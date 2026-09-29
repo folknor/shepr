@@ -29,8 +29,6 @@ impl App {
                     | shepr_api::schema::Method::PaneClear(_)
                     | shepr_api::schema::Method::PaneResize(_)
                     | shepr_api::schema::Method::LayoutSetSplitRatio(_)
-                    | shepr_api::schema::Method::AgentSendKeys(_)
-                    | shepr_api::schema::Method::AgentPrompt(_)
             );
         let render = if mutates_ui {
             if changes_shell_projection {
@@ -65,11 +63,10 @@ impl App {
         let response = match request.method {
             // Every one of these is answered before a request reaches the app:
             // the API server handles ping, SSH agent leases, subscriptions and
-            // waits (including `agent.wait`) on the connection thread and
-            // rejects `client_shell.surface.set`; the headless server
-            // intercepts window titles, `agent.prompt` and manifest reloads
-            // before calling this function. Reaching here is a routing bug,
-            // reported as such.
+            // waits on the connection thread and rejects
+            // `client_shell.surface.set`; the headless server intercepts window
+            // titles and manifest reloads before calling this function.
+            // Reaching here is a routing bug, reported as such.
             Method::Ping(_)
             | Method::ServerStop(_)
             | Method::ServerReloadAgentManifests(_)
@@ -77,8 +74,6 @@ impl App {
             | Method::ClientWindowTitleSet(_)
             | Method::ClientWindowTitleClear(_)
             | Method::ClientShellSurfaceSet(_)
-            | Method::AgentPrompt(_)
-            | Method::AgentWait(_)
             | Method::EventsSubscribe(_)
             | Method::EventsWait(_)
             | Method::PaneWaitForOutput(_) => {
@@ -137,9 +132,6 @@ impl App {
             Method::AgentRename(params) => return self.handle_agent_rename(params),
             Method::AgentRead(params) => return self.handle_agent_read(&params),
             Method::AgentExplain(target) => return self.handle_agent_explain(&target),
-            Method::AgentSendKeys(params) => {
-                return self.handle_agent_send_keys(&params);
-            }
             Method::PaneSplit(params) => return self.handle_pane_split(params),
             Method::PaneSwap(params) => return self.handle_pane_swap(params),
             Method::PaneMove(params) => return self.handle_pane_move(params),
@@ -476,11 +468,6 @@ mod tests {
             shepr_api::schema::Method::ClientWindowTitleClear(
                 shepr_api::schema::EmptyParams::default(),
             ),
-            shepr_api::schema::Method::AgentWait(shepr_api::schema::AgentWaitParams {
-                target: "reviewer".into(),
-                until: Vec::new(),
-                timeout_ms: None,
-            }),
             shepr_api::schema::Method::Ping(shepr_api::schema::PingParams::default()),
         ] {
             let name = shepr_api::api_method_name(&method);

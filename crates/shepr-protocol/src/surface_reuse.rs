@@ -84,15 +84,8 @@ impl std::fmt::Display for SurfaceDecodeError {
     }
 }
 
-impl std::error::Error for SurfaceDecodeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Delta(error) | Self::RejectedPatch(error) => Some(error),
-            Self::WithSubject { source, .. } => Some(source),
-            _ => None,
-        }
-    }
-}
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
+impl std::error::Error for SurfaceDecodeError {}
 
 impl SurfaceDecodeError {
     fn with_subject(self, subject: SurfaceDecodeSubject) -> Self {

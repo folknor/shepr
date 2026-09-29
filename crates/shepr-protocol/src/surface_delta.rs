@@ -27,6 +27,7 @@ impl std::fmt::Display for SurfaceDeltaError {
     }
 }
 
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
 impl std::error::Error for SurfaceDeltaError {}
 
 /// Whether a full surface can safely be represented as delta metadata.

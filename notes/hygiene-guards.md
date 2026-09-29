@@ -20,6 +20,15 @@ pass should expect that.
 
 ---
 
+## HYGG-152 - The IsolatedEnv rule is ambiguous about tests that only edit a command's env copy
+
+`AGENTS.md` says tests that touch the process environment hold a
+`shepr_test_support::IsolatedEnv`. The pane launch tests in
+`shepr-mux/src/pane/launch.rs` only edit a `PtyCommand`'s own environment map
+and hold none, and it is unclear whether they must. State the boundary in
+`AGENTS.md`: reading or writing the process environment needs the guard; a
+test that builds and inspects an explicit env map does not.
+
 ## HYGG-151 - Production files that open with an early `#[cfg(test)]` item
 
 Every `skip_after` textlint releases the rest of a file at its first

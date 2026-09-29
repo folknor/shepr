@@ -1,5 +1,5 @@
 /// Request params are deliberately not logged, here or in the other request
-/// events: `pane.send_text` and `agent.prompt` payloads carry user content.
+/// events: pane.send_text and pane.send_input payloads carry user content.
 /// Keep them out when adding fields.
 pub(crate) fn api_request_started(
     request_id: &str,
@@ -65,6 +65,10 @@ pub(crate) fn api_request_completed(
     }
 }
 
+/// A client that disconnected before its response was written never reaches
+/// this: the server write paths treat
+/// `shepr_platform::ipc::is_connection_closed_error` as a finished request.
+/// What remains is a real delivery failure, so it is logged as an error.
 pub(crate) fn api_request_failed(request_id: &str, method_name: &str, err: &str) {
     tracing::error!(
         event = "api.request.fail",

@@ -62,6 +62,8 @@ pub struct HookAuthority {
     pub agent_label: String,
     pub state: AgentState,
     pub message: Option<String>,
+    // Serde's zero-argument default cannot receive the app clock. Decoding
+    // needs a fresh local observation time.
     #[serde(skip, default = "Instant::now")]
     pub reported_at: Instant,
     pub session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,

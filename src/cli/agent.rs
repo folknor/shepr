@@ -1,23 +1,19 @@
 use clap::ArgMatches;
 
 use shepr_api::schema::{
-    AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStatus, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, ReadFormat, ReadSource, Request,
+    AgentReadParams, AgentRenameParams, AgentTarget, EmptyParams, ErrorBody, ErrorResponse, Method,
+    ReadFormat, ReadSource, Request,
 };
 
-use super::matches::{flag, required, string, value, values};
+use super::matches::{flag, required, string, value};
 
 #[derive(Clone)]
 pub(crate) enum Command {
     List,
     Get { target: String },
     Read(AgentReadParams),
-    SendKeys(AgentSendKeysParams),
-    Prompt(AgentPromptParams),
     Rename(AgentRenameParams),
     Focus { target: String },
-    Wait(AgentWaitParams),
     Attach { target: String, takeover: bool },
     Explain(ExplainArgs),
 }
@@ -37,11 +33,8 @@ impl Command {
             Self::List => "list",
             Self::Get { .. } => "get",
             Self::Read(_) => "read",
-            Self::SendKeys(_) => "send-keys",
-            Self::Prompt(_) => "prompt",
             Self::Rename(_) => "rename",
             Self::Focus { .. } => "focus",
-            Self::Wait(_) => "wait",
             Self::Attach { .. } => "attach",
             Self::Explain(_) => "explain",
         }
@@ -52,11 +45,8 @@ impl Command {
             Self::List
             | Self::Get { .. }
             | Self::Read(_)
-            | Self::SendKeys(_)
-            | Self::Prompt(_)
             | Self::Rename(_)
-            | Self::Focus { .. }
-            | Self::Wait(_) => true,
+            | Self::Focus { .. } => true,
             Self::Explain(args) => args.file.is_none(),
             Self::Attach { .. } => false,
         }
@@ -70,11 +60,6 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
             target: required(command, "target")?,
         }),
         Some(("read", command)) => Some(Command::Read(read_params(command)?)),
-        Some(("send-keys", command)) => Some(Command::SendKeys(AgentSendKeysParams {
-            target: required(command, "target")?,
-            keys: values::<String>(command, "key"),
-        })),
-        Some(("prompt", command)) => Some(Command::Prompt(prompt_params(command)?)),
         Some(("rename", command)) => Some(Command::Rename(AgentRenameParams {
             target: required(command, "target")?,
             name: string(command, "name"),
@@ -82,11 +67,6 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
         Some(("focus", command)) => Some(Command::Focus {
             target: required(command, "target")?,
         }),
-        Some(("wait", command)) => Some(Command::Wait(AgentWaitParams {
-            target: required(command, "target")?,
-            until: values::<AgentStatus>(command, "until"),
-            timeout_ms: value::<u64>(command, "timeout"),
-        })),
         Some(("attach", command)) => Some(Command::Attach {
             target: required(command, "target")?,
             takeover: flag(command, "takeover"),
@@ -111,11 +91,8 @@ pub(super) fn run_agent_command(
         Command::List => agent_list(paths),
         Command::Get { target } => agent_get(paths, target),
         Command::Read(params) => agent_read(paths, params),
-        Command::SendKeys(params) => agent_send_keys(paths, params),
-        Command::Prompt(params) => agent_prompt(paths, params),
         Command::Rename(params) => agent_rename(paths, params),
         Command::Focus { target } => agent_focus(paths, target),
-        Command::Wait(params) => agent_wait(paths, params),
         Command::Attach { target, takeover } => agent_attach(&target, takeover, config, paths),
         Command::Explain(args) => agent_explain(paths, args),
     }
@@ -337,16 +314,6 @@ fn agent_attach(
     ))
 }
 
-fn agent_wait(paths: &super::target::CliContext, params: AgentWaitParams) -> super::CliResult<i32> {
-    super::print_response(&super::send_request(
-        paths,
-        &Request {
-            id: "cli:agent:wait".into(),
-            method: Method::AgentWait(params),
-        },
-    )?)
-}
-
 fn resolve_agent_target(
     paths: &super::target::CliContext,
     target: &str,
@@ -373,46 +340,6 @@ fn agent_rename(
         &Request {
             id: "cli:agent:rename".into(),
             method: Method::AgentRename(params),
-        },
-    )?)
-}
-
-fn prompt_params(matches: &ArgMatches) -> Option<AgentPromptParams> {
-    // `--until` and `--timeout` require `--wait` in the spec.
-    Some(AgentPromptParams {
-        target: required(matches, "target")?,
-        text: required(matches, "text")?,
-        wait: flag(matches, "wait").then(|| AgentPromptWaitOptions {
-            until: values::<AgentStatus>(matches, "until"),
-            timeout_ms: value::<u64>(matches, "timeout"),
-            submission_deadline: None,
-        }),
-    })
-}
-
-fn agent_prompt(
-    paths: &super::target::CliContext,
-    params: AgentPromptParams,
-) -> super::CliResult<i32> {
-    let response = super::send_request(
-        paths,
-        &Request {
-            id: "cli:agent:prompt".into(),
-            method: Method::AgentPrompt(params),
-        },
-    )?;
-    super::print_response(&response)
-}
-
-fn agent_send_keys(
-    paths: &super::target::CliContext,
-    params: AgentSendKeysParams,
-) -> super::CliResult<i32> {
-    super::print_response(&super::send_request(
-        paths,
-        &Request {
-            id: "cli:agent:send-keys".into(),
-            method: Method::AgentSendKeys(params),
         },
     )?)
 }
@@ -448,7 +375,7 @@ fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> sup
 #[cfg(test)]
 mod parse_tests {
     use super::super::tests::group_matches;
-    use shepr_api::schema::{AgentStatus, ReadFormat, ReadSource};
+    use shepr_api::schema::{ReadFormat, ReadSource};
 
     fn command(args: &[&str]) -> super::Command {
         super::parse(&group_matches(args)).expect("test precondition")
@@ -482,32 +409,5 @@ mod parse_tests {
             assert_eq!(params.format, ReadFormat::Ansi);
             assert!(!params.strip_ansi);
         }
-    }
-
-    #[test]
-    fn prompt_wait_options_only_with_wait() {
-        let super::Command::Prompt(params) = command(&[
-            "agent",
-            "prompt",
-            "worker",
-            "--help me",
-            "--wait",
-            "--until",
-            "idle",
-            "--until=blocked",
-            "--timeout",
-            "500",
-        ]) else {
-            panic!("expected agent prompt");
-        };
-        assert_eq!(params.text, "--help me");
-        let wait = params.wait.expect("test precondition");
-        assert_eq!(wait.until, vec![AgentStatus::Idle, AgentStatus::Blocked]);
-        assert_eq!(wait.timeout_ms, Some(500));
-
-        let super::Command::Prompt(params) = command(&["agent", "prompt", "w", "hi"]) else {
-            panic!("expected agent prompt");
-        };
-        assert!(params.wait.is_none());
     }
 }

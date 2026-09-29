@@ -1,9 +1,10 @@
 //! Shepr-owned description of a process to launch inside a pane PTY.
 //!
-//! `PtyCommand` starts from the server's own environment and lets callers set,
-//! remove, and inspect variables before spawn, so pane launch policy (terminal
-//! identity, stripped host/agent variables, integration variables) is plain data
-//! that tests can assert on without spawning anything.
+//! `PtyCommand` starts from the server's own environment (see `base_env` for
+//! why it is inherited whole) and lets callers set, remove, and inspect
+//! variables before spawn, so pane launch policy (terminal identity, stripped
+//! host and agent variables, integration variables) is plain data that tests
+//! can assert on without spawning anything.
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, OsStr, OsString};
@@ -277,8 +278,16 @@ fn trimmed_shell(shell: &OsStr) -> Option<OsString> {
     shepr_core::shell::trim_shell_value(shell)
 }
 
-/// The server's environment. Shell selection and validation happen at spawn,
-/// after pane policy and launch environment have been applied.
+/// The server's environment, copied whole. A pane is the user's shell, so it
+/// inherits what the session that started the server set up, as a shell under
+/// tmux does: the agent socket, the display, the locale, `PATH`
+/// additions and whatever else the user's login exports. shepr cannot know that
+/// set, so an allowlist would silently break tools that read variables it never
+/// heard of. What must not reach a pane is the smaller, closed set shepr does
+/// know (its own handoffs, the outer terminal's identity, an outer agent
+/// session's markers), and the pane launch layer removes exactly those, one
+/// decision per registered variable. Shell selection and validation happen at
+/// spawn, after that policy and the launch environment have been applied.
 #[expect(
     clippy::disallowed_methods,
     reason = "a pane child inherits the server's environment verbatim; it is copied, not interpreted, and pane launch policy then edits the copy"

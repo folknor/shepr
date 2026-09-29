@@ -266,11 +266,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,
     };
-    AgentSendKeys(AgentSendKeysParams) => "agent.send_keys" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     AgentRename(AgentRenameParams) => "agent.rename" {
         client_shell: false, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: false,
@@ -280,16 +275,6 @@ define_methods! {
         client_shell: false, mutates_ui: true, changes_topology: false,
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
-    };
-    AgentPrompt(AgentPromptParams) => "agent.prompt" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: true, routine: false,
-    };
-    AgentWait(AgentWaitParams) => "agent.wait" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: true, routine: false,
     };
     PaneSplit(PaneSplitParams) => "pane.split" {
         client_shell: true, mutates_ui: true, changes_topology: true,

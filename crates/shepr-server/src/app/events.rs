@@ -297,8 +297,7 @@ impl App {
     }
 
     /// Close events for a tab and every pane in it, panes first. Removing a
-    /// container has to announce each child it takes along: `agent.wait` and
-    /// `agent.prompt --wait` end on their pane's `pane.closed`, and subscribers
+    /// container has to announce each child it takes along: subscribers
     /// rebuild the model from these events. Public ids stop resolving once
     /// the tab is gone, so build these before removing it and emit them after.
     ///

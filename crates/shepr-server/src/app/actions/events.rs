@@ -56,6 +56,7 @@ impl AppState {
     }
 
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
+        let now = self.clock_now;
         match event {
             AppEvent::PaneDied { pane_id, .. } => {
                 // `App::handle_internal_event` removes dead panes itself,
@@ -109,19 +110,26 @@ impl AppState {
                     &agent_label,
                 ) {
                     self.update_terminal_state(pane_id, |terminal| {
-                        terminal.set_agent_session_ref(source, agent_label, session_ref, seq)
+                        terminal.set_agent_session_ref_at(
+                            source,
+                            agent_label,
+                            session_ref,
+                            seq,
+                            now,
+                        )
                     })
                     .into_iter()
                     .collect()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
-                        terminal.set_hook_authority_with_session_ref(
+                        terminal.set_hook_authority_at(
                             source,
                             agent_label,
                             state,
                             message,
                             session_ref,
                             seq,
+                            now,
                         )
                     })
                     .into_iter()
@@ -137,12 +145,13 @@ impl AppState {
                 session_start_source,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_session_ref_for_typed_start_source(
+                    terminal.set_agent_session_ref_for_typed_start_source_at(
                         source,
                         agent_label,
                         session_ref,
                         seq,
                         session_start_source,
+                        now,
                     )
                 })
                 .into_iter()
@@ -180,7 +189,7 @@ impl AppState {
                 seq,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.clear_hook_authority_with_mutation(source.as_deref(), seq)
+                    terminal.clear_hook_authority_with_mutation_at(source.as_deref(), seq, now)
                 })
                 .into_iter()
                 .collect(),
@@ -195,7 +204,7 @@ impl AppState {
                     Vec::new()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
-                        terminal.release_agent_with_mutation(&source, &agent_label, seq)
+                        terminal.release_agent_with_mutation_at(&source, &agent_label, seq, now)
                     })
                     .into_iter()
                     .collect()

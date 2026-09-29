@@ -37,7 +37,9 @@ Kept:
   check`, `session list/delete`, `integration`, `machine`, `agent explain
   --file`) run in the CLI process and cannot be sent with `--machine`
 
-Launching agents through shepr (agent start and managed agents) is deliberately not kept.
+shepr is for overseeing agents across machines, not for driving them.
+Launching or steering agents through shepr (agent start, managed agents,
+agent prompt, agent send-keys and agent wait) is deliberately not kept.
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.

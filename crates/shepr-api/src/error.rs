@@ -31,16 +31,10 @@ macro_rules! api_error_codes {
 }
 
 api_error_codes! {
-    AgentBlocked => "agent_blocked",
     AgentExplainFileReadFailed => "agent_explain_file_read_failed",
     AgentExplainUnavailable => "agent_explain_unavailable",
     AgentNotFound => "agent_not_found",
-    AgentNotRunning => "agent_not_running",
-    AgentNotReady => "agent_not_ready",
-    AgentPromptFailed => "agent_prompt_failed",
-    AgentSendKeysFailed => "agent_send_keys_failed",
     CopyMotionUnavailable => "copy_motion_unavailable",
-    EmptyAgentPrompt => "empty_agent_prompt",
     InternalError => "internal_error",
     InvalidAgent => "invalid_agent",
     InvalidCwd => "invalid_cwd",
@@ -101,7 +95,6 @@ api_error_codes! {
     UnsupportedMethod => "unsupported_method",
     StaleBoot => "stale_boot",
     SurfaceInactive => "surface_inactive",
-    AgentPromptStalled => "agent_prompt_stalled",
     BuildMismatch => "build_mismatch",
     InvalidSessionName => "invalid_session_name",
     ServerNotRunning => "server_not_running",

@@ -8,6 +8,7 @@ impl TerminalState {
         self.persisted_agent_session = Some(session);
     }
 
+    #[cfg(test)]
     pub fn set_agent_session_ref(
         &mut self,
         source: String,
@@ -15,9 +16,28 @@ impl TerminalState {
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
-        self.set_agent_session_ref_for_session_start(source, agent_label, session_ref, seq, None)
+        self.set_agent_session_ref_at(source, agent_label, session_ref, seq, Instant::now())
     }
 
+    pub fn set_agent_session_ref_at(
+        &mut self,
+        source: String,
+        agent_label: String,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+        now: Instant,
+    ) -> Option<TerminalStateMutation> {
+        self.set_agent_session_ref_for_typed_start_source_at(
+            source,
+            agent_label,
+            session_ref,
+            seq,
+            None,
+            now,
+        )
+    }
+
+    #[cfg(test)]
     pub fn set_agent_session_ref_for_session_start(
         &mut self,
         source: String,
@@ -26,22 +46,24 @@ impl TerminalState {
         seq: Option<u64>,
         session_start_source: Option<&str>,
     ) -> Option<TerminalStateMutation> {
-        self.set_agent_session_ref_for_typed_start_source(
+        self.set_agent_session_ref_for_typed_start_source_at(
             source,
             agent_label,
             session_ref,
             seq,
             shepr_agent::agent::resume::normalize_session_start_source(session_start_source),
+            Instant::now(),
         )
     }
 
-    pub fn set_agent_session_ref_for_typed_start_source(
+    pub fn set_agent_session_ref_for_typed_start_source_at(
         &mut self,
         source: String,
         agent_label: String,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
+        now: Instant,
     ) -> Option<TerminalStateMutation> {
         self.warn_unrecognized_hook_identity(&source, &agent_label);
         let session_ref = session_ref?;
@@ -95,7 +117,7 @@ impl TerminalState {
                 .or_insert_with(|| SuppressedFullLifecycleHookReport {
                     agent_label,
                     session_ref: previous_session_ref,
-                    observed_at: Instant::now(),
+                    observed_at: now,
                     reason: FullLifecycleHookSuppressionReason::ProcessExit,
                     replacement_session_ref: None,
                     pending_replacement_report: None,
@@ -112,7 +134,6 @@ impl TerminalState {
                 return None;
             }
             let seq = seq?;
-            let now = Instant::now();
             if self.hook_seq_superseded(&source, seq, now) {
                 return None;
             }
@@ -153,7 +174,11 @@ impl TerminalState {
             }
 
             if process_present {
-                self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
+                self.clear_full_lifecycle_hook_suppression_for_detected_agent(
+                    None,
+                    known_agent,
+                    now,
+                );
                 let current_session = self.current_session_identity_for_persistence();
                 return Some(TerminalStateMutation {
                     effective_state_change: self.recompute_effective_state(
@@ -169,7 +194,7 @@ impl TerminalState {
             }
             return None;
         }
-        if !unsequenced_selection && !self.accept_hook_report(&source, seq) {
+        if !unsequenced_selection && !self.accept_hook_report_at(&source, seq, now) {
             return None;
         }
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
@@ -230,7 +255,6 @@ impl TerminalState {
             return None;
         }
 
-        let now = Instant::now();
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
@@ -249,6 +273,7 @@ impl TerminalState {
         } else if foreground_takeover_allowed {
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
+                now,
             );
             self.hook_authority = None;
         }
@@ -324,10 +349,6 @@ impl TerminalState {
             )
             .and_then(|session| shepr_agent::agent::resume::plan(&session))
             .is_some()
-    }
-
-    pub(super) fn accept_hook_report(&mut self, source: &str, seq: Option<u64>) -> bool {
-        self.accept_hook_report_at(source, seq, Instant::now())
     }
 
     pub(super) fn accept_hook_report_at(

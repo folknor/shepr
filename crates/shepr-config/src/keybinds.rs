@@ -902,7 +902,7 @@ fn parse_range_modifiers(s: &str) -> Option<KeyModifiers> {
     saw_range.then_some(modifiers)
 }
 
-/// Parses a key named through the API (`pane send-keys`, `agent send-keys`):
+/// Parses a key named through the API (`pane send-keys`):
 /// keybinding syntax plus a few spellings callers commonly send (`C-c`, `c-c`,
 /// a bare `+`). Config keybindings go through [`parse_key_combo`] and do not
 /// accept these.

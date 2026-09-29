@@ -16,11 +16,18 @@ impl TerminalState {
     pub fn set_agent_name(&mut self, name: String) {
         self.agent_name = (!name.is_empty()).then_some(name);
         self.agent_name_owner = self.agent_name.as_ref().and_then(|_| {
-            self.hook_authority
-                .as_ref()
-                .map(|authority| AgentNameOwner {
-                    agent_label: authority.agent_label.clone(),
-                    session_ref: authority.session_ref.clone(),
+            self.resume_name_hold
+                .map(|hold| AgentNameOwner {
+                    agent_label: shepr_agent::detect::agent_label(hold.kind).to_string(),
+                    session_ref: None,
+                })
+                .or_else(|| {
+                    self.hook_authority
+                        .as_ref()
+                        .map(|authority| AgentNameOwner {
+                            agent_label: authority.agent_label.clone(),
+                            session_ref: authority.session_ref.clone(),
+                        })
                 })
                 .or_else(|| {
                     self.persisted_agent_session

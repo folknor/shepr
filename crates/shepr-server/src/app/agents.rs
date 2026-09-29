@@ -238,15 +238,6 @@ impl App {
     }
 }
 
-/// Uses the same runtime observation path in tests and production; childless
-/// test runtimes seed observations through `PaneRuntime`'s explicit probe seam.
-pub(super) fn runtime_hosts_agent(
-    runtime: &shepr_mux::pane::PaneRuntime,
-    expected: shepr_agent::detect::Agent,
-) -> bool {
-    runtime.foreground_agent() == Some(expected)
-}
-
 pub(super) enum AgentRenameError {
     Target(TerminalTargetError),
     InvalidName,

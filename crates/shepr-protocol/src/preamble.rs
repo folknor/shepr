@@ -67,14 +67,8 @@ impl std::fmt::Display for PreambleError {
     }
 }
 
-impl std::error::Error for PreambleError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            _ => None,
-        }
-    }
-}
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
+impl std::error::Error for PreambleError {}
 
 /// This build's preamble.
 pub fn local_preamble() -> [u8; PREAMBLE_LEN] {

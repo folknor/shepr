@@ -1,10 +1,8 @@
 //! The byte channel between a pane and its child.
 
-use std::time::Duration;
-
 use bytes::Bytes;
 
-use crate::actor::{PtyIoActorHandle, QueuedSubmission};
+use crate::actor::PtyIoActorHandle;
 
 /// A non-blocking child write was rejected. The original bytes are returned
 /// so the caller can retry or handle the input itself.
@@ -27,11 +25,10 @@ impl std::fmt::Display for ChildIoSendError {
 
 impl std::error::Error for ChildIoSendError {}
 
-/// What a pane runtime writes to its child through: user input, prompt
-/// submissions, terminal replies and resizes. Every pane shepr runs talks to
-/// its child through the PTY actor ([`PtyIoActorHandle`]); the trait is the
-/// seam that lets a caller supply another channel, such as one with no child
-/// behind it.
+/// What a pane runtime writes to its child through: user input, terminal
+/// replies and resizes. Every pane shepr runs talks to its child through the
+/// PTY actor ([`PtyIoActorHandle`]); the trait is the seam that lets a caller
+/// supply another channel, such as one with no child behind it.
 ///
 /// The closures run under the implementation's reply-order lock (they may take
 /// the terminal core lock) and are called at most once. They are `FnMut` only
@@ -56,14 +53,6 @@ pub trait ChildIo: Send + Sync {
 
     /// Queue a terminal reply produced outside a read of the child's output.
     fn write_terminal_response(&self, response: &mut dyn FnMut() -> Option<Bytes>);
-
-    /// Queue `text`, then `enter` once `delay` has passed.
-    fn queue_user_input_submission(
-        &self,
-        text: Bytes,
-        enter: Bytes,
-        delay: Duration,
-    ) -> std::io::Result<QueuedSubmission>;
 }
 
 impl ChildIo for PtyIoActorHandle {
@@ -89,14 +78,5 @@ impl ChildIo for PtyIoActorHandle {
 
     fn write_terminal_response(&self, response: &mut dyn FnMut() -> Option<Bytes>) {
         PtyIoActorHandle::write_terminal_response(self, response);
-    }
-
-    fn queue_user_input_submission(
-        &self,
-        text: Bytes,
-        enter: Bytes,
-        delay: Duration,
-    ) -> std::io::Result<QueuedSubmission> {
-        PtyIoActorHandle::queue_user_input_submission(self, text, enter, delay)
     }
 }

@@ -221,7 +221,12 @@ fn run_client_with_launch_state(
                 true,
                 None,
             )
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(|error| {
+                io::Error::other(format!(
+                    "endpoint local (session {}): {error}",
+                    paths.session_id().display_name()
+                ))
+            })?;
             if let Some((terminal_id, takeover)) = attach_request {
                 write_to_server(
                     &mut stream,

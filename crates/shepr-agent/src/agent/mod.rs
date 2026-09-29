@@ -1,5 +1,5 @@
 //! Agent identity and facts that must agree across detection, integrations,
-//! resume, pane launch policy and presentation.
+//! resume and presentation.
 
 pub mod resume;
 
@@ -8,7 +8,6 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize, de::Visitor};
-use shepr_core::env::ChildEnv;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]
@@ -274,7 +273,6 @@ pub struct AgentDescriptor {
     pub session_identity_only_integration: bool,
     pub resume_support: Option<ResumeSupport>,
     pub screen_manifest: bool,
-    pub env_to_scrub: &'static [ChildEnv],
     pub title_activity_glyphs: &'static str,
     pub integration_hook_events: &'static [IntegrationHookEvent],
 }
@@ -297,7 +295,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -316,12 +313,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[
-            ChildEnv::ClaudeCode,
-            ChildEnv::ClaudeCodeChildSession,
-            ChildEnv::ClaudeCodeSessionId,
-            ChildEnv::ClaudeCodeMessagingToken,
-        ],
         title_activity_glyphs: CLAUDE_ACTIVITY_GLYPHS,
         integration_hook_events: &[],
     }
@@ -341,7 +332,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::Subcommand("resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[ChildEnv::CodexThreadId],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -358,7 +348,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         resume_support: None,
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -377,7 +366,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -397,7 +385,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -417,7 +404,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue(CONVERSATION_FLAG),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -434,7 +420,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         resume_support: None,
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -453,7 +438,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::InlineFlag("--resume="),
         )),
         screen_manifest: false,
-        env_to_scrub: &[ChildEnv::Ompcode],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -472,7 +456,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--thread"),
         )),
         screen_manifest: false,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -492,7 +475,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -511,7 +493,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::InlineFlag("--resume="),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -531,7 +512,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -548,7 +528,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         resume_support: None,
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -567,7 +546,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -584,7 +562,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         resume_support: None,
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -603,7 +580,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -623,7 +599,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -642,7 +617,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -662,7 +636,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -682,7 +655,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             ResumeArgs::LettaConversation,
         )),
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     }
@@ -699,7 +671,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         resume_support: None,
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -715,7 +686,6 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         resume_support: None,
         screen_manifest: true,
-        env_to_scrub: &[],
         title_activity_glyphs: "",
         integration_hook_events: &[],
     },
@@ -808,10 +778,6 @@ impl Agent {
         self.descriptor().screen_manifest
     }
 
-    pub const fn env_to_scrub(self) -> &'static [ChildEnv] {
-        self.descriptor().env_to_scrub
-    }
-
     pub const fn activity_glyphs(self) -> &'static str {
         self.descriptor().title_activity_glyphs
     }
@@ -853,10 +819,6 @@ const BRAILLE_ACTIVITY_GLYPH_RANGE: std::ops::RangeInclusive<char> = '\u{2800}'.
 
 fn is_braille_activity_glyph(glyph: char) -> bool {
     BRAILLE_ACTIVITY_GLYPH_RANGE.contains(&glyph)
-}
-
-pub fn launch_env_to_scrub() -> impl Iterator<Item = &'static str> {
-    Agent::all().flat_map(|agent| agent.env_to_scrub().iter().copied().map(ChildEnv::name))
 }
 
 fn agent_name_lookup() -> &'static HashMap<&'static str, Agent> {
@@ -1099,13 +1061,6 @@ mod tests {
         assert_eq!(Agent::Antigravity.label(), "agy");
         assert_eq!(Agent::Antigravity.integration_source(), Some("shepr:agy"));
         assert!(Agent::Claude.activity_glyphs().contains('◐'));
-        assert!(Agent::Claude.env_to_scrub().contains(&ChildEnv::ClaudeCode));
-        assert!(
-            Agent::Codex
-                .env_to_scrub()
-                .contains(&ChildEnv::CodexThreadId)
-        );
-        assert!(Agent::Omp.env_to_scrub().contains(&ChildEnv::Ompcode));
         assert_eq!(
             Agent::screen_manifest_agents().count(),
             AGENTS

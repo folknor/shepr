@@ -195,7 +195,6 @@ pub struct PaneRuntime {
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
-    process_probe_result_for_test: Option<Option<Agent>>,
     // Task handles for deterministic shutdown
     detect_handle: Option<tokio::task::AbortHandle>,
 }
@@ -1288,7 +1287,6 @@ impl PaneRuntime {
             full_lifecycle_authority_active,
             detect_reset_notify,
             pending_release,
-            process_probe_result_for_test: None,
             detect_handle,
         })
     }
@@ -1324,7 +1322,6 @@ impl PaneRuntime {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: detection_reset,
             pending_release: Arc::new(Mutex::new(None)),
-            process_probe_result_for_test: None,
             detect_handle: None,
         }
     }
@@ -1632,15 +1629,6 @@ impl PaneRuntime {
         self.io.try_write_user_input(bytes)
     }
 
-    pub fn queue_user_input_submission(
-        &self,
-        text: Bytes,
-        enter: Bytes,
-        delay: std::time::Duration,
-    ) -> std::io::Result<shepr_pty::actor::QueuedSubmission> {
-        self.io.queue_user_input_submission(text, enter, delay)
-    }
-
     pub fn try_send_paste(&self, text: String) -> Result<(), shepr_pty::ChildIoSendError> {
         self.try_send_bytes(self.paste_payload(text))
     }
@@ -1799,24 +1787,6 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
-    /// Return the agent identified in the pane's foreground process tree.
-    /// Childless test runtimes can use `set_process_probe_result_for_test` to
-    /// supply the observation without starting an agent process.
-    pub fn foreground_agent(&self) -> Option<Agent> {
-        if let Some(agent) = self.process_probe_result_for_test {
-            return agent;
-        }
-        let job = shepr_agent::detect::foreground_job(self.child_pid()?)?;
-        shepr_agent::detect::identify_agent_in_job(&job).map(|(agent, _)| agent)
-    }
-
-    /// Set the foreground agent observation used by childless runtimes in
-    /// tests. Spawned runtimes leave this seam unset and inspect their real
-    /// child.
-    pub fn set_process_probe_result_for_test(&mut self, foreground_agent: Option<Agent>) {
-        self.process_probe_result_for_test = Some(foreground_agent);
-    }
-
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         let leader_cwd = self
             .child_pid()
@@ -1912,7 +1882,6 @@ impl PaneRuntime {
 mod tests {
     use super::*;
     use shepr_test_support::fixture::{self, Held, Signal, Step};
-    use std::ffi::OsStr;
 
     fn shell_probe(
         previous_agent: Option<Agent>,
@@ -2039,84 +2008,6 @@ mod tests {
         };
         assert_eq!(patch.rows.len(), 5);
         assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 24));
-    }
-
-    #[test]
-    fn pane_launch_env_removes_outer_agent_identity() {
-        let keys = [
-            "CODEX_THREAD_ID",
-            "OMPCODE",
-            "CLAUDECODE",
-            "CLAUDE_CODE_CHILD_SESSION",
-            "CLAUDE_CODE_SESSION_ID",
-            "CLAUDE_CODE_MESSAGING_TOKEN",
-        ];
-        let mut cmd = PtyCommand::new("shell");
-        for key in keys {
-            cmd.env(key, "outer-session");
-        }
-        cmd.env("ANTHROPIC_API_KEY", "fake-api-key");
-        cmd.env("DISPLAY", ":42");
-
-        apply_pane_launch_env(
-            &mut cmd,
-            &PaneLaunchEnv::from_extra(Vec::new(), "/run/user/1000/shepr-test.sock".into()),
-        );
-
-        for key in keys {
-            assert!(cmd.get_env(key).is_none(), "{key} must not leak into panes");
-        }
-        assert_eq!(
-            cmd.get_env("ANTHROPIC_API_KEY"),
-            Some(OsStr::new("fake-api-key"))
-        );
-        assert_eq!(cmd.get_env("DISPLAY"), Some(OsStr::new(":42")));
-    }
-
-    #[test]
-    fn pane_terminal_identity_removes_outer_terminal_identity() {
-        let mut cmd = PtyCommand::new("shell");
-        for &key in OUTER_TERMINAL_IDENTITY_ENV {
-            cmd.env(key, "outer-session");
-        }
-        cmd.env("TERM_PROGRAM", "iTerm.app");
-        cmd.env("TERM_PROGRAM_VERSION", "outer-version");
-
-        apply_pane_terminal_env(&mut cmd);
-
-        for &key in OUTER_TERMINAL_IDENTITY_ENV {
-            assert!(cmd.get_env(key).is_none(), "{key} must not leak into panes");
-        }
-        assert_eq!(cmd.get_env("TERM_PROGRAM"), Some(OsStr::new("shepr")));
-        assert_eq!(
-            cmd.get_env("TERM_PROGRAM_VERSION"),
-            Some(OsStr::new(&shepr_protocol::build_version()))
-        );
-    }
-
-    #[test]
-    fn pane_launch_env_allows_explicit_session_identity() {
-        let extra = vec![
-            ("CLAUDE_CODE_CHILD_SESSION".into(), "1".into()),
-            ("CLAUDE_CODE_SESSION_ID".into(), "intentional-child".into()),
-            ("CLAUDE_CODE_MESSAGING_TOKEN".into(), "fake-token".into()),
-            ("ITERM_SESSION_ID".into(), "intentional-host".into()),
-        ];
-        let api_socket_path = std::path::PathBuf::from("/run/user/1000/shepr-test.sock");
-        let mut cmd = PtyCommand::new("shell");
-        apply_pane_terminal_env(&mut cmd);
-        apply_pane_launch_env(
-            &mut cmd,
-            &PaneLaunchEnv::from_extra(extra.clone(), api_socket_path.clone()),
-        );
-
-        for (key, value) in extra {
-            assert_eq!(cmd.get_env(key), Some(OsStr::new(&value)));
-        }
-        assert_eq!(
-            cmd.get_env("SHEPR_SOCKET_PATH"),
-            Some(api_socket_path.as_os_str())
-        );
     }
 
     #[tokio::test]
@@ -2725,7 +2616,6 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
-            process_probe_result_for_test: None,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
@@ -2757,7 +2647,6 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
-            process_probe_result_for_test: None,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 

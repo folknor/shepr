@@ -159,34 +159,42 @@ fn a_hook_report_from_the_resumed_agent_confirms_it() {
     assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
 }
 
+/// A resumed agent that reports a fresh session keeps its name, whether or
+/// not the pane was renamed while the resume was pending.
 #[test]
 fn a_resumed_agent_reporting_a_fresh_session_keeps_its_name() {
-    let now = Instant::now();
-    let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:opencode".into(),
-        agent: shepr_agent::agent::Agent::OpenCode,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("opencode-saved")
-            .expect("test precondition"),
-    });
-    terminal.hold_agent_name_for_resume("worker".into(), Agent::OpenCode);
-    terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
-    terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
-    let _ = terminal.set_detected_agent_process_at(Agent::OpenCode, now);
+    for rename in [None, Some("renamed worker")] {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
+            source: "shepr:opencode".into(),
+            agent: shepr_agent::agent::Agent::OpenCode,
+            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("opencode-saved")
+                .expect("test precondition"),
+        });
+        terminal.hold_agent_name_for_resume("worker".into(), Agent::OpenCode);
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+        terminal.begin_agent_resume_name_hold(now, Duration::from_secs(30));
+        if let Some(name) = rename {
+            terminal.set_agent_name(name.into());
+        }
+        let _ = terminal.set_detected_agent_process_at(Agent::OpenCode, now);
 
-    terminal
-        .set_agent_session_ref_for_session_start(
-            "shepr:opencode".into(),
-            "opencode".into(),
-            shepr_agent::agent::resume::AgentSessionRef::id("opencode-resumed"),
-            None,
-            Some("select"),
-        )
-        .expect("resumed session should be accepted");
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "shepr:opencode".into(),
+                "opencode".into(),
+                shepr_agent::agent::resume::AgentSessionRef::id("opencode-resumed"),
+                None,
+                Some("select"),
+            )
+            .expect("resumed session should be accepted");
 
-    assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
-    assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(60)));
-    assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+        let expected = rename.unwrap_or("worker");
+        assert_eq!(terminal.agent_name.as_deref(), Some(expected), "{rename:?}");
+        assert!(!terminal.reconcile_agent_resume_name(now + Duration::from_secs(60)));
+        assert_eq!(terminal.agent_name.as_deref(), Some(expected), "{rename:?}");
+    }
 }
 
 #[test]

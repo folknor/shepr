@@ -13,8 +13,7 @@ pub(crate) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100)
 /// server serves by scrolling the agent, harvesting output, and restoring the
 /// viewport. A second read of the same pane is parked until the first finishes,
 /// so the request deadline covers the full operation and queued read. Requests
-/// that carry their own timeout (`events.wait`,
-/// `agent.wait`, `pane.wait_for_output`, `agent.prompt` with `wait`) are
+/// that carry their own timeout (events.wait and pane.wait_for_output) are
 /// dispatched on their own paths and are not subject to this bound.
 pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -77,21 +76,8 @@ pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// while keeping the shared history bounded.
 pub(crate) const MAX_EVENT_HISTORY: usize = 512;
 
-/// Slack past a wait's own `timeout_ms`. At its deadline a wait still makes a
-/// final app probe (bounded by [`APP_RESPONSE_TIMEOUT`]), and
-/// `agent.prompt --wait` chains a submission step and two status waits that
-/// can each overrun by one such probe. This only has to exceed those
-/// overruns; it is not what normally ends a wait.
+/// Slack past a wait deadline, allowing the final app probe to finish.
 pub(crate) const WAIT_RESPONSE_GRACE: Duration = Duration::from_secs(30);
-
-/// Maximum time spent waiting for a prompt effect to appear as agent activity.
-/// It bounds a stalled submission while allowing normal detection.
-pub(crate) const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
-
-/// Allows the agent-prompt handler's app response to trail the user deadline
-/// long enough for the app's own timeout response to arrive. The grace gives
-/// that final status a chance to win without materially extending the wait.
-pub(crate) const AGENT_PROMPT_RESPONSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Maximum time a session stop waits for both session sockets to disappear,
 /// leaving time for orderly shutdown before reporting a stall.

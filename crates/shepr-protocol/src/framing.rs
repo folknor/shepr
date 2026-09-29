@@ -40,16 +40,8 @@ impl std::fmt::Display for FramingError {
     }
 }
 
-impl std::error::Error for FramingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            FramingError::Io(e) => Some(e),
-            FramingError::Codec(e) => Some(e),
-            FramingError::SurfaceDecode(e) => Some(e),
-            _ => None,
-        }
-    }
-}
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
+impl std::error::Error for FramingError {}
 
 impl From<io::Error> for FramingError {
     fn from(e: io::Error) -> Self {

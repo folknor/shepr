@@ -56,6 +56,26 @@ value the binary renders) plus a `clippy.toml disallowed_methods` entry for
 `eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
 and phrasing of the messages themselves cannot be held mechanically.
 
+## HYGC-053 - Two log facts that can be wrong after a disconnect or a failed probe
+
+- `shepr-api/src/server.rs::finish_api_response` writes through
+  `write_text_line_allow_disconnect`, which turns a disconnect into `Ok`, and
+  then logs `api.request.complete` with the response's own outcome (say "ok")
+  for a response that was never delivered. Match
+  `is_connection_closed_error` there and log a "client_disconnected" outcome.
+- `shepr-mux/src/pane/launch.rs`: `SHEPR_BIN_PATH` is allowed through and only
+  overwritten when `launch_executable()` succeeds, so if that fails a nested
+  server's pane keeps the outer server's stale value. Scrubbing it instead
+  would drop it in that case; the success case writes after the scrub and is
+  unaffected.
+
+## HYGC-054 - Handshake failure text may repeat the machine name
+
+Client handshake errors now read "endpoint local (session X) handshake failed:
+...". Nobody checked whether the endpoint status UI already prefixes the
+machine name, so an SSH endpoint may show it twice. Look at the rendered
+status line for a failing remote handshake and trim whichever side repeats.
+
 ## HYGC-013 - Structured field names for the same thing differ across sites
 
 `shepr-client` keys every failure field `error`. Every other crate mixes `err`
@@ -67,36 +87,16 @@ sources found both spellings in `shepr-agent`, `shepr-api`, `shepr-mux`,
 Enforcement named: a text rule on the field name, or funnelling failures through
 one helper.
 
-## HYGC-037 - Once-only drop and failure reports that lose their subject or their total
-
-- `api_request_failed` (now in `shepr-api`'s logging module) is `error!`, including
-  response-write IO failures from clients that disconnect abruptly; watch it for
-  noise and split the disconnect case if it is.
-
 ## HYGC-022 - Errors that reach an operator naming no subject
 
-Surface decode errors, endpoint reader errors and cached endpoint config errors
-now carry their subject as typed values. Open:
-
-- Client handshake failures: `do_handshake` does not know the endpoint id, and
-  the local session is only known at its callers in
-  `shepr-client/src/endpoint/supervisor.rs` and `shepr-client/src/lib.rs`,
-  which must pass that context in.
-- `shepr-server/src/server/client_transport.rs`: framing read failures log the
-  `client_id` but no session.
+Client-side decode, reader, config and handshake errors now carry their
+subject. Open: `shepr-server/src/server/client_transport.rs` framing read
+failures log the `client_id` but no session. The worker has no validated
+session (reading `SHEPR_SESSION` would be wrong when `--session` chose it), so
+the acceptor must pass it in.
 
 Enforcement named: partly. A typed error per module carrying the subject makes the
 subject impossible to omit; a lint cannot.
-
-## HYGC-052 - New typed client errors print their cause twice in a chain
-
-`shepr-protocol`'s `SurfaceDecodeError` and `shepr-client`'s
-`EndpointFramingError` include their source in `Display` and also return it
-from `source()`, as the older `FramingError` does, so any chain printer shows
-the cause twice. Pick one convention for the crate's errors. Related: client
-disconnect messages now begin "endpoint <id> connection generation N:", and
-that text reaches `EndpointTransportFailure.message` and possibly the UI;
-decide whether the generation belongs in operator text or only in the log.
 
 ## HYGC-050 - Pane restore failure wording is owned by the UI module and reached from the app layer
 

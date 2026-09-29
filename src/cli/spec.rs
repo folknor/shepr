@@ -12,8 +12,7 @@ use clap::builder::{
 use clap::{Arg, ArgAction, ArgGroup, Command, ValueHint};
 
 use shepr_api::schema::{
-    AgentStatus, PaneAgentState, PaneDirection, PaneRightClickTarget, ReadFormat, ReadSource,
-    SplitDirection,
+    PaneAgentState, PaneDirection, PaneRightClickTarget, ReadFormat, ReadSource, SplitDirection,
 };
 use shepr_remote::{
     COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
@@ -244,7 +243,7 @@ fn tab_command() -> Command {
 
 fn agent_command() -> Command {
     group("agent")
-        .about("Control and inspect agent panes")
+        .about("Inspect and navigate agent panes")
         .after_help("Targets accept unique agent names and pane ids that currently host agents.")
         .subcommand(Command::new("list").about("List agents"))
         .subcommand(id_command("get", "target", "Show an agent"))
@@ -257,37 +256,6 @@ fn agent_command() -> Command {
                 .arg(u32_option("lines", "N"))
                 .arg(read_format_option())
                 .arg(flag("ansi").conflicts_with("format")),
-        )
-        .subcommand(
-            Command::new("send-keys")
-                .about("Send key presses to an agent")
-                .arg(required("target", "TARGET"))
-                .arg(text_words("key", "KEY"))
-                .after_help(SEND_KEYS_HELP),
-        )
-        .subcommand(
-            Command::new("prompt")
-                .about("Submit a prompt to an agent")
-                .override_usage("shepr agent prompt <TARGET> <TEXT> [OPTIONS]")
-                .arg(required("target", "TARGET"))
-                .arg(required("text", "TEXT").allow_hyphen_values(true))
-                .arg(
-                    flag("wait")
-                        .help("Wait for the first matching state observed after submission"),
-                )
-                .arg(
-                    agent_status_option()
-                        .requires("wait")
-                        .help("State to match after --wait; repeat for more than one state"),
-                )
-                .arg(
-                    u64_option("timeout", "MS")
-                        .requires("wait")
-                        .help("Fail after this many milliseconds"),
-                )
-                .after_help(
-                    "If the agent is already blocked, submission is rejected with agent_blocked before any input is sent. When an accepted submission starts from another non-working state, --wait requires an observed working or blocked state within 5000ms; otherwise it returns agent_prompt_stalled. A caller timeout that expires first returns timeout. It then matches idle or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match.",
-                ),
         )
         .subcommand(
             Command::new("rename")
@@ -303,20 +271,6 @@ fn agent_command() -> Command {
                 ),
         )
         .subcommand(id_command("focus", "target", "Focus an agent"))
-        .subcommand(
-            Command::new("wait")
-                .about("Wait until an agent reaches one of the requested states")
-                .override_usage("shepr agent wait <TARGET> [OPTIONS]")
-                .arg(required("target", "TARGET"))
-                .arg(
-                    agent_status_option()
-                        .help("State to match; repeat for more than one state"),
-                )
-                .arg(u64_option("timeout", "MS").help("Fail after this many milliseconds"))
-                .after_help(
-                    "Without --until, matches idle or blocked. Unknown agent state is presented as idle. Without --timeout, waits indefinitely.",
-                ),
-        )
         .subcommand(
             Command::new("attach")
                 .about("Attach directly to an agent terminal")
@@ -357,7 +311,7 @@ fn agent_command() -> Command {
         )
 }
 
-/// Key syntax for `pane send-keys` and `agent send-keys`; the server parses
+/// Key syntax for `pane send-keys`; the server parses
 /// each key with the keybinding parser's API entry (`config::parse_api_key_combo`).
 const SEND_KEYS_HELP: &str = "Each KEY is a key combo in keybinding syntax: ctrl/alt/shift/super modifiers joined with + (meta is an alias for alt), then a character or a key name: enter, tab, esc, backspace, space, up, down, left, right, home, end, pageup, pagedown, delete, insert, f1..f12. Use esc as the canonical Escape key name; escape is also accepted.";
 
@@ -767,10 +721,6 @@ fn right_click_option() -> Arg {
     option("right-click", "TARGET").value_parser(Choice(RIGHT_CLICK_TARGETS))
 }
 
-fn agent_status_option() -> Arg {
-    repeatable_option("until", "STATUS").value_parser(Choice(AGENT_STATUSES))
-}
-
 fn read_source_option(values: &'static [(&'static str, ReadSource)]) -> Arg {
     option("source", "SOURCE")
         .value_parser(Choice(values))
@@ -914,12 +864,6 @@ const WAIT_READ_SOURCES: &[(&str, ReadSource)] = &[
 
 const READ_FORMATS: &[(&str, ReadFormat)] =
     &[("text", ReadFormat::Text), ("ansi", ReadFormat::Ansi)];
-
-const AGENT_STATUSES: &[(&str, AgentStatus)] = &[
-    ("idle", AgentStatus::Idle),
-    ("working", AgentStatus::Working),
-    ("blocked", AgentStatus::Blocked),
-];
 
 const PANE_AGENT_STATES: &[(&str, PaneAgentState)] = &[
     ("idle", PaneAgentState::Idle),
@@ -1366,19 +1310,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_prompt_until_requires_wait() {
-        let error = super::command()
-            .try_get_matches_from([
-                "shepr", "agent", "prompt", "reviewer", "hello", "--until", "idle",
-            ])
-            .expect_err("test precondition");
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
-    }
-
-    #[test]
     fn agent_rename_requires_exactly_one_name_or_clear() {
         for valid in [
             &["shepr", "agent", "rename", "reviewer", "worker"][..],
@@ -1400,16 +1331,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_keeps_agent_wait_status_free() {
-        let cmd = super::command();
-        let wait = command_path(&cmd, &["agent", "wait"]);
-        assert!(!has_option(wait, "status"));
-        assert_eq!(option_values(wait, "until"), ["idle", "working", "blocked"]);
-        assert!(has_option(wait, "timeout"));
-    }
-
-    #[test]
-    fn spec_matches_refactored_agent_and_pane_commands() {
+    fn spec_excludes_removed_agent_commands_and_keeps_pane_commands() {
         let cmd = super::command();
         assert!(
             cmd.get_subcommands()
@@ -1417,21 +1339,13 @@ mod tests {
         );
 
         let agent = command_path(&cmd, &["agent"]);
-        assert!(
-            agent
-                .get_subcommands()
-                .any(|subcommand| subcommand.get_name() == "send-keys")
-        );
-        assert!(
-            agent
-                .get_subcommands()
-                .any(|subcommand| subcommand.get_name() == "wait")
-        );
-        assert!(
-            agent
-                .get_subcommands()
-                .all(|subcommand| subcommand.get_name() != "send")
-        );
+        for removed in ["prompt", "send-keys", "wait"] {
+            assert!(
+                agent
+                    .get_subcommands()
+                    .all(|subcommand| subcommand.get_name() != removed)
+            );
+        }
 
         let pane = command_path(&cmd, &["pane"]);
         assert!(

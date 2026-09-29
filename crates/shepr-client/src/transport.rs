@@ -1,4 +1,5 @@
 use super::*;
+use tracing::debug;
 
 pub(super) fn start_endpoint_transport(
     stream: LocalStream,
@@ -98,6 +99,11 @@ pub(super) fn server_reader_thread(
                 }
             }
             Err(shepr_protocol::FramingError::UnexpectedEof) => {
+                debug!(
+                    endpoint = %endpoint_id.storage_key(),
+                    generation,
+                    "server closed connection"
+                );
                 report_disconnect(
                     event_tx,
                     ClientLoopEvent::ServerDisconnected {
@@ -106,7 +112,6 @@ pub(super) fn server_reader_thread(
                         error: framing_error_to_io(
                             shepr_protocol::FramingError::UnexpectedEof,
                             endpoint_id.clone(),
-                            generation,
                         ),
                     },
                 );
@@ -125,7 +130,7 @@ pub(super) fn server_reader_thread(
                     ClientLoopEvent::ServerDisconnected {
                         endpoint_id: endpoint_id.clone(),
                         generation,
-                        error: framing_error_to_io(err, endpoint_id.clone(), generation),
+                        error: framing_error_to_io(err, endpoint_id.clone()),
                     },
                 );
                 break;
@@ -147,7 +152,6 @@ fn report_disconnect(
 fn framing_error_to_io(
     error: shepr_protocol::FramingError,
     endpoint_id: endpoint::ClientEndpointId,
-    generation: u64,
 ) -> io::Error {
     let kind = match &error {
         shepr_protocol::FramingError::UnexpectedEof => io::ErrorKind::UnexpectedEof,
@@ -158,7 +162,6 @@ fn framing_error_to_io(
         kind,
         EndpointFramingError {
             endpoint_id,
-            generation,
             source: error,
         },
     )
@@ -167,18 +170,12 @@ fn framing_error_to_io(
 #[derive(Debug)]
 struct EndpointFramingError {
     endpoint_id: endpoint::ClientEndpointId,
-    generation: u64,
     source: shepr_protocol::FramingError,
 }
 
 impl std::fmt::Display for EndpointFramingError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "endpoint {} connection generation {}: ",
-            self.endpoint_id.storage_key(),
-            self.generation
-        )?;
+        write!(formatter, "endpoint {}: ", self.endpoint_id.storage_key())?;
         if matches!(&self.source, shepr_protocol::FramingError::UnexpectedEof) {
             formatter.write_str("server closed connection")
         } else {
@@ -187,11 +184,8 @@ impl std::fmt::Display for EndpointFramingError {
     }
 }
 
-impl std::error::Error for EndpointFramingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+// Display includes the framing cause, so leave the source chain empty to avoid repeating it.
+impl std::error::Error for EndpointFramingError {}
 
 struct EndpointReader<'a> {
     stream: &'a mut LocalStream,
@@ -262,12 +256,11 @@ mod tests {
         let eof = framing_error_to_io(
             shepr_protocol::FramingError::UnexpectedEof,
             endpoint_id.clone(),
-            7,
         );
         assert_eq!(eof.kind(), io::ErrorKind::UnexpectedEof);
         assert!(eof.to_string().contains("server closed connection"));
         assert!(eof.to_string().contains("endpoint local"));
-        assert!(eof.to_string().contains("generation 7"));
+        assert!(!eof.to_string().contains("generation"));
 
         let io_error = framing_error_to_io(
             shepr_protocol::FramingError::Io(io::Error::new(
@@ -275,7 +268,6 @@ mod tests {
                 "peer reset",
             )),
             endpoint_id.clone(),
-            7,
         );
         assert_eq!(io_error.kind(), io::ErrorKind::BrokenPipe);
         assert!(io_error.to_string().contains("peer reset"));
@@ -286,7 +278,6 @@ mod tests {
                 max: 16,
             },
             endpoint_id.clone(),
-            7,
         );
         assert_eq!(decode_error.kind(), io::ErrorKind::InvalidData);
         assert!(
@@ -310,7 +301,6 @@ mod tests {
                 },
             ),
             endpoint_id,
-            7,
         );
         assert_eq!(surface_error.kind(), io::ErrorKind::InvalidData);
         assert!(matches!(
@@ -330,7 +320,6 @@ mod tests {
                         shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch
                     )
             ) && error.endpoint_id == endpoint::ClientEndpointId::Local
-                && error.generation == 7
         ));
         assert!(surface_error.to_string().contains("boot boot"));
         assert!(surface_error.to_string().contains("projection revision 2"));

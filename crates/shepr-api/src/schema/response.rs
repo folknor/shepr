@@ -75,9 +75,6 @@ pub enum ResponseResult {
     AgentInfo {
         agent: AgentInfo,
     },
-    AgentPrompted {
-        agent: AgentInfo,
-    },
     AgentList {
         agents: Vec<AgentInfo>,
     },

@@ -22,6 +22,7 @@ impl TerminalState {
         .and_then(|mutation| mutation.effective_state_change)
     }
 
+    #[cfg(test)]
     pub fn set_hook_authority_with_session_ref(
         &mut self,
         source: String,
@@ -110,7 +111,7 @@ impl TerminalState {
         if reanchor_sequence {
             self.clear_hook_report_sequence(&source);
         }
-        if !self.accept_hook_report(&source, seq) {
+        if !self.accept_hook_report_at(&source, seq, now) {
             return None;
         }
 
@@ -123,6 +124,7 @@ impl TerminalState {
         if foreground_takeover_allowed {
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
+                now,
             );
         }
         if (session_ref.is_some() || reanchor_sequence)
@@ -222,6 +224,7 @@ impl TerminalState {
     pub(super) fn suppress_current_full_lifecycle_hook_authority(
         &mut self,
         reason: FullLifecycleHookSuppressionReason,
+        now: Instant,
     ) {
         if let Some((source, agent_label, session_ref)) =
             self.hook_authority.as_ref().and_then(|authority| {
@@ -243,7 +246,7 @@ impl TerminalState {
                 agent_label,
                 session_ref,
                 reason,
-                Instant::now(),
+                now,
             );
         }
     }
@@ -253,6 +256,7 @@ impl TerminalState {
         source: &str,
         agent_label: &str,
         reason: FullLifecycleHookSuppressionReason,
+        now: Instant,
     ) {
         if shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
             let session_ref = self
@@ -264,7 +268,7 @@ impl TerminalState {
                 agent_label.to_string(),
                 session_ref,
                 reason,
-                Instant::now(),
+                now,
             );
         }
     }
@@ -380,7 +384,7 @@ impl TerminalState {
         let Some(seq) = seq else {
             return FullLifecycleHookReportRoute::Ignore;
         };
-        if self.hook_seq_superseded(source, seq, Instant::now()) {
+        if self.hook_seq_superseded(source, seq, reported_at) {
             return FullLifecycleHookReportRoute::Ignore;
         }
 
@@ -516,6 +520,7 @@ impl TerminalState {
         &mut self,
         previous_detected_agent: Option<Agent>,
         detected_agent: Option<Agent>,
+        now: Instant,
     ) {
         let Some(detected_agent) = detected_agent else {
             return;
@@ -609,7 +614,7 @@ impl TerminalState {
             };
             self.persisted_agent_session = Some(persisted_session);
             if let Some(pending) = pending
-                && self.record_hook_seq(source, pending.seq, Instant::now())
+                && self.record_hook_seq(source, pending.seq, now)
             {
                 self.hook_authority = Some(pending.authority);
             }

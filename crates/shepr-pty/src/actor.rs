@@ -3,23 +3,19 @@ use std::{
     io::{Read, Write},
     os::fd::{AsRawFd, OwnedFd, RawFd},
     sync::{Arc, Mutex, mpsc as std_mpsc},
-    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use shepr_core::layout::PaneId;
 use tracing::{debug, error, warn};
 
-pub use crate::submission::{QueuedSubmission, SubmissionCancel, SubmissionCancelOutcome};
 use crate::{
     child_io::ChildIoSendError,
     fd,
     limits::{
         ACTOR_IDLE_POLL_MS, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS,
-        MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP, MIN_POLL_TIMEOUT_MS,
-        PTY_READ_BUFFER_BYTES,
+        MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP, PTY_READ_BUFFER_BYTES,
     },
-    submission::{EnterStart, SharedSubmissionState, SubmissionPart, SubmissionState, lock_state},
 };
 
 pub struct PtyReadResult {
@@ -89,13 +85,6 @@ pub struct PtyIoActorConfig {
     pub core_broken: CoreBrokenCheck,
 }
 
-fn submission_withdrawn_error() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "input submission withdrawn by its caller",
-    )
-}
-
 #[derive(Clone)]
 pub struct PtyIoActorHandle {
     pane_id: PaneId,
@@ -131,18 +120,7 @@ struct PtyIoInbox {
 struct PtyIoInboxEntry {
     id: u64,
     order: u64,
-    kind: PtyIoInboxEntryKind,
-}
-
-enum PtyIoInboxEntryKind {
-    Write(PendingWrite),
-    Submission {
-        text: Bytes,
-        enter: Bytes,
-        delay: Duration,
-        reply: std_mpsc::Sender<std::io::Result<()>>,
-        state: SharedSubmissionState,
-    },
+    write: PendingWrite,
 }
 
 struct QueuedResize {
@@ -205,7 +183,7 @@ impl PtyIoInbox {
         self.entries.push_back(PtyIoInboxEntry {
             id,
             order,
-            kind: PtyIoInboxEntryKind::Write(PendingWrite::User(bytes)),
+            write: PendingWrite::User(bytes),
         });
         Ok(())
     }
@@ -228,7 +206,7 @@ impl PtyIoInbox {
         self.entries.push_back(PtyIoInboxEntry {
             id,
             order,
-            kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
+            write: PendingWrite::TerminalResponse(bytes),
         });
         (true, false)
     }
@@ -246,36 +224,6 @@ impl PtyIoInbox {
         }
         self.terminal_response_drop_reported_count = self.terminal_response_drops;
         Some(self.terminal_response_drops)
-    }
-
-    fn push_submission(
-        &mut self,
-        text: Bytes,
-        enter: Bytes,
-        delay: Duration,
-        reply: std_mpsc::Sender<std::io::Result<()>>,
-        state: SharedSubmissionState,
-    ) -> Result<(), ()> {
-        let Some(bytes) = text.len().checked_add(enter.len()) else {
-            return Err(());
-        };
-        if !self.reserve(bytes, 1) {
-            return Err(());
-        }
-        let order = self.next_order();
-        let id = self.next_entry_id();
-        self.entries.push_back(PtyIoInboxEntry {
-            id,
-            order,
-            kind: PtyIoInboxEntryKind::Submission {
-                text,
-                enter,
-                delay,
-                reply,
-                state,
-            },
-        });
-        Ok(())
     }
 
     /// Coalesce resizes: only the newest geometry matters to the PTY, and the
@@ -317,32 +265,6 @@ impl PtyIoInbox {
         }
     }
 
-    /// The entry the actor should handle next. A write already under way
-    /// always continues. While a submission is active, user input queued
-    /// behind it waits, but terminal replies and the submission's own parts
-    /// go out. Otherwise it is the front of the queue.
-    fn next_entry_index(
-        &self,
-        active_submission: bool,
-        current_write_id: Option<u64>,
-    ) -> Option<usize> {
-        if let Some(id) = current_write_id {
-            return self.entries.iter().position(|entry| entry.id == id);
-        }
-        if active_submission {
-            self.entries.iter().position(|entry| {
-                matches!(
-                    &entry.kind,
-                    PtyIoInboxEntryKind::Write(
-                        PendingWrite::TerminalResponse(_) | PendingWrite::Submission { .. }
-                    )
-                )
-            })
-        } else {
-            (!self.entries.is_empty()).then_some(0)
-        }
-    }
-
     /// Whether a resize not yet applied holds its replies ahead of an entry.
     /// Everything queued after the resize waits until the actor applies it
     /// (on its next inbox pass), so no later reply overtakes its replies.
@@ -352,46 +274,28 @@ impl PtyIoInbox {
             .is_some_and(|resize| !resize.terminal_responses.is_empty() && resize.order < order)
     }
 
-    /// The write the actor can start or continue now, if any.
-    fn writable_index(
-        &self,
-        active_submission: bool,
-        current_write_id: Option<u64>,
-    ) -> Option<usize> {
-        let index = self.next_entry_index(active_submission, current_write_id)?;
-        let entry = self.entries.get(index)?;
-        if !matches!(entry.kind, PtyIoInboxEntryKind::Write(_)) {
+    /// The write the actor can start or continue now, if any. A write already
+    /// under way always continues; otherwise it is the front of the queue.
+    fn writable_index(&self, current_write_id: Option<u64>) -> Option<usize> {
+        if let Some(id) = current_write_id {
+            // A write under way was started before any resize that could hold it.
+            return self.entries.iter().position(|entry| entry.id == id);
+        }
+        let entry = self.entries.front()?;
+        if self.resize_holds(entry.order) {
             return None;
         }
-        // A write under way was started before any resize that could hold it.
-        if current_write_id.is_none() && self.resize_holds(entry.order) {
-            return None;
-        }
-        Some(index)
+        Some(0)
     }
 
     /// Remove an entry and release what it reserved. `written` bytes of it
-    /// were already released as they were written. A submission part holds
-    /// no item of its own: the submission's item is released when the
-    /// submission finishes.
-    fn remove_entry(&mut self, index: usize, written: usize) -> Option<PtyIoInboxEntryKind> {
+    /// were already released as they were written.
+    fn remove_entry(&mut self, index: usize, written: usize) -> Option<PendingWrite> {
         let entry = self.entries.remove(index)?;
-        let (bytes, releases_item) = match &entry.kind {
-            PtyIoInboxEntryKind::Write(
-                PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes),
-            ) => (bytes.len(), true),
-            PtyIoInboxEntryKind::Write(PendingWrite::Submission { bytes, .. }) => {
-                (bytes.len(), false)
-            }
-            PtyIoInboxEntryKind::Submission { text, enter, .. } => {
-                (text.len().saturating_add(enter.len()), true)
-            }
-        };
-        self.release_bytes(bytes.saturating_sub(written));
-        if releases_item {
-            self.release_item();
-        }
-        Some(entry.kind)
+        let (PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes)) = &entry.write;
+        self.release_bytes(bytes.len().saturating_sub(written));
+        self.release_item();
+        Some(entry.write)
     }
 
     /// Queue a resize's replies at the resize's place in the sequence: after
@@ -410,7 +314,7 @@ impl PtyIoInbox {
                 PtyIoInboxEntry {
                     id,
                     order,
-                    kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
+                    write: PendingWrite::TerminalResponse(bytes),
                 },
             );
         }
@@ -433,38 +337,6 @@ impl PtyIoActorHandle {
             }
             Err(bytes) => Err(ChildIoSendError::Full(bytes)),
         }
-    }
-
-    pub fn queue_user_input_submission(
-        &self,
-        text: Bytes,
-        enter: Bytes,
-        delay: Duration,
-    ) -> std::io::Result<QueuedSubmission> {
-        let (reply_tx, reply_rx) = std_mpsc::channel();
-        let state = SubmissionState::shared();
-        {
-            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-            if inbox.shutdown {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "pty actor closed",
-                ));
-            }
-            inbox
-                .push_submission(text, enter, delay, reply_tx, Arc::clone(&state))
-                .map_err(|()| {
-                    std::io::Error::new(std::io::ErrorKind::WouldBlock, "pty input queue is full")
-                })?;
-        }
-        self.wake_actor();
-        Ok(QueuedSubmission {
-            completion: reply_rx,
-            cancel: SubmissionCancel {
-                state,
-                wake: Some(self.wake.clone()),
-            },
-        })
     }
 
     /// Queue a terminal reply produced outside a PTY read. `response` runs
@@ -598,7 +470,6 @@ impl PtyIoActor {
             response_order,
             current_write_id: None,
             current_write_offset: 0,
-            active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
             on_read: config.on_read,
             on_reader_exit: Some(config.on_reader_exit),
@@ -636,7 +507,6 @@ struct PtyIoActorRunner {
     /// The offset is zero whenever the entry id is `None`.
     current_write_id: Option<u64>,
     current_write_offset: usize,
-    active_submission: Option<ActiveSubmission>,
     wake_read_fd: OwnedFd,
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
@@ -650,30 +520,20 @@ struct PtyIoActorRunner {
     drain_wake_fd: fn(RawFd) -> std::io::Result<()>,
 }
 
-struct ActiveSubmission {
-    enter: Bytes,
-    /// Enter bytes reserved in the inbox but not yet queued as an entry.
-    unqueued_enter_bytes: usize,
-    reply: std_mpsc::Sender<std::io::Result<()>>,
-    state: SharedSubmissionState,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum WriteStep {
     /// Nothing can be written now.
     Idle,
     /// The PTY would block.
     Blocked,
-    /// Bytes were written or an entry was retired; a finished submission
-    /// part is returned for `complete_submission_part`.
-    Progress(Option<SubmissionPart>),
+    /// Bytes were written or an entry was retired.
+    Progress,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum PendingWrite {
     User(Bytes),
     TerminalResponse(Bytes),
-    Submission { bytes: Bytes, part: SubmissionPart },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -708,9 +568,8 @@ impl PtyIoActorRunner {
             // The wake pipe is drained right after poll returns, before this
             // pump reads the inbox, so work pushed after the pump has read it
             // always leaves a wake byte for the poll below.
-            // clock-io-ok: the IO loop is the boundary that supplies the clock.
-            if let Err(err) = self.pump_with_clock(Instant::now) {
-                self.handle_write_failure(err);
+            if let Err(err) = self.pump() {
+                self.handle_write_failure(&err);
                 break;
             }
             if let Some(poll_observer) = &self.poll_observer {
@@ -726,8 +585,7 @@ impl PtyIoActorRunner {
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
                 self.has_writable_work(),
-                // clock-io-ok: the poll timeout is taken when the poll starts.
-                self.poll_timeout_ms(Instant::now()),
+                ACTOR_IDLE_POLL_MS,
             ) {
                 Ok(readiness) => {
                     if readiness.wake_ready
@@ -742,7 +600,7 @@ impl PtyIoActorRunner {
                         break;
                     }
                     if readiness.pty_error {
-                        self.handle_write_failure(std::io::Error::new(
+                        self.handle_write_failure(&std::io::Error::new(
                             std::io::ErrorKind::BrokenPipe,
                             "poll encountered PTY fd error",
                         ));
@@ -751,11 +609,10 @@ impl PtyIoActorRunner {
                     if readiness.pty_read_ready && self.read_chunk() == ReadOutcome::Closed {
                         break;
                     }
-                    // clock-io-ok: the IO loop is the boundary that supplies the clock.
                     if readiness.pty_write_ready
-                        && let Err(err) = self.pump_with_clock(Instant::now)
+                        && let Err(err) = self.pump()
                     {
-                        self.handle_write_failure(err);
+                        self.handle_write_failure(&err);
                         break;
                     }
                 }
@@ -783,111 +640,27 @@ impl PtyIoActorRunner {
         debug!(pane = self.pane_id.raw(), "PTY actor exiting");
     }
 
-    /// Write what the PTY takes now, handling the non-write work (resizes,
-    /// submission starts, Enter scheduling, withdrawals) around each write,
-    /// so nothing that is ready waits for the next wake or the idle poll.
-    fn pump_with_clock(&mut self, mut now: impl FnMut() -> Instant) -> std::io::Result<()> {
+    /// Write what the PTY takes now, applying any pending resize around each
+    /// write, so nothing that is ready waits for the next wake or the idle
+    /// poll.
+    fn pump(&mut self) -> std::io::Result<()> {
         for _ in 0..MAX_WRITE_STEPS_PER_PUMP {
-            self.withdraw_cancelled_submission();
-            self.advance_inbox(&mut now);
+            self.apply_pending_resizes();
             match self.write_next()? {
                 WriteStep::Idle | WriteStep::Blocked => return Ok(()),
-                WriteStep::Progress(Some(part)) => self.complete_submission_part(part, now()),
-                WriteStep::Progress(None) => {}
+                WriteStep::Progress => {}
             }
         }
         // Out of steps with the PTY still writable: the next poll returns at
-        // once. Settle the non-write work first so it is not left waiting.
-        self.withdraw_cancelled_submission();
-        self.advance_inbox(&mut now);
+        // once. Apply a pending resize first so it is not left waiting.
+        self.apply_pending_resizes();
         Ok(())
     }
 
-    #[cfg(test)]
-    fn pump(&mut self) -> std::io::Result<()> {
-        // clock-io-ok: the test-only pump stands in for the IO loop boundary.
-        self.pump_with_clock(Instant::now)
-    }
-
-    /// Handle every non-write inbox event that is ready. Each step either
-    /// changes the actor's state or reports nothing to do, so this ends.
-    fn advance_inbox(&mut self, now: &mut impl FnMut() -> Instant) {
-        while self.process_next_inbox_event(now()) || self.schedule_submission_enter(now()) {}
-    }
-
-    /// Apply a pending resize, or start the submission at the front of the
-    /// queue. Returns whether anything changed.
-    fn process_next_inbox_event(&mut self, now: Instant) -> bool {
-        if self.apply_pending_resize() {
-            return true;
-        }
-        // One submission at a time; the rest wait in queue order.
-        if self.active_submission.is_some() {
-            return false;
-        }
-        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-        let Some(entry_index) = inbox.next_entry_index(false, self.current_write_id) else {
-            return false;
-        };
-        let Some(entry) = inbox.entries.get(entry_index) else {
-            return false;
-        };
-        if !matches!(entry.kind, PtyIoInboxEntryKind::Submission { .. })
-            || inbox.resize_holds(entry.order)
-        {
-            return false;
-        }
-        let Some(PtyIoInboxEntry { id, order, kind }) = inbox.entries.remove(entry_index) else {
-            return false;
-        };
-        let (text, enter, delay, reply, state) = match kind {
-            PtyIoInboxEntryKind::Submission {
-                text,
-                enter,
-                delay,
-                reply,
-                state,
-            } => (text, enter, delay, reply, state),
-            kind => {
-                inbox
-                    .entries
-                    .insert(entry_index, PtyIoInboxEntry { id, order, kind });
-                return false;
-            }
-        };
-        if !lock_state(&state).start(now, text.is_empty(), delay) {
-            lock_state(&state).finish();
-            inbox.release_bytes(text.len().saturating_add(enter.len()));
-            inbox.release_item();
-            drop(inbox);
-            deliver_submission_result(&reply, Err(submission_withdrawn_error()));
-            return true;
-        }
-
-        // The text takes the submission's place in the sequence and keeps
-        // its reservation; the Enter's bytes stay reserved until it is queued.
-        if !text.is_empty() {
-            let id = inbox.next_entry_id();
-            inbox.entries.insert(
-                entry_index,
-                PtyIoInboxEntry {
-                    id,
-                    order,
-                    kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
-                        bytes: text,
-                        part: SubmissionPart::Text,
-                    }),
-                },
-            );
-        }
-        drop(inbox);
-        self.active_submission = Some(ActiveSubmission {
-            unqueued_enter_bytes: enter.len(),
-            enter,
-            reply,
-            state,
-        });
-        true
+    /// Apply resizes until none is pending. Each pass either applies one or
+    /// finds a newer request replaced it during the ioctl, so this ends.
+    fn apply_pending_resizes(&mut self) {
+        while self.apply_pending_resize() {}
     }
 
     /// Apply the pending resize. The ioctl runs as soon as the request
@@ -945,8 +718,8 @@ impl PtyIoActorRunner {
     /// still buffered on the master. Read that out before the loop ends so the
     /// child's last output reaches the terminal. Bounded so a peer that keeps
     /// producing output cannot hold the actor here.
-    fn handle_write_failure(&mut self, err: std::io::Error) {
-        self.finish_active_submission(Err(err));
+    fn handle_write_failure(&mut self, err: &std::io::Error) {
+        debug!(pane = self.pane_id.raw(), err = %err, "PTY actor stopping after a write failure");
         for _ in 0..MAX_WRITE_FAILURE_DRAIN_CHUNKS {
             match self.read_chunk() {
                 ReadOutcome::Data | ReadOutcome::Interrupted => {}
@@ -1060,238 +833,34 @@ impl PtyIoActorRunner {
         }
     }
 
-    /// Called when a submission part finished writing, or was skipped because
-    /// the submission was cancelled before it started.
-    fn complete_submission_part(&mut self, part: SubmissionPart, now: Instant) {
-        match part {
-            SubmissionPart::Text => {
-                let Some(submission) = self.active_submission.as_ref() else {
-                    return;
-                };
-                let completed = lock_state(&submission.state).text_finished(now);
-                if !completed {
-                    self.finish_active_submission(Err(std::io::Error::other(
-                        "PTY actor completed text outside the submission state machine",
-                    )));
-                } else if self.active_submission_cancelled() {
-                    self.finish_active_submission(Err(submission_withdrawn_error()));
-                }
-            }
-            SubmissionPart::Enter => {
-                let Some(submission) = self.active_submission.as_ref() else {
-                    return;
-                };
-                let finished = lock_state(&submission.state).enter_finished();
-                if finished {
-                    self.finish_active_submission(Ok(()));
-                } else if self.active_submission_cancelled() {
-                    self.finish_active_submission(Err(submission_withdrawn_error()));
-                } else {
-                    self.finish_active_submission(Err(std::io::Error::other(
-                        "PTY actor completed Enter outside the submission state machine",
-                    )));
-                }
-            }
-        }
-    }
-
-    fn active_submission_cancelled(&self) -> bool {
-        self.active_submission
-            .as_ref()
-            .is_some_and(|submission| lock_state(&submission.state).cancelled())
-    }
-
-    /// End the active submission and release everything it reserved,
-    /// including any of its parts still queued (a withdrawn part, or one left
-    /// behind by a write failure).
-    fn finish_active_submission(&mut self, result: std::io::Result<()>) {
-        let Some(submission) = self.active_submission.take() else {
-            return;
-        };
-        lock_state(&submission.state).finish();
-        {
-            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-            while let Some(index) = inbox.entries.iter().position(|entry| {
-                matches!(
-                    entry.kind,
-                    PtyIoInboxEntryKind::Write(PendingWrite::Submission { .. })
-                )
-            }) {
-                let id = inbox.entries.get(index).map(|entry| entry.id);
-                let written = if id.is_some() && id == self.current_write_id {
-                    self.current_write_id = None;
-                    std::mem::take(&mut self.current_write_offset)
-                } else {
-                    0
-                };
-                inbox.remove_entry(index, written);
-            }
-            inbox.release_bytes(submission.unqueued_enter_bytes);
-            inbox.release_item();
-        }
-        deliver_submission_result(&submission.reply, result);
-    }
-
-    /// Drop a cancelled submission as soon as the actor sees it, rather than
-    /// when its delay runs out or the PTY next becomes writable, so the input
-    /// queued behind it is not held up. A text write already under way is
-    /// left to finish (see `SubmissionCancel`); its completion ends the
-    /// submission.
-    fn withdraw_cancelled_submission(&mut self) {
-        let Some(submission) = self.active_submission.as_ref() else {
-            return;
-        };
-        let should_withdraw = lock_state(&submission.state).should_withdraw();
-        if should_withdraw {
-            // The unstarted part still queued is removed with the submission.
-            self.finish_active_submission(Err(submission_withdrawn_error()));
-        }
-    }
-
-    /// Queue the Enter once the delay after the text has passed. Returns
-    /// whether anything changed.
-    fn schedule_submission_enter(&mut self, now: Instant) -> bool {
-        let Some(submission) = self.active_submission.as_ref() else {
-            return false;
-        };
-        let enter = submission.enter.clone();
-        let state = Arc::clone(&submission.state);
-        let start = lock_state(&state).start_enter(now, enter.is_empty());
-        match start {
-            EnterStart::Cancelled => {
-                self.finish_active_submission(Err(submission_withdrawn_error()));
-                true
-            }
-            EnterStart::Empty => {
-                self.finish_active_submission(Ok(()));
-                true
-            }
-            EnterStart::Started => {
-                if !enter.is_empty() {
-                    let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-                    let order = inbox.next_order();
-                    let id = inbox.next_entry_id();
-                    inbox.entries.push_back(PtyIoInboxEntry {
-                        id,
-                        order,
-                        kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
-                            bytes: enter,
-                            part: SubmissionPart::Enter,
-                        }),
-                    });
-                }
-                if let Some(submission) = self.active_submission.as_mut() {
-                    submission.unqueued_enter_bytes = 0;
-                }
-                true
-            }
-            EnterStart::NotReady => false,
-        }
-    }
-
-    fn poll_timeout_ms(&self, now: Instant) -> i32 {
-        let submission_deadline = self
-            .active_submission
-            .as_ref()
-            .and_then(|submission| lock_state(&submission.state).deadline());
-        let Some(deadline) = submission_deadline else {
-            return ACTOR_IDLE_POLL_MS;
-        };
-        i32::try_from(
-            deadline
-                .saturating_duration_since(now)
-                .as_millis()
-                .max(MIN_POLL_TIMEOUT_MS)
-                .min(ACTOR_IDLE_POLL_MS as u128),
-        )
-        .unwrap_or(ACTOR_IDLE_POLL_MS)
-    }
-
     fn close_inbox(&mut self) -> Option<u64> {
-        let mut queued_submissions = Vec::new();
-        let unreported_drop_total = {
-            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
-            inbox.shutdown = true;
-            for entry in inbox.entries.drain(..) {
-                if let PtyIoInboxEntryKind::Submission { reply, state, .. } = entry.kind {
-                    queued_submissions.push((reply, state));
-                }
-            }
-            inbox.latest_resize = None;
-            inbox.pending_bytes = 0;
-            inbox.pending_items = 0;
-            // The first overflow is reported immediately; include later drops
-            // in one final total when the actor stops.
-            inbox.mark_terminal_response_drops_reported()
-        };
-        let error = input_submission_closed_error();
-        if let Some(submission) = self.active_submission.take() {
-            lock_state(&submission.state).finish();
-            deliver_submission_result(
-                &submission.reply,
-                Err(std::io::Error::new(error.kind(), error.to_string())),
-            );
-        }
-        for (reply, state) in queued_submissions {
-            lock_state(&state).finish();
-            deliver_submission_result(
-                &reply,
-                Err(std::io::Error::new(error.kind(), error.to_string())),
-            );
-        }
-        unreported_drop_total
+        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+        inbox.shutdown = true;
+        inbox.entries.clear();
+        inbox.latest_resize = None;
+        inbox.pending_bytes = 0;
+        inbox.pending_items = 0;
+        // The first overflow is reported immediately; include later drops
+        // in one final total when the actor stops.
+        inbox.mark_terminal_response_drops_reported()
     }
 
     /// Take one write step on the next writable entry. The inbox lock is
     /// released around the write syscall; the entry's index stays valid
     /// because only this thread removes or inserts entries.
     fn write_next(&mut self) -> std::io::Result<WriteStep> {
-        let (index, id, bytes, part) = {
+        let (index, id, bytes) = {
             let inbox = crate::locks::lock_auxiliary(&self.inbox);
-            let Some(index) =
-                inbox.writable_index(self.active_submission.is_some(), self.current_write_id)
-            else {
+            let Some(index) = inbox.writable_index(self.current_write_id) else {
                 return Ok(WriteStep::Idle);
             };
             let Some(entry) = inbox.entries.get(index) else {
                 return Ok(WriteStep::Idle);
             };
-            let PtyIoInboxEntryKind::Write(write) = &entry.kind else {
-                return Ok(WriteStep::Idle);
-            };
-            let (bytes, part) = match write {
-                PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes) => {
-                    (bytes.clone(), None)
-                }
-                PendingWrite::Submission { bytes, part } => (bytes.clone(), Some(*part)),
-            };
-            (index, entry.id, bytes, part)
+            let (PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes)) = &entry.write;
+            (index, entry.id, bytes.clone())
         };
         let offset = self.current_write_offset;
-
-        // The first byte of a submission part is written under the state
-        // lock, so a cancel either skips the whole part or sees that it has
-        // started. Later chunks finish without it: cancellation never
-        // truncates a part in flight.
-        let state = match part {
-            Some(_) if offset == 0 => self
-                .active_submission
-                .as_ref()
-                .map(|submission| Arc::clone(&submission.state)),
-            _ => None,
-        };
-        let mut state_guard = state.as_deref().map(lock_state);
-        let skip = match (part, offset, state_guard.as_ref()) {
-            // A part whose submission has already ended.
-            (Some(_), 0, None) => true,
-            (Some(part), 0, Some(guard)) => !guard.can_write_first_byte(part),
-            _ => false,
-        };
-        if skip {
-            drop(state_guard);
-            self.retire_entry(index, id, 0);
-            return Ok(WriteStep::Progress(part));
-        }
 
         let write_result = self.file.write(&bytes[offset..]);
         match write_result {
@@ -1300,28 +869,19 @@ impl PtyIoActorRunner {
                 "PTY actor write returned zero bytes",
             )),
             Ok(written) => {
-                if let (Some(guard), Some(part)) = (state_guard.as_mut(), part) {
-                    guard.first_byte_written(part);
-                }
-                drop(state_guard);
                 let offset = offset.saturating_add(written);
                 if offset < bytes.len() {
                     crate::locks::lock_auxiliary(&self.inbox).release_bytes(written);
                     self.current_write_id = Some(id);
                     self.current_write_offset = offset;
-                    return Ok(WriteStep::Progress(None));
+                    return Ok(WriteStep::Progress);
                 }
                 // `retire_entry` releases what the earlier chunks left.
                 self.retire_entry(index, id, offset.saturating_sub(written));
-                if part.is_some() {
-                    self.file.flush()?;
-                }
-                Ok(WriteStep::Progress(part))
+                Ok(WriteStep::Progress)
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(WriteStep::Blocked),
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
-                Ok(WriteStep::Progress(None))
-            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => Ok(WriteStep::Progress),
             Err(err) => {
                 if pty_master_error_means_child_closed(&err) {
                     debug!(
@@ -1341,8 +901,8 @@ impl PtyIoActorRunner {
         }
     }
 
-    /// Remove a finished or skipped entry. `released` bytes of it were
-    /// released as earlier chunks were written.
+    /// Remove a finished entry. `released` bytes of it were released as
+    /// earlier chunks were written.
     fn retire_entry(&mut self, index: usize, id: u64, released: usize) {
         self.current_write_id = None;
         self.current_write_offset = 0;
@@ -1354,7 +914,7 @@ impl PtyIoActorRunner {
 
     fn has_writable_work(&self) -> bool {
         crate::locks::lock_auxiliary(&self.inbox)
-            .writable_index(self.active_submission.is_some(), self.current_write_id)
+            .writable_index(self.current_write_id)
             .is_some()
     }
 }
@@ -1373,24 +933,6 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
     }
 }
 
-fn input_submission_closed_error() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::BrokenPipe,
-        "PTY actor closed during input submission",
-    )
-}
-
-/// Hand a submission's outcome to whoever queued it. The receiver is the
-/// `QueuedSubmission::completion` its caller holds; it is gone only when the
-/// caller dropped the submission, and then nobody is waiting for the outcome,
-/// so a failed send is not an error.
-fn deliver_submission_result(
-    reply: &std_mpsc::Sender<std::io::Result<()>>,
-    result: std::io::Result<()>,
-) {
-    reply.send(result).ok();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1399,6 +941,7 @@ mod tests {
         os::fd::{AsRawFd, FromRawFd, IntoRawFd},
         os::unix::net::UnixStream,
         sync::atomic::{AtomicBool, Ordering},
+        time::{Duration, Instant},
     };
 
     fn test_wake_pair() -> (fd::WakeWriter, OwnedFd) {
@@ -1467,7 +1010,6 @@ mod tests {
             response_order,
             current_write_id: None,
             current_write_offset: 0,
-            active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
             on_read,
             on_reader_exit: None,
@@ -1590,58 +1132,6 @@ mod tests {
     }
 
     #[test]
-    fn submission_part_does_not_wait_for_following_protocol_write() {
-        let (mut runner, mut peer) = actor_runner_for_unit_test();
-        let state = SubmissionState::shared();
-        assert!(lock_state(&state).start(Instant::now(), false, Duration::ZERO));
-        let (reply, _completion) = std_mpsc::channel();
-        runner.active_submission = Some(ActiveSubmission {
-            enter: Bytes::new(),
-            unqueued_enter_bytes: 0,
-            reply,
-            state,
-        });
-        {
-            let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
-            inbox.reserve(14, 2);
-            let submission_order = inbox.next_order();
-            let submission_id = inbox.next_entry_id();
-            inbox.entries.push_back(PtyIoInboxEntry {
-                id: submission_id,
-                order: submission_order,
-                kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
-                    bytes: Bytes::from_static(b"prompt"),
-                    part: SubmissionPart::Text,
-                }),
-            });
-            let reply_order = inbox.next_order();
-            let reply_id = inbox.next_entry_id();
-            inbox.entries.push_back(PtyIoInboxEntry {
-                id: reply_id,
-                order: reply_order,
-                kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(
-                    Bytes::from_static(b"response"),
-                )),
-            });
-        }
-
-        assert_eq!(
-            runner.write_next().expect("test precondition"),
-            WriteStep::Progress(Some(SubmissionPart::Text))
-        );
-        let mut prompt = [0; 6];
-        peer.read_exact(&mut prompt)
-            .expect("prompt was written first");
-        assert_eq!(&prompt, b"prompt");
-        let inbox = crate::locks::lock_auxiliary(&runner.inbox);
-        assert!(matches!(
-            inbox.entries.front().map(|entry| &entry.kind),
-            Some(PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)))
-                if bytes.as_ref() == b"response"
-        ));
-    }
-
-    #[test]
     fn actor_writes_user_input_to_owned_fd() {
         let (handle, mut peer, _read_rx) = actor_with_socket_pair();
 
@@ -1653,65 +1143,6 @@ mod tests {
         peer.read_exact(&mut buf).expect("peer receives write");
         assert_eq!(&buf, b"hello");
         handle.shutdown();
-    }
-
-    #[test]
-    fn actor_delays_enter_from_completed_prompt_write() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let text = Bytes::from(vec![b'x'; 240 * 1024]);
-        let text_len = text.len();
-        let delay = Duration::from_millis(200);
-        let reader = std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            let mut received = vec![0; text_len];
-            peer.read_exact(&mut received)
-                .expect("peer receives prompt");
-            let prompt_completed = Instant::now();
-            let mut enter = [0; 1];
-            peer.read_exact(&mut enter).expect("peer receives enter");
-            let enter_received = Instant::now();
-            let mut user = [0; 4];
-            peer.read_exact(&mut user)
-                .expect("peer receives queued input");
-            (prompt_completed, enter_received, enter, user)
-        });
-
-        let completion = handle
-            .queue_user_input_submission(text, Bytes::from_static(b"\r"), delay)
-            .expect("submission queues")
-            .completion;
-        handle
-            .try_write_user_input(Bytes::from_static(b"user"))
-            .expect("ordinary input queues behind submission");
-        completion
-            .recv()
-            .expect("actor reports submission")
-            .expect("submission completes");
-        let (prompt_completed, enter_received, enter, user) = reader.join().expect("reader joins");
-
-        assert_eq!(enter, *b"\r");
-        assert_eq!(user, *b"user");
-        assert!(enter_received.duration_since(prompt_completed) >= delay / 2);
-
-        let err = match handle.queue_user_input_submission(
-            Bytes::from_static(b"prompt"),
-            Bytes::from_static(b"\r"),
-            Duration::ZERO,
-        ) {
-            Ok(queued) => queued
-                .completion
-                .recv()
-                .expect("actor reports submission")
-                .expect_err("closed PTY rejects submission"),
-            Err(err) => err,
-        };
-
-        assert!(matches!(
-            err.kind(),
-            std::io::ErrorKind::BrokenPipe
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::WriteZero
-        ));
     }
 
     /// Fill the actor side's send buffer so the actor cannot write anything
@@ -1732,215 +1163,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_submission_is_never_typed_and_input_behind_it_flows() {
-        let (mut actor_socket, mut peer) = UnixStream::pair().expect("socket pair");
-        actor_socket
-            .set_nonblocking(true)
-            .expect("actor socket nonblocking");
-        let prefilled = fill_send_buffer(&mut actor_socket);
-        // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
-        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
-        let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: PaneId::from_raw(1),
-            master_fd: owned,
-            on_read: Box::new(|_| PtyReadResult::empty()),
-            on_reader_exit: Box::new(|_| {}),
-            core_broken: Box::new(|| false),
-        })
-        .expect("actor spawn");
-
-        let queued = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"prompt"),
-                Bytes::from_static(b"\r"),
-                Duration::ZERO,
-            )
-            .expect("submission queues");
-        handle
-            .try_write_user_input(Bytes::from_static(b"after"))
-            .expect("input queues behind the submission");
-
-        // The PTY is not writable, so not a byte of the prompt went out.
-        assert_eq!(queued.cancel.cancel(), SubmissionCancelOutcome::Withdrawn);
-        let err = queued
-            .completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports the withdrawn submission")
-            .expect_err("a withdrawn submission does not complete");
-        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
-
-        peer.set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("peer timeout");
-        let mut received = vec![0; prefilled + b"after".len()];
-        peer.read_exact(&mut received)
-            .expect("peer receives the filler and the later input");
-        assert!(received[..prefilled].iter().all(|byte| *byte == 0xAA));
-        assert_eq!(&received[prefilled..], b"after");
-        peer.set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("peer timeout");
-        let mut extra = [0u8; 1];
-        assert!(
-            peer.read(&mut extra).is_err(),
-            "the withdrawn prompt must never reach the pane"
-        );
-        handle.shutdown();
-    }
-
-    #[test]
-    fn cancelling_during_the_enter_delay_drops_the_enter() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let queued = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"prompt"),
-                Bytes::from_static(b"\r"),
-                Duration::from_secs(5),
-            )
-            .expect("submission queues");
-        let mut prompt = [0; 6];
-        peer.read_exact(&mut prompt).expect("peer receives prompt");
-        assert_eq!(&prompt, b"prompt");
-
-        let cancelled_at = Instant::now();
-        assert_eq!(
-            queued.cancel.cancel(),
-            SubmissionCancelOutcome::TextUnsubmitted
-        );
-        queued
-            .completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor ends the submission without waiting out the delay")
-            .expect_err("a cancelled submission does not complete");
-        assert!(cancelled_at.elapsed() < Duration::from_secs(1));
-
-        handle
-            .try_write_user_input(Bytes::from_static(b"x"))
-            .expect("input flows once the submission is gone");
-        let mut next = [0u8; 1];
-        peer.read_exact(&mut next)
-            .expect("peer receives later input");
-        assert_eq!(&next, b"x", "the Enter must not be sent after a cancel");
-        handle.shutdown();
-    }
-
-    #[test]
-    fn cancelling_a_finished_submission_leaves_its_result() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let queued = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"p"),
-                Bytes::from_static(b"\r"),
-                Duration::ZERO,
-            )
-            .expect("submission queues");
-        let mut written = [0; 2];
-        peer.read_exact(&mut written).expect("peer receives prompt");
-        let result = queued
-            .completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports submission");
-        assert!(result.is_ok());
-        assert_eq!(queued.cancel.cancel(), SubmissionCancelOutcome::Finished);
-        handle.shutdown();
-    }
-
-    #[test]
-    fn actor_completes_empty_submission_parts() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        peer.set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("peer timeout");
-
-        let completion = handle
-            .queue_user_input_submission(Bytes::new(), Bytes::from_static(b"\r"), Duration::ZERO)
-            .expect("empty prompt submission queues")
-            .completion;
-        let mut enter = [0; 1];
-        peer.read_exact(&mut enter)
-            .expect("peer receives enter for empty prompt");
-        assert_eq!(enter, *b"\r");
-        completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports empty prompt submission")
-            .expect("empty prompt submission completes");
-
-        let completion = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"prompt"),
-                Bytes::new(),
-                Duration::from_millis(40),
-            )
-            .expect("empty enter submission queues")
-            .completion;
-        let mut prompt = [0; 6];
-        peer.read_exact(&mut prompt)
-            .expect("peer receives prompt before empty enter");
-        assert_eq!(&prompt, b"prompt");
-        completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports empty enter submission")
-            .expect("empty enter submission completes");
-        handle.shutdown();
-    }
-
-    #[test]
-    fn actor_reports_peer_closure_during_submission_delay() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let completion = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"prompt"),
-                Bytes::from_static(b"\r"),
-                Duration::from_secs(1),
-            )
-            .expect("submission queues")
-            .completion;
-        let mut prompt = [0; 6];
-        peer.read_exact(&mut prompt).expect("peer receives prompt");
-        drop(peer);
-
-        let err = completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports peer closure")
-            .expect_err("peer closure fails the active submission");
-        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
-    }
-
-    #[test]
-    fn actor_fails_buffered_submissions_on_exit() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let active = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"first"),
-                Bytes::from_static(b"\r"),
-                Duration::from_secs(1),
-            )
-            .expect("first submission queues")
-            .completion;
-        let mut prompt = [0; 5];
-        peer.read_exact(&mut prompt).expect("peer receives prompt");
-        let buffered = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"second"),
-                Bytes::from_static(b"\r"),
-                Duration::ZERO,
-            )
-            .expect("second submission queues")
-            .completion;
-
-        drop(peer);
-        let active_err = active
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports active submission")
-            .expect_err("peer closure fails active submission");
-        let buffered_err = buffered
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports buffered submission")
-            .expect_err("peer closure fails buffered submission");
-
-        assert_eq!(active_err.kind(), std::io::ErrorKind::BrokenPipe);
-        assert_eq!(buffered_err.kind(), std::io::ErrorKind::BrokenPipe);
-    }
-
-    #[test]
-    fn actor_rejects_submission_after_io_loop_exits() {
+    fn actor_rejects_user_input_after_io_loop_exits() {
         let (actor_socket, peer) = UnixStream::pair().expect("socket pair");
         actor_socket
             .set_nonblocking(true)
@@ -1960,11 +1183,7 @@ mod tests {
                         .as_ref()
                         .expect("actor handle installed")
                         .clone();
-                    let attempt = handle.queue_user_input_submission(
-                        Bytes::from_static(b"prompt"),
-                        Bytes::from_static(b"\r"),
-                        Duration::ZERO,
-                    );
+                    let attempt = handle.try_write_user_input(Bytes::from_static(b"late"));
                     attempt_tx.send(attempt).expect("attempt receiver alive");
                 }
             }),
@@ -1974,19 +1193,13 @@ mod tests {
         *crate::locks::lock_auxiliary(&handle_slot) = Some(handle);
 
         drop(peer);
-        let err = match attempt_rx
+        match attempt_rx
             .recv_timeout(Duration::from_secs(1))
-            .expect("reader exit callback attempts submission")
+            .expect("reader exit callback attempts a write")
         {
-            Ok(queued) => queued
-                .completion
-                .recv_timeout(Duration::from_secs(1))
-                .expect("actor reports submission")
-                .expect_err("closed actor rejects submission"),
-            Err(err) => err,
-        };
-
-        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+            Err(ChildIoSendError::Closed(bytes)) => assert_eq!(bytes, "late"),
+            other => panic!("expected a closed queue, got {other:?}"),
+        }
     }
 
     fn actor_reporting_exit(
@@ -2306,11 +1519,10 @@ mod tests {
         })
         .expect("actor spawn");
 
-        let marker = Bytes::from_static(b"queued-input");
-        let completion = handle
-            .queue_user_input_submission(marker.clone(), Bytes::from_static(b"\r"), Duration::ZERO)
-            .expect("submission accepted")
-            .completion;
+        let marker = Bytes::from_static(b"queued-input\r");
+        handle
+            .try_write_user_input(marker.clone())
+            .expect("input accepted");
 
         const OUTPUT_LEN: usize = 128 * 1024;
         let mut peer_writer = peer.try_clone().expect("clone peer writer");
@@ -2336,19 +1548,11 @@ mod tests {
         assert_eq!(output_len, OUTPUT_LEN);
         output_writer.join().expect("output writer joins");
 
-        let mut received_input = vec![0; prefilled + marker.len() + 1];
+        let mut received_input = vec![0; prefilled + marker.len()];
         peer.read_exact(&mut received_input)
             .expect("peer receives prefill and queued input");
         assert!(received_input[..prefilled].iter().all(|byte| *byte == 0xAA));
-        assert_eq!(
-            &received_input[prefilled..prefilled + marker.len()],
-            marker.as_ref()
-        );
-        assert_eq!(received_input.last(), Some(&b'\r'));
-        completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports submission")
-            .expect("submission completes");
+        assert_eq!(&received_input[prefilled..], marker.as_ref());
         handle.shutdown();
     }
 
@@ -2382,7 +1586,7 @@ mod tests {
         let second = inbox.entries.get(1).expect("second reply was inserted");
         assert_eq!(first.order, second.order);
         assert_ne!(first.id, second.id);
-        assert_eq!(inbox.next_entry_index(false, Some(second.id)), Some(1));
+        assert_eq!(inbox.writable_index(Some(second.id)), Some(1));
     }
 
     #[test]
@@ -2440,11 +1644,9 @@ mod tests {
         let responses: Vec<_> = inbox
             .entries
             .iter()
-            .filter_map(|entry| match &entry.kind {
-                PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)) => {
-                    Some(bytes.as_ref())
-                }
-                _ => None,
+            .filter_map(|entry| match &entry.write {
+                PendingWrite::TerminalResponse(bytes) => Some(bytes.as_ref()),
+                PendingWrite::User(_) => None,
             })
             .collect();
         assert_eq!(responses, [b"before".as_slice(), b"middle".as_slice()]);
@@ -2489,11 +1691,9 @@ mod tests {
         let responses: Vec<_> = inbox
             .entries
             .iter()
-            .filter_map(|entry| match &entry.kind {
-                PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)) => {
-                    Some(bytes.as_ref())
-                }
-                _ => None,
+            .filter_map(|entry| match &entry.write {
+                PendingWrite::TerminalResponse(bytes) => Some(bytes.as_ref()),
+                PendingWrite::User(_) => None,
             })
             .collect();
         assert_eq!(
@@ -2672,9 +1872,9 @@ mod tests {
         let queued: usize = inbox
             .entries
             .iter()
-            .map(|entry| match &entry.kind {
-                PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)) => bytes.len(),
-                _ => 0,
+            .map(|entry| match &entry.write {
+                PendingWrite::TerminalResponse(bytes) => bytes.len(),
+                PendingWrite::User(_) => 0,
             })
             .sum();
         assert!(
@@ -2691,91 +1891,15 @@ mod tests {
     }
 
     #[test]
-    fn submission_queued_behind_input_starts_without_waiting_for_the_idle_poll() {
-        let (runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
-        handle
-            .try_write_user_input(Bytes::from_static(b"focus"))
-            .expect("input queues");
-        let completion = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"prompt"),
-                Bytes::from_static(b"\r"),
-                Duration::ZERO,
-            )
-            .expect("submission queues")
-            .completion;
-        // Both wakes were consumed by an earlier poll, as when they land
-        // while the actor is already awake.
-        fd::drain_wake_fd(runner.wake_read_fd.as_raw_fd()).expect("drain wake");
-
-        let started = Instant::now();
-        let actor = std::thread::spawn(move || {
-            let mut runner = runner;
-            runner.run();
-        });
-        peer.set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("peer timeout");
-        let mut received = [0; 12];
-        peer.read_exact(&mut received)
-            .expect("peer receives input then the prompt");
-        assert_eq!(&received, b"focusprompt\r");
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "the submission must not wait for the idle poll"
-        );
-        completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports submission")
-            .expect("submission completes");
-        handle.shutdown();
-        actor.join().expect("actor joins");
-    }
-
-    #[test]
-    fn finished_and_withdrawn_submissions_release_their_reservation() {
+    fn finished_writes_release_their_reservation() {
         let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
-        let queued = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"prompt"),
-                Bytes::from_static(b"\r"),
-                Duration::from_secs(5),
-            )
-            .expect("submission queues");
-        runner.pump().expect("text writes");
-        let mut prompt = [0; 6];
-        peer.read_exact(&mut prompt).expect("peer receives prompt");
-        assert_eq!(
-            queued.cancel.cancel(),
-            SubmissionCancelOutcome::TextUnsubmitted
-        );
-        runner.pump().expect("withdraw the Enter");
-        queued
-            .completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports the cancel")
-            .expect_err("a cancelled submission does not complete");
-        {
-            let inbox = crate::locks::lock_auxiliary(&runner.inbox);
-            assert_eq!((inbox.pending_bytes, inbox.pending_items), (0, 0));
-        }
-
-        let completion = handle
-            .queue_user_input_submission(
-                Bytes::from_static(b"again"),
-                Bytes::from_static(b"\r"),
-                Duration::ZERO,
-            )
-            .expect("submission queues")
-            .completion;
-        runner.pump().expect("submission writes");
+        handle
+            .try_write_user_input(Bytes::from_static(b"again\r"))
+            .expect("input queues");
+        runner.pump().expect("input writes");
         let mut written = [0; 6];
-        peer.read_exact(&mut written)
-            .expect("peer receives submission");
+        peer.read_exact(&mut written).expect("peer receives input");
         assert_eq!(&written, b"again\r");
-        completion
-            .recv_timeout(Duration::from_secs(1))
-            .expect("actor reports submission")
-            .expect("submission completes");
         let inbox = crate::locks::lock_auxiliary(&runner.inbox);
         assert_eq!((inbox.pending_bytes, inbox.pending_items), (0, 0));
         assert!(inbox.entries.is_empty());

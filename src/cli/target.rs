@@ -440,26 +440,29 @@ mod tests {
     fn machine_prefix_routes_without_consuming_command_payload() {
         for prefix in [&["--machine", "mac"][..], &["--machine=mac"]] {
             let mut input = prefix.to_vec();
-            input.extend_from_slice(&["agent", "prompt", "w4:p1", "--machine"]);
+            input.extend_from_slice(&["terminal", "title", "set", "--machine"]);
             let matches = parse(&input).expect("test precondition");
             assert_eq!(
                 super::super::matches::string(&matches, "machine").as_deref(),
                 Some("mac")
             );
-            let Some(("agent", agent)) = matches.subcommand() else {
-                panic!("agent command did not parse");
+            let Some(("terminal", terminal)) = matches.subcommand() else {
+                panic!("terminal command did not parse");
             };
-            let Some(("prompt", prompt)) = agent.subcommand() else {
-                panic!("agent prompt did not parse");
+            let Some(("title", title)) = terminal.subcommand() else {
+                panic!("terminal title did not parse");
+            };
+            let Some(("set", set)) = title.subcommand() else {
+                panic!("terminal title set did not parse");
             };
             assert_eq!(
-                super::super::matches::required(prompt, "text").as_deref(),
+                super::super::matches::required(set, "title").as_deref(),
                 Some("--machine")
             );
         }
 
         let matches =
-            parse(&["agent", "prompt", "w4:p1", "--machine=mac"]).expect("test precondition");
+            parse(&["terminal", "title", "set", "--machine=mac"]).expect("test precondition");
         assert_eq!(super::super::matches::string(&matches, "machine"), None);
     }
 
@@ -619,7 +622,6 @@ mod tests {
         }
         for command in [
             &["agent", "list"][..],
-            &["agent", "wait", "w4:p1"],
             &["agent", "explain", "w4:p1"],
             &["pane", "split", "w4:p1", "--direction", "right"],
             &["workspace", "list"],

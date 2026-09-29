@@ -5,7 +5,6 @@ mod command;
 mod fd;
 mod limits;
 mod locks;
-mod submission;
 
 pub use child_io::{ChildIo, ChildIoSendError};
 pub use command::PtyCommand;

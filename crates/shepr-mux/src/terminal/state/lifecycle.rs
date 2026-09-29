@@ -11,10 +11,20 @@ impl TerminalState {
             .and_then(|mutation| mutation.effective_state_change)
     }
 
+    #[cfg(test)]
     pub fn clear_hook_authority_with_mutation(
         &mut self,
         source: Option<&str>,
         seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        self.clear_hook_authority_with_mutation_at(source, seq, Instant::now())
+    }
+
+    pub fn clear_hook_authority_with_mutation_at(
+        &mut self,
+        source: Option<&str>,
+        seq: Option<u64>,
+        now: Instant,
     ) -> Option<TerminalStateMutation> {
         let sequence_source = source.map(str::to_string).or_else(|| {
             self.hook_authority
@@ -29,12 +39,11 @@ impl TerminalState {
             return None;
         }
         if let Some(source) = sequence_source.as_deref()
-            && !self.accept_hook_report(source, seq)
+            && !self.accept_hook_report_at(source, seq, now)
         {
             return None;
         }
 
-        let now = Instant::now();
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
@@ -42,6 +51,7 @@ impl TerminalState {
         let previous_session = self.current_session_identity_for_persistence();
         self.suppress_current_full_lifecycle_hook_authority(
             FullLifecycleHookSuppressionReason::HookClear,
+            now,
         );
         self.hook_authority = None;
         self.persisted_agent_session = None;
@@ -58,11 +68,22 @@ impl TerminalState {
         })
     }
 
+    #[cfg(test)]
     pub fn release_agent_with_mutation(
         &mut self,
         source: &str,
         agent_label: &str,
         seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        self.release_agent_with_mutation_at(source, agent_label, seq, Instant::now())
+    }
+
+    pub fn release_agent_with_mutation_at(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        seq: Option<u64>,
+        now: Instant,
     ) -> Option<TerminalStateMutation> {
         self.warn_unrecognized_hook_identity(source, agent_label);
         if self.hook_authority.as_ref().is_some_and(|authority| {
@@ -76,7 +97,7 @@ impl TerminalState {
         if !matches_current_agent && !matches_persisted_session {
             return None;
         }
-        if !self.accept_hook_report(source, seq) {
+        if !self.accept_hook_report_at(source, seq, now) {
             return None;
         }
         let preserve_foreign_persisted_session =
@@ -90,7 +111,6 @@ impl TerminalState {
                 self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
             });
 
-        let now = Instant::now();
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
@@ -100,6 +120,7 @@ impl TerminalState {
             source,
             agent_label,
             FullLifecycleHookSuppressionReason::HookClear,
+            now,
         );
         if !process_owns_agent {
             self.detected_agent = None;

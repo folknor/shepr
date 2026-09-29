@@ -207,6 +207,7 @@ impl TerminalState {
                     previous_detected_agent
                 },
                 agent,
+                now,
             );
         }
         self.fallback_state = fallback_state;
@@ -385,6 +386,7 @@ impl TerminalState {
             });
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
+                now,
             );
             self.hook_authority = None;
             self.persisted_agent_session = durable_session;

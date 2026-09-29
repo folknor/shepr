@@ -82,15 +82,8 @@ impl std::fmt::Display for ClientRunError {
     }
 }
 
-impl std::error::Error for ClientRunError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Launch(error) => Some(error),
-            Self::LaunchCatalog(error) => Some(error),
-            Self::Session(_) => None,
-        }
-    }
-}
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
+impl std::error::Error for ClientRunError {}
 
 /// Errors that can occur during client operation.
 #[derive(Debug)]
@@ -193,19 +186,8 @@ impl std::fmt::Display for ClientError {
     }
 }
 
-impl std::error::Error for ClientError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ClientError::EndpointSetup(err)
-            | ClientError::ConnectionFailed(err)
-            | ClientError::HostTerminal(err)
-            | ClientError::ConnectionLost(err) => Some(err),
-            ClientError::Protocol(err) => Some(err),
-            ClientError::Preamble(err) => Some(err),
-            _ => None,
-        }
-    }
-}
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
+impl std::error::Error for ClientError {}
 
 impl From<shepr_protocol::FramingError> for ClientError {
     fn from(err: shepr_protocol::FramingError) -> Self {

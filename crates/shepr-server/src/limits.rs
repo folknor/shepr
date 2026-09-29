@@ -52,8 +52,6 @@ pub(crate) const PENDING_AGENT_RESUME_RETRY_INTERVAL: Duration = Duration::from_
 /// the same hold the mux uses for detecting that agent during startup.
 pub(crate) const AGENT_RESUME_NAME_HOLD_TIMEOUT: Duration =
     shepr_mux::pane::AGENT_RESUME_DETECTION_HOLD;
-/// Pause after writing an agent prompt so the receiving TUI can process it.
-pub(crate) const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 // Alt-screen history reads: the read first waits for the pane to stop
 // changing, then sends scroll steps of `WHEEL_STEP_EVENTS` wheel events. Each

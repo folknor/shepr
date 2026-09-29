@@ -171,29 +171,16 @@ fn deadline_after(timeout: Duration) -> io::Result<Instant> {
 /// How long [`ApiClient::request_value`] waits for a response, or `None` for
 /// no bound.
 ///
-/// Wait methods run as long as the caller asked: their own `timeout_ms` plus
-/// the wait response grace, or unbounded when sent without one. A plain
-/// `agent.prompt` is unbounded because the server answers only once the
-/// prompt is written to the agent, which a busy agent may delay for minutes
-/// (see `prompt_agent` in `crates/shepr-api/src/wait.rs`). Everything else, including the
-/// acknowledgement of `events.subscribe`, is ordinary.
+/// Wait methods run as long as the caller asked: their own timeout plus
+/// the wait response grace, or unbounded when sent without one.
+/// Everything else, including the acknowledgement of events.subscribe, is ordinary.
 pub(crate) fn response_timeout(request: &Request) -> Option<Duration> {
     let wait_bound = |timeout_ms: Option<u64>| {
         timeout_ms.map(|ms| Duration::from_millis(ms).saturating_add(WAIT_RESPONSE_GRACE))
     };
     match &request.method {
         Method::EventsWait(params) => wait_bound(params.timeout_ms),
-        Method::AgentWait(params) => wait_bound(params.timeout_ms),
         Method::PaneWaitForOutput(params) => wait_bound(params.timeout_ms),
-        Method::AgentPrompt(params) => {
-            // Omitting `timeout_ms` also leaves the app's submission deadline
-            // empty. A hidden client cap could report failure while the queued
-            // prompt remains live and is typed later.
-            params
-                .wait
-                .as_ref()
-                .and_then(|wait| wait_bound(wait.timeout_ms))
-        }
         _ => Some(ORDINARY_RESPONSE_TIMEOUT),
     }
 }
@@ -364,52 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unbounded_request_times_out_sending_to_a_server_that_never_reads() {
-        use interprocess::local_socket::traits::Listener as _;
-        let scratch = shepr_test_support::ScratchDir::new("send-timeout");
-        let path = scratch.join("api.sock");
-        let listener =
-            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let server = std::thread::spawn(move || {
-            // Holds the connection open without reading a byte.
-            let _stream = listener.accept().expect("test precondition");
-            release_rx
-                .recv_timeout(Duration::from_secs(30))
-                .expect("the test releases the stalled connection");
-        });
-        let client = ApiClient::for_socket(path.clone());
-        // A plain prompt has no response bound, and a body far larger than
-        // the socket buffers blocks the write once they fill.
-        let request = Request {
-            id: "unread".into(),
-            method: Method::AgentPrompt(crate::schema::AgentPromptParams {
-                target: "reviewer".into(),
-                text: "x".repeat(8 * 1024 * 1024),
-                wait: None,
-            }),
-        };
-        assert_eq!(response_timeout(&request), None);
-        let started = Instant::now();
-        let error = client
-            .request_value(&request)
-            .expect_err("a server that never reads must not hang the client");
-        let elapsed = started.elapsed();
-        release_tx
-            .send(())
-            .expect("the stalled server is still holding the connection");
-        server.join().expect("test precondition");
-        std::fs::remove_file(path).expect("test precondition");
-        assert!(
-            matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut),
-            "{error:?}"
-        );
-        // The send timeout bounds each blocked write, and a stalled peer
-        // leaves at most one partial write before the final one times out.
-        assert!(elapsed < UNBOUNDED_RESPONSE_SEND_TIMEOUT * 3, "{elapsed:?}");
-    }
-
-    #[test]
     fn partial_responses_cannot_extend_the_response_deadline() {
         use interprocess::local_socket::traits::Listener as _;
         let scratch = shepr_test_support::ScratchDir::new("partial-response");
@@ -458,28 +399,65 @@ mod tests {
         assert!(ordinary > crate::limits::ORDINARY_REQUEST_TIMEOUT);
 
         let wait = |timeout_ms| {
-            request(Method::AgentWait(crate::schema::AgentWaitParams {
-                target: "reviewer".into(),
-                until: Vec::new(),
+            request(Method::EventsWait(crate::schema::EventsWaitParams {
+                match_event: crate::schema::EventMatch::PaneAgentStatusChanged {
+                    pane_id: "pane".into(),
+                    agent_status: crate::schema::AgentStatus::Idle,
+                },
                 timeout_ms,
             }))
         };
         assert_eq!(response_timeout(&wait(None)), None);
         let bounded = response_timeout(&wait(Some(600_000))).expect("bounded wait");
         assert!(bounded > Duration::from_secs(600));
+    }
 
-        let prompt = |wait| {
-            request(Method::AgentPrompt(crate::schema::AgentPromptParams {
-                target: "reviewer".into(),
-                text: "hi".into(),
-                wait,
-            }))
+    #[test]
+    fn an_unbounded_request_times_out_sending_to_a_server_that_never_reads() {
+        use interprocess::local_socket::traits::Listener as _;
+        let scratch = shepr_test_support::ScratchDir::new("send-timeout");
+        let path = scratch.join("api.sock");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            // Holds the connection open without reading a byte.
+            let _stream = listener.accept().expect("test precondition");
+            release_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the test releases the stalled connection");
+        });
+        let client = ApiClient::for_socket(path.clone());
+        // A wait without a timeout has no response bound, and a body far
+        // larger than the socket buffers blocks the write once they fill.
+        let request = Request {
+            id: "unread".into(),
+            method: Method::EventsWait(crate::schema::EventsWaitParams {
+                match_event: crate::schema::EventMatch::PaneAgentStatusChanged {
+                    pane_id: "p".repeat(8 * 1024 * 1024),
+                    agent_status: crate::schema::AgentStatus::Idle,
+                },
+                timeout_ms: None,
+            }),
         };
-        assert_eq!(response_timeout(&prompt(None)), None);
-        let prompt_wait: crate::schema::AgentPromptWaitOptions =
-            serde_json::from_value(serde_json::json!({ "timeout_ms": 1000 }))
-                .expect("test precondition");
-        assert!(response_timeout(&prompt(Some(prompt_wait))).is_some());
+        assert_eq!(response_timeout(&request), None);
+        let started = Instant::now();
+        let error = client
+            .request_value(&request)
+            .expect_err("a server that never reads must not hang the client");
+        let elapsed = started.elapsed();
+        release_tx
+            .send(())
+            .expect("the stalled server is still holding the connection");
+        server.join().expect("test precondition");
+        std::fs::remove_file(path).expect("test precondition");
+        assert!(
+            matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut),
+            "{error:?}"
+        );
+        // The send timeout bounds each blocked write, and a stalled peer
+        // leaves at most one partial write before the final one times out.
+        assert!(elapsed < UNBOUNDED_RESPONSE_SEND_TIMEOUT * 3, "{elapsed:?}");
     }
 
     #[test]

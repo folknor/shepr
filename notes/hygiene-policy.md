@@ -25,15 +25,6 @@ the entry says so.
 
 ---
 
-## HYGP-151 - Renaming an agent while its resume is pending can cost it the name
-
-`shepr-mux/src/terminal/state/names.rs` holds a restored agent's saved name
-through its pending resume and adopts whatever session the resumed agent first
-reports. But renaming the pane while the resume is still pending attaches the
-saved session to the name again, so a resumed agent that then reports a fresh
-session id loses the name. Narrow; make a rename during a pending resume keep
-the adopt-first-session behaviour.
-
 ## HYGP-066 - Clock seam residue
 
 The clock seam (time passed in, each converted subsystem held by a scoped
@@ -47,12 +38,6 @@ probe and the vt synchronized-update timeout. Open:
   `now` parameters with an ambient `self.now` that only the input and event
   entry points refresh, so a test that bypasses them runs on the construction
   time; pass `now` explicitly or refresh it in one place.
-- `shepr-mux/src/terminal/state/`: `TerminalState`'s hook, session and
-  lifecycle paths read `Instant::now()` inline (`lifecycle.rs` hook-clear and
-  `release_agent_with_mutation`, several sites in `hooks.rs` and `sessions.rs`,
-  the `set_detected_state_with_mutation` wrapper in `detection.rs`, and a
-  `serde(skip, default = "Instant::now")` field in `mod.rs`). Take `now` as a
-  parameter at those entry points and have callers pass the app clock.
 - Other remaining reads: `shepr-config`'s `TerminalId::alloc` (HYGV-087),
   `shepr-server/src/server/client_transport.rs` and the `shepr-api` transport
   deadlines.
@@ -80,15 +65,6 @@ Open, all in tests:
 - Fixed `/tmp` path literals in server fixtures (`app/mod.rs`,
   `app/actions/tests.rs`, `ui/panes.rs`).
 - `src/cli.rs` binds a used `IsolatedEnv` as `_env`.
-
-## HYGP-018 - The environment handed to panes is inherited wholesale and scrubbed by a denylist split across crates
-
-Residue. `shepr-mux/src/pane/launch.rs` now has an exhaustive per-variable pane
-policy over the whole `shepr-core` registry, held by a test, and the unsafe
-`remove_var` is gone. Open: panes still inherit the server environment
-wholesale (`shepr-pty/src/command.rs::base_env`), and agent variables are still
-scrubbed from a separate list owned by `shepr-agent`
-(`launch_env_to_scrub`), so the denylist is still split in two.
 
 ## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
 

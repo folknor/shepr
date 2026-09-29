@@ -758,13 +758,14 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
             .expect("test precondition"),
     });
-    terminal.set_hook_authority_with_session_ref(
+    terminal.set_hook_authority_at(
         "shepr:pi".into(),
         "pi".into(),
         shepr_agent::detect::AgentState::Working,
         None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
+        std::time::Instant::now(),
     );
 
     terminal.set_agent_name("reviewer".into());

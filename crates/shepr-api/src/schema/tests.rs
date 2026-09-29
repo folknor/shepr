@@ -69,50 +69,6 @@ fn request_uses_dot_method_names() {
 }
 
 #[test]
-fn agent_prompt_requests_round_trip() {
-    let prompt = Request {
-        id: "prompt".into(),
-        method: Method::AgentPrompt(AgentPromptParams {
-            target: "reviewer".into(),
-            text: "review this".into(),
-            wait: None,
-        }),
-    };
-    let prompt_json = serde_json::to_value(&prompt).expect("test precondition");
-    assert_eq!(prompt_json["method"], "agent.prompt");
-    assert_eq!(
-        serde_json::from_value::<Request>(prompt_json).expect("test precondition"),
-        prompt
-    );
-
-    let prompt_and_wait = Request {
-        id: "prompt-and-wait".into(),
-        method: Method::AgentPrompt(AgentPromptParams {
-            target: "reviewer".into(),
-            text: "review this".into(),
-            wait: Some(AgentPromptWaitOptions {
-                until: vec![AgentStatus::Idle],
-                timeout_ms: Some(120_000),
-                submission_deadline: None,
-            }),
-        }),
-    };
-    let prompt_and_wait_json = serde_json::to_value(&prompt_and_wait).expect("test precondition");
-    assert_eq!(
-        prompt_and_wait_json["params"]["wait"]["until"],
-        serde_json::json!(["idle"])
-    );
-    assert_eq!(
-        prompt_and_wait_json["params"]["wait"]["timeout_ms"],
-        120_000
-    );
-    assert_eq!(
-        serde_json::from_value::<Request>(prompt_and_wait_json).expect("test precondition"),
-        prompt_and_wait
-    );
-}
-
-#[test]
 fn request_round_trips_for_server_stop() {
     let request = Request {
         id: "req_stop".into(),

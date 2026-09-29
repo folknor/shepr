@@ -76,15 +76,8 @@ impl std::fmt::Display for EndpointConfigurationError {
     }
 }
 
-impl std::error::Error for EndpointConfigurationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.cause {
-            EndpointConfigurationCause::Decode(error) => Some(error),
-            EndpointConfigurationCause::EndpointUnavailable
-            | EndpointConfigurationCause::MissingConfiguration => None,
-        }
-    }
-}
+// Display includes the decode cause, so leave the source chain empty to avoid repeating it.
+impl std::error::Error for EndpointConfigurationError {}
 
 impl std::fmt::Debug for CachedEndpointConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

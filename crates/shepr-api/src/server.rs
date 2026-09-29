@@ -18,7 +18,7 @@ use crate::schema::{
     SuccessResponse,
 };
 use crate::subscriptions::{ActiveSubscription, SubscriptionStream};
-use crate::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
+use crate::wait::{wait_for_event, wait_for_output};
 use crate::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
 use shepr_platform::ipc::{
     LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
@@ -537,30 +537,6 @@ fn handle_connection_with_stop(
             )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
-        Method::AgentPrompt(params) => {
-            let response = prompt_agent(
-                request_id.clone(),
-                params,
-                &mut stream,
-                api_tx,
-                event_hub,
-                running,
-                server_stop,
-            )?;
-            finish_wait_response(&mut stream, response, &request_id, method_traits)
-        }
-        Method::AgentWait(params) => {
-            let response = wait_for_agent(
-                request_id.clone(),
-                params,
-                &mut stream,
-                api_tx,
-                event_hub,
-                running,
-                server_stop,
-            )?;
-            finish_wait_response(&mut stream, response, &request_id, method_traits)
-        }
         Method::PaneWaitForOutput(params) => {
             let response = wait_for_output(
                 request_id.clone(),
@@ -942,22 +918,6 @@ pub(super) fn dispatch_to_app_with_timeout_result(
     dispatch_to_app_result(request, api_tx, timeout, None)
 }
 
-pub(super) fn dispatch_to_app_with_caller_timeout_result(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-) -> crate::error::ApiResult {
-    dispatch_to_app_result(
-        request,
-        api_tx,
-        timeout,
-        Some((
-            crate::error::ApiErrorCode::Timeout,
-            "timed out waiting for agent status",
-        )),
-    )
-}
-
 fn dispatch_to_app(
     request: Request,
     api_tx: &ApiRequestSender,
@@ -1034,45 +994,6 @@ pub(super) fn shutdown_wait_error() -> crate::error::ApiError {
     )
 }
 
-/// Dispatch without a deadline, but stop waiting for the answer once server
-/// shutdown starts. The app may still act on the request (a queued prompt
-/// can be typed), so the shutdown error says the outcome is unknown.
-pub(super) fn dispatch_to_app_until_stopped_result(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    server_stop: Option<&Arc<AtomicBool>>,
-) -> crate::error::ApiResult {
-    let (respond_to, response_rx) = std::sync::mpsc::channel();
-    if let Err(err) = api_tx.send(ApiRequestMessage {
-        request,
-        respond_to,
-    }) {
-        return Err(crate::error::ApiError::new(
-            crate::error::ApiErrorCode::ServerUnavailable,
-            format!("failed to dispatch request: {err}"),
-        ));
-    }
-    loop {
-        match response_rx.recv_timeout(CONNECTION_POLL_INTERVAL) {
-            Ok(response) => return response,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if server_is_stopping(server_stop) {
-                    return Err(crate::error::ApiError::new(
-                        crate::error::ApiErrorCode::ServerUnavailable,
-                        "server is shutting down; the request may still run, so its outcome is unknown",
-                    ));
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(crate::error::ApiError::new(
-                    crate::error::ApiErrorCode::ServerUnavailable,
-                    "request handling failed: app response channel closed",
-                ));
-            }
-        }
-    }
-}
-
 pub(super) fn error_response_json(
     id: &str,
     code: crate::error::ApiErrorCode,
@@ -1096,24 +1017,6 @@ fn handle_connection(
 }
 
 #[cfg(test)]
-pub(super) fn dispatch_to_app_with_caller_timeout(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-) -> String {
-    dispatch_to_app(
-        request,
-        api_tx,
-        timeout,
-        Some((
-            crate::error::ApiErrorCode::Timeout,
-            "timed out waiting for agent status",
-        )),
-    )
-    .body
-}
-
-#[cfg(test)]
 mod subscription_socket_tests;
 
 #[cfg(test)]
@@ -1127,45 +1030,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use tokio::sync::mpsc;
-
-    #[test]
-    fn stop_aware_dispatch_ends_when_shutdown_starts() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let stop = Arc::new(AtomicBool::new(true));
-        let result = dispatch_to_app_until_stopped_result(
-            Request {
-                id: "prompt".into(),
-                method: Method::AgentPrompt(crate::schema::AgentPromptParams {
-                    target: "reviewer".into(),
-                    text: "review this".into(),
-                    wait: None,
-                }),
-            },
-            &tx,
-            Some(&stop),
-        );
-        let error = result.expect_err("shutdown ends the dispatch");
-        assert_eq!(error.code, crate::error::ApiErrorCode::ServerUnavailable);
-    }
-
-    #[test]
-    fn caller_timeout_dispatch_uses_timeout_error() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let response = dispatch_to_app_with_caller_timeout(
-            Request {
-                id: "prompt-timeout".into(),
-                method: Method::AgentPrompt(crate::schema::AgentPromptParams {
-                    target: "reviewer".into(),
-                    text: "review this".into(),
-                    wait: None,
-                }),
-            },
-            &tx,
-            Some(Duration::ZERO),
-        );
-        let error: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(error.error.code, "timeout");
-    }
 
     /// A fresh path in its own scratch directory.
     fn unique_test_path(name: &str) -> PathBuf {
