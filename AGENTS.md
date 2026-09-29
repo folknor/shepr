@@ -153,15 +153,17 @@ shared by every profile. The build identity also covers the profile
 as well as the source, so a dev and a release build never talk to each other's
 server: one that is reached anyway is refused with guidance.
 
-The one thing that defeats the separation is the socket override variables.
-`SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` win over the per-profile
-runtime directory, and every pane exports them, so inside a running shepr
-session a dev build would resolve the installed server's sockets. Drop them:
+Run it with plain `brokkr run -- [<command>]`, including from inside a pane
+of the installed server. Every pane exports `SHEPR_SOCKET_PATH` and
+`SHEPR_CLIENT_SOCKET_PATH`, which normally win over the per-profile runtime
+directory, and also `SHEPR_BUILD_PROFILE`, the profile (`release` or `dev`) of
+the server that owns the pane. A process whose own profile differs from that
+marker ignores both socket variables and resolves its own profile's runtime
+directory.
 
-`env -u SHEPR_SOCKET_PATH -u SHEPR_CLIENT_SOCKET_PATH brokkr run -- [<command>]`
-
-- Outside a shepr pane the variables are unset and plain `brokkr run --` is
-  enough.
+- Socket variables with no marker (set by a user or a script) and ones with a
+  matching marker still win over the runtime directory.
+- A marker that is neither `release` nor `dev` fails the launch.
 - The saved layout is not affected by the overrides, only the sockets are.
 - `server stop` against a server of another build is refused, naming both
   builds; `--force` overrides that and stops it with every pane in it.

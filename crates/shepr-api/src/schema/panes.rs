@@ -77,27 +77,6 @@ pub enum PaneZoomMode {
     Off,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct LayoutExportParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tab_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LayoutApplyParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tab_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tab_label: Option<String>,
-    #[serde(default)]
-    pub focus: bool,
-    pub root: LayoutNode,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,9 +113,7 @@ pub enum LayoutNode {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LayoutPane {
-    /// Output only: `layout.export` names the live pane behind each leaf.
-    /// `layout.apply` always spawns fresh panes and ignores it, so an exported
-    /// layout can be applied back unchanged.
+    /// The live pane behind this leaf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,8 +122,6 @@ pub struct LayoutPane {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,15 +253,6 @@ pub struct PaneReportAgentSessionParams {
     pub agent_session_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_start_source: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneClearAgentAuthorityParams {
-    pub pane_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

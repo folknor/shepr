@@ -36,6 +36,76 @@ so they wait for a decision rather than a fixer.
   lookup (`open_new_workspace_overlay` only queues the lookup for the local
   endpoint). Needs a new API method.
 
+## Residuals from the CLI reduction
+
+Surfaced while landing `notes/cli-ux-spec.md`; none blocks anything.
+
+- **Install integrations automatically.** The server should install or update
+  hooks for configured agents at launch, after which the `integration` command
+  group can go (`notes/cli-ux.md`).
+- **Flatten workspaces and tabs.** The owner considers the two grouping levels
+  one too many. Touches the data model, persistence, sidebar and tab bar.
+- **Rename `shepr_api::session`.** It now holds local server stop, restart
+  guidance and the stop-target build guard; `SessionError` and
+  `ApiErrorCode::SessionStopFailed` are misnomers too.
+- **Hook assets and the CLI.** The item above proposes moving hook assets to
+  the CLI, but the CLI no longer has report commands; that direction now means
+  adding them back.
+- **Server shell state is always present.** `ClientConnection::shell_state()`
+  and `shell_state_mut()` in shepr-server still return `Option` although every
+  connection has shell state; dozens of call sites guard a `None` that cannot
+  happen.
+- **Unconsumed `revision`.** `PaneInfo.revision` and `AgentInfo.revision` have
+  no consumer in shepr.
+- **Pane copy and search handlers.** Check whether the TUI still reaches every
+  handler in `crates/shepr-server/src/app/api/panes/copy.rs` (including
+  `clear_screen`); remove what it does not.
+- **Remote interactive branches.** `RemoteSsh`'s non-interactive flag and its
+  interactive branches (stderr relay, `framed_user_shell_output`) are only
+  reachable from tests, and `RemoteCliCommand::ServerStop` is unused outside
+  tests.
+- **Handshake leftovers.** `ServerMessage::Welcome` is only ever sent with an
+  error; `do_handshake` takes geometry and surface size separately;
+  `RawInputByteFramer` is public but only used inside `RawInputFramer`.
+- **Stale names and comments.** The client's `graphics_scope` field and its
+  comment in `shell/state.rs`; the `TERMINAL_ID_STAMP` comment in shepr-protocol
+  (and whether `TerminalId` is still needed outside the server);
+  `is_launch_fatal_setup_error`'s comment in shepr-remote; "saved machines"
+  wording in `src/autodetect.rs` and client comments, now configured machines.
+- **Preflight findings are dropped.** `src/preflight.rs` prints nothing for
+  `MachineCheck::Incompatible`, and the client's connectors never call
+  `check_saved_ssh`, so a remote server that is not a detached daemon is
+  attached to anyway and its error never shown.
+- **Discovery ignores the metadata cache.** `check_saved_ssh` runs full remote
+  discovery for every machine at every launch and neither reads nor writes
+  `SshMetadataCache`.
+- **Metadata cache and remote discovery versus build profiles.** The cache sits
+  in the shared client state directory, so dev and release clients overwrite
+  each other's hint for a target; remote discovery only finds an installed
+  `shepr` (PATH, `~/.cargo/bin`, `~/.local/bin`), so a dev client can never
+  match a remote dev build.
+- **Redundant build hash in the root package.** The root package appears to
+  run the workspace `build.rs` too, hashing the tree and writing build id files
+  nothing in `src/` includes.
+- **Dead after the API pruning.** With `layout.apply` gone nothing passes an
+  argv to a new tab or split (`Tab::new_argv_command`, `Tab::split_pane_argv`,
+  the `argv` parameters of `create_tab_with_runtime` and
+  `split_pane_with_runtime`, `PaneRuntime::spawn_argv_command`);
+  `dispatch_to_app_result` in shepr-api `server.rs` keeps an unused no-timeout
+  branch; `ApiErrorCode` lists variants nothing returns (`PaneClosed`,
+  `UnsupportedMethod`, `ClientMissing`); the test
+  `agent_state_sequences_track_transitions_for_waiters` is misnamed now that
+  there are no waiters; `Start::Branch` in shepr-agent `resume.rs` is only used
+  by a parse test.
+- **More stale wording.** `current_process_is_detached_server_daemon`'s doc says
+  remote attach restarts a non-detached server (it no longer does);
+  `RunServerError::SessionDataHeld` talks about a session data directory.
+- **Re-prompting for SSH authentication.** A machine that still needs
+  authentication after a failed or skipped startup prompt is not prompted again
+  until the next launch, and there is no TUI action to suspend the screen and
+  authenticate. Add one if losing the shared connection mid-session proves
+  annoying.
+
 ## Monitor upstream changes to integrations
 
 We need to create a script we can run periodically that checks upstream

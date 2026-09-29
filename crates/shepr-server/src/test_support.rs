@@ -407,21 +407,6 @@ impl GitStatusRefreshDemandFixture for shepr_mux::git::GitStatusRefreshDemand {
     };
 }
 
-pub(crate) trait EventHubFixture {
-    /// Returns retained events after `sequence`.
-    fn events_after(&self, sequence: u64) -> Vec<(u64, shepr_api::schema::EventEnvelope)>;
-}
-
-impl EventHubFixture for shepr_api::EventHub {
-    /// This test convenience panics on checked-history errors. Tests reading
-    /// expected events must fail on unavailable or lost history, never treat it
-    /// as an empty history.
-    fn events_after(&self, sequence: u64) -> Vec<(u64, shepr_api::schema::EventEnvelope)> {
-        self.events_after_checked(sequence)
-            .expect("test event history is retained")
-    }
-}
-
 /// A canonical workspace ID that no live test workspace holds, for public
 /// pane IDs a pane kept from a workspace it has left. Workspace IDs come from
 /// a process-wide counter that tests never drive to the top of the number

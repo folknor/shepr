@@ -1,51 +1,6 @@
 use super::*;
 
 impl TerminalState {
-    pub fn clear_hook_authority_with_mutation_at(
-        &mut self,
-        source: Option<&str>,
-        seq: Option<u64>,
-        now: Instant,
-    ) -> Option<TerminalStateMutation> {
-        let sequence_source = source.map(str::to_string).or_else(|| {
-            self.hook_authority
-                .as_ref()
-                .map(|authority| authority.source.clone())
-        });
-        let should_clear = self
-            .hook_authority
-            .as_ref()
-            .is_some_and(|authority| source.is_none_or(|source| authority.source == source));
-        if !should_clear {
-            return None;
-        }
-        if let Some(source) = sequence_source.as_deref()
-            && !self.accept_hook_report_at(source, seq, now)
-        {
-            return None;
-        }
-
-        let previous_agent_label = self.effective_agent_label().map(str::to_string);
-        let previous_known_agent = self.effective_known_agent();
-        let previous_state = self.state;
-        let previous_session = self.current_session_identity_for_persistence();
-        self.suppress_current_full_lifecycle_hook_authority(
-            FullLifecycleHookSuppressionReason::HookClear,
-            now,
-        );
-        self.hook_authority = None;
-        self.persisted_agent_session = None;
-        Some(TerminalStateMutation {
-            effective_state_change: self.recompute_effective_state(
-                previous_agent_label,
-                previous_known_agent,
-                previous_state,
-            ),
-            session_ref_changed: previous_session.is_some(),
-            agent_released: false,
-        })
-    }
-
     pub(super) fn hook_authority_is_effective(&self, authority: &HookAuthority) -> bool {
         !shepr_agent::detect::full_lifecycle_hook_authority(
             &authority.source,
@@ -112,25 +67,5 @@ impl TerminalState {
                     &authority.agent_label,
                 )
         })
-    }
-}
-
-#[cfg(test)]
-impl TerminalState {
-    pub fn clear_hook_authority(
-        &mut self,
-        source: Option<&str>,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange> {
-        self.clear_hook_authority_with_mutation(source, seq)
-            .and_then(|mutation| mutation.effective_state_change)
-    }
-
-    pub fn clear_hook_authority_with_mutation(
-        &mut self,
-        source: Option<&str>,
-        seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
-        self.clear_hook_authority_with_mutation_at(source, seq, Instant::now())
     }
 }

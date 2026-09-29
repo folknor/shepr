@@ -87,7 +87,6 @@ pub struct App {
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
-    pub(crate) event_hub: shepr_api::EventHub,
     pub(crate) last_focus: Option<(usize, shepr_core::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
@@ -127,7 +126,6 @@ impl App {
         lease: shepr_mux::persist::DataDirLease,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
-        event_hub: shepr_api::EventHub,
         clock: AppClock,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
@@ -300,7 +298,6 @@ impl App {
             last_render_at: None,
             last_presentation_at: None,
             api_rx,
-            event_hub,
             last_focus,
             policy,
             render_notify,
@@ -352,11 +349,10 @@ impl App {
             self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
         match self.create_workspace_with_options(&cwd, true) {
-            Ok(index) => {
+            Ok(_index) => {
                 // Callers include non-mutating API requests and client
                 // connects, so the shell projection is invalidated here.
                 self.state.mark_shell_projection_dirty();
-                self.emit_workspace_open_events(index);
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.
                     self.session_saver.pane_exit_checkpoint_pending = true;
@@ -403,7 +399,6 @@ mod tests {
             config: &Config,
             policy: AppPolicy,
             api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
-            event_hub: shepr_api::EventHub,
         ) -> Self {
             use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
             let scratch = crate::test_support::ScratchDir::new("app");
@@ -415,15 +410,7 @@ mod tests {
             );
             let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
                 .expect("test session lease");
-            Self::with_paths(
-                &config,
-                &paths,
-                lease,
-                policy,
-                api_rx,
-                event_hub,
-                test_clock(),
-            )
+            Self::with_paths(&config, &paths, lease, policy, api_rx, test_clock())
         }
 
         /// Installs `runtime` for a pane in the same registry production uses.
@@ -477,12 +464,7 @@ mod tests {
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
+        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.settings.default_shell = exiting_test_command().into();
         app
     }
@@ -642,12 +624,7 @@ mod tests {
         config.theme.name = Some("tokyo-night".to_string());
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let app = App::new(
-            &config,
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
+        let app = App::new(&config, crate::app::AppPolicy::Test, api_rx);
 
         assert_eq!(app.state.settings.palette, state::Palette::tokyo_night());
     }
@@ -781,32 +758,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_default_workspace_emits_creation_events() {
-        let event_hub = shepr_api::EventHub::default();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub.clone(),
-        );
-        app.state.settings.default_shell = exiting_test_command().into();
+    async fn ensure_default_workspace_creates_one_workspace_only_when_none_exist() {
+        let mut app = test_app();
 
         assert!(app.ensure_default_workspace());
-
-        let events = event_hub.events_after(0);
-        assert_eq!(
-            events
-                .iter()
-                .map(|(_, event)| event.data.kind())
-                .collect::<Vec<_>>(),
-            [
-                shepr_api::schema::EventKind::WorkspaceCreated,
-                shepr_api::schema::EventKind::TabCreated,
-                shepr_api::schema::EventKind::PaneCreated,
-                shepr_api::schema::EventKind::LayoutUpdated,
-            ]
-        );
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert!(!app.ensure_default_workspace());
+        assert_eq!(app.state.workspaces.len(), 1);
     }
 
     #[test]

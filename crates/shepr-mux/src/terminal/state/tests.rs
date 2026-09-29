@@ -1903,11 +1903,6 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
 
     assert!(
         terminal
-            .clear_hook_authority_with_mutation(Some("custom:pi"), Some(201))
-            .is_none()
-    );
-    assert!(
-        terminal
             .set_hook_authority(
                 "custom:pi".into(),
                 "pi".into(),
@@ -2298,72 +2293,6 @@ fn codex_lifecycle_session_ref_replaces_existing_session_ref() {
             Some(next_session.as_str())
         );
     }
-}
-
-#[test]
-fn qwen_lifecycle_session_ref_replaces_existing_session_ref() {
-    for session_start_source in ["startup", "clear", "resume", "compact", "branch"] {
-        let mut terminal = test_terminal();
-        terminal.set_detected_state(Some(Agent::Qwen), AgentState::Idle);
-        terminal
-            .set_agent_session_ref(
-                "shepr:qwen".into(),
-                "qwen".into(),
-                shepr_agent::agent::resume::AgentSessionRef::id("qwen-session"),
-                Some(20),
-            )
-            .expect("initial session should be accepted");
-
-        let next_session = format!("qwen-{session_start_source}-session");
-        let mutation = terminal
-            .set_agent_session_ref_for_session_start(
-                "shepr:qwen".into(),
-                "qwen".into(),
-                shepr_agent::agent::resume::AgentSessionRef::id(&next_session),
-                Some(21),
-                Some(session_start_source),
-            )
-            .unwrap_or_else(|| panic!("{session_start_source} should replace the session"));
-
-        assert!(mutation.session_ref_changed);
-        assert_eq!(
-            terminal
-                .persisted_agent_session
-                .as_ref()
-                .map(|session| session.session_ref.value_str()),
-            Some(next_session.as_str())
-        );
-    }
-}
-
-#[test]
-fn qwen_session_ref_does_not_replace_without_foreground_qwen() {
-    let mut terminal = test_terminal();
-    terminal
-        .set_agent_session_ref(
-            "shepr:qwen".into(),
-            "qwen".into(),
-            shepr_agent::agent::resume::AgentSessionRef::id("qwen-parent"),
-            Some(20),
-        )
-        .expect("initial session should be accepted");
-
-    let mutation = terminal.set_agent_session_ref_for_session_start(
-        "shepr:qwen".into(),
-        "qwen".into(),
-        shepr_agent::agent::resume::AgentSessionRef::id("qwen-branch"),
-        Some(21),
-        Some("branch"),
-    );
-
-    assert!(mutation.is_none());
-    assert_eq!(
-        terminal
-            .persisted_agent_session
-            .as_ref()
-            .map(|session| session.session_ref.value_str()),
-        Some("qwen-parent")
-    );
 }
 
 #[test]
@@ -3192,35 +3121,6 @@ fn detected_agent_clear_does_not_clear_current_session_ref() {
 }
 
 #[test]
-fn clearing_hook_authority_clears_session_ref() {
-    let mut terminal = test_terminal();
-    let session_path = test_session_path("pi.jsonl");
-    anchor_full_lifecycle_session(
-        &mut terminal,
-        Agent::Pi,
-        "shepr:pi",
-        "pi",
-        shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
-            .expect("test precondition"),
-    );
-    terminal.set_hook_authority_with_session_ref(
-        "shepr:pi".into(),
-        "pi".into(),
-        AgentState::Working,
-        None,
-        shepr_agent::agent::resume::AgentSessionRef::path(session_path),
-        Some(20),
-    );
-
-    let mutation = terminal
-        .clear_hook_authority_with_mutation(Some("shepr:pi"), Some(21))
-        .expect("accepted clear");
-
-    assert!(mutation.session_ref_changed);
-    assert!(terminal.hook_authority.is_none());
-}
-
-#[test]
 fn launch_command_alone_does_not_make_a_terminal_an_agent() {
     let terminal = test_terminal().with_launch_argv(vec!["just".into(), "dev".into()]);
 
@@ -3363,9 +3263,9 @@ fn detected_agent_disappearance_preserves_matching_persisted_session_ref() {
 fn initial_unknown_detection_preserves_restored_session_ref() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:letta".into(),
-        agent: shepr_agent::agent::Agent::Letta,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("letta-session")
+        source: "shepr:codex".into(),
+        agent: shepr_agent::agent::Agent::Codex,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
             .expect("test precondition"),
     });
 
@@ -3399,33 +3299,6 @@ fn unsequenced_hook_report_is_ignored_after_source_uses_sequence() {
 
     assert!(change.is_none());
     assert_eq!(terminal.state, AgentState::Working);
-}
-
-#[test]
-fn stale_clear_all_sequence_is_checked_against_current_authority_source() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    anchor_full_lifecycle_session(
-        &mut terminal,
-        Agent::Pi,
-        "shepr:pi",
-        "pi",
-        shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
-            .expect("test precondition"),
-    );
-    terminal.set_hook_authority(
-        "shepr:pi".into(),
-        "pi".into(),
-        AgentState::Working,
-        None,
-        Some(20),
-    );
-
-    let change = terminal.clear_hook_authority(None, Some(19));
-
-    assert!(change.is_none());
-    assert_eq!(terminal.state, AgentState::Working);
-    assert!(terminal.hook_authority.is_some());
 }
 
 #[test]

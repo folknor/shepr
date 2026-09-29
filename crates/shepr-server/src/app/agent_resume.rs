@@ -499,7 +499,6 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::Test,
             api_rx,
-            shepr_api::EventHub::default(),
         )
     }
 
@@ -511,12 +510,7 @@ mod tests {
             ))
             .expect("test precondition");
             let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut app = App::new(
-                &config,
-                crate::app::AppPolicy::Test,
-                api_rx,
-                shepr_api::EventHub::default(),
-            );
+            let mut app = App::new(&config, crate::app::AppPolicy::Test, api_rx);
             app.state.workspaces = (0..4)
                 .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
                 .collect();

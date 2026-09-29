@@ -39,7 +39,7 @@ impl HeadlessServer {
             // view is not recomputed for them.
             AppEvent::StateChanged { .. } | AppEvent::HookStateReported { .. } => {
                 self.sync_foreground_focus_state();
-                self.app.handle_internal_event_with_pane_updates(ev);
+                self.app.handle_internal_event(ev);
                 true
             }
             AppEvent::PaneDied {
@@ -49,13 +49,12 @@ impl HeadlessServer {
                 let focus_before = self.shell_focus_targets();
                 let focused_tabs_before = self.focused_shell_tabs();
                 let pane_id_val = *pane_id;
-                if let Some(update) = self
+                if self
                     .app
                     .state
                     .publish_pane_process_exit_if_agent(pane_id_val)
                 {
                     self.app.sync_full_lifecycle_authority_detection_pauses();
-                    self.app.emit_pane_state_update(&update);
                     // The agent row changes even when removal waits for its
                     // checkpoint below.
                     self.app.state.mark_shell_projection_dirty();
@@ -74,7 +73,7 @@ impl HeadlessServer {
                     return false;
                 }
 
-                self.app.handle_internal_event_with_pane_updates(ev);
+                self.app.handle_internal_event(ev);
                 self.reconcile_client_shell_locations();
                 self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
                 self.reapply_controlled_shell_tab_geometry(false);

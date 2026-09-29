@@ -277,8 +277,9 @@
 # manage_ssh_config = true
 
 # Machines whose shepr servers this client shows next to the local one. Each
-# entry needs a unique, nonblank label (how shepr names the machine) and an ssh
-# target (a host alias, user@host or ssh:// URL, never with a password).
+# entry needs a unique label (how shepr names the machine: nonblank, no control
+# characters, no leading or trailing whitespace) and an ssh target (a host
+# alias, user@host or ssh:// URL, never with a password).
 # Read once at launch; a duplicate label or a malformed target fails the launch.
 # [[machines]]
 # label = "build"

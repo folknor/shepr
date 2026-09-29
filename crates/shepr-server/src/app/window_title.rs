@@ -131,14 +131,8 @@ mod tests {
     use shepr_mux::workspace::Workspace;
 
     fn test_app() -> App {
-        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub,
-        );
+        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.workspaces = vec![Workspace::test_new("herd")];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();

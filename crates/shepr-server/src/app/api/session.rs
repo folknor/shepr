@@ -66,12 +66,7 @@ mod tests {
 
     fn app_with_two_tabs() -> crate::app::App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = crate::app::App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        );
+        let mut app = crate::app::App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         let mut workspace = Workspace::test_new("snapshot");
         workspace.test_add_tab(None);
         app.state.workspaces = vec![workspace];

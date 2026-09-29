@@ -723,16 +723,6 @@ impl TerminalState {
                     Agent::Omp,
                     Some(Start::Startup | Start::New | Start::Resume | Start::Fork)
                 )
-                | (
-                    Agent::Qwen,
-                    Some(
-                        Start::Startup
-                            | Start::Clear
-                            | Start::Resume
-                            | Start::Compact
-                            | Start::Branch
-                    )
-                )
                 | (Agent::Antigravity, None)
         )
     }

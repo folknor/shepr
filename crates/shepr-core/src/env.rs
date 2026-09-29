@@ -142,6 +142,13 @@ env_vocabulary! {
         /// `SHEPR_ENV`: marks a process as running inside a shepr pane; the
         /// value is [`SHEPR_ENV_IN_PANE`].
         SheprEnv => "SHEPR_ENV",
+        /// `SHEPR_BUILD_PROFILE`: the build profile (`release` or `dev`) of the
+        /// server that owns a pane, written into every pane next to the socket
+        /// variables. A process whose own profile differs ignores the socket
+        /// overrides, so a dev build run inside a release server's pane does
+        /// not target that server. Absent means the overrides were set by a
+        /// user or a script and apply as given.
+        SheprBuildProfile => "SHEPR_BUILD_PROFILE",
         /// `SHEPR_STARTUP_CWD`: the directory the user launched `shepr` from,
         /// handed to the server daemon it spawns to seed the first workspace.
         SheprStartupCwd => "SHEPR_STARTUP_CWD",
@@ -346,6 +353,7 @@ impl EnvVar {
             Self::SheprDebugOscEvidence => EnvKind::Flag,
             Self::SheprPaneId
             | Self::SheprEnv
+            | Self::SheprBuildProfile
             | Self::SheprLog
             | Self::TermProgram
             | Self::GitCeilingDirectories
@@ -941,6 +949,7 @@ mod tests {
             ),
             (EnvVar::SheprPaneId, "SHEPR_PANE_ID", Text),
             (EnvVar::SheprEnv, "SHEPR_ENV", Text),
+            (EnvVar::SheprBuildProfile, "SHEPR_BUILD_PROFILE", Text),
             (EnvVar::SheprStartupCwd, "SHEPR_STARTUP_CWD", Handoff),
             (EnvVar::SheprLog, "SHEPR_LOG", Text),
             (

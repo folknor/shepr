@@ -749,7 +749,6 @@ mod tests {
             &shepr_config::Config::default(),
             super::super::AppPolicy::Test,
             api_rx,
-            shepr_api::EventHub::default(),
         )
     }
 
@@ -891,7 +890,6 @@ mod tests {
             lease,
             super::super::AppPolicy::Production,
             api_rx,
-            shepr_api::EventHub::default(),
             super::super::tests::test_clock(),
         );
         let tab_names = |workspaces: Vec<Vec<Option<String>>>| workspaces.concat();

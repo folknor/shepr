@@ -155,7 +155,7 @@ impl HeadlessServer {
         }
         let (lost, gained) =
             self.shell_location_focus_transitions(focus_before, &focused_tabs_before);
-        self.app.accept_current_focus_with_api_events();
+        self.app.accept_current_focus();
         self.send_shell_focus_transitions(&lost, &gained);
     }
 
@@ -385,7 +385,7 @@ impl HeadlessServer {
     ) {
         let (lost, gained) =
             self.shell_location_focus_transitions(focus_before, focused_tabs_before);
-        self.app.accept_current_focus_without_events();
+        self.app.accept_current_focus();
         self.send_shell_focus_transitions(&lost, &gained);
     }
 

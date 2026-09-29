@@ -38,14 +38,11 @@ api_error_codes! {
     InvalidAgent => "invalid_agent",
     InvalidCwd => "invalid_cwd",
     InvalidEnv => "invalid_env",
-    InvalidLayout => "invalid_layout",
     InvalidPaneSwap => "invalid_pane_swap",
     InvalidParams => "invalid_params",
     InvalidRatio => "invalid_ratio",
     InvalidRequest => "invalid_request",
     InvalidSshAgent => "invalid_ssh_agent",
-    InvalidTarget => "invalid_target",
-    LayoutApplyFailed => "layout_apply_failed",
     LayoutNotFound => "layout_not_found",
     PaneClearFailed => "pane_clear_failed",
     PaneClosed => "pane_closed",
@@ -64,15 +61,12 @@ api_error_codes! {
     TabMoveFailed => "tab_move_failed",
     TabNotFound => "tab_not_found",
     Timeout => "timeout",
-    UnsupportedEventWaitMatch => "unsupported_event_wait_match",
     WorkspaceCreateFailed => "workspace_create_failed",
-    WorkspaceMoveBlockFailed => "workspace_move_block_failed",
     WorkspaceMoveFailed => "workspace_move_failed",
     WorkspaceNotFound => "workspace_not_found",
     ClientMissing => "client_missing",
     ConnectionLocalOnly => "connection_local_only",
     EndpointBusy => "endpoint_busy",
-    EventsLost => "events_lost",
     UnsupportedEndpointCommand => "unsupported_endpoint_command",
     UnsupportedMethod => "unsupported_method",
     StaleBoot => "stale_boot",
@@ -166,14 +160,6 @@ impl ApiLogOutcome {
             Self::Error => "error",
         }
     }
-
-    fn for_error_code(code: &str) -> Self {
-        if code == ApiErrorCode::Timeout.as_str() {
-            Self::Timeout
-        } else {
-            Self::Error
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -211,19 +197,6 @@ pub(crate) fn encode_result_with_outcome(id: String, result: ApiResult) -> Encod
     }
 }
 
-pub(crate) fn encode_error_response_with_outcome(response: &ErrorResponse) -> EncodedApiResponse {
-    let outcome = ApiLogOutcome::for_error_code(response.error.code.as_str());
-    let encoded = super::serialize_response_or_error_with_outcome(&response.id, &response);
-    EncodedApiResponse {
-        body: encoded.body,
-        outcome: if encoded.outcome == ApiLogOutcome::Error {
-            ApiLogOutcome::Error
-        } else {
-            outcome
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,23 +224,5 @@ mod tests {
             message: "the content changed".into(),
         });
         assert_eq!(error.code, ApiErrorCode::StaleContent);
-    }
-
-    #[test]
-    fn prebuilt_error_responses_log_timeout_only_for_the_timeout_code() {
-        let response = |code: &ApiErrorCode| ErrorResponse {
-            id: "req".into(),
-            error: ErrorBody::new(code, "message"),
-        };
-        let timeout = encode_error_response_with_outcome(&response(&ApiErrorCode::Timeout));
-        assert_eq!(timeout.outcome, ApiLogOutcome::Timeout);
-        assert_eq!(timeout.outcome.as_str(), "timeout");
-        let parsed: ErrorResponse = serde_json::from_str(&timeout.body).expect("test precondition");
-        assert_eq!(parsed.error.code, ApiErrorCode::Timeout.as_str());
-
-        let other = encode_error_response_with_outcome(&response(&ApiErrorCode::PaneNotFound));
-        assert_eq!(other.outcome, ApiLogOutcome::Error);
-        assert_eq!(other.outcome.as_str(), "error");
-        assert_eq!(ApiLogOutcome::Ok.as_str(), "ok");
     }
 }

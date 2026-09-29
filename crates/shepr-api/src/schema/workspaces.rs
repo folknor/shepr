@@ -38,13 +38,6 @@ pub struct WorkspaceMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceMoveBlockParams {
-    pub workspace_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub before_workspace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub workspace_id: WorkspaceId,
     pub number: usize,

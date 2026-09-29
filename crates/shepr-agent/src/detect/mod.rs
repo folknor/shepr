@@ -813,15 +813,9 @@ mod tests {
 
     #[test]
     fn session_identity_integrations_leave_state_to_screen_detection() {
-        for (source, label, agent) in [
-            ("shepr:qwen", "qwen", Agent::Qwen),
-            ("shepr:letta", "letta", Agent::Letta),
-            ("shepr:agy", "agy", Agent::Antigravity),
-        ] {
-            assert!(!full_lifecycle_hook_authority(source, label));
-            assert!(session_identity_only_integration(source, label));
-            assert!(agent.screen_manifest());
-        }
+        assert!(!full_lifecycle_hook_authority("shepr:agy", "agy"));
+        assert!(session_identity_only_integration("shepr:agy", "agy"));
+        assert!(Agent::Antigravity.screen_manifest());
     }
 
     #[test]

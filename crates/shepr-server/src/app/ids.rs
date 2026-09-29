@@ -149,7 +149,6 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
-            shepr_api::EventHub::default(),
         );
         app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         app.state.ensure_test_terminals();

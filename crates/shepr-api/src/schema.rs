@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 pub mod agents;
 pub mod common;
-pub mod events;
 pub mod panes;
 pub mod response;
 pub mod server;
@@ -12,7 +11,6 @@ pub mod workspaces;
 
 pub use agents::*;
 pub use common::*;
-pub use events::*;
 pub use panes::*;
 pub use response::*;
 pub use server::*;
@@ -166,11 +164,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    WorkspaceMoveBlock(WorkspaceMoveBlockParams) => "workspace.move_block" {
-        client_shell: true, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: true,
-        runs_on_socket_thread: false, routine: false,
-    };
     WorkspaceClose(WorkspaceCloseParams) => "workspace.close" {
         client_shell: true, mutates_ui: true, changes_topology: true,
         changes_geometry: true, claims_shell_geometry: true,
@@ -226,16 +219,6 @@ define_methods! {
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    LayoutExport(LayoutExportParams) => "layout.export" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
-    LayoutApply(LayoutApplyParams) => "layout.apply" {
-        client_shell: false, mutates_ui: true, changes_topology: true,
-        changes_geometry: true, claims_shell_geometry: true,
-        runs_on_socket_thread: false, routine: false,
-    };
     LayoutSetSplitRatio(LayoutSetSplitRatioParams) => "layout.set_split_ratio" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: true, claims_shell_geometry: true,
@@ -276,13 +259,6 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
     };
-    // Kept for `events.subscribe`, whose status and scroll subscriptions
-    // sample the pane through this request.
-    PaneGet(PaneTarget) => "pane.get" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: true,
-    };
     PaneFocus(PaneTarget) => "pane.focus" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: true, claims_shell_geometry: true,
@@ -308,25 +284,10 @@ define_methods! {
         changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: true,
     };
-    PaneClearAgentAuthority(PaneClearAgentAuthorityParams) => "pane.clear_agent_authority" {
-        client_shell: false, mutates_ui: true, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: false, routine: false,
-    };
     PaneClose(PaneTarget) => "pane.close" {
         client_shell: true, mutates_ui: true, changes_topology: true,
         changes_geometry: true, claims_shell_geometry: true,
         runs_on_socket_thread: false, routine: false,
-    };
-    EventsSubscribe(EventsSubscribeParams) => "events.subscribe" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: true, routine: false,
-    };
-    EventsWait(EventsWaitParams) => "events.wait" {
-        client_shell: false, mutates_ui: false, changes_topology: false,
-        changes_geometry: false, claims_shell_geometry: false,
-        runs_on_socket_thread: true, routine: false,
     };
 }
 

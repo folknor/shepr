@@ -67,7 +67,6 @@ pub enum ResumeArgs {
     FlagValue(&'static str),
     InlineFlag(&'static str),
     Subcommand(&'static str),
-    LettaConversation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -590,14 +589,11 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["qoderclicn", "qoder", "qodercn"],
         executable: "qodercli",
         integration_target: None,
-        integration_source: Some("shepr:qodercli"),
-        reserves_native_state: true,
+        integration_source: None,
+        reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
-        resume_support: Some(ResumeSupport::new(
-            SessionRefPolicy::Id,
-            ResumeArgs::FlagValue("--resume"),
-        )),
+        resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
         integration_hook_events: &[],
@@ -608,14 +604,11 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["qwen-code", "qwen code"],
         executable: "qwen",
         integration_target: None,
-        integration_source: Some("shepr:qwen"),
-        reserves_native_state: true,
+        integration_source: None,
+        reserves_native_state: false,
         full_lifecycle_hook_authority: false,
-        session_identity_only_integration: true,
-        resume_support: Some(ResumeSupport::new(
-            SessionRefPolicy::Id,
-            ResumeArgs::FlagValue("--resume"),
-        )),
+        session_identity_only_integration: false,
+        resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
         integration_hook_events: &[],
@@ -626,14 +619,11 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["letta-code", "letta code"],
         executable: "letta",
         integration_target: None,
-        integration_source: Some("shepr:letta"),
+        integration_source: None,
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
-        session_identity_only_integration: true,
-        resume_support: Some(ResumeSupport::new(
-            SessionRefPolicy::Id,
-            ResumeArgs::LettaConversation,
-        )),
+        session_identity_only_integration: false,
+        resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
         integration_hook_events: &[],
@@ -1013,8 +1003,8 @@ mod tests {
             } else {
                 assert!(descriptor.integration_hook_events.is_empty());
             }
-            // A source without an installable integration is legitimate: it
-            // names an agent whose session reports arrive by the API alone.
+            // A source need not have an installable integration; when it is
+            // present it must still resolve back to this agent.
             if let Some(source) = descriptor.integration_source {
                 assert_eq!(
                     AgentSource::from_pair(source, descriptor.label),

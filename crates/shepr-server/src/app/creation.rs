@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use super::{App, api_helpers::pane_agent_status};
-use shepr_api::schema::{EventData, EventEnvelope};
 use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
 
@@ -168,49 +167,6 @@ impl App {
         })
     }
 
-    pub(crate) fn emit_workspace_open_events(&mut self, ws_idx: usize) {
-        let Some(workspace_info) = self.workspace_info(ws_idx) else {
-            return;
-        };
-        let Some(tab) = self.tab_info(ws_idx, 0) else {
-            return;
-        };
-        let Some(root_pane) = self.root_pane_info(ws_idx, 0) else {
-            return;
-        };
-        self.emit_event(EventEnvelope {
-            data: EventData::WorkspaceCreated {
-                workspace: workspace_info,
-            },
-        });
-        self.emit_tab_and_pane_created_events(tab, root_pane);
-        self.emit_layout_updated_event(ws_idx, 0);
-    }
-
-    pub(crate) fn emit_tab_created_events(&mut self, ws_idx: usize, tab_idx: usize) {
-        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
-            return;
-        };
-        let Some(root_pane) = self.root_pane_info(ws_idx, tab_idx) else {
-            return;
-        };
-        self.emit_tab_and_pane_created_events(tab, root_pane);
-        self.emit_layout_updated_event(ws_idx, tab_idx);
-    }
-
-    fn emit_tab_and_pane_created_events(
-        &mut self,
-        tab: shepr_api::schema::TabInfo,
-        root_pane: shepr_api::schema::PaneInfo,
-    ) {
-        self.emit_event(EventEnvelope {
-            data: EventData::TabCreated { tab },
-        });
-        self.emit_event(EventEnvelope {
-            data: EventData::PaneCreated { pane: root_pane },
-        });
-    }
-
     pub(super) fn workspace_created_result(
         &self,
         ws_idx: usize,
@@ -274,10 +230,9 @@ impl App {
             cwd: tab
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            // Runs on the server main loop once per pane for every `pane.get`,
-            // `session.snapshot` and `pane.updated` event, so the
-            // runtime accessor behind it must stay a few /proc reads and never
-            // wait on the PTY actor thread.
+            // Runs on the server main loop once per pane for every
+            // `session.snapshot`, so the runtime accessor behind it must stay a
+            // few /proc reads and never wait on the PTY actor thread.
             foreground_cwd: tab
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

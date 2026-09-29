@@ -78,62 +78,6 @@ impl AppState {
         true
     }
 
-    pub fn move_workspace_block(
-        &mut self,
-        workspace_ids: &[shepr_protocol::WorkspaceId],
-        before_workspace_id: Option<&shepr_protocol::WorkspaceId>,
-    ) -> bool {
-        let moved_ids = workspace_ids
-            .iter()
-            .collect::<std::collections::HashSet<_>>();
-        if moved_ids.is_empty()
-            || moved_ids.len() != workspace_ids.len()
-            || !workspace_ids
-                .iter()
-                .all(|id| self.workspaces.iter().any(|workspace| workspace.id == *id))
-            || before_workspace_id.is_some_and(|id| {
-                moved_ids.contains(id)
-                    || !self.workspaces.iter().any(|workspace| workspace.id == *id)
-            })
-        {
-            return false;
-        }
-
-        let mut desired_ids = self
-            .workspaces
-            .iter()
-            .filter(|workspace| !moved_ids.contains(&workspace.id))
-            .map(|workspace| workspace.id.clone())
-            .collect::<Vec<_>>();
-        let insert_idx = before_workspace_id
-            .and_then(|id| desired_ids.iter().position(|candidate| candidate == id))
-            .unwrap_or(desired_ids.len());
-        desired_ids.splice(insert_idx..insert_idx, workspace_ids.iter().cloned());
-        if self
-            .workspaces
-            .iter()
-            .map(|workspace| &workspace.id)
-            .eq(desired_ids.iter())
-        {
-            return false;
-        }
-
-        let desired_positions = desired_ids
-            .iter()
-            .enumerate()
-            .map(|(index, id)| (id.clone(), index))
-            .collect::<std::collections::HashMap<_, _>>();
-
-        self.mark_session_dirty();
-        self.workspaces.sort_by_key(|workspace| {
-            desired_positions
-                .get(&workspace.id)
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-        true
-    }
-
     pub(crate) fn terminal_ids_for_workspace(
         &self,
         ws_idx: usize,
@@ -193,8 +137,6 @@ impl AppState {
             .prepare_pane_removal(pane_id)?;
         Some(PaneRemovalPlan {
             workspace_index,
-            tab_index: workspace_plan.tab_index,
-            scope: workspace_plan.scope,
             workspace_plan,
         })
     }

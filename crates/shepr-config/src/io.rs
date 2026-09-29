@@ -49,6 +49,23 @@ impl BuildProfile {
         }
     }
 
+    /// The value a pane exports as `SHEPR_BUILD_PROFILE` to name the profile of
+    /// the server that owns it.
+    pub const fn marker(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Dev => "dev",
+        }
+    }
+
+    fn from_marker(value: &str) -> Option<Self> {
+        match value {
+            "release" => Some(Self::Release),
+            "dev" => Some(Self::Dev),
+            _ => None,
+        }
+    }
+
     /// The directory name this profile uses under the XDG runtime directory
     /// and beside the shared state directory.
     pub const fn app_dir_name(self) -> &'static str {
@@ -335,10 +352,29 @@ fn resolve_paths_from_env(
     current_dir_origin: CurrentDirOrigin,
 ) -> Result<AppPaths, Vec<String>> {
     let mut target_env_diagnostics = Vec::new();
-    let api_socket_override =
+    let mut api_socket_override =
         socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
-    let client_socket_override =
+    let mut client_socket_override =
         socket_path_override(EnvVar::SheprClientSocketPath, &mut target_env_diagnostics);
+    // A pane names the profile of the server that owns it next to the socket
+    // variables it exports. A process of another profile started in that pane
+    // would otherwise follow them to the wrong server, so it drops them. With
+    // no marker the variables came from a user or a script and apply as given.
+    match shepr_core::env::read_text(EnvVar::SheprBuildProfile) {
+        Ok(Some(marker)) => match BuildProfile::from_marker(&marker) {
+            Some(owner) if owner != profile => {
+                api_socket_override = None;
+                client_socket_override = None;
+            }
+            Some(_) => {}
+            None => target_env_diagnostics.push(format!(
+                "{} must be `release` or `dev`, got `{marker}`",
+                EnvVar::SheprBuildProfile
+            )),
+        },
+        Ok(None) => {}
+        Err(error) => target_env_diagnostics.push(error.to_string()),
+    }
     if !target_env_diagnostics.is_empty() {
         return Err(target_env_diagnostics);
     }
@@ -1309,6 +1345,70 @@ tab_bar_right = [
                 Some(std::ffi::OsStr::new(profile.app_dir_name()))
             );
         }
+    }
+
+    #[test]
+    fn socket_overrides_with_a_matching_marker_win() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
+        for profile in [BuildProfile::Release, BuildProfile::Dev] {
+            env.set(EnvVar::SheprBuildProfile, profile.marker());
+            let paths = resolve_paths_from_env(profile, CurrentDirOrigin::Process)
+                .expect("override resolves");
+            assert_eq!(
+                paths.server_address().api_socket(),
+                env.path().join("api.sock")
+            );
+            assert_eq!(
+                paths.provenance().api_socket,
+                ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn socket_overrides_with_another_profiles_marker_are_ignored() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
+        env.set(
+            EnvVar::SheprClientSocketPath,
+            env.path().join("client.sock"),
+        );
+        for (profile, owner) in [
+            (BuildProfile::Dev, BuildProfile::Release),
+            (BuildProfile::Release, BuildProfile::Dev),
+        ] {
+            env.set(EnvVar::SheprBuildProfile, owner.marker());
+            let paths =
+                resolve_paths_from_env(profile, CurrentDirOrigin::Process).expect("paths resolve");
+            let runtime = env.path().join("runtime").join(profile.app_dir_name());
+            assert_eq!(
+                paths.server_address().api_socket(),
+                runtime.join("shepr.sock")
+            );
+            assert_eq!(
+                paths.server_address().client_socket(),
+                runtime.join("shepr-client.sock")
+            );
+            assert_eq!(
+                paths.provenance().api_socket,
+                ConfigSource::EnvironmentVariable("XDG_RUNTIME_DIR".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_profile_marker_fails_resolution() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.set(EnvVar::SheprBuildProfile, "staging");
+        let errors = resolve_paths_from_env(BuildProfile::Dev, CurrentDirOrigin::Process)
+            .expect_err("an unknown marker is refused");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("SHEPR_BUILD_PROFILE") && error.contains("staging")),
+            "{errors:?}"
+        );
     }
 
     #[test]

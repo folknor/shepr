@@ -6,7 +6,7 @@ impl HeadlessServer {
         &mut self,
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
-        mut request: Box<shepr_api::schema::Request>,
+        mut request: shepr_api::schema::Request,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
@@ -109,7 +109,7 @@ impl HeadlessServer {
             | self.handle_client_shell_api_request(
                 client_id,
                 shepr_api::ApiRequestMessage {
-                    request: *request,
+                    request,
                     respond_to,
                 },
             )

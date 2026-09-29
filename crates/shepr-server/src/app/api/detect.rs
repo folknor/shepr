@@ -105,7 +105,6 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::Test,
             api_rx,
-            shepr_api::EventHub::default(),
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(name)];
         app.state.ensure_test_terminals();

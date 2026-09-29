@@ -1,14 +1,7 @@
-use super::{App, RenderDemand, api_helpers::pane_agent_status};
+use super::{App, RenderDemand};
 use shepr_mux::events::AppEvent;
 
 impl App {
-    pub(crate) fn handle_internal_event_with_render_demand(
-        &mut self,
-        ev: AppEvent,
-    ) -> RenderDemand {
-        self.handle_internal_event_with_updates_and_render(ev).1
-    }
-
     fn handle_git_status_refreshed(
         &mut self,
         results: Vec<shepr_mux::git::WorkspaceGitStatus>,
@@ -27,22 +20,15 @@ impl App {
     }
 
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
-        let _ = self.handle_internal_event_with_updates_and_render(ev);
+        let _ = self.handle_internal_event_with_render_demand(ev);
     }
 
-    pub(crate) fn handle_internal_event_with_pane_updates(
+    pub(crate) fn handle_internal_event_with_render_demand(
         &mut self,
         ev: AppEvent,
-    ) -> Vec<crate::app::actions::PaneStateUpdate> {
-        self.handle_internal_event_with_updates_and_render(ev).0
-    }
-
-    fn handle_internal_event_with_updates_and_render(
-        &mut self,
-        ev: AppEvent,
-    ) -> (Vec<crate::app::actions::PaneStateUpdate>, RenderDemand) {
+    ) -> RenderDemand {
         if matches!(&ev, AppEvent::ClipboardWrite { .. }) {
-            return (Vec::new(), RenderDemand::None);
+            return RenderDemand::None;
         }
 
         if let AppEvent::GitStatusRefreshed {
@@ -51,7 +37,7 @@ impl App {
         } = ev
         {
             let changed = self.handle_git_status_refreshed(results, cache_updates);
-            return (Vec::new(), Self::render_demand_if(changed));
+            return Self::render_demand_if(changed);
         }
 
         if let AppEvent::TabBarCommandFinished {
@@ -63,14 +49,13 @@ impl App {
             if changed {
                 self.state.mark_shell_projection_dirty();
             }
-            return (Vec::new(), Self::render_demand_if(changed));
+            return Self::render_demand_if(changed);
         }
 
         if let AppEvent::PaneDied { pane_id, .. } = &ev
-            && let Some(update) = self.state.publish_pane_process_exit_if_agent(*pane_id)
+            && self.state.publish_pane_process_exit_if_agent(*pane_id)
         {
             self.sync_full_lifecycle_authority_detection_pauses();
-            self.emit_pane_state_update(&update);
         }
 
         let pane_removal_plan = if let AppEvent::PaneDied { pane_id, .. } = &ev {
@@ -91,45 +76,9 @@ impl App {
             tracing::warn!("pane exit reached removal before its session checkpoint settled");
         }
 
-        if let AppEvent::PaneDied { pane_id, .. } = &ev
-            && let Some(plan) = &pane_removal_plan
-            && let Some(public_pane_id) = self.public_pane_id(plan.workspace_index, *pane_id)
-            && let Some(workspace_id) = self.public_workspace_id(plan.workspace_index)
-        {
-            self.emit_event(shepr_api::schema::EventEnvelope {
-                data: shepr_api::schema::EventData::PaneExited {
-                    pane_id: public_pane_id,
-                    workspace_id,
-                },
-            });
-        }
-        let mut pane_exit_layout_target = if let Some(plan) = &pane_removal_plan {
-            (plan.scope == shepr_mux::workspace::PaneRemovalScope::Pane)
-                .then_some((plan.workspace_index, plan.tab_index))
-        } else {
-            None
-        };
-        let mut pane_exit_container_events: Vec<_> = if let Some(plan) = &pane_removal_plan {
-            let events = match plan.scope {
-                shepr_mux::workspace::PaneRemovalScope::Pane => Vec::new(),
-                shepr_mux::workspace::PaneRemovalScope::Tab => {
-                    self.tab_close_events(plan.workspace_index, plan.tab_index)
-                }
-                shepr_mux::workspace::PaneRemovalScope::Workspace => {
-                    self.workspace_close_events(plan.workspace_index)
-                }
-            };
-            events
-                .into_iter()
-                .filter(|event| event.data.kind() != shepr_api::schema::EventKind::PaneClosed)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let mut detached_terminal_ids = Vec::new();
-        let pane_updates = if let AppEvent::PaneDied { pane_id, .. } = &ev {
+        if let AppEvent::PaneDied { pane_id, .. } = &ev {
             if let Some(plan) = pane_removal_plan {
                 match self.state.commit_pane_removal(&plan) {
                     crate::app::actions::PaneRemovalCommit::Removed(outcome) => {
@@ -138,22 +87,18 @@ impl App {
                     crate::app::actions::PaneRemovalCommit::Stale => {
                         // The plan was made above in this same call, so a
                         // stale one means something in between changed the
-                        // workspaces. Nothing was removed: do not announce a
-                        // layout or container change.
+                        // workspaces. Nothing was removed.
                         tracing::warn!(
                             pane = pane_id.raw(),
                             workspace_index = plan.workspace_index,
                             "PaneDied removal went stale; the dead pane stays in the layout"
                         );
-                        pane_exit_layout_target = None;
-                        pane_exit_container_events.clear();
                     }
                 }
             }
-            Vec::new()
         } else {
-            self.state.handle_app_event(ev)
-        };
+            self.state.handle_app_event(ev);
+        }
         if checkpointed_pane_exit {
             self.finish_checkpointed_pane_exit();
         }
@@ -163,17 +108,10 @@ impl App {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
-        for update in &pane_updates {
-            self.emit_pane_state_update(update);
-        }
-        if let Some((ws_idx, tab_idx)) = pane_exit_layout_target {
-            self.emit_layout_updated_event(ws_idx, tab_idx);
-        }
-        self.emit_events(pane_exit_container_events);
 
         self.shutdown_detached_terminal_runtimes(&detached_terminal_ids);
         self.state.mark_shell_projection_dirty();
-        (pane_updates, RenderDemand::Full)
+        RenderDemand::Full
     }
 
     fn render_demand_if(changed: bool) -> RenderDemand {
@@ -204,202 +142,19 @@ impl App {
         }
     }
 
-    pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
-        // Workspace positions can change between state mutation and event emission. Resolve the
-        // stable workspace identity carried by the update before building public IDs.
-        let Some(ws_idx) = self.resolve_workspace_id(&update.workspace_id) else {
-            return;
-        };
-        let Some(pane_id) = self.public_pane_id(ws_idx, update.pane_id) else {
-            return;
-        };
-        let workspace_id = update.workspace_id.clone();
-
-        if update.previous.agent_label != update.current.agent_label || update.cause.released() {
-            self.emit_event(shepr_api::schema::EventEnvelope {
-                data: shepr_api::schema::EventData::PaneAgentDetected {
-                    pane_id: pane_id.clone(),
-                    workspace_id: workspace_id.clone(),
-                    agent: update.current.agent_label.clone(),
-                    released: update.cause.released(),
-                    final_status: update
-                        .cause
-                        .released()
-                        .then(|| pane_agent_status(update.current.state)),
-                },
-            });
-        }
-
-        let previous_agent_status = pane_agent_status(update.previous.state);
-        let agent_status = pane_agent_status(update.current.state);
-
-        if previous_agent_status != agent_status {
-            self.emit_event(shepr_api::schema::EventEnvelope {
-                data: shepr_api::schema::EventData::PaneAgentStatusChanged {
-                    pane_id,
-                    workspace_id,
-                    agent_status,
-                    agent: update.current.agent_label.clone(),
-                },
-            });
-        }
-    }
-
-    pub(super) fn emit_event(&mut self, event: shepr_api::schema::EventEnvelope) {
-        self.event_hub.push(event);
-    }
-
-    pub(super) fn emit_events(&mut self, events: Vec<shepr_api::schema::EventEnvelope>) {
-        for event in events {
-            self.emit_event(event);
-        }
-    }
-
-    /// Close events for a tab and every pane in it, panes first. Removing a
-    /// container has to announce each child it takes along: subscribers
-    /// rebuild the model from these events. Public ids stop resolving once
-    /// the tab is gone, so build these before removing it and emit them after.
-    ///
-    /// The app prepares these while ids still resolve, then emits them after
-    /// the state command removes the tab or workspace.
-    pub(super) fn tab_close_events(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Vec<shepr_api::schema::EventEnvelope> {
-        use shepr_api::schema::{EventData, EventEnvelope};
-
-        let Some(tab) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs().get(tab_idx))
-        else {
-            return Vec::new();
-        };
-        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Vec::new();
-        };
-        let mut events: Vec<_> = tab
-            .layout()
-            .pane_ids()
-            .into_iter()
-            .filter_map(|pane_id| self.public_pane_id(ws_idx, pane_id))
-            .map(|pane_id| EventEnvelope {
-                data: EventData::PaneClosed {
-                    pane_id,
-                    workspace_id: workspace_id.clone(),
-                },
-            })
-            .collect();
-        if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
-            events.push(EventEnvelope {
-                data: EventData::TabClosed {
-                    tab_id,
-                    workspace_id,
-                },
-            });
-        }
-        events
-    }
-
-    /// Close events for a workspace and everything in it, children first; see
-    /// `tab_close_events`.
-    pub(super) fn workspace_close_events(
-        &self,
-        ws_idx: usize,
-    ) -> Vec<shepr_api::schema::EventEnvelope> {
-        use shepr_api::schema::{EventData, EventEnvelope};
-
-        let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return Vec::new();
-        };
-        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Vec::new();
-        };
-        let mut events: Vec<_> = (0..ws.tabs().len())
-            .flat_map(|tab_idx| self.tab_close_events(ws_idx, tab_idx))
-            .collect();
-        events.push(EventEnvelope {
-            data: EventData::WorkspaceClosed {
-                workspace_id,
-                workspace: self.workspace_info(ws_idx),
-            },
-        });
-        events
-    }
-
-    pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: shepr_core::layout::PaneId) {
-        if let Some(pane) = self.pane_info(ws_idx, pane_id) {
-            self.emit_event(shepr_api::schema::EventEnvelope {
-                data: shepr_api::schema::EventData::PaneUpdated { pane },
-            });
-        }
-    }
-
     pub(crate) fn sync_focus_events(&mut self) {
         self.sync_focus_events_with_outer_event(None);
     }
 
-    pub(crate) fn accept_current_focus_without_events(&mut self) {
+    /// Records the current focus as already seen, so the next sync sends no
+    /// focus transition to the panes.
+    pub(crate) fn accept_current_focus(&mut self) {
         self.last_focus = self.state.active_index().and_then(|idx| {
             self.state
                 .workspaces
                 .get(idx)
                 .map(|workspace| (idx, workspace.focused_pane_id()))
         });
-    }
-
-    pub(crate) fn accept_current_focus_with_api_events(&mut self) {
-        let current_focus = self.state.active_index().and_then(|idx| {
-            self.state
-                .workspaces
-                .get(idx)
-                .map(|workspace| (idx, workspace.focused_pane_id()))
-        });
-        if current_focus == self.last_focus {
-            return;
-        }
-        self.last_focus = current_focus;
-        if let Some((ws_idx, pane_id)) = current_focus {
-            self.emit_focus_api_events(ws_idx, pane_id);
-        }
-    }
-
-    pub(crate) fn emit_focus_api_events(
-        &mut self,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) {
-        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return;
-        };
-        self.emit_event(shepr_api::schema::EventEnvelope {
-            data: shepr_api::schema::EventData::WorkspaceFocused {
-                workspace_id: workspace_id.clone(),
-            },
-        });
-        if let Some(tab_id) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| self.public_tab_id(ws_idx, ws.active_tab_index()))
-        {
-            self.emit_event(shepr_api::schema::EventEnvelope {
-                data: shepr_api::schema::EventData::TabFocused {
-                    tab_id,
-                    workspace_id: workspace_id.clone(),
-                },
-            });
-        }
-        if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
-            self.emit_event(shepr_api::schema::EventEnvelope {
-                data: shepr_api::schema::EventData::PaneFocused {
-                    pane_id: public_pane_id,
-                    workspace_id,
-                },
-            });
-        }
     }
 
     fn sync_focus_events_with_outer_event(&mut self, outer_event: Option<shepr_vt::FocusEvent>) {
@@ -428,7 +183,6 @@ impl App {
                 }
             });
             self.send_pane_focus_event(ws_idx, pane_id, event);
-            self.emit_focus_api_events(ws_idx, pane_id);
         }
 
         self.last_focus = current_focus;

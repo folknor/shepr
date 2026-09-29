@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use shepr_protocol::PublicPaneId;
 
-use super::events::EventEnvelope;
 use super::panes::{
     LayoutDescription, PaneFocusDirectionResult, PaneInfo, PaneResizeResult, PaneSwapResult,
     PaneTextPoint, PaneTextRange, PaneZoomResult,
@@ -80,12 +79,6 @@ pub enum ResponseResult {
     PaneZoom {
         zoom: PaneZoomResult,
     },
-    LayoutExport {
-        layout: LayoutDescription,
-    },
-    LayoutApply {
-        layout: LayoutDescription,
-    },
     LayoutSplitRatioSet {
         layout: LayoutDescription,
     },
@@ -121,10 +114,6 @@ pub enum ResponseResult {
     },
     DetectExplain {
         explain: serde_json::Value,
-    },
-    SubscriptionStarted {},
-    WaitMatched {
-        event: EventEnvelope,
     },
     /// Acknowledgement for the client-shell surface interest lease. Its revision-bearing
     /// result can establish an activation floor.

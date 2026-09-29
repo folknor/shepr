@@ -1,7 +1,7 @@
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::detect::AgentState;
 use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
 use shepr_mux::git::WorkspaceGitStatus;
@@ -20,39 +20,20 @@ fn public_tab_id_for_index(
     Some(shepr_protocol::PublicTabId::new(&ws.id, tab_number))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneStateSnapshot {
-    pub agent_label: Option<String>,
-    pub known_agent: Option<Agent>,
-    pub state: AgentState,
-}
-
+/// What applying an event did to a terminal's effective agent state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneStateCause {
-    StateChanged,
+pub enum StateUpdate {
+    /// The effective state did not change.
+    Unchanged,
+    /// The effective state changed.
+    Changed,
+    /// The agent was released from the terminal.
     Released,
-}
-
-impl PaneStateCause {
-    pub fn released(self) -> bool {
-        matches!(self, Self::Released)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneStateUpdate {
-    pub pane_id: PaneId,
-    pub workspace_id: shepr_protocol::WorkspaceId,
-    pub previous: PaneStateSnapshot,
-    pub current: PaneStateSnapshot,
-    pub cause: PaneStateCause,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneRemovalPlan {
     pub(crate) workspace_index: usize,
-    pub(crate) tab_index: usize,
-    pub(crate) scope: PaneRemovalScope,
     workspace_plan: WorkspacePaneRemovalPlan,
 }
 

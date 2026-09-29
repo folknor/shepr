@@ -759,12 +759,7 @@ mod tests {
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            shepr_api::EventHub::default(),
-        )
+        App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx)
     }
 
     // Status commands are shell command lines, since production runs them

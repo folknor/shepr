@@ -2,8 +2,7 @@ use shepr_api::error::{ApiErrorCode, ApiResult};
 
 use crate::app::App;
 use shepr_api::schema::{
-    EventData, EventEnvelope, ResponseResult, TabCreateParams, TabMoveParams, TabRenameParams,
-    TabTarget,
+    ResponseResult, TabCreateParams, TabMoveParams, TabRenameParams, TabTarget,
 };
 
 use super::super::api_helpers::{active_workspace_not_found, tab_not_found, workspace_not_found};
@@ -82,7 +81,6 @@ impl App {
                     }
                 }
                 self.schedule_session_save();
-                self.emit_tab_created_events(ws_idx, tab_idx);
                 match self.tab_created_result(ws_idx, tab_idx) {
                     Some(result) => success(result),
                     None => failure(ApiErrorCode::TabCreateFailed, "new tab is unavailable"),
@@ -111,27 +109,17 @@ impl App {
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
             return Err(tab_not_found(&params.tab_id));
         };
-        let Some(public_workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Err(tab_not_found(&params.tab_id));
-        };
         let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
             return Err(tab_not_found(&params.tab_id));
         };
         let Some(workspace) = self.state.workspaces.get_mut(ws_idx) else {
             return Err(tab_not_found(&params.tab_id));
         };
-        if !workspace.set_tab_custom_name(tab_idx, Some(params.label.clone())) {
+        if !workspace.set_tab_custom_name(tab_idx, Some(params.label)) {
             return Err(tab_not_found(&params.tab_id));
         }
         crate::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
-        self.emit_event(EventEnvelope {
-            data: EventData::TabRenamed {
-                tab_id: tab_id.clone(),
-                workspace_id: public_workspace_id,
-                label: params.label,
-            },
-        });
         let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
             return Err(tab_not_found(&params.tab_id));
         };
@@ -153,12 +141,6 @@ impl App {
             );
         }
 
-        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
-            return Err(tab_not_found(&params.tab_id));
-        };
-        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Err(tab_not_found(&params.tab_id));
-        };
         let insert_index = params.insert_index;
         let moved = self
             .state
@@ -169,14 +151,6 @@ impl App {
         if moved {
             self.state.refresh_active_tab_id();
             self.schedule_session_save();
-            self.emit_event(EventEnvelope {
-                data: EventData::TabMoved {
-                    tab_id,
-                    workspace_id,
-                    insert_index,
-                    tabs: tabs.clone(),
-                },
-            });
         }
 
         success(ResponseResult::TabList { tabs })
@@ -192,10 +166,6 @@ impl App {
         let Some(plan) = self.state.prepare_tab_removal(ws_idx, tab_idx) else {
             return Err(tab_not_found(&target.tab_id));
         };
-        let close_events = match plan.scope {
-            crate::app::actions::TabRemovalScope::Tab => self.tab_close_events(ws_idx, tab_idx),
-            crate::app::actions::TabRemovalScope::Workspace => self.workspace_close_events(ws_idx),
-        };
         let crate::app::actions::TabRemovalCommit::Removed(outcome) =
             self.state.commit_tab_removal(&plan)
         else {
@@ -206,7 +176,6 @@ impl App {
         };
         self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         self.schedule_session_save();
-        self.emit_events(close_events);
 
         success(ResponseResult::Ok {})
     }
@@ -221,9 +190,6 @@ impl App {
 }
 
 #[cfg(test)]
-use shepr_api::schema::EventKind;
-
-#[cfg(test)]
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
@@ -233,126 +199,53 @@ mod tests {
     use shepr_mux::workspace::Workspace;
 
     #[test]
-    fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {
-        let event_hub = shepr_api::EventHub::default();
+    fn api_tab_close_last_tab_closes_workspace() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub.clone(),
-        );
+        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.workspaces = vec![Workspace::test_new("tabs")];
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
-        let workspace_id = app.public_workspace_id(0).expect("test precondition");
-        let root_pane = app.state.workspaces[0].tabs()[0].root_pane();
-        let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
         let response = app.handle_tab_close(&TabTarget {
-            tab_id: tab_id.clone().to_string(),
+            tab_id: tab_id.to_string(),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert!(app.state.workspaces.is_empty());
         assert!(app.state.active_index().is_none());
-        let events = event_hub.events_after(0);
-        assert_eq!(
-            events
-                .iter()
-                .map(|(_, event)| event.data.kind())
-                .collect::<Vec<_>>(),
-            [
-                EventKind::PaneClosed,
-                EventKind::TabClosed,
-                EventKind::WorkspaceClosed
-            ]
-        );
-        assert!(matches!(
-            &events[0].1.data,
-            EventData::PaneClosed {
-                pane_id: closed_pane_id,
-                workspace_id: closed_workspace_id,
-            } if closed_pane_id == &pane_id && closed_workspace_id == &workspace_id
-        ));
-        assert!(matches!(
-            &events[1].1.data,
-            EventData::TabClosed {
-                tab_id: closed_tab_id,
-                workspace_id: closed_workspace_id,
-            } if closed_tab_id == &tab_id && closed_workspace_id == &workspace_id
-        ));
-        assert!(matches!(
-            &events[2].1.data,
-            EventData::WorkspaceClosed {
-                workspace_id: closed_workspace_id,
-                workspace: Some(workspace),
-            } if closed_workspace_id == &workspace_id
-                && workspace.workspace_id == workspace_id
-        ));
     }
 
     #[test]
-    fn api_tab_close_announces_every_pane_it_removes() {
-        let event_hub = shepr_api::EventHub::default();
+    fn api_tab_close_removes_every_pane_in_the_tab() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub.clone(),
-        );
+        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         let mut workspace = Workspace::test_new("tabs");
-        let split = workspace.test_split(shepr_core::layout::Direction::Horizontal);
+        workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.test_add_tab(Some("survivor"));
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
-        let root = app.state.workspaces[0].tabs()[0].root_pane();
-        let closed_panes = [
-            app.public_pane_id(0, root).expect("test precondition"),
-            app.public_pane_id(0, split).expect("test precondition"),
-        ];
+        let survivor_root = app.state.workspaces[0].tabs()[1].root_pane();
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
 
         let response = app.handle_tab_close(&TabTarget {
-            tab_id: tab_id.clone().to_string(),
+            tab_id: tab_id.to_string(),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);
-        let events = event_hub.events_after(0);
-        let mut pane_closed = events
-            .iter()
-            .filter_map(|(_, event)| match &event.data {
-                EventData::PaneClosed { pane_id, .. } => Some(pane_id.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        pane_closed.sort();
-        let mut expected = closed_panes.to_vec();
-        expected.sort();
-        assert_eq!(pane_closed, expected);
-        assert!(matches!(
-            &events.last().expect("tab close event").1.data,
-            EventData::TabClosed { tab_id: closed, .. } if closed == &tab_id
-        ));
+        assert_eq!(app.state.workspaces[0].tabs()[0].root_pane(), survivor_root);
+        assert_eq!(app.state.workspaces[0].tabs()[0].panes().len(), 1);
     }
 
     #[test]
     fn api_tab_move_reorders_tabs_in_target_workspace() {
-        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub.clone(),
-        );
+        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         let mut workspace = Workspace::test_new("tabs");
         workspace.test_add_tab(Some("two"));
         workspace.test_add_tab(Some("three"));
@@ -376,32 +269,13 @@ mod tests {
             tabs[2].tab_id,
             app.public_tab_id(0, 2).expect("test precondition")
         );
-        let events = event_hub.events_after(0);
-        assert!(events.iter().any(|(_, event)| {
-            matches!(
-                &event.data,
-                EventData::TabMoved {
-                    tab_id,
-                    workspace_id,
-                    insert_index: 3,
-                    tabs,
-                } if tab_id == &moved_id
-                    && workspace_id == &app.public_workspace_id(0).expect("test precondition")
-                    && tabs[2].tab_id == moved_id
-            )
-        }));
+        assert_eq!(tabs[2].tab_id, moved_id);
     }
 
     #[tokio::test]
     async fn tab_create_follows_cached_focused_pane_cwd_without_runtime() {
-        let event_hub = shepr_api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-            event_hub,
-        );
+        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
         let workspace = Workspace::test_new("tabs");

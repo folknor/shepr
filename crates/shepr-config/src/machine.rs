@@ -127,20 +127,29 @@ impl Deref for SshTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MachineLabelError {
     Blank,
+    ControlCharacters,
+    SurroundingWhitespace,
 }
 
 impl fmt::Display for MachineLabelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Blank => formatter.write_str("machine label must not be blank"),
+            Self::ControlCharacters => {
+                formatter.write_str("machine label must not contain control characters")
+            }
+            Self::SurroundingWhitespace => {
+                formatter.write_str("machine label must not start or end with whitespace")
+            }
         }
     }
 }
 
 impl std::error::Error for MachineLabelError {}
 
-/// The identifier of a configured machine: a nonblank string, kept exactly as
-/// written.
+/// The identifier of a configured machine: a nonblank string without control
+/// characters or leading and trailing whitespace, kept exactly as written.
+/// Inner spaces and non-ASCII characters are allowed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MachineLabel(String);
 
@@ -149,6 +158,12 @@ impl MachineLabel {
         let value = value.into();
         if value.trim().is_empty() {
             return Err(MachineLabelError::Blank);
+        }
+        if value.chars().any(char::is_control) {
+            return Err(MachineLabelError::ControlCharacters);
+        }
+        if value.trim() != value {
+            return Err(MachineLabelError::SurroundingWhitespace);
         }
         Ok(Self(value))
     }
@@ -216,5 +231,62 @@ mod tests {
         let label = MachineLabel::parse("build").expect("a nonblank label");
         assert_eq!(label.as_str(), "build");
         assert_eq!(label.to_string(), "build");
+    }
+
+    #[test]
+    fn machine_label_rejects_control_characters() {
+        for label in [
+            "a\nb",
+            "a\tb",
+            "a\u{0}b",
+            "a\u{7f}b",
+            "a\u{9b}b",
+            "\u{1b}[31mred",
+        ] {
+            assert_eq!(
+                MachineLabel::parse(label),
+                Err(MachineLabelError::ControlCharacters),
+                "{label:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn machine_label_rejects_leading_or_trailing_whitespace() {
+        for label in [
+            " build",
+            "build ",
+            " build ",
+            "\u{a0}build",
+            "build\u{2003}",
+        ] {
+            assert_eq!(
+                MachineLabel::parse(label),
+                Err(MachineLabelError::SurroundingWhitespace),
+                "{label:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn machine_label_keeps_inner_spaces_and_non_ascii_letters() {
+        let label = MachineLabel::parse("Bygg server \u{e6}\u{f8}\u{e5} \u{4e2d}\u{6587}")
+            .expect("inner spaces and non-ASCII letters are valid");
+        assert_eq!(
+            label.as_str(),
+            "Bygg server \u{e6}\u{f8}\u{e5} \u{4e2d}\u{6587}"
+        );
+    }
+
+    #[test]
+    fn machine_label_error_messages_name_the_rule() {
+        assert_eq!(
+            MachineLabelError::ControlCharacters.to_string(),
+            "machine label must not contain control characters"
+        );
+        assert_eq!(
+            MachineLabelError::SurroundingWhitespace.to_string(),
+            "machine label must not start or end with whitespace"
+        );
     }
 }

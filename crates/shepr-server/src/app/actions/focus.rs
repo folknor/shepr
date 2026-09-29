@@ -102,28 +102,6 @@ impl AppState {
         Some(outcome)
     }
 
-    pub(crate) fn commit_layout_tab_creation(
-        &mut self,
-        workspace_index: usize,
-        tab: shepr_mux::workspace::Tab,
-        terminals: Vec<shepr_mux::terminal::TerminalState>,
-        focus: bool,
-    ) -> Option<shepr_mux::workspace::TabCreationOutcome> {
-        let outcome = self
-            .workspaces
-            .get_mut(workspace_index)?
-            .commit_new_tab(tab)?;
-        for terminal in terminals {
-            self.terminals.insert(terminal.id.clone(), terminal);
-        }
-        if focus {
-            self.switch_workspace_tab(workspace_index, outcome.tab_index);
-            self.mode = Mode::Terminal;
-        }
-        self.mark_session_dirty();
-        Some(outcome)
-    }
-
     pub(crate) fn commit_pane_split(
         &mut self,
         workspace_index: usize,

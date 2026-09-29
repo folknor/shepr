@@ -29,6 +29,7 @@ fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
         | EnvVar::SheprClientSocketPath
         | EnvVar::SheprPaneId
         | EnvVar::SheprEnv
+        | EnvVar::SheprBuildProfile
         | EnvVar::SheprLog
         | EnvVar::Home
         | EnvVar::XdgConfigHome
@@ -201,6 +202,12 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     }
     cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
     cmd.env(EnvVar::SheprSocketPath, &launch_env.api_socket_path);
+    // Names the profile whose server owns this pane, so a process of another
+    // profile started inside it does not follow the socket variables above.
+    cmd.env(
+        EnvVar::SheprBuildProfile,
+        shepr_config::BuildProfile::current().marker(),
+    );
     cmd.env_remove(ChildEnv::SheprBinPath);
     if let Ok(executable) = shepr_platform::launch_executable() {
         cmd.env(ChildEnv::SheprBinPath, executable);

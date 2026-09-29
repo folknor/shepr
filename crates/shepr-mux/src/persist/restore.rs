@@ -1730,17 +1730,17 @@ mod tests {
     #[test]
     fn restore_rehydrates_agent_session_metadata() {
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: "shepr:letta".into(),
-            agent: shepr_agent::agent::Agent::Letta,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("letta-session")
+            source: "shepr:codex".into(),
+            agent: shepr_agent::agent::Agent::Codex,
+            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
                 .expect("test precondition"),
         };
 
         let preserved = restored_terminal_agent_session(Some(&session), false)
             .expect("restore should preserve metadata");
-        assert_eq!(preserved.source, "shepr:letta");
-        assert_eq!(preserved.agent, "letta");
-        assert_eq!(preserved.session_ref.value(), "letta-session");
+        assert_eq!(preserved.source, "shepr:codex");
+        assert_eq!(preserved.agent, "codex");
+        assert_eq!(preserved.session_ref.value(), "codex-session");
     }
 
     #[test]

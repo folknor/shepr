@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::Visitor};
 
 use crate::limits::{MAX_SESSION_ID_LEN, MAX_SESSION_PATH_LEN};
 
-use super::{Agent, AgentSource, CONVERSATION_FLAG, ResumeArgs, SessionRefPolicy};
+use super::{Agent, AgentSource, ResumeArgs, SessionRefPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,15 +36,11 @@ pub struct SessionId(String);
 #[serde(transparent)]
 pub struct AbsoluteSessionPath(String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct LettaAgentId(String);
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AgentSessionRef {
     Id(SessionId),
     Path(AbsoluteSessionPath),
-    LettaDefaultAgent(LettaAgentId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -89,24 +85,6 @@ impl AbsoluteSessionPath {
     }
 }
 
-impl LettaAgentId {
-    fn new(mut value: String) -> Option<Self> {
-        if !valid_session_id(&value) || value.starts_with('-') {
-            return None;
-        }
-        value.insert_str(0, "default:");
-        Some(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn id(&self) -> &str {
-        self.0.strip_prefix("default:").unwrap_or_default()
-    }
-}
-
 impl AgentSessionRef {
     pub fn id(value: impl Into<String>) -> Option<Self> {
         Some(Self::Id(SessionId::new(value.into())?))
@@ -116,20 +94,9 @@ impl AgentSessionRef {
         Some(Self::Path(AbsoluteSessionPath::new(value.into())?))
     }
 
-    fn for_agent_id(agent: Agent, value: String) -> Option<Self> {
-        if agent == Agent::Letta
-            && let Some(agent_id) = value.strip_prefix("default:")
-        {
-            return Some(Self::LettaDefaultAgent(LettaAgentId::new(
-                agent_id.to_owned(),
-            )?));
-        }
-        Self::id(value)
-    }
-
     pub const fn kind(&self) -> AgentSessionRefKind {
         match self {
-            Self::Id(_) | Self::LettaDefaultAgent(_) => AgentSessionRefKind::Id,
+            Self::Id(_) => AgentSessionRefKind::Id,
             Self::Path(_) => AgentSessionRefKind::Path,
         }
     }
@@ -142,7 +109,6 @@ impl AgentSessionRef {
         match self {
             Self::Id(session) => session.as_str(),
             Self::Path(path) => path.as_str(),
-            Self::LettaDefaultAgent(agent_id) => agent_id.as_str(),
         }
     }
 
@@ -155,12 +121,9 @@ impl AgentSessionRef {
             return false;
         };
         match (policy, self) {
-            (SessionRefPolicy::Id, Self::Id(session)) => {
-                agent != Agent::Letta || !session.as_str().starts_with("default:")
-            }
-            (SessionRefPolicy::Id, Self::LettaDefaultAgent(_)) => agent == Agent::Letta,
-            (SessionRefPolicy::IdOrPath, Self::Id(_) | Self::Path(_)) => true,
-            _ => false,
+            (SessionRefPolicy::Id, Self::Id(_))
+            | (SessionRefPolicy::IdOrPath, Self::Id(_) | Self::Path(_)) => true,
+            (SessionRefPolicy::Id, Self::Path(_)) => false,
         }
     }
 }
@@ -208,38 +171,6 @@ impl<'de> Deserialize<'de> for AbsoluteSessionPath {
             }
         }
         deserializer.deserialize_str(PathVisitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for LettaAgentId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct AgentIdVisitor;
-        impl Visitor<'_> for AgentIdVisitor {
-            type Value = LettaAgentId;
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a valid Letta agent ID")
-            }
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                LettaAgentId::new(value.to_owned())
-                    .ok_or_else(|| E::custom("invalid Letta agent ID"))
-            }
-        }
-        deserializer.deserialize_str(AgentIdVisitor)
-    }
-}
-
-impl Serialize for LettaAgentId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.id())
     }
 }
 
@@ -294,10 +225,11 @@ pub fn session_ref_from_report(
     let agent = source.agent()?;
     let policy = agent.descriptor().resume_support?.session_ref_policy;
     match (policy, agent_session_path, agent_session_id) {
-        (SessionRefPolicy::IdOrPath, Some(path), agent_session_id) => AgentSessionRef::path(path)
-            .or_else(|| agent_session_id.and_then(|id| AgentSessionRef::for_agent_id(agent, id))),
+        (SessionRefPolicy::IdOrPath, Some(path), agent_session_id) => {
+            AgentSessionRef::path(path).or_else(|| agent_session_id.and_then(AgentSessionRef::id))
+        }
         (SessionRefPolicy::IdOrPath, None, Some(id)) | (SessionRefPolicy::Id, _, Some(id)) => {
-            AgentSessionRef::for_agent_id(agent, id)
+            AgentSessionRef::id(id)
         }
         _ => None,
     }
@@ -328,16 +260,6 @@ pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
         }
         (ResumeArgs::Subcommand(subcommand), reference) => {
             vec![executable, subcommand.to_owned(), reference.value()]
-        }
-        (ResumeArgs::LettaConversation, AgentSessionRef::LettaDefaultAgent(agent_id)) => vec![
-            executable,
-            CONVERSATION_FLAG.into(),
-            "default".into(),
-            "--agent".into(),
-            agent_id.id().to_owned(),
-        ],
-        (ResumeArgs::LettaConversation, reference) => {
-            vec![executable, CONVERSATION_FLAG.into(), reference.value()]
         }
     };
     AgentResumePlan::with_argv(session, argv)
@@ -433,7 +355,7 @@ mod tests {
         let source = AgentSource::from_pair(source, agent_label)?;
         let agent = source.agent()?;
         let session_ref = match kind {
-            AgentSessionRefKind::Id => AgentSessionRef::for_agent_id(agent, value.to_owned())?,
+            AgentSessionRefKind::Id => AgentSessionRef::id(value)?,
             AgentSessionRefKind::Path => AgentSessionRef::path(value.to_owned())?,
         };
         PersistedAgentSession::new(source, agent, session_ref)
@@ -562,26 +484,6 @@ mod tests {
         );
         assert_eq!(
             plan_for_labels(
-                "shepr:qodercli",
-                "qodercli",
-                &AgentSessionRef::id("qoder-session").expect("test precondition")
-            )
-            .expect("test precondition")
-            .argv,
-            vec!["qodercli", "--resume", "qoder-session"]
-        );
-        assert_eq!(
-            plan_for_labels(
-                "shepr:qwen",
-                "qwen",
-                &AgentSessionRef::id("qwen-session").expect("test precondition")
-            )
-            .expect("test precondition")
-            .argv,
-            vec!["qwen", "--resume", "qwen-session"]
-        );
-        assert_eq!(
-            plan_for_labels(
                 "shepr:kilo",
                 "kilo",
                 &AgentSessionRef::id("kilo-session").expect("test precondition")
@@ -619,40 +521,6 @@ mod tests {
             .expect("test precondition")
             .argv,
             vec!["grok", "--resume", "grok-session"]
-        );
-        assert_eq!(
-            plan_for_labels(
-                "shepr:letta",
-                "letta",
-                &AgentSessionRef::id("conversation-123").expect("test precondition")
-            )
-            .expect("test precondition")
-            .argv,
-            vec!["letta", "--conversation", "conversation-123"]
-        );
-        assert_eq!(
-            plan_for_labels(
-                "shepr:letta",
-                "letta",
-                &session_ref_from_report(
-                    "shepr:letta",
-                    "letta",
-                    Some("default:agent-123".into()),
-                    None
-                )
-                .expect("test precondition")
-            )
-            .expect("test precondition")
-            .argv,
-            vec!["letta", "--conversation", "default", "--agent", "agent-123"]
-        );
-        assert!(
-            plan_for_labels(
-                "shepr:letta",
-                "letta",
-                &AgentSessionRef::id("default:").expect("test precondition")
-            )
-            .is_none()
         );
     }
 
@@ -785,17 +653,13 @@ mod tests {
         assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
         assert_eq!(session_ref.value_str(), "kilo-id");
 
-        let session_ref =
-            session_ref_from_report("shepr:qodercli", "qodercli", Some("qoder-id".into()), None)
-                .expect("test precondition");
-        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value_str(), "qoder-id");
-
-        let session_ref =
-            session_ref_from_report("shepr:qwen", "qwen", Some("qwen-id".into()), None)
-                .expect("test precondition");
-        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value_str(), "qwen-id");
+        for (source, label) in [
+            ("shepr:qodercli", "qodercli"),
+            ("shepr:qwen", "qwen"),
+            ("shepr:letta", "letta"),
+        ] {
+            assert!(session_ref_from_report(source, label, Some("id".into()), None).is_none());
+        }
 
         let session_ref = session_ref_from_report("shepr:agy", "agy", Some("agy-id".into()), None)
             .expect("test precondition");
@@ -901,8 +765,6 @@ mod tests {
         }
         // A value only has to avoid a leading dash; dashes inside are fine.
         assert!(AgentSessionRef::id("abc-def").is_some());
-        let letta_flag = AgentSessionRef::id("default:--yolo").expect("valid ordinary ID");
-        assert!(plan_for_labels("shepr:letta", "letta", &letta_flag).is_none());
     }
 
     #[test]

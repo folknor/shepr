@@ -465,7 +465,6 @@ mod tests {
             &shepr_config::Config::default(),
             app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
-            shepr_api::EventHub::default(),
         );
         let mut first = shepr_mux::workspace::Workspace::test_new("first");
         // `test_new` always sets a custom name for identification; clear it

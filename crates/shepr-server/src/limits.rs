@@ -46,10 +46,6 @@ pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
 /// this bounds both launch latency and repeated work.
 pub(crate) const PENDING_AGENT_RESUME_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
-/// A layout accepts a bounded number of panes to limit each apply operation's work.
-pub(crate) const MAX_LAYOUT_PANES: usize = 24;
-/// A layout accepts a bounded split depth to limit recursive walks.
-pub(crate) const MAX_LAYOUT_DEPTH: usize = 16;
 /// Refuse oversized copy-mode queries to bound search work per request.
 pub(crate) const MAX_QUERY_BYTES: usize = 4096;
 /// Limit copy-mode matches to bound each response.

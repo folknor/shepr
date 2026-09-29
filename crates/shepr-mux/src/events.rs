@@ -76,12 +76,6 @@ pub enum AppEvent {
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
     },
-    /// Hook authority was explicitly cleared for a pane.
-    HookAuthorityCleared {
-        pane_id: PaneId,
-        source: Option<String>,
-        seq: Option<u64>,
-    },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it through shepr's own clipboard writer.
     ClipboardWrite { content: Vec<u8> },

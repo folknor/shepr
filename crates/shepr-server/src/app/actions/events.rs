@@ -55,7 +55,9 @@ impl AppState {
         changed
     }
 
-    pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
+    /// Applies one state-level event and reports what it did to the terminal's
+    /// effective agent state.
+    pub fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
         let now = self.clock_now;
         match event {
             AppEvent::PaneDied { pane_id, .. } => {
@@ -65,18 +67,15 @@ impl AppState {
                     pane = pane_id.raw(),
                     "PaneDied reached AppState::handle_app_event; the pane is not removed here"
                 );
-                Vec::new()
+                StateUpdate::Unchanged
             }
             AppEvent::AgentProcessDetected {
                 pane_id,
                 agent,
                 observed_at,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    Some(terminal.set_detected_agent_process_at(agent, observed_at))
-                })
-                .into_iter()
-                .collect(),
+            } => self.update_terminal_state(pane_id, |terminal| {
+                Some(terminal.set_detected_agent_process_at(agent, observed_at))
+            }),
             AppEvent::StateChanged {
                 pane_id,
                 agent,
@@ -84,18 +83,15 @@ impl AppState {
                 visible_blocker,
                 process_exited,
                 observed_at,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    Some(terminal.set_detected_state_with_screen_signals_at(
-                        agent,
-                        state,
-                        visible_blocker,
-                        process_exited,
-                        observed_at,
-                    ))
-                })
-                .into_iter()
-                .collect(),
+            } => self.update_terminal_state(pane_id, |terminal| {
+                Some(terminal.set_detected_state_with_screen_signals_at(
+                    agent,
+                    state,
+                    visible_blocker,
+                    process_exited,
+                    observed_at,
+                ))
+            }),
             AppEvent::HookStateReported {
                 pane_id,
                 source,
@@ -118,8 +114,6 @@ impl AppState {
                             now,
                         )
                     })
-                    .into_iter()
-                    .collect()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
                         terminal.set_hook_authority_at(
@@ -132,8 +126,6 @@ impl AppState {
                             now,
                         )
                     })
-                    .into_iter()
-                    .collect()
                 }
             }
             AppEvent::AgentSessionReported {
@@ -143,75 +135,68 @@ impl AppState {
                 seq,
                 session_ref,
                 session_start_source,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_session_ref_for_typed_start_source_at(
-                        source,
-                        agent_label,
-                        session_ref,
-                        seq,
-                        session_start_source,
-                        now,
-                    )
-                })
-                .into_iter()
-                .collect(),
-            AppEvent::HookAuthorityCleared {
-                pane_id,
-                source,
-                seq,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    terminal.clear_hook_authority_with_mutation_at(source.as_deref(), seq, now)
-                })
-                .into_iter()
-                .collect(),
+            } => self.update_terminal_state(pane_id, |terminal| {
+                terminal.set_agent_session_ref_for_typed_start_source_at(
+                    source,
+                    agent_label,
+                    session_ref,
+                    seq,
+                    session_start_source,
+                    now,
+                )
+            }),
             // Handled before this state-only handler, which keeps them for
             // AppEvent exhaustiveness: a clipboard write is a host-local effect
             // the HeadlessServer forwards to the foreground client, and git and
             // tab-bar results are applied by the App's internal-event handler.
             AppEvent::ClipboardWrite { .. }
             | AppEvent::GitStatusRefreshed { .. }
-            | AppEvent::TabBarCommandFinished { .. } => Vec::new(),
+            | AppEvent::TabBarCommandFinished { .. } => StateUpdate::Unchanged,
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
                     ws.pane_state(pane_id)
                         .map(|pane| pane.attached_terminal_id.clone())
                 }) else {
-                    return Vec::new();
+                    return StateUpdate::Unchanged;
                 };
                 let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
-                    return Vec::new();
+                    return StateUpdate::Unchanged;
                 };
                 if terminal.cwd() != cwd.as_path() {
                     terminal.set_cwd(cwd);
                     self.mark_session_dirty();
                 }
-                Vec::new()
+                StateUpdate::Unchanged
             }
         }
     }
 
-    pub(super) fn update_terminal_state<F>(
-        &mut self,
-        pane_id: PaneId,
-        update: F,
-    ) -> Option<PaneStateUpdate>
+    /// Applies `update` to the pane's terminal and reports what it did to the
+    /// terminal's effective agent state.
+    pub(super) fn update_terminal_state<F>(&mut self, pane_id: PaneId, update: F) -> StateUpdate
     where
         F: FnOnce(&mut shepr_mux::terminal::TerminalState) -> Option<TerminalStateMutation>,
     {
-        let ws_idx = self
+        let Some(ws_idx) = self
             .workspaces
             .iter()
-            .position(|ws| ws.pane_state(pane_id).is_some())?;
-        let workspace_id = self.workspaces[ws_idx].id.clone();
-        let terminal_id = self.workspaces[ws_idx]
-            .pane_state(pane_id)?
-            .attached_terminal_id
-            .clone();
+            .position(|ws| ws.pane_state(pane_id).is_some())
+        else {
+            return StateUpdate::Unchanged;
+        };
+        let Some(terminal_id) = self.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .map(|pane| pane.attached_terminal_id.clone())
+        else {
+            return StateUpdate::Unchanged;
+        };
         let (mutation, unchanged_change) = {
-            let terminal = self.terminals.get_mut(&terminal_id)?;
-            let mutation = update(terminal)?;
+            let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+                return StateUpdate::Unchanged;
+            };
+            let Some(mutation) = update(terminal) else {
+                return StateUpdate::Unchanged;
+            };
             let unchanged_change = mutation
                 .agent_released
                 .then(|| terminal.unchanged_effective_state_change());
@@ -221,42 +206,19 @@ impl AppState {
             self.mark_session_dirty();
         }
         let agent_released = mutation.agent_released;
-        let change = mutation.effective_state_change.or(unchanged_change)?;
-        self.record_agent_state_change_seq(&terminal_id, &change);
-        let update = PaneStateUpdate {
-            pane_id,
-            workspace_id,
-            previous: PaneStateSnapshot {
-                agent_label: change.previous_agent_label.clone(),
-                known_agent: change.previous_known_agent,
-                state: change.previous_state,
-            },
-            current: PaneStateSnapshot {
-                agent_label: if agent_released {
-                    change.previous_agent_label.clone()
-                } else {
-                    change.agent_label.clone()
-                },
-                known_agent: if agent_released {
-                    change.previous_known_agent
-                } else {
-                    change.known_agent
-                },
-                state: change.state,
-            },
-            cause: if agent_released {
-                PaneStateCause::Released
-            } else {
-                PaneStateCause::StateChanged
-            },
+        let Some(change) = mutation.effective_state_change.or(unchanged_change) else {
+            return StateUpdate::Unchanged;
         };
-        Some(update)
+        self.record_agent_state_change_seq(&terminal_id, &change);
+        if agent_released {
+            StateUpdate::Released
+        } else {
+            StateUpdate::Changed
+        }
     }
 
-    /// The old background-completion predicate only populated the removed
-    /// completion sequence; it had no notification caller. Pane status is now
-    /// the current state directly, while state-change sequences remain so API
-    /// waiters and endpoint agent sorting can observe transitions between
+    /// Pane status is the current state directly; state-change sequences
+    /// remain so endpoint agent sorting can observe transitions between
     /// snapshots.
     pub(super) fn record_agent_state_change_seq(
         &mut self,
@@ -272,10 +234,9 @@ impl AppState {
         }
     }
 
-    pub(crate) fn publish_pane_process_exit_if_agent(
-        &mut self,
-        pane_id: PaneId,
-    ) -> Option<PaneStateUpdate> {
+    /// Marks the pane's agent idle because its process exited. Returns whether
+    /// that released the agent from the terminal.
+    pub(crate) fn publish_pane_process_exit_if_agent(&mut self, pane_id: PaneId) -> bool {
         let observed_at = self.clock_now;
         let update = self.update_terminal_state(pane_id, |terminal| {
             let agent = terminal.effective_known_agent().or(terminal.detected_agent);
@@ -289,8 +250,8 @@ impl AppState {
                 true,
                 observed_at,
             ))
-        })?;
-        update.cause.released().then_some(update)
+        });
+        update == StateUpdate::Released
     }
 
     /// Removes a dead pane by id and returns the terminals it detached, whose

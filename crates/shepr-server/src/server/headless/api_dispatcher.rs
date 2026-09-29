@@ -46,7 +46,6 @@ impl super::HeadlessServer {
         let focus_requested = match &msg.request.method {
             shepr_api::schema::Method::WorkspaceCreate(params) => params.focus,
             shepr_api::schema::Method::TabCreate(params) => params.focus,
-            shepr_api::schema::Method::LayoutApply(params) => params.focus,
             _ => false,
         };
         let reconcile = method_traits.changes_topology;
@@ -91,25 +90,13 @@ impl super::HeadlessServer {
             self.finish_shell_location_reconciliation(all_focus_before, &focused_tabs_before);
         } else {
             let focused_tabs_after = self.focused_shell_tabs();
-            self.app.accept_current_focus_without_events();
+            self.app.accept_current_focus();
             self.send_shell_navigation_focus_events(
                 focus_before.as_ref(),
                 focus_after.as_ref(),
                 &focused_tabs_before,
                 &focused_tabs_after,
             );
-        }
-        if focus_before != focus_after
-            && let Some(target) = focus_after
-            && let Some(workspace_index) = self
-                .app
-                .state
-                .workspaces
-                .iter()
-                .position(|workspace| workspace.id == target.workspace_id)
-        {
-            self.app
-                .emit_focus_api_events(workspace_index, target.pane_id);
         }
         let geometry_changed = method_claims_geometry
             && if reconcile {

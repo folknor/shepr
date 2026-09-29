@@ -1,18 +1,13 @@
 use super::*;
 use crate::app::Mode;
 use crate::test_support::*;
-use shepr_api::schema::{ErrorResponse, EventKind, SuccessResponse};
+use shepr_api::schema::{ErrorResponse, SuccessResponse};
 use shepr_config::Config;
 use shepr_mux::workspace::Workspace;
 
 fn app_with_test_workspace() -> (App, String) {
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::new(
-        &Config::default(),
-        crate::app::AppPolicy::Test,
-        api_rx,
-        shepr_api::EventHub::default(),
-    );
+    let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
     app.state.workspaces = vec![Workspace::test_new("metadata")];
     app.state.ensure_test_terminals();
     let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
@@ -86,22 +81,15 @@ async fn api_clear_pane_mutates_endpoint_owned_history() {
 }
 
 #[tokio::test]
-async fn api_pane_get_exposes_scroll_metrics() {
-    let (mut app, public_pane_id, pane_id) = app_with_scrollback_runtime();
+async fn pane_info_exposes_scroll_metrics() {
+    let (app, _public_pane_id, pane_id) = app_with_scrollback_runtime();
     let runtime = app
         .state
         .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
         .expect("runtime");
     runtime.scroll_up(3);
 
-    let response = app.handle_pane_get(&PaneTarget {
-        pane_id: public_pane_id,
-    });
-
-    let success: SuccessResponse = crate::test_support::test_success(&response);
-    let ResponseResult::PaneInfo { pane } = success.result else {
-        panic!("expected pane info response");
-    };
+    let pane = app.pane_info(0, pane_id).expect("pane info");
     let scroll = pane.scroll.expect("scroll metrics");
     assert_eq!(scroll.offset_from_bottom, 3);
     assert!(scroll.max_offset_from_bottom >= scroll.offset_from_bottom);
@@ -362,7 +350,7 @@ async fn api_copy_search_rejects_stale_content_revision() {
 }
 
 #[test]
-fn api_pane_rename_emits_pane_updated() {
+fn api_pane_rename_returns_the_renamed_pane() {
     let (mut app, public_pane_id) = app_with_test_workspace();
 
     let response = app.handle_pane_rename(PaneRenameParams {
@@ -371,27 +359,16 @@ fn api_pane_rename_emits_pane_updated() {
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
-    assert!(matches!(success.result, ResponseResult::PaneInfo { .. }));
-    assert!(
-        app.event_hub
-            .events_after(0)
-            .iter()
-            .any(|(_, event)| matches!(
-                &event.data,
-                EventData::PaneUpdated { pane }
-                    if pane.pane_id == public_pane_id && pane.label.as_deref() == Some("build")
-            ))
-    );
+    let ResponseResult::PaneInfo { pane } = success.result else {
+        panic!("expected pane info response");
+    };
+    assert_eq!(pane.pane_id, public_pane_id);
+    assert_eq!(pane.label.as_deref(), Some("build"));
 }
 
 fn app_with_workspace() -> App {
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::new(
-        &Config::default(),
-        crate::app::AppPolicy::Test,
-        api_rx,
-        shepr_api::EventHub::default(),
-    );
+    let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
     app.state.workspaces = vec![Workspace::test_new("issue")];
     app.state.ensure_test_terminals();
     app
@@ -409,45 +386,24 @@ fn api_pane_close_of_last_pane_closes_workspace() {
 
     let _: SuccessResponse = crate::test_support::test_success(&response);
     assert!(app.state.workspaces.is_empty());
-    assert_eq!(
-        app.event_hub
-            .events_after(0)
-            .iter()
-            .map(|(_, event)| event.data.kind())
-            .collect::<Vec<_>>(),
-        [
-            EventKind::PaneClosed,
-            EventKind::TabClosed,
-            EventKind::WorkspaceClosed
-        ]
-    );
 }
 
 #[test]
-fn api_pane_close_of_a_tabs_last_pane_announces_the_tab() {
+fn api_pane_close_of_a_tabs_last_pane_closes_the_tab() {
     let mut app = app_with_workspace();
     app.state.workspaces[0].test_add_tab(Some("survivor"));
     app.state.ensure_test_terminals();
     let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+    let survivor_root = app.state.workspaces[0].tabs()[1].root_pane();
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
-    let tab_id = app.public_tab_id(0, 0).expect("test precondition");
 
     let response = app.handle_pane_close(&PaneTarget {
-        pane_id: public_pane_id.clone().to_string(),
+        pane_id: public_pane_id.to_string(),
     });
 
     let _: SuccessResponse = crate::test_support::test_success(&response);
     assert_eq!(app.state.workspaces[0].tabs().len(), 1);
-    let events = app.event_hub.events_after(0);
-    assert_eq!(events.len(), 2);
-    assert!(matches!(
-        &events[0].1.data,
-        EventData::PaneClosed { pane_id, .. } if pane_id == &public_pane_id
-    ));
-    assert!(matches!(
-        &events[1].1.data,
-        EventData::TabClosed { tab_id: closed, .. } if closed == &tab_id
-    ));
+    assert_eq!(app.state.workspaces[0].tabs()[0].root_pane(), survivor_root);
 }
 
 #[test]
@@ -506,7 +462,6 @@ fn api_pane_swap_direction_no_neighbor_returns_unchanged_layout() {
     assert_eq!(swap.source_pane_id, source_public);
     assert_eq!(swap.target_pane_id, None);
     assert_eq!(swap.layout.panes.len(), 1);
-    assert!(app.event_hub.events_after(0).is_empty());
 }
 
 #[test]
@@ -614,11 +569,6 @@ fn api_pane_zoom_current_toggles_zoom() {
     assert_eq!(zoom.focused_pane_id, zoom.pane_id);
     assert!(zoom.zoomed);
     assert!(zoom.layout.zoomed);
-    assert!(matches!(
-        &app.event_hub.events_after(0).last().expect("layout event").1.data,
-        EventData::LayoutUpdated { layout }
-            if layout.tab_id == app.public_tab_id(0, 0).expect("test precondition") && layout.zoomed
-    ));
 
     let response = app.handle_pane_zoom(&PaneZoomParams::default());
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -630,11 +580,6 @@ fn api_pane_zoom_current_toggles_zoom() {
     assert!(!zoom.focus_changed);
     assert!(!zoom.zoomed);
     assert!(!zoom.layout.zoomed);
-    assert!(matches!(
-        &app.event_hub.events_after(0).last().expect("layout event").1.data,
-        EventData::LayoutUpdated { layout }
-            if layout.tab_id == app.public_tab_id(0, 0).expect("test precondition") && !layout.zoomed
-    ));
 }
 
 #[test]
@@ -754,11 +699,7 @@ fn api_pane_zoom_idempotent_mode_reports_focus_change() {
     assert_eq!(zoom.reason, Some(PaneZoomReason::AlreadyZoomed));
     assert!(zoom.zoomed);
     assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
-    assert!(matches!(
-        &app.event_hub.events_after(0).last().expect("layout event").1.data,
-        EventData::LayoutUpdated { layout }
-            if layout.focused_pane_id == app.public_pane_id(0, right).expect("test precondition")
-    ));
+    assert_eq!(zoom.layout.focused_pane_id, right_public);
 }
 
 #[test]
@@ -834,12 +775,6 @@ fn api_pane_resize_changes_target_ratio_without_changing_focus() {
     assert_eq!(resize.layout.focused_pane_id, right_public);
     assert!((resize.layout.splits[0].ratio - 0.6).abs() < f32::EPSILON);
     assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
-    assert!(matches!(
-        &app.event_hub.events_after(0).last().expect("layout event").1.data,
-        EventData::LayoutUpdated { layout }
-            if layout.tab_id == app.public_tab_id(0, 0).expect("test precondition")
-                && (layout.splits[0].ratio - 0.6).abs() < f32::EPSILON
-    ));
 }
 
 #[test]

@@ -1,6 +1,5 @@
 pub mod client;
 pub mod error;
-mod event_hub;
 pub mod guidance;
 pub mod launch_env;
 mod limits;
@@ -10,10 +9,7 @@ mod server;
 pub mod session;
 mod status;
 mod stop;
-mod subscriptions;
-mod wait;
 
-pub use event_hub::{EventHistoryError, EventHub};
 pub use server::ServerHandle;
 pub use server::{api_method_name, start_server_with_stop_control};
 pub use status::{RuntimeStatus, read_runtime_status_at};
@@ -138,14 +134,20 @@ mod tests {
         assert!(!ping.mutates_ui);
         assert!(!ping.routine);
 
-        let pane_get = Method::PaneGet(crate::schema::PaneTarget {
+        let report = Method::PaneReportAgentSession(crate::schema::PaneReportAgentSessionParams {
             pane_id: "w1:p1".into(),
+            source: "test".into(),
+            agent: "pi".into(),
+            seq: None,
+            agent_session_id: None,
+            agent_session_path: None,
+            session_start_source: None,
         })
         .traits();
-        assert_eq!(pane_get.name, "pane.get");
-        assert!(!pane_get.runs_on_socket_thread);
-        assert!(!pane_get.mutates_ui);
-        assert!(pane_get.routine);
+        assert_eq!(report.name, "pane.report_agent_session");
+        assert!(!report.runs_on_socket_thread);
+        assert!(report.mutates_ui);
+        assert!(report.routine);
 
         let pane_clear = Method::PaneClear(crate::schema::PaneTarget {
             pane_id: "w1:p1".into(),

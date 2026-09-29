@@ -1,19 +1,17 @@
 use std::time::Duration;
 
-/// Poll interval for waiting on app responses and client disconnects. It keeps
-/// cancellation responsive without busy polling.
+/// Poll interval for noticing client disconnects and shutdown on a long-lived
+/// connection. It keeps cancellation responsive without busy polling.
 pub(crate) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Bound on how long an ordinary (non-wait, non-stream) request waits for the
-/// app main loop to answer. Without one, a stalled main loop hangs every CLI
-/// call and every agent hook that shells out to the CLI.
+/// Bound on how long a request waits for the app main loop to answer. Without
+/// one, a stalled main loop hangs every CLI call and every agent hook that
+/// shells out to the CLI.
 ///
-/// Every remaining ordinary request (status, session snapshot, detection
-/// capture and explain, hook reports, stop) is answered within a loop turn or
-/// two and returns a bounded response, so this only has to sit comfortably
-/// above [`APP_RESPONSE_TIMEOUT`] and one slow turn while still failing a
-/// stalled loop promptly. Requests that carry their own timeout (`events.wait`)
-/// are dispatched on their own paths and are not subject to this bound.
+/// Every request (status, session snapshot, detection capture and explain,
+/// hook reports, stop) is answered within a loop turn or two and returns a
+/// bounded response, so this only has to sit comfortably above one slow turn
+/// while still failing a stalled loop promptly.
 pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Extra client-side allowance beyond the server request deadline, so the
@@ -25,17 +23,9 @@ const ORDINARY_RESPONSE_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const ORDINARY_RESPONSE_TIMEOUT: Duration =
     Duration::from_secs(ORDINARY_REQUEST_TIMEOUT.as_secs() + ORDINARY_RESPONSE_GRACE.as_secs());
 
-/// Bounds how long synchronous app dispatch waits for the main loop, covering
-/// a normal loop turn while making a stalled loop detectable.
-pub(crate) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Deadline for a client to send its first request line after connecting.
 /// It gives local clients time to serialize while bounding idle peers.
 pub(crate) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Send deadline used by an otherwise unbounded client request, derived from
-/// the server's initial request-line deadline.
-pub(crate) const UNBOUNDED_RESPONSE_SEND_TIMEOUT: Duration = INITIAL_REQUEST_TIMEOUT;
 
 /// Bounds how long the server waits for a busy caller's request ID before
 /// refusing the connection without one. It gives a live local client time to
@@ -69,25 +59,6 @@ pub(crate) const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 /// Maximum accept-loop retry delay. The ceiling bounds recovery
 /// latency during persistent resource failures while exponential backoff rests.
 pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
-
-/// Maximum number of recent API events retained for wait and subscription
-/// consumers. The history provides a useful recent replay window
-/// while keeping the shared history bounded.
-pub(crate) const MAX_EVENT_HISTORY: usize = 512;
-
-/// Largest `timeout_ms` an `events.wait` accepts: one day. A caller that means "until it happens" omits the
-/// timeout; a larger value is refused rather than clamped, so nobody mistakes
-/// a shortened wait for the one they asked for. The cap also keeps the
-/// deadline far inside `Instant`'s range, so computing it cannot overflow.
-pub(crate) const MAX_WAIT_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
-
-/// Client-side slack past a wait's own `timeout_ms`. A wait checks its
-/// deadline only after each poll, and a poll can block on an app probe for up
-/// to [`APP_RESPONSE_TIMEOUT`], so the server's answer can trail the deadline
-/// by one such probe. One extra second leaves a margin for scheduling and
-/// delivery after the probe; the grace is not what normally ends a wait.
-pub(crate) const WAIT_RESPONSE_GRACE: Duration =
-    APP_RESPONSE_TIMEOUT.saturating_add(Duration::from_secs(1));
 
 /// Maximum time a session stop waits for both session sockets to disappear,
 /// leaving time for orderly shutdown before reporting a stall.

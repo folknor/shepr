@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::*;
 
@@ -24,7 +24,6 @@ fn method_names_and_traits_share_unique_schema_entries() {
             "workspace.focus",
             "workspace.rename",
             "workspace.move",
-            "workspace.move_block",
             "workspace.close",
             "tab.create",
             "tab.focus",
@@ -159,157 +158,23 @@ fn removed_methods_are_rejected() {
 }
 
 #[test]
-fn event_envelope_round_trips() {
-    let events = [
-        EventEnvelope {
-            data: EventData::PaneExited {
-                pane_id: shepr_test_fixtures::id("w1:p1"),
-                workspace_id: shepr_test_fixtures::id("w1"),
-            },
-        },
-        EventEnvelope {
-            data: EventData::WorkspaceMoved {
-                workspace_id: shepr_test_fixtures::id("w1"),
-                insert_index: 2,
-                workspaces: vec![],
-            },
-        },
-        EventEnvelope {
-            data: EventData::WorkspaceReordered {
-                workspace_ids: vec![shepr_test_fixtures::id("w1"), shepr_test_fixtures::id("w2")],
-                before_workspace_id: Some(shepr_test_fixtures::id("w3")),
-                workspaces: vec![],
-            },
-        },
-        EventEnvelope {
-            data: EventData::TabMoved {
-                tab_id: shepr_test_fixtures::id("w1:t1"),
-                workspace_id: shepr_test_fixtures::id("w1"),
-                insert_index: 1,
-                tabs: vec![],
-            },
-        },
-        EventEnvelope {
-            data: EventData::LayoutUpdated {
-                layout: PaneLayoutSnapshot {
-                    workspace_id: shepr_test_fixtures::id("w1"),
-                    tab_id: shepr_test_fixtures::id("w1:t1"),
-                    zoomed: false,
-                    area: PaneLayoutRect {
-                        x: 0,
-                        y: 0,
-                        width: 100,
-                        height: 24,
-                    },
-                    focused_pane_id: shepr_test_fixtures::id("w1:p1"),
-                    panes: vec![PaneLayoutPane {
-                        pane_id: shepr_test_fixtures::id("w1:p1"),
-                        focused: true,
-                        rect: PaneLayoutRect {
-                            x: 0,
-                            y: 0,
-                            width: 100,
-                            height: 24,
-                        },
-                    }],
-                    splits: vec![],
-                },
-            },
-        },
-    ];
-
-    for event in events {
-        let value = serde_json::to_value(&event).expect("test precondition");
-        assert!(value.get("event").is_none());
-        assert_eq!(
-            value["data"]["type"],
-            serde_json::to_value(event.data.kind()).expect("test precondition")
+fn removed_uncalled_methods_are_rejected() {
+    for method in [
+        "layout.export",
+        "layout.apply",
+        "workspace.move_block",
+        "pane.clear_agent_authority",
+        "pane.get",
+        "events.subscribe",
+        "events.wait",
+    ] {
+        let request = serde_json::json!({"id": "req", "method": method, "params": {}});
+        let error = serde_json::from_value::<Request>(request).expect_err("removed method");
+        assert!(
+            error.to_string().contains("unknown variant"),
+            "{method}: {error}"
         );
-        let json = serde_json::to_string(&event).expect("test precondition");
-        let restored: EventEnvelope = serde_json::from_str(&json).expect("test precondition");
-        assert_eq!(restored, event);
     }
-}
-
-#[test]
-fn subscribe_request_parses_parameterized_subscriptions() {
-    let json = r#"
-    {
-        "id": "sub_1",
-        "method": "events.subscribe",
-        "params": {
-            "subscriptions": [
-                {
-                    "type": "pane.agent_status_changed",
-                    "pane_id": "w1:p1",
-                    "agent_status": "idle"
-                },
-                {
-                    "type": "pane.scroll_changed",
-                    "pane_id": "w1:p1"
-                }
-            ]
-        }
-    }
-    "#;
-
-    let request: Request = serde_json::from_str(json).expect("test precondition");
-    let Method::EventsSubscribe(params) = request.method else {
-        panic!("wrong method parsed");
-    };
-    assert_eq!(params.subscriptions.len(), 2);
-    assert!(matches!(
-        &params.subscriptions[0],
-        Subscription::PaneAgentStatusChanged {
-            pane_id,
-            agent_status: Some(AgentStatus::Idle),
-        } if pane_id == "w1:p1"
-    ));
-    assert!(matches!(
-        &params.subscriptions[1],
-        Subscription::PaneScrollChanged { pane_id } if pane_id == "w1:p1"
-    ));
-}
-
-#[test]
-fn subscription_event_envelope_round_trips() {
-    let event = SubscriptionEventEnvelope {
-        event: SubscriptionEventKind::PaneAgentStatusChanged,
-        data: SubscriptionEventData::PaneAgentStatusChanged(PaneAgentStatusChangedEvent {
-            pane_id: shepr_test_fixtures::id("w1:p1"),
-            workspace_id: shepr_test_fixtures::id("w1"),
-            agent_status: AgentStatus::Blocked,
-            agent: Some("pi".into()),
-        }),
-    };
-
-    let json = serde_json::to_string(&event).expect("test precondition");
-    assert!(json.contains("\"event\":\"pane.agent_status_changed\""));
-    let restored: SubscriptionEventEnvelope =
-        serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, event);
-}
-
-#[test]
-fn scroll_changed_subscription_event_round_trips() {
-    let event = SubscriptionEventEnvelope {
-        event: SubscriptionEventKind::ScrollChanged,
-        data: SubscriptionEventData::ScrollChanged(PaneScrollChangedEvent {
-            pane_id: shepr_test_fixtures::id("w1:p1"),
-            workspace_id: shepr_test_fixtures::id("w1"),
-            scroll: PaneScrollInfo {
-                offset_from_bottom: 12,
-                max_offset_from_bottom: 240,
-                viewport_rows: 30,
-            },
-        }),
-    };
-
-    let json = serde_json::to_string(&event).expect("test precondition");
-    assert!(json.contains("\"event\":\"pane.scroll_changed\""));
-    let restored: SubscriptionEventEnvelope =
-        serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, event);
 }
 
 #[test]
@@ -386,70 +251,7 @@ fn session_snapshot_request_and_response_round_trip() {
 }
 
 #[test]
-fn layout_export_apply_round_trip() {
-    let root = LayoutNode::Split {
-        direction: SplitDirection::Right,
-        ratio: 0.6,
-        first: Box::new(LayoutNode::Pane {
-            pane: LayoutPane {
-                label: Some("editor".into()),
-                cwd: Some("/repo".into()),
-                ..Default::default()
-            },
-        }),
-        second: Box::new(LayoutNode::Pane {
-            pane: LayoutPane {
-                label: Some("tests".into()),
-                command: Some(vec!["sh".into(), "-c".into(), "just test".into()]),
-                env: HashMap::from([("ROLE".into(), "tests".into())]),
-                ..Default::default()
-            },
-        }),
-    };
-
-    let export = Request {
-        id: "layout_export".into(),
-        method: Method::LayoutExport(LayoutExportParams {
-            tab_id: Some("w1:t1".into()),
-            pane_id: None,
-        }),
-    };
-    let json = serde_json::to_string(&export).expect("test precondition");
-    assert!(json.contains("\"method\":\"layout.export\""));
-    let restored: Request = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, export);
-
-    let apply = Request {
-        id: "layout_apply".into(),
-        method: Method::LayoutApply(LayoutApplyParams {
-            workspace_id: Some("w1".into()),
-            tab_id: None,
-            tab_label: Some("dev".into()),
-            focus: true,
-            root: root.clone(),
-        }),
-    };
-    let json = serde_json::to_string(&apply).expect("test precondition");
-    assert!(json.contains("\"method\":\"layout.apply\""));
-    let restored: Request = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, apply);
-
-    let response = SuccessResponse {
-        id: "layout_export".into(),
-        result: ResponseResult::LayoutExport {
-            layout: LayoutDescription {
-                workspace_id: shepr_test_fixtures::id("w1"),
-                tab_id: shepr_test_fixtures::id("w1:t1"),
-                zoomed: false,
-                focused_pane_id: shepr_test_fixtures::id("w1:p1"),
-                root,
-            },
-        },
-    };
-    let json = serde_json::to_string(&response).expect("test precondition");
-    let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, response);
-
+fn layout_split_ratio_response_round_trips() {
     let response = SuccessResponse {
         id: "layout_ratio".into(),
         result: ResponseResult::LayoutSplitRatioSet {
@@ -487,18 +289,6 @@ fn authority_mutation_requests_round_trip() {
     let restored: Request = serde_json::from_value(json).expect("test precondition");
     assert_eq!(restored, workspace_move);
 
-    let workspace_move_block = Request {
-        id: "move_ws_block".into(),
-        method: Method::WorkspaceMoveBlock(WorkspaceMoveBlockParams {
-            workspace_ids: vec!["w1".into(), "w2".into()],
-            before_workspace_id: Some("w3".into()),
-        }),
-    };
-    let json = serde_json::to_value(&workspace_move_block).expect("test precondition");
-    assert_eq!(json["method"], "workspace.move_block");
-    let restored: Request = serde_json::from_value(json).expect("test precondition");
-    assert_eq!(restored, workspace_move_block);
-
     let tab_move = Request {
         id: "move_tab".into(),
         method: Method::TabMove(TabMoveParams {
@@ -535,25 +325,6 @@ fn authority_mutation_requests_round_trip() {
     assert_eq!(json["method"], "layout.set_split_ratio");
     let restored: Request = serde_json::from_value(json).expect("test precondition");
     assert_eq!(restored, split_ratio);
-
-    let subscription = Request {
-        id: "sub_moves".into(),
-        method: Method::EventsSubscribe(EventsSubscribeParams {
-            subscriptions: vec![
-                Subscription::WorkspaceMoved {},
-                Subscription::WorkspaceReordered {},
-                Subscription::TabMoved {},
-                Subscription::LayoutUpdated {},
-            ],
-        }),
-    };
-    let json = serde_json::to_string(&subscription).expect("test precondition");
-    assert!(json.contains("\"type\":\"workspace.moved\""));
-    assert!(json.contains("\"type\":\"workspace.reordered\""));
-    assert!(json.contains("\"type\":\"tab.moved\""));
-    assert!(json.contains("\"type\":\"layout.updated\""));
-    let restored: Request = serde_json::from_str(&json).expect("test precondition");
-    assert_eq!(restored, subscription);
 }
 
 #[test]
@@ -611,61 +382,4 @@ fn error_response_round_trips() {
     let json = serde_json::to_string(&response).expect("test precondition");
     let restored: ErrorResponse = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, response);
-}
-
-#[test]
-fn event_wait_parses_typed_match() {
-    let json = r#"
-    {
-        "id": "req_9",
-        "method": "events.wait",
-        "params": {
-            "match_event": {
-                "event": "pane_agent_status_changed",
-                "pane_id": "w1:p1",
-                "agent_status": "idle"
-            },
-            "timeout_ms": 30000
-        }
-    }
-    "#;
-
-    let request: Request = serde_json::from_str(json).expect("test precondition");
-    let Method::EventsWait(params) = request.method else {
-        panic!("wrong method parsed");
-    };
-    assert_eq!(
-        params.match_event,
-        EventMatch::PaneAgentStatusChanged {
-            pane_id: "w1:p1".into(),
-            agent_status: AgentStatus::Idle,
-        }
-    );
-}
-
-#[test]
-fn event_wait_rejects_matches_it_cannot_serve_at_parse_time() {
-    // events.wait only matches agent status; other kinds must not parse and
-    // then fail later with a runtime "unsupported" error.
-    for event in ["workspace_created", "pane_closed", "pane_output_changed"] {
-        let json = serde_json::json!({
-            "id": "req_unsupported",
-            "method": "events.wait",
-            "params": { "match_event": { "event": event, "pane_id": "w1:p1" } }
-        });
-        assert!(
-            serde_json::from_value::<Request>(json).is_err(),
-            "{event} should be rejected"
-        );
-    }
-}
-
-#[test]
-fn removed_never_emitted_subscriptions_do_not_parse() {
-    let json = serde_json::json!({
-        "id": "req_sub",
-        "method": "events.subscribe",
-        "params": { "subscriptions": [{ "type": "workspace.updated" }] }
-    });
-    assert!(serde_json::from_value::<Request>(json).is_err());
 }

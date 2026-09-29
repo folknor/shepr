@@ -599,34 +599,7 @@ impl Workspace {
         )
     }
 
-    // Same argument set as `create_tab`, with an argv instead of a shell.
-    pub fn create_tab_argv_command(
-        &self,
-        rows: u16,
-        cols: u16,
-        cwd: PathBuf,
-        argv: &[String],
-        extra_env: Vec<(String, String)>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
-        self.create_tab_with_runtime(
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", false),
-            Some(argv),
-            extra_env,
-            spawn,
-        )
-    }
-
-    // Shared body of the two tab constructors above.
+    // Shared body of the tab constructors.
     fn create_tab_with_runtime(
         &self,
         rows: u16,

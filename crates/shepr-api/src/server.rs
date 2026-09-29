@@ -17,9 +17,7 @@ use crate::schema::{
     ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
     SuccessResponse,
 };
-use crate::subscriptions::{ActiveSubscription, SubscriptionStream};
-use crate::wait::wait_for_event;
-use crate::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
+use crate::{ApiRequestMessage, ApiRequestSender, socket_path};
 use shepr_platform::ipc::{
     LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
     is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
@@ -119,14 +117,12 @@ impl ServerHandle {
 
 pub fn start_server_with_stop_control(
     api_tx: ApiRequestSender,
-    event_hub: EventHub,
     server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     let inherited_agent = shepr_platform::ssh_agent::inherited_agent_socket()?;
     start_server_inner(
         api_tx,
-        event_hub,
         default_capabilities(),
         Some(server_stop),
         inherited_agent,
@@ -143,7 +139,6 @@ fn default_capabilities() -> Option<ServerCapabilities> {
 
 fn start_server_inner(
     api_tx: ApiRequestSender,
-    event_hub: EventHub,
     mut capabilities: Option<ServerCapabilities>,
     server_stop: Option<Arc<crate::ServerStopSignal>>,
     inherited_agent: Option<PathBuf>,
@@ -178,7 +173,7 @@ fn start_server_inner(
     // looks alive to autodetection, so a dead API listener leaves a server
     // that refuses attaches (its status probe fails) and every CLI call and
     // agent hook fails until someone kills it by hand. Transient errors such
-    // as EMFILE/ENFILE (one fd and thread per subscription, plus PTYs) or
+    // as EMFILE/ENFILE (one fd and thread per connection, plus PTYs) or
     // ECONNABORTED are therefore logged and retried with a bounded backoff.
     let connection_running = Arc::clone(&running);
     let busy_refuser = spawn_busy_refuser();
@@ -201,7 +196,6 @@ fn start_server_inner(
             return Ok(());
         };
         let api_tx = api_tx.clone();
-        let event_hub = event_hub.clone();
         let capabilities = capabilities.clone();
         let server_stop = server_stop.clone();
         let connection_running = Arc::clone(&connection_running);
@@ -217,7 +211,6 @@ fn start_server_inner(
                 if let Err(err) = handle_connection_with_stop(
                     stream,
                     &api_tx,
-                    &event_hub,
                     &connection_running,
                     capabilities,
                     server_stop.as_ref(),
@@ -392,7 +385,6 @@ impl AcceptBackoff {
 fn handle_connection_with_stop(
     mut stream: LocalStream,
     api_tx: &ApiRequestSender,
-    event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&Arc<crate::ServerStopSignal>>,
@@ -439,7 +431,7 @@ fn handle_connection_with_stop(
         method_traits.routine,
     );
 
-    // Socket-thread waits and streams bypass `handle_request`, so gate them here too.
+    // Socket-thread methods bypass `handle_request`, so gate them here too.
     if let Some(response) = shutdown_rejection(&request, server_stop) {
         return finish_api_response(&mut stream, &request_id, method_traits, &response);
     }
@@ -493,48 +485,6 @@ fn handle_connection_with_stop(
             }
             Ok(())
         }
-        Method::EventsSubscribe(params) => {
-            let result = stream_subscriptions(
-                stream,
-                &request_id,
-                params,
-                api_tx,
-                event_hub,
-                running,
-                server_stop,
-            );
-            match &result {
-                Ok(()) => crate::logging::api_request_completed(
-                    &request_id,
-                    method_traits.name,
-                    method_traits.mutates_ui,
-                    method_traits.routine,
-                    "stream_closed",
-                ),
-                Err(err) => {
-                    crate::logging::api_request_failed(
-                        &request_id,
-                        method_traits.name,
-                        &err.to_string(),
-                    );
-                }
-            }
-            result
-        }
-        Method::EventsWait(params) => {
-            let response = wait_for_event(
-                request_id.clone(),
-                params,
-                &mut stream,
-                api_tx,
-                event_hub,
-                running,
-                server_stop,
-                // clock-io-ok: the socket thread supplies the real clock.
-                &Instant::now,
-            )?;
-            finish_wait_response(&mut stream, response, &request_id, method_traits)
-        }
         method_body => {
             let response = handle_request(
                 Request {
@@ -548,25 +498,6 @@ fn handle_connection_with_stop(
             finish_api_response(&mut stream, &request_id, method_traits, &response)
         }
     }
-}
-
-fn finish_wait_response(
-    stream: &mut LocalStream,
-    response: Option<crate::error::EncodedApiResponse>,
-    request_id: &str,
-    method: MethodTraits,
-) -> std::io::Result<()> {
-    let Some(response) = response else {
-        crate::logging::api_request_completed(
-            request_id,
-            method.name,
-            method.mutates_ui,
-            method.routine,
-            "client_disconnected",
-        );
-        return Ok(());
-    };
-    finish_api_response(stream, request_id, method, &response)
 }
 
 fn finish_api_response(
@@ -645,7 +576,7 @@ fn handle_request(
     )
 }
 
-pub(super) fn server_is_stopping(server_stop: Option<&Arc<crate::ServerStopSignal>>) -> bool {
+fn server_is_stopping(server_stop: Option<&Arc<crate::ServerStopSignal>>) -> bool {
     server_stop.is_some_and(|stop| stop.is_requested())
 }
 
@@ -685,10 +616,9 @@ fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option
 /// writes just after connecting pays no poll interval, and a large request
 /// costs one syscall per chunk rather than per byte. Reading in chunks can
 /// consume bytes past the newline, which are dropped. The protocol is one
-/// request per connection and no method reads a payload after its line:
-/// subscription and wait loops detect the peer's hang-up with a readiness
-/// check that ignores unread bytes, and the SSH-agent lease loop ends on EOF
-/// whether or not stray bytes preceded it.
+/// request per connection and no method reads a payload after its line: the
+/// SSH-agent lease loop detects the peer's hang-up with a readiness check that
+/// ignores unread bytes, and ends on EOF whether or not stray bytes preceded it.
 fn read_request_line_until(
     stream: &mut LocalStream,
     deadline: Instant,
@@ -746,89 +676,6 @@ fn read_request_line_blocking(
     }
 }
 
-fn stream_subscriptions(
-    mut stream: LocalStream,
-    request_id: &str,
-    params: crate::schema::EventsSubscribeParams,
-    api_tx: &ApiRequestSender,
-    event_hub: &EventHub,
-    running: &Arc<AtomicBool>,
-    server_stop: Option<&Arc<crate::ServerStopSignal>>,
-) -> std::io::Result<()> {
-    let event_start_sequence = event_hub.current_sequence();
-    let mut subscriptions = Vec::with_capacity(params.subscriptions.len());
-    for (index, subscription) in params.subscriptions.into_iter().enumerate() {
-        let active = match ActiveSubscription::new(
-            subscription,
-            request_id,
-            index,
-            api_tx,
-            event_hub,
-            event_start_sequence,
-        ) {
-            Ok(active) => active,
-            Err(mut response) => {
-                response.id = request_id.to_string();
-                if let Err(err) = write_api_json_line(&mut stream, request_id, &response) {
-                    if is_connection_closed_error(&err) {
-                        return Ok(());
-                    }
-                    return Err(err);
-                }
-                return Ok(());
-            }
-        };
-        subscriptions.push(active);
-    }
-
-    if let Err(err) = write_api_json_line(
-        &mut stream,
-        request_id,
-        &SuccessResponse {
-            id: request_id.to_string(),
-            result: ResponseResult::SubscriptionStarted {},
-        },
-    ) {
-        if is_connection_closed_error(&err) {
-            return Ok(());
-        }
-        return Err(err);
-    }
-
-    // Polled as one stream so events go out in the hub's global order.
-    let mut subscriptions = SubscriptionStream::new(subscriptions, event_start_sequence);
-    loop {
-        if server_is_stopping(server_stop) || should_stop_connection(&mut stream, running)? {
-            return Ok(());
-        }
-
-        let batch = subscriptions.poll(api_tx, event_hub);
-        for event in batch.events {
-            if server_is_stopping(server_stop) || should_stop_connection(&mut stream, running)? {
-                return Ok(());
-            }
-            if let Err(err) = write_api_json_line(&mut stream, request_id, &event) {
-                if is_connection_closed_error(&err) {
-                    return Ok(());
-                }
-                return Err(err);
-            }
-        }
-        if let Some(error) = batch.error {
-            write_api_json_line_allow_disconnect(
-                &mut stream,
-                request_id,
-                &ErrorResponse {
-                    id: request_id.to_string(),
-                    error,
-                },
-            )?;
-            return Ok(());
-        }
-        std::thread::sleep(CONNECTION_POLL_INTERVAL);
-    }
-}
-
 fn write_text_line(stream: &mut LocalStream, value: &str) -> std::io::Result<()> {
     stream.write_all(value.as_bytes())?;
     stream.write_all(b"\n")?;
@@ -860,25 +707,6 @@ fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
         Err(err) if is_connection_closed_error(&err) => Ok(()),
         result => result,
     }
-}
-
-pub(super) fn should_stop_connection(
-    stream: &mut LocalStream,
-    running: &Arc<AtomicBool>,
-) -> std::io::Result<bool> {
-    if !running.load(Ordering::Relaxed) {
-        return Ok(true);
-    }
-
-    local_stream_peer_closed(stream)
-}
-
-pub(super) fn dispatch_to_app_with_timeout_result(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-) -> crate::error::ApiResult {
-    dispatch_to_app_result(request, api_tx, timeout, None)
 }
 
 fn dispatch_to_app(
@@ -946,18 +774,7 @@ fn dispatch_to_app_result(
     }
 }
 
-/// Error text for a socket-thread wait that ended because shutdown started.
-const SHUTDOWN_WAIT_MESSAGE: &str =
-    "server is shutting down; the wait ended before its condition was met";
-
-pub(super) fn shutdown_wait_error() -> crate::error::ApiError {
-    crate::error::ApiError::new(
-        crate::error::ApiErrorCode::ServerUnavailable,
-        SHUTDOWN_WAIT_MESSAGE,
-    )
-}
-
-pub(super) fn error_response_json(
+fn error_response_json(
     id: &str,
     code: crate::error::ApiErrorCode,
     message: String,
@@ -972,15 +789,11 @@ pub(super) fn error_response_json(
 fn handle_connection(
     stream: LocalStream,
     api_tx: &ApiRequestSender,
-    event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
 ) -> std::io::Result<()> {
-    handle_connection_with_stop(stream, api_tx, event_hub, running, capabilities, None, None)
+    handle_connection_with_stop(stream, api_tx, running, capabilities, None, None)
 }
-
-#[cfg(test)]
-mod subscription_socket_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1204,7 +1017,6 @@ mod tests {
             handle_connection_with_stop(
                 server,
                 &tx,
-                &EventHub::default(),
                 &Arc::new(AtomicBool::new(true)),
                 None,
                 None,
@@ -1228,57 +1040,6 @@ mod tests {
         worker.join().expect("test precondition");
         assert!(!stable.try_exists().expect("stat stable agent link"));
         drop(registry);
-    }
-
-    fn pane_info(
-        pane_id: &str,
-        agent_status: crate::schema::AgentStatus,
-    ) -> crate::schema::PaneInfo {
-        crate::schema::PaneInfo {
-            pane_id: shepr_test_fixtures::id(pane_id),
-            terminal_id: shepr_test_fixtures::id("term_1_1"),
-            workspace_id: shepr_test_fixtures::id("w1"),
-            tab_id: shepr_test_fixtures::id("w1:t1"),
-            focused: true,
-            cwd: None,
-            foreground_cwd: None,
-            restore_error: None,
-            label: None,
-            agent: Some("pi".into()),
-            terminal_title: None,
-            terminal_title_stripped: None,
-            agent_status,
-            agent_session: None,
-            scroll: None,
-            revision: 0,
-        }
-    }
-
-    fn spawn_pane_get_responder(
-        agent_status: crate::schema::AgentStatus,
-    ) -> (ApiRequestSender, std::thread::JoinHandle<()>) {
-        let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let responder = std::thread::spawn(move || {
-            while let Some(msg) = api_rx.blocking_recv() {
-                match msg.request.method {
-                    Method::PaneGet(_) => msg
-                        .respond_to
-                        .send(Ok(ResponseResult::PaneInfo {
-                            pane: pane_info("w1:p1", agent_status),
-                        }))
-                        .expect("test precondition"),
-                    Method::EventsWait(_) => msg
-                        .respond_to
-                        .send(Err(crate::error::ApiError::new(
-                            crate::error::ApiErrorCode::External("unexpected_dispatch".into()),
-                            "events.wait should be handled by the api server",
-                        )))
-                        .expect("test precondition"),
-                    other => panic!("unexpected request: {other:?}"),
-                }
-            }
-        });
-        (api_tx, responder)
     }
 
     #[test]
@@ -1350,14 +1111,8 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(
-            server,
-            &api_tx,
-            &EventHub::default(),
-            &Arc::new(AtomicBool::new(true)),
-            None,
-        )
-        .expect("test precondition");
+        handle_connection(server, &api_tx, &Arc::new(AtomicBool::new(true)), None)
+            .expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -1376,14 +1131,8 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(
-            server,
-            &api_tx,
-            &EventHub::default(),
-            &Arc::new(AtomicBool::new(true)),
-            None,
-        )
-        .expect("test precondition");
+        handle_connection(server, &api_tx, &Arc::new(AtomicBool::new(true)), None)
+            .expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -1474,113 +1223,6 @@ mod tests {
     }
 
     #[test]
-    fn events_wait_agent_status_returns_initial_match() {
-        let (api_tx, responder) = spawn_pane_get_responder(crate::schema::AgentStatus::Blocked);
-
-        let (mut client, server) = local_stream_pair("api-events-wait-initial");
-        client
-            .write_all(br#"{"id":"wait_1","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"w1:p1","agent_status":"blocked"},"timeout_ms":1000}}"#)
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        let event_hub = EventHub::default();
-        handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
-
-        let response: serde_json::Value =
-            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
-        assert_eq!(response["id"], "wait_1");
-        assert_eq!(response["result"]["type"], "wait_matched");
-        assert_eq!(
-            response["result"]["event"]["data"]["agent_status"],
-            "blocked"
-        );
-        drop(api_tx);
-        responder.join().expect("test precondition");
-    }
-
-    #[test]
-    fn events_wait_agent_status_times_out_server_side() {
-        let (api_tx, responder) = spawn_pane_get_responder(crate::schema::AgentStatus::Idle);
-
-        let (mut client, server) = local_stream_pair("api-events-wait-timeout");
-        client
-            .write_all(br#"{"id":"wait_2","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"w1:p1","agent_status":"blocked"},"timeout_ms":30}}"#)
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        let event_hub = EventHub::default();
-        handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
-
-        let response: serde_json::Value =
-            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
-        assert_eq!(response["id"], "wait_2");
-        assert_eq!(response["error"]["code"], "timeout");
-        assert_eq!(
-            response["error"]["message"],
-            "timed out waiting for event match"
-        );
-        drop(api_tx);
-        responder.join().expect("test precondition");
-    }
-
-    #[test]
-    fn events_wait_agent_status_returns_not_found_when_pane_closes() {
-        let event_hub = EventHub::default();
-        let responder_event_hub = event_hub.clone();
-        let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let responder = std::thread::spawn(move || {
-            let mut pane_get_count = 0;
-            while let Some(msg) = api_rx.blocking_recv() {
-                let Method::PaneGet(_) = msg.request.method else {
-                    panic!("unexpected request: {:?}", msg.request.method);
-                };
-                pane_get_count += 1;
-                let response = if pane_get_count == 1 {
-                    Ok(ResponseResult::PaneInfo {
-                        pane: pane_info("w1:p1", crate::schema::AgentStatus::Idle),
-                    })
-                } else {
-                    if pane_get_count == 2 {
-                        responder_event_hub.push(crate::schema::EventEnvelope {
-                            data: crate::schema::EventData::PaneClosed {
-                                pane_id: shepr_test_fixtures::id("w1:p1"),
-                                workspace_id: shepr_test_fixtures::id("w1"),
-                            },
-                        });
-                    }
-                    Err(crate::error::ApiError::new(
-                        crate::error::ApiErrorCode::PaneNotFound,
-                        "pane pane_1 not found",
-                    ))
-                };
-                msg.respond_to.send(response).expect("test precondition");
-            }
-        });
-
-        let (mut client, server) = local_stream_pair("wait-close");
-        client
-            .write_all(br#"{"id":"wait_close","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"w1:p1","agent_status":"blocked"},"timeout_ms":500}}"#)
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
-
-        let response: serde_json::Value =
-            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
-        assert_eq!(response["id"], "wait_close");
-        assert_eq!(response["error"]["code"], "pane_not_found");
-        assert_eq!(response["error"]["message"], "pane pane_1 not found");
-        drop(api_tx);
-        responder.join().expect("test precondition");
-    }
-
-    #[test]
     fn invalid_requests_preserve_only_unambiguous_string_ids() {
         let cases = [
             (
@@ -1602,8 +1244,7 @@ mod tests {
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
             let running = Arc::new(AtomicBool::new(true));
-            handle_connection(server, &api_tx, &EventHub::default(), &running, None)
-                .expect("test precondition");
+            handle_connection(server, &api_tx, &running, None).expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)
@@ -1619,120 +1260,5 @@ mod tests {
                 "invalid requests must not dispatch"
             );
         }
-    }
-
-    #[test]
-    fn subscription_setup_errors_preserve_request_id_and_reject_entire_stream() {
-        let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let event_hub = EventHub::default();
-        let responder_event_hub = event_hub.clone();
-        let responder = std::thread::spawn(move || {
-            let msg = api_rx.blocking_recv().expect("test precondition");
-            let Method::PaneGet(params) = msg.request.method else {
-                panic!("unexpected request: {:?}", msg.request.method);
-            };
-            assert_eq!(params.pane_id, "w999:p9");
-            responder_event_hub.push(crate::schema::EventEnvelope {
-                data: crate::schema::EventData::PaneClosed {
-                    pane_id: shepr_test_fixtures::id("w999:p9"),
-                    workspace_id: shepr_test_fixtures::id("w999"),
-                },
-            });
-            msg.respond_to
-                .send(Err(crate::error::ApiError::new(
-                    crate::error::ApiErrorCode::PaneNotFound,
-                    "pane w999:p9 not found",
-                )))
-                .expect("test precondition");
-            assert!(
-                api_rx.blocking_recv().is_none(),
-                "rejection must not start polling"
-            );
-        });
-        let (mut client, server) = local_stream_pair("subscription-error-id");
-        let request = r#"{"id":"panefold:events","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"},{"type":"pane.closed"},{"type":"pane.agent_status_changed","pane_id":"w999:p9"}]}}"#;
-        writeln!(client, "{request}").expect("test precondition");
-        let running = Arc::new(AtomicBool::new(true));
-        handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
-        drop(api_tx);
-        responder.join().expect("test precondition");
-
-        let mut response = String::new();
-        BufReader::new(client)
-            .read_to_string(&mut response)
-            .expect("test precondition");
-        let response: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(response.id, "panefold:events");
-        assert_eq!(response.error.code, "pane_not_found");
-        assert_eq!(response.error.message, "pane w999:p9 not found");
-    }
-
-    #[test]
-    fn subscriptions_stop_when_client_disconnects() {
-        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let (mut client, server) = local_stream_pair("api-sub-disconnect");
-        client
-            .write_all(
-                br#"{"id":"sub_1","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"}]}}"#,
-            )
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        let server_running = Arc::clone(&running);
-        let event_hub = EventHub::default();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let server_thread = std::thread::spawn(move || {
-            let result = handle_connection(server, &api_tx, &event_hub, &server_running, None);
-            done_tx.send(result).expect("test precondition");
-        });
-
-        let ack = read_line(&mut client);
-        let ack: serde_json::Value = serde_json::from_str(&ack).expect("test precondition");
-        assert_eq!(ack["result"]["type"], "subscription_started");
-        assert_eq!(ack["id"], "sub_1");
-
-        drop(client);
-
-        let result = done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("test precondition");
-        assert!(result.is_ok());
-        server_thread.join().expect("test precondition");
-    }
-
-    #[test]
-    fn subscriptions_stop_when_server_shuts_down() {
-        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
-        let (mut client, server) = local_stream_pair("api-sub-shutdown");
-        client
-            .write_all(
-                br#"{"id":"sub_2","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"}]}}"#,
-            )
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        let server_running = Arc::clone(&running);
-        let event_hub = EventHub::default();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let server_thread = std::thread::spawn(move || {
-            let result = handle_connection(server, &api_tx, &event_hub, &server_running, None);
-            done_tx.send(result).expect("test precondition");
-        });
-
-        let ack = read_line(&mut client);
-        let ack: serde_json::Value = serde_json::from_str(&ack).expect("test precondition");
-        assert_eq!(ack["result"]["type"], "subscription_started");
-
-        running.store(false, Ordering::Relaxed);
-
-        let result = done_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("test precondition");
-        assert!(result.is_ok());
-        server_thread.join().expect("test precondition");
     }
 }

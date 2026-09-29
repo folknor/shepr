@@ -732,7 +732,6 @@ mod tests {
             config,
             crate::app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
-            shepr_api::EventHub::default(),
         )
     }
 

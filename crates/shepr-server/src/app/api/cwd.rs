@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use shepr_api::error::{ApiError, ApiErrorCode};
 
-/// The launch cwd named by an API request (`workspace.create`, `tab.create`,
-/// `pane.split`, and every `layout.apply` leaf).
+/// The launch cwd named by an API request (`workspace.create`, `tab.create`
+/// and `pane.split`).
 ///
 /// A relative path is refused, not resolved: the server's own working
 /// directory means nothing to the caller, and the CLI already absolutises
@@ -28,8 +28,8 @@ mod tests {
     use crate::app::App;
     use crate::test_support::*;
     use shepr_api::schema::{
-        ErrorResponse, LayoutApplyParams, LayoutNode, LayoutPane, PaneRightClickTarget,
-        PaneSplitParams, SplitDirection, TabCreateParams, WorkspaceCreateParams,
+        ErrorResponse, PaneRightClickTarget, PaneSplitParams, SplitDirection, TabCreateParams,
+        WorkspaceCreateParams,
     };
     use shepr_mux::workspace::Workspace;
 
@@ -46,13 +46,6 @@ mod tests {
                 error.into_message(),
                 format!("cwd {raw:?} must be an absolute path")
             );
-        }
-    }
-
-    fn relative_leaf() -> LayoutPane {
-        LayoutPane {
-            cwd: Some(".".into()),
-            ..Default::default()
         }
     }
 
@@ -77,7 +70,6 @@ mod tests {
             &shepr_config::Config::default(),
             crate::app::AppPolicy::Test,
             api_rx,
-            shepr_api::EventHub::default(),
         );
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
@@ -116,33 +108,6 @@ mod tests {
             env: Default::default(),
         });
         assert_refused(&response, "invalid_cwd");
-
-        // The root leaf and a later split leaf are both checked before the
-        // first pane of the layout is launched.
-        for root in [
-            LayoutNode::Pane {
-                pane: relative_leaf(),
-            },
-            LayoutNode::Split {
-                direction: SplitDirection::Down,
-                ratio: 0.5,
-                first: Box::new(LayoutNode::Pane {
-                    pane: LayoutPane::default(),
-                }),
-                second: Box::new(LayoutNode::Pane {
-                    pane: relative_leaf(),
-                }),
-            },
-        ] {
-            let response = app.handle_layout_apply(&LayoutApplyParams {
-                workspace_id: None,
-                tab_id: None,
-                tab_label: None,
-                focus: false,
-                root,
-            });
-            assert_refused(&response, "invalid_cwd");
-        }
 
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);

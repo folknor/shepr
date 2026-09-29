@@ -3,14 +3,13 @@ use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 use crate::app::App;
 use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
 use shepr_api::schema::{
-    EventData, EventEnvelope, PaneClearAgentAuthorityParams, PaneCopyMotion, PaneCopyMotionParams,
-    PaneCopySearchDirection, PaneCopySearchParams, PaneDirection, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInputSetParams, PaneLayoutPane,
-    PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneRenameParams, PaneReportAgentParams,
-    PaneReportAgentSessionParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
-    PaneScrollParams, PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
-    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
-    PaneZoomReason, PaneZoomResult, ResponseResult,
+    PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams,
+    PaneDirection, PaneFocusDirectionParams, PaneFocusDirectionReason, PaneFocusDirectionResult,
+    PaneInputSetParams, PaneLayoutPane, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
+    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams, PaneResizeParams,
+    PaneResizeReason, PaneResizeResult, PaneScrollParams, PaneSelectionReadParams, PaneSplitParams,
+    PaneSwapParams, PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange,
+    PaneZoomMode, PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 
@@ -176,21 +175,6 @@ impl App {
         let Some(pane) = self.pane_info(outcome.workspace_index, outcome.pane_id) else {
             return failure(ApiErrorCode::PaneSplitFailed, "new pane is unavailable");
         };
-        self.emit_event(EventEnvelope {
-            data: EventData::PaneCreated { pane: pane.clone() },
-        });
-        self.emit_layout_updated_event(outcome.workspace_index, outcome.tab_index);
-
-        success(ResponseResult::PaneInfo { pane })
-    }
-
-    pub(super) fn handle_pane_get(&mut self, target: &PaneTarget) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
-        };
-        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
-        };
 
         success(ResponseResult::PaneInfo { pane })
     }
@@ -255,11 +239,6 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        // The label is part of `PaneInfo`, so subscribers see the rename as a
-        // pane update.
-        self.emit_event(EventEnvelope {
-            data: EventData::PaneUpdated { pane: pane.clone() },
-        });
 
         success(ResponseResult::PaneInfo { pane })
     }
@@ -276,46 +255,14 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
-        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
-        };
-        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
-        };
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
-        };
-        let layout_update_target = (plan.scope == shepr_mux::workspace::PaneRemovalScope::Pane)
-            .then_some((ws_idx, plan.tab_index));
-        let container_events = match plan.scope {
-            shepr_mux::workspace::PaneRemovalScope::Pane => Vec::new(),
-            shepr_mux::workspace::PaneRemovalScope::Tab => {
-                self.tab_close_events(ws_idx, plan.tab_index)
-            }
-            shepr_mux::workspace::PaneRemovalScope::Workspace => {
-                self.workspace_close_events(ws_idx)
-            }
         };
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
         self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         self.schedule_session_save();
-        match outcome.removal.scope {
-            shepr_mux::workspace::PaneRemovalScope::Pane => self.emit_event(EventEnvelope {
-                data: EventData::PaneClosed {
-                    pane_id: public_pane_id,
-                    workspace_id,
-                },
-            }),
-            shepr_mux::workspace::PaneRemovalScope::Tab
-            | shepr_mux::workspace::PaneRemovalScope::Workspace => {
-                self.emit_events(container_events);
-            }
-        }
-        if let Some((ws_idx, tab_idx)) = layout_update_target {
-            self.emit_layout_updated_event(ws_idx, tab_idx);
-        }
 
         Ok(())
     }
@@ -430,18 +377,6 @@ impl App {
             panes,
             splits,
         })
-    }
-
-    pub(crate) fn emit_layout_updated_event(&mut self, ws_idx: usize, tab_idx: usize) {
-        if let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) {
-            self.emit_layout_updated_snapshot(layout);
-        }
-    }
-
-    pub(super) fn emit_layout_updated_snapshot(&mut self, layout: PaneLayoutSnapshot) {
-        self.emit_event(EventEnvelope {
-            data: EventData::LayoutUpdated { layout },
-        });
     }
 }
 

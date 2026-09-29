@@ -57,20 +57,4 @@ impl App {
 
         success(ResponseResult::Ok {})
     }
-
-    pub(crate) fn handle_pane_clear_agent_authority(
-        &mut self,
-        params: PaneClearAgentAuthorityParams,
-    ) -> shepr_api::error::ApiResult {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
-        self.handle_internal_event(shepr_mux::events::AppEvent::HookAuthorityCleared {
-            pane_id,
-            source: params.source,
-            seq: params.seq,
-        });
-
-        success(ResponseResult::Ok {})
-    }
 }

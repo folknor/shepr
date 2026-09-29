@@ -101,9 +101,6 @@ impl App {
             );
         };
         let focused_pane_id = layout.focused_pane_id.clone();
-        if changed {
-            self.emit_layout_updated_snapshot(layout.clone());
-        }
 
         success(ResponseResult::PaneResize {
             resize: PaneResizeResult {
@@ -280,9 +277,6 @@ impl App {
             );
         };
         let focused_pane_id = layout.focused_pane_id.clone();
-        if changed {
-            self.emit_layout_updated_snapshot(layout.clone());
-        }
 
         success(ResponseResult::PaneSwap {
             swap: PaneSwapResult {
@@ -332,9 +326,6 @@ impl App {
             );
         };
         let focused_pane_id = layout.focused_pane_id.clone();
-        if outcome.changed || outcome.focus_changed {
-            self.emit_layout_updated_snapshot(layout.clone());
-        }
 
         success(ResponseResult::PaneZoom {
             zoom: PaneZoomResult {

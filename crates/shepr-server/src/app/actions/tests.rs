@@ -87,7 +87,6 @@ fn pane_removal_command_returns_the_removed_container_scope() {
     let plan = state
         .prepare_pane_removal(0, first_pane)
         .expect("test precondition");
-    assert_eq!(plan.scope, PaneRemovalScope::Tab);
     let PaneRemovalCommit::Removed(outcome) = state.commit_pane_removal(&plan) else {
         panic!("prepared tab removal must commit");
     };
@@ -421,66 +420,6 @@ fn move_workspace_accepts_insert_at_end() {
         .map(shepr_mux::workspace::Workspace::display_name)
         .collect();
     assert_eq!(names, vec!["b", "c", "a"]);
-}
-
-#[test]
-fn move_workspace_block_collects_non_contiguous_members() {
-    let mut state = app_with_workspaces(&["child-one", "normal", "parent", "child-two", "tail"]);
-    let parent_id = state.workspaces[2].id.clone();
-    let child_one_id = state.workspaces[0].id.clone();
-    let child_two_id = state.workspaces[3].id.clone();
-    let tail_id = state.workspaces[4].id.clone();
-    state.set_active_index(Some(0));
-    state.set_selected_index(Some(4));
-
-    assert!(state.move_workspace_block(
-        &[parent_id, child_one_id.clone(), child_two_id],
-        Some(&tail_id),
-    ));
-
-    let names = state
-        .workspaces
-        .iter()
-        .map(shepr_mux::workspace::Workspace::display_name)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names,
-        ["normal", "parent", "child-one", "child-two", "tail"]
-    );
-    assert_eq!(
-        state.workspaces[state.active_index().expect("test precondition")].id,
-        child_one_id
-    );
-    assert_eq!(
-        state.workspaces[state.selected_index().unwrap_or(0)].id,
-        tail_id
-    );
-}
-
-#[test]
-fn move_workspace_block_rejects_invalid_and_noop_orders() {
-    let mut state = app_with_workspaces(&["a", "b", "c"]);
-    let ids = state
-        .workspaces
-        .iter()
-        .map(|workspace| workspace.id.clone())
-        .collect::<Vec<_>>();
-    // A number the allocator never reaches, so no workspace holds it.
-    let missing = shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero number");
-
-    assert!(!state.move_workspace_block(&[], None));
-    assert!(!state.move_workspace_block(&[ids[0].clone(), ids[0].clone()], None));
-    assert!(!state.move_workspace_block(&[missing], None));
-    assert!(!state.move_workspace_block(&[ids[0].clone()], Some(&ids[0])));
-    assert!(!state.move_workspace_block(&[ids[0].clone()], Some(&ids[1])));
-    assert_eq!(
-        state
-            .workspaces
-            .iter()
-            .map(shepr_mux::workspace::Workspace::display_name)
-            .collect::<Vec<_>>(),
-        ["a", "b", "c"]
-    );
 }
 
 #[test]
@@ -839,7 +778,7 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
     let first_session = test_dir.path().join("one.jsonl").display().to_string();
     let second_session = test_dir.path().join("two.jsonl").display().to_string();
 
-    let first_updates = state.handle_app_event(AppEvent::HookStateReported {
+    let first_update = state.handle_app_event(AppEvent::HookStateReported {
         pane_id,
         source: "custom:pi".into(),
         agent_label: "pi".into(),
@@ -848,10 +787,10 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         seq: Some(20),
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(first_session),
     });
-    assert_eq!(first_updates.len(), 1);
+    assert_eq!(first_update, StateUpdate::Changed);
     state.session_dirty = false;
 
-    let second_updates = state.handle_app_event(AppEvent::HookStateReported {
+    let second_update = state.handle_app_event(AppEvent::HookStateReported {
         pane_id,
         source: "custom:pi".into(),
         agent_label: "pi".into(),
@@ -861,7 +800,7 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(second_session),
     });
 
-    assert!(second_updates.is_empty());
+    assert_eq!(second_update, StateUpdate::Unchanged);
     assert!(state.session_dirty);
 }
 
@@ -882,12 +821,12 @@ fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
     let cwd = scratch.to_path_buf();
     state.session_dirty = false;
 
-    let updates = state.handle_app_event(AppEvent::TerminalCwdReported {
+    let update = state.handle_app_event(AppEvent::TerminalCwdReported {
         pane_id,
         cwd: shepr_mux::UsableCwd::new(cwd.clone()).expect("test cwd is usable"),
     });
 
-    assert!(updates.is_empty());
+    assert_eq!(update, StateUpdate::Unchanged);
     assert_eq!(
         state
             .terminals
@@ -1087,16 +1026,19 @@ fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
         AgentState::Working
     );
 
-    let update = state
-        .publish_pane_process_exit_if_agent(pane_id)
-        .expect("process exit update");
+    assert!(
+        state.publish_pane_process_exit_if_agent(pane_id),
+        "the exit releases the agent"
+    );
 
-    assert_eq!(update.workspace_id, state.workspaces[0].id);
-    assert_eq!(update.previous.state, AgentState::Working);
-    assert_eq!(update.current.state, AgentState::Idle);
-    assert_eq!(update.current.agent_label.as_deref(), Some("pi"));
-    assert_eq!(update.current.known_agent, Some(Agent::Pi));
-    assert!(update.cause.released());
+    assert_eq!(
+        state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition")
+            .state,
+        AgentState::Idle
+    );
 }
 
 #[test]

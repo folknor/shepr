@@ -113,13 +113,9 @@ pub(crate) fn client_shell_snapshot(
 }
 
 pub(crate) fn test_headless_server() -> HeadlessServer {
-    test_headless_server_with_event_hub(shepr_api::EventHub::default())
-}
-
-fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> HeadlessServer {
     let config = shepr_config::Config::default();
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test, api_rx, event_hub);
+    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test, api_rx);
 
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
     // The server removes its socket when dropped.
@@ -272,9 +268,8 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
 }
 
 #[tokio::test]
-async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
-    let event_hub = shepr_api::EventHub::default();
-    let mut server = test_headless_server_with_event_hub(event_hub.clone());
+async fn headless_api_reads_latest_title() {
+    let mut server = test_headless_server();
     server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("one")];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -304,7 +299,6 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .expect("test precondition");
     assert_eq!(first.terminal_title.as_deref(), Some("⠋ task"));
     assert_eq!(first.terminal_title_stripped.as_deref(), Some("task"));
-    assert_eq!(pane_updated_events(&event_hub), 1);
     server
         .app
         .terminal_runtimes
@@ -317,7 +311,6 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .expect("test precondition");
     assert_eq!(second.terminal_title.as_deref(), Some("⠙ task"));
     assert_eq!(second.terminal_title_stripped.as_deref(), Some("task"));
-    assert_eq!(pane_updated_events(&event_hub), 1);
 }
 
 fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::PaneInfo> {
@@ -339,14 +332,6 @@ fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::Pan
         panic!("expected session snapshot");
     };
     snapshot.panes
-}
-
-fn pane_updated_events(event_hub: &shepr_api::EventHub) -> usize {
-    event_hub
-        .events_after(0)
-        .iter()
-        .filter(|(_, event)| event.data.kind() == shepr_api::schema::EventKind::PaneUpdated)
-        .count()
 }
 
 #[test]
@@ -2470,11 +2455,10 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
 }
 
 #[tokio::test]
-async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves() {
-    use shepr_api::schema::{EventData, Method, PaneTarget, TabTarget};
+async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
+    use shepr_api::schema::{Method, PaneTarget, TabTarget};
 
-    let event_hub = shepr_api::EventHub::default();
-    let mut server = test_headless_server_with_event_hub(event_hub.clone());
+    let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("focus-events");
     let first_pane = workspace.tabs()[0].root_pane();
     let second_tab = workspace.test_add_tab(Some("second"));
@@ -2497,10 +2481,6 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         .app
         .public_pane_id(0, second_pane)
         .expect("test precondition");
-    let workspace_id = server
-        .app
-        .public_workspace_id(0)
-        .expect("test precondition");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 61);
     let (second_control, _) = connect_matching_test_shell(&mut server, 62);
@@ -2514,45 +2494,28 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         tab_id: second_tab_id.to_string(),
     };
     let cases = [
-        (
-            61,
-            Method::TabFocus(second_tab.clone()),
-            Some(&second_pane_id),
-        ),
-        // Both clients selecting the same destination must each emit an event.
-        (
-            62,
-            Method::TabFocus(second_tab.clone()),
-            Some(&second_pane_id),
-        ),
-        (61, Method::TabFocus(second_tab.clone()), None),
-        (61, Method::TabFocus(first_tab), Some(&first_pane_id)),
-        // Switching the server's default to this client's unchanged tab is not navigation.
+        (61, Method::TabFocus(second_tab.clone())),
+        (62, Method::TabFocus(second_tab.clone())),
+        (61, Method::TabFocus(second_tab.clone())),
+        (61, Method::TabFocus(first_tab)),
         (
             62,
             Method::PaneFocus(PaneTarget {
                 pane_id: second_pane_id.clone().to_string(),
             }),
-            None,
         ),
         (
             62,
             Method::PaneFocus(PaneTarget {
                 pane_id: first_pane_id.clone().to_string(),
             }),
-            Some(&first_pane_id),
         ),
-        (
-            61,
-            Method::TabFocus(second_tab.clone()),
-            Some(&second_pane_id),
-        ),
-        (61, Method::TabClose(second_tab), Some(&first_pane_id)),
+        (61, Method::TabFocus(second_tab.clone())),
+        (61, Method::TabClose(second_tab)),
     ];
-    for (client_id, method, expected_pane) in cases {
+    for (client_id, method) in cases {
         let other_client = ClientId::test_new(if client_id == 61 { 62 } else { 61 });
         let other_focus = server.shell_focus_target(other_client);
-        let sequence = event_hub.current_sequence();
         let (respond_to, response_rx) = std::sync::mpsc::channel();
         server.handle_client_shell_api_request(
             client_id.into(),
@@ -2574,23 +2537,11 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         );
         server.app.sync_focus_events();
 
-        let focused = event_hub
-            .events_after(sequence)
-            .into_iter()
-            .filter_map(|(_, event)| match event.data {
-                EventData::PaneFocused {
-                    pane_id,
-                    workspace_id,
-                } => Some((pane_id, workspace_id)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let expected = expected_pane
-            .map(|pane_id| (pane_id.clone(), workspace_id.clone()))
-            .into_iter()
-            .collect::<Vec<_>>();
-        assert_eq!(focused, expected, "client {client_id}");
-        assert_eq!(server.shell_focus_target(other_client), other_focus);
+        assert_eq!(
+            server.shell_focus_target(other_client),
+            other_focus,
+            "client {client_id}"
+        );
     }
     shutdown_test_runtimes(&mut server);
 }

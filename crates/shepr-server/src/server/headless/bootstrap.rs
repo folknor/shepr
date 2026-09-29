@@ -135,13 +135,11 @@ pub fn run_server(
     shepr_agent::detect::manifest::compile_bundled_manifests();
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let event_hub = shepr_api::EventHub::default();
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
     // Start the JSON API socket server.
     let _api_server = match shepr_api::start_server_with_stop_control(
         api_tx.clone(),
-        event_hub.clone(),
         Arc::clone(&stop_requested),
         paths,
     ) {
@@ -162,7 +160,6 @@ pub fn run_server(
             lease,
             app::AppPolicy::Production,
             api_rx,
-            event_hub,
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);

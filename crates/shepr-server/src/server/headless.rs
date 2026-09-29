@@ -1317,7 +1317,7 @@ impl HeadlessServer {
                 client_id,
                 boot_id,
                 request,
-            } => self.handle_client_shell_endpoint_request(client_id, boot_id, request),
+            } => self.handle_client_shell_endpoint_request(client_id, boot_id, *request),
             ServerEvent::ClientShellEndpointResponseChunkReady {
                 client_id,
                 boot_id,
