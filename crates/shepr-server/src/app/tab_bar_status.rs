@@ -46,19 +46,22 @@ impl App {
             if let Some(workspace_id) = self.public_workspace_id(ws_idx) {
                 env.push((
                     ChildEnv::SheprActiveWorkspaceId.name().to_string(),
-                    workspace_id,
+                    workspace_id.into(),
                 ));
             }
             if let Some(workspace) = self.state.workspaces.get(ws_idx) {
                 let tab_idx = workspace.active_tab_index();
                 if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
-                    env.push((ChildEnv::SheprActiveTabId.name().to_string(), tab_id));
+                    env.push((
+                        ChildEnv::SheprActiveTabId.name().to_string(),
+                        tab_id.to_string(),
+                    ));
                 }
                 let pane_id = workspace.focused_pane_id();
                 if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
                     env.push((
                         ChildEnv::SheprActivePaneId.name().to_string(),
-                        public_pane_id,
+                        public_pane_id.to_string(),
                     ));
                 }
                 if let Some(pane_cwd) = workspace.active_tab().cwd_for_pane(
@@ -258,7 +261,8 @@ impl App {
             if runtime.task.is_some() || now < runtime.next_run_at {
                 continue;
             }
-            runtime.next_run_at = now.checked_add(runtime.interval).unwrap_or(now);
+            // Config caps the interval at a year, far inside `Instant`'s range.
+            runtime.next_run_at = now + runtime.interval;
             runtime.task = Some(spawn_status_command(
                 self.event_tx.clone(),
                 runtime.segment_index,

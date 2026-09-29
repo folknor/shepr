@@ -286,7 +286,7 @@ mod tests {
         let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
         let response = app.handle_tab_close(&TabTarget {
-            tab_id: tab_id.clone(),
+            tab_id: tab_id.clone().to_string(),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -362,7 +362,7 @@ mod tests {
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
 
         let response = app.handle_tab_close(&TabTarget {
-            tab_id: tab_id.clone(),
+            tab_id: tab_id.clone().to_string(),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -412,7 +412,7 @@ mod tests {
         let moved_id = app.public_tab_id(0, 0).expect("test precondition");
 
         let response = app.handle_tab_move(&TabMoveParams {
-            tab_id: moved_id.clone(),
+            tab_id: moved_id.clone().to_string(),
             insert_index: 3,
         });
 

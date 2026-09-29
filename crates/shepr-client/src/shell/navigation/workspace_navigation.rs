@@ -4,7 +4,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct WorkspaceNavigationTarget {
     pub(super) endpoint_id: ClientEndpointId,
-    pub(super) workspace_id: String,
+    pub(super) workspace_id: shepr_protocol::WorkspaceId,
     boot_id: shepr_protocol::BootId,
     generation: Option<u64>,
 }
@@ -17,8 +17,12 @@ pub(super) struct PendingWorkspaceHighlight {
 }
 
 impl WorkspaceNavigationTarget {
-    pub(super) fn matches(&self, endpoint_id: &ClientEndpointId, workspace_id: &str) -> bool {
-        &self.endpoint_id == endpoint_id && self.workspace_id == workspace_id
+    pub(super) fn matches(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        workspace_id: &shepr_protocol::WorkspaceId,
+    ) -> bool {
+        &self.endpoint_id == endpoint_id && self.workspace_id == *workspace_id
     }
 }
 
@@ -55,7 +59,7 @@ impl ClientShellState {
     pub(super) fn navigation_target(
         &self,
         endpoint_id: &ClientEndpointId,
-        workspace_id: &str,
+        workspace_id: &shepr_protocol::WorkspaceId,
     ) -> Option<WorkspaceNavigationTarget> {
         let endpoint = self
             .endpoints
@@ -64,14 +68,14 @@ impl ClientShellState {
         let snapshot = endpoint.snapshot.as_deref()?;
         Some(WorkspaceNavigationTarget {
             endpoint_id: endpoint_id.clone(),
-            workspace_id: workspace_id.to_owned(),
+            workspace_id: workspace_id.clone(),
             boot_id: snapshot.boot_id.clone(),
             generation: endpoint.snapshot_generation,
         })
     }
 
     pub(super) fn focused_navigation_target(&self) -> Option<WorkspaceNavigationTarget> {
-        let workspace_id = self.snapshot.as_deref()?.focused_workspace_id.as_deref()?;
+        let workspace_id = self.snapshot.as_deref()?.focused_workspace_id.as_ref()?;
         self.navigation_target(&self.active_endpoint_id, workspace_id)
     }
 
@@ -108,7 +112,7 @@ impl ClientShellState {
             for entry in render::workspace_entries(snapshot) {
                 targets.push(WorkspaceNavigationTarget {
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: snapshot.workspaces[entry].workspace_id.to_string(),
+                    workspace_id: snapshot.workspaces[entry].workspace_id.clone(),
                     boot_id: snapshot.boot_id.clone(),
                     generation: endpoint.snapshot_generation,
                 });

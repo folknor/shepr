@@ -60,7 +60,9 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     crate::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
-            target: Some(ClientEndpointFocusTarget::Workspace("w1".into())),
+            target: Some(ClientEndpointFocusTarget::Workspace(
+                shepr_test_fixtures::id("w1"),
+            )),
         }],
         &mut commands,
         &mut endpoints,
@@ -118,7 +120,9 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
 
     let (mut state, actions) = pending_request();
     let stale_id = request_id(&actions).to_owned();
-    let current = state.focus_endpoint_target(ClientEndpointFocusTarget::Workspace("w1".into()));
+    let current = state.focus_endpoint_target(ClientEndpointFocusTarget::Workspace(
+        shepr_test_fixtures::id("w1"),
+    ));
     let current_id = request_id(&current).to_owned();
     let mut commands = EndpointCommands::default();
     for (generation, actions) in [(1, actions), (2, current)] {

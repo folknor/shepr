@@ -37,20 +37,10 @@ pub(super) fn snapshot_from_session(
 ) -> shepr_protocol::ClientShellSnapshot {
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
-        .or_else(|| {
-            snapshot
-                .focused_workspace_id
-                .as_deref()
-                .and_then(|id| id.parse().ok())
-        });
+        .or(snapshot.focused_workspace_id);
     let focused_tab_id = location
         .and_then(|location| location.focused_tab_id().cloned())
-        .or_else(|| {
-            snapshot
-                .focused_tab_id
-                .as_deref()
-                .and_then(|id| id.parse().ok())
-        });
+        .or(snapshot.focused_tab_id);
     let focused_pane_id = focused_tab_id
         .as_ref()
         .and_then(|tab_id| app.resolve_tab_id(tab_id))
@@ -63,14 +53,9 @@ pub(super) fn snapshot_from_session(
                 .get(tab_index)?
                 .layout()
                 .focused();
-            app.typed_public_pane_id(workspace_index, pane_id)
+            app.public_pane_id(workspace_index, pane_id)
         })
-        .or_else(|| {
-            snapshot
-                .focused_pane_id
-                .as_deref()
-                .and_then(|id| id.parse().ok())
-        });
+        .or(snapshot.focused_pane_id);
     // Snapshot entries are joined to live state by their public ids, never by
     // position: a snapshot that filtered or reordered entries would otherwise
     // hand one workspace's or tab's labels, branch and zoom to another. The
@@ -80,16 +65,10 @@ pub(super) fn snapshot_from_session(
         .workspaces
         .into_iter()
         .enumerate()
-        .filter_map(|(position, workspace)| {
+        .map(|(position, workspace)| {
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
-            // The session snapshot is the JSON API's, whose ids are `String`s,
-            // so every id in it is parsed back to its type here. This same app
-            // spelled them from typed ids, so they are canonical and the parse
-            // cannot fail; an entry with an id that did not parse would be left
-            // out. The parse goes away only by typing the id fields of the JSON
-            // API's info types, which leaves their JSON text unchanged.
-            let workspace_id: shepr_protocol::WorkspaceId = workspace.workspace_id.parse().ok()?;
+            let workspace_id = workspace.workspace_id;
             let workspace_index = app
                 .state
                 .workspaces
@@ -101,7 +80,7 @@ pub(super) fn snapshot_from_session(
             let active_tab_id = location
                 .and_then(|location| location.active_tab_ids.get(&workspace_id))
                 .cloned()
-                .or_else(|| workspace.active_tab_id.parse().ok())?;
+                .unwrap_or(workspace.active_tab_id);
             let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
                 let active_tab_index = app.resolve_tab_id(&active_tab_id).and_then(
                     |(tab_workspace_index, tab_index)| {
@@ -112,8 +91,8 @@ pub(super) fn snapshot_from_session(
                     .display()
                     .to_string()
             });
-            Some(shepr_protocol::ClientShellWorkspace {
-                focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
+            shepr_protocol::ClientShellWorkspace {
+                focused: focused_workspace_id.as_ref() == Some(&workspace_id),
                 workspace_id,
                 active_tab_id,
                 new_workspace_cwd,
@@ -126,14 +105,14 @@ pub(super) fn snapshot_from_session(
                     .map(|counts| (counts.ahead, counts.behind)),
                 tokens,
                 agent_status: workspace.agent_status,
-            })
+            }
         })
         .collect();
     let tabs = snapshot
         .tabs
         .into_iter()
-        .filter_map(|tab| {
-            let tab_id: shepr_protocol::PublicTabId = tab.tab_id.parse().ok()?;
+        .map(|tab| {
+            let tab_id = tab.tab_id;
             let state = app
                 .resolve_tab_id(&tab_id)
                 .and_then(|(workspace_index, tab_index)| {
@@ -143,24 +122,24 @@ pub(super) fn snapshot_from_session(
                         .tabs()
                         .get(tab_index)
                 });
-            Some(shepr_protocol::ClientShellTab {
-                focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
+            shepr_protocol::ClientShellTab {
+                focused: focused_tab_id.as_ref() == Some(&tab_id),
                 tab_id,
-                workspace_id: tab.workspace_id.parse().ok()?,
+                workspace_id: tab.workspace_id,
                 number: tab.number,
                 label: tab.label,
                 custom_label: state.is_some_and(|state| !state.is_auto_named()),
                 zoomed: state.is_some_and(shepr_mux::workspace::Tab::zoomed),
                 agent_status: tab.agent_status,
-            })
+            }
         })
         .collect();
     let panes = snapshot
         .panes
         .into_iter()
-        .filter_map(|pane| {
-            let pane_id: shepr_protocol::PublicPaneId = pane.pane_id.parse().ok()?;
-            let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
+        .map(|pane| {
+            let pane_id = pane.pane_id;
+            let focused = focused_pane_id.as_ref() == Some(&pane_id);
             let right_click_passthrough = app
                 .resolve_pane_id(&pane_id)
                 .and_then(|(workspace_index, pane_id)| {
@@ -170,30 +149,29 @@ pub(super) fn snapshot_from_session(
                         .pane_state(pane_id)
                 })
                 .is_some_and(|pane| pane.right_click_passthrough);
-            Some(shepr_protocol::ClientShellPane {
+            shepr_protocol::ClientShellPane {
                 pane_id,
-                workspace_id: pane.workspace_id.parse().ok()?,
-                tab_id: pane.tab_id.parse().ok()?,
+                workspace_id: pane.workspace_id,
+                tab_id: pane.tab_id,
                 label: pane.label,
                 cwd: pane.cwd,
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
-            })
+            }
         })
         .collect();
     let agents = snapshot
         .agents
         .into_iter()
-        .filter_map(|agent| {
-            let focused = focused_pane_id.as_deref() == Some(agent.pane_id.as_str());
-            let pane_id = agent.pane_id.parse().ok()?;
+        .map(|agent| {
+            let focused = focused_pane_id.as_ref() == Some(&agent.pane_id);
             let mut tokens = agent.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
-            Some(shepr_protocol::ClientShellAgent {
-                pane_id,
-                workspace_id: agent.workspace_id.parse().ok()?,
-                tab_id: agent.tab_id.parse().ok()?,
+            shepr_protocol::ClientShellAgent {
+                pane_id: agent.pane_id,
+                workspace_id: agent.workspace_id,
+                tab_id: agent.tab_id,
                 name: agent.name,
                 display_agent: agent.display_agent,
                 agent: agent.agent,
@@ -204,7 +182,7 @@ pub(super) fn snapshot_from_session(
                 state_change_seq: agent.state_change_seq,
                 tokens,
                 focused,
-            })
+            }
         })
         .collect();
 
@@ -321,62 +299,59 @@ pub(super) fn render_pane_surface(
                 .pane_infos
                 .iter()
                 .filter_map(|pane| {
-                    app.typed_public_pane_id(workspace_index, pane.id)
-                        .map(|pane_id| {
-                            let runtime = app.state.runtime_for_pane_in_workspace(
-                                &app.terminal_runtimes,
-                                workspace_index,
-                                pane.id,
-                            );
-                            let mouse_reporting = runtime
-                                .is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
-                            let sgr_pixel_mouse = runtime
-                                .is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
-                            let (pixel_width, pixel_height) = if cell_size.is_known() {
-                                (
-                                    u32::from(pane.inner_rect.width) * cell_size.width_px,
-                                    u32::from(pane.inner_rect.height) * cell_size.height_px,
-                                )
+                    app.public_pane_id(workspace_index, pane.id).map(|pane_id| {
+                        let runtime = app.state.runtime_for_pane_in_workspace(
+                            &app.terminal_runtimes,
+                            workspace_index,
+                            pane.id,
+                        );
+                        let mouse_reporting = runtime
+                            .is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
+                        let sgr_pixel_mouse = runtime
+                            .is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
+                        let (pixel_width, pixel_height) = if cell_size.is_known() {
+                            (
+                                u32::from(pane.inner_rect.width) * cell_size.width_px,
+                                u32::from(pane.inner_rect.height) * cell_size.height_px,
+                            )
+                        } else {
+                            (0, 0)
+                        };
+                        let content_revision = runtime.map_or(0, |runtime| {
+                            let after = runtime.content_seq();
+                            if content_revisions_before
+                                .get(&pane.id)
+                                .is_some_and(|&(_, before)| before == after)
+                                && after.is_multiple_of(2)
+                            {
+                                after
                             } else {
-                                (0, 0)
-                            };
-                            let content_revision = runtime.map_or(0, |runtime| {
-                                let after = runtime.content_seq();
-                                if content_revisions_before
-                                    .get(&pane.id)
-                                    .is_some_and(|&(_, before)| before == after)
-                                    && after.is_multiple_of(2)
-                                {
-                                    after
-                                } else {
-                                    after | 1
-                                }
-                            });
-                            shepr_protocol::PaneSurfacePane {
-                                pane_id,
-                                content_revision,
-                                rect: pane.rect.into(),
-                                inner_rect: pane.inner_rect.into(),
-                                scrollbar_rect: pane.scrollbar_rect.map(Into::into),
-                                scroll: runtime
-                                    .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
-                                    .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
-                                        offset_from_bottom: metrics.offset_from_bottom as u64,
-                                        max_offset_from_bottom: metrics.max_offset_from_bottom
-                                            as u64,
-                                        viewport_rows: metrics.viewport_rows as u64,
-                                        history_origin: metrics.history_origin,
-                                    }),
-                                focused: pane.is_focused,
-                                mouse_reporting,
-                                sgr_pixel_mouse,
-                                alternate_screen_active: runtime.is_some_and(
-                                    shepr_mux::pane::PaneRuntime::alternate_screen_active,
-                                ),
-                                pixel_width,
-                                pixel_height,
+                                after | 1
                             }
-                        })
+                        });
+                        shepr_protocol::PaneSurfacePane {
+                            pane_id,
+                            content_revision,
+                            rect: pane.rect.into(),
+                            inner_rect: pane.inner_rect.into(),
+                            scrollbar_rect: pane.scrollbar_rect.map(Into::into),
+                            scroll: runtime
+                                .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
+                                .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
+                                    offset_from_bottom: metrics.offset_from_bottom as u64,
+                                    max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
+                                    viewport_rows: metrics.viewport_rows as u64,
+                                    history_origin: metrics.history_origin,
+                                }),
+                            focused: pane.is_focused,
+                            mouse_reporting,
+                            sgr_pixel_mouse,
+                            alternate_screen_active: runtime
+                                .is_some_and(shepr_mux::pane::PaneRuntime::alternate_screen_active),
+                            pixel_width,
+                            pixel_height,
+                        }
+                    })
                 })
                 .collect()
         });

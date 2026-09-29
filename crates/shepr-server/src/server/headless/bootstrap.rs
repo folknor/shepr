@@ -37,12 +37,12 @@ impl std::fmt::Display for RunServerError {
         match self {
             Self::AlreadyRunning { socket, path } => write!(
                 f,
-                "shepr server is already running ({socket}: {})",
+                "another server listens on the {socket} ({})",
                 path.display()
             ),
             Self::SessionDataHeld { directory } => write!(
                 f,
-                "shepr server is already running (session data: {})",
+                "another server holds the session data directory {}",
                 directory.display()
             ),
             Self::Io(error) => error.fmt(f),
@@ -260,7 +260,7 @@ fn startup_error(socket: ServerSocket, error: io::Error) -> RunServerError {
         return RunServerError::Io(error);
     };
     let path = busy.path().to_path_buf();
-    tracing::error!(%socket, path = %path.display(), "shepr server is already running");
+    tracing::error!(%socket, path = %path.display(), "another server already listens on the socket");
     RunServerError::AlreadyRunning { socket, path }
 }
 

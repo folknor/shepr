@@ -38,7 +38,7 @@ fn enter_navigation(state: &mut ClientShellState) {
 fn assert_selected(state: &ClientShellState, endpoint: &ClientEndpointId, workspace: &str) {
     assert_eq!(
         state.navigate_workspace_id,
-        state.navigation_target(endpoint, workspace)
+        state.navigation_target(endpoint, &shepr_test_fixtures::id(workspace))
     );
 }
 
@@ -759,7 +759,7 @@ fn navigation_highlight_yields_to_new_intent() {
     let mut focus = ClientShellInput::default();
     state.focus_or_activate(
         ClientEndpointId::Local,
-        ClientEndpointFocusTarget::Workspace("w2".into()),
+        ClientEndpointFocusTarget::Workspace(shepr_test_fixtures::id("w2")),
         &mut focus,
     );
     assert!(state.pending_workspace_highlight.is_none());
@@ -849,7 +849,7 @@ fn cancelled_close_does_not_restore_an_older_navigation_highlight() {
     let mut state = local_navigation_state(false);
     request_local_navigation(&mut state, 2);
     state.mode = ClientShellMode::Navigate;
-    state.open_confirm_close_overlay("w1".into());
+    state.open_confirm_close_overlay(shepr_test_fixtures::id("w1"));
     state.mode = ClientShellMode::Terminal;
     preview_key(&mut state, b"\x1b");
     assert_eq!(state.mode, ClientShellMode::Navigate);
@@ -862,7 +862,7 @@ fn cancelled_close_does_not_restore_an_older_navigation_highlight() {
 fn cancelled_close_returns_to_the_mode_it_was_opened_from() {
     let mut state = local_navigation_state(false);
     assert_eq!(state.mode, ClientShellMode::Terminal);
-    state.open_confirm_close_overlay("w1".into());
+    state.open_confirm_close_overlay(shepr_test_fixtures::id("w1"));
     preview_key(&mut state, b"\x1b");
     assert!(state.overlay.is_none());
     assert_eq!(state.mode, ClientShellMode::Terminal);

@@ -31,7 +31,7 @@ impl AppState {
             .workspaces
             .iter()
             .flat_map(|ws| {
-                let workspace_id = ws.id.to_string();
+                let workspace_id = ws.id.clone();
                 ws.tabs().iter().flat_map(move |tab| {
                     let workspace_id = workspace_id.clone();
                     tab.layout()
@@ -127,15 +127,17 @@ impl AppState {
             let previous_focus = self.current_pane_focus_target();
             self.set_active_index(Some(idx));
             self.set_selected_index(Some(idx));
-            let workspace_id = self.workspaces[idx].id.to_string();
+            let workspace_id = self.workspaces[idx].id.clone();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
             if let Some(ws) = self.workspaces.get_mut(idx) {
                 let active_tab = ws.active_tab_index();
                 ws.switch_tab(active_tab);
-                let tab_id =
-                    public_tab_id_for_index(ws, active_tab).unwrap_or_else(|| workspace_id.clone());
-                crate::logging::tab_focused(&workspace_id, &tab_id);
+                let tab_id = public_tab_id_for_index(ws, active_tab);
+                crate::logging::tab_focused(
+                    &workspace_id,
+                    tab_id.as_deref().unwrap_or(&workspace_id),
+                );
             }
             self.record_pane_focus_after_navigation(previous_focus);
         }
@@ -157,16 +159,15 @@ impl AppState {
         let workspace_changed = self.active_index() != Some(ws_idx);
         self.set_active_index(Some(ws_idx));
         self.set_selected_index(Some(ws_idx));
-        let workspace_id = self.workspaces[ws_idx].id.to_string();
+        let workspace_id = self.workspaces[ws_idx].id.clone();
         if workspace_changed {
             crate::logging::workspace_focused(&workspace_id);
         }
         self.mark_session_dirty();
         if let Some(ws) = self.workspaces.get_mut(ws_idx) {
             ws.switch_tab(tab_idx);
-            let tab_id =
-                public_tab_id_for_index(ws, tab_idx).unwrap_or_else(|| workspace_id.clone());
-            crate::logging::tab_focused(&workspace_id, &tab_id);
+            let tab_id = public_tab_id_for_index(ws, tab_idx);
+            crate::logging::tab_focused(&workspace_id, tab_id.as_deref().unwrap_or(&workspace_id));
         }
         self.refresh_active_tab_id();
         self.record_pane_focus_after_navigation(previous_focus);
@@ -196,12 +197,11 @@ impl AppState {
 
     pub fn move_workspace_block(
         &mut self,
-        workspace_ids: &[String],
-        before_workspace_id: Option<&str>,
+        workspace_ids: &[shepr_protocol::WorkspaceId],
+        before_workspace_id: Option<&shepr_protocol::WorkspaceId>,
     ) -> bool {
         let moved_ids = workspace_ids
             .iter()
-            .map(String::as_str)
             .collect::<std::collections::HashSet<_>>();
         if moved_ids.is_empty()
             || moved_ids.len() != workspace_ids.len()
@@ -210,7 +210,7 @@ impl AppState {
                 .all(|id| self.workspaces.iter().any(|workspace| workspace.id == *id))
             || before_workspace_id.is_some_and(|id| {
                 moved_ids.contains(id)
-                    || !self.workspaces.iter().any(|workspace| workspace.id == id)
+                    || !self.workspaces.iter().any(|workspace| workspace.id == *id)
             })
         {
             return false;
@@ -219,8 +219,8 @@ impl AppState {
         let mut desired_ids = self
             .workspaces
             .iter()
-            .filter(|workspace| !moved_ids.contains(workspace.id.as_str()))
-            .map(|workspace| workspace.id.to_string())
+            .filter(|workspace| !moved_ids.contains(&workspace.id))
+            .map(|workspace| workspace.id.clone())
             .collect::<Vec<_>>();
         let insert_idx = before_workspace_id
             .and_then(|id| desired_ids.iter().position(|candidate| candidate == id))
@@ -229,8 +229,8 @@ impl AppState {
         if self
             .workspaces
             .iter()
-            .map(|workspace| workspace.id.as_str())
-            .eq(desired_ids.iter().map(String::as_str))
+            .map(|workspace| &workspace.id)
+            .eq(desired_ids.iter())
         {
             return false;
         }
@@ -244,7 +244,7 @@ impl AppState {
         self.mark_session_dirty();
         self.workspaces.sort_by_key(|workspace| {
             desired_positions
-                .get(workspace.id.as_str())
+                .get(&workspace.id)
                 .copied()
                 .unwrap_or(usize::MAX)
         });
@@ -384,7 +384,7 @@ impl AppState {
             } else {
                 TabRemovalScope::Tab
             },
-            workspace_id: workspace.id.to_string(),
+            workspace_id: workspace.id.clone(),
             tab_number,
         })
     }
@@ -436,10 +436,7 @@ impl AppState {
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         self.mark_session_dirty();
-        let tab_id = shepr_mux::workspace::public_tab_id_for_number(
-            &removal.workspace_id,
-            removal.tab_number,
-        );
+        let tab_id = shepr_protocol::PublicTabId::new(&removal.workspace_id, removal.tab_number);
         crate::logging::tab_closed(&removal.workspace_id, &tab_id);
         TabRemovalCommit::Removed(TabRemovalOutcome {
             workspace_index: plan.workspace_index,
@@ -478,7 +475,7 @@ impl AppState {
     /// back to the closed slot (clamped). Closing the last workspace leaves
     /// terminal mode, since there is no pane left to type into.
     pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) -> Option<WorkspaceRemovalOutcome> {
-        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.to_string())?;
+        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.clone())?;
         self.mark_session_dirty();
         crate::logging::workspace_closed(&workspace_id);
 
@@ -535,9 +532,8 @@ impl AppState {
                 return;
             };
             ws.switch_tab(idx);
-            let workspace_id = ws.id.to_string();
-            let tab_id = public_tab_id_for_index(ws, idx).unwrap_or_else(|| workspace_id.clone());
-            crate::logging::tab_focused(&workspace_id, &tab_id);
+            let tab_id = public_tab_id_for_index(ws, idx);
+            crate::logging::tab_focused(&ws.id, tab_id.as_deref().unwrap_or(&ws.id));
             self.refresh_active_tab_id();
             self.mark_session_dirty();
             self.record_pane_focus_after_navigation(previous_focus);

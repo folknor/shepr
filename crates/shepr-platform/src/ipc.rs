@@ -468,11 +468,19 @@ pub fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
 
 /// Probe a local server socket and classify whether it is absent, stale, live,
 /// or present but unreachable. Timeouts and access failures stay errors because
-/// they do not prove that no server is listening.
+/// they do not prove that no server is listening. Anything at the path that is
+/// not a socket is unreachable, never stale: `connect` to a regular file also
+/// fails with `ECONNREFUSED`, and a stale path is one callers delete.
 pub fn probe(path: &Path) -> Liveness {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Liveness::Absent,
         Err(error) => return Liveness::Unreachable(error),
+        Ok(metadata) if !metadata.file_type().is_socket() => {
+            return Liveness::Unreachable(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} exists and is not a socket", path.display()),
+            ));
+        }
         Ok(_) => {}
     }
 
@@ -1084,6 +1092,25 @@ mod tests {
         let _listener =
             std::os::unix::net::UnixListener::bind(&live_path).expect("bind live socket");
         assert!(matches!(probe(&live_path), Liveness::Live));
+    }
+
+    /// A regular file at a socket path refuses `connect` the way a stale
+    /// socket does; it must read as unreachable so no binder deletes it.
+    #[test]
+    fn a_regular_file_at_the_socket_path_is_unreachable_and_survives_a_bind() {
+        let dir = shepr_test_support::ScratchDir::new("probe-regular-file");
+        let path = dir.join("server.sock");
+        fs::write(&path, b"not a socket").expect("write regular file");
+
+        assert!(matches!(probe(&path), Liveness::Unreachable(_)));
+        let Err(error) = bind_private_socket(&path) else {
+            panic!("a regular file at the socket path was bound over");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&path).expect("regular file is kept"),
+            b"not a socket"
+        );
     }
 
     /// Binding takes the startup lock before touching the path: a stale socket

@@ -458,11 +458,7 @@ impl HeadlessServer {
             let Some(surface_target) = self.shell_target_for_client(client_id) else {
                 continue;
             };
-            if self
-                .clients
-                .geometry_controller_by_id(&surface_target.tab_id)
-                != Some(client_id)
-            {
+            if self.clients.geometry_controller(&surface_target.tab_id) != Some(client_id) {
                 continue;
             }
             let changed = client

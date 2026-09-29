@@ -14,11 +14,12 @@ use shepr_mux::workspace::{
 
 use super::state::{AppState, Mode, PaneFocusTarget};
 
-fn public_tab_id_for_index(ws: &shepr_mux::workspace::Workspace, tab_idx: usize) -> Option<String> {
+fn public_tab_id_for_index(
+    ws: &shepr_mux::workspace::Workspace,
+    tab_idx: usize,
+) -> Option<shepr_protocol::PublicTabId> {
     let tab_number = ws.public_tab_number(tab_idx)?;
-    Some(shepr_mux::workspace::public_tab_id_for_number(
-        &ws.id, tab_number,
-    ))
+    Some(shepr_protocol::PublicTabId::new(&ws.id, tab_number))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +51,7 @@ impl PaneStateCause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneStateUpdate {
     pub pane_id: PaneId,
-    pub workspace_id: String,
+    pub workspace_id: shepr_protocol::WorkspaceId,
     pub previous: PaneStateSnapshot,
     pub current: PaneStateSnapshot,
     pub cause: PaneStateCause,
@@ -82,7 +83,7 @@ pub(crate) enum PaneRemovalCommit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceRemovalOutcome {
-    pub(crate) workspace_id: String,
+    pub(crate) workspace_id: shepr_protocol::WorkspaceId,
     pub(crate) pane_ids: Vec<PaneId>,
     pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
     /// Terminals the removal detached from state; the caller shuts down
@@ -101,7 +102,7 @@ pub(crate) struct TabRemovalPlan {
     pub(crate) workspace_index: usize,
     pub(crate) tab_index: usize,
     pub(crate) scope: TabRemovalScope,
-    workspace_id: String,
+    workspace_id: shepr_protocol::WorkspaceId,
     tab_number: usize,
 }
 
@@ -127,7 +128,7 @@ pub(crate) enum TabRemovalCommit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceCreationOutcome {
     pub(crate) workspace_index: usize,
-    pub(crate) workspace_id: String,
+    pub(crate) workspace_id: shepr_protocol::WorkspaceId,
     pub(crate) root_pane: PaneId,
     pub(crate) focused: bool,
 }

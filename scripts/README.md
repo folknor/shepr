@@ -29,3 +29,4 @@ Three standings:
 | `notes_drop.py` | tool | removes whole findings entries by ID from a notes document |
 | `notes_drop_bullet.py` | tool | removes single top-level bullets from a notes document by the start of their first line; each prefix must match exactly one bullet |
 | `fix_unwraps.py` | tool | one-off: replaced `.unwrap()` in test code for clippy's `unwrap_used` |
+| `rewrite_id_literals.py` | tool | one-off: read a `brokkr check` log and fixed test code at the reported positions when the API schema's id fields were typed (`EXPR.into()` to `shepr_test_fixtures::id(EXPR)`, and `.to_string()` where a typed id met a string field) |

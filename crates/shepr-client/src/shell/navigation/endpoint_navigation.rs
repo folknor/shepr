@@ -1,7 +1,10 @@
 use super::*;
 
 impl ClientShellState {
-    pub(super) fn active_endpoint_workspace_at(&self, point: (u16, u16)) -> Option<String> {
+    pub(super) fn active_endpoint_workspace_at(
+        &self,
+        point: (u16, u16),
+    ) -> Option<shepr_protocol::WorkspaceId> {
         self.hits
             .workspaces
             .iter()
@@ -28,7 +31,7 @@ impl ClientShellState {
     ) {
         self.focus_or_activate(
             press.endpoint_id,
-            ClientEndpointFocusTarget::Workspace(press.workspace_id.to_string()),
+            ClientEndpointFocusTarget::Workspace(press.workspace_id),
             outcome,
         );
     }
@@ -119,7 +122,7 @@ impl ClientShellState {
                                     snapshot.workspaces.get(entry).map(|workspace| {
                                         (
                                             endpoint.endpoint_id.clone(),
-                                            workspace.workspace_id.to_string(),
+                                            workspace.workspace_id.clone(),
                                         )
                                     })
                                 })
@@ -133,9 +136,9 @@ impl ClientShellState {
             let focused = self
                 .snapshot
                 .as_deref()
-                .and_then(|snapshot| snapshot.focused_workspace_id.as_deref());
+                .and_then(|snapshot| snapshot.focused_workspace_id.as_ref());
             let current = workspaces.iter().position(|(endpoint_id, workspace_id)| {
-                endpoint_id == &self.active_endpoint_id && Some(workspace_id.as_str()) == focused
+                endpoint_id == &self.active_endpoint_id && Some(workspace_id) == focused
             });
             let next = match (current, action) {
                 (Some(index), KeybindAction::PreviousWorkspace) => {
@@ -264,7 +267,7 @@ impl ClientShellState {
             let method = match target {
                 ClientEndpointFocusTarget::Workspace(workspace_id) => {
                     shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                        workspace_id,
+                        workspace_id: workspace_id.into(),
                     })
                 }
                 ClientEndpointFocusTarget::Pane(pane_id) => {

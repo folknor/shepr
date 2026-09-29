@@ -1411,7 +1411,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
     assert!(api_through_server(
         &mut server,
         shepr_api::schema::Method::PaneScroll(shepr_api::schema::PaneScrollParams {
-            pane_id,
+            pane_id: pane_id.to_string(),
             offset_from_bottom: 0,
         }),
     ));
@@ -1589,7 +1589,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert!(api_through_server(
         &mut server,
         Method::PaneRename(shepr_api::schema::PaneRenameParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id.clone().to_string(),
             label: Some("manual".into()),
         }),
     ));
@@ -1599,7 +1599,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert!(api_through_server(
         &mut server,
         Method::TabRename(shepr_api::schema::TabRenameParams {
-            tab_id: tab_id.clone(),
+            tab_id: tab_id.clone().to_string(),
             label: "named-tab".into(),
         }),
     ));
@@ -1610,7 +1610,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert!(api_through_server(
         &mut server,
         Method::PaneInputSet(shepr_api::schema::PaneInputSetParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id.clone().to_string(),
             right_click: shepr_api::schema::PaneRightClickTarget::Pane,
         }),
     ));
@@ -1619,7 +1619,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert!(api_through_server(
         &mut server,
         Method::WorkspaceReportMetadata(shepr_api::schema::WorkspaceReportMetadataParams {
-            workspace_id: workspace_id.clone(),
+            workspace_id: workspace_id.clone().to_string(),
             source: "test".into(),
             tokens: std::collections::HashMap::from([("ticket".into(), Some("T-1".into()))]),
             seq: None,
@@ -1697,7 +1697,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert!(api_through_server(
         &mut server,
         Method::PaneZoom(shepr_api::schema::PaneZoomParams {
-            pane_id: Some(public_pane_id.clone()),
+            pane_id: Some(public_pane_id.clone().to_string()),
             mode: shepr_api::schema::PaneZoomMode::On,
         }),
     ));
@@ -2403,7 +2403,7 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
             request: Box::new(shepr_api::schema::Request {
                 id: "focus-second".into(),
                 method: shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
-                    tab_id: second_tab_id.clone(),
+                    tab_id: second_tab_id.clone().to_string(),
                 }),
             }),
         })
@@ -2502,7 +2502,7 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
             request: shepr_api::schema::Request {
                 id: "read-selection".into(),
                 method: Method::PaneSelectionRead(PaneSelectionReadParams {
-                    pane_id: first_pane_id,
+                    pane_id: first_pane_id.to_string(),
                     anchor: PaneSelectionPoint {
                         row: shepr_vt::AbsRow(0),
                         col: 0,
@@ -2615,7 +2615,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
             request: shepr_api::schema::Request {
                 id: "focus-own-tab".into(),
                 method: shepr_api::schema::Method::TabFocus(shepr_api::schema::TabTarget {
-                    tab_id: second_tab_id,
+                    tab_id: second_tab_id.to_string(),
                 }),
             },
             respond_to,
@@ -2666,10 +2666,10 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
     let _ = second_control.recv().expect("second snapshot");
 
     let first_tab = TabTarget {
-        tab_id: first_tab_id,
+        tab_id: first_tab_id.to_string(),
     };
     let second_tab = TabTarget {
-        tab_id: second_tab_id,
+        tab_id: second_tab_id.to_string(),
     };
     let cases = [
         (
@@ -2689,14 +2689,14 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         (
             62,
             Method::PaneFocus(PaneTarget {
-                pane_id: second_pane_id.clone(),
+                pane_id: second_pane_id.clone().to_string(),
             }),
             None,
         ),
         (
             62,
             Method::PaneFocus(PaneTarget {
-                pane_id: first_pane_id.clone(),
+                pane_id: first_pane_id.clone().to_string(),
             }),
             Some(&first_pane_id),
         ),
@@ -2861,7 +2861,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
                 id: "resize-layout".into(),
                 method: shepr_api::schema::Method::LayoutSetSplitRatio(
                     shepr_api::schema::LayoutSetSplitRatioParams {
-                        tab_id: Some(tab_id),
+                        tab_id: Some(tab_id.to_string()),
                         pane_id: None,
                         path: Vec::new(),
                         ratio: 0.8,
@@ -2912,7 +2912,7 @@ async fn public_close_reapplies_controller_geometry() {
             request: shepr_api::schema::Request {
                 id: "public-close-geometry".into(),
                 method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
-                    pane_id: second_pane_id,
+                    pane_id: second_pane_id.to_string(),
                 }),
             },
             respond_to,
@@ -3183,7 +3183,7 @@ async fn public_background_tab_create_preserves_client_locations() {
         request: shepr_api::schema::Request {
             id: "create-background-tab".into(),
             method: shepr_api::schema::Method::TabCreate(shepr_api::schema::TabCreateParams {
-                workspace_id: Some(workspace_id),
+                workspace_id: Some(workspace_id.to_string()),
                 cwd: None,
                 focus: false,
                 label: Some("background".into()),
@@ -3241,7 +3241,7 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
         request: shepr_api::schema::Request {
             id: "focus-second-workspace".into(),
             method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                workspace_id: second_workspace_id.clone(),
+                workspace_id: second_workspace_id.clone().to_string(),
             }),
         },
         respond_to,
@@ -3341,7 +3341,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         request: shepr_api::schema::Request {
             id: "focus-first-agent".into(),
             method: shepr_api::schema::Method::AgentFocus(shepr_api::schema::AgentTarget {
-                target: first_pane_id.clone(),
+                target: first_pane_id.clone().to_string(),
             }),
         },
         respond_to,
@@ -3366,7 +3366,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     );
     assert_eq!(
         location.focused_tab_id().map(ToString::to_string),
-        Some(first_tab_id.clone())
+        Some(first_tab_id.clone()).map(|id| id.to_string())
     );
 
     server.render_and_stream();
@@ -3416,7 +3416,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
         request: shepr_api::schema::Request {
             id: "test.client.shell.workspace.focus".into(),
             method: shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                workspace_id: second_id.clone(),
+                workspace_id: second_id.clone().to_string(),
             }),
         },
         respond_to,
@@ -3828,7 +3828,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
             break kind.to_string();
         }
     };
-    assert!(message.contains(&pane_id), "message: {message}");
+    assert!(message.contains(pane_id.as_str()), "message: {message}");
     assert!(message.contains("2 events"), "message: {message}");
     shutdown_test_runtimes(&mut server);
 }
@@ -4300,9 +4300,9 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
                 respond_to,
                 Ok(shepr_api::schema::ResponseResult::Ok {}),
                 shepr_api::schema::PaneReadResult {
-                    pane_id: "w1:p1".into(),
-                    workspace_id: "w1".into(),
-                    tab_id: "w1:t1".into(),
+                    pane_id: shepr_test_fixtures::id("w1:p1"),
+                    workspace_id: shepr_test_fixtures::id("w1"),
+                    tab_id: shepr_test_fixtures::id("w1:t1"),
                     source: shepr_api::schema::ReadSource::Recent,
                     format: shepr_api::schema::ReadFormat::Text,
                     text: String::new(),

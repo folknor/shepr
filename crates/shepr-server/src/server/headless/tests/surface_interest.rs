@@ -79,7 +79,9 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             request: Box::new(shepr_api::schema::Request {
                 id: "inactive-mutation".into(),
                 method: shepr_api::schema::Method::WorkspaceFocus(
-                    shepr_api::schema::WorkspaceTarget { workspace_id }
+                    shepr_api::schema::WorkspaceTarget {
+                        workspace_id: workspace_id.to_string(),
+                    },
                 ),
             }),
         })

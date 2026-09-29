@@ -179,7 +179,7 @@ impl Client {
 fn renamed_event(index: usize) -> EventEnvelope {
     EventEnvelope {
         data: EventData::WorkspaceRenamed {
-            workspace_id: "workspace_1".into(),
+            workspace_id: shepr_test_fixtures::id("w1"),
             label: format!("flood-{index}"),
         },
     }
@@ -190,7 +190,7 @@ fn renamed_event(index: usize) -> EventEnvelope {
 fn scroll_subscription() -> Value {
     json!({
         "type": "pane.scroll_changed",
-        "pane_id": "pane_1"
+        "pane_id": "w1:p1"
     })
 }
 
@@ -205,10 +205,10 @@ fn reply_to_probe(request: &ApiRequestMessage) {
     let result = match request.request.method {
         Method::PaneGet(_) => ResponseResult::PaneInfo {
             pane: PaneInfo {
-                pane_id: "pane_1".into(),
-                terminal_id: "term_1".into(),
-                workspace_id: "workspace_1".into(),
-                tab_id: "tab_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                terminal_id: shepr_test_fixtures::id("term_1_1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
+                tab_id: shepr_test_fixtures::id("w1:t1"),
                 focused: true,
                 cwd: None,
                 foreground_cwd: None,
@@ -257,7 +257,7 @@ fn events_for_different_subscriptions_arrive_in_hub_order_with_their_sequence() 
     let start = test.hub.current_sequence();
     test.hub.push(EventEnvelope {
         data: EventData::WorkspaceFocused {
-            workspace_id: "workspace_1".into(),
+            workspace_id: shepr_test_fixtures::id("w1"),
         },
     });
     test.hub.push(renamed_event(0));
@@ -287,7 +287,7 @@ fn assert_subscription_history_loss(agent_status: bool) {
     let subscriptions = if agent_status {
         json!([{
             "type": "pane.agent_status_changed",
-            "pane_id": "pane_1",
+            "pane_id": "w1:p1",
             "agent_status": "working"
         }])
     } else {

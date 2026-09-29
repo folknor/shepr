@@ -546,14 +546,14 @@ fn nav_direction(direction: PaneDirection) -> NavDirection {
 
 enum ResolvedPaneMoveDestination {
     ExistingTab {
-        tab_id: String,
+        tab_id: shepr_protocol::PublicTabId,
         target_pane_id: PaneId,
         split: shepr_api::schema::SplitDirection,
         ratio: f32,
         cross_workspace: bool,
     },
     NewTab {
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         label: Option<String>,
     },
     NewWorkspace {
@@ -572,9 +572,9 @@ struct PaneMoveRecoveryContext {
 
 fn encode_unchanged_pane_move(
     reason: PaneMoveReason,
-    previous_pane_id: String,
-    previous_workspace_id: String,
-    previous_tab_id: String,
+    previous_pane_id: shepr_protocol::PublicPaneId,
+    previous_workspace_id: shepr_protocol::WorkspaceId,
+    previous_tab_id: shepr_protocol::PublicTabId,
     pane: PaneInfo,
     source_layout: Option<PaneLayoutSnapshot>,
     target_layout: PaneLayoutSnapshot,

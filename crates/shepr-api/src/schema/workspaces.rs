@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use shepr_protocol::{PublicTabId, WorkspaceId};
 
 use super::common::AgentStatus;
 
@@ -56,13 +57,13 @@ pub struct WorkspaceReportMetadataParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     pub number: usize,
     pub label: String,
     pub focused: bool,
     pub pane_count: usize,
     pub tab_count: usize,
-    pub active_tab_id: String,
+    pub active_tab_id: PublicTabId,
     pub agent_status: AgentStatus,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tokens: HashMap<String, String>,

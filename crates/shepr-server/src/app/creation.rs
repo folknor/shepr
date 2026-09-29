@@ -291,7 +291,7 @@ impl App {
         let tab = ws.tabs().get(tab_idx)?;
         Some(shepr_api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
-            terminal_id: terminal.id.to_string(),
+            terminal_id: terminal.id.clone(),
             workspace_id: self.public_workspace_id(ws_idx)?,
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
@@ -324,7 +324,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<(&shepr_mux::pane::PaneRuntime, String)> {
+    ) -> Option<(&shepr_mux::pane::PaneRuntime, shepr_protocol::WorkspaceId)> {
         let runtime =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;

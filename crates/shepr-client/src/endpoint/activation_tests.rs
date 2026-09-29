@@ -261,13 +261,16 @@ fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
         id: id.into(),
         result: shepr_api::schema::ResponseResult::WorkspaceInfo {
             workspace: shepr_api::schema::WorkspaceInfo {
-                workspace_id: workspace_id.into(),
+                workspace_id: shepr_test_fixtures::id(workspace_id),
                 number: 1,
                 label: workspace_id.into(),
                 focused: true,
                 pane_count: 1,
                 tab_count: 1,
-                active_tab_id: "tab".into(),
+                active_tab_id: shepr_protocol::PublicTabId::new(
+                    &shepr_test_fixtures::id(workspace_id),
+                    1,
+                ),
                 agent_status: shepr_api::schema::AgentStatus::Idle,
                 tokens: Default::default(),
             },
@@ -647,7 +650,7 @@ fn same_target_retarget_is_latest_wins() {
         &mut endpoints,
         &target,
         Some(crate::shell::ClientEndpointFocusTarget::Workspace(
-            "old".into(),
+            shepr_test_fixtures::id("w1"),
         )),
         resize(),
         12,
@@ -682,7 +685,7 @@ fn same_target_retarget_is_latest_wins() {
     activation
         .retarget(
             Some(crate::shell::ClientEndpointFocusTarget::Workspace(
-                "new".into(),
+                shepr_test_fixtures::id("w2"),
             )),
             &mut endpoints,
         )
@@ -702,7 +705,7 @@ fn same_target_retarget_is_latest_wins() {
             &target,
             7,
             &old_focus,
-            &workspace_focus_success(&old_focus, "old"),
+            &workspace_focus_success(&old_focus, "w1"),
             &mut endpoints,
         ),
         SurfaceActivationProgress::Pending
@@ -1390,7 +1393,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             &mut serial,
             ClientEndpointId::Local,
             Some(crate::shell::ClientEndpointFocusTarget::Workspace(
-                "selected-local".into(),
+                shepr_test_fixtures::id("w3"),
             )),
             false,
             Instant::now(),
@@ -1440,7 +1443,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
         assert_eq!(
             target,
             Some(crate::shell::ClientEndpointFocusTarget::Workspace(
-                "selected-local".into()
+                shepr_test_fixtures::id("w3")
             ))
         );
         begin_endpoint_activation(

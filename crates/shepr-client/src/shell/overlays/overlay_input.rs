@@ -133,7 +133,7 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn workspace_action_id(&self) -> Option<String> {
+    pub(super) fn workspace_action_id(&self) -> Option<shepr_protocol::WorkspaceId> {
         self.navigate_workspace_id
             .as_ref()
             .filter(|target| {
@@ -142,12 +142,9 @@ impl ClientShellState {
             })
             .map(|target| target.workspace_id.clone())
             .or_else(|| {
-                self.snapshot.as_deref().and_then(|snapshot| {
-                    snapshot
-                        .focused_workspace_id
-                        .as_ref()
-                        .map(ToString::to_string)
-                })
+                self.snapshot
+                    .as_deref()
+                    .and_then(|snapshot| snapshot.focused_workspace_id.clone())
             })
     }
 
@@ -155,11 +152,11 @@ impl ClientShellState {
         self.pending_workspace_label_lookup = None;
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.snapshot.as_deref().and_then(|snapshot| {
-            let workspace_id = source_workspace_id.as_deref()?;
+            let workspace_id = source_workspace_id.as_ref()?;
             snapshot
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.workspace_id == workspace_id)
+                .find(|workspace| workspace.workspace_id == *workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
         let mut label_lookup_id = None;
@@ -246,11 +243,7 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
-        let Some(workspace_id) = snapshot
-            .focused_workspace_id
-            .as_ref()
-            .map(ToString::to_string)
-        else {
+        let Some(workspace_id) = snapshot.focused_workspace_id.clone() else {
             return;
         };
         let default_name = (snapshot
@@ -711,7 +704,7 @@ impl ClientShellState {
                 ..
             } => Some(shepr_api::schema::Method::WorkspaceCreate(
                 shepr_api::schema::WorkspaceCreateParams {
-                    source_workspace_id,
+                    source_workspace_id: source_workspace_id.map(Into::into),
                     cwd,
                     focus: true,
                     label: (!trimmed.is_empty() && trimmed != suggested_name)
@@ -722,7 +715,7 @@ impl ClientShellState {
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
                 shepr_api::schema::Method::WorkspaceRename(
                     shepr_api::schema::WorkspaceRenameParams {
-                        workspace_id,
+                        workspace_id: workspace_id.into(),
                         label: trimmed.to_owned(),
                     },
                 )
@@ -732,7 +725,7 @@ impl ClientShellState {
                 default_name,
             } => Some(shepr_api::schema::Method::TabCreate(
                 shepr_api::schema::TabCreateParams {
-                    workspace_id: Some(workspace_id),
+                    workspace_id: Some(workspace_id.into()),
                     cwd: None,
                     focus: true,
                     label: (!trimmed.is_empty() && trimmed != default_name)
@@ -775,7 +768,7 @@ impl ClientShellState {
                     .tabs
                     .iter()
                     .any(|tab| tab.workspace_id == target.workspace_id && &tab.tab_id != tab_id))
-            .then(|| target.workspace_id.to_string())
+            .then(|| target.workspace_id.clone())
         });
         if let Some(workspace_id) = workspace_id
             && self.open_close_confirmation(workspace_id, Some(tab_id.clone()))
@@ -816,19 +809,19 @@ impl ClientShellState {
             })
         } else {
             shepr_api::schema::Method::WorkspaceClose(shepr_api::schema::WorkspaceCloseParams {
-                workspace_id: confirm.workspace_id,
+                workspace_id: confirm.workspace_id.into(),
             })
         };
         self.push_endpoint_method(method, outcome);
     }
 
-    pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: String) {
+    pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: shepr_protocol::WorkspaceId) {
         self.open_close_confirmation(workspace_id, None);
     }
 
     fn open_close_confirmation(
         &mut self,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         tab_id: Option<shepr_protocol::PublicTabId>,
     ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {

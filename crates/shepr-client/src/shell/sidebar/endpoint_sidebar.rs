@@ -190,7 +190,7 @@ pub(super) fn render_collapsed(
             hits.workspaces.push(WorkspaceHit {
                 rect,
                 endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id.to_string(),
+                workspace_id: workspace.workspace_id.clone(),
             });
             y = y.saturating_add(1);
         }
@@ -482,7 +482,7 @@ pub(super) fn render_expanded(
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: workspace.workspace_id.to_string(),
+                    workspace_id: workspace.workspace_id.clone(),
                 });
                 y = y
                     .saturating_add(height)

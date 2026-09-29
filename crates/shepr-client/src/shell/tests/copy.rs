@@ -1508,7 +1508,7 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
             target,
             expected.then(|| ClientNavigatorTarget::Workspace {
                 endpoint_id: ClientEndpointId::Local,
-                workspace_id: "w1".into(),
+                workspace_id: shepr_test_fixtures::id("w1"),
             })
         );
     }

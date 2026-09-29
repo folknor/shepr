@@ -349,29 +349,19 @@ impl ClientRegistry {
         &self.geometry_controllers
     }
 
-    pub(crate) fn geometry_controller(&self, tab_id: &str) -> Option<ClientId> {
-        self.geometry_controllers
-            .get(&tab_id.parse::<PublicTabId>().ok()?)
-            .copied()
-    }
-
-    pub(crate) fn geometry_controller_by_id(&self, tab_id: &PublicTabId) -> Option<ClientId> {
+    pub(crate) fn geometry_controller(&self, tab_id: &PublicTabId) -> Option<ClientId> {
         self.geometry_controllers.get(tab_id).copied()
     }
 
     pub(crate) fn set_geometry_controller(
         &mut self,
-        tab_id: &str,
+        tab_id: PublicTabId,
         client_id: ClientId,
     ) -> Option<ClientId> {
-        self.geometry_controllers
-            .insert(tab_id.parse().ok()?, client_id)
+        self.geometry_controllers.insert(tab_id, client_id)
     }
 
-    pub(crate) fn claim_geometry(&mut self, tab_id: &str, client_id: ClientId) -> bool {
-        let Ok(tab_id) = tab_id.parse::<PublicTabId>() else {
-            return false;
-        };
+    pub(crate) fn claim_geometry(&mut self, tab_id: PublicTabId, client_id: ClientId) -> bool {
         if !self
             .connections
             .get(&client_id)
@@ -382,10 +372,11 @@ impl ClientRegistry {
         self.geometry_controllers.insert(tab_id, client_id) != Some(client_id)
     }
 
-    pub(crate) fn claim_unowned_geometry(&mut self, tab_id: &str, client_id: ClientId) -> bool {
-        let Ok(tab_id) = tab_id.parse::<PublicTabId>() else {
-            return false;
-        };
+    pub(crate) fn claim_unowned_geometry(
+        &mut self,
+        tab_id: PublicTabId,
+        client_id: ClientId,
+    ) -> bool {
         if !self
             .connections
             .get(&client_id)
@@ -985,9 +976,10 @@ mod tests {
         assert!(registry.promote_to_foreground(first_id));
         assert_eq!(registry.foreground_client_id(), Some(first_id));
         assert!(!registry.promote_to_foreground(second_id));
-        assert!(registry.claim_geometry("w1:t1", first_id));
-        assert!(!registry.claim_unowned_geometry("w1:t1", first_id));
-        assert_eq!(registry.geometry_controller("w1:t1"), Some(first_id));
+        let tab_id: PublicTabId = shepr_test_fixtures::id("w1:t1");
+        assert!(registry.claim_geometry(tab_id.clone(), first_id));
+        assert!(!registry.claim_unowned_geometry(tab_id.clone(), first_id));
+        assert_eq!(registry.geometry_controller(&tab_id), Some(first_id));
 
         let terminal_id = TerminalId::alloc();
         registry.set_attach_owner(terminal_id.clone(), second_id);
@@ -1007,7 +999,7 @@ mod tests {
         );
         let (_, was_foreground) = registry.remove_client(first_id);
         assert!(was_foreground);
-        assert_eq!(registry.geometry_controller("w1:t1"), None);
+        assert_eq!(registry.geometry_controller(&tab_id), None);
         assert!(!registry.promote_latest_remaining());
         assert_eq!(registry.foreground_client_id(), None);
         let (removed, was_foreground) = registry.remove_client(second_id);

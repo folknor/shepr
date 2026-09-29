@@ -67,9 +67,9 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
     let moved = public_move(
         &mut server,
         PaneMoveParams {
-            pane_id: source_id,
+            pane_id: source_id.to_string(),
             destination: PaneMoveDestination::NewTab {
-                workspace_id: Some(destination_id.clone()),
+                workspace_id: Some(destination_id.clone().to_string()),
                 label: None,
             },
             focus: true,
@@ -90,7 +90,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
     );
     assert_eq!(
         location.focused_tab_id().map(ToString::to_string),
-        Some(moved.pane.tab_id.clone())
+        Some(moved.pane.tab_id.clone()).map(|id| id.to_string())
     );
 
     server.render_and_stream();
@@ -154,7 +154,7 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
         } else {
             server.app.state.switch_workspace_tab(1, 0);
             PaneMoveDestination::Tab {
-                tab_id: second_tab,
+                tab_id: second_tab.to_string(),
                 target_pane_id: None,
                 split: shepr_api::schema::SplitDirection::Right,
                 ratio: None,
@@ -168,7 +168,7 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
         let moved = public_move(
             &mut server,
             PaneMoveParams {
-                pane_id: source_id,
+                pane_id: source_id.to_string(),
                 destination,
                 focus: true,
             },
@@ -180,7 +180,7 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
                 server
                     .default_shell_target()
                     .map(|target| target.tab_id.to_string()),
-                Some(moved.pane.tab_id.clone()),
+                Some(moved.pane.tab_id.clone()).map(|id| id.to_string()),
             );
         } else {
             assert_eq!(server.default_shell_target(), target_before);
@@ -232,14 +232,18 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
             server.app.state.workspaces[0].set_tab_zoomed(0, true);
         }
         let tab_id = match case {
-            "same-tab" => server.app.public_tab_id(0, 0).expect("test precondition"),
-            "invalid" => "missing-tab".into(),
-            _ => destination_tab,
+            "same-tab" => server
+                .app
+                .public_tab_id(0, 0)
+                .expect("test precondition")
+                .to_string(),
+            "invalid" => "missing-tab".to_owned(),
+            _ => destination_tab.to_string(),
         };
         let result = public_move(
             &mut server,
             PaneMoveParams {
-                pane_id: source_id,
+                pane_id: source_id.to_string(),
                 destination: PaneMoveDestination::Tab {
                     tab_id,
                     target_pane_id: None,

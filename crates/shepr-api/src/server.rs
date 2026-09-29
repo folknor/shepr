@@ -1236,10 +1236,10 @@ mod tests {
         agent_status: crate::schema::AgentStatus,
     ) -> crate::schema::PaneInfo {
         crate::schema::PaneInfo {
-            pane_id: pane_id.into(),
-            terminal_id: "term_1".into(),
-            workspace_id: "ws_1".into(),
-            tab_id: "tab_1".into(),
+            pane_id: shepr_test_fixtures::id(pane_id),
+            terminal_id: shepr_test_fixtures::id("term_1_1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
+            tab_id: shepr_test_fixtures::id("w1:t1"),
             focused: true,
             cwd: None,
             foreground_cwd: None,
@@ -1268,7 +1268,7 @@ mod tests {
                     Method::PaneGet(_) => msg
                         .respond_to
                         .send(Ok(ResponseResult::PaneInfo {
-                            pane: pane_info("pane_1", agent_status),
+                            pane: pane_info("w1:p1", agent_status),
                         }))
                         .expect("test precondition"),
                     Method::EventsWait(_) => msg
@@ -1497,7 +1497,7 @@ mod tests {
 
         let (mut client, server) = local_stream_pair("api-events-wait-initial");
         client
-            .write_all(br#"{"id":"wait_1","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":1000}}"#)
+            .write_all(br#"{"id":"wait_1","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"w1:p1","agent_status":"blocked"},"timeout_ms":1000}}"#)
             .expect("test precondition");
         client.write_all(b"\n").expect("test precondition");
         client.flush().expect("test precondition");
@@ -1524,7 +1524,7 @@ mod tests {
 
         let (mut client, server) = local_stream_pair("api-events-wait-timeout");
         client
-            .write_all(br#"{"id":"wait_2","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":30}}"#)
+            .write_all(br#"{"id":"wait_2","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"w1:p1","agent_status":"blocked"},"timeout_ms":30}}"#)
             .expect("test precondition");
         client.write_all(b"\n").expect("test precondition");
         client.flush().expect("test precondition");
@@ -1559,14 +1559,14 @@ mod tests {
                 pane_get_count += 1;
                 let response = if pane_get_count == 1 {
                     Ok(ResponseResult::PaneInfo {
-                        pane: pane_info("pane_1", crate::schema::AgentStatus::Idle),
+                        pane: pane_info("w1:p1", crate::schema::AgentStatus::Idle),
                     })
                 } else {
                     if pane_get_count == 2 {
                         responder_event_hub.push(crate::schema::EventEnvelope {
                             data: crate::schema::EventData::PaneClosed {
-                                pane_id: "pane_1".into(),
-                                workspace_id: "ws_1".into(),
+                                pane_id: shepr_test_fixtures::id("w1:p1"),
+                                workspace_id: shepr_test_fixtures::id("w1"),
                             },
                         });
                     }
@@ -1581,7 +1581,7 @@ mod tests {
 
         let (mut client, server) = local_stream_pair("wait-close");
         client
-            .write_all(br#"{"id":"wait_close","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":500}}"#)
+            .write_all(br#"{"id":"wait_close","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"w1:p1","agent_status":"blocked"},"timeout_ms":500}}"#)
             .expect("test precondition");
         client.write_all(b"\n").expect("test precondition");
         client.flush().expect("test precondition");
@@ -1652,8 +1652,8 @@ mod tests {
             assert_eq!(params.pane_id, "w999:p9");
             responder_event_hub.push(crate::schema::EventEnvelope {
                 data: crate::schema::EventData::PaneClosed {
-                    pane_id: "w999:p9".into(),
-                    workspace_id: "w999".into(),
+                    pane_id: shepr_test_fixtures::id("w999:p9"),
+                    workspace_id: shepr_test_fixtures::id("w999"),
                 },
             });
             msg.respond_to

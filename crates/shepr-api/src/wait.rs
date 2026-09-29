@@ -182,7 +182,7 @@ mod tests {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
 
-    const PANE: &str = "pane_1";
+    const PANE: &str = "w1:p1";
     const TIMEOUT_MS: u64 = 1_000;
 
     /// A clock that answers its nth read with `base + offsets_ms[n]`, after
@@ -219,10 +219,10 @@ mod tests {
 
     fn working_pane() -> PaneInfo {
         PaneInfo {
-            pane_id: PANE.into(),
-            terminal_id: "terminal_1".into(),
-            workspace_id: "workspace_1".into(),
-            tab_id: "tab_1".into(),
+            pane_id: shepr_test_fixtures::id(PANE),
+            terminal_id: shepr_test_fixtures::id("term_1_1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
+            tab_id: shepr_test_fixtures::id("w1:t1"),
             focused: true,
             cwd: None,
             foreground_cwd: None,
@@ -268,8 +268,8 @@ mod tests {
     fn idle_event() -> EventEnvelope {
         EventEnvelope {
             data: EventData::PaneAgentStatusChanged {
-                pane_id: PANE.into(),
-                workspace_id: "workspace_1".into(),
+                pane_id: shepr_test_fixtures::id(PANE),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Idle,
                 agent: Some("pi".into()),
                 title: Some("done".into()),
@@ -423,8 +423,8 @@ mod tests {
         let scroll = serde_json::to_value(SubscriptionEventEnvelope {
             event: crate::schema::SubscriptionEventKind::ScrollChanged,
             data: SubscriptionEventData::ScrollChanged(crate::schema::PaneScrollChangedEvent {
-                pane_id: "pane_1".into(),
-                workspace_id: "workspace_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 scroll: crate::schema::PaneScrollInfo {
                     offset_from_bottom: 1,
                     max_offset_from_bottom: 2,
@@ -442,8 +442,8 @@ mod tests {
             event: crate::schema::SubscriptionEventKind::PaneAgentStatusChanged,
             data: SubscriptionEventData::PaneAgentStatusChanged(
                 crate::schema::PaneAgentStatusChangedEvent {
-                    pane_id: "pane_1".into(),
-                    workspace_id: "workspace_1".into(),
+                    pane_id: shepr_test_fixtures::id("w1:p1"),
+                    workspace_id: shepr_test_fixtures::id("w1"),
                     agent_status: crate::schema::AgentStatus::Idle,
                     agent: None,
                     title: None,

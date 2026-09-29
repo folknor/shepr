@@ -14,37 +14,21 @@ impl App {
 
     /// Public id of the workspace at `ws_idx`, or `None` when that index no
     /// longer names a workspace.
-    pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> Option<String> {
-        self.state
-            .workspaces
-            .get(ws_idx)
-            .map(|ws| ws.id.to_string())
+    pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> Option<shepr_protocol::WorkspaceId> {
+        self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone())
     }
 
-    pub(crate) fn public_tab_id(&self, ws_idx: usize, tab_idx: usize) -> Option<String> {
+    pub(crate) fn public_tab_id(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> Option<shepr_protocol::PublicTabId> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_number = ws.public_tab_number(tab_idx)?;
-        Some(shepr_mux::workspace::public_tab_id_for_number(
-            &ws.id, tab_number,
-        ))
+        Some(shepr_protocol::PublicTabId::new(&ws.id, tab_number))
     }
 
     pub(crate) fn public_pane_id(
-        &self,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<String> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let pane_number = ws.public_pane_number(pane_id)?;
-        Some(shepr_mux::workspace::public_pane_id_for_number(
-            &ws.id,
-            pane_number,
-        ))
-    }
-
-    /// [`Self::public_pane_id`] as the typed id, for callers that hand it on
-    /// typed rather than spell it and parse it back.
-    pub(crate) fn typed_public_pane_id(
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,

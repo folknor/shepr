@@ -12,27 +12,25 @@ pub(super) struct ShellFocusTarget {
 fn classify_shell_focus_transition<'a>(
     before: Option<&'a ShellFocusTarget>,
     after: Option<&'a ShellFocusTarget>,
-    focused_tabs_before: &HashSet<String>,
-    focused_tabs_after: &HashSet<String>,
+    focused_tabs_before: &HashSet<shepr_protocol::PublicTabId>,
+    focused_tabs_after: &HashSet<shepr_protocol::PublicTabId>,
 ) -> (Option<&'a ShellFocusTarget>, Option<&'a ShellFocusTarget>) {
     if before == after {
         return (None, None);
     }
-    if before.map(|target| target.tab_id.as_str()) == after.map(|target| target.tab_id.as_str()) {
+    if before.map(|target| &target.tab_id) == after.map(|target| &target.tab_id) {
         return match (before, after) {
-            (Some(before), Some(after)) if focused_tabs_after.contains(after.tab_id.as_str()) => {
+            (Some(before), Some(after)) if focused_tabs_after.contains(&after.tab_id) => {
                 (Some(before), Some(after))
             }
             _ => (None, None),
         };
     }
     let lost = before.filter(|target| {
-        focused_tabs_before.contains(target.tab_id.as_str())
-            && !focused_tabs_after.contains(target.tab_id.as_str())
+        focused_tabs_before.contains(&target.tab_id) && !focused_tabs_after.contains(&target.tab_id)
     });
     let gained = after.filter(|target| {
-        !focused_tabs_before.contains(target.tab_id.as_str())
-            && focused_tabs_after.contains(target.tab_id.as_str())
+        !focused_tabs_before.contains(&target.tab_id) && focused_tabs_after.contains(&target.tab_id)
     });
     (lost, gained)
 }
@@ -86,13 +84,19 @@ impl HeadlessServer {
             .or_else(|| self.default_shell_target())
     }
 
-    fn tab_id_for_target(&self, target: &crate::ui::TabSurfaceTarget) -> Option<String> {
+    fn tab_id_for_target(
+        &self,
+        target: &crate::ui::TabSurfaceTarget,
+    ) -> Option<shepr_protocol::PublicTabId> {
         target
             .resolve(&self.app.state)
-            .map(|_| target.tab_id.to_string())
+            .map(|_| target.tab_id.clone())
     }
 
-    pub(super) fn shell_tab_id_for_client(&self, client_id: ClientId) -> Option<String> {
+    pub(super) fn shell_tab_id_for_client(
+        &self,
+        client_id: ClientId,
+    ) -> Option<shepr_protocol::PublicTabId> {
         self.shell_target_for_client(client_id)
             .and_then(|target| self.tab_id_for_target(&target))
     }
@@ -170,8 +174,12 @@ impl HeadlessServer {
         self.send_shell_focus_transitions(&lost, &gained);
     }
 
-    pub(super) fn focus_shell_client_on_tab(&mut self, client_id: ClientId, tab_id: &str) -> bool {
-        let Some((workspace_index, _)) = self.app.parse_tab_id(tab_id) else {
+    pub(super) fn focus_shell_client_on_tab(
+        &mut self,
+        client_id: ClientId,
+        tab_id: &shepr_protocol::PublicTabId,
+    ) -> bool {
+        let Some((workspace_index, _)) = self.app.resolve_tab_id(tab_id) else {
             return false;
         };
         let Some(workspace_id) = self
@@ -192,10 +200,7 @@ impl HeadlessServer {
         else {
             return false;
         };
-        let Ok(tab_id) = tab_id.parse() else {
-            return false;
-        };
-        location.focus_tab(workspace_id, tab_id);
+        location.focus_tab(workspace_id, tab_id.clone());
         true
     }
 
@@ -263,9 +268,10 @@ impl HeadlessServer {
                 location.focus_workspace(workspace_id);
                 true
             }
-            shepr_api::schema::Method::TabFocus(target) => {
-                self.focus_shell_client_on_tab(client_id, &target.tab_id)
-            }
+            shepr_api::schema::Method::TabFocus(target) => target
+                .tab_id
+                .parse()
+                .is_ok_and(|tab_id| self.focus_shell_client_on_tab(client_id, &tab_id)),
             shepr_api::schema::Method::PaneFocus(target) => self
                 .app
                 .parse_pane_id(&target.pane_id)
@@ -304,7 +310,7 @@ impl HeadlessServer {
         self.focus_target_for_surface(self.shell_target_for_client(client_id)?)
     }
 
-    pub(super) fn focused_shell_tabs(&self) -> HashSet<String> {
+    pub(super) fn focused_shell_tabs(&self) -> HashSet<shepr_protocol::PublicTabId> {
         self.clients
             .iter()
             .filter(|(_, client)| {
@@ -345,14 +351,14 @@ impl HeadlessServer {
     fn shell_location_focus_transitions(
         &self,
         focus_before: Vec<(ClientId, Option<ShellFocusTarget>)>,
-        focused_tabs_before: &HashSet<String>,
+        focused_tabs_before: &HashSet<shepr_protocol::PublicTabId>,
     ) -> (
-        HashMap<String, ShellFocusTarget>,
-        HashMap<String, ShellFocusTarget>,
+        HashMap<shepr_protocol::PublicTabId, ShellFocusTarget>,
+        HashMap<shepr_protocol::PublicTabId, ShellFocusTarget>,
     ) {
         let focused_tabs_after = self.focused_shell_tabs();
-        let mut lost = HashMap::<String, ShellFocusTarget>::new();
-        let mut gained = HashMap::<String, ShellFocusTarget>::new();
+        let mut lost = HashMap::<shepr_protocol::PublicTabId, ShellFocusTarget>::new();
+        let mut gained = HashMap::<shepr_protocol::PublicTabId, ShellFocusTarget>::new();
         for (client_id, before) in focus_before {
             let after = self.shell_focus_target(client_id);
             let (lost_target, gained_target) = classify_shell_focus_transition(
@@ -362,12 +368,12 @@ impl HeadlessServer {
                 &focused_tabs_after,
             );
             if let Some(target) = lost_target {
-                lost.entry(target.tab_id.to_string())
+                lost.entry(target.tab_id.clone())
                     .or_insert_with(|| target.clone());
             }
             if let Some(target) = gained_target {
                 gained
-                    .entry(target.tab_id.to_string())
+                    .entry(target.tab_id.clone())
                     .or_insert_with(|| target.clone());
             }
         }
@@ -376,8 +382,8 @@ impl HeadlessServer {
 
     fn send_shell_focus_transitions(
         &self,
-        lost: &HashMap<String, ShellFocusTarget>,
-        gained: &HashMap<String, ShellFocusTarget>,
+        lost: &HashMap<shepr_protocol::PublicTabId, ShellFocusTarget>,
+        gained: &HashMap<shepr_protocol::PublicTabId, ShellFocusTarget>,
     ) {
         for target in lost.values() {
             self.send_shell_focus_target(target, shepr_vt::FocusEvent::Lost);
@@ -390,7 +396,7 @@ impl HeadlessServer {
     pub(super) fn finish_shell_location_reconciliation(
         &mut self,
         focus_before: Vec<(ClientId, Option<ShellFocusTarget>)>,
-        focused_tabs_before: &HashSet<String>,
+        focused_tabs_before: &HashSet<shepr_protocol::PublicTabId>,
     ) {
         let (lost, gained) =
             self.shell_location_focus_transitions(focus_before, focused_tabs_before);
@@ -402,8 +408,8 @@ impl HeadlessServer {
         &self,
         before: Option<&ShellFocusTarget>,
         after: Option<&ShellFocusTarget>,
-        focused_tabs_before: &HashSet<String>,
-        focused_tabs_after: &HashSet<String>,
+        focused_tabs_before: &HashSet<shepr_protocol::PublicTabId>,
+        focused_tabs_after: &HashSet<shepr_protocol::PublicTabId>,
     ) {
         let (lost, gained) =
             classify_shell_focus_transition(before, after, focused_tabs_before, focused_tabs_after);
@@ -578,7 +584,7 @@ impl HeadlessServer {
         &mut self,
         start_pending_agent_resumes: bool,
     ) -> bool {
-        let mut viewed_tabs = HashMap::<String, Vec<ClientId>>::new();
+        let mut viewed_tabs = HashMap::<shepr_protocol::PublicTabId, Vec<ClientId>>::new();
         for (&client_id, client) in &self.clients {
             if !client.is_active_shell_client() || client.writer.is_none() {
                 continue;
@@ -598,7 +604,7 @@ impl HeadlessServer {
                 .as_ref()
                 .is_some_and(|controller| viewers.contains(controller));
             if !controller_is_viewing {
-                self.clients.set_geometry_controller(&tab_id, viewers[0]);
+                self.clients.set_geometry_controller(tab_id, viewers[0]);
             }
         }
 
@@ -652,7 +658,7 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if !self.clients.claim_geometry(&tab_id, client_id) {
+        if !self.clients.claim_geometry(tab_id, client_id) {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -673,7 +679,7 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if !self.clients.claim_unowned_geometry(&tab_id, client_id) {
+        if !self.clients.claim_unowned_geometry(tab_id, client_id) {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -726,7 +732,7 @@ impl HeadlessServer {
             },
         )?;
         self.clients
-            .geometry_controller_by_id(&target.tab_id)
+            .geometry_controller(&target.tab_id)
             .map(|client_id| (client_id, target))
     }
 

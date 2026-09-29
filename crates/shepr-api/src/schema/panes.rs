@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
 
 use super::agents::AgentSessionInfo;
 use super::common::{AgentStatus, PaneAgentState, ReadFormat, ReadSource, SplitDirection};
@@ -154,10 +155,10 @@ pub struct LayoutSetSplitRatioParams {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutDescription {
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub workspace_id: WorkspaceId,
+    pub tab_id: PublicTabId,
     pub zoomed: bool,
-    pub focused_pane_id: String,
+    pub focused_pane_id: PublicPaneId,
     pub root: LayoutNode,
 }
 
@@ -410,10 +411,10 @@ pub struct PaneReleaseAgentParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
-    pub pane_id: String,
-    pub terminal_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub pane_id: PublicPaneId,
+    pub terminal_id: TerminalId,
+    pub workspace_id: WorkspaceId,
+    pub tab_id: PublicTabId,
     pub focused: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -452,7 +453,7 @@ pub struct PaneScrollInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneProcessInfo {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -483,7 +484,7 @@ pub struct PaneSwapResult {
     pub source_pane_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_pane_id: Option<String>,
-    pub focused_pane_id: String,
+    pub focused_pane_id: PublicPaneId,
     pub layout: PaneLayoutSnapshot,
 }
 
@@ -501,9 +502,9 @@ pub struct PaneMoveResult {
     pub changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<PaneMoveReason>,
-    pub previous_pane_id: String,
-    pub previous_workspace_id: String,
-    pub previous_tab_id: String,
+    pub previous_pane_id: PublicPaneId,
+    pub previous_workspace_id: WorkspaceId,
+    pub previous_tab_id: PublicTabId,
     pub pane: Box<PaneInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_layout: Option<Box<PaneLayoutSnapshot>>,
@@ -513,10 +514,10 @@ pub struct PaneMoveResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_tab: Option<super::TabInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_workspace_id: Option<String>,
+    pub closed_workspace_id: Option<WorkspaceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_tab_id: Option<String>,
-    pub focused_pane_id: String,
+    pub closed_tab_id: Option<PublicTabId>,
+    pub focused_pane_id: PublicPaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -533,8 +534,8 @@ pub struct PaneZoomResult {
     pub focus_changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<PaneZoomReason>,
-    pub pane_id: String,
-    pub focused_pane_id: String,
+    pub pane_id: PublicPaneId,
+    pub focused_pane_id: PublicPaneId,
     pub zoomed: bool,
     pub layout: PaneLayoutSnapshot,
 }
@@ -549,11 +550,11 @@ pub enum PaneZoomReason {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneLayoutSnapshot {
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub workspace_id: WorkspaceId,
+    pub tab_id: PublicTabId,
     pub zoomed: bool,
     pub area: PaneLayoutRect,
-    pub focused_pane_id: String,
+    pub focused_pane_id: PublicPaneId,
     pub panes: Vec<PaneLayoutPane>,
     pub splits: Vec<PaneLayoutSplit>,
 }
@@ -568,7 +569,7 @@ pub struct PaneLayoutRect {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneLayoutPane {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub focused: bool,
     pub rect: PaneLayoutRect,
 }
@@ -583,16 +584,16 @@ pub struct PaneLayoutSplit {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneNeighborResult {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub direction: PaneDirection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub neighbor_pane_id: Option<String>,
+    pub neighbor_pane_id: Option<PublicPaneId>,
     pub layout: PaneLayoutSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneEdgesResult {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub left: bool,
     pub right: bool,
     pub up: bool,
@@ -605,9 +606,9 @@ pub struct PaneFocusDirectionResult {
     pub changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<PaneFocusDirectionReason>,
-    pub source_pane_id: String,
+    pub source_pane_id: PublicPaneId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focused_pane_id: Option<String>,
+    pub focused_pane_id: Option<PublicPaneId>,
     pub layout: PaneLayoutSnapshot,
 }
 
@@ -622,8 +623,8 @@ pub struct PaneResizeResult {
     pub changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<PaneResizeReason>,
-    pub pane_id: String,
-    pub focused_pane_id: String,
+    pub pane_id: PublicPaneId,
+    pub focused_pane_id: PublicPaneId,
     pub layout: PaneLayoutSnapshot,
 }
 
@@ -635,9 +636,9 @@ pub enum PaneResizeReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReadResult {
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub pane_id: PublicPaneId,
+    pub workspace_id: WorkspaceId,
+    pub tab_id: PublicTabId,
     pub source: ReadSource,
     /// The format `text` is in, after `strip_ansi` has been applied.
     pub format: ReadFormat,

@@ -82,7 +82,7 @@ mod tests {
     fn event() -> EventEnvelope {
         EventEnvelope {
             data: EventData::WorkspaceFocused {
-                workspace_id: "workspace_1".into(),
+                workspace_id: shepr_test_fixtures::id("w1"),
             },
         }
     }

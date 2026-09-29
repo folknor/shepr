@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use shepr_protocol::{PublicTabId, WorkspaceId};
 
 use super::common::AgentStatus;
 
@@ -38,8 +39,8 @@ pub struct TabMoveParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabInfo {
-    pub tab_id: String,
-    pub workspace_id: String,
+    pub tab_id: PublicTabId,
+    pub workspace_id: WorkspaceId,
     pub number: usize,
     pub label: String,
     pub focused: bool,

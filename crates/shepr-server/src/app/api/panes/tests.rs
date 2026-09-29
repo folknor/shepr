@@ -19,7 +19,7 @@ fn app_with_test_workspace() -> (App, String) {
     app.state.ensure_test_terminals();
     let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
-    (app, public_pane_id)
+    (app, public_pane_id.to_string())
 }
 
 #[test]
@@ -516,7 +516,7 @@ fn api_pane_close_of_last_pane_closes_workspace() {
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
 
     let response = app.handle_pane_close(&PaneTarget {
-        pane_id: public_pane_id,
+        pane_id: public_pane_id.to_string(),
     });
 
     let _: SuccessResponse = crate::test_support::test_success(&response);
@@ -553,7 +553,7 @@ fn api_pane_close_of_a_tabs_last_pane_announces_the_tab() {
     let tab_id = app.public_tab_id(0, 0).expect("test precondition");
 
     let response = app.handle_pane_close(&PaneTarget {
-        pane_id: public_pane_id.clone(),
+        pane_id: public_pane_id.clone().to_string(),
     });
 
     let _: SuccessResponse = crate::test_support::test_success(&response);
@@ -583,7 +583,7 @@ fn api_pane_current_prefers_caller_pane_id() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_current(&shepr_api::schema::PaneCurrentParams {
-        caller_pane_id: Some(right_public.clone()),
+        caller_pane_id: Some(right_public.clone().to_string()),
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -669,8 +669,8 @@ fn api_pane_swap_explicit_source_and_target_preserves_focus_and_returns_layout()
     let target_public = app.public_pane_id(0, target).expect("test precondition");
 
     let response = app.handle_pane_swap(PaneSwapParams {
-        source_pane_id: Some(source_public.clone()),
-        target_pane_id: Some(target_public.clone()),
+        source_pane_id: Some(source_public.clone().to_string()),
+        target_pane_id: Some(target_public.clone().to_string()),
         ..PaneSwapParams::default()
     });
 
@@ -681,7 +681,10 @@ fn api_pane_swap_explicit_source_and_target_preserves_focus_and_returns_layout()
     assert!(swap.changed);
     assert_eq!(swap.reason, None);
     assert_eq!(swap.source_pane_id, source_public);
-    assert_eq!(swap.target_pane_id, Some(target_public));
+    assert_eq!(
+        swap.target_pane_id,
+        Some(target_public).map(|id| id.to_string())
+    );
     assert_eq!(swap.focused_pane_id, swap.source_pane_id);
     assert_eq!(swap.layout.focused_pane_id, swap.source_pane_id);
     assert_eq!(swap.layout.panes.len(), 2);
@@ -697,7 +700,7 @@ fn api_pane_swap_direction_no_neighbor_returns_unchanged_layout() {
     let source_public = app.public_pane_id(0, source).expect("test precondition");
 
     let response = app.handle_pane_swap(PaneSwapParams {
-        pane_id: Some(source_public.clone()),
+        pane_id: Some(source_public.clone().to_string()),
         direction: Some(PaneDirection::Left),
         ..PaneSwapParams::default()
     });
@@ -721,7 +724,7 @@ fn api_pane_swap_explicit_missing_target_returns_not_found_noop() {
     let source_public = app.public_pane_id(0, source).expect("test precondition");
 
     let response = app.handle_pane_swap(PaneSwapParams {
-        source_pane_id: Some(source_public.clone()),
+        source_pane_id: Some(source_public.clone().to_string()),
         target_pane_id: Some("missing-pane".into()),
         ..PaneSwapParams::default()
     });
@@ -745,7 +748,7 @@ fn api_pane_swap_explicit_missing_source_returns_not_found_noop() {
 
     let response = app.handle_pane_swap(PaneSwapParams {
         source_pane_id: Some("missing-pane".into()),
-        target_pane_id: Some(target_public.clone()),
+        target_pane_id: Some(target_public.clone().to_string()),
         ..PaneSwapParams::default()
     });
 
@@ -756,7 +759,10 @@ fn api_pane_swap_explicit_missing_source_returns_not_found_noop() {
     assert!(!swap.changed);
     assert_eq!(swap.reason, Some(PaneSwapReason::NotFound));
     assert_eq!(swap.source_pane_id, "missing-pane");
-    assert_eq!(swap.target_pane_id, Some(target_public));
+    assert_eq!(
+        swap.target_pane_id,
+        Some(target_public).map(|id| id.to_string())
+    );
     assert_eq!(swap.layout.panes.len(), 1);
 }
 
@@ -770,8 +776,8 @@ fn api_pane_swap_explicit_cross_workspace_preserves_target_id() {
     let target_public = app.public_pane_id(1, target).expect("test precondition");
 
     let response = app.handle_pane_swap(PaneSwapParams {
-        source_pane_id: Some(source_public.clone()),
-        target_pane_id: Some(target_public.clone()),
+        source_pane_id: Some(source_public.clone().to_string()),
+        target_pane_id: Some(target_public.clone().to_string()),
         ..PaneSwapParams::default()
     });
 
@@ -782,7 +788,10 @@ fn api_pane_swap_explicit_cross_workspace_preserves_target_id() {
     assert!(!swap.changed);
     assert_eq!(swap.reason, Some(PaneSwapReason::CrossTab));
     assert_eq!(swap.source_pane_id, source_public);
-    assert_eq!(swap.target_pane_id, Some(target_public));
+    assert_eq!(
+        swap.target_pane_id,
+        Some(target_public).map(|id| id.to_string())
+    );
     assert_eq!(
         swap.layout.workspace_id,
         app.public_workspace_id(0).expect("test precondition")
@@ -806,10 +815,10 @@ fn api_pane_move_to_existing_tab_preserves_internal_pane_and_terminal() {
     let target_tab_public = app.public_tab_id(0, target_tab).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public.clone(),
+        pane_id: source_public.clone().to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: target_tab_public.clone(),
-            target_pane_id: Some(target_public),
+            tab_id: target_tab_public.clone().to_string(),
+            target_pane_id: Some(target_public.to_string()),
             split: SplitDirection::Right,
             ratio: Some(0.25),
         },
@@ -826,7 +835,7 @@ fn api_pane_move_to_existing_tab_preserves_internal_pane_and_terminal() {
     assert_eq!(move_result.previous_tab_id, source_tab_public);
     assert_eq!(move_result.pane.pane_id, move_result.previous_pane_id);
     assert_eq!(move_result.pane.tab_id, target_tab_public);
-    assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
+    assert_eq!(move_result.pane.terminal_id, source_terminal);
     assert_eq!(move_result.closed_tab_id, Some(source_tab_public));
     assert_eq!(move_result.closed_workspace_id, None);
     assert_eq!(move_result.target_layout.panes.len(), 2);
@@ -860,10 +869,10 @@ fn api_pane_move_to_existing_tab_across_workspace_reassigns_public_pane_id() {
     let target_pane_id = app.public_pane_id(1, target).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: previous_pane_id.clone(),
+        pane_id: previous_pane_id.clone().to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: target_tab_id.clone(),
-            target_pane_id: Some(target_pane_id),
+            tab_id: target_tab_id.clone().to_string(),
+            target_pane_id: Some(target_pane_id.to_string()),
             split: SplitDirection::Down,
             ratio: None,
         },
@@ -887,7 +896,7 @@ fn api_pane_move_to_existing_tab_across_workspace_reassigns_public_pane_id() {
     );
     assert_eq!(move_result.pane.workspace_id, target_workspace_id);
     assert_eq!(move_result.pane.tab_id, target_tab_id);
-    assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
+    assert_eq!(move_result.pane.terminal_id, source_terminal);
     assert_eq!(app.state.workspaces.len(), 1);
     assert_eq!(
         app.state.workspaces[0].tabs()[0].terminal_id(source),
@@ -919,10 +928,10 @@ fn api_pane_move_target_tab_id_survives_source_workspace_removal() {
     let target_public = app.public_pane_id(1, target).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public,
+        pane_id: source_public.to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: target_tab_id.clone(),
-            target_pane_id: Some(target_public),
+            tab_id: target_tab_id.clone().to_string(),
+            target_pane_id: Some(target_public.to_string()),
             split: SplitDirection::Right,
             ratio: None,
         },
@@ -938,7 +947,7 @@ fn api_pane_move_target_tab_id_survives_source_workspace_removal() {
     assert_eq!(move_result.closed_workspace_id, Some(source_workspace_id));
     assert_eq!(move_result.pane.workspace_id, target_workspace_id);
     assert_eq!(move_result.pane.tab_id, target_tab_id);
-    assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
+    assert_eq!(move_result.pane.terminal_id, source_terminal);
     assert_eq!(
         app.state.workspaces[0].tabs()[0].terminal_id(source),
         Some(&source_terminal)
@@ -958,7 +967,7 @@ fn api_pane_move_to_new_tab_creates_tab_without_spawning_terminal() {
     let source_public = app.public_pane_id(0, source).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public.clone(),
+        pane_id: source_public.clone().to_string(),
         destination: PaneMoveDestination::NewTab {
             workspace_id: None,
             label: Some("moved".into()),
@@ -984,7 +993,7 @@ fn api_pane_move_to_new_tab_creates_tab_without_spawning_terminal() {
     );
     assert_eq!(move_result.closed_tab_id, None);
     assert_eq!(move_result.pane.pane_id, source_public);
-    assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
+    assert_eq!(move_result.pane.terminal_id, source_terminal);
     assert_eq!(app.state.workspaces[0].tabs().len(), 2);
     assert!(
         app.state.workspaces[0].tabs()[0]
@@ -1039,7 +1048,7 @@ async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
     let source_tab_public = app.public_tab_id(0, 0).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public.clone(),
+        pane_id: source_public.clone().to_string(),
         destination: PaneMoveDestination::NewTab {
             workspace_id: None,
             label: Some("moved".into()),
@@ -1081,7 +1090,7 @@ fn api_pane_move_to_new_workspace_closes_empty_source_workspace() {
     let source_workspace = app.public_workspace_id(0).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public.clone(),
+        pane_id: source_public.clone().to_string(),
         destination: PaneMoveDestination::NewWorkspace {
             label: Some("promoted".into()),
             tab_label: Some("main".into()),
@@ -1118,7 +1127,7 @@ fn api_pane_move_to_new_workspace_closes_empty_source_workspace() {
         Some(true)
     );
     assert_ne!(move_result.pane.pane_id, source_public);
-    assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
+    assert_eq!(move_result.pane.terminal_id, source_terminal);
     assert_eq!(app.state.workspaces.len(), 1);
     assert_eq!(
         app.state.workspaces[0].tabs()[0].terminal_id(source),
@@ -1167,9 +1176,9 @@ fn api_pane_move_same_tab_returns_same_tab_noop() {
     let source_tab = app.public_tab_id(0, 0).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public,
+        pane_id: source_public.to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: source_tab,
+            tab_id: source_tab.to_string(),
             target_pane_id: None,
             split: SplitDirection::Right,
             ratio: None,
@@ -1200,10 +1209,10 @@ fn api_pane_move_rejects_target_pane_outside_target_tab() {
         .expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public,
+        pane_id: source_public.to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: target_tab_public,
-            target_pane_id: Some(wrong_target),
+            tab_id: target_tab_public.to_string(),
+            target_pane_id: Some(wrong_target.to_string()),
             split: SplitDirection::Right,
             ratio: None,
         },
@@ -1238,10 +1247,10 @@ fn api_pane_move_existing_tab_no_focus_preserves_previous_target_focus() {
         .expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public,
+        pane_id: source_public.to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: target_tab_public,
-            target_pane_id: Some(explicit_target_public),
+            tab_id: target_tab_public.to_string(),
+            target_pane_id: Some(explicit_target_public.to_string()),
             split: SplitDirection::Right,
             ratio: None,
         },
@@ -1311,10 +1320,10 @@ fn api_pane_move_to_zoomed_target_returns_target_layout() {
     let target_public = app.public_pane_id(0, target).expect("test precondition");
 
     let response = app.handle_pane_move(PaneMoveParams {
-        pane_id: source_public,
+        pane_id: source_public.to_string(),
         destination: PaneMoveDestination::Tab {
-            tab_id: target_tab_public.clone(),
-            target_pane_id: Some(target_public),
+            tab_id: target_tab_public.clone().to_string(),
+            target_pane_id: Some(target_public.to_string()),
             split: SplitDirection::Right,
             ratio: None,
         },
@@ -1393,7 +1402,7 @@ fn api_pane_zoom_single_pane_returns_noop() {
     let root_public = app.public_pane_id(0, root).expect("test precondition");
 
     let response = app.handle_pane_zoom(&PaneZoomParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         mode: PaneZoomMode::Toggle,
     });
 
@@ -1421,7 +1430,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
     let root_public = app.public_pane_id(0, root).expect("test precondition");
 
     let response = app.handle_pane_zoom(&PaneZoomParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         mode: PaneZoomMode::On,
     });
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1434,7 +1443,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
     assert!(zoom.zoomed);
 
     let response = app.handle_pane_zoom(&PaneZoomParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         mode: PaneZoomMode::On,
     });
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1448,7 +1457,7 @@ fn api_pane_zoom_on_and_off_are_idempotent() {
     assert!(zoom.zoomed);
 
     let response = app.handle_pane_zoom(&PaneZoomParams {
-        pane_id: Some(root_public),
+        pane_id: Some(root_public.to_string()),
         mode: PaneZoomMode::Off,
     });
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1487,7 +1496,7 @@ fn api_pane_zoom_idempotent_mode_reports_focus_change() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_zoom(&PaneZoomParams {
-        pane_id: Some(right_public),
+        pane_id: Some(right_public.to_string()),
         mode: PaneZoomMode::On,
     });
 
@@ -1565,7 +1574,7 @@ fn api_pane_layout_returns_public_ids_rects_and_splits() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_layout(&shepr_api::schema::PaneLayoutParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1593,7 +1602,7 @@ fn api_pane_neighbor_returns_directional_neighbor_public_id() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_neighbor(&shepr_api::schema::PaneNeighborParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         direction: PaneDirection::Right,
     });
 
@@ -1616,7 +1625,7 @@ fn api_pane_edges_reports_physical_layout_edges() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_edges(&shepr_api::schema::PaneEdgesParams {
-        pane_id: Some(right_public.clone()),
+        pane_id: Some(right_public.clone().to_string()),
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1641,7 +1650,7 @@ fn api_pane_resize_changes_target_ratio_without_changing_focus() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_resize(&shepr_api::schema::PaneResizeParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         direction: PaneDirection::Right,
         amount: Some(0.1),
     });
@@ -1676,7 +1685,7 @@ fn api_pane_focus_direction_focuses_neighbor() {
     let right_public = app.public_pane_id(0, right).expect("test precondition");
 
     let response = app.handle_pane_focus_direction(&shepr_api::schema::PaneFocusDirectionParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         direction: PaneDirection::Right,
     });
 
@@ -1707,7 +1716,7 @@ fn api_pane_focus_focuses_direct_target_across_tabs_and_workspaces() {
     assert_eq!(app.state.active_index(), Some(0));
 
     let response = app.handle_pane_focus(&shepr_api::schema::PaneTarget {
-        pane_id: target_public.clone(),
+        pane_id: target_public.clone().to_string(),
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1740,7 +1749,7 @@ fn api_pane_focus_returns_idle_agent_status() {
 
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
     let response = app.handle_pane_focus(&PaneTarget {
-        pane_id: public_pane_id,
+        pane_id: public_pane_id.to_string(),
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -1771,7 +1780,7 @@ fn api_pane_focus_direction_no_neighbor_is_noop() {
     let root_public = app.public_pane_id(0, root).expect("test precondition");
 
     let response = app.handle_pane_focus_direction(&shepr_api::schema::PaneFocusDirectionParams {
-        pane_id: Some(root_public.clone()),
+        pane_id: Some(root_public.clone().to_string()),
         direction: PaneDirection::Left,
     });
 

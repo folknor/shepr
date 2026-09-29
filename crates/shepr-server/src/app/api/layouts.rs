@@ -355,7 +355,7 @@ impl App {
         let terminal_id = tab.terminal_id(pane_id)?;
         let terminal = self.state.terminals.get(terminal_id);
         Some(LayoutPane {
-            pane_id: Some(self.public_pane_id(ws_idx, pane_id)?),
+            pane_id: Some(self.public_pane_id(ws_idx, pane_id)?.to_string()),
             label: terminal.and_then(|terminal| terminal.manual_label.clone()),
             cwd: tab
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(pane.label.as_deref(), Some("tests"));
         assert_eq!(
             pane.pane_id,
-            Some(app.public_pane_id(0, right).expect("test precondition"))
+            Some(app.public_pane_id(0, right).expect("test precondition")).map(|id| id.to_string())
         );
     }
 
@@ -773,7 +773,7 @@ mod tests {
 
         let response = app.handle_layout_apply(&LayoutApplyParams {
             workspace_id: None,
-            tab_id: Some(original_tab_id.clone()),
+            tab_id: Some(original_tab_id.clone().to_string()),
             tab_label: Some("dev".into()),
             focus: true,
             root: LayoutNode::Split {
@@ -904,7 +904,11 @@ mod tests {
         let original_tab_count = app.state.workspaces[0].tabs().len();
 
         let response = app.handle_layout_apply(&LayoutApplyParams {
-            workspace_id: Some(app.public_workspace_id(0).expect("test precondition")),
+            workspace_id: Some(
+                app.public_workspace_id(0)
+                    .expect("test precondition")
+                    .to_string(),
+            ),
             tab_id: None,
             tab_label: Some("bad".into()),
             focus: false,

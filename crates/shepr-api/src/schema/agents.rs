@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
 
 use super::common::{AgentStatus, ReadFormat, ReadSource};
 
@@ -27,7 +28,7 @@ pub struct AgentRenameParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
-    pub terminal_id: String,
+    pub terminal_id: TerminalId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,9 +48,9 @@ pub struct AgentInfo {
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<AgentSessionInfo>,
-    pub workspace_id: String,
-    pub tab_id: String,
-    pub pane_id: String,
+    pub workspace_id: WorkspaceId,
+    pub tab_id: PublicTabId,
+    pub pane_id: PublicPaneId,
     pub focused: bool,
     #[serde(default)]
     pub state_change_seq: u64,

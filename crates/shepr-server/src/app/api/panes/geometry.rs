@@ -409,6 +409,8 @@ impl App {
             }
         }
 
+        // A swap answers with the caller's own text for an id that does not
+        // resolve, so both ids stay strings.
         let source_public_id = match params.source_pane_id {
             Some(raw) => self
                 .parse_pane_id(&raw)
@@ -419,23 +421,26 @@ impl App {
                         .find_tab_index_for_pane(pane_id)?;
                     self.public_pane_id(idx, pane_id)
                 })
-                .unwrap_or(raw),
+                .map_or(raw, |id| id.to_string()),
             None => source_pane_id
                 .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id))
-                .unwrap_or_default(),
+                .map_or_default(|id| id.to_string()),
         };
         let target_public_id = match params.target_pane_id {
-            Some(raw) => self
-                .parse_pane_id(&raw)
-                .and_then(|(idx, pane_id)| {
-                    self.state
-                        .workspaces
-                        .get(idx)?
-                        .find_tab_index_for_pane(pane_id)?;
-                    self.public_pane_id(idx, pane_id)
-                })
-                .or(Some(raw)),
-            None => target_pane_id.and_then(|pane_id| self.public_pane_id(ws_idx, pane_id)),
+            Some(raw) => Some(
+                self.parse_pane_id(&raw)
+                    .and_then(|(idx, pane_id)| {
+                        self.state
+                            .workspaces
+                            .get(idx)?
+                            .find_tab_index_for_pane(pane_id)?;
+                        self.public_pane_id(idx, pane_id)
+                    })
+                    .map_or(raw, |id| id.to_string()),
+            ),
+            None => target_pane_id
+                .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id))
+                .map(|id| id.to_string()),
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return failure(
@@ -490,9 +495,9 @@ impl App {
         let previous_workspace_label = source_ws.custom_name.clone();
         let previous_tab_label = source_tab.custom_name().map(str::to_owned);
         let identity_cwd = source_ws.identity_cwd.clone();
-        let previous_pane_id = self
-            .public_pane_id(source_ws_idx, source_pane_id)
-            .unwrap_or_else(|| pane_id.clone());
+        let Some(previous_pane_id) = self.public_pane_id(source_ws_idx, source_pane_id) else {
+            return Err(pane_not_found(Some(&pane_id)));
+        };
         let Some(previous_workspace_id) = self.public_workspace_id(source_ws_idx) else {
             return Err(pane_not_found(Some(&pane_id)));
         };
@@ -694,12 +699,12 @@ impl App {
                         .state
                         .active
                         .as_ref()
-                        .is_some_and(|id| id.as_str() == previous_workspace_id);
+                        .is_some_and(|id| *id == previous_workspace_id);
                     let selected_was_source = self
                         .state
                         .selected
                         .as_ref()
-                        .is_some_and(|id| id.as_str() == previous_workspace_id);
+                        .is_some_and(|id| *id == previous_workspace_id);
                     let workspace = self.state.workspaces.remove(source_ws_idx);
                     let moved = match workspace.into_only_pane() {
                         Ok(moved) => moved,
@@ -741,10 +746,10 @@ impl App {
                     source_removed_tab_id = taken.removed_tab_idx.map(|_| previous_tab_id.clone());
                     taken.moved
                 };
-                if cross_workspace && let Ok(alias) = previous_pane_id.parse() {
+                if cross_workspace {
                     self.state
                         .public_pane_id_aliases
-                        .insert(alias, source_pane_id);
+                        .insert(previous_pane_id.clone(), source_pane_id);
                 }
                 match resolved {
                     ResolvedPaneMoveDestination::ExistingTab {
@@ -754,7 +759,7 @@ impl App {
                         ratio,
                         cross_workspace: _,
                     } => {
-                        let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id)
+                        let Some((target_ws_idx, target_tab_idx)) = self.resolve_tab_id(&tab_id)
                         else {
                             self.recover_failed_pane_move(recovery_context, moved);
                             return failure(

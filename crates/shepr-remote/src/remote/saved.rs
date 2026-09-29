@@ -444,10 +444,12 @@ pub fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
 // socket of its own and removes it on drop. Two bridges for one profile never
 // contend for a path, so the busy-socket `AddrInUse` cannot arise between them.
 
-/// A fresh socket path for one saved-machine attach bridge.
+/// A fresh socket path for one saved-machine attach bridge. The prefix is
+/// distinct from the `shepr-ssh-` SSH config directories, whose sweep matches
+/// on that prefix.
 fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
-    let readable = format!("shepr-ssh-{profile_id}.sock");
-    let short = format!("shepr-s-{}.sock", profile_id.short());
+    let readable = format!("shepr-bridge-{profile_id}.sock");
+    let short = format!("shepr-b-{}.sock", profile_id.short());
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
 }
 

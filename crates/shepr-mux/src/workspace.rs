@@ -13,7 +13,7 @@ use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
 use shepr_core::layout::{Direction, PaneId, TileLayout};
-use shepr_protocol::{PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
+use shepr_protocol::{PublicPaneId, TerminalId, WorkspaceId};
 
 mod aggregate;
 mod geometry;
@@ -51,7 +51,7 @@ pub enum PaneRemovalScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneRemovalPlan {
-    workspace_id: String,
+    workspace_id: WorkspaceId,
     pub pane_id: PaneId,
     pub tab_index: usize,
     pub scope: PaneRemovalScope,
@@ -59,7 +59,7 @@ pub struct PaneRemovalPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneRemoval {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     pub pane_id: PaneId,
     pub tab_index: usize,
     pub scope: PaneRemovalScope,
@@ -89,8 +89,9 @@ pub struct TabCreationOutcome {
 /// process serves one session, so unique per process is unique per session;
 /// an owned allocator would have to be threaded into every workspace
 /// constructor, pane move and restore for no change in behaviour. Restore
-/// moves the counter past every restored ID with `reserve_workspace_ids`, and
-/// the counter never wraps, so a live ID is never handed out twice.
+/// moves the counter past every saved ID with `reserve_workspace_ids` before
+/// it allocates any, and the counter never wraps, so a live ID is never handed
+/// out twice.
 static NEXT_WORKSPACE_NUMBER: AtomicUsize = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
 
 pub(crate) fn generate_workspace_id() -> WorkspaceId {
@@ -113,28 +114,17 @@ fn allocate_workspace_id(counter: &AtomicUsize) -> Option<WorkspaceId> {
         .and_then(WorkspaceId::from_number)
 }
 
-/// Moves `counter` past every ID in `workspaces`. An ID at the top of the
-/// number space leaves nothing to allocate, so the counter is exhausted
-/// rather than left where it could reach that ID again.
-fn reserve_workspace_numbers(counter: &AtomicUsize, workspaces: &[Workspace]) {
-    let Some(max) = workspaces
-        .iter()
-        .map(|workspace| workspace.id.number())
-        .max()
-    else {
+/// Moves `counter` past every ID in `ids`. An ID at the top of the number
+/// space leaves nothing to allocate, so the counter is exhausted rather than
+/// left where it could reach that ID again.
+fn reserve_workspace_numbers<'a>(
+    counter: &AtomicUsize,
+    ids: impl IntoIterator<Item = &'a WorkspaceId>,
+) {
+    let Some(max) = ids.into_iter().map(WorkspaceId::number).max() else {
         return;
     };
     counter.fetch_max(max.saturating_add(1), Ordering::Relaxed);
-}
-
-/// Canonical public pane ID renderer; parsing uses `PublicPaneId::from_str`.
-pub fn public_pane_id_for_number(workspace_id: &WorkspaceId, pane_number: usize) -> String {
-    PublicPaneId::new(workspace_id, pane_number).to_string()
-}
-
-/// Canonical public tab ID renderer; parsing uses `PublicTabId::from_str`.
-pub fn public_tab_id_for_number(workspace_id: &WorkspaceId, tab_number: usize) -> String {
-    PublicTabId::new(workspace_id, tab_number).to_string()
 }
 
 /// A non-empty ordered tab collection with one focused position.
@@ -301,8 +291,8 @@ fn valid_tabs<'a>(
     !tab_numbers.is_empty()
 }
 
-pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
-    reserve_workspace_numbers(&NEXT_WORKSPACE_NUMBER, workspaces);
+pub(crate) fn reserve_workspace_ids<'a>(ids: impl IntoIterator<Item = &'a WorkspaceId>) {
+    reserve_workspace_numbers(&NEXT_WORKSPACE_NUMBER, ids);
 }
 
 /// A named workspace containing tabs.
@@ -1160,7 +1150,7 @@ impl Workspace {
             PaneRemovalScope::Workspace
         };
         Some(PaneRemovalPlan {
-            workspace_id: self.id.to_string(),
+            workspace_id: self.id.clone(),
             pane_id,
             tab_index,
             scope,
@@ -1223,7 +1213,7 @@ impl Workspace {
         }
 
         Some(PaneRemoval {
-            workspace_id: self.id.to_string(),
+            workspace_id: self.id.clone(),
             pane_id: plan.pane_id,
             tab_index: plan.tab_index,
             scope: plan.scope,
@@ -1536,7 +1526,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_protocol::{decode_public_number, encode_public_number};
+    use shepr_protocol::{PublicTabId, decode_public_number, encode_public_number};
 
     #[test]
     fn public_tab_and_pane_ids_share_one_canonical_format() {
@@ -1555,19 +1545,19 @@ mod tests {
         assert!("wA:t1".parse::<PublicPaneId>().is_err());
     }
 
+    /// A counter of its own, so the numbers do not depend on how many IDs
+    /// other tests in this binary took from the process-wide one.
     #[test]
-    fn generated_workspace_ids_are_short_base32_handles() {
-        let first = generate_workspace_id();
-        let second = generate_workspace_id();
+    fn allocated_workspace_ids_are_short_base32_handles() {
+        let counter = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
+        let first = allocate_workspace_id(&counter).expect("first number");
+        let second = allocate_workspace_id(&counter).expect("second number");
+        assert_eq!(first, "w1");
+        assert_eq!(second, "w2");
 
-        assert!(first.starts_with('w'));
-        assert!(second.starts_with('w'));
-        assert_ne!(first, second);
-        assert!(first.len() <= 3, "unexpectedly long workspace id: {first}");
-        assert!(
-            second.len() <= 3,
-            "unexpectedly long workspace id: {second}"
-        );
+        let counter = AtomicUsize::new(32 * 32);
+        let thousandth = allocate_workspace_id(&counter).expect("1024th number");
+        assert_eq!(thousandth, "wZ0");
     }
 
     #[test]
@@ -1599,10 +1589,9 @@ mod tests {
 
     #[test]
     fn reserving_restored_workspace_ids_prevents_reuse() {
-        let mut restored = Workspace::test_new("restored");
-        restored.id = "wZ".parse().expect("canonical workspace id");
+        let restored: WorkspaceId = "wZ".parse().expect("canonical workspace id");
 
-        reserve_workspace_ids(&[restored]);
+        reserve_workspace_ids([&restored]);
 
         let generated = generate_workspace_id();
         assert_ne!(generated, "wZ");
@@ -1620,22 +1609,20 @@ mod tests {
 
     #[test]
     fn reserving_an_id_at_the_top_of_the_space_exhausts_allocation() {
-        let mut restored = Workspace::test_new("restored");
-        restored.id = WorkspaceId::from_number(usize::MAX).expect("nonzero number");
+        let restored = WorkspaceId::from_number(usize::MAX).expect("nonzero number");
         let counter = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
 
-        reserve_workspace_numbers(&counter, &[restored]);
+        reserve_workspace_numbers(&counter, [&restored]);
 
         assert_eq!(allocate_workspace_id(&counter), None);
     }
 
     #[test]
     fn reserving_never_moves_the_counter_back() {
-        let mut restored = Workspace::test_new("restored");
-        restored.id = WorkspaceId::from_number(3).expect("nonzero number");
+        let restored = WorkspaceId::from_number(3).expect("nonzero number");
         let counter = AtomicUsize::new(10);
 
-        reserve_workspace_numbers(&counter, &[restored]);
+        reserve_workspace_numbers(&counter, [&restored]);
 
         let next = allocate_workspace_id(&counter).expect("numbers left");
         assert_eq!(next.number(), 10);

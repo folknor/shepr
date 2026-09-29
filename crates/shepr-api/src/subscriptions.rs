@@ -127,7 +127,7 @@ impl ActiveSubscription {
 
                 Ok(Self::AgentStatusChanged(Box::new(
                     ActiveAgentStatusChangedSubscription {
-                        pane_id: probe.pane_id,
+                        pane_id: probe.pane_id.to_string(),
                         status_filter: agent_status,
                         last_status: Some(last_status),
                         last_presentation: Some(last_presentation),
@@ -141,7 +141,7 @@ impl ActiveSubscription {
                 let probe = pane_get(format!("{request_id}:sub:{index}:probe"), &pane_id, api_tx)?;
 
                 Ok(Self::ScrollChanged(ActiveScrollChangedSubscription {
-                    pane_id: probe.pane_id,
+                    pane_id: probe.pane_id.to_string(),
                     last_scroll: probe.scroll,
                     request_prefix: format!("{request_id}:sub:{index}"),
                 }))
@@ -581,8 +581,8 @@ mod tests {
     fn presentation_event(title: Option<&str>) -> EventEnvelope {
         EventEnvelope {
             data: EventData::PaneAgentStatusChanged {
-                pane_id: "pane_1".into(),
-                workspace_id: "workspace_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Working,
                 agent: Some("pi".into()),
                 title: title.map(str::to_string),
@@ -594,17 +594,17 @@ mod tests {
     fn workspace_focused_event(workspace_id: &str) -> EventEnvelope {
         EventEnvelope {
             data: EventData::WorkspaceFocused {
-                workspace_id: workspace_id.into(),
+                workspace_id: shepr_test_fixtures::id(workspace_id),
             },
         }
     }
 
     fn pane_info_with_scroll(scroll: Option<PaneScrollInfo>) -> PaneInfo {
         PaneInfo {
-            pane_id: "pane_1".into(),
-            terminal_id: "terminal_1".into(),
-            workspace_id: "workspace_1".into(),
-            tab_id: "tab_1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            terminal_id: shepr_test_fixtures::id("term_1_1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
+            tab_id: shepr_test_fixtures::id("w1:t1"),
             focused: true,
             cwd: None,
             foreground_cwd: None,
@@ -651,7 +651,10 @@ mod tests {
 
     fn overflow_history(event_hub: &EventHub) {
         for index in 0..600 {
-            event_hub.push(workspace_focused_event(&format!("overflow_{index}")));
+            event_hub.push(workspace_focused_event(&format!(
+                "w{}",
+                shepr_protocol::encode_public_number(index + 1)
+            )));
         }
     }
 
@@ -661,13 +664,13 @@ mod tests {
         let api_tx = pane_not_found_app();
         let mut subscriptions = [
             ActiveSubscription::ScrollChanged(ActiveScrollChangedSubscription {
-                pane_id: "pane_1".into(),
+                pane_id: "w1:p1".into(),
                 last_scroll: None,
                 request_prefix: "scroll".into(),
             }),
             ActiveSubscription::AgentStatusChanged(Box::new(
                 ActiveAgentStatusChangedSubscription {
-                    pane_id: "pane_1".into(),
+                    pane_id: "w1:p1".into(),
                     status_filter: None,
                     last_status: Some(AgentStatus::Working),
                     last_presentation: None,
@@ -717,8 +720,8 @@ mod tests {
                 pane: pane_info_with_scroll(None),
             },
             EventKind::PaneClosed => EventData::PaneClosed {
-                pane_id: "pane_1".into(),
-                workspace_id: "workspace_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
             },
             other => panic!("not a pane lifecycle kind: {other:?}"),
         };
@@ -742,7 +745,7 @@ mod tests {
         let mut stream = SubscriptionStream::new(subscriptions, start);
 
         event_hub.push(pane_lifecycle_event(EventKind::PaneCreated));
-        event_hub.push(workspace_focused_event("unsubscribed"));
+        event_hub.push(workspace_focused_event("w2"));
         event_hub.push(pane_lifecycle_event(EventKind::PaneClosed));
 
         let events = poll_stream(&mut stream, &api_tx, &event_hub);
@@ -785,15 +788,15 @@ mod tests {
         )
         .expect("test precondition");
         let scroll = ActiveSubscription::ScrollChanged(ActiveScrollChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             last_scroll: None,
             request_prefix: "mixed:sub:0".into(),
         });
         // The sampled subscription comes first in request order, yet its
         // event follows the history delivered in the same poll.
         let mut stream = SubscriptionStream::new(vec![scroll, focused], start);
-        event_hub.push(workspace_focused_event("first"));
-        event_hub.push(workspace_focused_event("second"));
+        event_hub.push(workspace_focused_event("w3"));
+        event_hub.push(workspace_focused_event("w4"));
 
         let events = poll_stream(&mut stream, &api_tx, &event_hub);
         let summary = events
@@ -836,16 +839,16 @@ mod tests {
         )
         .expect("test precondition");
         let scroll = ActiveSubscription::ScrollChanged(ActiveScrollChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             last_scroll: None,
             request_prefix: "fail:sub:1".into(),
         });
         let mut stream = SubscriptionStream::new(vec![focused, scroll], start);
-        event_hub.push(workspace_focused_event("before_close"));
+        event_hub.push(workspace_focused_event("w5"));
 
         let poll = stream.poll(&api_tx, &event_hub);
         assert_eq!(poll.events.len(), 1);
-        assert_eq!(poll.events[0]["data"]["workspace_id"], "before_close");
+        assert_eq!(poll.events[0]["data"]["workspace_id"], "w5");
         assert_eq!(
             poll.error.expect("sampling failure ends the stream").code,
             "pane_not_found"
@@ -866,7 +869,7 @@ mod tests {
         )
         .expect("test precondition");
         let mut status = ActiveAgentStatusChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             status_filter: None,
             last_status: Some(AgentStatus::Working),
             last_presentation: None,
@@ -889,9 +892,9 @@ mod tests {
     #[test]
     fn lifecycle_subscription_skips_history_but_keeps_setup_window_events() {
         let event_hub = EventHub::default();
-        event_hub.push(workspace_focused_event("before_subscription"));
+        event_hub.push(workspace_focused_event("w6"));
         let event_start_sequence = event_hub.current_sequence();
-        event_hub.push(workspace_focused_event("during_setup"));
+        event_hub.push(workspace_focused_event("w7"));
 
         let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut subscription = ActiveSubscription::new(
@@ -908,7 +911,7 @@ mod tests {
             .poll_for_wait(&api_tx, &event_hub)
             .expect("history poll succeeds")
             .expect("setup-window event");
-        assert_eq!(setup_event["data"]["workspace_id"], "during_setup");
+        assert_eq!(setup_event["data"]["workspace_id"], "w7");
         assert!(
             subscription
                 .poll_for_wait(&api_tx, &event_hub)
@@ -916,12 +919,12 @@ mod tests {
                 .is_none()
         );
 
-        event_hub.push(workspace_focused_event("after_setup"));
+        event_hub.push(workspace_focused_event("w8"));
         let live_event = subscription
             .poll_for_wait(&api_tx, &event_hub)
             .expect("history poll succeeds")
             .expect("live event");
-        assert_eq!(live_event["data"]["workspace_id"], "after_setup");
+        assert_eq!(live_event["data"]["workspace_id"], "w8");
     }
 
     #[test]
@@ -950,9 +953,9 @@ mod tests {
     #[test]
     fn lifecycle_batch_drains_in_order_and_advances_past_unmatched_events() {
         let event_hub = EventHub::default();
-        event_hub.push(workspace_focused_event("old"));
+        event_hub.push(workspace_focused_event("w9"));
         let start = event_hub.current_sequence();
-        event_hub.push(workspace_focused_event("setup"));
+        event_hub.push(workspace_focused_event("wA"));
         let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
         let subscription = ActiveSubscription::new(
             Subscription::WorkspaceFocused {},
@@ -964,12 +967,12 @@ mod tests {
         )
         .expect("test precondition");
         event_hub.push(presentation_event(None));
-        event_hub.push(workspace_focused_event("live"));
+        event_hub.push(workspace_focused_event("wB"));
         let mut stream = SubscriptionStream::new(vec![subscription], start);
         let events = poll_stream(&mut stream, &api_tx, &event_hub);
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0]["data"]["workspace_id"], "setup");
-        assert_eq!(events[1]["data"]["workspace_id"], "live");
+        assert_eq!(events[0]["data"]["workspace_id"], "wA");
+        assert_eq!(events[1]["data"]["workspace_id"], "wB");
         assert!(poll_stream(&mut stream, &api_tx, &event_hub).is_empty());
         let Some(ActiveSubscription::Event(subscription)) = stream.subscriptions.pop() else {
             panic!("expected lifecycle subscription");
@@ -983,14 +986,14 @@ mod tests {
             let event_hub = EventHub::default();
             let subscription = ActiveSubscription::AgentStatusChanged(Box::new(
                 ActiveAgentStatusChangedSubscription {
-                    pane_id: "pane_1".into(),
+                    pane_id: "w1:p1".into(),
                     status_filter: filtered.then_some(AgentStatus::Working),
                     last_status: Some(AgentStatus::Working),
                     last_presentation: None,
                     last_sequence: event_hub.current_sequence(),
                     initial_event: Some(PaneAgentStatusChangedEvent {
-                        pane_id: "pane_1".into(),
-                        workspace_id: "workspace_1".into(),
+                        pane_id: shepr_test_fixtures::id("w1:p1"),
+                        workspace_id: shepr_test_fixtures::id("w1"),
                         agent_status: AgentStatus::Working,
                         agent: Some("pi".into()),
                         title: Some("stale initial snapshot".into()),
@@ -1050,7 +1053,7 @@ mod tests {
             viewport_rows: 20,
         };
         let mut subscription = ActiveScrollChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             last_scroll: Some(at_bottom),
             request_prefix: "test".into(),
         };
@@ -1068,8 +1071,8 @@ mod tests {
         let SubscriptionEventData::ScrollChanged(data) = event.data else {
             panic!("wrong event data");
         };
-        assert_eq!(data.pane_id, "pane_1");
-        assert_eq!(data.workspace_id, "workspace_1");
+        assert_eq!(data.pane_id, "w1:p1");
+        assert_eq!(data.workspace_id, "w1");
         assert_eq!(data.scroll, scrolled_back);
     }
 
@@ -1077,7 +1080,7 @@ mod tests {
     fn agent_status_subscription_replays_queued_metadata_set_and_expiry_events() {
         let event_hub = EventHub::default();
         let mut subscription = ActiveAgentStatusChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             status_filter: None,
             last_status: Some(AgentStatus::Working),
             last_presentation: Some(PanePresentationSnapshot {
@@ -1115,7 +1118,7 @@ mod tests {
     fn agent_status_subscription_prefers_setup_window_events_over_initial_snapshot() {
         let event_hub = EventHub::default();
         let mut subscription = ActiveAgentStatusChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             status_filter: Some(AgentStatus::Working),
             last_status: Some(AgentStatus::Working),
             last_presentation: Some(PanePresentationSnapshot {
@@ -1124,8 +1127,8 @@ mod tests {
             }),
             last_sequence: event_hub.current_sequence(),
             initial_event: Some(PaneAgentStatusChangedEvent {
-                pane_id: "pane_1".into(),
-                workspace_id: "workspace_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Working,
                 agent: Some("pi".into()),
                 title: None,
@@ -1160,7 +1163,7 @@ mod tests {
     fn agent_status_subscription_emits_setup_window_event_already_reflected_by_probe() {
         let event_hub = EventHub::default();
         let mut subscription = ActiveAgentStatusChangedSubscription {
-            pane_id: "pane_1".into(),
+            pane_id: "w1:p1".into(),
             status_filter: Some(AgentStatus::Working),
             last_status: Some(AgentStatus::Working),
             last_presentation: Some(PanePresentationSnapshot {
@@ -1169,8 +1172,8 @@ mod tests {
             }),
             last_sequence: event_hub.current_sequence(),
             initial_event: Some(PaneAgentStatusChangedEvent {
-                pane_id: "pane_1".into(),
-                workspace_id: "workspace_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 agent_status: AgentStatus::Working,
                 agent: Some("pi".into()),
                 title: Some("short lived".into()),

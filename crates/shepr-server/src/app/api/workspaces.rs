@@ -185,13 +185,13 @@ impl App {
             let Some(workspace) = self.state.workspaces.get(index) else {
                 return Err(workspace_not_found(requested_id));
             };
-            if !seen_ids.insert(workspace.id.to_string()) {
+            if !seen_ids.insert(workspace.id.clone()) {
                 return failure(
                     ApiErrorCode::WorkspaceMoveBlockFailed,
                     format!("workspace {requested_id} appears more than once"),
                 );
             }
-            workspace_ids.push(workspace.id.to_string());
+            workspace_ids.push(workspace.id.clone());
         }
 
         let before_workspace_id = match params.before_workspace_id {
@@ -202,20 +202,20 @@ impl App {
                 let Some(workspace) = self.state.workspaces.get(index) else {
                     return Err(workspace_not_found(&requested_id));
                 };
-                if seen_ids.contains(workspace.id.as_str()) {
+                if seen_ids.contains(&workspace.id) {
                     return failure(
                         ApiErrorCode::WorkspaceMoveBlockFailed,
                         "before_workspace_id must not be part of workspace_ids",
                     );
                 }
-                Some(workspace.id.to_string())
+                Some(workspace.id.clone())
             }
             None => None,
         };
 
         let moved = self
             .state
-            .move_workspace_block(&workspace_ids, before_workspace_id.as_deref());
+            .move_workspace_block(&workspace_ids, before_workspace_id.as_ref());
         let workspaces = self.workspace_list_info();
         if moved {
             self.emit_event(EventEnvelope {
@@ -438,7 +438,7 @@ mod tests {
         let source_workspace_id = app.public_workspace_id(1).expect("test precondition");
 
         let response = app.handle_workspace_create(WorkspaceCreateParams {
-            source_workspace_id: Some(source_workspace_id),
+            source_workspace_id: Some(source_workspace_id.to_string()),
             cwd: None,
             focus: false,
             label: None,
@@ -527,7 +527,7 @@ mod tests {
                 id: "req".into(),
                 method: shepr_api::schema::Method::WorkspaceReportMetadata(
                     WorkspaceReportMetadataParams {
-                        workspace_id: workspace_id.clone(),
+                        workspace_id: workspace_id.clone().to_string(),
                         source: "user:test".into(),
                         tokens,
                         seq: None,
@@ -564,7 +564,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one")];
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
         let response = app.handle_workspace_report_metadata(WorkspaceReportMetadataParams {
-            workspace_id,
+            workspace_id: workspace_id.to_string(),
             source: "user:test".into(),
             tokens: std::collections::HashMap::from([("summary".into(), Some("temporary".into()))]),
             seq: None,
@@ -625,7 +625,7 @@ mod tests {
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         let response = app.handle_workspace_move(&WorkspaceMoveParams {
-            workspace_id: moved_id.clone(),
+            workspace_id: moved_id.clone().to_string(),
             insert_index: 3,
         });
 
@@ -670,8 +670,8 @@ mod tests {
         let tail_id = app.public_workspace_id(3).expect("test precondition");
 
         let response = app.handle_workspace_move_block(WorkspaceMoveBlockParams {
-            workspace_ids: vec![parent_id.clone(), child_id.clone()],
-            before_workspace_id: Some(tail_id.clone()),
+            workspace_ids: vec![parent_id.to_string(), child_id.to_string()],
+            before_workspace_id: Some(tail_id.to_string()),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -735,7 +735,7 @@ mod tests {
         ];
 
         let response = app.handle_workspace_close(&WorkspaceCloseParams {
-            workspace_id: workspace_id.clone(),
+            workspace_id: workspace_id.clone().to_string(),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -776,7 +776,7 @@ mod tests {
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         let response = app.handle_workspace_move(&WorkspaceMoveParams {
-            workspace_id: moved_id.clone(),
+            workspace_id: moved_id.clone().to_string(),
             insert_index: 1,
         });
 

@@ -59,7 +59,7 @@ impl ApiClient {
         read_json_line(&mut reader)
     }
 
-    /// Like [`Self::request_value`] with an explicit bound. The bound is an
+    /// Like [`Self::request_value`] with an explicit bound. The bound is a
     /// send timeout for writing and one overall deadline for reading. A timeout
     /// surfaces as `ErrorKind::TimedOut`, even if the server trickles out a
     /// partial response.

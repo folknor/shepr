@@ -63,7 +63,7 @@ impl AppState {
         terminal: shepr_mux::terminal::TerminalState,
         focus: bool,
     ) -> WorkspaceCreationOutcome {
-        let workspace_id = workspace.id.to_string();
+        let workspace_id = workspace.id.clone();
         // A workspace being created holds exactly its first tab, which is
         // also its focused tab; `active_tab` has no empty case to index past.
         let root_pane = workspace.active_tab().root_pane();

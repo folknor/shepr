@@ -12,7 +12,7 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) resolved_config_error: Option<CachedEndpointConfigError>,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
     pub(crate) snapshot_generation: Option<u64>,
-    pub(crate) agent_recency: HashMap<String, u64>,
+    pub(crate) agent_recency: HashMap<shepr_protocol::PublicPaneId, u64>,
 }
 
 #[derive(Clone)]
@@ -97,7 +97,7 @@ pub(super) struct MachineHit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClientEndpointFocusTarget {
-    Workspace(String),
+    Workspace(shepr_protocol::WorkspaceId),
     Pane(shepr_protocol::PublicPaneId),
 }
 
@@ -438,13 +438,13 @@ impl ClientShellState {
                 .is_none_or(|previous| previous.state_change_seq != agent.state_change_seq);
             if changed {
                 next_recency = next_recency.saturating_add(1);
-                recency.insert(agent.pane_id.to_string(), next_recency);
+                recency.insert(agent.pane_id.clone(), next_recency);
             }
         }
         let live_agent_ids = snapshot
             .agents
             .iter()
-            .map(|agent| agent.pane_id.to_string())
+            .map(|agent| &agent.pane_id)
             .collect::<std::collections::HashSet<_>>();
         recency.retain(|pane_id, _| live_agent_ids.contains(pane_id));
         let endpoint = &mut self.endpoints[index];

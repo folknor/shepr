@@ -166,7 +166,7 @@ pub(super) fn focus_request(
     let method = match focus {
         crate::shell::ClientEndpointFocusTarget::Workspace(workspace_id) => {
             shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                workspace_id: workspace_id.clone(),
+                workspace_id: workspace_id.to_string(),
             })
         }
         crate::shell::ClientEndpointFocusTarget::Pane(pane_id) => {

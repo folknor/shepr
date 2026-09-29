@@ -194,20 +194,23 @@ pub(super) use crate::limits::{
     METADATA_TTL_MAX_MS,
 };
 
-pub(super) fn normalize_metadata_source(value: &str) -> Result<String, &'static str> {
+pub(super) fn normalize_metadata_source(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("metadata source must not be empty");
+        return Err("metadata source must not be empty".into());
     }
     if value.chars().count() > METADATA_SOURCE_MAX_CHARS {
-        return Err("metadata source must be 80 characters or fewer");
+        return Err(format!(
+            "metadata source must be {METADATA_SOURCE_MAX_CHARS} characters or fewer"
+        ));
     }
     if !value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '.' | '_' | '-'))
     {
         return Err(
-            "metadata source may contain only ASCII letters, digits, colon, dot, underscore, and hyphen",
+            "metadata source may contain only ASCII letters, digits, colon, dot, underscore, and hyphen"
+                .into(),
         );
     }
     Ok(value.to_string())
@@ -215,15 +218,19 @@ pub(super) fn normalize_metadata_source(value: &str) -> Result<String, &'static 
 
 pub(super) fn normalize_metadata_ttl(
     ttl_ms: Option<u64>,
-) -> Result<Option<std::time::Duration>, &'static str> {
+) -> Result<Option<std::time::Duration>, String> {
     let Some(ttl_ms) = ttl_ms else {
         return Ok(None);
     };
     if ttl_ms < METADATA_TTL_MIN_MS {
-        return Err("metadata ttl_ms must be at least 1");
+        return Err(format!(
+            "metadata ttl_ms must be at least {METADATA_TTL_MIN_MS}"
+        ));
     }
     if ttl_ms > METADATA_TTL_MAX_MS {
-        return Err("metadata ttl_ms must be 86400000 or less");
+        return Err(format!(
+            "metadata ttl_ms must be {METADATA_TTL_MAX_MS} or less"
+        ));
     }
     Ok(Some(std::time::Duration::from_millis(ttl_ms)))
 }

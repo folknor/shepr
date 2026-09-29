@@ -59,12 +59,13 @@ impl App {
                 "agent pane tab is no longer available",
             );
         };
+        let Some(pane_id) = self.public_pane_id(resolved.ws_idx, resolved.pane_id) else {
+            return agent_not_found(&params.target);
+        };
 
         success(ResponseResult::PaneRead {
             read: PaneReadResult {
-                pane_id: self
-                    .public_pane_id(resolved.ws_idx, resolved.pane_id)
-                    .unwrap_or_else(|| params.target.clone()),
+                pane_id,
                 workspace_id,
                 tab_id,
                 source: params.source,
@@ -246,7 +247,10 @@ mod tests {
         app.state.workspaces[0].focus_pane_in_tab(0, pane_id);
 
         let response = app.handle_agent_focus(&AgentTarget {
-            target: app.public_pane_id(0, pane_id).expect("test precondition"),
+            target: app
+                .public_pane_id(0, pane_id)
+                .expect("test precondition")
+                .to_string(),
         });
 
         let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -274,7 +278,7 @@ mod tests {
 
         for name in [Some("reviewer".to_string()), None] {
             let response = app.handle_agent_rename(AgentRenameParams {
-                target: target.clone(),
+                target: target.clone().to_string(),
                 name,
             });
             let success: SuccessResponse = crate::test_support::test_success(&response);

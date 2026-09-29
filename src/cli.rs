@@ -1164,6 +1164,9 @@ mod tests {
 
     #[test]
     fn terminal_attach_refuses_an_id_the_server_never_issues() {
+        // `run` resolves the application paths from the environment before
+        // it reaches the command.
+        let _env = crate::test_support::IsolatedEnv::new();
         let invocation = parse(&["terminal", "attach", "terminal-1"]);
         let Launch::Cli(command) = invocation.launch else {
             panic!("terminal attach is not a CLI command");

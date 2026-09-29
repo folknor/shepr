@@ -48,6 +48,21 @@ pub fn fixed_pane_id(raw: u32) -> shepr_core::layout::PaneId {
         .unwrap_or_else(|| panic!("{raw} is the layout placeholder, not a pane id"))
 }
 
+/// A typed id parsed from its canonical text, for tests that spell workspace,
+/// tab, pane or terminal ids as literals.
+///
+/// # Panics
+///
+/// Panics when `text` is not canonical for `T`.
+pub fn id<T>(text: &str) -> T
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    text.parse()
+        .unwrap_or_else(|error| panic!("{text:?}: {error}"))
+}
+
 /// A canonical boot id for tests, one per `process_id`: the id a server with
 /// that process id would take at the epoch. Distinct numbers give distinct
 /// boot ids, so tests name servers by number.

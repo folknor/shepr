@@ -21,12 +21,12 @@ pub(super) struct AgentRow {
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: shepr_config::AgentPanelSortConfig,
-) -> Vec<String> {
+) -> Vec<shepr_protocol::PublicPaneId> {
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
     sort_agent_refs(&mut agents, sort);
     agents
         .into_iter()
-        .map(|agent| agent.pane_id.to_string())
+        .map(|agent| agent.pane_id.clone())
         .collect()
 }
 

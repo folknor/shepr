@@ -127,7 +127,7 @@ pub(super) struct ClientWorkspacePress {
 
 pub(super) struct ClientTabPress {
     pub(super) tab_id: shepr_protocol::PublicTabId,
-    pub(super) workspace_id: String,
+    pub(super) workspace_id: shepr_protocol::WorkspaceId,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
 }
@@ -154,12 +154,12 @@ pub(super) enum ClientChromeDrag {
     },
     Tab {
         tab_id: shepr_protocol::PublicTabId,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         insert_index: Option<usize>,
     },
     Workspace {
         source_workspace_id: shepr_protocol::WorkspaceId,
-        target: Option<(Option<String>, u16)>,
+        target: Option<(Option<shepr_protocol::WorkspaceId>, u16)>,
     },
     PaneSplit {
         hit: PaneSplitHit,
@@ -179,7 +179,7 @@ pub(super) enum ClientChromeDrag {
 pub(super) struct WorkspaceHit {
     pub(super) rect: Rect,
     pub(super) endpoint_id: ClientEndpointId,
-    pub(super) workspace_id: String,
+    pub(super) workspace_id: shepr_protocol::WorkspaceId,
 }
 
 #[derive(Debug)]
@@ -246,16 +246,16 @@ pub(super) enum ClientShellOverlayKind {
 #[derive(Debug)]
 pub(super) enum ClientRenameTarget {
     NewWorkspace {
-        source_workspace_id: Option<String>,
+        source_workspace_id: Option<shepr_protocol::WorkspaceId>,
         cwd: Option<String>,
         suggested_name: String,
         label_lookup_id: Option<u64>,
     },
     Workspace {
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
     },
     NewTab {
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         default_name: String,
     },
     Tab {
@@ -289,7 +289,7 @@ pub(super) enum ClientNavigatorTarget {
     },
     Workspace {
         endpoint_id: ClientEndpointId,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
     },
     Pane {
         endpoint_id: ClientEndpointId,
@@ -349,15 +349,15 @@ pub(super) enum ClientContextMenuAction {
 #[derive(Debug)]
 pub(super) enum ClientContextMenuTarget {
     Workspace {
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
     },
     Tab {
         tab_id: shepr_protocol::PublicTabId,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
     },
     Pane {
         pane_id: shepr_protocol::PublicPaneId,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         source_pane_id: Option<shepr_protocol::PublicPaneId>,
         has_manual_label: bool,
         right_click_passthrough: bool,
@@ -385,7 +385,7 @@ pub(super) struct ClientTabCloseConfirmation {
 
 #[derive(Debug)]
 pub(super) struct ClientConfirmCloseOverlay {
-    pub(super) workspace_id: String,
+    pub(super) workspace_id: shepr_protocol::WorkspaceId,
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
@@ -818,19 +818,19 @@ impl ClientShellState {
         render::workspace_entries(snapshot)
     }
 
-    pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {
+    pub(super) fn reveal_workspace(&mut self, workspace_id: &shepr_protocol::WorkspaceId) {
         if self
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.workspace_id == workspace_id)
+            .any(|hit| hit.workspace_id == *workspace_id)
         {
             return;
         }
         let target = self.snapshot.as_deref().and_then(|snapshot| {
             self.navigation_workspace_entries(snapshot)
                 .iter()
-                .position(|entry| snapshot.workspaces[*entry].workspace_id == workspace_id)
+                .position(|entry| snapshot.workspaces[*entry].workspace_id == *workspace_id)
         });
         if let Some(target) = target {
             self.workspace_scroll = target.min(self.hits.workspace_max_scroll);
@@ -1098,7 +1098,7 @@ impl ClientShellState {
         if self.mode == ClientShellMode::Navigate && self.navigate_workspace_id.is_none() {
             self.navigate_workspace_id = snapshot
                 .focused_workspace_id
-                .as_deref()
+                .as_ref()
                 .and_then(|id| self.navigation_target(&self.active_endpoint_id, id));
         }
         let pane_exists = |pane_id: &shepr_protocol::PublicPaneId| {

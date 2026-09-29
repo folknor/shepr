@@ -1232,14 +1232,14 @@ fn reconnecting_local_selection_still_reaches_the_runtime() {
     let mut outcome = ClientShellInput::default();
     state.focus_or_activate(
         ClientEndpointId::Local,
-        ClientEndpointFocusTarget::Workspace("local-workspace".into()),
+        ClientEndpointFocusTarget::Workspace(shepr_test_fixtures::id("w1")),
         &mut outcome,
     );
     assert!(
         matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
         endpoint_id: ClientEndpointId::Local,
         target: Some(ClientEndpointFocusTarget::Workspace(id)),
-    }] if id == "local-workspace")
+    }] if id == "w1")
     );
 }
 
@@ -1355,7 +1355,7 @@ fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
     );
     assert_eq!(
         state.active_endpoint_workspace_at((local.x, local.y)),
-        Some("w1".into())
+        Some(shepr_test_fixtures::id("w1"))
     );
 }
 

@@ -61,7 +61,7 @@ impl ClientShellState {
                         self.push_endpoint_method(
                             shepr_api::schema::Method::WorkspaceCreate(
                                 shepr_api::schema::WorkspaceCreateParams {
-                                    source_workspace_id: self.workspace_action_id(),
+                                    source_workspace_id: self.workspace_action_id().map(Into::into),
                                     cwd: None,
                                     focus: true,
                                     label: None,
@@ -86,7 +86,9 @@ impl ClientShellState {
                         } else {
                             self.push_endpoint_method(
                                 shepr_api::schema::Method::WorkspaceClose(
-                                    shepr_api::schema::WorkspaceCloseParams { workspace_id },
+                                    shepr_api::schema::WorkspaceCloseParams {
+                                        workspace_id: workspace_id.into(),
+                                    },
                                 ),
                                 outcome,
                             );
@@ -303,7 +305,7 @@ impl ClientShellState {
         let method = match target {
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
                 shepr_api::schema::Method::WorkspaceFocus(shepr_api::schema::WorkspaceTarget {
-                    workspace_id,
+                    workspace_id: workspace_id.into(),
                 })
             }
             ClientEndpointFocusTarget::Pane(pane_id) => {
@@ -615,7 +617,7 @@ impl ClientShellState {
                     self.config.agent_panel_sort,
                 );
                 Some(Method::PaneFocus(PaneTarget {
-                    pane_id: agents.get(index)?.clone(),
+                    pane_id: agents.get(index)?.to_string(),
                 }))
             }
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
@@ -626,9 +628,9 @@ impl ClientShellState {
                 if agents.is_empty() {
                     return None;
                 }
-                let current = agents.iter().position(|pane_id| {
-                    Some(pane_id.as_str()) == snapshot.focused_pane_id.as_deref()
-                });
+                let current = agents
+                    .iter()
+                    .position(|pane_id| Some(pane_id) == snapshot.focused_pane_id.as_ref());
                 let next = match (current, action) {
                     (Some(current), KeybindAction::PreviousAgent) => {
                         (current + agents.len() - 1) % agents.len()
@@ -643,11 +645,13 @@ impl ClientShellState {
                     .hits
                     .agents
                     .iter()
-                    .any(|(_, visible_pane_id)| visible_pane_id.as_str() == pane_id)
+                    .any(|(_, visible_pane_id)| *visible_pane_id == pane_id)
                 {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }
-                Some(Method::PaneFocus(PaneTarget { pane_id }))
+                Some(Method::PaneFocus(PaneTarget {
+                    pane_id: pane_id.to_string(),
+                }))
             }
             KeybindAction::SwitchWorkspace(index) => {
                 let entries = self.navigation_workspace_entries(snapshot);
@@ -655,9 +659,11 @@ impl ClientShellState {
                     .workspaces
                     .get(*entries.get(index)?)?
                     .workspace_id
-                    .to_string();
+                    .clone();
                 self.reveal_workspace(&workspace_id);
-                Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
+                Some(Method::WorkspaceFocus(WorkspaceTarget {
+                    workspace_id: workspace_id.into(),
+                }))
             }
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => {
                 let entries = self.navigation_workspace_entries(snapshot);
@@ -676,9 +682,11 @@ impl ClientShellState {
                 let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
                 let len_isize = isize::try_from(entries.len()).unwrap_or(isize::MAX);
                 let next = (current_isize + delta).rem_euclid(len_isize) as usize;
-                let workspace_id = snapshot.workspaces[entries[next]].workspace_id.to_string();
+                let workspace_id = snapshot.workspaces[entries[next]].workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
-                Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
+                Some(Method::WorkspaceFocus(WorkspaceTarget {
+                    workspace_id: workspace_id.into(),
+                }))
             }
             KeybindAction::SwitchTab(index) => {
                 let tabs = snapshot

@@ -597,7 +597,10 @@ impl ClientShellState {
         Some(last_index + 1)
     }
 
-    fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
+    fn workspace_drop_target_at(
+        &self,
+        point: (u16, u16),
+    ) -> Option<(Option<shepr_protocol::WorkspaceId>, u16)> {
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= self.hits.new_workspace.y
@@ -632,7 +635,7 @@ impl ClientShellState {
             snapshot
                 .workspaces
                 .get(*entry)
-                .map(|workspace| workspace.workspace_id.to_string())
+                .map(|workspace| workspace.workspace_id.clone())
         });
         let row = last_hit.rect.bottom();
         if row < self.hits.new_workspace.y {
@@ -647,30 +650,30 @@ impl ClientShellState {
 
     fn workspace_move_method(
         &self,
-        source_workspace_id: &str,
-        before_workspace_id: Option<&str>,
+        source_workspace_id: &shepr_protocol::WorkspaceId,
+        before_workspace_id: Option<&shepr_protocol::WorkspaceId>,
     ) -> Option<shepr_api::schema::Method> {
         let snapshot = self.snapshot.as_deref()?;
         let source = snapshot
             .workspaces
             .iter()
-            .find(|workspace| workspace.workspace_id == source_workspace_id)?;
+            .find(|workspace| workspace.workspace_id == *source_workspace_id)?;
         if before_workspace_id == Some(source_workspace_id) {
             return None;
         }
         let source_position = snapshot
             .workspaces
             .iter()
-            .position(|workspace| workspace.workspace_id == source_workspace_id)?;
+            .position(|workspace| workspace.workspace_id == *source_workspace_id)?;
         let remaining = snapshot
             .workspaces
             .iter()
-            .filter(|workspace| workspace.workspace_id != source_workspace_id)
+            .filter(|workspace| workspace.workspace_id != *source_workspace_id)
             .collect::<Vec<_>>();
         let insert_position = match before_workspace_id {
             Some(target) => remaining
                 .iter()
-                .position(|workspace| workspace.workspace_id == target)?,
+                .position(|workspace| workspace.workspace_id == *target)?,
             None => remaining.len(),
         };
         if insert_position == source_position {
@@ -683,7 +686,7 @@ impl ClientShellState {
                     snapshot
                         .workspaces
                         .iter()
-                        .position(|workspace| workspace.workspace_id == target)
+                        .position(|workspace| workspace.workspace_id == *target)
                 })
                 .unwrap_or(snapshot.workspaces.len());
             Some(shepr_api::schema::Method::WorkspaceMove(
@@ -1023,8 +1026,8 @@ impl ClientShellState {
                     } => {
                         if let Some((before_workspace_id, _)) = target
                             && let Some(method) = self.workspace_move_method(
-                                source_workspace_id.as_str(),
-                                before_workspace_id.as_deref(),
+                                &source_workspace_id,
+                                before_workspace_id.as_ref(),
                             )
                         {
                             self.push_endpoint_method(method, outcome);
@@ -1718,15 +1721,11 @@ impl ClientShellState {
                     .workspaces
                     .iter()
                     .find(|hit| super::contains(hit.rect, point))
-                    .and_then(|hit| {
-                        // Hits are drawn from the endpoint's workspace IDs,
-                        // so this parse only refuses what no server sent.
-                        Some(ClientWorkspacePress {
-                            endpoint_id: hit.endpoint_id.clone(),
-                            workspace_id: hit.workspace_id.parse().ok()?,
-                            start_column: mouse.column,
-                            start_row: mouse.row,
-                        })
+                    .map(|hit| ClientWorkspacePress {
+                        endpoint_id: hit.endpoint_id.clone(),
+                        workspace_id: hit.workspace_id.clone(),
+                        start_column: mouse.column,
+                        start_row: mouse.row,
                     });
                 if let Some(workspace_press) = workspace_press {
                     self.workspace_press = Some(workspace_press);
@@ -1749,7 +1748,7 @@ impl ClientShellState {
                                     .find(|tab| tab.tab_id == *tab_id)?;
                                 Some(ClientTabPress {
                                     tab_id: tab.tab_id.clone(),
-                                    workspace_id: tab.workspace_id.to_string(),
+                                    workspace_id: tab.workspace_id.clone(),
                                     start_column: mouse.column,
                                     start_row: mouse.row,
                                 })

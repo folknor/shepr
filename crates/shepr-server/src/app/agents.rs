@@ -97,7 +97,7 @@ impl App {
         };
 
         if let Some(name) = normalized_name.as_deref() {
-            let conflicts = self.agent_name_conflicts(name, resolved.terminal_id.as_str());
+            let conflicts = self.agent_name_conflicts(name, &resolved.terminal_id);
             if !conflicts.is_empty() {
                 return Err(AgentRenameError::DuplicateName {
                     name: name.to_string(),
@@ -227,12 +227,12 @@ impl App {
     fn agent_name_conflicts(
         &self,
         name: &str,
-        except_terminal_id: &str,
+        except_terminal_id: &shepr_protocol::TerminalId,
     ) -> Vec<shepr_api::schema::AgentInfo> {
         self.collect_agent_infos()
             .into_iter()
             .filter(|agent| {
-                agent.name.as_deref() == Some(name) && agent.terminal_id != except_terminal_id
+                agent.name.as_deref() == Some(name) && agent.terminal_id != *except_terminal_id
             })
             .collect()
     }

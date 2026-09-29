@@ -152,10 +152,10 @@ fn pane_scroll_result(
 ) -> shepr_api::schema::ResponseResult {
     shepr_api::schema::ResponseResult::PaneInfo {
         pane: shepr_api::schema::PaneInfo {
-            pane_id: "w1:p1".into(),
-            terminal_id: "terminal_1".into(),
-            workspace_id: "w1".into(),
-            tab_id: "w1:t1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            terminal_id: shepr_test_fixtures::id("term_1_1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
+            tab_id: shepr_test_fixtures::id("w1:t1"),
             focused: true,
             cwd: None,
             foreground_cwd: None,

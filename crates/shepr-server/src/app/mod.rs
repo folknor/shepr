@@ -786,8 +786,6 @@ mod tests {
         assert_eq!(tab.workspace_id, workspace.workspace_id);
         assert_eq!(root_pane.workspace_id, workspace.workspace_id);
         assert_eq!(root_pane.tab_id, tab.tab_id);
-        assert!(root_pane.terminal_id.starts_with("term_"));
-        assert_ne!(root_pane.terminal_id, root_pane.pane_id);
     }
 
     #[tokio::test]
@@ -994,7 +992,7 @@ mod tests {
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_rename".into(),
             method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
-                pane_id: pane_id.clone(),
+                pane_id: pane_id.clone().to_string(),
                 label: Some("reviewer".into()),
             }),
         });
@@ -1021,7 +1019,7 @@ mod tests {
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_rename_clear".into(),
             method: shepr_api::schema::Method::PaneRename(shepr_api::schema::PaneRenameParams {
-                pane_id,
+                pane_id: pane_id.to_string(),
                 label: None,
             }),
         });
@@ -1314,7 +1312,7 @@ mod tests {
             id: "req_pane_split_focus_background_tab".into(),
             method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
                 workspace_id: None,
-                target_pane_id: Some(target_pane_id),
+                target_pane_id: Some(target_pane_id.to_string()),
                 direction: shepr_api::schema::SplitDirection::Right,
                 ratio: None,
                 cwd: None,
@@ -1327,7 +1325,7 @@ mod tests {
             serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
-        assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id);
+        assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id.as_str());
         assert_eq!(response["result"]["pane"]["focused"], true);
         assert_eq!(app.state.active_index(), Some(0));
         assert_eq!(app.state.workspaces[0].active_tab_index(), background_tab);
@@ -1360,7 +1358,7 @@ mod tests {
             id: "req_pane_split_ratio".into(),
             method: shepr_api::schema::Method::PaneSplit(shepr_api::schema::PaneSplitParams {
                 workspace_id: None,
-                target_pane_id: Some(target_pane_id),
+                target_pane_id: Some(target_pane_id.to_string()),
                 direction: shepr_api::schema::SplitDirection::Right,
                 ratio: Some(0.333),
                 cwd: None,
@@ -1460,7 +1458,7 @@ mod tests {
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_close".into(),
             method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
-                pane_id: target_pane_id,
+                pane_id: target_pane_id.to_string(),
             }),
         });
         let response: serde_json::Value =
@@ -1490,7 +1488,7 @@ mod tests {
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "req_pane_close_last".into(),
             method: shepr_api::schema::Method::PaneClose(shepr_api::schema::PaneTarget {
-                pane_id: target_pane_id,
+                pane_id: target_pane_id.to_string(),
             }),
         });
         let response: serde_json::Value =

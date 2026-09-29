@@ -202,7 +202,7 @@ mod tests {
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "agent_explain".into(),
             method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
-                target,
+                target: target.to_string(),
             }),
         });
         let response: serde_json::Value =
@@ -252,7 +252,7 @@ mod tests {
         let response = app.handle_api_request(shepr_api::schema::Request {
             id: "agent_explain_omp".into(),
             method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
-                target,
+                target: target.to_string(),
             }),
         });
         let response: serde_json::Value =
@@ -285,7 +285,7 @@ mod tests {
             id: "process_info".into(),
             method: shepr_api::schema::Method::PaneProcessInfo(
                 shepr_api::schema::PaneProcessInfoParams {
-                    pane_id: Some(target.clone()),
+                    pane_id: Some(target.clone().to_string()),
                 },
             ),
         });
@@ -294,7 +294,10 @@ mod tests {
                 .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_process_info");
-        assert_eq!(response["result"]["process_info"]["pane_id"], target);
+        assert_eq!(
+            response["result"]["process_info"]["pane_id"],
+            target.as_str()
+        );
     }
 
     #[test]
@@ -378,7 +381,7 @@ mod tests {
         let first = shepr_mux::workspace::Workspace::test_new("closing");
         let target = shepr_mux::workspace::Workspace::test_new("target");
         let pane_id = target.tabs()[0].root_pane();
-        let workspace_id = target.id.to_string();
+        let workspace_id = target.id.clone();
         app.state.workspaces = vec![first, target];
         app.state.ensure_test_terminals();
         let presentation = shepr_mux::terminal::EffectivePresentation {

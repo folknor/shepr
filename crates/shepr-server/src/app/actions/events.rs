@@ -248,7 +248,7 @@ impl AppState {
             .workspaces
             .iter()
             .position(|ws| ws.pane_state(pane_id).is_some())?;
-        let workspace_id = self.workspaces[ws_idx].id.to_string();
+        let workspace_id = self.workspaces[ws_idx].id.clone();
         let terminal_id = self.workspaces[ws_idx]
             .pane_state(pane_id)?
             .attached_terminal_id

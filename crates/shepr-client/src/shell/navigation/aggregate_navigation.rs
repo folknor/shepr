@@ -9,7 +9,7 @@ pub(super) struct CachedEndpointSnapshot<'a> {
     pub(super) label: &'a str,
     pub(super) status: ClientEndpointStatus,
     pub(super) snapshot: &'a ClientShellSnapshot,
-    pub(super) agent_recency: &'a HashMap<String, u64>,
+    pub(super) agent_recency: &'a HashMap<shepr_protocol::PublicPaneId, u64>,
 }
 
 impl CachedEndpointSnapshot<'_> {
@@ -56,12 +56,11 @@ pub(super) fn aggregate_agent_rows<'a>(
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
                 .into_iter()
                 .filter_map(move |pane_id| {
-                    let typed_pane_id = pane_id.parse::<shepr_protocol::PublicPaneId>().ok()?;
                     let agent = endpoint
                         .snapshot
                         .agents
                         .iter()
-                        .find(|agent| agent.pane_id == typed_pane_id)?;
+                        .find(|agent| agent.pane_id == pane_id)?;
                     Some(AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -264,7 +263,7 @@ pub(super) fn navigator_rows(
                         current: false,
                         target: ClientNavigatorTarget::Workspace {
                             endpoint_id: endpoint.endpoint_id.clone(),
-                            workspace_id: workspace.workspace_id.to_string(),
+                            workspace_id: workspace.workspace_id.clone(),
                         },
                     });
                     endpoint_rows.extend(children);

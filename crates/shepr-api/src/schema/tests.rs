@@ -208,28 +208,28 @@ fn event_envelope_round_trips() {
     let events = [
         EventEnvelope {
             data: EventData::PaneExited {
-                pane_id: "p_1".into(),
-                workspace_id: "w_1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
             },
         },
         EventEnvelope {
             data: EventData::WorkspaceMoved {
-                workspace_id: "w_1".into(),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 insert_index: 2,
                 workspaces: vec![],
             },
         },
         EventEnvelope {
             data: EventData::WorkspaceReordered {
-                workspace_ids: vec!["w_1".into(), "w_2".into()],
-                before_workspace_id: Some("w_3".into()),
+                workspace_ids: vec![shepr_test_fixtures::id("w1"), shepr_test_fixtures::id("w2")],
+                before_workspace_id: Some(shepr_test_fixtures::id("w3")),
                 workspaces: vec![],
             },
         },
         EventEnvelope {
             data: EventData::TabMoved {
-                tab_id: "w_1:1".into(),
-                workspace_id: "w_1".into(),
+                tab_id: shepr_test_fixtures::id("w1:t1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 insert_index: 1,
                 tabs: vec![],
             },
@@ -237,8 +237,8 @@ fn event_envelope_round_trips() {
         EventEnvelope {
             data: EventData::LayoutUpdated {
                 layout: PaneLayoutSnapshot {
-                    workspace_id: "w_1".into(),
-                    tab_id: "w_1:1".into(),
+                    workspace_id: shepr_test_fixtures::id("w1"),
+                    tab_id: shepr_test_fixtures::id("w1:t1"),
                     zoomed: false,
                     area: PaneLayoutRect {
                         x: 0,
@@ -246,9 +246,9 @@ fn event_envelope_round_trips() {
                         width: 100,
                         height: 24,
                     },
-                    focused_pane_id: "w_1-1".into(),
+                    focused_pane_id: shepr_test_fixtures::id("w1:p1"),
                     panes: vec![PaneLayoutPane {
-                        pane_id: "w_1-1".into(),
+                        pane_id: shepr_test_fixtures::id("w1:p1"),
                         focused: true,
                         rect: PaneLayoutRect {
                             x: 0,
@@ -321,8 +321,8 @@ fn subscription_event_envelope_round_trips() {
     let event = SubscriptionEventEnvelope {
         event: SubscriptionEventKind::PaneAgentStatusChanged,
         data: SubscriptionEventData::PaneAgentStatusChanged(PaneAgentStatusChangedEvent {
-            pane_id: "p_1_1".into(),
-            workspace_id: "w_1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
             agent_status: AgentStatus::Blocked,
             agent: Some("pi".into()),
             title: Some("approval".into()),
@@ -342,8 +342,8 @@ fn scroll_changed_subscription_event_round_trips() {
     let event = SubscriptionEventEnvelope {
         event: SubscriptionEventKind::ScrollChanged,
         data: SubscriptionEventData::ScrollChanged(PaneScrollChangedEvent {
-            pane_id: "p_1_1".into(),
-            workspace_id: "w_1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
             scroll: PaneScrollInfo {
                 offset_from_bottom: 12,
                 max_offset_from_bottom: 240,
@@ -485,10 +485,10 @@ fn layout_export_apply_round_trip() {
         id: "layout_export".into(),
         result: ResponseResult::LayoutExport {
             layout: LayoutDescription {
-                workspace_id: "w1".into(),
-                tab_id: "w1:1".into(),
+                workspace_id: shepr_test_fixtures::id("w1"),
+                tab_id: shepr_test_fixtures::id("w1:t1"),
                 zoomed: false,
-                focused_pane_id: "w1-1".into(),
+                focused_pane_id: shepr_test_fixtures::id("w1:p1"),
                 root,
             },
         },
@@ -501,10 +501,10 @@ fn layout_export_apply_round_trip() {
         id: "layout_ratio".into(),
         result: ResponseResult::LayoutSplitRatioSet {
             layout: LayoutDescription {
-                workspace_id: "w1".into(),
-                tab_id: "w1:1".into(),
+                workspace_id: shepr_test_fixtures::id("w1"),
+                tab_id: shepr_test_fixtures::id("w1:t1"),
                 zoomed: false,
-                focused_pane_id: "w1-1".into(),
+                focused_pane_id: shepr_test_fixtures::id("w1:p1"),
                 root: LayoutNode::Pane {
                     pane: LayoutPane {
                         pane_id: Some("w1-1".into()),
@@ -609,8 +609,8 @@ fn create_response_round_trips_with_root_pane() {
         id: "req_2".into(),
         result: ResponseResult::TabCreated {
             tab: TabInfo {
-                tab_id: "w_1:2".into(),
-                workspace_id: "w_1".into(),
+                tab_id: shepr_test_fixtures::id("w1:t2"),
+                workspace_id: shepr_test_fixtures::id("w1"),
                 number: 2,
                 label: "review".into(),
                 focused: false,
@@ -618,10 +618,10 @@ fn create_response_round_trips_with_root_pane() {
                 agent_status: AgentStatus::Idle,
             },
             root_pane: PaneInfo {
-                pane_id: "w_1-3".into(),
-                terminal_id: "term_example".into(),
-                workspace_id: "w_1".into(),
-                tab_id: "w_1:2".into(),
+                pane_id: shepr_test_fixtures::id("w1:p3"),
+                terminal_id: shepr_test_fixtures::id("term_1_1"),
+                workspace_id: shepr_test_fixtures::id("w1"),
+                tab_id: shepr_test_fixtures::id("w1:t2"),
                 focused: false,
                 cwd: Some("/tmp/review".into()),
                 foreground_cwd: None,

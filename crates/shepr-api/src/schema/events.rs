@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use shepr_protocol::{PublicPaneId, PublicTabId, WorkspaceId};
 
 use super::common::AgentStatus;
 use super::panes::{PaneInfo, PaneScrollInfo};
@@ -150,8 +151,8 @@ pub enum SubscriptionEventData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneAgentStatusChangedEvent {
-    pub pane_id: String,
-    pub workspace_id: String,
+    pub pane_id: PublicPaneId,
+    pub workspace_id: WorkspaceId,
     pub agent_status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -163,8 +164,8 @@ pub struct PaneAgentStatusChangedEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneScrollChangedEvent {
-    pub pane_id: String,
-    pub workspace_id: String,
+    pub pane_id: PublicPaneId,
+    pub workspace_id: WorkspaceId,
     pub scroll: PaneScrollInfo,
 }
 
@@ -178,85 +179,85 @@ pub enum EventData {
         workspace: WorkspaceInfo,
     },
     WorkspaceClosed {
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<WorkspaceInfo>,
     },
     WorkspaceRenamed {
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         label: String,
     },
     WorkspaceMoved {
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         insert_index: usize,
         workspaces: Vec<WorkspaceInfo>,
     },
     WorkspaceReordered {
-        workspace_ids: Vec<String>,
+        workspace_ids: Vec<WorkspaceId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        before_workspace_id: Option<String>,
+        before_workspace_id: Option<WorkspaceId>,
         workspaces: Vec<WorkspaceInfo>,
     },
     WorkspaceFocused {
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     TabCreated {
         tab: TabInfo,
     },
     TabClosed {
-        tab_id: String,
-        workspace_id: String,
+        tab_id: PublicTabId,
+        workspace_id: WorkspaceId,
     },
     TabRenamed {
-        tab_id: String,
-        workspace_id: String,
+        tab_id: PublicTabId,
+        workspace_id: WorkspaceId,
         label: String,
     },
     TabMoved {
-        tab_id: String,
-        workspace_id: String,
+        tab_id: PublicTabId,
+        workspace_id: WorkspaceId,
         insert_index: usize,
         tabs: Vec<TabInfo>,
     },
     TabFocused {
-        tab_id: String,
-        workspace_id: String,
+        tab_id: PublicTabId,
+        workspace_id: WorkspaceId,
     },
     PaneCreated {
         pane: PaneInfo,
     },
     PaneClosed {
-        pane_id: String,
-        workspace_id: String,
+        pane_id: PublicPaneId,
+        workspace_id: WorkspaceId,
     },
     PaneUpdated {
         pane: PaneInfo,
     },
     PaneFocused {
-        pane_id: String,
-        workspace_id: String,
+        pane_id: PublicPaneId,
+        workspace_id: WorkspaceId,
     },
     PaneMoved {
-        previous_pane_id: String,
-        previous_workspace_id: String,
-        previous_tab_id: String,
+        previous_pane_id: PublicPaneId,
+        previous_workspace_id: WorkspaceId,
+        previous_tab_id: PublicTabId,
         pane: Box<PaneInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         created_workspace: Option<WorkspaceInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         created_tab: Option<TabInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        closed_workspace_id: Option<String>,
+        closed_workspace_id: Option<WorkspaceId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        closed_tab_id: Option<String>,
+        closed_tab_id: Option<PublicTabId>,
     },
     PaneExited {
-        pane_id: String,
-        workspace_id: String,
+        pane_id: PublicPaneId,
+        workspace_id: WorkspaceId,
     },
     PaneAgentDetected {
-        pane_id: String,
-        workspace_id: String,
+        pane_id: PublicPaneId,
+        workspace_id: WorkspaceId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -265,8 +266,8 @@ pub enum EventData {
         final_status: Option<AgentStatus>,
     },
     PaneAgentStatusChanged {
-        pane_id: String,
-        workspace_id: String,
+        pane_id: PublicPaneId,
+        workspace_id: WorkspaceId,
         agent_status: AgentStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,

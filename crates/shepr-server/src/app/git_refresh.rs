@@ -43,9 +43,9 @@ impl GitRefreshScheduler {
             self.git_refresh_due_after_in_flight = true;
             return;
         }
-        self.last_git_remote_status_refresh = now
-            .checked_sub(GIT_REMOTE_STATUS_REFRESH_INTERVAL)
-            .unwrap_or(now);
+        // As in `new`: a monotonic instant is never within the short refresh
+        // interval of the clock's origin by the time a server runs.
+        self.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
         self.git_refresh_due_after_in_flight = false;
     }
 

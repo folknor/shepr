@@ -136,15 +136,22 @@ pub fn restore(
     let host_theme = snapshot.host_theme.to_theme();
     // Where each saved workspace ended up, `None` for a dropped one.
     let mut restored_index = Vec::with_capacity(snapshot.workspaces.len());
-    let saved_ids: HashSet<&str> = snapshot
+    let saved_ids = snapshot
         .workspaces
         .iter()
-        .filter_map(|ws| ws.id.as_deref())
-        .collect();
+        .map(|ws| {
+            ws.id
+                .as_deref()
+                .and_then(|id| id.parse::<WorkspaceId>().ok())
+        })
+        .collect::<Vec<_>>();
+    // Before any allocation below, so a fresh ID is never one a saved
+    // workspace owns.
+    crate::workspace::reserve_workspace_ids(saved_ids.iter().flatten());
     let mut used_ids = HashSet::new();
     let mut dropped_tabs = 0;
-    for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
-        let workspace_id = restored_workspace_id(ws_snap.id.as_deref(), &saved_ids, &mut used_ids);
+    for ((idx, ws_snap), saved_id) in snapshot.workspaces.iter().enumerate().zip(saved_ids) {
+        let workspace_id = restored_workspace_id(saved_id, &mut used_ids);
         let runtime_context = RestoreRuntimeContext {
             scrollback_limit_bytes,
             now,
@@ -179,7 +186,6 @@ pub fn restore(
             restored_index.push(None);
         }
     }
-    crate::workspace::reserve_workspace_ids(&workspaces);
     let active = snapshot
         .active
         .and_then(|active| remap_saved_index(active, &restored_index));
@@ -262,30 +268,21 @@ fn next_free_public_tab_number(next: &mut usize, used: &HashSet<usize>) -> usize
     number
 }
 
-/// The ID a restored workspace gets. A saved ID is kept if it is a canonical
-/// workspace ID that no earlier workspace of the same file already took (a
-/// hand-edited or damaged file can break either). A workspace without a
-/// usable ID gets a fresh one, which must not be any other saved workspace's
-/// ID either: the process-wide ID counter only moves past the saved IDs once
-/// restore finishes, so a fresh ID could otherwise be one a later saved
-/// workspace already owns. Every candidate the loop skips is a distinct saved
-/// or used ID, so it ends.
+/// The ID a restored workspace gets. A saved ID is kept if it is canonical
+/// (`saved` is `None` otherwise) and no earlier workspace of the same file
+/// already took it (a hand-edited or damaged file can break either). A
+/// workspace without a usable ID gets a fresh one: the caller reserved every
+/// saved ID before restoring, so a fresh ID is past all of them.
 fn restored_workspace_id(
-    saved: Option<&str>,
-    saved_ids: &HashSet<&str>,
+    saved: Option<WorkspaceId>,
     used_ids: &mut HashSet<WorkspaceId>,
 ) -> WorkspaceId {
-    if let Some(id) = saved.and_then(|id| id.parse::<WorkspaceId>().ok())
+    if let Some(id) = saved
         && used_ids.insert(id.clone())
     {
         return id;
     }
-    loop {
-        let id = crate::workspace::generate_workspace_id();
-        if !saved_ids.contains(id.as_str()) && used_ids.insert(id.clone()) {
-            return id;
-        }
-    }
+    crate::workspace::generate_workspace_id()
 }
 
 fn restore_workspace(

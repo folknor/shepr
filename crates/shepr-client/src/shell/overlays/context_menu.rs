@@ -48,7 +48,12 @@ impl ClientContextMenuOverlay {
 }
 
 impl ClientShellState {
-    pub(super) fn open_workspace_context_menu(&mut self, workspace_id: String, x: u16, y: u16) {
+    pub(super) fn open_workspace_context_menu(
+        &mut self,
+        workspace_id: shepr_protocol::WorkspaceId,
+        x: u16,
+        y: u16,
+    ) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
@@ -83,7 +88,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
-                workspace_id: tab.workspace_id.to_string(),
+                workspace_id: tab.workspace_id.clone(),
             },
             x,
             y,
@@ -110,7 +115,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
-                workspace_id: pane.workspace_id.to_string(),
+                workspace_id: pane.workspace_id.clone(),
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
@@ -177,7 +182,7 @@ impl ClientShellState {
 
     fn activate_workspace_context_action(
         &mut self,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
@@ -207,7 +212,9 @@ impl ClientShellState {
                 } else {
                     self.push_endpoint_method(
                         shepr_api::schema::Method::WorkspaceClose(
-                            shepr_api::schema::WorkspaceCloseParams { workspace_id },
+                            shepr_api::schema::WorkspaceCloseParams {
+                                workspace_id: workspace_id.into(),
+                            },
                         ),
                         outcome,
                     );
@@ -220,7 +227,7 @@ impl ClientShellState {
     fn activate_tab_context_action(
         &mut self,
         tab_id: shepr_protocol::PublicTabId,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
@@ -254,7 +261,7 @@ impl ClientShellState {
                 } else {
                     self.push_endpoint_method(
                         Method::TabCreate(shepr_api::schema::TabCreateParams {
-                            workspace_id: Some(workspace_id),
+                            workspace_id: Some(workspace_id.into()),
                             cwd: None,
                             focus: true,
                             label: None,
@@ -291,7 +298,7 @@ impl ClientShellState {
     fn activate_pane_context_action(
         &mut self,
         pane_id: shepr_protocol::PublicPaneId,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         source_pane_id: Option<shepr_protocol::PublicPaneId>,
         right_click_passthrough: bool,
         action: ClientContextMenuAction,
@@ -346,7 +353,7 @@ impl ClientShellState {
             ClientContextMenuAction::SplitRight | ClientContextMenuAction::SplitDown => {
                 self.push_endpoint_method(
                     Method::PaneSplit(PaneSplitParams {
-                        workspace_id: Some(workspace_id),
+                        workspace_id: Some(workspace_id.into()),
                         target_pane_id: Some(pane_id.to_string()),
                         direction: if action == ClientContextMenuAction::SplitRight {
                             SplitDirection::Right

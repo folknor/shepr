@@ -540,9 +540,9 @@ mod tests {
         let (_, initial) = runtime.screen_text_snapshot().expect("initial snapshot");
         let (respond_to, response_rx) = mpsc::channel();
         let read = PaneReadResult {
-            pane_id: "w1:p1".into(),
-            workspace_id: "w1".into(),
-            tab_id: "w1:t1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            workspace_id: shepr_test_fixtures::id("w1"),
+            tab_id: shepr_test_fixtures::id("w1:t1"),
             source: ReadSource::Recent,
             format: ReadFormat::Text,
             text: String::new(),

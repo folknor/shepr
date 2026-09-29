@@ -425,10 +425,10 @@ fn move_workspace_accepts_insert_at_end() {
 #[test]
 fn move_workspace_block_collects_non_contiguous_members() {
     let mut state = app_with_workspaces(&["child-one", "normal", "parent", "child-two", "tail"]);
-    let parent_id = state.workspaces[2].id.to_string();
-    let child_one_id = state.workspaces[0].id.to_string();
-    let child_two_id = state.workspaces[3].id.to_string();
-    let tail_id = state.workspaces[4].id.to_string();
+    let parent_id = state.workspaces[2].id.clone();
+    let child_one_id = state.workspaces[0].id.clone();
+    let child_two_id = state.workspaces[3].id.clone();
+    let tail_id = state.workspaces[4].id.clone();
     state.set_active_index(Some(0));
     state.set_selected_index(Some(4));
 
@@ -462,12 +462,14 @@ fn move_workspace_block_rejects_invalid_and_noop_orders() {
     let ids = state
         .workspaces
         .iter()
-        .map(|workspace| workspace.id.to_string())
+        .map(|workspace| workspace.id.clone())
         .collect::<Vec<_>>();
+    // A number the allocator never reaches, so no workspace holds it.
+    let missing = shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero number");
 
     assert!(!state.move_workspace_block(&[], None));
     assert!(!state.move_workspace_block(&[ids[0].clone(), ids[0].clone()], None));
-    assert!(!state.move_workspace_block(&["missing".into()], None));
+    assert!(!state.move_workspace_block(&[missing], None));
     assert!(!state.move_workspace_block(&[ids[0].clone()], Some(&ids[0])));
     assert!(!state.move_workspace_block(&[ids[0].clone()], Some(&ids[1])));
     assert_eq!(
