@@ -169,26 +169,6 @@ impl From<ServerStopError> for String {
     }
 }
 
-/// Guidance for a build meeting a running server of another build.
-///
-/// A dev and a release build keep separate runtime directories, so the server
-/// met here is one another build of the same profile started. The only way
-/// forward is to stop that server, which exits its panes, with the plain
-/// `server stop` command: it stops whatever server answers, whatever its build.
-fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
-    crate::guidance::operator_guidance(crate::guidance::OperatorGuidance::LocalBuildMismatch {
-        stop_command,
-        attach_command,
-    })
-}
-
-pub fn restart_after_update_guidance_for(paths: &shepr_config::AppPaths) -> String {
-    let address = paths.server_address();
-    let stop_command = address.stop_command();
-    let attach_command = address.attach_command();
-    restart_after_update_guidance(&stop_command, Some(&attach_command))
-}
-
 pub fn active_api_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.server_address().api_socket().to_path_buf()
 }
@@ -579,61 +559,6 @@ mod tests {
         assert_eq!(
             active_api_socket_path(&paths),
             PathBuf::from("/tmp/explicit.sock")
-        );
-    }
-
-    const KEEP_GUIDANCE: &str = "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes.";
-
-    #[test]
-    fn restart_after_update_guidance_names_the_plain_stop_and_attach_commands() {
-        assert_eq!(
-            restart_after_update_guidance("shepr server stop", Some("shepr")),
-            format!("{KEEP_GUIDANCE} Run `shepr server stop`, then run `shepr` again.")
-        );
-        assert!(
-            restart_after_update_guidance("shepr server stop", None)
-                .contains("Run `shepr server stop`, then restart Shepr")
-        );
-    }
-
-    #[test]
-    fn guidance_never_mentions_named_sessions() {
-        let (_env, paths) = isolated_config_env();
-        let guidance = restart_after_update_guidance_for(&paths);
-        assert!(!guidance.contains("--session"), "{guidance}");
-        assert!(!guidance.contains("SHEPR_SESSION"), "{guidance}");
-        assert!(
-            guidance.contains("Run `shepr server stop`, then run `shepr` again."),
-            "{guidance}"
-        );
-        assert!(!guidance.contains("--force"), "{guidance}");
-    }
-
-    #[test]
-    fn restart_after_update_guidance_respects_socket_override() {
-        let env = IsolatedEnv::new();
-        env.set(EnvVar::SheprSocketPath, "/tmp/custom-shepr.sock");
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        assert_eq!(
-            restart_after_update_guidance_for(&paths),
-            format!(
-                "{KEEP_GUIDANCE} Run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
-            )
-        );
-    }
-
-    #[test]
-    fn restart_after_update_guidance_preserves_client_socket_override() {
-        let env = IsolatedEnv::new();
-        env.set(EnvVar::SheprClientSocketPath, "/tmp/work-client.sock");
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        assert_eq!(
-            restart_after_update_guidance_for(&paths),
-            format!(
-                "{KEEP_GUIDANCE} Run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
-            )
         );
     }
 

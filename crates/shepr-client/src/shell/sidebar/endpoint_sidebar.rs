@@ -579,7 +579,7 @@ fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
         .iter()
         .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
         .map_or(state.active_endpoint_id.display_label(), |endpoint| {
-            endpoint.label.as_str()
+            endpoint.endpoint_id.display_label()
         })
 }
 
@@ -618,7 +618,7 @@ fn render_endpoint_row(
         rect.x,
         rect.y,
         rect.width.saturating_sub(signal_width.saturating_add(1)),
-        &format!(" {marker} {}", endpoint.label),
+        &format!(" {marker} {}", endpoint.endpoint_id.display_label()),
         Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD),

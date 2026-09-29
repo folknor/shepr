@@ -12,7 +12,7 @@ mod status;
 mod stop;
 
 pub use server::ServerHandle;
-pub use server::start_server_with_stop_control;
+pub use server::start_server;
 pub use status::{RuntimeStatus, read_runtime_status_at};
 pub use stop::ServerStopSignal;
 

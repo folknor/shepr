@@ -60,6 +60,7 @@ use tracing::{info, warn};
 
 use shepr_mux::events::AppEvent;
 
+pub(crate) use api::session::SessionSnapshot;
 pub use state::{AppState, Mode};
 
 /// Whether the app restores a saved session at startup and persists it.
@@ -371,6 +372,8 @@ impl App {
 
 #[cfg(test)]
 mod snapshot_tests;
+#[cfg(test)]
+pub(crate) use api::session::SnapshotAgent;
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
 #[cfg(test)]
@@ -836,9 +839,6 @@ mod tests {
             .pane_info(0, target_pane)
             .expect("test precondition")
             .pane_id;
-        let target_tab_id = app
-            .public_tab_id(0, background_tab)
-            .expect("test precondition");
 
         let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
             workspace_id: None,
@@ -854,7 +854,13 @@ mod tests {
             panic!("expected pane info");
         };
 
-        assert_eq!(pane.tab_id, target_tab_id);
+        let (reply_workspace, reply_pane) = app
+            .parse_pane_id(pane.pane_id.as_str())
+            .expect("test precondition");
+        assert_eq!(
+            app.state.workspaces[reply_workspace].find_tab_index_for_pane(reply_pane),
+            Some(background_tab)
+        );
         assert!(pane.focused);
         assert_eq!(app.state.active_index(), Some(0));
         assert_eq!(app.state.workspaces[0].active_tab_index(), background_tab);

@@ -446,10 +446,11 @@ pub(crate) struct ClientConnection {
     pub(crate) pixel_mouse: bool,
     /// Whether an ordinary render was skipped because the render channel was full.
     pub(crate) render_pending: RenderDemand,
-    /// Whether the client has been told that its current frame is too large to
-    /// send. Set on the first oversized frame, cleared once a frame goes out, so
-    /// a client whose frames keep failing is warned once rather than per render.
-    pub(crate) oversized_frame_reported: bool,
+    /// Whether the client has been told that its current surface is too large
+    /// to send even in parts (past `MAX_MESSAGE_SIZE`). Set on the first
+    /// oversized surface, cleared once a surface goes out, so a client whose
+    /// surfaces keep failing is warned once rather than per render.
+    pub(crate) oversized_surface_reported: bool,
     /// Last host mouse capture mode sent to this client.
     pub(crate) host_mouse_capture_active: Option<bool>,
     /// Last SGR pixel provenance mode sent to this client.
@@ -485,7 +486,7 @@ impl ClientConnection {
             render_state: ClientRenderState::new(),
             pixel_mouse: false,
             render_pending: RenderDemand::None,
-            oversized_frame_reported: false,
+            oversized_surface_reported: false,
             host_mouse_capture_active: None,
             host_sgr_pixels_active: None,
             sent_window_title: None,

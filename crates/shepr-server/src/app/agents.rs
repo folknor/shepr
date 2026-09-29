@@ -1,7 +1,8 @@
 use super::App;
+use super::api::session::SnapshotAgent;
 
 impl App {
-    pub(super) fn collect_agent_infos(&self) -> Vec<shepr_api::schema::AgentInfo> {
+    pub(super) fn collect_agent_infos(&self) -> Vec<SnapshotAgent> {
         self.state
             .workspaces
             .iter()
@@ -21,29 +22,23 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<shepr_api::schema::AgentInfo> {
+    ) -> Option<SnapshotAgent> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_state = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane_state.attached_terminal_id)?;
         if !terminal.is_agent_terminal() {
             return None;
         }
-        let pane = self.pane_info(ws_idx, pane_id)?;
-        Some(shepr_api::schema::AgentInfo {
-            terminal_id: pane.terminal_id,
-            agent: pane.agent,
-            terminal_title: pane.terminal_title,
-            terminal_title_stripped: pane.terminal_title_stripped,
-            agent_status: pane.agent_status,
-            screen_detection_skipped: terminal.full_lifecycle_hook_authority_active(),
-            agent_session: pane.agent_session,
-            workspace_id: pane.workspace_id,
-            tab_id: pane.tab_id,
-            pane_id: pane.pane_id,
-            focused: pane.focused,
+        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        Some(SnapshotAgent {
+            pane_id: self.public_pane_id(ws_idx, pane_id)?,
+            workspace_id: self.public_workspace_id(ws_idx)?,
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            agent: terminal.effective_agent_label().map(str::to_string),
+            terminal_title: terminal.terminal_title.clone(),
+            terminal_title_stripped: terminal.terminal_title_stripped(),
+            agent_status: super::api_helpers::pane_agent_status(terminal.state),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
-            cwd: pane.cwd,
-            foreground_cwd: pane.foreground_cwd,
         })
     }
 }

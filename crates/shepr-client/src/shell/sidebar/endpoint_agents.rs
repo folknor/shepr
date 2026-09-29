@@ -164,7 +164,7 @@ fn agent_rows(
                 super::agent_sidebar::agent_rows(
                     snapshot,
                     config,
-                    (endpoints.len() > 1).then_some(endpoint.label.as_str()),
+                    (endpoints.len() > 1).then_some(endpoint.endpoint_id.display_label()),
                 )
                 .into_iter()
                 .map(|agent| {

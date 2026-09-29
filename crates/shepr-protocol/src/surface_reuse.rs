@@ -102,22 +102,19 @@ impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
     }
 }
 
-pub fn message(
-    last: &PaneSurfaceFrame,
-    surface: &mut PaneSurfaceFrame,
-) -> Result<Option<ServerMessage>, super::codec::CodecError> {
+/// A metadata-only update that keeps every cell of `last`, when `surface` is
+/// its successor on the same baseline.
+pub fn message(last: &PaneSurfaceFrame, surface: &mut PaneSurfaceFrame) -> Option<ServerMessage> {
     let baseline = Baseline::new(
         &last.boot_id,
         last.projection_revision,
         last.surface_revision,
     );
     if !baseline.accepts_surface(surface) {
-        return Ok(None);
+        return None;
     }
     let update = baseline.update(surface, Vec::new());
-    let message = ServerMessage::SurfaceUpdate(update);
-    let size = super::codec::encoded_len(&message)?;
-    Ok(super::frame_payload_fits(size).then_some(message))
+    Some(ServerMessage::SurfaceUpdate(update))
 }
 
 struct CellBaseline {

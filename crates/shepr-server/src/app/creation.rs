@@ -134,53 +134,22 @@ impl App {
         Ok(outcome.workspace_index)
     }
 
-    pub(super) fn collect_panes(&self) -> Vec<shepr_api::schema::PaneInfo> {
-        self.state
-            .workspaces
-            .iter()
-            .enumerate()
-            .flat_map(|(ws_idx, ws)| {
-                ws.tabs()
-                    .iter()
-                    .flat_map(|tab| tab.layout().pane_ids().into_iter())
-                    .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
-            })
-            .collect()
-    }
-
-    pub(super) fn tab_info(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Option<shepr_api::schema::TabInfo> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs().get(tab_idx)?;
-        let agg_state = tab.aggregate_state(&self.state.terminals);
-        Some(shepr_api::schema::TabInfo {
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
-            workspace_id: self.public_workspace_id(ws_idx)?,
-            number: tab.number(),
-            label: ws.tab_display_name(tab_idx)?,
-            focused: self.state.active_index() == Some(ws_idx) && ws.active_tab_index() == tab_idx,
-            pane_count: tab.panes().len(),
-            agent_status: pane_agent_status(agg_state),
-        })
-    }
-
+    /// The reply a pane command gives the client shell: the pane, whether it
+    /// has focus and its scroll position. Cheap on purpose; the per-pane
+    /// snapshot entry with the `/proc` reads is `snapshot_pane`.
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<shepr_api::schema::PaneInfo> {
+    ) -> Option<shepr_protocol::command::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let pane = ws.pane_state(pane_id)?;
-        let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
+        ws.pane_state(pane_id)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
             .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
-            .map(|metrics| shepr_api::schema::PaneScrollInfo {
+            .map(|metrics| shepr_protocol::command::PaneScrollInfo {
                 offset_from_bottom: metrics.offset_from_bottom as u64,
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                 viewport_rows: metrics.viewport_rows as u64,
@@ -188,30 +157,9 @@ impl App {
         let focused = self.state.active_index() == Some(ws_idx)
             && ws.active_tab_index() == tab_idx
             && ws.focused_pane_id() == pane_id;
-        let tab = ws.tabs().get(tab_idx)?;
-        Some(shepr_api::schema::PaneInfo {
+        Some(shepr_protocol::command::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
-            terminal_id: terminal.id.clone(),
-            workspace_id: self.public_workspace_id(ws_idx)?,
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
-            cwd: tab
-                .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
-            // Runs on the server main loop once per pane for every session
-            // snapshot the client shells are projected from, so the runtime
-            // accessor behind it must stay a few /proc reads and never wait on
-            // the PTY actor thread.
-            foreground_cwd: tab
-                .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
-            restore_error: terminal.restore_error.as_ref().map(ToString::to_string),
-            label: terminal.manual_label.clone(),
-            agent: terminal.effective_agent_label().map(str::to_string),
-            terminal_title: terminal.terminal_title.clone(),
-            terminal_title_stripped: terminal.terminal_title_stripped(),
-            agent_status: pane_agent_status(terminal.state),
-            agent_session: terminal_agent_session_info(terminal),
             scroll,
         })
     }
@@ -230,10 +178,13 @@ impl App {
     /// `None` when `index` names no workspace, like `tab_info` and
     /// `pane_info`: every caller either resolved the index a moment ago or
     /// carries it across an event, and a stale index must not panic the server.
-    pub(super) fn workspace_info(&self, index: usize) -> Option<shepr_api::schema::WorkspaceInfo> {
+    pub(super) fn workspace_info(
+        &self,
+        index: usize,
+    ) -> Option<shepr_protocol::command::WorkspaceInfo> {
         let ws = self.state.workspaces.get(index)?;
         let agg_state = ws.aggregate_state(&self.state.terminals);
-        Some(shepr_api::schema::WorkspaceInfo {
+        Some(shepr_protocol::command::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index)?,
             number: index + 1,
             label: ws.display_name(),
@@ -244,29 +195,4 @@ impl App {
             agent_status: pane_agent_status(agg_state),
         })
     }
-}
-
-fn terminal_agent_session_info(
-    terminal: &shepr_mux::terminal::TerminalState,
-) -> Option<shepr_api::schema::AgentSessionInfo> {
-    if let Some(authority) = terminal.hook_authority.as_ref()
-        && let Some(session_ref) = authority.session_ref.as_ref()
-    {
-        return Some(shepr_api::schema::AgentSessionInfo {
-            source: authority.source.clone(),
-            agent: authority.agent_label.clone(),
-            kind: session_ref.kind(),
-            value: session_ref.value(),
-        });
-    }
-
-    terminal
-        .persisted_agent_session
-        .as_ref()
-        .map(|session| shepr_api::schema::AgentSessionInfo {
-            source: session.source.to_source_string(),
-            agent: session.agent.label().to_owned(),
-            kind: session.session_ref.kind(),
-            value: session.session_ref.value(),
-        })
 }

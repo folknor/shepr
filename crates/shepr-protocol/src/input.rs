@@ -14,7 +14,7 @@ pub struct ClientSurfaceSize {
 }
 
 impl ClientSurfaceSize {
-    /// Fit a requested grid into one ordinary surface frame. Keep its width
+    /// Fit a requested grid into the server's surface limits. Keep its width
     /// first so the shell layout tracks the host; trim excess height.
     pub fn clamped(self) -> Self {
         let cols = self

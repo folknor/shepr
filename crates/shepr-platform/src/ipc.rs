@@ -12,12 +12,6 @@ use sha2::{Digest as _, Sha256};
 pub type LocalListener = interprocess::local_socket::Listener;
 pub type LocalStream = interprocess::local_socket::Stream;
 
-pub enum LocalStreamRead {
-    Data,
-    Pending,
-    Closed,
-}
-
 pub enum LocalStreamReadCount {
     Data(usize),
     Pending,
@@ -1096,23 +1090,7 @@ impl AsRawFd for LocalStreamReader<'_> {
     }
 }
 
-/// Readiness-only result for callers that only need to know whether a read
-/// produced data. Use [`poll_local_stream_read_count`] when the byte count
-/// matters.
-pub fn poll_local_stream_read(
-    stream: &mut LocalStream,
-    buf: &mut [u8],
-) -> io::Result<LocalStreamRead> {
-    match stream.read(buf) {
-        Ok(0) => Ok(LocalStreamRead::Closed),
-        Ok(_) => Ok(LocalStreamRead::Data),
-        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(LocalStreamRead::Pending),
-        Err(err) => Err(err),
-    }
-}
-
-/// Like [`poll_local_stream_read`], but preserves the number of bytes read for
-/// callers that need to consume a variable-sized buffer.
+/// One nonblocking read that preserves the number of bytes read.
 pub fn poll_local_stream_read_count(
     stream: &mut LocalStream,
     buf: &mut [u8],

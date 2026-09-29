@@ -142,14 +142,11 @@ pub fn run_server(
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
     // Start the JSON API socket server.
-    let _api_server = match shepr_api::start_server_with_stop_control(
-        api_tx.clone(),
-        Arc::clone(&stop_requested),
-        paths,
-    ) {
-        Ok(server) => server,
-        Err(err) => return Err(startup_error(ServerSocket::Api, err)),
-    };
+    let _api_server =
+        match shepr_api::start_server(api_tx.clone(), Arc::clone(&stop_requested), paths) {
+            Ok(server) => server,
+            Err(err) => return Err(startup_error(ServerSocket::Api, err)),
+        };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

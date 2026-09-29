@@ -18,7 +18,6 @@ unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 
 shepr-agent = { path = "../shepr-agent" }
-shepr-api = { path = "../shepr-api" }
 shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
 shepr-platform = { path = "../shepr-platform" }

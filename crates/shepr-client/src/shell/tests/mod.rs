@@ -153,19 +153,7 @@ fn pane_scroll_result(
     EndpointReply::PaneInfo {
         pane: Box::new(shepr_protocol::command::PaneInfo {
             pane_id: shepr_test_fixtures::id("w1:p1"),
-            terminal_id: shepr_test_fixtures::id("term_1_1"),
-            workspace_id: shepr_test_fixtures::id("w1"),
-            tab_id: shepr_test_fixtures::id("w1:t1"),
             focused: true,
-            cwd: None,
-            foreground_cwd: None,
-            restore_error: None,
-            label: None,
-            agent: None,
-            terminal_title: None,
-            terminal_title_stripped: None,
-            agent_status: shepr_protocol::AgentStatus::Idle,
-            agent_session: None,
             scroll: Some(shepr_protocol::command::PaneScrollInfo {
                 offset_from_bottom,
                 max_offset_from_bottom,

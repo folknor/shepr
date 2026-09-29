@@ -29,7 +29,7 @@ pub(super) fn snapshot(
 /// that some client's projection changed.
 pub(super) fn snapshot_from_session(
     app: &app::App,
-    snapshot: shepr_api::schema::SessionSnapshot,
+    snapshot: crate::app::SessionSnapshot,
     resolved_config: &[u8],
     boot_id: &shepr_protocol::BootId,
     revision: u64,

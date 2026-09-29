@@ -108,15 +108,7 @@ impl ClientRenderState {
                 .then_some(last_surface.as_deref())
                 .flatten()
                 .filter(|last| last.frame == surface.frame)
-                .and_then(
-                    |last| match shepr_protocol::surface_reuse::message(last, surface) {
-                        Ok(reused) => reused,
-                        Err(error) => {
-                            warn_surface_encoding_failure("reuse", &error, last, surface);
-                            None
-                        }
-                    },
-                )
+                .and_then(|last| shepr_protocol::surface_reuse::message(last, surface))
         } else {
             None
         };
@@ -176,10 +168,6 @@ impl ClientRenderState {
             meta: Some(meta),
             spans: patch.rows.clone(),
         });
-        let size = shepr_protocol::codec::encoded_len(&message).ok()?;
-        if !shepr_protocol::frame_payload_fits(size) {
-            return None;
-        }
         Some(PreparedRender::SemanticPatch { message, patch })
     }
 
@@ -505,12 +493,18 @@ mod tests {
     }
 
     #[test]
-    fn surface_update_keeps_large_metadata_within_the_frame_limit() {
+    fn surface_update_with_large_metadata_crosses_in_parts() {
         let mut state = ClientRenderState::new();
         let mut surface = test_surface("popup");
-        surface.frame.hyperlinks = vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE / 2)];
+        // Metadata alone past one frame: the update still carries it, split
+        // across frames, and the client decodes it against its baseline.
+        surface.frame.hyperlinks = vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE + 1)];
+        let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
         let initial = state
             .prepare_pane_surface(surface.clone())
+            .expect("test precondition");
+        decoder
+            .decode(initial.message().clone())
             .expect("test precondition");
         state.commit_sent_frame(initial);
         surface.projection_revision = surface
@@ -518,12 +512,19 @@ mod tests {
             .checked_next()
             .expect("test precondition");
         let update = state
-            .prepare_pane_surface(surface)
+            .prepare_pane_surface(surface.clone())
             .expect("test precondition");
         assert!(matches!(update.message(), ServerMessage::SurfaceUpdate(_)));
         let mut bytes = Vec::new();
         shepr_protocol::write_message(&mut bytes, update.message()).expect("test precondition");
-        assert!(bytes.len() < shepr_protocol::MAX_FRAME_SIZE);
+        assert!(bytes.len() > shepr_protocol::MAX_FRAME_SIZE);
+        let read: ServerMessage =
+            shepr_protocol::read_message(&mut bytes.as_slice()).expect("test precondition");
+        let ServerMessage::PaneSurface(decoded) = decoder.decode(read).expect("test precondition")
+        else {
+            panic!("decoded full surface");
+        };
+        assert_eq!(decoded.frame, surface.frame);
     }
 
     #[test]

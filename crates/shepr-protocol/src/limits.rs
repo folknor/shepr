@@ -6,12 +6,22 @@
 // JSON status API. Compare it through `is_this_build`, never with `==`.
 include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 
-/// Maximum allowed frame payload size in either direction. Readers
-/// reject larger length prefixes to prevent denial-of-service, and
-/// `write_message` refuses to produce them, so an oversized message fails at
-/// the sender instead of making the peer tear the connection down. The cap
-/// carries ordinary surfaces while bounding one allocation.
+/// Maximum payload of one frame in either direction. A message larger than
+/// this crosses as several frames (see `framing`), so the cap bounds one read
+/// allocation step, not what a message can carry.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
+
+/// Largest message, reassembled from its frames, a client accepts from a
+/// server. It bounds the reader's buffer against a corrupt or hostile stream;
+/// nothing the server sends is sized to it: a pane surface at
+/// `MAX_SURFACE_CELLS` is a small fraction of it, and only a selection copy of
+/// an enormous scrollback could reach it (that reply is refused by size).
+pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+
+/// Largest message a server accepts from a client: one frame. Client messages
+/// are input, geometry and endpoint commands, all far smaller; clients encode
+/// them with `encode_frame`, which refuses anything larger before sending.
+pub const MAX_CLIENT_MESSAGE_SIZE: usize = MAX_FRAME_SIZE;
 
 /// Largest client hello accepted before authentication.
 ///
@@ -19,14 +29,9 @@ pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 /// fields while keeping the unauthenticated handshake allocation small.
 pub(crate) const HANDSHAKE_FRAME_SIZE: usize = 64 * 1024;
 
-/// Whether an encoded payload fits in one protocol frame.
-pub const fn frame_payload_fits(size: usize) -> bool {
-    size <= MAX_FRAME_SIZE
-}
-
 /// The one size cap on a single client request, whichever door it comes in
 /// by: pane input or a JSON API request line. A client-shell endpoint command
-/// is bounded by the frame it arrives in.
+/// is bounded by `MAX_CLIENT_MESSAGE_SIZE`.
 ///
 /// Keeping the request cap below the frame cap leaves room for the positional
 /// wire envelope while limiting client-controlled request buffers.
@@ -35,8 +40,8 @@ pub const MAX_CLIENT_REQUEST_BYTES: usize = 1024 * 1024;
 /// summed paste, committed text and generated key text of one
 /// `ClientShellPaneInput` batch.
 ///
-/// Kept well below `MAX_FRAME_SIZE` so an input message at the limit still fits
-/// in one frame with its envelope. The server answers an oversized paste with a
+/// Kept well below `MAX_CLIENT_MESSAGE_SIZE` so an input message at the limit
+/// still fits in one frame with its envelope. The server answers an oversized paste with a
 /// rejection notice rather than a disconnect; clients check the same limit
 /// before sending so an oversized paste never has to cross the wire.
 pub const MAX_INPUT_PAYLOAD: usize = MAX_CLIENT_REQUEST_BYTES;
@@ -66,18 +71,13 @@ impl crate::ClientPaneInputEvent {
     }
 }
 
-/// Encoded bytes budgeted per cell of a full pane surface or terminal redraw.
-///
-/// The allowance estimates a typical encoded cell with RGB colors, style flags,
-/// underline shape, and a hyperlink. More complex styles or long graphemes can
-/// exceed it; the render path handles oversized frames.
-pub const SURFACE_BYTES_PER_CELL: usize = 16;
-
-/// Largest grid, in cells, a client may request for a pane surface: what one
-/// `MAX_FRAME_SIZE` frame carries at
-/// `SURFACE_BYTES_PER_CELL`. The server enforces it; a client of the same
-/// build can clamp to it before asking.
-pub const MAX_SURFACE_CELLS: usize = MAX_FRAME_SIZE / SURFACE_BYTES_PER_CELL;
+/// Largest grid, in cells, a client may request for a pane surface. Surfaces
+/// cross in as many frames as they need, so this is not a frame budget: it
+/// bounds the grids the server keeps per pane and per client. It sits far above
+/// any real display (an 8K panel of 4-pixel-wide cells is about a million).
+/// The server enforces it; a client of the same build can clamp to it before
+/// asking.
+pub const MAX_SURFACE_CELLS: usize = 1 << 22;
 
 /// Largest width or height, in cells, a client may request.
 ///
@@ -149,11 +149,12 @@ pub const DEFAULT_MAX_DEPTH: usize = 128;
 
 /// Maximum number of items in any codec sequence or map.
 ///
-/// The cap accommodates large terminal surfaces and config maps while
-/// limiting attacker-controlled collection sizes before allocation.
-/// Fields with tighter protocol caps apply those through
-/// `serialize_bounded_vec` / `deserialize_bounded_vec` as well.
-pub const MAX_COLLECTION_ITEMS: usize = 131_072;
+/// The cap is the largest surface's cell grid, the longest sequence on the
+/// wire, while limiting attacker-controlled collection sizes before
+/// allocation (a claimed length must also fit the remaining input). Fields
+/// with tighter protocol caps apply those through `serialize_bounded_vec` /
+/// `deserialize_bounded_vec` as well.
+pub const MAX_COLLECTION_ITEMS: usize = MAX_SURFACE_CELLS;
 
 /// Minimum key repeat count charged for a key event.
 ///

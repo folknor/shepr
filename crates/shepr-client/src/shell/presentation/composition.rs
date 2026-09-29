@@ -466,7 +466,12 @@ impl ClientShellState {
             .iter()
             .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
             .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
-            .map(|endpoint| (endpoint.label.clone(), endpoint.status));
+            .map(|endpoint| {
+                (
+                    endpoint.endpoint_id.display_label().to_owned(),
+                    endpoint.status,
+                )
+            });
         if active_lifecycle.is_some() || self.visible_endpoint_notice.is_some() {
             let composed = ensure_buffer(&frame, &mut composed)?;
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {

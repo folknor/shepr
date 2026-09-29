@@ -24,9 +24,8 @@ use crate::limits::{
 };
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
-/// protocol's own: the cell limit is what one frame can carry (see
-/// `MAX_SURFACE_CELLS`), not an arbitrary safety number, since a grid past it
-/// renders frames that can never be sent.
+/// protocol's own (`MAX_SURFACE_DIMENSION`, `MAX_SURFACE_CELLS`,
+/// `MAX_CELL_SIZE_PX`); a same-build client clamps to them before asking.
 fn client_shell_geometry_error(
     surface_size: shepr_protocol::ClientSurfaceSize,
     cell_width_px: u32,
@@ -40,7 +39,7 @@ fn client_shell_geometry_error(
         || usize::from(surface_size.cols) * usize::from(surface_size.rows)
             > shepr_protocol::MAX_SURFACE_CELLS
     {
-        return Some("client shell pane surface is larger than one frame can carry");
+        return Some("client shell pane surface exceeds the surface size limit");
     }
     if cell_width_px > shepr_protocol::MAX_CELL_SIZE_PX
         || cell_height_px > shepr_protocol::MAX_CELL_SIZE_PX
@@ -581,7 +580,7 @@ pub(crate) fn handle_client_handshake(
 }
 
 fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
-    if let Ok(framed) = shepr_protocol::encode_frame(&ServerMessage::ServerShutdown {
+    if let Ok(framed) = shepr_protocol::encode_message(&ServerMessage::ServerShutdown {
         reason: Some(shepr_protocol::ShutdownReason::Message(
             "server is shutting down".to_owned(),
         )),
@@ -670,8 +669,10 @@ fn client_read_loop_with_endpoint_controls(
     endpoint_control_writer: Option<&ClientControlWriter>,
 ) -> io::Result<()> {
     while !should_quit.is_requested() {
-        let message =
-            shepr_protocol::read_message(&mut shepr_platform::ClientStreamReader(&mut stream));
+        let message = shepr_protocol::read_message_limited(
+            &mut shepr_platform::ClientStreamReader(&mut stream),
+            shepr_protocol::MAX_CLIENT_MESSAGE_SIZE,
+        );
         let msg: ClientMessage = match message {
             Ok(msg) => msg,
             Err(shepr_protocol::FramingError::UnexpectedEof) => {
@@ -790,7 +791,7 @@ fn client_read_loop_with_endpoint_controls(
             } => {
                 // Both ids are echoed back and held with the reply until the
                 // render after the command, so they are bounded here; the
-                // command itself is bounded by its frame.
+                // command itself is bounded by `MAX_CLIENT_MESSAGE_SIZE`.
                 if boot_id.len() > crate::server::client_commands::MAX_ENDPOINT_BOOT_ID_BYTES
                     || request_id.len()
                         > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
@@ -820,7 +821,7 @@ fn client_read_loop_with_endpoint_controls(
                 let Some(writer) = endpoint_control_writer else {
                     continue;
                 };
-                let Ok(framed) = shepr_protocol::encode_frame(&response) else {
+                let Ok(framed) = shepr_protocol::encode_message(&response) else {
                     break;
                 };
                 if writer.send(framed).is_err() {

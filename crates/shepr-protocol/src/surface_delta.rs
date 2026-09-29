@@ -171,6 +171,6 @@ pub fn message(
         let update = baseline.update(surface, spans);
         let message = ServerMessage::SurfaceUpdate(update);
         let size = encoded_size(&message)?;
-        Ok((super::frame_payload_fits(size) && size < full_size).then_some(message))
+        Ok((size < full_size).then_some(message))
     }
 }

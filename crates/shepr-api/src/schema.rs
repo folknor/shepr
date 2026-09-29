@@ -1,26 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-pub mod agents;
 pub mod common;
 pub mod panes;
 pub mod response;
 pub mod server;
-pub mod session;
 pub mod tabs;
 pub mod workspaces;
 
-pub use agents::*;
 pub use common::*;
 pub use panes::*;
 pub use response::*;
 pub use server::*;
-pub use session::*;
 pub use tabs::*;
 pub use workspaces::*;
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {

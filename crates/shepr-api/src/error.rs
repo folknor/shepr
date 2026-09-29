@@ -1,29 +1,19 @@
 use super::schema::{ErrorBody, ErrorResponse, ResponseResult, SuccessResponse};
 
 /// Stable error categories, with one source for enum variants and wire codes.
+/// Codes only go out (to the JSON socket or as `EndpointError.code`); nothing
+/// parses a wire code back into this enum.
 macro_rules! api_error_codes {
     ($($variant:ident => $wire:literal,)+) => {
-        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum ApiErrorCode {
             $($variant,)+
-            /// Keeps a code from an error producer outside this typed path.
-            External(String),
         }
 
         impl ApiErrorCode {
-            pub fn as_str(&self) -> &str {
+            pub const fn as_str(self) -> &'static str {
                 match self {
                     $(Self::$variant => $wire,)+
-                    Self::External(code) => code,
-                }
-            }
-        }
-
-        impl From<&str> for ApiErrorCode {
-            fn from(code: &str) -> Self {
-                match code {
-                    $($wire => Self::$variant,)+
-                    other => Self::External(other.to_owned()),
                 }
             }
         }
@@ -69,18 +59,6 @@ api_error_codes! {
     ServerBootMismatch => "server_boot_mismatch",
 }
 
-impl From<&String> for ApiErrorCode {
-    fn from(code: &String) -> Self {
-        Self::from(code.as_str())
-    }
-}
-
-impl From<String> for ApiErrorCode {
-    fn from(code: String) -> Self {
-        Self::from(code.as_str())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiErrorPayload {
     Message(String),
@@ -121,10 +99,6 @@ impl ApiError {
 
     pub fn into_message(self) -> String {
         self.payload.into_message()
-    }
-
-    pub fn from_body(body: ErrorBody) -> Self {
-        Self::new(ApiErrorCode::from(body.code.as_str()), body.message)
     }
 
     pub fn into_body(self) -> ErrorBody {
@@ -208,14 +182,5 @@ mod tests {
             error.into_body(),
             ErrorBody::new(&ApiErrorCode::PaneNotFound, "pane w1:p7 not found")
         );
-    }
-
-    #[test]
-    fn wire_codes_are_classified_before_internal_use() {
-        let error = ApiError::from_body(ErrorBody {
-            code: "selection_unavailable".into(),
-            message: "no selection".into(),
-        });
-        assert_eq!(error.code, ApiErrorCode::SelectionUnavailable);
     }
 }

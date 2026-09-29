@@ -4,18 +4,16 @@
 //! This is the client shell's whole vocabulary: the server dispatches an
 //! [`EndpointCommand`] straight to its handlers and answers with an
 //! [`EndpointReply`], with no JSON API method in between. The JSON API in
-//! `shepr-api` re-exports some of the parameter and info types here (its
-//! session snapshot carries the same workspace, tab and pane infos), but none
-//! of its methods is a client-shell command. The types are positional wire
+//! `shepr-api` re-exports some of the parameter types here, but none of its
+//! methods is a client-shell command. The types are positional wire
 //! types: no field is skipped or flattened, so an absent `Option` is written
 //! to JSON as `null`.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use shepr_core::agent_session::AgentSessionRefKind;
 
-use crate::{AgentStatus, PublicPaneId, PublicTabId, TerminalId, WorkspaceId};
+use crate::{AgentStatus, PublicPaneId, PublicTabId, WorkspaceId};
 
 /// Updates whether the requesting client shell receives and controls pane presentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,14 +291,6 @@ pub struct PaneRenameParams {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSessionInfo {
-    pub source: String,
-    pub agent: String,
-    pub kind: AgentSessionRefKind,
-    pub value: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneScrollInfo {
     pub offset_from_bottom: u64,
@@ -308,30 +298,13 @@ pub struct PaneScrollInfo {
     pub viewport_rows: u64,
 }
 
+/// What a client shell reads back about one pane after a command: which pane
+/// it was, whether it now has focus, and its scroll position. Everything else
+/// about a pane reaches the shell through its snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub pane_id: PublicPaneId,
-    pub terminal_id: TerminalId,
-    pub workspace_id: WorkspaceId,
-    pub tab_id: PublicTabId,
     pub focused: bool,
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub foreground_cwd: Option<String>,
-    #[serde(default)]
-    pub restore_error: Option<String>,
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub agent: Option<String>,
-    #[serde(default)]
-    pub terminal_title: Option<String>,
-    #[serde(default)]
-    pub terminal_title_stripped: Option<String>,
-    pub agent_status: AgentStatus,
-    #[serde(default)]
-    pub agent_session: Option<AgentSessionInfo>,
     #[serde(default)]
     pub scroll: Option<PaneScrollInfo>,
 }

@@ -1,5 +1,52 @@
 use crate::app::App;
-use shepr_api::schema::SessionSnapshot;
+use shepr_protocol::command::WorkspaceInfo;
+use shepr_protocol::{AgentStatus, PublicPaneId, PublicTabId, WorkspaceId};
+
+/// The session's workspaces, tabs, panes and agents with their focus, the
+/// layout-free step between `App` state and the client-shell snapshot each
+/// shell receives. It carries only what `server::client_shell` projects; the
+/// server rebuilds it on the loop, so a field nothing reads costs every rebuild.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SessionSnapshot {
+    pub(crate) focused_workspace_id: Option<WorkspaceId>,
+    pub(crate) focused_tab_id: Option<PublicTabId>,
+    pub(crate) focused_pane_id: Option<PublicPaneId>,
+    pub(crate) workspaces: Vec<WorkspaceInfo>,
+    pub(crate) tabs: Vec<SnapshotTab>,
+    pub(crate) panes: Vec<SnapshotPane>,
+    pub(crate) agents: Vec<SnapshotAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotTab {
+    pub(crate) tab_id: PublicTabId,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) number: usize,
+    pub(crate) label: String,
+    pub(crate) agent_status: AgentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotPane {
+    pub(crate) pane_id: PublicPaneId,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) tab_id: PublicTabId,
+    pub(crate) label: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) foreground_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotAgent {
+    pub(crate) pane_id: PublicPaneId,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) tab_id: PublicTabId,
+    pub(crate) agent: Option<String>,
+    pub(crate) terminal_title: Option<String>,
+    pub(crate) terminal_title_stripped: Option<String>,
+    pub(crate) agent_status: AgentStatus,
+    pub(crate) state_change_seq: u64,
+}
 
 impl App {
     /// The session's workspaces, tabs, panes and agents, which the server
@@ -14,25 +61,72 @@ impl App {
 
         let mut workspaces = Vec::new();
         let mut tabs = Vec::new();
+        let mut panes = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             workspaces.extend(self.workspace_info(ws_idx));
             for tab_idx in 0..ws.tabs().len() {
-                if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
-                    tabs.push(tab);
-                }
+                tabs.extend(self.tab_info(ws_idx, tab_idx));
+            }
+            for tab in ws.tabs() {
+                panes.extend(
+                    tab.layout()
+                        .pane_ids()
+                        .into_iter()
+                        .filter_map(|pane_id| self.snapshot_pane(ws_idx, pane_id)),
+                );
             }
         }
 
         SessionSnapshot {
-            version: shepr_protocol::build_version(),
             focused_workspace_id,
             focused_tab_id,
             focused_pane_id,
             workspaces,
             tabs,
-            panes: self.collect_panes(),
+            panes,
             agents: self.collect_agent_infos(),
         }
+    }
+
+    pub(in crate::app) fn tab_info(&self, ws_idx: usize, tab_idx: usize) -> Option<SnapshotTab> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let tab = ws.tabs().get(tab_idx)?;
+        let agg_state = tab.aggregate_state(&self.state.terminals);
+        Some(SnapshotTab {
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            workspace_id: self.public_workspace_id(ws_idx)?,
+            number: tab.number(),
+            label: ws.tab_display_name(tab_idx)?,
+            agent_status: crate::app::api_helpers::pane_agent_status(agg_state),
+        })
+    }
+
+    fn snapshot_pane(
+        &self,
+        ws_idx: usize,
+        pane_id: shepr_core::layout::PaneId,
+    ) -> Option<SnapshotPane> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let pane = ws.pane_state(pane_id)?;
+        let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
+        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        let tab = ws.tabs().get(tab_idx)?;
+        Some(SnapshotPane {
+            pane_id: self.public_pane_id(ws_idx, pane_id)?,
+            workspace_id: self.public_workspace_id(ws_idx)?,
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            label: terminal.manual_label.clone(),
+            cwd: tab
+                .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
+                .map(|cwd| cwd.display().to_string()),
+            // Runs on the server main loop once per pane for every session
+            // snapshot the client shells are projected from, so the runtime
+            // accessor behind it must stay a few /proc reads and never wait on
+            // the PTY actor thread.
+            foreground_cwd: tab
+                .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
+                .map(|cwd| cwd.display().to_string()),
+        })
     }
 }
 

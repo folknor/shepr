@@ -1340,7 +1340,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shepr-agent",
- "shepr-api",
  "shepr-config",
  "shepr-core",
  "shepr-platform",

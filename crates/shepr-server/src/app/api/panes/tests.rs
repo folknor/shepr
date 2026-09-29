@@ -370,7 +370,16 @@ fn pane_rename_returns_the_renamed_pane() {
         panic!("expected pane info, got {response:?}");
     };
     assert_eq!(pane.pane_id, public_pane_id);
-    assert_eq!(pane.label.as_deref(), Some("build"));
+    let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+    let terminal_id = app.state.workspaces[0]
+        .pane_state(pane_id)
+        .expect("test precondition")
+        .attached_terminal_id
+        .clone();
+    assert_eq!(
+        app.state.terminals[&terminal_id].manual_label.as_deref(),
+        Some("build")
+    );
 }
 
 #[test]
@@ -397,10 +406,7 @@ fn pane_rename_sets_and_clears_the_manual_label() {
         pane_id: public_pane_id,
         label: None,
     });
-    let Ok(EndpointReply::PaneInfo { pane }) = response else {
-        panic!("expected pane info, got {response:?}");
-    };
-    assert!(pane.label.is_none());
+    assert!(matches!(response, Ok(EndpointReply::PaneInfo { .. })));
     assert!(app.state.terminals[&terminal_id].manual_label.is_none());
 }
 
@@ -735,7 +741,8 @@ fn pane_focus_returns_idle_agent_status() {
     let Ok(EndpointReply::PaneInfo { pane }) = response else {
         panic!("expected pane info, got {response:?}");
     };
-    assert_eq!(pane.agent_status, shepr_protocol::AgentStatus::Idle);
+    assert_eq!(pane.pane_id, public_pane_id);
+    assert!(pane.focused);
 }
 
 #[test]

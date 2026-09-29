@@ -5,7 +5,7 @@ mod env;
 mod layouts;
 mod panes;
 pub(super) mod responses;
-mod session;
+pub(super) mod session;
 mod tabs;
 mod workspaces;
 

@@ -95,14 +95,8 @@ mod tests {
                 stripped_changed: true,
             }
         );
-        let pane = app.pane_info(0, pane_id).expect("test precondition");
-        assert_eq!(pane.terminal_title.as_deref(), Some("⠋ 修复\u{1F642}标题"));
-        assert_eq!(
-            pane.terminal_title_stripped.as_deref(),
-            Some("修复\u{1F642}标题")
-        );
-        assert_eq!(pane.agent_status, shepr_api::schema::AgentStatus::Working);
         let agent = app.collect_agent_infos().pop().expect("test precondition");
+        assert_eq!(agent.agent_status, shepr_api::schema::AgentStatus::Working);
         assert_eq!(agent.terminal_title.as_deref(), Some("⠋ 修复\u{1F642}标题"));
         assert_eq!(
             agent.terminal_title_stripped.as_deref(),
@@ -120,10 +114,10 @@ mod tests {
                 stripped_changed: false,
             }
         );
-        let pane = app.pane_info(0, pane_id).expect("test precondition");
-        assert_eq!(pane.terminal_title.as_deref(), Some("⠙ 修复\u{1F642}标题"));
+        let agent = app.collect_agent_infos().pop().expect("test precondition");
+        assert_eq!(agent.terminal_title.as_deref(), Some("⠙ 修复\u{1F642}标题"));
         assert_eq!(
-            pane.terminal_title_stripped.as_deref(),
+            agent.terminal_title_stripped.as_deref(),
             Some("修复\u{1F642}标题")
         );
 
@@ -138,9 +132,9 @@ mod tests {
             .expect("test precondition")
             .test_process_pty_bytes(b"\x1b]0;\x07");
         assert!(app.sync_terminal_titles(&sources).stripped_changed);
-        let pane = app.pane_info(0, pane_id).expect("test precondition");
-        assert_eq!(pane.terminal_title, None);
-        assert_eq!(pane.terminal_title_stripped, None);
+        let agent = app.collect_agent_infos().pop().expect("test precondition");
+        assert_eq!(agent.terminal_title, None);
+        assert_eq!(agent.terminal_title_stripped, None);
     }
 
     #[tokio::test]

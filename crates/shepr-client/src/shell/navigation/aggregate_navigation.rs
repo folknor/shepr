@@ -27,7 +27,7 @@ pub(super) fn cached_endpoint_snapshots(
             .as_deref()
             .map(|snapshot| CachedEndpointSnapshot {
                 endpoint_id: &endpoint.endpoint_id,
-                label: &endpoint.label,
+                label: endpoint.endpoint_id.display_label(),
                 status: endpoint.status,
                 snapshot,
                 agent_recency: &endpoint.agent_recency,
@@ -134,7 +134,8 @@ pub(super) fn navigator_rows(
 
     for endpoint in endpoints {
         let stale = endpoint.status != ClientEndpointStatus::Online;
-        let endpoint_query_matches = !query.is_empty() && text(&endpoint.label);
+        let endpoint_query_matches =
+            !query.is_empty() && text(endpoint.endpoint_id.display_label());
         let mut endpoint_rows = Vec::new();
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
             let agents = snapshot
@@ -262,7 +263,7 @@ pub(super) fn navigator_rows(
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,
-                    label: endpoint.label.clone(),
+                    label: endpoint.endpoint_id.display_label().to_owned(),
                     meta: String::new(),
                     detail: String::new(),
                     agent: None,

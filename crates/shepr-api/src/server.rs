@@ -114,7 +114,7 @@ impl ServerHandle {
     }
 }
 
-pub fn start_server_with_stop_control(
+pub fn start_server(
     api_tx: ApiRequestSender,
     server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_config::AppPaths,

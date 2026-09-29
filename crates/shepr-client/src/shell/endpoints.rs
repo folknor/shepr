@@ -3,7 +3,6 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(crate) struct ClientShellEndpoint {
     pub(crate) endpoint_id: ClientEndpointId,
-    pub(crate) label: String,
     pub(crate) status: ClientEndpointStatus,
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
     /// Config bytes are stable for a server boot; cache their launch-time parse across snapshots.
@@ -117,7 +116,6 @@ impl ClientShellState {
         for machine in machines {
             next.push(ClientShellEndpoint {
                 endpoint_id: ClientEndpointId::Ssh(machine.label.clone()),
-                label: machine.label.to_string(),
                 status: ClientEndpointStatus::Connecting,
                 snapshot: None,
                 resolved_config: None,
@@ -312,17 +310,12 @@ impl ClientShellState {
         self.outer_focused.unwrap_or(true)
     }
 
-    pub(crate) fn endpoint_label<'a>(&'a self, endpoint_id: &'a ClientEndpointId) -> &'a str {
-        self.endpoints
-            .iter()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .map_or(endpoint_id.display_label(), |endpoint| {
-                endpoint.label.as_str()
-            })
+    pub(crate) fn endpoint_label<'a>(&self, endpoint_id: &'a ClientEndpointId) -> &'a str {
+        endpoint_id.display_label()
     }
 
     pub(crate) fn active_endpoint_label(&self) -> &str {
-        self.endpoint_label(&self.active_endpoint_id)
+        self.active_endpoint_id.display_label()
     }
 
     pub fn endpoint_is_active(&self, endpoint_id: &ClientEndpointId) -> bool {
@@ -363,6 +356,18 @@ impl ClientShellState {
                 |snapshot| workspace_tab_count(snapshot, focus),
             );
         self.surface_size_with_tab_count(cols, rows, tab_count)
+    }
+
+    /// Like `endpoint_surface_size` for an endpoint whose cached projection is `snapshot`,
+    /// a snapshot that has arrived but is not cached yet.
+    pub(crate) fn snapshot_surface_size(
+        &self,
+        snapshot: &ClientShellSnapshot,
+        focus: Option<&ClientEndpointFocusTarget>,
+        cols: u16,
+        rows: u16,
+    ) -> ClientSurfaceSize {
+        self.surface_size_with_tab_count(cols, rows, workspace_tab_count(snapshot, focus))
     }
 
     pub(crate) fn cache_endpoint_snapshot_for_generation(
@@ -574,7 +579,6 @@ impl ClientShellState {
             }
             Err(error) => {
                 let error_message = error.to_string();
-                let label = self.endpoints[index].label.clone();
                 {
                     let endpoint = &mut self.endpoints[index];
                     endpoint.resolved_config_error = Some(CachedEndpointConfigError {
@@ -589,7 +593,6 @@ impl ClientShellState {
                 );
                 tracing::warn!(
                     endpoint = %endpoint_id.storage_key(),
-                    label = %label,
                     error = %error_message,
                     "endpoint configuration could not be decoded"
                 );
@@ -642,7 +645,6 @@ pub(super) fn endpoint_status_presentation(
 pub(super) fn local_endpoint() -> ClientShellEndpoint {
     ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
-        label: ClientEndpointId::Local.display_label().into(),
         status: ClientEndpointStatus::Online,
         snapshot: None,
         resolved_config: None,

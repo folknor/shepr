@@ -181,8 +181,7 @@ impl EndpointSupervisors {
     }
 
     pub(crate) fn add_local(&mut self, path: PathBuf, generation: Option<u64>, now: Instant) {
-        let mismatch_guidance =
-            shepr_api::server_stop::restart_after_update_guidance_for(&self.paths).into();
+        let mismatch_guidance = self.paths.server_address().build_mismatch_guidance().into();
         let mut state = ReconnectState::new(
             ConnectTarget::Local {
                 path,

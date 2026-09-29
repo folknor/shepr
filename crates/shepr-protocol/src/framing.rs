@@ -7,14 +7,32 @@ use std::io::{self, Read, Write};
 // limits-exempt: the frame format prefixes payloads with a four-byte u32 LE length.
 const LENGTH_PREFIX_BYTES: usize = 4;
 
+// limits-exempt: the frame format's continuation marker, the top bit of the
+// length prefix. `MAX_FRAME_SIZE` is far below 2^31, so no length uses it.
+const CONTINUED: u32 = 1 << 31;
+
 // ---------------------------------------------------------------------------
 // Framing: length-prefixed binary messages
 // ---------------------------------------------------------------------------
+//
+// A message is one codec payload carried in one or more frames. Each frame is
+// `[u32 LE prefix][payload bytes]`: the low 31 bits of the prefix are the
+// frame's payload length, at most `MAX_FRAME_SIZE`, and the top bit says the
+// message continues in the next frame. A message that fits in one frame is
+// exactly the plain `[length][payload]` frame, so the common case pays nothing
+// for the split. A larger one is cut into full `MAX_FRAME_SIZE` frames with the
+// top bit set, then one final frame without it. Frames of one message are
+// written as one buffer, so no other message can land between them.
+//
+// The split is below the codec: every message kind (pane surfaces, surface
+// updates, clipboard data, endpoint replies) crosses the same way, and no wire
+// type knows how large a frame is. A reader bounds each frame by
+// `MAX_FRAME_SIZE` and the whole message by the cap it is given.
 
 /// Errors that can occur during framing operations.
 #[derive(Debug)]
 pub enum FramingError {
-    /// The decoded payload length exceeds the applicable fixed frame limit.
+    /// A frame or a whole message exceeds the applicable fixed limit.
     Oversized { claimed: usize, max: usize },
     /// An I/O error occurred while reading or writing.
     Io(io::Error),
@@ -55,83 +73,124 @@ impl From<CodecError> for FramingError {
     }
 }
 
-/// Serializes a message and writes it as a length-prefixed frame:
-/// `[u32LE length][codec payload]` (see `protocol::codec` for the payload format).
+/// Serializes a message and writes it as one or more length-prefixed frames
+/// (see [`encode_message`]).
 ///
 /// This is a blocking/synchronous write suitable for use with `std::os::unix::net::UnixStream`
 /// in blocking mode, or with any `Write` implementor.
 ///
 /// # Errors
 ///
-/// Returns `FramingError::Oversized`, without writing anything, if the payload
-/// exceeds `MAX_FRAME_SIZE`. Every reader enforces that cap and drops the
-/// connection on a larger frame, so refusing here keeps the failure local to
-/// the one message instead of tearing down the peer connection.
+/// Returns `FramingError::Oversized`, without writing anything, if the
+/// payload exceeds `MAX_MESSAGE_SIZE`.
 pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), FramingError> {
-    let frame = encode_frame(msg)?;
-    writer.write_all(&frame)?;
+    let frames = encode_message(msg)?;
+    writer.write_all(&frames)?;
     writer.flush()?;
     Ok(())
 }
 
-/// Encodes a message as one complete frame, `[u32LE length][codec payload]`,
-/// in a single buffer that is returned as is.
+/// Encodes a message as its complete frame sequence in a single buffer: one
+/// frame when the payload fits in `MAX_FRAME_SIZE`, else full frames marked as
+/// continued followed by a final one.
 ///
-/// This is the owned-buffer form of [`write_message`] for callers that queue
-/// frames rather than write them: the payload is encoded straight behind a
-/// placeholder prefix, so no second copy of the frame is ever made. It retains
-/// at most `MAX_FRAME_SIZE` payload bytes while counting excess bytes for an
-/// exact oversized error. Passing a `Vec` to `write_message` instead would
-/// encode into one buffer and then copy all of it into the `Vec`.
+/// The payload is encoded straight into the buffer, with each frame's prefix
+/// reserved as the payload reaches it, so a message is serialized once and
+/// never copied. The reader reassembles it with [`read_message`].
 ///
 /// # Errors
 ///
-/// `FramingError::Oversized` if the payload exceeds `MAX_FRAME_SIZE` (the
+/// `FramingError::Oversized` if the payload exceeds `MAX_MESSAGE_SIZE` (the
 /// encoded buffer is dropped), or `FramingError::Codec` if encoding fails.
+pub fn encode_message<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
+    encode_frames(msg, MAX_MESSAGE_SIZE)
+}
+
+/// Encodes a message that must fit in one frame, `[u32LE length][codec
+/// payload]`. Client messages are sent this way: the server reads them with a
+/// one-frame cap (`MAX_CLIENT_MESSAGE_SIZE`), so refusing here keeps an
+/// oversized message a local error instead of a dropped connection.
+///
+/// # Errors
+///
+/// `FramingError::Oversized` if the payload exceeds `MAX_FRAME_SIZE`, or
+/// `FramingError::Codec` if encoding fails.
 pub fn encode_frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
+    encode_frames(msg, MAX_FRAME_SIZE)
+}
+
+fn encode_frames<M: Serialize>(msg: &M, max_message: usize) -> Result<Vec<u8>, FramingError> {
     // Keep the output bounded during the one serialization pass. Calling
     // `encoded_len` first would traverse every field again on the client
     // fanout path; this buffer counts any excess bytes without retaining them.
-    let mut output = FramePayloadBuffer::new();
-    let len = codec::encode_into(&mut output, msg)?;
-    if !frame_payload_fits(len) {
-        return Err(FramingError::Oversized {
-            claimed: len,
-            max: MAX_FRAME_SIZE,
-        });
-    }
-    let prefix = u32::try_from(len).map_err(|_| FramingError::Oversized {
-        claimed: len,
-        max: MAX_FRAME_SIZE,
-    })?;
-    output.frame[..LENGTH_PREFIX_BYTES].copy_from_slice(&prefix.to_le_bytes());
-    Ok(output.frame)
+    let mut output = FramedPayloadBuffer::new(max_message);
+    codec::encode_into(&mut output, msg)?;
+    output.finish()
 }
 
-struct FramePayloadBuffer {
-    frame: Vec<u8>,
+/// Collects an encoded payload as frames: the prefix of the next frame is
+/// reserved whenever the current one is full and more payload follows.
+/// Payload beyond `max_message` is counted but not kept.
+struct FramedPayloadBuffer {
+    frames: Vec<u8>,
     payload_len: usize,
+    max_message: usize,
 }
 
-impl FramePayloadBuffer {
-    fn new() -> Self {
+impl FramedPayloadBuffer {
+    fn new(max_message: usize) -> Self {
         Self {
-            frame: vec![0u8; LENGTH_PREFIX_BYTES],
+            frames: vec![0u8; LENGTH_PREFIX_BYTES],
             payload_len: 0,
+            max_message,
         }
     }
+
+    /// Writes every frame prefix and returns the frames.
+    fn finish(mut self) -> Result<Vec<u8>, FramingError> {
+        let len = self.payload_len;
+        let max = self.max_message;
+        let oversized = || FramingError::Oversized { claimed: len, max };
+        if len > max {
+            return Err(oversized());
+        }
+        let continued = len.saturating_sub(1) / MAX_FRAME_SIZE;
+        let full = u32::try_from(MAX_FRAME_SIZE).map_err(|_| oversized())? | CONTINUED;
+        for frame in 0..continued {
+            let at = frame * (LENGTH_PREFIX_BYTES + MAX_FRAME_SIZE);
+            self.frames[at..at + LENGTH_PREFIX_BYTES].copy_from_slice(&full.to_le_bytes());
+        }
+        let last = u32::try_from(len - continued * MAX_FRAME_SIZE).map_err(|_| oversized())?;
+        let at = continued * (LENGTH_PREFIX_BYTES + MAX_FRAME_SIZE);
+        self.frames[at..at + LENGTH_PREFIX_BYTES].copy_from_slice(&last.to_le_bytes());
+        Ok(self.frames)
+    }
 }
 
-impl Write for FramePayloadBuffer {
+impl Write for FramedPayloadBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let next_len = self
             .payload_len
             .checked_add(bytes.len())
             .ok_or_else(|| io::Error::other("encoded frame size overflow"))?;
-        let remaining = MAX_FRAME_SIZE.saturating_sub(self.payload_len);
-        let retained = bytes.len().min(remaining);
-        self.frame.extend_from_slice(&bytes[..retained]);
-        self.payload_len = next_len;
+        if next_len > self.max_message {
+            // Oversized: `finish` reports the full count, so nothing more is kept.
+            self.payload_len = next_len;
+            return Ok(bytes.len());
+        }
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let in_frame = self.payload_len % MAX_FRAME_SIZE;
+            if in_frame == 0 && self.payload_len > 0 {
+                // The current frame is full and payload continues: open the
+                // next frame; `finish` fills in its prefix.
+                self.frames.extend_from_slice(&[0u8; LENGTH_PREFIX_BYTES]);
+            }
+            let take = rest.len().min(MAX_FRAME_SIZE - in_frame);
+            self.frames.extend_from_slice(&rest[..take]);
+            self.payload_len += take;
+            rest = &rest[take..];
+        }
         Ok(bytes.len())
     }
 
@@ -140,42 +199,70 @@ impl Write for FramePayloadBuffer {
     }
 }
 
-/// Reads and deserializes a length-prefixed protocol frame from a reader.
+/// Reads and deserializes one message, reassembling it from as many frames as
+/// it spans, up to `MAX_MESSAGE_SIZE` in all.
 ///
-/// Reassembles partial reads correctly. Rejects frames whose declared length
-/// exceeds `MAX_FRAME_SIZE` without panicking or allocating oversized buffers.
+/// Reassembles partial reads correctly. Rejects a frame over `MAX_FRAME_SIZE`
+/// or a message over the cap without panicking or allocating ahead of the
+/// bytes that actually arrive.
 pub fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<M, FramingError> {
-    read_message_with_limit(reader, super::MAX_FRAME_SIZE)
+    read_message_limited(reader, MAX_MESSAGE_SIZE)
+}
+
+/// Like [`read_message`] with a smaller cap on the whole message. The server
+/// reads client messages with `MAX_CLIENT_MESSAGE_SIZE`.
+pub fn read_message_limited<R: Read, M: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+    max_message: usize,
+) -> Result<M, FramingError> {
+    read_frames(reader, MAX_FRAME_SIZE.min(max_message), max_message)
 }
 
 /// Reads a client hello with the smaller fixed handshake frame limit.
 pub fn read_handshake_message<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<M, FramingError> {
-    read_message_with_limit(reader, HANDSHAKE_FRAME_SIZE)
+    read_frames(reader, HANDSHAKE_FRAME_SIZE, HANDSHAKE_FRAME_SIZE)
 }
 
-fn read_message_with_limit<R: Read, M: for<'de> Deserialize<'de>>(
+fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
-    max_frame_size: usize,
+    max_frame: usize,
+    max_message: usize,
 ) -> Result<M, FramingError> {
-    // Read the 4-byte length prefix, reassembling partial reads.
-    let mut len_buf = [0u8; LENGTH_PREFIX_BYTES];
-    read_exact_or_eof(reader, &mut len_buf)?;
-    let claimed_len = usize::try_from(u32::from_le_bytes(len_buf)).unwrap_or(usize::MAX);
+    let mut payload = Vec::new();
+    loop {
+        // Read the 4-byte length prefix, reassembling partial reads.
+        let mut len_buf = [0u8; LENGTH_PREFIX_BYTES];
+        read_exact_or_eof(reader, &mut len_buf)?;
+        let prefix = u32::from_le_bytes(len_buf);
+        let continued = prefix & CONTINUED != 0;
+        let claimed_len = usize::try_from(prefix & !CONTINUED).unwrap_or(usize::MAX);
 
-    if claimed_len > max_frame_size {
-        return Err(FramingError::Oversized {
-            claimed: claimed_len,
-            max: max_frame_size,
-        });
+        if claimed_len > max_frame {
+            return Err(FramingError::Oversized {
+                claimed: claimed_len,
+                max: max_frame,
+            });
+        }
+        let start = payload.len();
+        let total = start.saturating_add(claimed_len);
+        if total > max_message {
+            return Err(FramingError::Oversized {
+                claimed: total,
+                max: max_message,
+            });
+        }
+
+        // Read the payload, reassembling partial reads.
+        payload.resize(total, 0);
+        read_exact_or_eof(reader, &mut payload[start..])?;
+        if !continued {
+            break;
+        }
     }
-
-    // Read the payload, reassembling partial reads.
-    let mut payload = vec![0u8; claimed_len];
-    read_exact_or_eof(reader, &mut payload)?;
 
     // The decoder must consume the full payload. Trailing bytes after the
     // decoded message indicate a protocol violation (e.g., a corrupted length

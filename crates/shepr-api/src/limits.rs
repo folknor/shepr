@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 /// Bound on how long a request waits for the app main loop to answer. Without
-/// one, a stalled main loop hangs every CLI call and every agent hook that
-/// shells out to the CLI.
+/// one, a stalled main loop hangs every CLI call and every agent hook report.
 ///
-/// Every request (status, session snapshot, detection capture and explain,
-/// hook reports, stop) is answered within a loop turn or two and returns a
+/// Every request (status, detection capture and explain, hook reports, stop)
+/// is answered within a loop turn or two and returns a
 /// bounded response, so this only has to sit comfortably above one slow turn
 /// while still failing a stalled loop promptly.
 pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);

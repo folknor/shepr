@@ -209,11 +209,15 @@ impl io::Read for EndpointReader<'_> {
     }
 }
 
+/// Writes one client message, which crosses in one frame: the server reads
+/// client messages with a one-frame cap, so a larger one fails here.
 pub(crate) fn write_to_local_server(
     stream: &mut LocalStream,
     msg: &ClientMessage,
 ) -> io::Result<()> {
-    shepr_protocol::write_message(stream, msg).map_err(io::Error::other)
+    let frame = shepr_protocol::encode_frame(msg).map_err(io::Error::other)?;
+    io::Write::write_all(stream, &frame)?;
+    io::Write::flush(stream)
 }
 
 pub(super) trait ClientMessageSink {

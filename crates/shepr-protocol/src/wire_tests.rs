@@ -634,7 +634,8 @@ mod tests {
         let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         match result {
             Err(FramingError::Oversized { claimed, max }) => {
-                assert_eq!(claimed, u32::MAX as usize);
+                // The top bit is the continuation marker, not length.
+                assert_eq!(claimed, (u32::MAX >> 1) as usize);
                 assert_eq!(max, MAX_FRAME_SIZE);
             }
             other => panic!("expected Oversized error, got: {other:?}"),
@@ -1042,32 +1043,127 @@ mod tests {
         assert_eq!(msg, decoded);
     }
 
+    /// The length prefixes of an encoded frame sequence, walked frame by frame.
+    fn frame_prefixes(mut frames: &[u8]) -> Vec<u32> {
+        let mut prefixes = Vec::new();
+        while !frames.is_empty() {
+            let prefix = u32::from_le_bytes(frames[..4].try_into().expect("test precondition"));
+            prefixes.push(prefix);
+            let len = (prefix & !(1 << 31)) as usize;
+            frames = &frames[4 + len..];
+        }
+        prefixes
+    }
+
+    fn frame_len(len: usize) -> u32 {
+        u32::try_from(len).expect("test precondition")
+    }
+
+    // PresentationSync and Clipboard are one variant-index byte followed by a
+    // 3-byte varint length for strings under 2 MiB (4 bytes from 2 MiB on).
+    const SYNC_ENVELOPE: usize = 4;
+
     #[test]
-    fn write_message_rejects_oversized_payload() {
-        // PresentationSync is one variant-index byte followed by a 3-byte
-        // varint length for payloads this size, so a string of
-        // MAX_FRAME_SIZE - 4 bytes encodes to exactly MAX_FRAME_SIZE.
-        let envelope = 4;
-        let at_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - envelope));
+    fn a_message_at_the_frame_cap_is_one_plain_frame() {
+        let at_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - SYNC_ENVELOPE));
         assert_eq!(
             codec::encoded_len(&at_limit).expect("test precondition"),
             MAX_FRAME_SIZE
         );
-        let mut buf = Vec::new();
-        write_message(&mut buf, &at_limit).expect("a frame at the cap is accepted");
-        let decoded: ClientMessage = read_message(&mut buf.as_slice()).expect("test precondition");
+        let frames = encode_message(&at_limit).expect("test precondition");
+        assert_eq!(frame_prefixes(&frames), vec![frame_len(MAX_FRAME_SIZE)]);
+        assert_eq!(frames, encode_frame(&at_limit).expect("one frame fits"));
+        let decoded: ClientMessage =
+            read_message(&mut frames.as_slice()).expect("test precondition");
         assert_eq!(decoded, at_limit);
+    }
 
-        let over_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - envelope + 1));
-        let mut buf = Vec::new();
-        match write_message(&mut buf, &over_limit) {
+    #[test]
+    fn a_message_past_the_frame_cap_is_split_and_reassembled() {
+        let continued = frame_len(MAX_FRAME_SIZE) | (1 << 31);
+        // One byte past the cap: a full continued frame and a one-byte final one.
+        let over = ServerMessage::Clipboard {
+            data: "x".repeat(MAX_FRAME_SIZE - SYNC_ENVELOPE + 1),
+        };
+        let len = codec::encoded_len(&over).expect("test precondition");
+        let frames = encode_message(&over).expect("test precondition");
+        assert_eq!(len, MAX_FRAME_SIZE + 1);
+        assert_eq!(frame_prefixes(&frames), vec![continued, 1]);
+        let decoded: ServerMessage =
+            read_message(&mut ChunkedReader::new(frames.clone(), 4093)).expect("reassembled");
+        assert_eq!(decoded, over);
+        let mut written = Vec::new();
+        write_message(&mut written, &over).expect("test precondition");
+        assert_eq!(written, frames);
+
+        // Exactly two frames' worth: the second frame is full and final, with
+        // no empty frame after it.
+        let two_full = ServerMessage::Clipboard {
+            data: "x".repeat(2 * MAX_FRAME_SIZE - SYNC_ENVELOPE - 1),
+        };
+        assert_eq!(
+            codec::encoded_len(&two_full).expect("test precondition"),
+            2 * MAX_FRAME_SIZE
+        );
+        let frames = encode_message(&two_full).expect("test precondition");
+        assert_eq!(
+            frame_prefixes(&frames),
+            vec![continued, frame_len(MAX_FRAME_SIZE)]
+        );
+        let decoded: ServerMessage = read_message(&mut frames.as_slice()).expect("reassembled");
+        assert_eq!(decoded, two_full);
+    }
+
+    #[test]
+    fn encode_frame_refuses_what_one_frame_cannot_carry() {
+        let over_limit =
+            ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - SYNC_ENVELOPE + 1));
+        match encode_frame(&over_limit) {
             Err(FramingError::Oversized { claimed, max }) => {
                 assert_eq!(claimed, MAX_FRAME_SIZE + 1);
                 assert_eq!(max, MAX_FRAME_SIZE);
             }
             other => panic!("expected Oversized, got {other:?}"),
         }
-        assert!(buf.is_empty(), "nothing is written for a rejected frame");
+    }
+
+    #[test]
+    fn a_limited_reader_refuses_a_message_past_its_cap() {
+        let over = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE));
+        let frames = encode_message(&over).expect("test precondition");
+        let result: Result<ClientMessage, FramingError> =
+            read_message_limited(&mut frames.as_slice(), MAX_CLIENT_MESSAGE_SIZE);
+        assert!(matches!(
+            result,
+            Err(FramingError::Oversized { max, .. }) if max == MAX_CLIENT_MESSAGE_SIZE
+        ));
+        let decoded: ClientMessage =
+            read_message(&mut frames.as_slice()).expect("the full cap reads it");
+        assert_eq!(decoded, over);
+    }
+
+    #[test]
+    fn a_stream_ending_inside_a_split_message_is_eof() {
+        let over = ServerMessage::Clipboard {
+            data: "x".repeat(MAX_FRAME_SIZE),
+        };
+        let frames = encode_message(&over).expect("test precondition");
+        let cut = &frames[..MAX_FRAME_SIZE + 4];
+        let result: Result<ServerMessage, FramingError> = read_message(&mut &cut[..]);
+        assert!(matches!(result, Err(FramingError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn handshake_reader_refuses_a_continued_hello() {
+        let mut buf = (16u32 | (1 << 31)).to_le_bytes().to_vec();
+        buf.extend_from_slice(&[0; 16]);
+        buf.extend_from_slice(&(64u32 * 1024).to_le_bytes());
+        let result: Result<ClientMessage, FramingError> =
+            read_handshake_message(&mut buf.as_slice());
+        assert!(matches!(
+            result,
+            Err(FramingError::Oversized { max, .. }) if max == 64 * 1024
+        ));
     }
 
     #[test]

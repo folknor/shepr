@@ -119,6 +119,19 @@ impl ServerAddress {
         self.command("shepr server stop")
     }
 
+    /// What to tell an operator whose build met a running server of another
+    /// build at this address. A dev and a release build keep separate runtime
+    /// directories, so the way forward is to stop that server, which exits its
+    /// panes, with the plain `server stop` command: it stops whatever server
+    /// answers, whatever its build.
+    pub fn build_mismatch_guidance(&self) -> String {
+        let stop_command = self.stop_command();
+        let attach_command = self.attach_command();
+        format!(
+            "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. Run `{stop_command}`, then run `{attach_command}` again."
+        )
+    }
+
     fn command(&self, command: &str) -> String {
         match self.source {
             AddressSource::Runtime => command.to_owned(),
@@ -216,6 +229,42 @@ mod tests {
         assert_eq!(
             client.override_variable(),
             Some(EnvVar::SheprClientSocketPath)
+        );
+    }
+
+    const KEEP_GUIDANCE: &str = "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes.";
+
+    #[test]
+    fn build_mismatch_guidance_names_the_stop_and_attach_commands() {
+        let runtime = Path::new("/run/user/1/shepr");
+        let plain = ServerAddress::resolve_paths(runtime, None, None).build_mismatch_guidance();
+        assert_eq!(
+            plain,
+            format!("{KEEP_GUIDANCE} Run `shepr server stop`, then run `shepr` again.")
+        );
+        for banned in ["--session", "SHEPR_SESSION", "--force"] {
+            assert!(!plain.contains(banned), "{plain}");
+        }
+    }
+
+    #[test]
+    fn build_mismatch_guidance_keeps_the_socket_override() {
+        let runtime = Path::new("/run/user/1/shepr");
+        let api =
+            ServerAddress::resolve_paths(runtime, Some(Path::new("/tmp/custom-shepr.sock")), None);
+        assert_eq!(
+            api.build_mismatch_guidance(),
+            format!(
+                "{KEEP_GUIDANCE} Run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
+            )
+        );
+        let client =
+            ServerAddress::resolve_paths(runtime, None, Some(Path::new("/tmp/work-client.sock")));
+        assert_eq!(
+            client.build_mismatch_guidance(),
+            format!(
+                "{KEEP_GUIDANCE} Run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
+            )
         );
     }
 

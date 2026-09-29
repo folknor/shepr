@@ -97,10 +97,17 @@ pub(super) fn client_shell_resize_message(
 
 /// The geometry `endpoint_id` is asked to render once its cached projection commits focused on
 /// `focus`: the host size under that projection's own layout, not the active one's.
+///
+/// `incoming` is a snapshot that has arrived for an endpoint but is not cached yet; it stands in
+/// for that endpoint's cached projection.
 fn endpoint_terminal_geometry(
     state: &ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
     focus: Option<&shell::ClientEndpointFocusTarget>,
+    incoming: Option<(
+        &endpoint::ClientEndpointId,
+        &shepr_protocol::ClientShellSnapshot,
+    )>,
 ) -> shepr_protocol::TerminalGeometry {
     let geometry = &state.reported_geometry;
     let (cell_width_px, cell_height_px, pixel_mouse) =
@@ -109,10 +116,16 @@ fn endpoint_terminal_geometry(
             geometry.cell_height(),
             geometry.exact,
         );
-    let size =
-        state
+    let size = match incoming {
+        Some((incoming_id, snapshot)) if incoming_id == endpoint_id => state
             .shell
-            .endpoint_surface_size(endpoint_id, focus, geometry.cols(), geometry.rows());
+            .snapshot_surface_size(snapshot, focus, geometry.cols(), geometry.rows()),
+        _ => {
+            state
+                .shell
+                .endpoint_surface_size(endpoint_id, focus, geometry.cols(), geometry.rows())
+        }
+    };
     shepr_protocol::TerminalGeometry::new(
         size.cols,
         size.rows,
@@ -129,10 +142,14 @@ fn handoff_geometry(
     source: &endpoint::ClientEndpointId,
     target: &endpoint::ClientEndpointId,
     focus: Option<&shell::ClientEndpointFocusTarget>,
+    incoming: Option<(
+        &endpoint::ClientEndpointId,
+        &shepr_protocol::ClientShellSnapshot,
+    )>,
 ) -> endpoint::HandoffGeometry {
     endpoint::HandoffGeometry {
-        source: endpoint_terminal_geometry(state, source, None),
-        target: endpoint_terminal_geometry(state, target, focus),
+        source: endpoint_terminal_geometry(state, source, None, incoming),
+        target: endpoint_terminal_geometry(state, target, focus, incoming),
     }
 }
 
@@ -143,6 +160,33 @@ pub(super) fn resize_handoff(
     endpoints: &mut endpoint::EndpointRegistry,
     now: std::time::Instant,
 ) -> bool {
+    resize_handoff_with(state, endpoints, None, now)
+}
+
+/// `resize_handoff` for a snapshot that has arrived for `endpoint_id` but is not cached yet: a
+/// tab added or closed elsewhere changes that endpoint's layout (the tab bar), so the size the
+/// handoff requested from it is stale. The client loop calls this before handing the snapshot to
+/// `receive_snapshot`, so the resize drops only surface evidence gathered at the old size and
+/// never evidence the snapshot itself completes. An unchanged geometry changes nothing.
+pub(super) fn resize_handoff_for_snapshot(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    endpoint_id: &endpoint::ClientEndpointId,
+    snapshot: &shepr_protocol::ClientShellSnapshot,
+    now: std::time::Instant,
+) {
+    resize_handoff_with(state, endpoints, Some((endpoint_id, snapshot)), now);
+}
+
+fn resize_handoff_with(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    incoming: Option<(
+        &endpoint::ClientEndpointId,
+        &shepr_protocol::ClientShellSnapshot,
+    )>,
+    now: std::time::Instant,
+) -> bool {
     let Some(activation) = state.presentation.handoff() else {
         return false;
     };
@@ -151,6 +195,7 @@ pub(super) fn resize_handoff(
         activation.source(),
         activation.target(),
         activation.focus(),
+        incoming,
     );
     let resized = state
         .presentation
@@ -331,7 +376,13 @@ pub(super) fn begin_endpoint_activation(
         }
         return Ok(());
     }
-    let geometry = handoff_geometry(state, endpoints.active_id(), &endpoint_id, target.as_ref());
+    let geometry = handoff_geometry(
+        state,
+        endpoints.active_id(),
+        &endpoint_id,
+        target.as_ref(),
+        None,
+    );
     match endpoint::PendingEndpointActivation::prepare(
         &state.shell,
         endpoints,

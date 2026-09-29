@@ -39,11 +39,10 @@ impl super::HeadlessServer {
                 shepr_api::error::ApiErrorCode::ServerUnavailable,
                 "server is shutting down",
             )
-            .into_body()
         });
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
-        let response = Err(shepr_api::error::ApiError::from_body(error));
+        let response = Err(error);
         shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
     }
 }

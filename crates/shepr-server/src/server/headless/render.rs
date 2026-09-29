@@ -14,7 +14,7 @@ pub(super) struct ShellSessionCache {
     pub(super) revision: u64,
     /// When the snapshot last read the `/proc`-derived fields.
     pub(super) built_at: Instant,
-    pub(super) session: shepr_api::schema::SessionSnapshot,
+    pub(super) session: crate::app::SessionSnapshot,
 }
 
 impl HeadlessServer {
@@ -390,7 +390,7 @@ impl HeadlessServer {
             self.rebuild_shell_session_cache();
             self.shell_session_generation = self.shell_session_generation.saturating_add(1);
         }
-        // (client, claimed bytes, frame limit)
+        // (client, claimed bytes, message limit)
         let mut oversized_notices: Vec<(ClientId, usize, usize)> = Vec::new();
         for target in render_targets {
             let client_id = target.client_id;
@@ -416,6 +416,11 @@ impl HeadlessServer {
                 match result {
                     Ok(surface) => Some(surface),
                     Err(reason) => {
+                        // Only the surface waits (synchronized output); the
+                        // projection below still goes out, so a held
+                        // endpoint reply flushed after this render never
+                        // reaches the client ahead of the snapshot its
+                        // command changed.
                         if let Some(client) = self.clients.get_mut(&client_id) {
                             client.render_state.request_recompute();
                         }
@@ -425,7 +430,7 @@ impl HeadlessServer {
                         ) {
                             self.app.render_dirty.request_generic();
                         }
-                        continue;
+                        None
                     }
                 }
             } else {
@@ -529,27 +534,29 @@ impl HeadlessServer {
                 client.clear_deferred_render();
                 continue;
             };
+            // A surface past one frame is split across frames here; only one
+            // past `MAX_MESSAGE_SIZE` fails.
             let serialized = match Self::frame_server_message(prepared.message()) {
                 Ok(frame) => frame,
                 Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
                     // Nothing is committed, so the next render that has work
-                    // for this client tries a full frame again: the frame fits
+                    // for this client tries a full surface again: it fits
                     // again once the window shrinks or the content gets
                     // cheaper (fewer hyperlinks or long graphemes). Renders
                     // only run on real damage, so this does not spin. What
                     // must not happen is a client that stays blank with
                     // nobody told why, or a warning per render.
-                    if client.oversized_frame_reported {
+                    if client.oversized_surface_reported {
                         debug!(
                             ?client_id,
-                            claimed, max, "skipping oversized frame for client"
+                            claimed, max, "skipping oversized surface for client"
                         );
                     } else {
                         warn!(
                             ?client_id,
-                            claimed, max, "skipping oversized frame for client"
+                            claimed, max, "skipping oversized surface for client"
                         );
-                        client.oversized_frame_reported = true;
+                        client.oversized_surface_reported = true;
                         oversized_notices.push((client_id, claimed, max));
                     }
                     continue;
@@ -565,7 +572,7 @@ impl HeadlessServer {
                 Ok(()) => {
                     client.render_state.commit_sent_frame(prepared);
                     client.clear_deferred_render();
-                    client.oversized_frame_reported = false;
+                    client.oversized_surface_reported = false;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     client.defer_full_render();
@@ -581,7 +588,7 @@ impl HeadlessServer {
                 continue;
             }
             let notice = ServerMessage::ClientShellError {
-                kind: shepr_protocol::NoticeKind::OversizedFrame { claimed, max },
+                kind: shepr_protocol::NoticeKind::OversizedSurface { claimed, max },
             };
             self.send_to_client(client_id, &notice);
         }

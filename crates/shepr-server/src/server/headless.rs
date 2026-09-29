@@ -503,6 +503,12 @@ impl HeadlessServer {
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
                     LoopEvent::Api(msg) => self.reject_api_request_for_shutdown(&msg),
+                    LoopEvent::ServerEvent(ServerEvent::ClientShellEndpointRequest {
+                        client_id,
+                        boot_id,
+                        request_id,
+                        ..
+                    }) => self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id),
                     _ => {}
                 }
                 continue;
@@ -715,25 +721,40 @@ impl HeadlessServer {
         changed
     }
 
+    /// Closes the server event channel and settles what is left in it: a
+    /// client that connected too late is sent the shutdown notice, and an
+    /// endpoint command still queued is answered with the shutdown refusal
+    /// rather than left to its client's command timeout. Everything else is
+    /// moot once the server stops.
     async fn reject_late_client_connections(&mut self) {
         self.server_event_rx.close();
         while let Some(event) = self.server_event_rx.recv().await {
-            if let ServerEvent::ClientShellConnected {
-                client_id, writer, ..
-            } = event
-                && let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Message(
-                        "server is shutting down".to_owned(),
-                    )),
-                })
-            {
-                // A closed writer means the client already left; there is
-                // nothing to flush for it.
-                if writer.control.send(message).is_err() {
-                    debug!(?client_id, "late client left before its shutdown notice");
-                } else {
-                    self.shutdown_flushes.push(writer.flush());
+            match event {
+                ServerEvent::ClientShellConnected {
+                    client_id, writer, ..
+                } => {
+                    let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
+                        reason: Some(shepr_protocol::ShutdownReason::Message(
+                            "server is shutting down".to_owned(),
+                        )),
+                    }) else {
+                        continue;
+                    };
+                    // A closed writer means the client already left; there is
+                    // nothing to flush for it.
+                    if writer.control.send(message).is_err() {
+                        debug!(?client_id, "late client left before its shutdown notice");
+                    } else {
+                        self.shutdown_flushes.push(writer.flush());
+                    }
                 }
+                ServerEvent::ClientShellEndpointRequest {
+                    client_id,
+                    boot_id,
+                    request_id,
+                    ..
+                } => self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id),
+                _ => {}
             }
         }
     }
@@ -837,13 +858,14 @@ impl HeadlessServer {
         sent
     }
 
-    /// Encodes a server message into a length-prefixed frame.
+    /// Encodes a server message as its frames: one for a payload that fits in
+    /// `MAX_FRAME_SIZE`, several for a larger one. The frames are one buffer,
+    /// so the writer puts them on the socket back to back.
     ///
-    /// A payload over `MAX_FRAME_SIZE` fails with `FramingError::Oversized`:
-    /// `shepr_protocol::write_message` refuses it before writing anything, since
-    /// every reader would drop the connection on such a frame.
+    /// Only a payload over `MAX_MESSAGE_SIZE` fails, with
+    /// `FramingError::Oversized`, since the client refuses a larger message.
     fn frame_server_message(msg: &ServerMessage) -> Result<Vec<u8>, shepr_protocol::FramingError> {
-        shepr_protocol::encode_frame(msg)
+        shepr_protocol::encode_message(msg)
     }
 
     /// Sends a message to all connected clients.

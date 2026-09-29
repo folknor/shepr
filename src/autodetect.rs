@@ -72,12 +72,7 @@ mod tests {
     fn the_local_startup_notice_carries_the_whole_refusal() {
         let error = io::Error::other(format!(
             "the running shepr server is a different build.\n\n{}",
-            shepr_api::guidance::operator_guidance(
-                shepr_api::guidance::OperatorGuidance::LocalBuildMismatch {
-                    stop_command: "shepr server stop",
-                    attach_command: Some("shepr"),
-                },
-            )
+            "To use this build here instead, stop the running server. Run `shepr server stop`, then run `shepr` again."
         ));
         let notice = local_startup_notice(&error);
         assert!(

@@ -34,7 +34,9 @@ pub enum NoticeKind {
         size: usize,
         max: usize,
     },
-    OversizedFrame {
+    /// A pane surface encoded past `MAX_MESSAGE_SIZE`, so it cannot be sent
+    /// even in parts.
+    OversizedSurface {
         claimed: usize,
         max: usize,
     },
@@ -54,9 +56,9 @@ impl std::fmt::Display for NoticeKind {
                 f,
                 "Paste rejected: Input message is {size} bytes; Shepr's limit is {max} bytes"
             ),
-            Self::OversizedFrame { claimed, max } => write!(
+            Self::OversizedSurface { claimed, max } => write!(
                 f,
-                "The screen is too large to send ({claimed} bytes; the limit is {max}). Make the window smaller; the display resumes once a frame fits."
+                "The screen is too large to send ({claimed} bytes; the limit is {max}). Make the window smaller; the display resumes once the screen fits."
             ),
         }
     }
@@ -108,8 +110,9 @@ pub enum ServerMessage {
     /// Whether the focused pane needs the shell host to report every key.
     ClientShellKeyboardReportAll { enabled: bool },
 
-    /// The one response to a `ClientShellEndpointRequest`. It crosses in a
-    /// single frame: a result too large for one is answered with an
+    /// The one response to a `ClientShellEndpointRequest`. A large result (a
+    /// selection copy of a long scrollback) crosses in as many frames as it
+    /// needs; only one past `MAX_MESSAGE_SIZE` is answered with an
     /// `endpoint_response_too_large` error instead.
     ClientShellEndpointResponse {
         boot_id: BootId,

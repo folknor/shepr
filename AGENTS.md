@@ -237,7 +237,9 @@ directory.
   terminal-core locks short, and preserve the hidden-pane early exits.
 - **No wire compatibility obligations.** Client and server are always the same
   build. Change the protocol freely; there are no frozen fixtures.
-- **Wire encoding is shepr's own.** Frames are `[u32 LE length][payload]`,
+- **Wire encoding is shepr's own.** Frames are `[u32 LE length][payload]`;
+  a server message too large for one frame spans several, the top bit of the
+  length marking that more follow (`crates/shepr-protocol/src/framing.rs`),
   and payloads use the positional serde codec in `crates/shepr-protocol/src/codec.rs`
   (varints, no field names, not self-describing). Wire types must not use
   `skip_serializing_if`, `flatten`, `untagged` or tagged enums.

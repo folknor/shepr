@@ -192,7 +192,7 @@ fn frame_text(frame: &FrameData) -> String {
 }
 
 #[test]
-fn frame_server_message_refuses_payloads_over_the_frame_cap() {
+fn frame_server_message_splits_payloads_over_the_frame_cap() {
     let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
         kind: shepr_protocol::NoticeKind::PaneInputDropped {
             pane_id: shepr_protocol::PublicPaneId::new(
@@ -208,12 +208,17 @@ fn frame_server_message_refuses_payloads_over_the_frame_cap() {
         ServerMessage::ClientShellError { kind: shepr_protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "w1:p1"
     ));
 
-    let oversized = HeadlessServer::frame_server_message(&ServerMessage::Clipboard {
-        data: "x".repeat(MAX_FRAME_SIZE + 1),
-    });
+    // Clipboard data past one frame crosses as a continued frame and a final
+    // one, and reads back whole.
+    let data = "x".repeat(MAX_FRAME_SIZE + 1);
+    let large =
+        HeadlessServer::frame_server_message(&ServerMessage::Clipboard { data: data.clone() })
+            .expect("large message frames");
+    let first_prefix = u32::from_le_bytes(large[..4].try_into().expect("test precondition"));
+    assert_ne!(first_prefix & (1 << 31), 0, "the first frame is continued");
     assert!(matches!(
-        oversized,
-        Err(shepr_protocol::FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
+        read_server_message(large),
+        ServerMessage::Clipboard { data: read } if read == data
     ));
 }
 
@@ -310,7 +315,7 @@ async fn headless_api_reads_latest_title() {
         .insert(terminal_id.clone(), runtime);
     server.app.render_dirty.request_terminal_title(pane_id);
 
-    let first = headless_pane_list(&mut server)
+    let first = headless_agent_list(&mut server)
         .pop()
         .expect("test precondition");
     assert_eq!(first.terminal_title.as_deref(), Some("⠋ task"));
@@ -322,16 +327,16 @@ async fn headless_api_reads_latest_title() {
         .expect("test precondition")
         .test_process_pty_bytes(b"\x1b]2;\xe2\xa0\x99 task\x1b\\");
     server.app.render_dirty.request_terminal_title(pane_id);
-    let second = headless_pane_list(&mut server)
+    let second = headless_agent_list(&mut server)
         .pop()
         .expect("test precondition");
     assert_eq!(second.terminal_title.as_deref(), Some("⠙ task"));
     assert_eq!(second.terminal_title_stripped.as_deref(), Some("task"));
 }
 
-fn headless_pane_list(server: &mut HeadlessServer) -> Vec<shepr_api::schema::PaneInfo> {
+fn headless_agent_list(server: &mut HeadlessServer) -> Vec<crate::app::SnapshotAgent> {
     server.app.sync_pending_terminal_titles();
-    server.app.session_snapshot().panes
+    server.app.session_snapshot().agents
 }
 
 #[test]
@@ -411,6 +416,50 @@ async fn complete_shutdown_answers_queued_requests_and_closes_the_channel() {
     // thread turns into `server_unavailable` at once.
     let (late, _late_rx) = shutdown_test_request("late");
     assert!(api_tx.send(late).is_err());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn an_endpoint_request_queued_at_shutdown_is_answered() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("stopping")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_active_index(Some(0));
+    let (control, _render) = connect_matching_test_shell(&mut server, 44);
+    server
+        .server_event_tx
+        .try_send(ServerEvent::ClientShellEndpointRequest {
+            client_id: ClientId::test_new(44),
+            boot_id: server.client_shell_boot_id.clone(),
+            request_id: "at-stop".into(),
+            command: Box::new(EndpointCommand::PaneFocus(
+                shepr_protocol::command::PaneTarget {
+                    pane_id: "w1:p1".into(),
+                },
+            )),
+        })
+        .expect("test precondition");
+
+    server.initiate_shutdown();
+    server
+        .complete_shutdown()
+        .await
+        .expect("shutdown completes");
+
+    let (request_id, error) =
+        std::iter::from_fn(|| control.recv_timeout(Duration::from_millis(500)).ok())
+            .map(read_server_message)
+            .find_map(|message| match message {
+                ServerMessage::ClientShellEndpointResponse {
+                    request_id,
+                    result: Err(error),
+                    ..
+                } => Some((request_id, error)),
+                _ => None,
+            })
+            .expect("the queued command is answered, not left to its timeout");
+    assert_eq!(request_id, "at-stop");
+    assert_eq!(error.code, "server_unavailable");
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1709,12 +1758,14 @@ fn recv_pane_surface_patch(
 async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
-    let (_control, render) = connect_matching_test_shell(&mut server, 7);
+    let (control, render) = connect_matching_test_shell(&mut server, 7);
     let mut render = PaneSurfaceReceiver::new(render);
     server.render_and_stream();
     let before = recv_pane_surface(&mut render, "baseline");
     assert!(frame_text(&before.frame).contains("BASE"));
     let projection_before = server.clients[&7].shell_state().projection_revision.get();
+    // Drain the attach and baseline control traffic.
+    while control.recv_timeout(Duration::from_millis(50)).is_ok() {}
 
     write_shared_test_pane(
         &mut server,
@@ -1730,9 +1781,20 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
         .request_recompute();
     server.render_and_stream();
     assert!(render.try_recv().is_err(), "partial frame was published");
+    // Only the pane surface waits for the synchronized update: the projection
+    // still goes out, so a reply flushed after this render cannot overtake it.
+    let ServerMessage::EndpointSnapshot(snapshot) = read_server_message(
+        control
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the projection is sent while the surface waits"),
+    ) else {
+        panic!("expected the changed projection");
+    };
+    assert_eq!(snapshot.workspaces[0].label, "renamed during frame");
+    assert!(snapshot.revision.get() > projection_before);
     assert_eq!(
-        server.clients[&7].shell_state().projection_revision.get(),
-        projection_before
+        server.clients[&7].shell_state().projection_revision,
+        snapshot.revision
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\rCOMPLETE\x1b[?2026l");
@@ -3975,7 +4037,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
 }
 
 #[tokio::test]
-async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
+async fn a_surface_larger_than_one_frame_crosses_in_parts() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("oversized");
     let pane_id = workspace.tabs()[0].root_pane();
@@ -3984,9 +4046,8 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    // Keep the surface within the protocol's cell-count limit, but make one
-    // displayed grapheme large enough that its encoded frame exceeds the byte
-    // limit. This exercises the oversized-frame path with valid geometry.
+    // One displayed grapheme large enough that the encoded surface is past
+    // one frame: the surface is split, not refused.
     let mut screen = String::with_capacity(2_200_001);
     screen.push('x');
     for _ in 0..1_100_000 {
@@ -3997,59 +4058,42 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, screen.as_bytes()),
     );
     let (control, render_rx) = connect_test_shell(&mut server, 91, 80, 24);
-    // The test writer forwards queued control messages from a background
-    // thread (see `ClientWriter::test_pair`), so a message queued by this
-    // render is not necessarily visible to a bare `try_recv` yet. Wait a
-    // short beat for the drain thread instead of racing it.
-    let drain_notices = || {
-        std::iter::from_fn(|| {
-            control
-                .recv_timeout(std::time::Duration::from_millis(500))
-                .ok()
-        })
-        .map(read_server_message)
-        .filter(|message| matches!(message, ServerMessage::ClientShellError { .. }))
-        .count()
+
+    server.render_and_stream();
+    let bytes = render_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the large surface was queued");
+    assert!(bytes.len() > MAX_FRAME_SIZE);
+    let first_prefix = u32::from_le_bytes(bytes[..4].try_into().expect("test precondition"));
+    assert_ne!(first_prefix & (1 << 31), 0, "the first frame is continued");
+    let ServerMessage::PaneSurface(surface) = read_server_message(bytes) else {
+        panic!("expected a full pane surface");
     };
-    let reported = |server: &HeadlessServer| {
-        server
+    assert!(
+        surface
+            .frame
+            .cells
+            .iter()
+            .any(|cell| cell.symbol.len() > MAX_FRAME_SIZE),
+        "the large grapheme arrives whole"
+    );
+    assert!(
+        std::iter::from_fn(|| control.recv_timeout(Duration::from_millis(200)).ok())
+            .map(read_server_message)
+            .all(|message| !matches!(message, ServerMessage::ClientShellError { .. })),
+        "a split surface is not reported as too large"
+    );
+    assert!(
+        !server
             .clients
             .get(&91)
             .expect("client stays connected")
-            .oversized_frame_reported
-    };
-
-    server.render_and_stream();
-    assert!(reported(&server));
-    assert_eq!(drain_notices(), 1, "the first oversized frame is reported");
-    assert!(
-        render_rx.try_recv().is_err(),
-        "nothing oversized was queued"
+            .oversized_surface_reported
     );
-
-    server.render_and_stream();
-    assert!(reported(&server));
-    assert_eq!(drain_notices(), 0, "the report is not repeated per render");
-
-    server.app.insert_test_runtime(
-        pane_id,
-        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
-    );
-    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
-        client_id: ClientId::test_new(91),
-        surface_cols: 80,
-        surface_rows: 24,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-    }));
-    server.render_and_stream();
-    assert!(!reported(&server), "a frame that fits clears the report");
-    assert!(render_rx.try_recv().is_ok(), "the smaller frame was sent");
     assert!(
-        shepr_protocol::NoticeKind::OversizedFrame {
+        shepr_protocol::NoticeKind::OversizedSurface {
             claimed: 3_000_000,
-            max: MAX_FRAME_SIZE
+            max: shepr_protocol::MAX_MESSAGE_SIZE
         }
         .to_string()
         .contains("too large")

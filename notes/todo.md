@@ -6,25 +6,14 @@ once, so it needs a wave of its own rather than parallel fixers.
 
 ## JSON API leftovers
 
-- `shepr_api::schema::SessionSnapshot` is no longer an API type: it is only an
-  internal step before `client_shell.rs` builds the shell snapshot. Move it
-  into shepr-server without serde; its `version` is never read, and several
-  `PaneInfo` fields (`restore_error`, `agent_session`, `scroll`,
-  `terminal_id`, `agent`, `focused`) are computed for every pane on every
-  rebuild but never projected.
-- `ApiErrorCode` still carries codes from the JSON era of TUI commands
-  (`copy_motion_unavailable`, `invalid_pane_swap`, `split_not_found`,
-  `query_too_large` and kin), plus an `External` variant and a string parser
-  whose main wire user was the deleted ssh-agent bridge; audit what still
-  produces or parses each.
-- `shepr_platform::ipc::poll_local_stream_read` has no callers, and
-  `start_server_with_stop_control` is the API server's only entry point.
-- `render_and_stream` (`headless/render.rs`) skips a client whose surface
-  render is deferred (synchronized output) before its snapshot projection, so
-  that client gets no snapshot that render and a held endpoint reply can
-  arrive before the projection its command changed.
-- In the loop's stop path a `ClientShellEndpointRequest` falls into the
-  catch-all arm and is never answered; the client waits out its timeout.
+- Most app-handler error codes (`copy_motion_unavailable`, `query_too_large`,
+  `pane_layout_unavailable`, `layout_not_found`, `invalid_ratio`,
+  `invalid_agent`, `pane_clear_failed`, the `*_create_failed` and
+  `*_move_failed` codes) are only ever shown: the client treats every code but
+  `endpoint_timeout`, `endpoint_cancelled`, `server_unavailable` and
+  `endpoint_response_too_large` alike. `CopyMotionUnavailable` in the
+  word-motion branch and `InvalidPaneSwap` for missing swap ids look
+  unreachable through typed commands.
 
 ## Deferred
 
@@ -51,8 +40,8 @@ none blocks anything.
   `XDG_*`) from the server process, which a client- or SSH-spawned server may
   not share with the user's interactive shells; an agent with a non-default
   config directory then reads as absent.
-- **Flatten workspaces and tabs.** The owner considers the two grouping levels
-  one too many. Touches the data model, persistence, sidebar and tab bar.
+- **Flatten workspaces and tabs.** Decided: drop tabs. A workspace is one pane
+  layout; the tab bar goes. Spec in `notes/flatten-spec.md`.
 - **A stopped server whose lease outlives its sockets.** `server stop` now waits
   for the data-directory lease, so the launcher no longer does. A server stopped
   another way (a signal) can still drop its sockets before its lease, and a
@@ -85,33 +74,20 @@ Do this the next time opencode or Kilo is in use.
 
 ## Client presentation follow-ups
 
-- A handoff sizes each side by its own layout (`HandoffGeometry`), but if a
-  cached snapshot changes the committing endpoint's tab count mid-handoff (a
-  tab added or closed elsewhere), the requested size goes stale and nothing
-  corrects it after commit. Comparing geometry in `lib.rs` before
-  `receive_snapshot` would catch it.
-- `ClientShellEndpoint.label` always equals `endpoint_id.display_label()`; the
-  field and the lookup in `endpoint_label` can go.
-- shepr-client depends on shepr-api for one call,
-  `shepr_api::server_stop::restart_after_update_guidance_for` in
-  `endpoint/supervisor.rs`. Moving it lower (shepr-config or shepr-remote)
-  drops the dependency.
 
 ## Composition and config encoding
 
 - Composition converts a frame with overlays to a ratatui buffer once and
-  writes it back once (`crates/shepr-client/src/shell/presentation/composition.rs`),
-  but the write-back (`FrameData::from_ratatui_buffer_with_hyperlinks` in
-  `crates/shepr-protocol/src/ratatui_conversion.rs`) still rebuilds every
-  cell's `String` and two hyperlink `HashMap`s, and underline shapes survive
-  only through `Modifier` bits stashed across the round trip.
+  writes it back once (`crates/shepr-client/src/shell/presentation/composition.rs`).
+  The write-back now rewrites only cells that differ from the buffer, but the
+  forward conversion (`FrameData::to_ratatui_buffer` in
+  `crates/shepr-protocol/src/ratatui_conversion.rs`) still copies every cell's
+  symbol, and underline shapes still cross the buffer as `Modifier` bits
+  (ratatui has no shape field, and touched cells still round-trip). Drawing
+  the overlay stages straight onto the frame's cells, or converting only the
+  dirty rectangles, would remove both.
 - `ClientShellSnapshot.resolved_config` is a codec-encoded blob inside a codec
   message.
-
-## Split large surfaces across frames
-
-- Surface geometry is bounded to what one frame can carry (`MAX_SURFACE_CELLS = MAX_FRAME_SIZE / SURFACE_BYTES_PER_CELL`, `MAX_SURFACE_DIMENSION`, `MAX_CELL_SIZE_PX` in `crates/shepr-protocol/src/limits.rs`). Cells with long graphemes or many hyperlinks can still exceed the 16-byte budget (reported once to clients). Splitting a full surface across frames, and chunking OSC 52 clipboard data, would remove the limit.
-- An endpoint response crosses in one frame too (`ServerMessage::ClientShellEndpointResponse`): a result larger than `MAX_FRAME_SIZE` is answered with `endpoint_response_too_large` (`crates/shepr-server/src/server/client_commands.rs`). In practice only a selection copy gets that big, so copying more than about 2 MiB of scrollback fails with that error. Streaming the selection text in parts would lift it.
 
 ## Per-client presentation state on the server
 

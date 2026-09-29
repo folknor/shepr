@@ -128,13 +128,14 @@ impl EndpointTransport for NativeEndpointTransport {
                 "endpoint writer stopped",
             ));
         }
-        // `write_message` refuses frames over `MAX_FRAME_SIZE`, so an oversized
-        // message fails here with a size error before anything is queued, rather
-        // than reaching the server, which would drop the connection without a
-        // word. Pastes are checked against the server's input limit even earlier,
-        // in the shell's input handling, and never get this far.
-        let mut frame = Vec::new();
-        shepr_protocol::write_message(&mut frame, message)
+        // A client message crosses in one frame: `encode_frame` refuses one
+        // over `MAX_FRAME_SIZE`, so an oversized message fails here with a size
+        // error before anything is queued, rather than reaching the server,
+        // which reads client messages with a one-frame cap and would drop the
+        // connection without a word. Pastes are checked against the server's
+        // input limit even earlier, in the shell's input handling, and never
+        // get this far.
+        let frame = shepr_protocol::encode_frame(message)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let len = frame.len();
         if self
