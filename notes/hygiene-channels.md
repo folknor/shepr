@@ -90,20 +90,6 @@ ad-hoc text, an enum does not; one `fn paste_rejected_notice(size, max)`; one
 validator in `shepr-api` returning one `ApiError` (HYGP-017). The wording
 itself is not mechanically holdable.
 
-## HYGC-006 - Severity encoded as a text prefix instead of a level
-
-`shepr-agent/src/integration/version.rs` builds three warnings by prepending the
-constant `INSTALL_WARNING_PREFIX` (`"warning:"`) to a formatted string, which
-the CLI then prints verbatim. The project has `tracing` and a CLI output path; a
-prefix constant is a severity encoded in text.
-
-Enforcement named: return a typed `InstallWarning` and let the printer decide
-the prefix. The agent side is ready (install outcomes are one shape now), but
-`install_target` still returns `Vec<String>`, so the change spans
-`crates/shepr-agent/src/integration/version.rs` (where the warnings are built),
-the action layer (`actions.rs`), `mod.rs` and the CLI printer in
-`src/cli/integration.rs`; a comment at the agent site records this.
-
 ## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
 
 `shepr-platform/src/logging.rs` holds 25 functions named after concepts the
@@ -232,6 +218,13 @@ protocol/config hunter filed that swallow itself as a live defect.)
   response-write IO failures from clients that disconnect abruptly; watch it for
   noise and split the disconnect case if it is.
 
+## HYGC-038 - An internal client invariant breach is answered by reconnecting
+
+`crates/shepr-client/src/lib.rs`: a `SurfaceUpdate` reaching presentation
+undecoded can only mean a client bug, since the reader thread always decodes it
+first; it now fails the endpoint, which reconnects and hides the bug. Log it at
+error with the endpoint and generation so it is seen, whatever the recovery.
+
 ## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
 
 Residue. The pty and mux drops are now counted and reported once per actor or
@@ -318,12 +311,6 @@ fixes.
 
 ## HYGC-029 - Poisoned locks answered with success, a fabricated value, or a silent drop
 
-- `shepr-agent/src/detect/manifest.rs` unwraps poisoned locks into inner values
-  at five sites (`unwrap_or_else(PoisonError::into_inner)`,
-  `Err(poisoned) => poisoned.into_inner()`). The agent hunter's reading: that is
-  the right call for a cache, and it is consistent, but the choice is re-made at
-  each site; a small `fn read_cache(&self)` / `write_cache(&self)` pair would
-  make it one decision.
 
 Note on disagreement across scopes: `shepr-platform`'s log writer recovers a poisoned
 mutex and records the gap, `shepr-vt::lock_terminal_core` treats
@@ -332,26 +319,6 @@ poisoned state at eight sites, and `shepr-server/src/app/session.rs` both
 recovers and refuses on the *same* mutex twenty lines apart. The hunters did not
 agree on which is right; the per-call-site-policy half of this is filed in the
 policy sibling document, and only the swallowing is here.
-
-## HYGC-030 - Hook assets swallow everything, by design, and report nowhere
-
-Every shipped hook asset under `shepr-agent/src/integration/assets/` swallows
-failures deliberately: `except Exception: pass` in the Python bodies, `|| true`
-on the heredocs, `2>/dev/null`, `client.recv` wrapped in a bare `try`. The reason
-is sound and documented in the claude asset - a traceback would be shown to the
-user by the agent. The consequence is that a hook that cannot reach the socket,
-or that shepr rejects, is indistinguishable from no hook at all, forever.
-
-A related case: the antigravity asset's `emit_and_exit` path prints a JSON
-document to stdout on every early return (missing `SHEPR_ENV`, missing socket,
-missing pane id), because Antigravity CLI expects a hook response. So the "not
-running under shepr" case and the "running under shepr and reported" case produce
-the same visible artifact, and a genuinely broken install cannot be
-distinguished from a hook running outside shepr.
-
-Mitigation named: have the receiving side own the observability - log
-unrecognised or malformed reports (HYGC-016) - since the sending side
-structurally cannot.
 
 ## HYGC-032 - Failures answered with a valid-looking sentinel instead of a refusal
 

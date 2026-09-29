@@ -306,8 +306,9 @@ impl App {
             return Err(workspace_not_found(&params.workspace_id));
         }
         let close_events = self.workspace_close_events(index);
-        self.state.close_workspace_at(index);
-        self.shutdown_detached_terminal_runtimes();
+        if let Some(outcome) = self.state.close_workspace_at(index) {
+            self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
+        }
         self.emit_events(close_events);
 
         success(ResponseResult::Ok {})

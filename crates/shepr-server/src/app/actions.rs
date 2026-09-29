@@ -3,8 +3,6 @@
 
 use std::time::Instant;
 
-use tracing::debug;
-
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 #[cfg(test)]
@@ -72,6 +70,9 @@ pub(crate) struct PaneRemovalPlan {
 pub(crate) struct PaneRemovalOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) removal: PaneRemoval,
+    /// Terminals the removal detached from state; the caller shuts down
+    /// their runtimes.
+    pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +87,9 @@ pub(crate) struct WorkspaceRemovalOutcome {
     pub(crate) workspace_id: String,
     pub(crate) pane_ids: Vec<PaneId>,
     pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
+    /// Terminals the removal detached from state; the caller shuts down
+    /// their runtimes.
+    pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +113,9 @@ pub(crate) struct TabRemovalOutcome {
     pub(crate) scope: TabRemovalScope,
     pub(crate) pane_ids: Vec<PaneId>,
     pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
+    /// Terminals the removal detached from state; the caller shuts down
+    /// their runtimes.
+    pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
     pub(crate) tab: Option<TabRemoval>,
 }
 

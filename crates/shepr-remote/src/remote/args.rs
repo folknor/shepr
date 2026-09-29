@@ -30,7 +30,8 @@ pub const KEYBINDINGS_SERVER: &str = COMMAND_SERVER;
 ///
 /// Commands run on a remote host name their session only when it is not the
 /// default one; the remote process then resolves the default by the flag's
-/// absence.
+/// absence. A local `Attach` command spells any supplied session, including
+/// the default, so the caller's `SHEPR_SESSION` cannot retarget reattachment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCliCommand<'a> {
     ClientStatus,

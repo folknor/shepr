@@ -4,13 +4,13 @@ use super::env::AgentIntegrationPaths;
 use super::registry::{
     action_label, install_operation, integration_target_label, uninstall_operation,
 };
-use super::types::{InstallOutcome, UninstallOutcome};
+use super::types::{InstallOutcome, InstallOutput, UninstallOutcome};
 use super::version::{VERSION_PROBE_TIMEOUT, agent_version_requirement, enforce_agent_version};
 
 pub fn install_target(
     paths: &AgentIntegrationPaths,
     target: crate::agent::IntegrationTarget,
-) -> io::Result<Vec<String>> {
+) -> io::Result<InstallOutput> {
     let result = install_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
     shepr_platform::logging::integration_action(
@@ -24,17 +24,16 @@ pub fn install_target(
 fn install_target_inner(
     paths: &AgentIntegrationPaths,
     target: crate::agent::IntegrationTarget,
-) -> io::Result<Vec<String>> {
+) -> io::Result<InstallOutput> {
     let version_warning = match agent_version_requirement(target) {
         Some(requirement) => enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)?,
         None => None,
     };
     let outcome = install_operation(paths, target)?;
-    let mut messages = install_messages(action_label(target), outcome);
-    if let Some(warning) = version_warning {
-        messages.push(warning);
-    }
-    Ok(messages)
+    Ok(InstallOutput {
+        messages: install_messages(action_label(target), outcome),
+        warnings: version_warning.into_iter().collect(),
+    })
 }
 
 fn install_messages(label: &str, outcome: InstallOutcome) -> Vec<String> {

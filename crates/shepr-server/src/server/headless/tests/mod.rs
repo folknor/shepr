@@ -179,7 +179,7 @@ pub(crate) fn shutdown_test_runtimes(server: &mut HeadlessServer) {
 
 pub(crate) fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
     let mut cursor = std::io::Cursor::new(bytes);
-    shepr_protocol::read_message(&mut cursor, MAX_FRAME_SIZE).expect("decode server message")
+    shepr_protocol::read_message(&mut cursor).expect("decode server message")
 }
 
 fn frame_text(frame: &FrameData) -> String {

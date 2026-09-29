@@ -16,7 +16,9 @@ mod version;
 pub use actions::{install_target, uninstall_target};
 pub use env::AgentIntegrationPaths;
 pub use registry::{integration_status_rows, integration_target_label, outdated_update_notice};
-pub use types::{IntegrationStatus, IntegrationStatusError, IntegrationStatusKind};
+pub use types::{
+    InstallOutput, InstallWarning, IntegrationStatus, IntegrationStatusError, IntegrationStatusKind,
+};
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");
@@ -85,6 +87,11 @@ const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 const GROK_INTEGRATION_VERSION: u32 = 2;
 const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
+// Hook assets deliver reports best-effort and discard failures, because the
+// host agent may show a failing hook to the operator. The server refuses a
+// report for a pane it does not know or with an empty agent label; the hook
+// drops that refusal like any other failure.
+
 // Each agent's own config files, named once. The `IntegrationSpec` rows list
 // them for the registration check, and install and uninstall join the same
 // constants, so the three can never spell a file differently.
@@ -107,11 +114,6 @@ const ANTIGRAVITY_CLI_HOOKS_NAME: &str = "hooks.json";
 /// Lives in Grok's `hooks` directory beside the hook script, not in the
 /// agent's config directory like the other names here.
 const GROK_HOOK_CONFIG_NAME: &str = "shepr.json";
-
-// Keep the public result as strings until version warnings are typed at their
-// source and carried through the action layer. Parsing the prefix here would
-// keep severity encoded in text inside the agent crate.
-pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 
 #[cfg(test)]
 mod test_support;

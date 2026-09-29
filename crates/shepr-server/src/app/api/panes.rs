@@ -417,7 +417,7 @@ impl App {
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
-        self.shutdown_detached_terminal_runtimes();
+        self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         self.schedule_session_save();
         match outcome.removal.scope {
             shepr_mux::workspace::PaneRemovalScope::Pane => self.emit_event(EventEnvelope {

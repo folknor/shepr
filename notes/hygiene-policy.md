@@ -443,36 +443,6 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   bad cwd (warn only) while the API validates `new_cwd` upstream - two policies
   for one value.
 
-## HYGP-015 - The validate-on-deserialize shadow-struct idiom is hand-written four times
-
-From `shepr-protocol` and `shepr-config`: `geometry.rs`
-(`ReceivedTerminalGeometry`), `address.rs` (`ServerAddress`'s `Wire`), `io.rs`
-(`AppPaths`'s `Wire`, ten fields), `validated.rs` (`ValidatedConfig`'s `Wire`).
-Each repeats its type's full field list and then a field-by-field move. Adding a
-field to the outer type is a compile error in the struct literal, so the copies
-cannot silently drift - credit the hunter gave - but it is four independent
-implementations of one rule.
-
-Enforcement named: a small derive or macro
-(`#[validated_deserialize(validate = "validate_resolved")]`), after which the
-rule exists once.
-
-## HYGP-017 - Launch-environment validation exists twice, with different rules and different operator text
-
-From `shepr-server` and the root binary: `app/api/env.rs` validates a JSON map;
-`src/cli.rs` parses `KEY=VALUE`. Divergences today: a key containing `=` is
-rejected with `"env key {key} must not contain '='"` by the API and is impossible
-by construction in the CLI (which splits on the first `=`); NUL in a key is
-`"env key must not contain NUL bytes"` versus `"env must not contain NUL bytes"`;
-NUL in a value is `"env value for {key} must not contain NUL bytes"` versus
-`"env must not contain NUL bytes"`. So the same rejected request yields different
-operator text depending on whether it arrived via `--env` or the JSON API, and
-within `api/env.rs` alone two of the four messages name the key and two do not.
-
-Enforcement named: one validator in `shepr-api` (both the CLI and the server
-depend on it) returning one `ApiError`; the CLI's parser then only splits and
-delegates.
-
 ## HYGP-018 - The environment handed to panes is inherited wholesale and scrubbed by a denylist split across crates
 
 **Decision (partial):** piece 1 (the `shepr-core` environment registry, after
@@ -609,41 +579,6 @@ an identity that is supposed to come from one place.
   events were emitted" from "the lock is poisoned". Suggested: delete
   `events_after`.
 
-## HYGP-036 - `migration_tests.rs` and `SHEPR_MIGRATION_OBSERVATIONS`: scaffolding for a finished migration
-
-**Decision (partial):** the droid pid gate no longer spawns the host `bash`: it
-now launches a `shepr_test_support::fixture::stand_in` named `droid` under a
-scratch `PATH`. The stale prose turns out to be partly lintable: the older-peer
-compatibility textlint adopted from broadarrow (A3 in
-`notes/broadarrow-ports.md`) matches "during the migration", and the
-`terminal/state/mod.rs` and `pane/state.rs` prose are gone. Open: the
-tautological test, the env var, and the module header.
-
-Reported by the `shepr-vt`/`shepr-pty` and `shepr-mux` hunters. The file (461
-lines) is headed "Bounded semantic migration gates ... Keep the same runner for
-old/candidate captures". The "old" side is the pre-fork upstream terminal layer;
-there is no build of it in this repository and AGENTS.md states there is no
-compatibility with upstream.
-
-What tells the hunters it is dead: no in-repo producer of the "old" captures, no
-committed fixture to compare against, an env var
-(`SHEPR_MIGRATION_OBSERVATIONS`) with one writer and no reader, and a
-`capture_bounded_migration_observations` whose only assertion compares the last
-observation against observing the same unchanged terminal again - so it passes
-for any behaviour the emulator could have while reading as coverage of eleven
-semantic dimensions across four geometries.
-
-What is not dead, per the `shepr-mux` hunter: the file's other six tests
-(`incremental_rows_reconstruct_full_render`,
-`sparse_dirty_patches_preserve_coordinates_and_clipped_rows`,
-`dirty_patch_fallback_keeps_previously_collected_rows_dirty`,
-`complete_history_replay_supports_plain_append`, and the read-purity checks)
-assert real invariants and should stay, under a name saying what they check
-rather than what they were once migrated from.
-
-Enforcement named: deletion of the tautological test and the env var, a rename of
-the module, and a text rule against `SHEPR_MIGRATION_OBSERVATIONS`.
-
 ## HYGP-037 - `shepr-platform`'s `test-support` feature gates one nine-line function with one caller
 
 **Decision:** piece 4 of the test-isolation work adopted from broadarrow (test-only
@@ -754,11 +689,6 @@ in `notes/broadarrow-ports.md`), so the stat-error-preserving distinction
 now carry the distinction to the refresh task as typed errors, so the
 `RefFileRead` bullet is resolved. Open: the other three bullets.
 
-- Root binary `src/cli/error.rs`: `CliError::source()` matches
-  `Stop(error) | Delete(error)` and falls through to `_ => None` for
-  `SessionCliError::InvalidName`, though `InvalidName` wraps the same
-  `SessionError` type. Either an oversight or an intentional distinction with no
-  comment; either way the asymmetry is invisible.
 - `shepr-mux` `git/discovery.rs`: `RefFileRead` goes to real trouble to
   distinguish `Absent` from `Unavailable` (with a careful comment about
   `Path::exists()` lying on metadata errors) and its one consumer,
@@ -769,10 +699,19 @@ now carry the distinction to the refresh task as typed errors, so the
 
 ## HYGP-050 - Environment variables with no reader
 
-- `SHEPR_MIGRATION_OBSERVATIONS` (HYGP-036) exists for a migration that is over.
-  `shepr-agent/src/integration/config_file/tests.rs` still names two re-exec
+- `shepr-agent/src/integration/config_file/tests.rs` still names two re-exec
   test probes in the `SHEPR_` namespace (`SHEPR_CONFIG_READ_ONLY_TEST`,
-  `SHEPR_CONFIG_PARTIAL_WRITE_TEST`); the opencode probe was renamed out of it.
+  `SHEPR_CONFIG_PARTIAL_WRITE_TEST`); move them out of it as the opencode probe
+  was.
+
+## HYGP-065 - A valueless git string key is handled two ways
+
+`crates/shepr-mux/src/git/config.rs`: the config file reader skips a
+valueless `remote`/`merge`/`fetch`/`url` line with a silent `continue`, while
+the `git -c` path now reports a missing value for the same key, and
+`apply_git_config_parameters` stops at the first such key so later `-c`
+parameters are not applied. One rule for both sources, matching git (which
+errors), applied without abandoning the remaining parameters.
 
 ## HYGP-057 - Modules and items sitting in a crate that does not use them
 
@@ -796,11 +735,3 @@ now carry the distinction to the refresh task as typed errors, so the
   four `u16`s and a two-variant enum; owning them in `shepr-core` alongside
   `GridSize` would drop `ratatui` from the bottom four crates' dependency closure
   and remove a re-export the wire types currently share with the renderer.
-
-## HYGP-062 - `modes::lookup(DecMode)` returns `Option` for a table that holds every variant
-
-`crates/shepr-vt/src/modes.rs`: now that modes are a `DecMode` enum and the
-`MODES` table has a row for every variant, `lookup` cannot miss, so the
-"unsupported DEC private mode" branch in `mode_set` is unreachable. Make the
-lookup total (a `match` on `DecMode`, or a table indexed by the variant) and
-delete the branch.

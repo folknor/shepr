@@ -5,7 +5,20 @@ use shepr_pty::PtyCommand;
 /// Time allowed for a restored agent to appear after its resume launch.
 pub const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-pub(super) const PANE_COLORTERM: &str = "truecolor";
+pub(super) const OUTER_TERMINAL_IDENTITY_ENV: &[&str] = &[
+    ChildEnv::ItermSessionId.name(),
+    ChildEnv::LcTerminal.name(),
+    ChildEnv::LcTerminalVersion.name(),
+    EnvVar::WeztermPane.name(),
+    ChildEnv::KittyWindowId.name(),
+    ChildEnv::WtSession.name(),
+    EnvVar::Tmux.name(),
+    ChildEnv::TmuxPane.name(),
+    ChildEnv::Sty.name(),
+    ChildEnv::Zellij.name(),
+    ChildEnv::ZellijSessionName.name(),
+    ChildEnv::ZellijPaneId.name(),
+];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {
@@ -20,27 +33,14 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
     // identity into shells and across SSH, which breaks redraw and cursor movement
     // when the remote side lacks matching terminfo entries.
     cmd.env(ChildEnv::Term, shepr_vt::PANE_TERM);
-    cmd.env(ChildEnv::Colorterm, PANE_COLORTERM);
+    cmd.env(ChildEnv::Colorterm, shepr_vt::PANE_COLORTERM);
     cmd.env(EnvVar::TermProgram, "shepr");
     cmd.env(
         ChildEnv::TermProgramVersion,
         shepr_protocol::build_version(),
     );
     // Host handles refer to the outer terminal, never to this pane.
-    for key in [
-        ChildEnv::ItermSessionId.name(),
-        ChildEnv::LcTerminal.name(),
-        ChildEnv::LcTerminalVersion.name(),
-        EnvVar::WeztermPane.name(),
-        ChildEnv::KittyWindowId.name(),
-        ChildEnv::WtSession.name(),
-        EnvVar::Tmux.name(),
-        ChildEnv::TmuxPane.name(),
-        ChildEnv::Sty.name(),
-        ChildEnv::Zellij.name(),
-        ChildEnv::ZellijSessionName.name(),
-        ChildEnv::ZellijPaneId.name(),
-    ] {
+    for &key in OUTER_TERMINAL_IDENTITY_ENV {
         cmd.env_remove(key);
     }
 }

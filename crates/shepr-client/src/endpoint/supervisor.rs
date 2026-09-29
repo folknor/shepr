@@ -665,10 +665,6 @@ fn handshake_error(error: crate::ClientError, mismatch_guidance: Option<&str>) -
             std::io::ErrorKind::InvalidData,
             crate::ClientError::UnexpectedWelcome { endpoint },
         ),
-        ClientError::SurfaceUpdateBeforeDecode => std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            crate::ClientError::SurfaceUpdateBeforeDecode,
-        ),
         // A peer that closes before Welcome is a server restarting, a dropped SSH link or a
         // remote launch that failed: all transient, so this must stay out of InvalidData,
         // which the attention classifier treats as a compatibility problem.

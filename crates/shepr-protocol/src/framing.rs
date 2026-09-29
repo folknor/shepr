@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 const LENGTH_PREFIX_BYTES: usize = 4;
+/// Largest client hello a server accepts. Both hello forms are a few hundred
+/// bytes; the small cap keeps an unauthenticated peer from making the
+/// handshake thread allocate a full `MAX_FRAME_SIZE` buffer.
+const HANDSHAKE_FRAME_SIZE: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Framing: length-prefixed binary messages
@@ -12,7 +16,7 @@ const LENGTH_PREFIX_BYTES: usize = 4;
 /// Errors that can occur during framing operations.
 #[derive(Debug)]
 pub enum FramingError {
-    /// The decoded payload length exceeds the configured maximum frame size.
+    /// The decoded payload length exceeds the applicable fixed frame limit.
     Oversized { claimed: usize, max: usize },
     /// An I/O error occurred while reading or writing.
     Io(io::Error),
@@ -145,12 +149,24 @@ impl Write for FramePayloadBuffer {
     }
 }
 
-/// Reads and deserializes a length-prefixed frame from a reader.
+/// Reads and deserializes a length-prefixed protocol frame from a reader.
 ///
-/// Reassembles partial reads correctly. Rejects frames whose declared
-/// length exceeds `max_frame_size` without panicking or allocating
-/// oversized buffers.
+/// Reassembles partial reads correctly. Rejects frames whose declared length
+/// exceeds `MAX_FRAME_SIZE` without panicking or allocating oversized buffers.
 pub fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+) -> Result<M, FramingError> {
+    read_message_with_limit(reader, super::MAX_FRAME_SIZE)
+}
+
+/// Reads a client hello with the smaller fixed handshake frame limit.
+pub fn read_handshake_message<R: Read, M: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+) -> Result<M, FramingError> {
+    read_message_with_limit(reader, HANDSHAKE_FRAME_SIZE)
+}
+
+fn read_message_with_limit<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
     max_frame_size: usize,
 ) -> Result<M, FramingError> {

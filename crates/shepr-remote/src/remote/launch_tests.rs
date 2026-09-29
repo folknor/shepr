@@ -74,7 +74,10 @@ fn reattach_command_includes_remote_and_session() {
             shepr_config::DEFAULT_SESSION_NAME,
             RemoteKeybindings::Local,
         ),
-        "shepr --remote 'host name'"
+        format!(
+            "shepr --remote 'host name' --session {}",
+            shepr_config::DEFAULT_SESSION_NAME
+        )
     );
     assert_eq!(
         reattach_command(
@@ -83,7 +86,10 @@ fn reattach_command_includes_remote_and_session() {
             shepr_config::DEFAULT_SESSION_NAME,
             RemoteKeybindings::Server,
         ),
-        "shepr --remote host --remote-keybindings server"
+        format!(
+            "shepr --remote host --remote-keybindings server --session {}",
+            shepr_config::DEFAULT_SESSION_NAME
+        )
     );
 }
 

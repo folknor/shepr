@@ -12,9 +12,12 @@ impl App {
         }
     }
 
-    pub(crate) fn shutdown_detached_terminal_runtimes(&mut self) {
-        let terminal_ids = std::mem::take(&mut self.state.terminal_runtime_shutdowns);
-        for terminal_id in &terminal_ids {
+    /// Shuts down the runtimes of terminals a state removal detached.
+    pub(crate) fn shutdown_detached_terminal_runtimes(
+        &mut self,
+        terminal_ids: &[shepr_protocol::TerminalId],
+    ) {
+        for terminal_id in terminal_ids {
             self.shutdown_terminal_runtime(terminal_id);
         }
     }

@@ -194,7 +194,9 @@ fn read_config_with_user_paths_and_errors(
             &mut reader,
         );
     }
-    apply_git_config_parameters(&mut config, branch, &command_parameters);
+    if let Some(message) = apply_git_config_parameters(&mut config, branch, &command_parameters) {
+        errors.push(GitReadError::ConfigEnvironment { message });
+    }
     if let Some((path, kind, message)) = &reader.failure {
         errors.push(GitReadError::FileRead {
             path: path.clone(),
@@ -323,7 +325,20 @@ pub(super) fn read_config_value(
     if let Some(command_value) =
         git_config_parameter_value(&command_parameters, target_section, None, target_key)
     {
-        value = Some(command_value.to_owned());
+        value = Some(match command_value {
+            Some(value) => value.to_owned(),
+            None if target_section.eq_ignore_ascii_case("core")
+                && target_key.eq_ignore_ascii_case("bare") =>
+            {
+                "true".to_owned()
+            }
+            None => {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("missing value for '{target_section}.{target_key}'"),
+                ));
+            }
+        });
     }
     if let Some(error) = reader.read_error() {
         return Err(error);
@@ -332,16 +347,16 @@ pub(super) fn read_config_value(
 }
 
 fn git_config_parameter_value<'a>(
-    parameters: &'a [(String, String)],
+    parameters: &'a [(String, Option<String>)],
     section: &str,
     subsection: Option<&str>,
     key: &str,
-) -> Option<&'a str> {
+) -> Option<Option<&'a str>> {
     parameters
         .iter()
         .rev()
         .find(|(name, _)| git_config_parameter_matches(name, section, subsection, key))
-        .map(|(_, value)| value.as_str())
+        .map(|(_, value)| value.as_deref())
 }
 
 fn git_config_parameter_matches(
@@ -375,21 +390,34 @@ fn git_config_parameter_subsection<'a>(name: &'a str, section: &str, key: &str) 
 fn apply_git_config_parameters(
     config: &mut BranchConfig,
     branch: &str,
-    parameters: &[(String, String)],
-) {
+    parameters: &[(String, Option<String>)],
+) -> Option<String> {
     for (name, value) in parameters {
         if git_config_parameter_matches(name, "branch", Some(branch), "remote") {
+            let Some(value) = value else {
+                return Some(format!("missing value for '{name}'"));
+            };
             config.remote.clone_from(value);
         } else if git_config_parameter_matches(name, "branch", Some(branch), "merge") {
+            let Some(value) = value else {
+                return Some(format!("missing value for '{name}'"));
+            };
             config.merge_ref.clone_from(value);
         } else if let Some(remote) = git_config_parameter_subsection(name, "remote", "fetch") {
+            let Some(value) = value else {
+                return Some(format!("missing value for '{name}'"));
+            };
             config
                 .fetch_refspecs
                 .push((remote.to_owned(), value.clone()));
         } else if let Some(remote) = git_config_parameter_subsection(name, "remote", "url") {
+            let Some(value) = value else {
+                return Some(format!("missing value for '{name}'"));
+            };
             config.remote_urls.push((remote.to_owned(), value.clone()));
         }
     }
+    None
 }
 
 /// The last value of `[section] key` in the one config file at `path`, with

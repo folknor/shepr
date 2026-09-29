@@ -78,25 +78,6 @@ into the log.
 Fix: resolve it in the same pass as the rest of the config and carry it in the
 validated config down to pane construction.
 
-## HYGV-021 - "Unknown presents as Idle" has four statements and two implementations
-
-**Decision (partial):** the `--state-label STATUS=TEXT` feature is deleted end
-to end (CLI flag, API params, storage in `shepr-mux` metadata, projection,
-sidebar rendering), which removed this entry's `state_label_assignment` /
-`normalize_state_labels` half and the vocabulary-ownership question with it.
-The "Unknown presents as Idle" half remains open.
-
-Reported by the mux hunter: the rule has four statements and two
-implementations - stated in `AGENTS.md`, implemented in
-`crates/shepr-agent/src/detect/mod.rs::attention_rank`, implemented again in
-`crates/shepr-server/src/app/api_helpers.rs::pane_agent_status`, and documented
-in `crates/shepr-mux/src/workspace/aggregate.rs` as happening "at the API edge",
-which is a claim about a different crate. Consistent today.
-
-Enforcement: one mapping function in `shepr-agent` used by both
-`attention_rank` and `pane_agent_status`, with the `aggregate.rs` doc comment
-deleted rather than restated.
-
 ## HYGV-027 - The client state subdirectory is spelled at three sites, two ways
 
 Reported by the remote hunter.
@@ -324,20 +305,6 @@ For a pane over 65535 px the child's TIOCGWINSZ and its `CSI 14 t` answer alread
 disagree. Fix: a `PaneGeometry::text_area_px()` in `shepr-core` that every site
 calls.
 
-## HYGV-058 - `PANE_TERM` has one owner but `PANE_COLORTERM` lives in another crate, and a test re-spells both
-
-**Decision (partial):** `pane_terminal_identity_overrides_outer_terminal_env`
-no longer runs `printf` through the host shell and now reads `PANE_TERM` and the
-colorterm constant directly, so the re-spelling half is resolved. Open:
-`PANE_COLORTERM`'s owner and XTGETTCAP's independent `Tc`/`RGB` claim.
-
-Reported by the vt/pty hunter.
-
-`PANE_TERM` is single-owned (good), while its sibling
-`PANE_COLORTERM = "truecolor"` lives in `shepr-mux`, and XTGETTCAP in
-`shepr-vt`'s `scan.rs` advertises `Tc` and `RGB` independently of it. The
-terminal-identity claims should sit together in `shepr-vt`.
-
 ## HYGV-072 - Three boolean-from-string parsers, no owner, and one is an incomplete implementation of an external grammar
 
 **Decision (partial):** the `env_bool()` half is piece 1 (the `shepr-core`
@@ -402,31 +369,3 @@ This duplication is forced (two hosts, two binaries, one config travelling
 between them). What keeps the two validations in step is the exact-build preamble
 plus the shared crate, and the hunter's recommendation is to say that out loud in
 the `AGENTS.md` sentence, which currently reads as absolute.
-
-## HYGV-104 - Sidebar chrome preferences are validated at the moment of use rather than at startup
-
-Reported by the termio/client hunter.
-
-`crates/shepr-client/src/shell/presentation/config.rs::persist_chrome_preferences`
-writes preferences and, on failure, calls `self.set_endpoint_error(error)` - a UI
-banner, hours into a session, on whatever gesture happened to trigger a persist.
-The preferences path is an `Option` and a `None` silently skips persistence
-entirely. Nothing at launch checks that the path is writable, so the first sidebar
-drag of the session is where an unwritable state directory is discovered, against
-the project's "any config problem fails the launch; no fallbacks".
-
-Fix: a startup probe on the preferences path, which turns this into a launch
-refusal. Checkable by a test that launches with a read-only state directory.
-
-## HYGV-107 - `read_message`'s `max_frame_size` parameter has had one value at every production call site
-
-Reported by the protocol/config hunter.
-
-Roughly fifteen call sites across `shepr-client` and `shepr-server` all pass
-`shepr_protocol::MAX_FRAME_SIZE`; only one test passes anything else. A parameter
-nobody varies is both dead weight and a hazard, since a call site can weaken the
-cap and nothing notices.
-
-Fix: drop the parameter from the public function and keep a
-`#[cfg(any(test, feature = "test-support"))]` variant for the one test; the
-signature then makes the bad spelling unrepresentable.

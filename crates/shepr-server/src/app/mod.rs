@@ -295,7 +295,6 @@ impl App {
             host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             shell_projection_revision: 0,
-            terminal_runtime_shutdowns: Vec::new(),
         };
 
         state.refresh_active_tab_id();

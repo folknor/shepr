@@ -180,9 +180,11 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Session(SessionCliError::Stop(error) | SessionCliError::Delete(error)) => {
-                Some(error)
-            }
+            Self::Session(
+                SessionCliError::InvalidName(error)
+                | SessionCliError::Stop(error)
+                | SessionCliError::Delete(error),
+            ) => Some(error),
             Self::Io(error) => Some(error),
             Self::Client(error) => Some(error),
             _ => None,
@@ -215,5 +217,13 @@ mod tests {
         ] {
             assert_eq!(error.exit_code(), 1, "{error}");
         }
+    }
+
+    #[test]
+    fn invalid_session_name_preserves_its_error_source() {
+        let error = shepr_api::session::SessionError::InvalidName("bad name".into());
+        let cli_error = CliError::Session(SessionCliError::InvalidName(error));
+
+        assert!(std::error::Error::source(&cli_error).is_some());
     }
 }

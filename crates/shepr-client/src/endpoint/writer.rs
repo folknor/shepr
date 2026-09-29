@@ -271,11 +271,9 @@ mod tests {
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let first: ClientMessage =
-                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
-                    .expect("test precondition");
+                shepr_protocol::read_message(&mut peer).expect("test precondition");
             let second: ClientMessage =
-                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
-                    .expect("test precondition");
+                shepr_protocol::read_message(&mut peer).expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
         transport
@@ -306,10 +304,8 @@ mod tests {
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let result = (|| {
-                let first: ClientMessage =
-                    shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)?;
-                let second: ClientMessage =
-                    shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)?;
+                let first: ClientMessage = shepr_protocol::read_message(&mut peer)?;
+                let second: ClientMessage = shepr_protocol::read_message(&mut peer)?;
                 Ok::<_, shepr_protocol::FramingError>((first, second))
             })();
             done.send(result).expect("test precondition");
@@ -357,11 +353,9 @@ mod tests {
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let first: ClientMessage =
-                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
-                    .expect("test precondition");
+                shepr_protocol::read_message(&mut peer).expect("test precondition");
             let second: ClientMessage =
-                shepr_protocol::read_message(&mut peer, shepr_protocol::MAX_FRAME_SIZE)
-                    .expect("test precondition");
+                shepr_protocol::read_message(&mut peer).expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
         let input = ClientMessage::Input {

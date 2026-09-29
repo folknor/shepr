@@ -302,10 +302,14 @@ impl AppState {
             .map(|pane| pane.attached_terminal_id.clone())
     }
 
+    /// Drops the metadata of every listed terminal no pane still attaches and
+    /// returns those terminals, whose runtimes the caller must shut down.
+    #[must_use = "the detached terminals' runtimes must be shut down"]
     pub(crate) fn remove_unattached_terminal_ids(
         &mut self,
         terminal_ids: impl IntoIterator<Item = shepr_protocol::TerminalId>,
-    ) {
+    ) -> Vec<shepr_protocol::TerminalId> {
+        let mut detached = Vec::new();
         for terminal_id in terminal_ids {
             let still_attached = self.workspaces.iter().any(|ws| {
                 ws.tabs().iter().any(|tab| {
@@ -321,12 +325,11 @@ impl AppState {
             // disconnect, but once the terminal is gone the lock guards
             // nothing; drop it here so it cannot outlive the terminal.
             self.direct_attach_resize_locks.remove(&terminal_id);
-            if self.terminals.remove(&terminal_id).is_some()
-                && !self.terminal_runtime_shutdowns.contains(&terminal_id)
-            {
-                self.terminal_runtime_shutdowns.push(terminal_id);
+            if self.terminals.remove(&terminal_id).is_some() {
+                detached.push(terminal_id);
             }
         }
+        detached
     }
 
     pub(crate) fn prepare_pane_removal(
@@ -376,12 +379,14 @@ impl AppState {
                     pane_ids: closed.pane_ids,
                     terminal_ids: closed.terminal_ids,
                 },
+                detached_terminal_ids: closed.detached_terminal_ids,
             });
         }
 
         self.remove_pane_aliases(&removal.pane_ids);
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
-        self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
+        let detached_terminal_ids =
+            self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         if self.active_index() == Some(plan.workspace_index) {
             self.refresh_active_tab_id();
         }
@@ -389,9 +394,11 @@ impl AppState {
         PaneRemovalCommit::Removed(PaneRemovalOutcome {
             workspace_index: plan.workspace_index,
             removal,
+            detached_terminal_ids,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_pane(
         &mut self,
         workspace_index: usize,
@@ -450,6 +457,7 @@ impl AppState {
                 scope: plan.scope,
                 pane_ids: closed.pane_ids,
                 terminal_ids: closed.terminal_ids,
+                detached_terminal_ids: closed.detached_terminal_ids,
                 tab: None,
             });
         }
@@ -466,7 +474,8 @@ impl AppState {
         }
         self.remove_pane_aliases(&removal.pane_ids);
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
-        self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
+        let detached_terminal_ids =
+            self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         self.mark_session_dirty();
         let tab_id = shepr_mux::workspace::public_tab_id_for_number(
             &removal.workspace_id,
@@ -478,6 +487,7 @@ impl AppState {
             scope: plan.scope,
             pane_ids: removal.pane_ids.clone(),
             terminal_ids: removal.terminal_ids.clone(),
+            detached_terminal_ids,
             tab: Some(removal),
         })
     }
@@ -544,7 +554,8 @@ impl AppState {
         self.remove_pane_aliases(&pane_ids);
         self.clear_stale_previous_pane_focus(pane_ids.iter().copied());
         self.workspaces.remove(ws_idx);
-        self.remove_unattached_terminal_ids(terminal_ids.iter().cloned());
+        let detached_terminal_ids =
+            self.remove_unattached_terminal_ids(terminal_ids.iter().cloned());
 
         if self.workspaces.is_empty() {
             self.set_active_index(None);
@@ -556,6 +567,7 @@ impl AppState {
                 workspace_id,
                 pane_ids,
                 terminal_ids,
+                detached_terminal_ids,
             });
         }
         let last = self.workspaces.len() - 1;
@@ -573,6 +585,7 @@ impl AppState {
             workspace_id,
             pane_ids,
             terminal_ids,
+            detached_terminal_ids,
         })
     }
 }

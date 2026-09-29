@@ -203,11 +203,10 @@ impl App {
                     params.tab_id.as_deref().unwrap_or("replacement tab"),
                 ));
             };
-            if matches!(
-                self.state.commit_tab_removal(&plan),
-                crate::app::actions::TabRemovalCommit::Removed(_)
-            ) {
-                self.shutdown_detached_terminal_runtimes();
+            if let crate::app::actions::TabRemovalCommit::Removed(outcome) =
+                self.state.commit_tab_removal(&plan)
+            {
+                self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
                 self.emit_events(replace_close_events);
             }
         }

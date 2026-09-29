@@ -921,6 +921,13 @@ impl Serialize for ValidatedConfig {
     }
 }
 
+// Keep the received-value adapters explicit across protocol and config:
+// geometry, addresses, and paths are field mirrors with distinct checks,
+// while this wire shape omits runtime caches and rebuilds them with
+// received-value rules. A local macro per crate would duplicate its generator;
+// a shared derive needs a new proc-macro crate and per-type hooks. The explicit
+// Wire literals already make field drift a compile-time error, so that
+// machinery would cost more than it removes.
 impl<'de> Deserialize<'de> for ValidatedConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

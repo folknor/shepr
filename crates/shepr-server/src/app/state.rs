@@ -85,9 +85,6 @@ pub struct AppState {
     pub session_dirty: bool,
     /// Invalidates the shell projection after state changes that can affect chrome.
     pub(crate) shell_projection_revision: u64,
-    /// Terminal runtimes that should be shut down by the app/runtime layer
-    /// after state has detached their terminal metadata.
-    pub(crate) terminal_runtime_shutdowns: Vec<shepr_protocol::TerminalId>,
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
@@ -292,7 +289,6 @@ impl AppState {
             host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             shell_projection_revision: 0,
-            terminal_runtime_shutdowns: Vec::new(),
         }
     }
 

@@ -161,43 +161,6 @@ Enforcement rules named: a gremlin-style text rule forbidding `temp_dir`
 outside `shepr-test-support` plus a documented exemption; a text rule against
 `/tmp` literals in `shepr-mux` and in `crates/*/src` generally.
 
-## HYGG-016 - The login-shell tests never check the `-sh` argv0 that makes a shell a login shell
-
-`login_shell_execs_shell_env_without_arguments` in `shepr-pty`, and the
-`shepr-mux` twin `login_shell_builder_uses_one_resolved_path...`.
-`std::process::Command` does not expose `arg0`, so only a spawn test can check
-it - which means the property the tests are named for is unverified.
-
-## HYGG-017 - `pane_terminal_identity_allows_explicit_override` applies the override by a path production does not use
-
-`shepr-mux`. The test applies the override with a raw `cmd.env` after
-`apply_pane_terminal_env`, while the production override path is
-`PaneLaunchEnv::extra` in `apply_pane_launch_env`. The test therefore cannot
-fail.
-
-## HYGG-018 - Two pane-terminal-identity tests restate the values and the list they are checking
-
-**Decision (partial):** `pane_terminal_identity_overrides_outer_terminal_env`
-no longer runs `printf` through the host shell and reads `shepr_vt::PANE_TERM`
-and `PANE_COLORTERM` directly instead of the hard-coded
-`"xterm-256color\ntruecolor\n"`. Open: the restated scrub list in
-`pane_terminal_identity_removes_outer_terminal_identity`.
-
-`pane_terminal_identity_removes_outer_terminal_identity` restates the production
-scrub list verbatim, so a key added to production is not tested. Enforcement
-named: export the list and iterate it.
-
-## HYGG-034 - `EventHub::events_after` cannot report what its production sibling reports
-
-`crates/shepr-api/src/event_hub.rs`. The test-support method returns
-`Vec::new()` on a poisoned lock and has no `Lost` signal, while
-`events_after_checked` distinguishes both. Eleven call sites in `shepr-server`
-tests use it (for example `app/api/panes/tests.rs`,
-`assert!(app.event_hub.events_after(0).is_empty())`), and an assertion that a
-history is empty cannot distinguish "no events were emitted" from "the lock is
-poisoned" - a test that can pass for the wrong reason. Enforcement named: delete
-`events_after` and have tests use `events_after_checked(..).expect(..)`.
-
 ## HYGG-067 - Claim: "Wire types must not use `skip_serializing_if`, `flatten`, `untagged` or tagged enums"
 
 `AGENTS.md` and the `shepr-protocol/src/codec.rs` module doc. The hunter's
@@ -270,14 +233,6 @@ strftime compile (`parse_tab_bar_datetime_format`), the window-title template
 parse and the keybind parse. The `shepr-server` hunter verified the same for its
 scope and reports no finding there.
 
-## HYGG-075 - `run_on_machine`'s comment names an exclusion a different file enforces
-
-`src/cli/target.rs::validate_machine_command`'s comment says `--machine`
-excludes "no local file evaluation (`agent explain --file`)". That is enforced by
-`agent::Command::is_api_command` (`Self::Explain(args) => args.file.is_none()`)
-in a different file, and nothing ties the comment to it. True today, and the
-existing test covers the `--file` case, so the hunter marks this one held.
-
 ## HYGG-086 - `AGENTS.md` describes `reference/` and `docs/` as binding in-repo folders that do not exist
 
 **False today**: neither directory exists in the tree; only `notes/` does.
@@ -325,47 +280,6 @@ four `Arc`-shared atomics, three mutexes, a `Cell` and forty pure-read
 delegations in one type. The claim is "true about the name and misleading about
 the shape."
 
-## HYGG-093 - Claim: `AppState` is pure data
-
-`AGENTS.md`. The `shepr-server` hunter's verdict: **holds** - no channels, no
-runtime, no `Arc`, and `test_new()` works. One leak recorded:
-`app/state.rs`'s `terminal_runtime_shutdowns: Vec<TerminalId>` ("runtimes that
-should be shut down by the app/runtime layer") is a pending-effects queue, not
-state. It is data-shaped so the claim survives literally, but it is the seam
-through which pure state schedules side effects, and nothing stops the next such
-field from being a channel. Returning the shutdown list from the mutating call
-instead of parking it on state removes the field.
-
-## HYGG-094 - Claim: render is pure
-
-`AGENTS.md`: "`compute_view()` updates only `AppState::view`; pane runtimes are
-resized by explicit geometry paths, and surface drawing takes shared references
-and only draws." The `shepr-server` hunter's verdict: **holds in behaviour, not
-in structure.** `compute_view` does touch only `view`, but it takes
-`&mut AppState` so nothing enforces it. `resize_pane_infos` (`ui/panes.rs`)
-takes `app: &AppState` and a `&PaneRuntimeRegistry` and calls `rt.resize(...)`
-through them, and so do `resize_tab_surface`, `resize_tab_surface_layout` and
-`resize_all_tab_surfaces`; the draw path (`render_tab_surface`) and the resize
-paths take *identical* signatures `(&AppState, &PaneRuntimeRegistry, ...)`.
-Nothing in the type system distinguishes "only draws" from "resizes every PTY in
-the tab"; the invariant rests entirely on which function name a caller types, and
-in `render.rs` the two are interleaved in one function, which is where a mistake
-would land.
-
-Enforcement named: give the resize paths a distinct receiver - a
-`PaneResizer<'a>` newtype over the registry, constructed only on the explicit
-geometry paths - so a drawing function cannot reach `resize`; and make
-`compute_view` return `ViewState` instead of taking `&mut AppState`, which makes
-"touches only `view`" true by signature.
-
-The `shepr-vt`/`shepr-pty` hunter reports a violation of the same claim in
-`shepr-mux/src/pane/terminal/backend.rs` (`render()`,
-`collect_dirty_patch()`, `synchronized_output_active()` and
-`synchronized_output_state()` all call `flush_expired_synchronized_output`, which
-feeds the buffered frame through the parser and mutates the grid), but files it
-as a live defect, so a fix pass should expect that entry in the bug document
-rather than here.
-
 ## HYGG-116 - Claim: alacritty types never leak out of `shepr-vt`
 
 The dependency rule enforces this at crate level, and the hunter found no
@@ -373,6 +287,15 @@ alacritty types in public signatures. Two soft spots recorded: the public
 `impl From<Rgb> for RgbColor` and `From<RgbColor> for Rgb`; and `CellStyle`,
 which is `pub` in a private module and reachable through `CellBasicData.style`
 but not re-exported, so callers cannot name it.
+
+## HYGG-128 - A permission test stays ignored where a per-thread capability drop would run it
+
+`crates/shepr-remote/src/remote/local_server.rs`:
+`is_server_listening_returns_permission_errors_instead_of_false` is ignored,
+so it runs nowhere. `crates/shepr-mux/src/pane/runtime.rs` now makes a similar
+test meaningful for every user by running the probe on a thread that drops
+`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` from its own effective set. Move
+that helper into `shepr-test-support` and use it here.
 
 ## HYGG-126 - The `skip_after` test marker is anchored to column 0
 
@@ -383,13 +306,3 @@ skipped. That errs safe, but it pushed one fixer into rewriting test helpers to
 dodge the rule, which changed what the tests exercised. Either allow leading
 whitespace in the pattern and teach `scripts/check_skip_after_scopes.py` the
 same, or state at the rules that test helpers belong in `mod tests`.
-
-## HYGG-125 - The schema macro builds `MethodTraits` twice, and its test pins a count
-
-`crates/shepr-api/src/schema.rs`: the method macro now spells each wire name
-once, but `traits()` and `traits_for_name()` each construct `MethodTraits`, so
-the flags (including the client-shell lane) are generated at two sites that
-must agree. The schema test asserts that 27 methods are classified for the
-client-shell lane - a count, not the set - so swapping one method in and another
-out passes. Have `traits_for_name` resolve the name to a variant and reuse
-`traits()`, and assert the lane as a named set.

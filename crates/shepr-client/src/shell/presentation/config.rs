@@ -98,8 +98,10 @@ impl ClientShellConfig {
         self,
         state_dir: &std::path::Path,
         socket_path: &std::path::Path,
-    ) -> Self {
-        self.with_preferences_path(preferences::path_for_local_endpoint(state_dir, socket_path))
+    ) -> std::io::Result<Self> {
+        let path = preferences::path_for_local_endpoint(state_dir, socket_path);
+        preferences::probe_writable(&path)?;
+        Ok(self.with_preferences_path(path))
     }
 
     pub(super) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
@@ -293,5 +295,22 @@ mod tests {
         assert_eq!(stored.agent_panel_sort, None);
         assert_eq!(stored.sidebar_collapsed, Some(true));
         std::fs::remove_file(path).expect("remove endpoint chrome");
+    }
+
+    #[test]
+    fn local_endpoint_refuses_unwritable_preferences_directory_at_startup() {
+        let scratch = shepr_test_support::ScratchDir::new("shell-prefs-startup-probe");
+        let state_dir = scratch.path().join("state");
+        std::fs::create_dir_all(&state_dir).expect("create state directory");
+        std::fs::write(state_dir.join("client-shell"), b"not a directory")
+            .expect("block preferences directory");
+
+        let result = ClientShellConfig::from_validated_config(
+            &shepr_config::ValidatedConfig::test_default(),
+        )
+        .with_local_endpoint(&state_dir, std::path::Path::new("/run/shepr/client.sock"));
+
+        let error = result.err().expect("startup probe refuses the state path");
+        assert!(error.to_string().contains("client shell state directory"));
     }
 }

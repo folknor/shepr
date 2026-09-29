@@ -370,13 +370,17 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
         b"544E" => Some(Some(super::PANE_TERM.as_bytes())),
         // Co / colors: palette size.
         b"436F" | b"636F6C6F7273" => Some(Some(b"256")),
-        // Tc: truecolor, and Su: styled underlines; both boolean.
-        b"5463" | b"5375" => Some(None),
+        // Tc, RGB and the RGB setters follow the same truecolor capability as COLORTERM.
+        b"5463" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL.map(|_| None),
+        // Su: styled underlines; a boolean capability.
+        b"5375" => Some(None),
         // RGB: bits per channel.
-        b"524742" => Some(Some(b"8")),
+        b"524742" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL.map(Some),
         // setrgbf / setrgbb.
-        b"73657472676266" => Some(Some(b"\\E[38:2:%p1%d:%p2%d:%p3%dm")),
-        b"73657472676262" => Some(Some(b"\\E[48:2:%p1%d:%p2%d:%p3%dm")),
+        b"73657472676266" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL
+            .map(|_| Some(b"\\E[38:2:%p1%d:%p2%d:%p3%dm".as_slice())),
+        b"73657472676262" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL
+            .map(|_| Some(b"\\E[48:2:%p1%d:%p2%d:%p3%dm".as_slice())),
         // Ms: OSC 52 clipboard.
         b"4D73" => Some(Some(b"\\E]52;%p1%s;%p2%s\\007")),
         // Smulx: underline style.
@@ -476,6 +480,15 @@ mod tests {
             assert_eq!(replies[0], b"\x1bP1+r5463\x1b\\");
             assert_chunk_equivalence(bytes);
         }
+    }
+
+    #[test]
+    fn xtgettcap_truecolor_values_follow_pane_color_identity() {
+        assert_eq!(super::super::PANE_COLORTERM, "truecolor");
+        assert_eq!(xtgettcap_value(b"5463"), Some(None));
+        assert_eq!(xtgettcap_value(b"524742"), Some(Some(b"8".as_slice())));
+        assert!(xtgettcap_value(b"73657472676266").is_some());
+        assert!(xtgettcap_value(b"73657472676262").is_some());
     }
 
     #[test]

@@ -24,7 +24,7 @@ use shepr_protocol::CellData;
 use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
 #[cfg(test)]
-mod migration_tests;
+mod invariant_tests;
 
 use super::cursor::decscusr_cursor_shape;
 use super::osc::{

@@ -27,14 +27,30 @@ pub enum AgentState {
     Unknown,
 }
 
+/// An agent state after applying the user-facing presentation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentedAgentState {
+    Idle,
+    Working,
+    Blocked,
+}
+
 impl AgentState {
-    /// Rank agent states for attention, from least to most urgent.
-    /// Unknown shares Idle's rank because the UI presents it as Idle.
-    pub const fn attention_rank(self) -> u8 {
+    /// Collapse an unknown state to idle for user-facing presentation.
+    pub const fn presentation_state(self) -> PresentedAgentState {
         match self {
-            Self::Idle | Self::Unknown => 0,
-            Self::Working => 1,
-            Self::Blocked => 2,
+            Self::Idle | Self::Unknown => PresentedAgentState::Idle,
+            Self::Working => PresentedAgentState::Working,
+            Self::Blocked => PresentedAgentState::Blocked,
+        }
+    }
+
+    /// Rank agent states for attention, from least to most urgent.
+    pub const fn attention_rank(self) -> u8 {
+        match self.presentation_state() {
+            PresentedAgentState::Idle => 0,
+            PresentedAgentState::Working => 1,
+            PresentedAgentState::Blocked => 2,
         }
     }
 }
@@ -623,7 +639,11 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn attention_rank_orders_blocked_working_idle_and_unknown_as_idle() {
+    fn presentation_state_collapses_unknown_and_attention_rank_orders_states() {
+        assert_eq!(
+            AgentState::Unknown.presentation_state(),
+            PresentedAgentState::Idle
+        );
         assert!(AgentState::Blocked.attention_rank() > AgentState::Working.attention_rank());
         assert!(AgentState::Working.attention_rank() > AgentState::Idle.attention_rank());
         assert_eq!(

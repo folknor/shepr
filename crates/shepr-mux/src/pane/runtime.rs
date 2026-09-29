@@ -2134,22 +2134,8 @@ mod tests {
 
     #[test]
     fn pane_terminal_identity_removes_outer_terminal_identity() {
-        let keys = [
-            "ITERM_SESSION_ID",
-            "LC_TERMINAL",
-            "LC_TERMINAL_VERSION",
-            "WEZTERM_PANE",
-            "KITTY_WINDOW_ID",
-            "WT_SESSION",
-            "TMUX",
-            "TMUX_PANE",
-            "STY",
-            "ZELLIJ",
-            "ZELLIJ_SESSION_NAME",
-            "ZELLIJ_PANE_ID",
-        ];
         let mut cmd = PtyCommand::new("shell");
-        for key in keys {
+        for &key in OUTER_TERMINAL_IDENTITY_ENV {
             cmd.env(key, "outer-session");
         }
         cmd.env("TERM_PROGRAM", "iTerm.app");
@@ -2157,7 +2143,7 @@ mod tests {
 
         apply_pane_terminal_env(&mut cmd);
 
-        for key in keys {
+        for &key in OUTER_TERMINAL_IDENTITY_ENV {
             assert!(cmd.get_env(key).is_none(), "{key} must not leak into panes");
         }
         assert_eq!(cmd.get_env("TERM_PROGRAM"), Some(OsStr::new("shepr")));
@@ -2333,6 +2319,43 @@ mod tests {
         );
     }
 
+    /// Drops `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` from the calling
+    /// thread's effective set, so mode bits bind it even when the test runs as
+    /// root. Linux keeps capabilities per thread: the test's other threads
+    /// keep theirs. Lowering the effective set needs no privilege.
+    fn drop_dac_capabilities_on_this_thread() {
+        #[repr(C)]
+        struct CapHeader {
+            version: u32,
+            pid: libc::c_int,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy, Default)]
+        struct CapData {
+            effective: u32,
+            permitted: u32,
+            inheritable: u32,
+        }
+        const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+        const CAP_DAC_OVERRIDE: u32 = 1;
+        const CAP_DAC_READ_SEARCH: u32 = 2;
+
+        let mut header = CapHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let mut data = [CapData::default(); 2];
+        // SAFETY: version 3 capget reads one header and writes two data
+        // structs, which `header` and `data` provide.
+        let status = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
+        assert_eq!(status, 0, "capget: {}", std::io::Error::last_os_error());
+        data[0].effective &= !((1 << CAP_DAC_OVERRIDE) | (1 << CAP_DAC_READ_SEARCH));
+        // SAFETY: version 3 capset reads one header and two data structs; pid
+        // 0 targets only the calling thread.
+        let status = unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) };
+        assert_eq!(status, 0, "capset: {}", std::io::Error::last_os_error());
+    }
+
     #[test]
     fn process_cwd_does_not_require_traversing_the_directory_path() {
         use std::os::unix::fs::PermissionsExt;
@@ -2351,26 +2374,30 @@ mod tests {
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
             .expect("make cwd path untraversable");
 
-        // Only a refused stat means the path is untraversable; any other
-        // error is a broken fixture, not a skip.
-        let path_is_traversable = match std::fs::metadata(&cwd) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
-            Err(error) => panic!("stat the process cwd: {error}"),
-        };
-        let observed = (!path_is_traversable)
-            .then(|| absolute_process_cwd(child.id()))
-            .flatten();
+        // The probe thread cannot bypass the mode-000 directory, whoever runs
+        // the test, so the stat below is always refused.
+        let pid = child.id();
+        let probe_cwd = cwd.clone();
+        let probe = std::thread::spawn(move || {
+            drop_dac_capabilities_on_this_thread();
+            (
+                std::fs::metadata(&probe_cwd).map(|_| ()),
+                absolute_process_cwd(pid),
+            )
+        })
+        .join();
 
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755))
             .expect("restore cwd path permissions");
         child.kill().expect("kill the sleeping cwd fixture");
         child.wait().expect("reap the cwd fixture");
 
-        if path_is_traversable {
-            eprintln!("skipping untraversable cwd assertion for privileged test process");
-            return;
-        }
+        let (stat, observed) = probe.expect("the cwd probe thread completes");
+        assert_eq!(
+            stat.expect_err("the cwd path must be untraversable for the probe")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
         assert_eq!(observed, Some(expected_cwd));
     }
 
@@ -2629,9 +2656,14 @@ mod tests {
         cmd.env("TERM", "xterm-ghostty");
         cmd.env("COLORTERM", "falsecolor");
         apply_pane_terminal_env(&mut cmd);
-        for (key, value) in extra_env {
-            cmd.env(key, value);
-        }
+        let extra_env = extra_env
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        apply_pane_launch_env(
+            &mut cmd,
+            &PaneLaunchEnv::from_extra(extra_env, "/run/user/1000/shepr-test.sock".into()),
+        );
 
         let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn in pty");
         let status = spawned.child.wait().expect("wait for the fixture");
@@ -2642,8 +2674,15 @@ mod tests {
 
     #[test]
     fn login_shell_builder_uses_one_resolved_path_for_exec_and_shell_env() {
-        let shell = fixture::path_str();
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(shell, true));
+        let scratch = crate::test_support::ScratchDir::new("pane-login-shell");
+        let shell = fixture::stand_in(
+            scratch.path(),
+            "shepr-login-shell",
+            &[Step::Sleep(std::time::Duration::from_secs(30))],
+        );
+        let shell = shell.to_str().expect("scratch shell path is UTF-8");
+        let mut cmd = pane_shell_command_builder(PaneShellConfig::new(shell, true));
+        cmd.cwd(scratch.path());
         assert!(cmd.is_login_shell());
         let std_cmd = cmd.to_std_command().expect("test precondition");
         assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new(shell));
@@ -2654,6 +2693,24 @@ mod tests {
                 .find(|(key, _)| *key == std::ffi::OsStr::new("SHELL"))
                 .and_then(|(_, value)| value),
             Some(std::ffi::OsStr::new(shell))
+        );
+
+        let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn test shell");
+        let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
+        spawned
+            .child
+            .kill()
+            .expect("stop the sleeping shell fixture");
+        spawned.child.wait().expect("reap the shell fixture");
+        let command_line = command_line.expect("read the fixture command line");
+        let argv0_end = command_line
+            .iter()
+            .position(|byte| *byte == 0)
+            .expect("command line has an argv0 terminator");
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            std::ffi::OsStr::from_bytes(&command_line[..argv0_end]),
+            std::ffi::OsStr::new("-shepr-login-shell")
         );
     }
 
@@ -2706,7 +2763,7 @@ mod tests {
         let output = capture_terminal_identity(&[]);
         assert_eq!(
             output,
-            format!("{}\n{PANE_COLORTERM}\n", shepr_vt::PANE_TERM)
+            format!("{}\n{}\n", shepr_vt::PANE_TERM, shepr_vt::PANE_COLORTERM)
         );
     }
 

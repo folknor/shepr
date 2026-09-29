@@ -32,24 +32,19 @@ pub fn write_config_temporary(
         let input = std::fs::File::open(source)?;
         let metadata = input.metadata()?;
         let current = output.metadata()?;
-        if (metadata.uid(), metadata.gid()) != (current.uid(), current.gid()) {
-            // Keep ownership before restoring mode/ACLs; chown can clear mode bits.
-            // SAFETY: fchown(2) on an fd `output` keeps open; integers only.
-            if unsafe { libc::fchown(output.as_raw_fd(), metadata.uid(), metadata.gid()) } != 0 {
-                let error = std::io::Error::last_os_error();
-                // Replacing a writable file owned by another uid can still be
-                // valid when the caller cannot reproduce that ownership.
-                if error.raw_os_error() != Some(libc::EPERM) {
-                    return Err(error);
+        preserve_config_owner_with(
+            (metadata.uid(), metadata.gid()),
+            (current.uid(), current.gid()),
+            || {
+                // Keep ownership before restoring mode/ACLs; chown can clear mode bits.
+                // SAFETY: fchown(2) on an fd `output` keeps open; integers only.
+                if unsafe { libc::fchown(output.as_raw_fd(), metadata.uid(), metadata.gid()) } != 0
+                {
+                    return Err(std::io::Error::last_os_error());
                 }
-                tracing::debug!(
-                    uid = metadata.uid(),
-                    gid = metadata.gid(),
-                    %error,
-                    "could not preserve config file ownership"
-                );
-            }
-        }
+                Ok(())
+            },
+        )?;
         // Replace inherited ACLs before enabling the original mode. Prepare all
         // required access controls while the temporary is empty, before writing
         // secrets.
@@ -58,6 +53,30 @@ pub fn write_config_temporary(
     }
     output.write_all(contents)?;
     output.sync_all()
+}
+
+fn preserve_config_owner_with(
+    source: (libc::uid_t, libc::gid_t),
+    current: (libc::uid_t, libc::gid_t),
+    set_owner: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if source == current {
+        return Ok(());
+    }
+    if let Err(error) = set_owner() {
+        // Replacing a writable file owned by another uid can still be valid
+        // when the caller cannot reproduce that ownership.
+        if error.raw_os_error() != Some(libc::EPERM) {
+            return Err(error);
+        }
+        tracing::debug!(
+            uid = source.0,
+            gid = source.1,
+            %error,
+            "could not preserve config file ownership"
+        );
+    }
+    Ok(())
 }
 
 // Access ACLs and security labels live in xattrs on Linux. Mode bits alone can
@@ -163,4 +182,24 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
 // refuses a copy.
 fn is_posix_acl_xattr(name: &std::ffi::CStr) -> bool {
     name.to_bytes().starts_with(b"system.posix_acl_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preserve_config_owner_with;
+
+    #[test]
+    fn permission_denied_preserving_config_owner_is_tolerated() {
+        let mut attempted = false;
+        let result = preserve_config_owner_with((1001, 1002), (1000, 1000), || {
+            attempted = true;
+            Err(std::io::Error::from_raw_os_error(libc::EPERM))
+        });
+
+        assert!(attempted, "the ownership operation should be tried");
+        assert!(
+            result.is_ok(),
+            "EPERM must not prevent replacing the config"
+        );
+    }
 }

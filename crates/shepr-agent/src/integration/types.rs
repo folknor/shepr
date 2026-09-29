@@ -1,5 +1,30 @@
 use std::path::{Path, PathBuf};
 
+/// Messages produced by installing an agent integration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallOutput {
+    /// Installation and configuration messages, in display order.
+    pub messages: Vec<String>,
+    /// Warnings to display after the installation messages.
+    pub warnings: Vec<InstallWarning>,
+}
+
+/// A non-fatal install warning whose severity is chosen by the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallWarning(String);
+
+impl InstallWarning {
+    pub(crate) fn new(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl std::fmt::Display for InstallWarning {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// What a file an integration writes is to the operator. The role picks the
 /// wording of the install and uninstall messages; the file's own format is
 /// the target's business.

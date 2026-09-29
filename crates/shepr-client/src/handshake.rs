@@ -5,7 +5,7 @@ use tracing::info;
 
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointClientHello;
-use shepr_protocol::{ClientMessage, MAX_FRAME_SIZE, ServerMessage};
+use shepr_protocol::{ClientMessage, ServerMessage};
 
 use super::{ClientError, shell};
 
@@ -170,7 +170,7 @@ pub(super) fn do_handshake(
     let read_deadline = deadline.map_or(read_deadline, |deadline| deadline.min(read_deadline));
     let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, read_deadline);
     shepr_protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
-    let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader, MAX_FRAME_SIZE)?;
+    let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader)?;
     set_handshake_recv_timeout(
         stream,
         None,
@@ -244,8 +244,8 @@ mod tests {
         let peer = std::thread::spawn(move || {
             shepr_protocol::preamble::write_preamble(&mut server).expect("test precondition");
             shepr_protocol::preamble::read_preamble(&mut server).expect("client preamble");
-            let _hello: ClientMessage = shepr_protocol::read_message(&mut server, MAX_FRAME_SIZE)
-                .expect("test precondition");
+            let _hello: ClientMessage =
+                shepr_protocol::read_message(&mut server).expect("test precondition");
             shepr_protocol::write_message(
                 &mut server,
                 &ServerMessage::ServerShutdown {

@@ -511,7 +511,7 @@ impl HeadlessServer {
                 for tab_index in 0..workspace.tabs().len() {
                     crate::ui::resize_tab_surface(
                         &self.app.state,
-                        &self.app.terminal_runtimes,
+                        &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
                         workspace_index,
                         tab_index,
                         area,
@@ -528,7 +528,7 @@ impl HeadlessServer {
             );
             crate::ui::resize_tab_surface_layout(
                 &self.app.state,
-                &self.app.terminal_runtimes,
+                &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
                 &layout,
                 cell_size,
             );
@@ -562,7 +562,7 @@ impl HeadlessServer {
         let area = self.app.state.settings.headless_rect();
         crate::ui::resize_all_tab_surfaces(
             &self.app.state,
-            &self.app.terminal_runtimes,
+            &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
             area,
             shepr_termio::host_term::cell_size::HostCellSize::default(),
         );

@@ -76,9 +76,9 @@ use super::rows::RowOrigin;
 /// (`PrivateMode::new` is private to vte). Adapter-stored and unlisted modes
 /// stay `Unknown`, exactly as vte's parser would deliver them.
 pub(super) fn private_mode(mode: DecMode) -> PrivateMode {
-    match modes::lookup(mode).map(|spec| spec.set) {
-        Some(modes::Setter::Vte(named)) => PrivateMode::Named(named),
-        _ => PrivateMode::Unknown(mode.number()),
+    match modes::lookup(mode).set {
+        modes::Setter::Vte(named) => PrivateMode::Named(named),
+        modes::Setter::Extra(_) => PrivateMode::Unknown(mode.number()),
     }
 }
 

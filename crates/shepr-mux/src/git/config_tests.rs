@@ -192,6 +192,54 @@ fn git_dash_c_parameters_override_indexed_command_scope_pairs() {
 }
 
 #[test]
+fn git_dash_c_valueless_boolean_parameter_means_true() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let bare = bare_layout("git-config-valueless-boolean", "[core]\n\tbare = true\n");
+    let info = git_worktree_info(&bare.join("refs")).expect("test precondition");
+    let config_path = bare.join("config");
+    std::fs::write(&config_path, "[core]\n\tbare = false\n").expect("test precondition");
+    env.set(
+        shepr_core::env::EnvVar::GitConfigParameters,
+        "'core.bare'= ",
+    );
+
+    let (value, _) = read_config_value(
+        &info,
+        "main",
+        std::slice::from_ref(&config_path),
+        "core",
+        "bare",
+    )
+    .expect("Git's implicit boolean value");
+
+    assert_eq!(value.as_deref().and_then(git_config_bool), Some(true));
+}
+
+#[test]
+fn git_dash_c_valueless_string_parameter_reports_missing_value() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let root = temp_test_dir("git-config-valueless-string");
+    write_fake_tracked_repo(&root);
+    let info = git_worktree_info(&root).expect("test precondition");
+    env.set(
+        shepr_core::env::EnvVar::GitConfigParameters,
+        "'branch.main.remote'= ",
+    );
+
+    let mut errors = Vec::new();
+    let _config = read_config_for_status(&info, "main", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| matches!(
+            error,
+            crate::git::GitReadError::ConfigEnvironment { message }
+                if message.contains("missing value for 'branch.main.remote'")
+        )),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn git_command_scope_config_requires_every_indexed_pair() {
     let env = shepr_test_support::IsolatedEnv::new();
     env.set(shepr_core::env::EnvVar::GitConfigCount, "1");

@@ -56,6 +56,11 @@ use cell::{CellText, cell_graphemes, cell_text, cell_text_into, cell_wide};
 pub use cell::{RowWrap, ScreenTextCell, ScreenTextRow, unicode_display_units};
 pub use modes::DecMode;
 pub const PANE_TERM: &str = "xterm-256color";
+const PANE_TRUECOLOR_BITS_PER_CHANNEL: Option<&'static [u8]> = Some(b"8");
+pub const PANE_COLORTERM: &str = match PANE_TRUECOLOR_BITS_PER_CHANNEL {
+    Some(_) => "truecolor",
+    None => "",
+};
 
 pub use color::{ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette};
 pub use render::{CursorVisualStyle, Dirty, RenderState};
@@ -722,12 +727,10 @@ impl Terminal {
         mem::take(&mut self.clipboard_writes)
     }
 
-    /// The live value of a DEC private mode; `false` for modes the table in
-    /// `modes.rs` does not list or reports as unsupported.
+    /// The live value of a DEC private mode; `false` when the table in
+    /// `modes.rs` reports it as unsupported.
     pub fn mode_get(&self, mode: DecMode) -> bool {
-        let Some(spec) = modes::lookup(mode) else {
-            return false;
-        };
+        let spec = modes::lookup(mode);
         match spec.get {
             modes::Getter::Term(flag) => self.term.mode().contains(flag),
             modes::Getter::CursorBlink => self.term.cursor_style().blinking,
@@ -743,9 +746,6 @@ impl Terminal {
     /// and a synchronized update does not defer it. Mode 2026 is refused: it
     /// is parser state, not terminal state.
     pub fn mode_set(&mut self, mode: DecMode, value: bool) -> Result<(), Error> {
-        if modes::lookup(mode).is_none() {
-            return Err(Error("unsupported DEC private mode"));
-        }
         if mode == DecMode::SynchronizedOutput {
             return Err(Error("synchronized output is driven by the parser"));
         }

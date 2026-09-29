@@ -233,16 +233,15 @@ impl App {
             crate::app::actions::TabRemovalScope::Tab => self.tab_close_events(ws_idx, tab_idx),
             crate::app::actions::TabRemovalScope::Workspace => self.workspace_close_events(ws_idx),
         };
-        if !matches!(
-            self.state.commit_tab_removal(&plan),
-            crate::app::actions::TabRemovalCommit::Removed(_)
-        ) {
+        let crate::app::actions::TabRemovalCommit::Removed(outcome) =
+            self.state.commit_tab_removal(&plan)
+        else {
             return failure(
                 ApiErrorCode::TabCloseFailed,
                 format!("tab {} could not be closed", target.tab_id),
             );
-        }
-        self.shutdown_detached_terminal_runtimes();
+        };
+        self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         self.schedule_session_save();
         self.emit_events(close_events);
 

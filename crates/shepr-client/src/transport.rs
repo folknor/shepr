@@ -6,7 +6,6 @@ pub(super) fn start_endpoint_transport(
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
-    max_frame_size: usize,
     surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) -> Result<endpoint::NativeEndpointTransport, ClientError> {
     let reader = stream.try_clone().map_err(ClientError::ConnectionFailed)?;
@@ -17,7 +16,6 @@ pub(super) fn start_endpoint_transport(
         reader,
         event_tx,
         &stopped,
-        max_frame_size,
         endpoint_id,
         generation,
         surface_decoder,
@@ -29,7 +27,6 @@ pub(super) fn spawn_endpoint_reader(
     reader: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     stopped: &Arc<AtomicBool>,
-    max_frame_size: usize,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
     surface_decoder: shepr_protocol::surface_reuse::Decoder,
@@ -43,7 +40,6 @@ pub(super) fn spawn_endpoint_reader(
                 reader,
                 &event_tx,
                 &stopped,
-                max_frame_size,
                 endpoint_id,
                 generation,
                 surface_decoder,
@@ -58,7 +54,6 @@ pub(super) fn server_reader_thread(
     mut stream: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
-    max_frame_size: usize,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
     mut surface_decoder: shepr_protocol::surface_reuse::Decoder,
@@ -84,12 +79,11 @@ pub(super) fn server_reader_thread(
             break;
         }
 
-        let message =
-            shepr_protocol::read_message(&mut stream, max_frame_size).and_then(|message| {
-                surface_decoder
-                    .decode(message)
-                    .map_err(|error| shepr_protocol::FramingError::SurfaceDecode(error.to_string()))
-            });
+        let message = shepr_protocol::read_message(&mut stream).and_then(|message| {
+            surface_decoder
+                .decode(message)
+                .map_err(|error| shepr_protocol::FramingError::SurfaceDecode(error.to_string()))
+        });
         match message {
             Ok(msg) => {
                 if event_tx
@@ -329,8 +323,7 @@ mod tests {
         let flushed = writer.flush(Instant::now() + Duration::from_secs(3));
         if flushed.is_ok() {
             let received: ClientMessage =
-                shepr_protocol::read_message(&mut bridge, shepr_protocol::MAX_FRAME_SIZE)
-                    .expect("test precondition");
+                shepr_protocol::read_message(&mut bridge).expect("test precondition");
             assert_eq!(received, ClientMessage::ClientShellFocus { focused: true });
         }
         const FINAL: &[u8] = b"pending-download: FINAL OUTPUT\n";

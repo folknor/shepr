@@ -386,9 +386,8 @@ pub(super) fn resolve_machine<'a>(
     Ok(profile)
 }
 
-/// Only commands that can run safely against a saved machine are accepted:
-/// noninteractive server API requests, without local management, TUI or
-/// terminal attachment, or local file evaluation (`agent explain --file`).
+/// Command eligibility comes from `CliCommand::can_run_on_machine`; this
+/// boundary provides the shared rejection message when that predicate refuses.
 fn validate_machine_command(command: &super::CliCommand) -> Result<(), String> {
     if command.can_run_on_machine() {
         Ok(())

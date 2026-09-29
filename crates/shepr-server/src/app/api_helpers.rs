@@ -134,12 +134,14 @@ pub(super) fn detect_state_from_api(
 pub(super) fn pane_agent_status(
     state: shepr_agent::detect::AgentState,
 ) -> shepr_api::schema::AgentStatus {
-    match state {
-        shepr_agent::detect::AgentState::Idle | shepr_agent::detect::AgentState::Unknown => {
-            shepr_api::schema::AgentStatus::Idle
+    match state.presentation_state() {
+        shepr_agent::detect::PresentedAgentState::Idle => shepr_api::schema::AgentStatus::Idle,
+        shepr_agent::detect::PresentedAgentState::Working => {
+            shepr_api::schema::AgentStatus::Working
         }
-        shepr_agent::detect::AgentState::Working => shepr_api::schema::AgentStatus::Working,
-        shepr_agent::detect::AgentState::Blocked => shepr_api::schema::AgentStatus::Blocked,
+        shepr_agent::detect::PresentedAgentState::Blocked => {
+            shepr_api::schema::AgentStatus::Blocked
+        }
     }
 }
 

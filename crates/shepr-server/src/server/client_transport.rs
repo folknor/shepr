@@ -21,7 +21,7 @@ use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointServerWelcome;
 use shepr_protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
-    MAX_FRAME_SIZE, MAX_INPUT_PAYLOAD, ServerMessage,
+    MAX_INPUT_PAYLOAD, ServerMessage,
 };
 
 /// Minimum accepted attached client size.
@@ -41,11 +41,6 @@ const MIN_CLIENT_ROWS: u16 = 1;
 /// connection is closed within 5 seconds even with OS timer slack, thread
 /// scheduling, and cleanup overhead.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
-
-/// Largest hello frame accepted. Both hello forms are a few hundred bytes; a
-/// small cap keeps an unauthenticated peer from making the handshake thread
-/// allocate a full `MAX_FRAME_SIZE` buffer.
-const MAX_HANDSHAKE_FRAME: usize = 64 * 1024;
 
 /// How long a transport thread waits for a client it could not register to
 /// receive its shutdown frame.
@@ -780,7 +775,7 @@ pub(crate) fn handle_client_handshake(
             return Ok(());
         }
     }
-    let hello = shepr_protocol::read_message::<_, ClientMessage>(&mut reader, MAX_HANDSHAKE_FRAME);
+    let hello = shepr_protocol::read_handshake_message::<_, ClientMessage>(&mut reader);
     let hello: ClientMessage = match hello {
         Ok(msg) => msg,
         Err(shepr_protocol::FramingError::UnexpectedEof) => {
@@ -1040,10 +1035,8 @@ fn client_read_loop_with_endpoint_controls(
     endpoint_control_writer: Option<&ClientControlWriter>,
 ) -> io::Result<()> {
     while !should_quit.load(Ordering::Acquire) {
-        let message = shepr_protocol::read_message(
-            &mut shepr_platform::ClientStreamReader(&mut stream),
-            MAX_FRAME_SIZE,
-        );
+        let message =
+            shepr_protocol::read_message(&mut shepr_platform::ClientStreamReader(&mut stream));
         let msg: ClientMessage = match message {
             Ok(msg) => msg,
             Err(shepr_protocol::FramingError::UnexpectedEof) => {
@@ -1466,14 +1459,11 @@ mod tests {
             );
         });
 
-        match shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE)
-            .expect("read control")
-        {
+        match shepr_protocol::read_message(&mut client_stream).expect("read control") {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("control")),
             other => panic!("expected control message first, got {other:?}"),
         }
-        match shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read render")
-        {
+        match shepr_protocol::read_message(&mut client_stream).expect("read render") {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("render")),
             other => panic!("expected render message second, got {other:?}"),
         }
@@ -1540,7 +1530,7 @@ mod tests {
                 title: Some("cloned".into()),
             }))
             .expect("cloned writer still sends after original drops");
-        match shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE)
+        match shepr_protocol::read_message(&mut client_stream)
             .expect("read control from cloned writer")
         {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("cloned")),
@@ -1705,7 +1695,7 @@ mod tests {
             },
         );
         let _welcome: ServerMessage =
-            shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+            shepr_protocol::read_message(&mut client_stream).expect("read welcome");
         match recv_server_event(&mut server_event_rx, "oversized terminal connect") {
             ServerEvent::ClientConnected {
                 cols,
@@ -1917,7 +1907,7 @@ mod tests {
         );
 
         let welcome: ServerMessage =
-            shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+            shepr_protocol::read_message(&mut client_stream).expect("read welcome");
         match welcome {
             ServerMessage::Welcome { error } => {
                 assert_eq!(error, None);
@@ -1973,7 +1963,7 @@ mod tests {
         open_as_client(&mut client_stream, &endpoint_hello(80, 29));
 
         let welcome: ServerMessage =
-            shepr_protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+            shepr_protocol::read_message(&mut client_stream).expect("read welcome");
         let welcome = endpoint_welcome(welcome);
         assert!(welcome.error.is_none());
         match server_event_rx

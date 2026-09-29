@@ -70,18 +70,17 @@ macro_rules! define_methods {
             )+
         }
 
-        impl Method {
-            /// All wire names declared by the API schema.
-            pub const ALL_NAMES: &'static [&'static str] = &[$($name,)+];
+        #[derive(Clone, Copy)]
+        enum MethodKind {
+            $($variant,)+
+        }
 
-            pub fn traits(&self) -> MethodTraits {
-                // This entry generates both Serde's method tag and
-                // MethodTraits::name, so those names cannot drift independently.
-                // Keep every method's client-shell lane explicit here beside its
-                // other server routing facts.
+        impl MethodKind {
+            fn traits(self) -> MethodTraits {
+                // Keep each method's routing facts in one generated match arm.
                 match self {
                     $(
-                        Self::$variant(_) => MethodTraits {
+                        Self::$variant => MethodTraits {
                             name: $name,
                             client_shell: $client_shell,
                             mutates_ui: $mutates_ui,
@@ -95,23 +94,28 @@ macro_rules! define_methods {
                 }
             }
 
-            /// Returns the schema classification for a wire method name.
-            pub fn traits_for_name(name: &str) -> Option<MethodTraits> {
+            fn from_name(name: &str) -> Option<Self> {
                 match name {
-                    $(
-                        $name => Some(MethodTraits {
-                            name: $name,
-                            client_shell: $client_shell,
-                            mutates_ui: $mutates_ui,
-                            changes_topology: $changes_topology,
-                            changes_geometry: $changes_geometry,
-                            claims_shell_geometry: $claims_shell_geometry,
-                            runs_on_socket_thread: $runs_on_socket_thread,
-                            routine: $routine,
-                        }),
-                    )+
+                    $($name => Some(Self::$variant),)+
                     _ => None,
                 }
+            }
+        }
+
+        impl Method {
+            /// All wire names declared by the API schema.
+            pub const ALL_NAMES: &'static [&'static str] = &[$($name,)+];
+
+            pub fn traits(&self) -> MethodTraits {
+                match self {
+                    $(Self::$variant(_) => MethodKind::$variant,)+
+                }
+                .traits()
+            }
+
+            /// Returns the schema classification for a wire method name.
+            pub fn traits_for_name(name: &str) -> Option<MethodTraits> {
+                MethodKind::from_name(name).map(MethodKind::traits)
             }
         }
     };

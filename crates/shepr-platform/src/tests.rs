@@ -514,8 +514,8 @@ fn config_metadata_preserves_acl_without_inheriting_extra_access() {
 fn config_metadata_preserves_a_different_source_owner() {
     use std::os::unix::fs::MetadataExt;
 
-    // A non-root process cannot create a differently owned source here. Testing
-    // the tolerated EPERM case itself needs an ownership seam in config_file.rs.
+    // A non-root process cannot create a differently owned source here. The
+    // tolerated EPERM path has a separate unit test through the ownership seam.
     assert_eq!(effective_uid(), 0, "run this test as root");
     let dir = shepr_test_support::ScratchDir::new("config-owner");
     let source = dir.join("source");

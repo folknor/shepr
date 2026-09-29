@@ -1,4 +1,5 @@
 use std::{
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -86,6 +87,79 @@ pub(super) fn path_for_local_endpoint(state_dir: &Path, socket_path: &Path) -> P
 pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+pub(super) fn probe_writable(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid client shell state path: {}", path.display()),
+            )
+        })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to create client shell state directory {}: {error}",
+                parent.display()
+            ),
+        )
+    })?;
+    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    let mut temp_name = path
+        .file_name()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid client shell state path: {}", path.display()),
+            )
+        })?
+        .to_os_string();
+    temp_name.push(format!(".write-probe-{}-{sequence}", std::process::id()));
+    let temp_path = parent.join(temp_name);
+    let mut probe = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to create client shell state write probe {}: {error}",
+                    temp_path.display()
+                ),
+            )
+        })?;
+    let write_error = probe.write_all(&[0]).err();
+    drop(probe);
+    if let Some(error) = write_error {
+        let cleanup = match std::fs::remove_file(&temp_path) {
+            Ok(()) => String::new(),
+            Err(cleanup_error) => format!(
+                "; failed to remove client shell state write probe {}: {cleanup_error}",
+                temp_path.display()
+            ),
+        };
+        return Err(io::Error::new(
+            error.kind(),
+            format!(
+                "failed to write client shell state probe {}: {error}{cleanup}",
+                temp_path.display()
+            ),
+        ));
+    }
+    std::fs::remove_file(&temp_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to remove client shell state write probe {}: {error}",
+                temp_path.display()
+            ),
+        )
+    })
 }
 
 pub(super) fn store(path: &Path, preferences: &ClientChromePreferences) -> Result<(), String> {

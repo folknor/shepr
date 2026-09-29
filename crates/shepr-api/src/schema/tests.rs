@@ -5,16 +5,49 @@ use super::*;
 #[test]
 fn method_names_and_traits_share_unique_schema_entries() {
     let mut names = HashSet::new();
-    let mut client_shell_methods = 0;
+    let mut client_shell_methods = HashSet::new();
 
     for name in Method::ALL_NAMES {
         assert!(names.insert(*name), "duplicate method name: {name}");
         let traits = Method::traits_for_name(name).expect("declared method name");
         assert_eq!(traits.name, *name);
-        client_shell_methods += usize::from(traits.client_shell);
+        if traits.client_shell {
+            client_shell_methods.insert(*name);
+        }
     }
 
-    assert_eq!(client_shell_methods, 27);
+    assert_eq!(
+        client_shell_methods,
+        HashSet::from([
+            "client_shell.surface.set",
+            "workspace.create",
+            "workspace.focus",
+            "workspace.rename",
+            "workspace.move",
+            "workspace.move_block",
+            "workspace.close",
+            "tab.create",
+            "tab.focus",
+            "tab.rename",
+            "tab.move",
+            "tab.close",
+            "pane.split",
+            "pane.swap",
+            "pane.zoom",
+            "layout.set_split_ratio",
+            "pane.focus_direction",
+            "pane.resize",
+            "pane.scroll",
+            "pane.clear",
+            "pane.selection.read",
+            "pane.copy_motion",
+            "pane.copy_search",
+            "pane.focus",
+            "pane.input.set",
+            "pane.rename",
+            "pane.close",
+        ])
+    );
     assert!(Method::traits_for_name("plugin.future").is_none());
 }
 

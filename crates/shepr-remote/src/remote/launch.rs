@@ -259,7 +259,7 @@ pub(super) fn reattach_command(
     });
     let args = RemoteCliCommand::Attach {
         target,
-        session: (session_name != shepr_config::DEFAULT_SESSION_NAME).then_some(session_name),
+        session: Some(session_name),
         keybindings: (keybindings != RemoteKeybindings::Local).then_some(keybindings),
     }
     .args();

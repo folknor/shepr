@@ -577,8 +577,7 @@ mod tests {
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
-        let decoded: ClientMessage =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage = read_message(&mut buf.as_slice()).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -642,8 +641,7 @@ mod tests {
             buf.len()
         );
 
-        let decoded: ServerMessage =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ServerMessage = read_message(&mut buf.as_slice()).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -688,8 +686,7 @@ mod tests {
 
         let mut cursor = buf.as_slice();
         for expected_msg in &expected {
-            let decoded: ClientMessage =
-                read_message(&mut cursor, MAX_FRAME_SIZE).expect("test precondition");
+            let decoded: ClientMessage = read_message(&mut cursor).expect("test precondition");
             assert_eq!(*expected_msg, decoded);
         }
     }
@@ -701,8 +698,7 @@ mod tests {
         // Add a few garbage bytes after the length prefix.
         buf.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
-        let result: Result<ClientMessage, FramingError> =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
+        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         match result {
             Err(FramingError::Oversized { claimed, max }) => {
                 assert_eq!(claimed, u32::MAX as usize);
@@ -722,8 +718,7 @@ mod tests {
             .to_vec();
         buf.extend_from_slice(&payload);
 
-        let result: Result<ClientMessage, FramingError> =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
+        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         assert!(result.is_err(), "malformed payload should be rejected");
         match result {
             Err(FramingError::Codec(_)) => {} // expected
@@ -737,8 +732,7 @@ mod tests {
         let mut buf: Vec<u8> = 100u32.to_le_bytes().to_vec();
         buf.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
-        let result: Result<ClientMessage, FramingError> =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
+        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         match result {
             Err(FramingError::UnexpectedEof) => {}
             other => panic!("expected UnexpectedEof, got: {other:?}"),
@@ -760,8 +754,7 @@ mod tests {
             "length prefix should match payload size"
         );
 
-        let decoded: ClientMessage =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage = read_message(&mut buf.as_slice()).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -776,8 +769,7 @@ mod tests {
 
         // Wrap in a chunked reader that only yields 7 bytes at a time.
         let mut chunked = ChunkedReader::new(full_buf, 7);
-        let decoded: ClientMessage =
-            read_message(&mut chunked, MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage = read_message(&mut chunked).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -789,8 +781,7 @@ mod tests {
         let mut buf: Vec<u8> = 0xFFC00000u32.to_le_bytes().to_vec(); // ~4 GB claim
         buf.extend_from_slice(&[0; 8]);
 
-        let result: Result<ClientMessage, FramingError> =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
+        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         assert!(result.is_err());
         // Did not panic - test passing is proof.
     }
@@ -807,27 +798,25 @@ mod tests {
             .to_vec();
         buf.extend_from_slice(&garbage);
 
-        let result: Result<ClientMessage, FramingError> =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
+        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         assert!(result.is_err());
         // Did not panic.
     }
 
     #[test]
-    fn oversized_input_rejected_custom_max() {
-        // Verify a custom (small) max_frame_size is enforced.
-        let msg = ClientMessage::Input {
-            data: vec![0x41; 1000],
-        };
-        let mut buf = Vec::new();
-        write_message(&mut buf, &msg).expect("test precondition");
-
-        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice(), 64);
-        // The encoded payload for 1000 bytes of input will be > 64 bytes.
-        assert!(
-            matches!(result, Err(FramingError::Oversized { .. })),
-            "expected Oversized with small max_frame_size"
-        );
+    fn handshake_frame_limit_is_fixed() {
+        let claimed = 64 * 1024 + 1;
+        let prefix = u32::try_from(claimed)
+            .expect("test precondition")
+            .to_le_bytes()
+            .to_vec();
+        let result: Result<ClientMessage, FramingError> =
+            read_handshake_message(&mut prefix.as_slice());
+        assert!(matches!(
+            result,
+            Err(FramingError::Oversized { claimed: got, max })
+                if got == claimed && max == 64 * 1024
+        ));
     }
 
     // ---- FrameData ↔ ratatui Buffer conversion ----
@@ -1089,8 +1078,7 @@ mod tests {
         let mut buf = u32::try_from(payload.len())?.to_le_bytes().to_vec();
         buf.extend_from_slice(&payload);
 
-        let result: Result<ClientMessage, FramingError> =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
+        let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         match result {
             Err(FramingError::Codec(error)) => {
                 assert_eq!(
@@ -1119,8 +1107,7 @@ mod tests {
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
-        let decoded: ClientMessage =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage = read_message(&mut buf.as_slice()).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -1139,8 +1126,7 @@ mod tests {
         );
         let mut buf = Vec::new();
         write_message(&mut buf, &at_limit).expect("a frame at the cap is accepted");
-        let decoded: ClientMessage =
-            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage = read_message(&mut buf.as_slice()).expect("test precondition");
         assert_eq!(decoded, at_limit);
 
         let over_limit = ClientMessage::Input {
@@ -1167,7 +1153,7 @@ mod tests {
         write_message(&mut written, &msg).expect("test precondition");
         assert_eq!(frame, written);
         let decoded: ServerMessage =
-            read_message(&mut frame.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+            read_message(&mut frame.as_slice()).expect("test precondition");
         assert_eq!(decoded, msg);
 
         let over_limit = ClientMessage::Input {
@@ -1209,8 +1195,7 @@ mod tests {
         }
 
         for expected in &messages {
-            let decoded: ClientMessage =
-                read_message(&mut b, MAX_FRAME_SIZE).expect("test precondition");
+            let decoded: ClientMessage = read_message(&mut b).expect("test precondition");
             assert_eq!(*expected, decoded);
         }
     }

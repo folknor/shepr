@@ -420,10 +420,35 @@ mod tests {
 
     #[test]
     fn login_shell_execs_shell_env_without_arguments() {
-        let cmd = PtyCommand::interactive_shell(fixture::path_str(), true);
+        let scratch = shepr_test_support::ScratchDir::new("pty-login-shell");
+        let shell = fixture::stand_in(
+            scratch.path(),
+            "shepr-login-shell",
+            &[fixture::Step::Sleep(std::time::Duration::from_secs(30))],
+        );
+        let shell = shell.to_str().expect("scratch shell path is UTF-8");
+        let mut cmd = PtyCommand::interactive_shell(shell, true);
+        cmd.cwd(scratch.path());
         let std_cmd = cmd.to_std_command().expect("build std command");
-        assert_eq!(std_cmd.get_program(), fixture::path().as_os_str());
+        assert_eq!(std_cmd.get_program(), OsStr::new(shell));
         assert_eq!(std_cmd.get_args().count(), 0);
+
+        let mut spawned = crate::backend::spawn_pty(24, 80, &cmd).expect("spawn shell fixture");
+        let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
+        spawned
+            .child
+            .kill()
+            .expect("stop the sleeping shell fixture");
+        spawned.child.wait().expect("reap the shell fixture");
+        let command_line = command_line.expect("read the fixture command line");
+        let argv0_end = command_line
+            .iter()
+            .position(|byte| *byte == 0)
+            .expect("command line has an argv0 terminator");
+        assert_eq!(
+            OsStr::from_bytes(&command_line[..argv0_end]),
+            OsStr::new("-shepr-login-shell")
+        );
     }
 
     #[test]

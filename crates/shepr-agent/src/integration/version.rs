@@ -5,6 +5,8 @@ use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::types::InstallWarning;
+
 pub(crate) const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_VERSION_PROBE_OUTPUT: usize = 64 * 1024;
@@ -49,44 +51,38 @@ pub(crate) fn extract_version_triple(text: &str) -> Option<(u64, u64, u64)> {
     })
 }
 
-/// Returns `Ok(None)` when the installed agent satisfies the requirement,
-/// `Ok(Some(warning))` when the version cannot be determined (install
-/// proceeds), and `Err` when the installed agent is too old.
+/// Returns a warning when the version cannot be determined (install proceeds),
+/// no warning when the installed agent satisfies the requirement, and an error
+/// when the installed agent is too old.
 pub(crate) fn enforce_agent_version(
     requirement: &AgentVersionRequirement,
     timeout: Duration,
-) -> io::Result<Option<String>> {
+) -> io::Result<Option<InstallWarning>> {
     let probe = format!("{} {}", requirement.binary, requirement.args.join(" "));
     let output = match run_version_probe(requirement, timeout) {
         Ok(Some(output)) if output.status.success() => output,
         Ok(None) => {
-            return Ok(Some(format!(
-                "{} `{probe}` timed out after {} seconds while verifying the installed version; hooks require {} {} or newer",
-                super::INSTALL_WARNING_PREFIX,
+            return Ok(Some(InstallWarning::new(format!(
+                "`{probe}` timed out after {} seconds while verifying the installed version; hooks require {} {} or newer",
                 timeout.as_secs(),
                 requirement.label,
                 requirement.min_version
-            )));
+            ))));
         }
         _ => {
-            return Ok(Some(format!(
-                "{} could not run `{probe}` to verify the installed version; hooks require {} {} or newer",
-                super::INSTALL_WARNING_PREFIX,
-                requirement.label,
-                requirement.min_version
-            )));
+            return Ok(Some(InstallWarning::new(format!(
+                "could not run `{probe}` to verify the installed version; hooks require {} {} or newer",
+                requirement.label, requirement.min_version
+            ))));
         }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let Some(found) = extract_version_triple(&stdout) else {
-        return Ok(Some(format!(
-            "{} could not parse the {} version from `{probe}` output; hooks require {} {} or newer",
-            super::INSTALL_WARNING_PREFIX,
-            requirement.label,
-            requirement.label,
-            requirement.min_version
-        )));
+        return Ok(Some(InstallWarning::new(format!(
+            "could not parse the {} version from `{probe}` output; hooks require {} {} or newer",
+            requirement.label, requirement.label, requirement.min_version
+        ))));
     };
     // The minimum is a compile-time constant (a test pins it as parseable);
     // should it ever fail to parse, refuse the install rather than panic.
@@ -283,6 +279,6 @@ mod tests {
         // child to finish before the test exits; this sleep is cleanup only.
         thread::sleep(Duration::from_millis(350));
 
-        assert!(warning.contains("timed out"));
+        assert!(warning.to_string().contains("timed out"));
     }
 }

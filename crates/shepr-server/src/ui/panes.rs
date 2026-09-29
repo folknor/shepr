@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Borders, Paragraph, Wrap},
 };
 
+use super::PaneResizer;
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
 #[cfg(test)]
 use super::text::display_width;
@@ -41,17 +42,6 @@ fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool
     )
 }
 
-fn runtime_for_tab_pane<'a>(
-    terminal_runtimes: &'a PaneRuntimeRegistry,
-    tab: &'a shepr_mux::workspace::Tab,
-    pane_id: shepr_core::layout::PaneId,
-) -> Option<(&'a shepr_protocol::TerminalId, &'a PaneRuntime)> {
-    let terminal_id = tab.terminal_id(pane_id)?;
-    terminal_runtimes
-        .get(terminal_id)
-        .map(|runtime| (terminal_id, runtime))
-}
-
 fn stable_scrollbar_gutter(
     rt: &PaneRuntime,
     pane_inner: Rect,
@@ -78,7 +68,7 @@ fn stable_scrollbar_gutter(
 /// Apply a computed pane layout to every runtime it contains.
 pub(super) fn resize_pane_infos(
     app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
+    resizer: &PaneResizer<'_>,
     ws_idx: usize,
     tab_idx: usize,
     pane_infos: &[PaneInfo],
@@ -93,7 +83,10 @@ pub(super) fn resize_pane_infos(
     };
 
     for info in pane_infos {
-        let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) else {
+        let Some(terminal_id) = tab.terminal_id(info.id) else {
+            continue;
+        };
+        let Some(rt) = resizer.runtime(terminal_id) else {
             continue;
         };
         if !app.direct_attach_resize_locks.contains(terminal_id) {

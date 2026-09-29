@@ -90,7 +90,7 @@ use interprocess::local_socket::traits::Stream as _;
 use tracing::{info, warn};
 
 use shepr_platform::ipc::LocalStream;
-use shepr_protocol::{ClientMessage, MAX_FRAME_SIZE, ServerMessage};
+use shepr_protocol::{ClientMessage, ServerMessage};
 use shepr_termio::blit as render_ansi;
 
 fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
@@ -167,11 +167,15 @@ fn run_client_with_launch_state(
     );
     let role = ClientProcessRole::from_env().map_err(io::Error::other)?;
     let keybinding_source = role.keybinding_source();
-    let shell_config = client_rendered_shell.then(|| {
-        shell::ClientShellConfig::from_validated_config(config)
-            .with_keybinding_source(keybinding_source)
-            .with_local_endpoint(paths.state_dir(), &socket_path)
-    });
+    let shell_config = if client_rendered_shell {
+        Some(
+            shell::ClientShellConfig::from_validated_config(config)
+                .with_keybinding_source(keybinding_source)
+                .with_local_endpoint(paths.state_dir(), &socket_path)?,
+        )
+    } else {
+        None
+    };
     let mouse_capture = settings.mouse_capture_active();
     let pixel_geometry_fallback = settings.pixel_geometry_fallback();
     let mut loop_config = ClientLoopConfig {
@@ -496,7 +500,6 @@ async fn run_client_loop(
             endpoint::LocalEndpointLink::Socket
         };
     let write_stream = if let Some(stream) = initial {
-        let max_frame_size = shepr_protocol::MAX_FRAME_SIZE;
         let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
         let transport = start_endpoint_transport(
             stream,
@@ -504,7 +507,6 @@ async fn run_client_loop(
             &event_tx,
             endpoint::ClientEndpointId::Local,
             1,
-            max_frame_size,
             surface_decoder,
         )?;
         let mut registry = endpoint::EndpointRegistry::with_local_link(transport, 1, local_link);
@@ -1154,7 +1156,6 @@ impl ClientLoop<'_> {
                     reader,
                     event_tx,
                     &reader_quit,
-                    MAX_FRAME_SIZE,
                     endpoint_id,
                     generation,
                     surface_decoder,
@@ -1669,7 +1670,19 @@ impl ClientLoop<'_> {
                 return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::SurfaceUpdate(_) => {
-                return Err(ClientError::SurfaceUpdateBeforeDecode);
+                warn!(
+                    endpoint = %endpoint_id.storage_key(),
+                    generation,
+                    "surface update reached presentation before decoding; failing its connection"
+                );
+                write_stream.fail(
+                    endpoint_id,
+                    &io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "protocol error: surface update reached presentation before decoding",
+                    ),
+                );
+                return Ok(ClientLoopAction::NextEvent);
             }
         }
         Ok(ClientLoopAction::NextEvent)

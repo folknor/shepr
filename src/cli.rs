@@ -56,12 +56,8 @@ pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String
     let Some((key, value)) = raw.split_once('=') else {
         return Err("env must use KEY=VALUE".into());
     };
-    if key.is_empty() {
-        return Err("env key must not be empty".into());
-    }
-    if key.contains('\0') || value.contains('\0') {
-        return Err("env must not contain NUL bytes".into());
-    }
+    shepr_api::launch_env::validate_launch_env([(key, value)])
+        .map_err(shepr_api::error::ApiError::into_message)?;
     Ok((key.to_string(), value.to_string()))
 }
 
@@ -1269,6 +1265,22 @@ mod tests {
         assert_eq!(
             super::parse_env_assignment("ROLE").expect_err("test precondition"),
             "env must use KEY=VALUE"
+        );
+    }
+
+    #[test]
+    fn parse_env_assignment_reports_the_rejected_key_or_value() {
+        assert_eq!(
+            super::parse_env_assignment("=value").expect_err("empty key is invalid"),
+            "env key \"\" must not be empty"
+        );
+        assert_eq!(
+            super::parse_env_assignment("BAD\0KEY=value").expect_err("NUL key is invalid"),
+            "env key \"BAD\\0KEY\" must not contain NUL bytes"
+        );
+        assert_eq!(
+            super::parse_env_assignment("NAME=BAD\0VALUE").expect_err("NUL value is invalid"),
+            "env value for key \"NAME\" must not contain NUL bytes"
         );
     }
 

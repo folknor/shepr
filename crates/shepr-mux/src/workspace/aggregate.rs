@@ -32,7 +32,7 @@ impl Tab {
 
 impl Workspace {
     /// Aggregate agent state over every pane in every tab, preferring Blocked,
-    /// then Working, then Idle. Unknown panes present as Idle at the API edge.
+    /// then Working, then Idle.
     pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> AgentState {
         aggregate_attention(self.tabs.iter().flat_map(|tab| pane_states(tab, terminals)))
     }

@@ -659,8 +659,8 @@ impl HeadlessServer {
     }
 
     fn sync_runtime_view_geometry(&mut self) {
-        crate::ui::compute_view(
-            &mut self.app.state,
+        self.app.state.view = crate::ui::compute_view(
+            &self.app.state,
             &self.app.terminal_runtimes,
             Rect::new(
                 0,

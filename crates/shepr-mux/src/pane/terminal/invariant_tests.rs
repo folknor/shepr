@@ -1,5 +1,4 @@
-//! Bounded semantic migration gates. No opaque IDs, timing, or render scheduling
-//! decisions enter this oracle. Keep the same runner for old/candidate captures.
+//! Pane terminal behavior checks that span parsing, reads, rendering and history.
 use super::*;
 
 struct Harness {
@@ -207,7 +206,7 @@ fn short_streams_are_invariant_at_every_byte_boundary() {
         "a界e\u{301}\u{1F1EF}\u{1F1F5}!".as_bytes(),
         b"a\x1b[31;1mB\x1b[0m\x1b[2;3HZ\x1b[6n\x1b[?2004h",
         b"\x1b]8;;https://example.test/a\x1b\\link\x1b]8;;\x1b\\!",
-        b"\x1b]52;c;aGk=\x07\x1b]2;migration\x1b\\\x07",
+        b"\x1b]52;c;aGk=\x07\x1b]2;fragmentation\x1b\\\x07",
         b"\x1bP+q5463\x1b\\\x1bP+q6E6F7065\x9c\x1b[6n",
     ];
     for bytes in fixtures {
@@ -394,39 +393,4 @@ fn complete_history_replay_supports_plain_append() {
     );
     assert!(restored.effects.clipboard.is_empty());
     assert!(restored.effects.replies.is_empty());
-}
-
-#[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "SHEPR_MIGRATION_OBSERVATIONS is a test harness probe naming a dump file, not a shepr setting"
-)]
-fn capture_bounded_migration_observations() {
-    let mut terminal = Harness::new(12, 5);
-    let mut observations = Vec::new();
-    terminal.write(MIXED.as_bytes());
-    observations.push(terminal.observe());
-    for (width, height) in [(8, 4), (17, 6), (12, 5)] {
-        terminal.resize(width, height);
-        observations.push(terminal.observe());
-    }
-    terminal.write(b"\x1b[6n\x1b[?2004h\x1b]52;c;aGk=\x07\x07");
-    observations.push(terminal.observe());
-    terminal.pane.scroll_up(2);
-    observations.push(terminal.observe());
-    terminal.pane.scroll_reset();
-    observations.push(terminal.observe());
-    // An explicit path prevents fixtures from silently being regenerated.
-    // Compare old/new with diff; explain each difference, never bulk-bless it.
-    if let Some(path) = std::env::var_os("SHEPR_MIGRATION_OBSERVATIONS") {
-        std::fs::write(
-            path,
-            format!("{observations:#?}\n{:#?}\n", terminal.effects),
-        )
-        .expect("test precondition");
-    }
-    assert_eq!(
-        observations.last().expect("test precondition"),
-        &terminal.observe()
-    );
 }

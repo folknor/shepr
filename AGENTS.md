@@ -142,8 +142,10 @@ its own:
 - **State is separated from runtime.** `AppState` is pure data, testable
   without PTYs or async. `PaneState` is separate from `PaneRuntime`.
 - **Render is pure.** `compute_view()` in `crates/shepr-server/src/ui.rs`
-  updates only `AppState::view`; pane runtimes are resized by explicit geometry
-  paths, and surface drawing takes shared references and only draws.
+  reads `AppState` by shared reference and returns the view its caller stores
+  in `AppState::view`; pane runtimes are resized by explicit geometry paths
+  (the ones taking a `PaneResizer`), and surface drawing takes shared
+  references and only draws.
 - **No god objects.** `AppState` lives in `crates/shepr-server/src/app/state.rs`;
   `App` behavior is organized across modules under
   `crates/shepr-server/src/app/`. Keep it that way.

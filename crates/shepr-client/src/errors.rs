@@ -103,8 +103,6 @@ pub enum ClientError {
     Preamble(shepr_protocol::preamble::PreambleError),
     /// The first framed reply had the wrong message kind.
     UnexpectedWelcome { endpoint: bool },
-    /// A delta bypassed connection-local surface decoding.
-    SurfaceUpdateBeforeDecode,
     /// Server shut down.
     ServerShutdown {
         reason: Option<shepr_protocol::ShutdownReason>,
@@ -169,10 +167,6 @@ impl std::fmt::Display for ClientError {
             ClientError::UnexpectedWelcome { endpoint: false } => {
                 write!(f, "protocol error: expected Welcome message")
             }
-            ClientError::SurfaceUpdateBeforeDecode => write!(
-                f,
-                "protocol error: surface update reached presentation before decoding"
-            ),
             ClientError::ServerShutdown { reason } => {
                 match reason {
                     Some(shepr_protocol::ShutdownReason::Detached) => {

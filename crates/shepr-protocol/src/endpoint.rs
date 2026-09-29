@@ -66,8 +66,7 @@ mod tests {
         let mut bytes = Vec::new();
         crate::write_message(&mut bytes, &message).expect("test precondition");
         let decoded: ServerMessage =
-            crate::read_message(&mut bytes.as_slice(), crate::MAX_FRAME_SIZE)
-                .expect("test precondition");
+            crate::read_message(&mut bytes.as_slice()).expect("test precondition");
         let ServerMessage::EndpointSnapshot(decoded) = decoded else {
             panic!("snapshot should use typed endpoint message");
         };
@@ -80,8 +79,7 @@ mod tests {
         let mut bytes = Vec::new();
         crate::write_message(&mut bytes, &welcome).expect("test precondition");
         let decoded: ServerMessage =
-            crate::read_message(&mut bytes.as_slice(), crate::MAX_FRAME_SIZE)
-                .expect("test precondition");
+            crate::read_message(&mut bytes.as_slice()).expect("test precondition");
         assert_eq!(decoded, welcome);
     }
 }

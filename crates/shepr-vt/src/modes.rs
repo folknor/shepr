@@ -14,8 +14,7 @@
 //! 1049 state. 3 (DECCOLM) is written through vte but reports unsupported,
 //! because alacritty only performs its side effects and keeps no state.
 //!
-//! Lookups are a linear scan over a short static slice: no allocation and no
-//! locking on the parsing path.
+//! Number lookups scan the short static slice without allocation or locking.
 
 use alacritty_terminal::term::TermMode;
 use vte::ansi::NamedPrivateMode;
@@ -24,6 +23,8 @@ use super::ExtraModes;
 
 /// A DEC private mode supported by the terminal adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// The discriminant indexes the corresponding entry in `MODES`.
+#[repr(usize)]
 pub enum DecMode {
     ApplicationCursorKeys,
     ColumnMode,
@@ -285,8 +286,20 @@ pub(super) const MODES: &[ModeSpec] = &[
     ),
 ];
 
-pub(super) fn lookup(mode: DecMode) -> Option<&'static ModeSpec> {
-    MODES.iter().find(|spec| spec.mode == mode)
+// `lookup` indexes the table by discriminant: every entry must sit at its own
+// variant's index, and the table must end at the last variant, so the table
+// order matches the enum order and every variant has an entry.
+const _: () = {
+    assert!(MODES.len() == DecMode::InBandResize as usize + 1);
+    let mut index = 0;
+    while index < MODES.len() {
+        assert!(MODES[index].mode as usize == index);
+        index += 1;
+    }
+};
+
+pub(super) fn lookup(mode: DecMode) -> &'static ModeSpec {
+    &MODES[mode as usize]
 }
 
 pub(super) fn lookup_number(number: u16) -> Option<&'static ModeSpec> {
@@ -324,5 +337,12 @@ mod tests {
         assert!(lookup_number(47).is_none());
         assert!(lookup_number(1047).is_none());
         assert!(lookup_number(1049).is_some());
+    }
+
+    #[test]
+    fn each_dec_mode_indexes_its_table_entry() {
+        for spec in MODES {
+            assert_eq!(lookup(spec.mode).mode, spec.mode);
+        }
     }
 }

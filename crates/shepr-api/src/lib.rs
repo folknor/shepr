@@ -1,6 +1,7 @@
 pub mod client;
 pub mod error;
 mod event_hub;
+pub mod launch_env;
 pub mod schema;
 mod server;
 pub mod session;

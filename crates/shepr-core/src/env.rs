@@ -57,6 +57,27 @@ use std::path::{Path, PathBuf};
 /// "inside a shepr pane".
 pub const SHEPR_ENV_IN_PANE: &str = "1";
 
+/// `SHEPR_*` spellings used internally by the shipped agent assets rather
+/// than read by a shepr process or written into a pane, so they stay outside
+/// the environment registry. Keeping the list in core lets test isolation
+/// clear these names and the agent crate's asset test check against the same
+/// list, without making them process configuration.
+pub const SHEPR_ASSET_INTERNAL_NAMES: &[&str] = &[
+    // Header markers install and status code parse out of an asset's text;
+    // they are not environment variables.
+    "SHEPR_INTEGRATION_ID",
+    "SHEPR_INTEGRATION_VERSION",
+    // A hook script handing its arguments to the interpreter it runs.
+    "SHEPR_ACTION",
+    "SHEPR_HOOK_INPUT_FILE",
+    "SHEPR_HOOK_SEQ",
+    // Tunables only the omp extension reads.
+    "SHEPR_OMP_IDLE_DEBOUNCE_MS",
+    "SHEPR_OMP_RETRY_GRACE_MS",
+    // The devin hook's injection seam for its own tests.
+    "SHEPR_DEVIN_LIST_JSON",
+];
+
 /// Declares a closed vocabulary of environment variable names: the enum, its
 /// `ALL` table in declaration order, `name()`, `Display` and `AsRef<OsStr>`,
 /// so a variant can be handed straight to `Command::env` and friends.
@@ -739,14 +760,16 @@ pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
 /// Reads Git's indexed command-scope config pairs in index order, followed by
 /// quoted `git -c` parameters, which override conflicting indexed pairs. Git
 /// treats an unset or empty count as zero, requires both variables for every
-/// index below the count, and rejects malformed counts or missing pairs.
+/// index below the count, and rejects malformed counts or missing pairs. A
+/// valueless `git -c` parameter is represented by `None`; its consumer decides
+/// whether the key is boolean or requires a value.
 ///
 /// # Errors
 ///
 /// Returns an error when the count is not accepted by Git, an indexed key or
 /// value is missing, a present pair is not valid UTF-8 for shepr's config
 /// reader, or the quoted parameters are malformed.
-pub fn read_git_config_parameters() -> io::Result<Vec<(String, String)>> {
+pub fn read_git_config_parameters() -> io::Result<Vec<(String, Option<String>)>> {
     let count = read_os(EnvVar::GitConfigCount)?;
     let count = count
         .as_deref()
@@ -781,7 +804,7 @@ pub fn read_git_config_parameters() -> io::Result<Vec<(String, String)>> {
                 format!("{value_name} is not valid UTF-8"),
             )
         })?;
-        parameters.push((key.to_owned(), value.to_owned()));
+        parameters.push((key.to_owned(), Some(value.to_owned())));
     }
     if let Some(raw) = read_os(EnvVar::GitConfigParameters)? {
         let text = raw.to_str().ok_or_else(|| {
@@ -799,8 +822,8 @@ pub fn read_git_config_parameters() -> io::Result<Vec<(String, String)>> {
 /// is quoted separately in the current form; the older quoted `key=value`
 /// form is also accepted. A quote inside a word is encoded as `'\''` and an
 /// exclamation mark as `'\!'`. A valueless key (Git's implicit boolean) reads
-/// as `true`.
-fn parse_git_config_parameters(text: &str) -> io::Result<Vec<(String, String)>> {
+/// as no value, leaving its meaning to the config consumer.
+fn parse_git_config_parameters(text: &str) -> io::Result<Vec<(String, Option<String>)>> {
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -813,17 +836,18 @@ fn parse_git_config_parameters(text: &str) -> io::Result<Vec<(String, String)>> 
         let (key, tail) = parse_git_single_quote(rest).ok_or_else(invalid)?;
         let (name, value, tail) = if let Some(tail) = tail.strip_prefix('=') {
             let (value, tail) = if tail.starts_with('\'') {
-                parse_git_single_quote(tail).ok_or_else(invalid)?
+                let (value, tail) = parse_git_single_quote(tail).ok_or_else(invalid)?;
+                (Some(value), tail)
             } else if tail.is_empty() || tail.as_bytes()[0].is_ascii_whitespace() {
-                ("true".to_owned(), tail)
+                (None, tail)
             } else {
                 return Err(invalid());
             };
             (key, value, tail)
         } else if let Some((name, value)) = key.split_once('=') {
-            (name.to_owned(), value.to_owned(), tail)
+            (name.to_owned(), Some(value.to_owned()), tail)
         } else {
-            (key, "true".to_owned(), tail)
+            (key, None, tail)
         };
         if name.is_empty() || (!tail.is_empty() && !tail.as_bytes()[0].is_ascii_whitespace()) {
             return Err(invalid());
@@ -1039,9 +1063,9 @@ mod tests {
         assert_eq!(
             parsed,
             [
-                ("branch.main.remote".into(), "team ".into()),
-                ("branch.main.merge".into(), "refs/heads/it's".into()),
-                ("core.bare".into(), "false".into()),
+                ("branch.main.remote".into(), Some("team ".into())),
+                ("branch.main.merge".into(), Some("refs/heads/it's".into())),
+                ("core.bare".into(), Some("false".into())),
             ]
         );
         // Verbatim from `git -c 'alias.x=!printenv GIT_CONFIG_PARAMETERS'
@@ -1053,11 +1077,14 @@ mod tests {
         assert_eq!(
             parsed,
             [
-                ("alias.x".into(), "!printenv GIT_CONFIG_PARAMETERS".into()),
-                ("a.b".into(), "it's".into()),
-                ("c.d".into(), "true".into()),
-                ("e.f".into(), String::new()),
-                ("g.h".into(), "x y".into()),
+                (
+                    "alias.x".into(),
+                    Some("!printenv GIT_CONFIG_PARAMETERS".into())
+                ),
+                ("a.b".into(), Some("it's".into())),
+                ("c.d".into(), None),
+                ("e.f".into(), Some(String::new())),
+                ("g.h".into(), Some("x y".into())),
             ]
         );
         for input in [

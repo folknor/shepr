@@ -58,7 +58,12 @@ impl AppState {
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
         match event {
             AppEvent::PaneDied { pane_id, .. } => {
-                self.handle_pane_died(pane_id);
+                // `App::handle_internal_event` removes dead panes itself,
+                // because only it can shut down the detached runtimes.
+                tracing::warn!(
+                    pane = pane_id.raw(),
+                    "PaneDied reached AppState::handle_app_event; the pane is not removed here"
+                );
                 Vec::new()
             }
             AppEvent::AgentProcessDetected {
@@ -351,7 +356,12 @@ impl AppState {
         update.cause.released().then_some(update)
     }
 
-    pub(super) fn handle_pane_died(&mut self, pane_id: PaneId) {
+    /// Removes a dead pane by id and returns the terminals it detached, whose
+    /// runtimes the caller must shut down. State-level tests use it in place
+    /// of the App event path.
+    #[cfg(test)]
+    #[must_use = "the detached terminals' runtimes must be shut down"]
+    pub(super) fn handle_pane_died(&mut self, pane_id: PaneId) -> Vec<shepr_protocol::TerminalId> {
         let ws_idx = self
             .workspaces
             .iter()
@@ -361,17 +371,21 @@ impl AppState {
             // Expected, not a fault: a pane already removed because its PTY
             // reader reported a broken terminal core gets a second PaneDied
             // from the child watcher once the child is reaped.
-            debug!(pane = pane_id.raw(), "PaneDied for unknown pane");
-            return;
+            tracing::debug!(pane = pane_id.raw(), "PaneDied for unknown pane");
+            return Vec::new();
         };
         // The pane was just found in this workspace, so a stale plan means
         // the removal logic and the lookup above disagree.
-        if matches!(self.remove_pane(ws_idx, pane_id), PaneRemovalCommit::Stale) {
-            tracing::warn!(
-                pane = pane_id.raw(),
-                workspace_index = ws_idx,
-                "PaneDied removal went stale; the dead pane stays in the layout"
-            );
+        match self.remove_pane(ws_idx, pane_id) {
+            PaneRemovalCommit::Removed(outcome) => outcome.detached_terminal_ids,
+            PaneRemovalCommit::Stale => {
+                tracing::warn!(
+                    pane = pane_id.raw(),
+                    workspace_index = ws_idx,
+                    "PaneDied removal went stale; the dead pane stays in the layout"
+                );
+                Vec::new()
+            }
         }
     }
 }

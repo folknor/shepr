@@ -128,7 +128,7 @@ fn integration_install(
     paths: &shepr_agent::integration::AgentIntegrationPaths,
 ) -> super::CliResult<i32> {
     let target = target_from_label(label).ok_or_else(|| unknown_target(label))?;
-    report_outcome(shepr_agent::integration::install_target(paths, target))
+    report_install_outcome(shepr_agent::integration::install_target(paths, target))
 }
 
 fn integration_uninstall(
@@ -144,6 +144,19 @@ fn integration_uninstall(
 fn report_outcome(outcome: std::io::Result<Vec<String>>) -> super::CliResult<i32> {
     for message in outcome? {
         println!("{message}");
+    }
+    Ok(0)
+}
+
+fn report_install_outcome(
+    outcome: std::io::Result<shepr_agent::integration::InstallOutput>,
+) -> super::CliResult<i32> {
+    let output = outcome?;
+    for message in output.messages {
+        println!("{message}");
+    }
+    for warning in output.warnings {
+        super::print_notice(&format!("warning: {warning}"));
     }
     Ok(0)
 }

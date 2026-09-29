@@ -147,23 +147,27 @@ impl App {
         };
 
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        let mut detached_terminal_ids = Vec::new();
         let pane_updates = if let AppEvent::PaneDied { pane_id, .. } = &ev {
-            if let Some(plan) = pane_removal_plan
-                && matches!(
-                    self.state.commit_pane_removal(&plan),
-                    crate::app::actions::PaneRemovalCommit::Stale
-                )
-            {
-                // The plan was made above in this same call, so a stale one
-                // means something in between changed the workspaces. Nothing
-                // was removed: do not announce a layout or container change.
-                tracing::warn!(
-                    pane = pane_id.raw(),
-                    workspace_index = plan.workspace_index,
-                    "PaneDied removal went stale; the dead pane stays in the layout"
-                );
-                pane_exit_layout_target = None;
-                pane_exit_container_events.clear();
+            if let Some(plan) = pane_removal_plan {
+                match self.state.commit_pane_removal(&plan) {
+                    crate::app::actions::PaneRemovalCommit::Removed(outcome) => {
+                        detached_terminal_ids = outcome.detached_terminal_ids;
+                    }
+                    crate::app::actions::PaneRemovalCommit::Stale => {
+                        // The plan was made above in this same call, so a
+                        // stale one means something in between changed the
+                        // workspaces. Nothing was removed: do not announce a
+                        // layout or container change.
+                        tracing::warn!(
+                            pane = pane_id.raw(),
+                            workspace_index = plan.workspace_index,
+                            "PaneDied removal went stale; the dead pane stays in the layout"
+                        );
+                        pane_exit_layout_target = None;
+                        pane_exit_container_events.clear();
+                    }
+                }
             }
             Vec::new()
         } else {
@@ -196,7 +200,7 @@ impl App {
         }
         self.emit_events(pane_exit_container_events);
 
-        self.shutdown_detached_terminal_runtimes();
+        self.shutdown_detached_terminal_runtimes(&detached_terminal_ids);
         self.state.mark_shell_projection_dirty();
         (pane_updates, shepr_api::RenderDemand::Full)
     }

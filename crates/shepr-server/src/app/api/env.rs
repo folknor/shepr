@@ -1,38 +1,15 @@
 use std::collections::HashMap;
 
-use shepr_api::error::{ApiError, ApiErrorCode};
+use shepr_api::error::ApiError;
 
 pub(super) fn normalize_launch_env(
     env: HashMap<String, String>,
 ) -> Result<Vec<(String, String)>, ApiError> {
-    let mut normalized = Vec::with_capacity(env.len());
-    for (key, value) in env {
-        if key.is_empty() {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidEnv,
-                "env key must not be empty",
-            ));
-        }
-        if key.contains('=') {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidEnv,
-                format!("env key {key} must not contain '='"),
-            ));
-        }
-        if key.contains('\0') {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidEnv,
-                "env key must not contain NUL bytes",
-            ));
-        }
-        if value.contains('\0') {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidEnv,
-                format!("env value for {key} must not contain NUL bytes"),
-            ));
-        }
-        normalized.push((key, value));
-    }
+    shepr_api::launch_env::validate_launch_env(
+        env.iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    )?;
+    let mut normalized: Vec<_> = env.into_iter().collect();
     normalized.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(normalized)
 }
@@ -64,8 +41,8 @@ mod tests {
         assert_eq!(
             normalize_launch_env(env)
                 .expect_err("test precondition")
-                .code,
-            ApiErrorCode::InvalidEnv
+                .into_message(),
+            "env key \"BAD=KEY\" must not contain '='"
         );
     }
 }

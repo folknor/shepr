@@ -1,5 +1,6 @@
 use ratatui::{Frame, layout::Rect};
 
+use super::PaneResizer;
 use super::panes::{compute_pane_infos_for_tab, render_panes, resize_pane_infos};
 use crate::app::AppState;
 use shepr_core::layout::SplitBorder;
@@ -99,17 +100,17 @@ pub(crate) fn compute_tab_surface_for(
 
 pub(crate) fn resize_tab_surface(
     app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
+    resizer: &PaneResizer<'_>,
     workspace_index: usize,
     tab_index: usize,
     area: Rect,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) {
     let pane_infos =
-        compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area);
+        compute_pane_infos_for_tab(app, resizer.runtimes, workspace_index, tab_index, area);
     resize_pane_infos(
         app,
-        terminal_runtimes,
+        resizer,
         workspace_index,
         tab_index,
         &pane_infos,
@@ -119,7 +120,7 @@ pub(crate) fn resize_tab_surface(
 
 pub(crate) fn resize_tab_surface_layout(
     app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
+    resizer: &PaneResizer<'_>,
     layout: &TabSurfaceLayout,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) {
@@ -132,7 +133,7 @@ pub(crate) fn resize_tab_surface_layout(
     };
     resize_pane_infos(
         app,
-        terminal_runtimes,
+        resizer,
         workspace_index,
         tab_index,
         &layout.pane_infos,

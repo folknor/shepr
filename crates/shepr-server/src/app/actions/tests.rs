@@ -542,7 +542,7 @@ fn pane_died_last_pane_removes_workspace() {
         .next()
         .expect("test precondition");
 
-    state.handle_pane_died(pane_id);
+    let _detached = state.handle_pane_died(pane_id);
 
     assert_eq!(state.workspaces.len(), 1);
     assert_eq!(state.workspaces[0].custom_name.as_deref(), Some("b"));
@@ -564,7 +564,7 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
     state.direct_attach_resize_locks.insert(terminal_id.clone());
     state.session_dirty = false;
 
-    state.handle_pane_died(pane_id);
+    let detached = state.handle_pane_died(pane_id);
 
     assert_eq!(state.workspaces.len(), 2);
     assert_eq!(
@@ -576,7 +576,7 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
         "a"
     );
     assert!(!state.terminals.contains_key(&terminal_id));
-    assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
+    assert_eq!(detached, std::slice::from_ref(&terminal_id));
     assert!(!state.direct_attach_resize_locks.contains(&terminal_id));
     assert!(state.public_pane_id_aliases.is_empty());
     assert!(state.session_dirty);
@@ -593,7 +593,7 @@ fn pane_died_last_workspace_enters_navigate() {
         .next()
         .expect("test precondition");
 
-    state.handle_pane_died(pane_id);
+    let _detached = state.handle_pane_died(pane_id);
 
     assert!(state.workspaces.is_empty());
     assert_eq!(state.mode, Mode::Navigate);
@@ -606,7 +606,7 @@ fn pane_died_multi_pane_keeps_workspace() {
     let second_id = state.workspaces[0].test_split(Direction::Horizontal);
     state.ensure_test_terminals();
 
-    state.handle_pane_died(second_id);
+    let _detached = state.handle_pane_died(second_id);
 
     assert_eq!(state.workspaces.len(), 1);
     assert_eq!(state.workspaces[0].tabs()[0].panes().len(), 1);
@@ -618,7 +618,7 @@ fn pane_died_unknown_pane_is_noop() {
     let mut state = app_with_workspaces(&["test"]);
     let fake_id = PaneId::from_raw(9999);
 
-    state.handle_pane_died(fake_id);
+    assert!(state.handle_pane_died(fake_id).is_empty());
 
     assert_eq!(state.workspaces.len(), 1);
     state.assert_invariants_for_test();

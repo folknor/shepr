@@ -110,8 +110,9 @@ fn enforce_agent_version_warns_when_binary_missing() {
     let warning = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
         .expect("missing binary must not fail the install")
         .expect("missing binary must produce a warning");
-    assert!(warning.contains("could not run"));
-    assert!(warning.contains("0.14.0"));
+    let warning_text = warning.to_string();
+    assert!(warning_text.contains("could not run"));
+    assert!(warning_text.contains("0.14.0"));
 }
 
 #[test]
@@ -4163,11 +4164,9 @@ fn install_and_uninstall_messages_name_every_artifact() {
             IntegrationStatusKind::NotInstalled,
             "{target:?}"
         );
-        assert_eq!(
-            install_target(&paths, target).expect("install succeeds"),
-            installed,
-            "{target:?}"
-        );
+        let install_output = install_target(&paths, target).expect("install succeeds");
+        assert_eq!(install_output.messages, installed, "{target:?}");
+        assert!(install_output.warnings.is_empty(), "{target:?}");
         assert_eq!(
             status_of(target),
             IntegrationStatusKind::Current,
@@ -4226,23 +4225,9 @@ fn install_and_uninstall_messages_keep_target_specific_lines() {
 }
 
 /// `SHEPR_*` names the shipped assets spell that no shepr process reads or
-/// writes into a child, so they stay outside the environment registry. Each
-/// entry must still appear in some asset, or it is removed from this list.
-const ASSET_INTERNAL_SHEPR_NAMES: &[&str] = &[
-    // Header markers install and status code parse out of an asset's text
-    // (`INTEGRATION_VERSION_MARKER`); they are not environment variables.
-    "SHEPR_INTEGRATION_ID",
-    "SHEPR_INTEGRATION_VERSION",
-    // A hook script handing its arguments to the interpreter it runs.
-    "SHEPR_ACTION",
-    "SHEPR_HOOK_INPUT_FILE",
-    "SHEPR_HOOK_SEQ",
-    // Tunables only the omp extension reads.
-    "SHEPR_OMP_IDLE_DEBOUNCE_MS",
-    "SHEPR_OMP_RETRY_GRACE_MS",
-    // The devin hook's injection seam for its own tests.
-    "SHEPR_DEVIN_LIST_JSON",
-];
+/// writes into a child. Each entry must still appear in some asset, or it is
+/// removed from the list.
+const ASSET_INTERNAL_SHEPR_NAMES: &[&str] = shepr_core::env::SHEPR_ASSET_INTERNAL_NAMES;
 
 fn collect_asset_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read an asset directory") {
@@ -4299,7 +4284,7 @@ fn every_shepr_name_in_the_shipped_assets_is_owned_or_asset_internal() {
                 owned.contains(found.as_str())
                     || ASSET_INTERNAL_SHEPR_NAMES.contains(&found.as_str()),
                 "{} spells {found}, which no shepr process reads or writes into a pane; \
-                 register it in shepr_core::env or list it as asset-internal here",
+                 register it in shepr_core::env or list it in SHEPR_ASSET_INTERNAL_NAMES",
                 file.display()
             );
             seen.insert(found);
