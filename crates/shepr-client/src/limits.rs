@@ -146,21 +146,21 @@ pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// The delay retries quickly after a transient local or SSH failure.
 pub(super) const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Every endpoint, Local or saved machine, retries at least this often. The
-/// `shepr machine reconnect` promise requires open clients to retry promptly once
-/// the machine is reachable again; a longer backoff would make that untrue.
+/// Every endpoint, Local or configured machine, retries at least this often, so an open
+/// client picks a machine up promptly once it is reachable again; a longer backoff would
+/// leave it offline long after it came back.
 ///
 /// An attempt's own failure schedules the next one from when that attempt started, not
 /// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
 /// keep the promise with an attempt already in flight: from any moment, the next attempt
 /// starts once the current one ends or its retry delay (counted from its start) is up,
 /// whichever is later, within the retry bound.
-pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// A connection stable for this interval resets its accumulated retry state.
 ///
 /// The interval distinguishes a durable connection from a brief success between failures.
 pub(super) const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
-/// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
+/// Same bound as `MAX_RETRY_DELAY`, for the same prompt-retry guarantee.
 pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// What `ATTEMPT_BUDGET` allows beyond one cold SSH round trip.
 pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
@@ -169,7 +169,7 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// that stalls could hold the endpoint indefinitely (each discovery command may
 /// take `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
 /// `REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it, which broke the
-/// reconnect promise. `do_handshake` takes this deadline and stops at whichever
+/// retry bound. `do_handshake` takes this deadline and stops at whichever
 /// of it and the handshake timeout comes first.
 ///
 /// A healthy attempt needs far less: every noninteractive discovery command already had
@@ -177,8 +177,8 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
 ///
 /// The budget is the same for every attempt, including one that has to run full
-/// discovery of the remote executable. Most attempts do not: `shepr machine add` seeds
-/// the metadata cache and a reconnect launches the bridge from the remembered executable.
+/// discovery of the remote executable. Most attempts do not: a reconnect launches the
+/// bridge from the remembered executable.
 /// With the default managed ssh config every command after the first reuses one shared
 /// connection (ControlMaster), so only one cold connect is paid.
 /// The case that can overrun is a cache miss or a stale remembered path on a slow link
@@ -192,7 +192,7 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// exceeds it by `SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
 /// completes at least one, and discovery finishes after a bounded number of attempts;
 /// after that the bridge and handshake need to fit one attempt, as on every ordinary
-/// reconnect. A larger discovery budget would stretch the reconnect promise exactly where
+/// reconnect. A larger discovery budget would stretch the retry bound exactly where
 /// the link is slowest, and would still fail on an even slower link.
 pub(super) const ATTEMPT_BUDGET: Duration =
     shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);

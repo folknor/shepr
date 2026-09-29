@@ -9,15 +9,18 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 /// this build and a detached daemon. A stopped server passes, since the
 /// bridge starts a detached one on attach. A running server that is not a
 /// detached daemon is an `Unsupported` error whose text says how to fix it.
-/// `machine` is the label named in that text.
+/// `machine` is the label named in that text. No SSH command starts once
+/// `deadline` has passed, and each is cut short at it.
 pub fn check_saved_ssh(
     paths: &shepr_config::AppPaths,
     machine: &MachineLabel,
     target: &SshTarget,
     settings: super::SavedSshSettings,
+    deadline: std::time::Instant,
 ) -> io::Result<()> {
-    let ssh =
+    let mut ssh =
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
+    ssh.set_attempt_deadline(Some(deadline));
     let remote = locate_remote_shepr(&ssh)?;
     let status = remote_server_status(&ssh, &remote)?;
     ensure_remote_server_build(ssh.target(), &status)?;

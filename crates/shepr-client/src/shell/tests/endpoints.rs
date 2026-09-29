@@ -250,7 +250,11 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
             .take()
             .expect("test precondition");
         assert!(notice.body.contains("Permission denied"));
-        assert!(notice.title.contains("shepr machine reconnect Build"));
+        assert!(
+            notice
+                .title
+                .contains("Build: restart shepr to authenticate")
+        );
     }
     state.set_endpoint_status(&id, ClientEndpointStatus::Online);
     state.compose(120, 40).expect("test precondition");

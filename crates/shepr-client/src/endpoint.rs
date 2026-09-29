@@ -14,7 +14,6 @@ pub(crate) use message_policy::*;
 pub(crate) use registry::*;
 pub use registry::{EndpointRegistry, EndpointTransport};
 pub use shepr_config::MachineLabel;
-pub use supervisor::MAX_RETRY_DELAY;
 pub(crate) use supervisor::*;
 pub(crate) use writer::NativeEndpointTransport;
 

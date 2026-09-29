@@ -13,6 +13,8 @@ mod launch;
 #[path = "remote/local_server.rs"]
 pub mod local_server;
 pub mod machine;
+#[path = "remote/preflight.rs"]
+mod preflight;
 #[path = "remote/process.rs"]
 mod process;
 #[path = "remote/saved.rs"]
@@ -36,6 +38,9 @@ pub use args::*;
 pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
 pub use launch::{check_saved_ssh, interactive_shell_command, shell_quote};
+pub use preflight::{
+    MachineCheck, PreflightOutcome, PreflightSsh, SavedSshPreflight, classify_check, preflight,
+};
 pub use saved::*;
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 

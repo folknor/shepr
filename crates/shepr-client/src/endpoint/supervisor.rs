@@ -6,14 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{ClientEndpointId, ClientEndpointStatus, NativeEndpointTransport};
-pub use crate::limits::MAX_RETRY_DELAY;
+pub(crate) use crate::limits::MAX_RETRY_DELAY;
 use crate::limits::{
     ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, STABLE_CONNECTION_PERIOD,
 };
 use interprocess::TryClone as _;
 use shepr_protocol::ClientSurfaceSize;
 
-// An attempt, and so the retry that follows it, must fit the reconnect promise.
+// An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
 #[derive(Clone, Copy)]
@@ -601,7 +601,7 @@ fn local_build_mismatch(running: &str, guidance: &str) -> String {
 }
 
 /// Endpoint reconnect backoff: doubling from `INITIAL_RETRY_DELAY` to the
-/// `MAX_RETRY_DELAY` ceiling that `shepr machine reconnect` promises. This
+/// `MAX_RETRY_DELAY` ceiling. This
 /// policy is the client's alone; the other retry loops in the tree (the SSH
 /// agent registration worker, the API accept loop, the CLI's status probe)
 /// answer different failures and deliberately do not share it.
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn a_reconnecting_machine_retries_within_thirty_seconds() {
-        // `shepr machine reconnect` promises open clients retry within 30 seconds.
+        // Open clients retry a machine within 30 seconds of it becoming reachable.
         let now = Instant::now();
         let machine = machine();
         let id = ClientEndpointId::Ssh(machine.label.clone());
@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn a_slow_failed_attempt_still_retries_within_thirty_seconds_of_any_moment() {
         // An attempt that hangs until its budget runs out, at the longest backoff, and the
-        // user runs `shepr machine reconnect` just after it started.
+        // machine becomes reachable just after it started.
         assert!(ATTEMPT_BUDGET < MAX_RETRY_DELAY);
         for status in [
             ClientEndpointStatus::Reconnecting,

@@ -35,9 +35,8 @@ Kept:
 - The JSON API over the server socket. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
   configured machine. `status`, `server stop`, `detect capture` and `detect explain
-  <PANE>` talk to the local server over its socket; `integration`,
-  `machine reconnect` and `detect explain --file` manage local state in the CLI
-  process
+  <PANE>` talk to the local server over its socket; `integration`
+  and `detect explain --file` manage local state in the CLI process
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr is deliberately not kept, and
@@ -49,8 +48,8 @@ detection manifest overrides and their reload: a detection change ships as a
 new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
-the subcommands are `status`, `machine`, `server`, `integration`
-and `detect`. Workspaces, tabs and panes are managed from the TUI only; there
+the subcommands are `status`, `server`, `integration` and
+`detect`. Workspaces, tabs and panes are managed from the TUI only; there
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the text the detector evaluates for a pane, and
 `shepr detect explain <pane>` says which rule decided its state.
@@ -68,7 +67,12 @@ Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
 Machines are configured in config.toml as `[[machines]]` entries (a `label` and
 an `ssh` target), read once at launch like the rest of the config; there are no
-commands to add, remove or list them. Unreachable ones fail soft. With
+commands to add, remove or list them. The TUI connects to them without
+prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
+checks every machine and runs interactive ssh for each one that needs
+authentication, one at a time, on shepr's own control socket; there is no
+command for it. Host keys are never accepted automatically. Unreachable ones
+fail soft. With
 machines configured, losing the local server does not end the client either:
 it keeps serving the remote machines and reconnects once the local server is
 restarted.

@@ -146,9 +146,8 @@ impl ClientShellState {
             },
             title: if diagnostic.requires_authentication {
                 format!(
-                    "{}: shepr machine reconnect {}",
-                    self.endpoint_label(&id),
-                    shepr_remote::shell_quote(label.as_str())
+                    "{}: restart shepr to authenticate",
+                    self.endpoint_label(&id)
                 )
             } else {
                 self.endpoint_label(&id).to_owned()

@@ -47,7 +47,7 @@ fn remote_bridge_command_uses_installed_binary() {
 /// The bridge command is interpreted by /bin/sh, not by the login shell: the
 /// login shell only sees `/bin/sh -c` and one quoted word without newlines.
 #[test]
-fn saved_bridge_command_does_not_depend_on_a_posix_login_shell() {
+fn bridge_command_is_one_quoted_word_for_bin_sh_that_frames_its_output() {
     let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     let command = remote.bridge_command();
     let script = command

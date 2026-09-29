@@ -126,6 +126,14 @@ pub(crate) const REMOTE_STDERR_FILTER_BUFFER_BYTES: usize = 4 * 1024;
 pub(crate) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration =
     shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
 
+/// How long the startup check of every configured machine may take in all: one
+/// cold SSH round trip plus slack for the remaining discovery commands. The
+/// checks run concurrently, so this is a bound on the whole phase, not per
+/// machine. It mirrors the client's per-attempt connection budget, which sits
+/// in a higher crate.
+pub(crate) const PREFLIGHT_CHECK_BUDGET: Duration =
+    NONINTERACTIVE_SSH_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(10));
+
 /// OpenSSH option limiting connection establishment. This
 /// leaves room for ordinary network setup while bounding unreachable hosts.
 pub(crate) const SSH_CONNECT_TIMEOUT_OPTION: &str = "ConnectTimeout=10";

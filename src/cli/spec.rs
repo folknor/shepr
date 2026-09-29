@@ -11,8 +11,6 @@ use shepr_remote::{
     FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
 };
 
-mod machine;
-
 pub(super) fn command() -> Command {
     let command = Command::new(PROGRAM_NAME)
         .bin_name(PROGRAM_NAME)
@@ -28,7 +26,6 @@ pub(super) fn command() -> Command {
                 .help("Print version and exit"),
         )
         .subcommand(status_command())
-        .subcommand(machine::command())
         .subcommand(server_command())
         .subcommand(detect_command())
         .subcommand(integration_command())
@@ -292,7 +289,6 @@ mod tests {
             .map_or_else(
                 || match arg.get_id().as_str() {
                     "pane" => "w1:p1".to_string(),
-                    "ssh-target" => "user@example.test".to_string(),
                     _ => "value".to_string(),
                 },
                 |value| value.get_name().to_string(),
@@ -542,7 +538,6 @@ mod tests {
                 "client",
                 "detect",
                 "integration",
-                "machine",
                 "remote-client-bridge",
                 "server",
                 "status",

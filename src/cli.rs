@@ -21,7 +21,6 @@ macro_rules! println {
 mod detect;
 mod error;
 mod integration;
-mod machine;
 mod matches;
 mod server;
 mod server_not_running;
@@ -44,7 +43,6 @@ pub(crate) enum Launch {
 
 pub(crate) enum CliCommand {
     Status(status::Command),
-    Machine(machine::Command),
     Server(server::Command),
     Detect(detect::Command),
     Integration(integration::Command),
@@ -54,7 +52,6 @@ impl CliCommand {
     fn from_matches(name: &str, matches: &ArgMatches) -> Option<Self> {
         Some(match name {
             COMMAND_STATUS => Self::Status(status::parse(matches)?),
-            "machine" => Self::Machine(machine::parse(matches)?),
             COMMAND_SERVER => Self::Server(server::parse(matches)?),
             "detect" => Self::Detect(detect::parse(matches)?),
             "integration" => Self::Integration(integration::parse(matches)?),
@@ -168,7 +165,6 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
 fn dispatch(command: &CliCommand, context: &target::CliContext) -> CliResult<i32> {
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
-        CliCommand::Machine(command) => machine::run_machine_command(command.clone(), context),
         CliCommand::Server(command) => server::run_server_command(*command, context),
         CliCommand::Detect(command) => detect::run_detect_command(command.clone(), context),
         CliCommand::Integration(command) => {
@@ -182,21 +178,6 @@ fn resolve_app_paths() -> CliResult<shepr_config::AppPaths> {
         CliError::Io(std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
-        )))
-    })
-}
-
-fn load_validated_config(
-    paths: &shepr_config::AppPaths,
-) -> CliResult<shepr_config::ValidatedConfig> {
-    shepr_config::load_validated(paths).map_err(|diagnostics| {
-        CliError::Io(std::io::Error::other(format!(
-            "configuration error:\n  {}",
-            diagnostics
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n  ")
         )))
     })
 }
@@ -304,9 +285,8 @@ mod tests {
 
     #[test]
     fn every_cli_spec_root_has_typed_parser() {
-        let samples: [(&str, &[&str]); 5] = [
+        let samples: [(&str, &[&str]); 4] = [
             ("status", &["status"]),
-            ("machine", &["machine", "reconnect", "build"]),
             ("server", &["server", "stop"]),
             ("detect", &["detect", "capture", "w1:p1"]),
             ("integration", &["integration", "status"]),
@@ -417,7 +397,7 @@ mod tests {
             &["machine", "status"],
             &["machine", "add", "host", "--label", "h"],
             &["machine", "remove", "h"],
-            &["machine", "reconnect"],
+            &["machine", "reconnect", "build"],
             &["api", "snapshot"],
             &["workspace", "list"],
             &["tab", "list"],

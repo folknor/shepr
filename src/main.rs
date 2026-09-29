@@ -16,6 +16,7 @@ const NESTED_SHEPR_MESSAGES: &[&str] = &[
 mod autodetect;
 mod cli;
 mod limits;
+mod preflight;
 
 /// Whether this launch is inside a shepr pane that forbids nesting. `SHEPR_ENV`
 /// counts only when it is exactly [`SHEPR_ENV_IN_PANE`], the value shepr writes
@@ -146,6 +147,9 @@ fn launch() -> CliResult<i32> {
     refuse_if_nested_disabled(&loaded_config)?;
 
     init_client_logging(paths)?;
+    // Prompts must run before the client takes the terminal: it connects to
+    // machines with BatchMode and cannot answer one.
+    preflight::authenticate_machines(&loaded_config, paths);
     let client = autodetect::auto_detect_launch(
         &loaded_config,
         paths,
