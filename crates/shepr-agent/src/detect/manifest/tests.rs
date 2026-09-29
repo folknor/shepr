@@ -63,6 +63,14 @@ impl TestManifests {
         self.registry.reload(&self.override_dir);
     }
 
+    fn validate_overrides(&self) -> Result<(), ManifestOverrideError> {
+        let config_dir = self
+            .override_dir
+            .parent()
+            .expect("override directory has a config directory");
+        validate_manifest_overrides(config_dir)
+    }
+
     fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
         self.registry.get(agent)
     }
@@ -493,6 +501,47 @@ fn invalid_local_override_falls_back_to_bundled_manifest() {
 
     assert!(matches!(explain.source, Some(ManifestSource::Bundled)));
     assert!(explain.warning.is_some());
+}
+
+#[test]
+fn override_validation_reports_typed_load_identity_and_compile_failures() {
+    let manifests = TestManifests::new("typed-override-errors");
+
+    manifests.write_codex_without_reload("id = ");
+    assert!(matches!(
+        manifests.validate_overrides(),
+        Err(ManifestOverrideError::Load { .. })
+    ));
+
+    manifests.write_codex_without_reload(
+        r#"
+id = "pi"
+
+[[rules]]
+id = "test"
+state = "idle"
+contains = ["ready"]
+"#,
+    );
+    assert!(matches!(
+        manifests.validate_overrides(),
+        Err(ManifestOverrideError::IdMismatch { .. })
+    ));
+
+    manifests.write_codex_without_reload(
+        r#"
+id = "codex"
+
+[[rules]]
+id = "test"
+state = "working"
+regex = ["["]
+"#,
+    );
+    assert!(matches!(
+        manifests.validate_overrides(),
+        Err(ManifestOverrideError::Compile { .. })
+    ));
 }
 
 #[test]

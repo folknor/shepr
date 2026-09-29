@@ -12,8 +12,6 @@ use std::time::{Duration, Instant};
 /// How long one Git probe may run before it is killed.
 pub const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
-const POLL_INTERVAL: Duration = Duration::from_millis(5);
-
 /// Why a Git probe produced no output to interpret.
 #[derive(Debug)]
 pub enum GitCommandError {
@@ -88,7 +86,9 @@ pub fn run_git_with_program(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
+            }
             Ok(None) => {
                 kill_and_reap(&mut child);
                 // The readers are not joined: whatever still holds the pipes

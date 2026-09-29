@@ -1,5 +1,5 @@
 use shepr_api::error::{ApiError, ApiErrorCode};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -58,7 +58,7 @@ impl App {
             .state
             .terminals
             .get_mut(&terminal_id)
-            .is_some_and(|terminal| terminal.reconcile_managed_agent_at(Instant::now(), false));
+            .is_some_and(|terminal| terminal.reconcile_managed_agent_at(self.clock.now, false));
         if changed {
             self.state.mark_session_dirty();
             self.schedule_session_save();
@@ -256,7 +256,7 @@ impl App {
         terminal.begin_managed_agent(
             name.clone(),
             kind,
-            Instant::now(),
+            self.clock.now,
             AGENT_START_SETTLE_DELAY,
             timeout,
         );

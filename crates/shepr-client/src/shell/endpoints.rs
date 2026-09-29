@@ -366,11 +366,11 @@ impl ClientShellState {
             return;
         }
         // Decode every endpoint's config as it arrives, active or not, so a bad
-        // one is reported at once. An empty value reuses the connection's
-        // previous config; without a cached value it is malformed and is
-        // decoded (and so reported) once. A failure is cached, logged and set
-        // on the endpoint inside `cache_endpoint_config`, so the result is not
-        // needed here.
+        // one is reported at once. `cache_endpoint_config` stores either the
+        // decoded Arc or the failure on the endpoint; active projection reads
+        // that same cache, so only this Result value is discarded. An empty
+        // value reuses the connection's previous config, or is reported once
+        // when the connection has no cached value.
         let endpoint = &self.endpoints[index];
         if !snapshot.resolved_config.is_empty()
             || (endpoint.resolved_config.is_none() && endpoint.resolved_config_error.is_none())

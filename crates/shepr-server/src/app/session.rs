@@ -171,7 +171,7 @@ enum SessionSaveJob {
 impl App {
     pub(super) fn schedule_session_save(&mut self) {
         if self.policy.persists_session() {
-            self.session_saver.schedule(Instant::now());
+            self.session_saver.schedule(self.clock.now);
         }
     }
 
@@ -410,7 +410,7 @@ impl App {
             return;
         }
 
-        let now = Instant::now();
+        let now = self.clock.now;
         self.reap_finished_session_save(now);
         if self
             .session_saver
@@ -473,7 +473,7 @@ impl App {
         now: Instant,
     ) {
         let writer = self.session_saver.session_writer.clone();
-        let saved_at = SystemTime::now();
+        let saved_at = self.clock.wall_now;
         match std::thread::Builder::new()
             .name("shepr-session-save".into())
             .spawn(move || run_session_save_job(job, &writer, saved_at))
@@ -508,7 +508,7 @@ impl App {
                 Ok(result) => result,
                 Err(_) => Err(std::io::Error::other("session save thread panicked")),
             };
-            self.finish_session_save(purpose, result, Instant::now());
+            self.finish_session_save(purpose, result, self.clock.now);
         }
 
         if !self.policy.persists_session() {
@@ -519,10 +519,10 @@ impl App {
         let result = run_session_save_job(
             self.capture_session_save_job(),
             &self.session_saver.session_writer,
-            SystemTime::now(),
+            self.clock.wall_now,
         );
         self.session_saver.pane_exit_checkpoint_pending = false;
-        let saved = self.record_session_save_result(result, Instant::now());
+        let saved = self.record_session_save_result(result, self.clock.now);
         if saved {
             self.session_saver.clear_deadline();
         }
@@ -608,7 +608,7 @@ impl App {
     pub(crate) fn finish_checkpointed_pane_exit(&mut self) {
         if self.session_saver.pane_exit_checkpoint_pending {
             self.state.session_dirty = false;
-            self.session_saver.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+            self.session_saver.session_save_deadline = Some(self.clock.now + SESSION_SAVE_DEBOUNCE);
         }
     }
 
@@ -634,7 +634,7 @@ impl App {
                     let result = thread
                         .join()
                         .unwrap_or_else(|_| Err(std::io::Error::other("save thread panicked")));
-                    self.finish_session_save(purpose, result, Instant::now());
+                    self.finish_session_save(purpose, result, self.clock.now);
                 }
                 if self.take_pane_exit_checkpoint_ready() {
                     break;
@@ -675,7 +675,7 @@ impl App {
                     "failed to join session save thread: {err}"
                 ))),
             };
-            self.finish_session_save(purpose, result, Instant::now());
+            self.finish_session_save(purpose, result, self.clock.now);
         }
 
         if preserve_checkpoint {
@@ -690,7 +690,7 @@ impl App {
 
         let job = self.capture_session_save_job();
         let writer = self.session_saver.session_writer.clone();
-        let saved_at = SystemTime::now();
+        let saved_at = self.clock.wall_now;
         let result =
             match tokio::task::spawn_blocking(move || run_session_save_job(job, &writer, saved_at))
                 .await
@@ -701,7 +701,7 @@ impl App {
                 ))),
             };
         self.session_saver.pane_exit_checkpoint_pending = false;
-        let saved = self.record_session_save_result(result, Instant::now());
+        let saved = self.record_session_save_result(result, self.clock.now);
         if saved {
             self.session_saver.clear_deadline();
         }
@@ -715,7 +715,7 @@ impl App {
             let result = thread
                 .join()
                 .unwrap_or_else(|_| Err(std::io::Error::other("session save thread panicked")));
-            self.record_session_save_result(result, Instant::now());
+            self.record_session_save_result(result, self.clock.now);
         }
         self.session_saver.clear_deadline();
         self.session_saver.session_writer.lock().retire();
@@ -800,6 +800,153 @@ mod tests {
         assert!(
             !app.pane_exit_checkpoint_settled(),
             "a save that succeeds again restores pre-exit checkpoints"
+        );
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    fn directory_files(directory: &std::path::Path) -> Vec<Vec<u8>> {
+        let mut paths = std::fs::read_dir(directory)
+            .expect("read backup directory")
+            .map(|entry| entry.expect("backup directory entry").path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+            .iter()
+            .map(|path| std::fs::read(path).expect("read backup"))
+            .collect()
+    }
+
+    /// A restore that drops a saved tab leaves that tab only in the session
+    /// file, so the first save copies the file to `session-backups` before
+    /// replacing it. The copy is made once, not on every save.
+    #[test]
+    fn a_restore_that_drops_a_tab_backs_up_the_saved_session_before_the_first_save() {
+        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+        use shepr_mux::persist::snapshot::{
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, TabSnapshot,
+            WorkspaceSnapshot,
+        };
+
+        let scratch = crate::test_support::ScratchDir::new("dropped-tab-backup");
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
+            shepr_config::Config::default(),
+            None,
+            paths.clone(),
+        );
+        let data_dir = shepr_api::session::data_dir(&paths);
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
+
+        // A working directory that does not exist restores each pane without
+        // starting a shell.
+        let pane = || PaneSnapshot {
+            cwd: scratch.join("missing-cwd"),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            launch_argv: None,
+        };
+        let tab = |name: &str, layout: LayoutSnapshot, ids: &[u32]| TabSnapshot {
+            custom_name: Some(name.into()),
+            layout,
+            panes: ids.iter().map(|id| (*id, pane())).collect(),
+            zoomed: false,
+            focused: None,
+            root_pane: None,
+        };
+        let snapshot = SessionSnapshot {
+            version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w1".into()),
+                custom_name: Some("mixed".into()),
+                identity_cwd: scratch.path().to_path_buf(),
+                public_pane_numbers: std::collections::HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![
+                    tab("healthy", LayoutSnapshot::Pane(1), &[1]),
+                    tab(
+                        "invalid ratio",
+                        LayoutSnapshot::Split {
+                            direction: DirectionSnapshot::Horizontal,
+                            ratio: 1.0,
+                            first: Box::new(LayoutSnapshot::Pane(2)),
+                            second: Box::new(LayoutSnapshot::Pane(3)),
+                        },
+                        &[2, 3],
+                    ),
+                ],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+        };
+        let original = serde_json::to_vec(&snapshot).expect("encode the saved session");
+        // The session file name the persist layer reads and writes.
+        let session_file = data_dir.join("session.json");
+        std::fs::write(&session_file, &original).expect("test precondition");
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_paths(
+            &config,
+            &paths,
+            lease,
+            super::super::AppPolicy::Production,
+            api_rx,
+            shepr_api::EventHub::default(),
+            Vec::new(),
+            super::super::tests::test_clock(),
+        );
+        let tab_names = |workspaces: Vec<Vec<Option<String>>>| workspaces.concat();
+        assert_eq!(
+            tab_names(
+                app.state
+                    .workspaces
+                    .iter()
+                    .map(|workspace| {
+                        workspace
+                            .tabs()
+                            .iter()
+                            .map(|tab| tab.custom_name.clone())
+                            .collect()
+                    })
+                    .collect()
+            ),
+            vec![Some("healthy".to_owned())],
+            "the saved session loaded and only the invalid tab was dropped"
+        );
+
+        assert!(app.save_session_now(), "first save");
+        let backups = data_dir.join("session-backups");
+        assert_eq!(directory_files(&backups), vec![original.clone()]);
+        let saved = shepr_mux::persist::snapshot::parse_snapshot(
+            &std::fs::read_to_string(&session_file).expect("read the new session"),
+        )
+        .expect("parse the new session");
+        assert_eq!(
+            tab_names(
+                saved
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace
+                        .tabs
+                        .iter()
+                        .map(|tab| tab.custom_name.clone())
+                        .collect())
+                    .collect()
+            ),
+            vec![Some("healthy".to_owned())]
+        );
+
+        assert!(app.save_session_now(), "second save");
+        assert_eq!(
+            directory_files(&backups),
+            vec![original],
+            "a later save makes no second backup"
         );
         app.policy = super::super::AppPolicy::Test;
     }

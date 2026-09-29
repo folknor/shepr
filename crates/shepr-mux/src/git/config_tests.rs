@@ -124,6 +124,45 @@ fn relative_git_config_overrides_resolve_from_the_repository_root() {
 }
 
 #[test]
+fn refused_git_config_file_overrides_are_reported_without_falling_back() {
+    for var in [
+        shepr_core::env::EnvVar::GitConfigSystem,
+        shepr_core::env::EnvVar::GitConfigGlobal,
+    ] {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.remove(shepr_core::env::EnvVar::GitConfigNoSystem);
+        let root = temp_test_dir("refused-git-config-override");
+        write_fake_tracked_repo(&root);
+        let config = root.join(".git/config");
+        std::fs::write(
+            &config,
+            "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n",
+        )
+        .expect("test precondition");
+        let info = git_worktree_info(&root).expect("test precondition");
+        env.set(var, " leading-space ");
+
+        let mut errors = Vec::new();
+        let (branch, config, deps) = read_config_for_status(&info, "main", &mut errors);
+
+        assert_eq!(branch, "main");
+        assert!(config.is_none(), "a refused override must not use defaults");
+        assert!(
+            deps.is_empty(),
+            "no config files are consulted after refusal"
+        );
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::git::GitReadError::ConfigEnvironment { message }
+                    if message.contains(var.name())
+            )),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
 fn git_command_scope_config_overrides_files_in_pair_order() {
     let env = shepr_test_support::IsolatedEnv::new();
     let bare = bare_layout("git-config-command-scope", "[core]\n\tbare = false\n");

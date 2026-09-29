@@ -357,7 +357,7 @@ pub(super) fn git_ref_storage_is_reftable(
 /// root.
 fn git_dir_is_bare(info: &GitWorktreeInfo) -> io::Result<bool> {
     let branch = git_head_branch(&info.git_dir);
-    let mut config_paths = super::config::git_user_config_paths_at(&info.repo_root);
+    let mut config_paths = super::config::git_user_config_paths_at(&info.repo_root)?;
     config_paths.push(info.git_dir.join("config"));
     let (value, _) =
         super::config::read_config_value(info, &branch, &config_paths, "core", "bare")?;

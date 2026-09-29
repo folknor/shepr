@@ -1,7 +1,7 @@
 //! Terminal setup and restoration for the rendered client.
 
-use std::io::{self, Write as _};
-use std::os::fd::AsRawFd as _;
+use std::io;
+use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -11,7 +11,9 @@ use crossterm::event::{
     EnableFocusChange, EnableMouseCapture,
 };
 use crossterm::execute;
-use crossterm::terminal::{DisableLineWrap, EnableLineWrap};
+use crossterm::terminal::{
+    DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
+};
 
 // ---------------------------------------------------------------------------
 // Terminal setup / restore
@@ -19,8 +21,10 @@ use crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 
 /// Sets up the terminal for client mode (raw mode, optional mouse, keyboard enhancements).
 ///
-/// Returns a guard that restores the terminal when dropped.
-pub(super) fn setup_terminal(mouse_capture: bool) -> io::Result<TerminalGuard> {
+/// Returns the output writer and a guard that restores the terminal when dropped.
+pub(super) fn setup_terminal(
+    mouse_capture: bool,
+) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     setup_terminal_with_capabilities(true, mouse_capture)
 }
 
@@ -29,14 +33,16 @@ pub(super) fn setup_terminal(mouse_capture: bool) -> io::Result<TerminalGuard> {
 /// Direct attach forwards stdin to the attached PTY. When configured, mouse
 /// capture lets wheel events drive the attached viewport or reach child
 /// programs that requested mouse input.
-pub(super) fn setup_direct_attach_terminal(mouse_capture: bool) -> io::Result<TerminalGuard> {
+pub(super) fn setup_direct_attach_terminal(
+    mouse_capture: bool,
+) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     setup_terminal_with_capabilities(false, mouse_capture)
 }
 
 pub(super) fn setup_terminal_with_capabilities(
     enable_client_protocols: bool,
     mouse_capture: bool,
-) -> io::Result<TerminalGuard> {
+) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     // Read before the terminal leaves cooked mode, so a refused variable is
     // reported on an ordinary terminal.
     let modify_other_keys_mode = if enable_client_protocols {
@@ -44,44 +50,76 @@ pub(super) fn setup_terminal_with_capabilities(
     } else {
         None
     };
-    ratatui::init();
+    let output_writer = HostTerminalWriter::from_stdout()?;
     let host_modes = HostModes::new(false, false, mouse_capture);
+    // Built before raw mode so a failure anywhere below still restores through Drop. Raw mode
+    // and the alternate screen go through crossterm and this writer directly rather than
+    // `ratatui::init`, whose own panic hook would restore through `io::stdout()`.
     let mut terminal_guard = TerminalGuard {
         host_escape_disambiguation_active: false,
         buffered_host_input: Vec::new(),
         restore_claimed: Arc::new(AtomicBool::new(false)),
         host_modes: host_modes.clone(),
+        output_writer: output_writer.clone(),
         restored: false,
     };
+    crossterm::terminal::enable_raw_mode()?;
+    let mut output = output_writer.clone();
+    execute!(output, EnterAlternateScreen)?;
     let (host_escape_disambiguation_active, buffered_host_input) = if enable_client_protocols {
         host_modes.set_keyboard_enhancement_flags(
-            &mut io::stdout(),
+            &mut output,
             shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
         )?;
-        let (active, buffered_input) = query_host_escape_disambiguation();
-        host_modes.apply_mouse(true, false, true)?;
-        host_modes.enable_bracketed_paste(&mut io::stdout())?;
-        host_modes.enable_focus_change(&mut io::stdout())?;
-        host_modes.enable_color_scheme_reports(&mut io::stdout())?;
+        let (active, buffered_input) = query_host_escape_disambiguation(&mut output);
+        host_modes.apply_mouse(&mut output, true, false, true)?;
+        host_modes.enable_bracketed_paste(&mut output)?;
+        host_modes.enable_focus_change(&mut output)?;
+        host_modes.enable_color_scheme_reports(&mut output)?;
         (active, buffered_input)
     } else {
         // Keep color-scheme reports out of the attached PTY's input. Direct
         // attach never enables them, so there is nothing to restore on exit.
-        write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
-        host_modes.apply_mouse(false, false, true)?;
-        host_modes.enable_bracketed_paste(&mut io::stdout())?;
+        write_host_color_scheme_report_mode(&mut output, false)?;
+        host_modes.apply_mouse(&mut output, false, false, true)?;
+        host_modes.enable_bracketed_paste(&mut output)?;
         (false, Vec::new())
     };
 
     if let Some(mode) = modify_other_keys_mode {
-        host_modes.set_modify_other_keys(&mut io::stdout(), mode)?;
+        host_modes.set_modify_other_keys(&mut output, mode)?;
     }
 
-    host_modes.disable_line_wrap(&mut io::stdout())?;
+    host_modes.disable_line_wrap(&mut output)?;
 
     terminal_guard.host_escape_disambiguation_active = host_escape_disambiguation_active;
     terminal_guard.buffered_host_input = buffered_host_input;
-    Ok(terminal_guard)
+    Ok((terminal_guard, output_writer))
+}
+
+/// Owns one duplicate of stdout. Writes use the file descriptor directly, so panic and Drop
+/// restoration do not depend on the standard output lock held by another client operation.
+#[derive(Clone)]
+pub(super) struct HostTerminalWriter(Arc<std::fs::File>);
+
+impl HostTerminalWriter {
+    fn from_stdout() -> io::Result<Self> {
+        // `try_clone_to_owned` duplicates with close-on-exec set.
+        let owned_fd = io::stdout().as_fd().try_clone_to_owned()?;
+        Ok(Self(Arc::new(std::fs::File::from(owned_fd))))
+    }
+}
+
+impl io::Write for HostTerminalWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut file = self.0.as_ref();
+        file.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut file = self.0.as_ref();
+        file.flush()
+    }
 }
 
 /// Guard that restores the terminal when dropped.
@@ -90,17 +128,18 @@ pub(super) struct TerminalGuard {
     buffered_host_input: Vec<u8>,
     restore_claimed: Arc<AtomicBool>,
     host_modes: HostModes,
+    output_writer: HostTerminalWriter,
     restored: bool,
 }
 
 const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
 
-fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
+fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u8>) {
     let mut buffered_input = Vec::new();
-    if let Err(err) = io::stdout()
+    if let Err(err) = writer
         .write_all(shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE)
-        .and_then(|()| io::stdout().flush())
+        .and_then(|()| writer.flush())
     {
         tracing::debug!(error = %err, "host keyboard enhancement query unavailable");
         return (false, buffered_input);
@@ -510,15 +549,6 @@ impl HostModes {
 
     pub(super) fn apply_mouse(
         &self,
-        client_shell: bool,
-        exact_geometry: bool,
-        reassert: bool,
-    ) -> io::Result<()> {
-        self.apply_mouse_with_writer(&mut io::stdout(), client_shell, exact_geometry, reassert)
-    }
-
-    fn apply_mouse_with_writer(
-        &self,
         writer: &mut impl io::Write,
         client_shell: bool,
         exact_geometry: bool,
@@ -782,21 +812,25 @@ fn set_mouse_capture_with_writer(
 fn restore_terminal_state_once(
     restore_claimed: &AtomicBool,
     host_modes: &HostModes,
+    writer: &mut HostTerminalWriter,
 ) -> io::Result<()> {
     if restore_claimed.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    restore_terminal_state(host_modes)
+    restore_terminal_state(host_modes, writer)
 }
 
 /// Restores every host mode, the raw mode and the screen, running each step
 /// even after an earlier one fails. Each failure is logged here because the
 /// panic hook and `Drop` have no caller to hand an error to; the first failure
 /// is also returned.
-fn restore_terminal_state(host_modes: &HostModes) -> io::Result<()> {
+fn restore_terminal_state(
+    host_modes: &HostModes,
+    writer: &mut HostTerminalWriter,
+) -> io::Result<()> {
     // Runs first so the kitty keyboard pop reaches the host before the screen
     // is torn down; a failure here leaves the host terminal encoding keys.
-    let modes_result = host_modes.restore(&mut io::stdout());
+    let modes_result = host_modes.restore(writer);
     if let Err(error) = &modes_result {
         tracing::warn!(
             error = %error,
@@ -804,17 +838,28 @@ fn restore_terminal_state(host_modes: &HostModes) -> io::Result<()> {
         );
     }
 
-    let restore_result = ratatui::try_restore();
-    if let Err(error) = &restore_result {
-        tracing::warn!(error = %error, "failed to restore host terminal screen and raw mode");
+    // A guard whose setup failed before raw mode was entered has no saved
+    // mode, and crossterm then leaves the terminal as it is.
+    let raw_mode_result = crossterm::terminal::disable_raw_mode();
+    if let Err(error) = &raw_mode_result {
+        tracing::warn!(error = %error, "failed to restore host terminal raw mode");
     }
-    let postlude_result = write_terminal_restore_postlude(&mut io::stdout());
+
+    let screen_result = execute!(writer, LeaveAlternateScreen);
+    if let Err(error) = &screen_result {
+        tracing::warn!(error = %error, "failed to restore host terminal screen");
+    }
+
+    let postlude_result = write_terminal_restore_postlude(writer);
     if let Err(error) = &postlude_result {
         tracing::warn!(error = %error, "failed to write host terminal restore postlude");
     }
 
-    // Preserve the host-mode failure for explicit restore callers as well as logging it here.
-    modes_result.and(restore_result).and(postlude_result)
+    // Preserve the first failure while still attempting every restoration step.
+    modes_result
+        .and(raw_mode_result)
+        .and(screen_result)
+        .and(postlude_result)
 }
 
 impl TerminalGuard {
@@ -834,16 +879,19 @@ impl TerminalGuard {
     pub(super) fn panic_restore(&self) -> impl Fn() + Send + Sync + 'static {
         let restore_claimed = Arc::clone(&self.restore_claimed);
         let host_modes = self.host_modes.clone();
+        let output_writer = self.output_writer.clone();
         move || {
             // A panic has nowhere to report a restore failure, and
             // restore_terminal_state already logged each failed step.
-            restore_terminal_state_once(&restore_claimed, &host_modes).ok();
+            let mut output_writer = output_writer.clone();
+            restore_terminal_state_once(&restore_claimed, &host_modes, &mut output_writer).ok();
         }
     }
 
     pub(super) fn restore(mut self) -> io::Result<()> {
         self.restored = true;
-        restore_terminal_state_once(&self.restore_claimed, &self.host_modes)
+        let mut output_writer = self.output_writer.clone();
+        restore_terminal_state_once(&self.restore_claimed, &self.host_modes, &mut output_writer)
     }
 }
 
@@ -852,7 +900,13 @@ impl Drop for TerminalGuard {
         if !self.restored {
             // Drop cannot return the error, and restore_terminal_state already
             // logged each failed step.
-            restore_terminal_state_once(&self.restore_claimed, &self.host_modes).ok();
+            let mut output_writer = self.output_writer.clone();
+            restore_terminal_state_once(
+                &self.restore_claimed,
+                &self.host_modes,
+                &mut output_writer,
+            )
+            .ok();
         }
     }
 }
@@ -1024,7 +1078,7 @@ mod tests {
 
         let mut setup_output = Vec::new();
         modes
-            .apply_mouse_with_writer(&mut setup_output, false, false, false)
+            .apply_mouse(&mut setup_output, false, false, false)
             .expect("write to a Vec");
         assert!(!setup_output.is_empty());
         assert!(modes.state().mouse.capture_active());

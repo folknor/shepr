@@ -4,6 +4,7 @@ pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
+    output_writer: &mut impl io::Write,
     mut shell: Option<&mut shell::ClientShellState>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> bool {
@@ -31,7 +32,9 @@ pub(super) fn dispatch_client_shell_actions(
             shell::ClientShellAction::ClipboardWrite(bytes) => {
                 // Once per user copy, so a warn cannot flood; only the length is
                 // logged because the bytes are the user's selection.
-                if let Err(error) = shepr_termio::host_term::title::write_clipboard_bytes(&bytes) {
+                if let Err(error) =
+                    shepr_termio::host_term::title::write_clipboard_bytes(&bytes, output_writer)
+                {
                     warn!(
                         bytes = bytes.len(),
                         %error,
@@ -97,7 +100,7 @@ pub(super) fn sync_client_shell_keyboard_report_all(
     state
         .host_modes
         .sync_shell_keyboard_report_all(
-            &mut io::stdout(),
+            &mut state.output_writer,
             shell.host_keyboard_report_all_requested(),
         )
         .map_err(ClientError::HostTerminal)
@@ -109,20 +112,24 @@ pub(super) fn sync_client_shell_keyboard_report_all(
 /// client loop.
 pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(), ClientError> {
     state.host_modes.clear_mouse_endpoint_request();
-    let mouse =
-        state
-            .host_modes
-            .apply_mouse(state.mode.is_shell(), state.reported_geometry.exact, false);
+    let mouse = state.host_modes.apply_mouse(
+        &mut state.output_writer,
+        state.mode.is_shell(),
+        state.reported_geometry.exact,
+        false,
+    );
     let shell_requests_report_all = state
         .mode
         .shell()
         .is_some_and(ShellSession::host_keyboard_report_all_requested);
     let report_all = state.host_modes.set_pane_keyboard_report_all(
-        &mut std::io::stdout(),
+        &mut state.output_writer,
         false,
         shell_requests_report_all,
     );
-    let title = state.host_modes.reset_window_title(&mut std::io::stdout());
+    let title = state
+        .host_modes
+        .reset_window_title(&mut state.output_writer);
     mouse
         .and(report_all)
         .and(title)
@@ -243,6 +250,7 @@ pub(super) fn begin_endpoint_activation(
                 actions,
                 endpoint_commands,
                 endpoints,
+                &mut state.output_writer,
                 Some(shell),
                 scheduled_activation,
             );
@@ -827,16 +835,17 @@ pub(super) fn finish_client_shell_input(
         state.request_repaint();
     }
     if outcome.query_host_appearance {
-        query_host_terminal_appearance();
+        query_host_terminal_appearance(&mut state.output_writer);
     }
     if outcome.query_host_theme {
-        query_host_terminal_theme();
+        query_host_terminal_theme(&mut state.output_writer);
     }
     sync_client_shell_keyboard_report_all(state)?;
     let dispatch_repaint = dispatch_client_shell_actions(
         outcome.actions,
         endpoint_commands,
         endpoints,
+        &mut state.output_writer,
         state.mode.shell_mut(),
         scheduled_activation,
     );

@@ -98,7 +98,7 @@ fn list(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
         .collect::<Vec<_>>();
     if json {
         // SSH diagnostics can include remote control bytes. serde_json writes ESC as
-        // `\u001b`; the text renderer below uses escape_debug before printing it.
+        // `\u001b`; the text renderer below escapes controls before printing them.
         println!(
             "{}",
             serde_json::to_string_pretty(&rows).map_err(std::io::Error::other)?
@@ -174,7 +174,9 @@ fn status(
         for row in &rows {
             println!("{}\t{}\t{}", row.id, row.label, row.status);
             if let Some(error) = &row.error {
-                println!("  {}", error.escape_debug());
+                for line in escaped_error_lines(error) {
+                    println!("{line}");
+                }
             }
         }
         if rows.is_empty() {
@@ -182,6 +184,13 @@ fn status(
         }
     }
     Ok(i32::from(rows.iter().any(|row| row.error.is_some())))
+}
+
+fn escaped_error_lines(error: &str) -> impl Iterator<Item = String> + '_ {
+    // Keep sanitized SSH stderr's line breaks while escaping controls on each line.
+    error
+        .split('\n')
+        .map(|line| format!("  {}", line.escape_debug()))
 }
 
 fn reconnect(
@@ -241,14 +250,14 @@ fn add(
         label,
         session,
     } = args;
-    let target = SshTarget::parse(target).map_err(CliError::Usage)?;
+    let target = SshTarget::parse(target).map_err(|error| CliError::Usage(error.to_string()))?;
     let mut catalog = load_catalog(paths)?;
     // This preflight validates fields and capacity before remote setup can wait. Its ID is
     // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
     // and selectors report ambiguity so callers can use the profile ID.
     catalog
         .add_ssh(label.clone(), target.clone(), session.clone())
-        .map_err(CliError::Usage)?;
+        .map_err(|error| CliError::Usage(error.to_string()))?;
     let executable = shepr_remote::prepare_saved_ssh(
         paths,
         &target,
@@ -268,7 +277,7 @@ fn add(
     })?;
     let id = catalog
         .add_ssh(label, target.clone(), &session)
-        .map_err(CliError::Usage)?;
+        .map_err(|error| CliError::Usage(error.to_string()))?;
     store_catalog(&mut catalog).map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
@@ -385,6 +394,20 @@ mod tests {
         assert_eq!(
             subcommands,
             vec!["add", "list", "reconnect", "remove", "status"]
+        );
+    }
+
+    #[test]
+    fn machine_status_preserves_error_paragraphs_and_escapes_controls_per_line() {
+        let lines = escaped_error_lines("first\n\nthird\tline\u{1b}[2J").collect::<Vec<_>>();
+
+        assert_eq!(
+            lines,
+            vec![
+                "  first".to_owned(),
+                "  ".to_owned(),
+                "  third\\tline\\u{1b}[2J".to_owned(),
+            ]
         );
     }
 

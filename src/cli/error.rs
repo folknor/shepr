@@ -154,6 +154,7 @@ impl From<shepr_server::server::headless::RunServerError> for CliError {
                     hints: vec![error.to_string()],
                 }
             }
+            RunServerError::ManifestOverride(error) => Self::Config(vec![error.to_string()]),
             RunServerError::Io(error) => Self::Io(error),
         }
     }

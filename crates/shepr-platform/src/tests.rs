@@ -30,21 +30,6 @@ fn child_exit_classification_only_checkpoints_interruptions() {
 }
 
 #[test]
-fn terminal_resize_signal_is_recorded_once_per_delivery() {
-    watch_terminal_resize_signal();
-    assert!(!take_terminal_resize_signal());
-
-    // SAFETY: raise(3) delivers SIGWINCH to this thread; the handler that
-    // `watch_terminal_resize_signal` installed only stores an atomic.
-    unsafe {
-        libc::raise(libc::SIGWINCH);
-    }
-
-    assert!(take_terminal_resize_signal());
-    assert!(!take_terminal_resize_signal());
-}
-
-#[test]
 fn read_limited_reader_returns_complete_data_under_limit() {
     let input = std::io::Cursor::new(b"image".to_vec());
     assert_eq!(
@@ -219,6 +204,101 @@ fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
             & 0o7777,
         0o700
     );
+}
+
+#[test]
+fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
+
+    let runtime = shepr_test_support::ScratchDir::new("platform-stale-sweep");
+    std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("test precondition");
+    let dead_tag = dead_process_tag(0);
+    let live_tag = process_identity::ProcessIdentity::current()
+        .expect("current process identity")
+        .tag(0);
+
+    let stale_config = runtime.join(format!("shepr-ssh-{dead_tag}"));
+    std::fs::create_dir(&stale_config).expect("test precondition");
+    std::fs::set_permissions(&stale_config, std::fs::Permissions::from_mode(0o700))
+        .expect("test precondition");
+    std::fs::write(stale_config.join("config"), b"Host *\n").expect("test precondition");
+    let untagged_config = runtime.join("shepr-ssh-0123456789abcdef");
+    std::fs::create_dir(&untagged_config).expect("test precondition");
+    let live_config = runtime.join(format!("shepr-ssh-{live_tag}"));
+    std::fs::create_dir(&live_config).expect("test precondition");
+
+    let stale_agent_link = runtime.join(format!("agent.shepr-{dead_tag}.new"));
+    let live_agent_link = runtime.join(format!("agent.shepr-{live_tag}.new"));
+    symlink("target", &stale_agent_link).expect("test precondition");
+    symlink("target", &live_agent_link).expect("test precondition");
+
+    for (name, tag) in [
+        (".s0000000000000001", dead_tag.as_str()),
+        (".s0000000000000002", live_tag.as_str()),
+    ] {
+        let staging = runtime.join(name);
+        std::fs::create_dir(&staging).expect("test precondition");
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))
+            .expect("test precondition");
+        let mut marker = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(staging.join(".owner"))
+            .expect("test precondition");
+        marker.write_all(tag.as_bytes()).expect("test precondition");
+    }
+
+    let _created = create_remote_ssh_config_dir(runtime.path()).expect("create config dir");
+    assert!(
+        !present(&stale_config),
+        "dead owner's config directory is swept"
+    );
+    assert!(
+        present(&untagged_config),
+        "an untagged directory has no provable owner"
+    );
+    assert!(
+        present(&live_config),
+        "a live owner's config directory is retained"
+    );
+
+    let registry = ssh_agent::SshAgentRegistry::new(runtime.join("agent"), None)
+        .expect("create an unmanaged registry");
+    assert!(
+        std::fs::symlink_metadata(&stale_agent_link).is_err(),
+        "dead owner's temporary link is swept"
+    );
+    assert!(
+        std::fs::symlink_metadata(&live_agent_link).is_ok(),
+        "a live owner's temporary link is retained"
+    );
+    drop(registry);
+
+    let socket_path = runtime.join("api.sock");
+    let listener = ipc::bind_private_local_listener(&socket_path).expect("bind listener");
+    assert!(
+        !present(&runtime.join(".s0000000000000001")),
+        "dead owner's staging directory is swept"
+    );
+    assert!(
+        present(&runtime.join(".s0000000000000002")),
+        "a live owner's staging directory is retained"
+    );
+    drop(listener);
+}
+
+fn present(path: &Path) -> bool {
+    path.try_exists().expect("stat a swept path")
+}
+
+fn dead_process_tag(token: u64) -> String {
+    let current = process_identity::ProcessIdentity::current().expect("current process identity");
+    let tag = current.tag(token);
+    let (_, rest) = tag.split_once('-').expect("serialized process identity");
+    format!("{:08x}-{rest}", u32::MAX)
 }
 
 #[test]

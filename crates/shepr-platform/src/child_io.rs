@@ -124,7 +124,7 @@ pub(crate) fn read_limited_reader(
     max_bytes: usize,
 ) -> std::io::Result<LimitedRead> {
     let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 8192];
+    let mut buffer = [0_u8; super::limits::LIMITED_READ_BUFFER_BYTES];
 
     while bytes.len() < max_bytes {
         let remaining = max_bytes - bytes.len();

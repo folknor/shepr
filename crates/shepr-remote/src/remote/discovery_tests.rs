@@ -316,9 +316,11 @@ fn exhausted_discovery_reports_not_ready_and_starts_over_next_time() {
 
 #[test]
 fn remote_client_status_requires_an_exact_build_id() {
-    let matching = RemoteClientStatusJson {
+    let matching = shepr_api::schema::ClientStatusJson {
         version: Some("old-version".into()),
         build_id: Some(shepr_protocol::BUILD_ID.into()),
+        binary: None,
+        session: None,
     };
     assert!(ensure_remote_client_build("build", &matching).is_ok());
 
@@ -327,9 +329,11 @@ fn remote_client_status_requires_an_exact_build_id() {
     } else {
         "ffffffffffffffff"
     };
-    let mismatched = RemoteClientStatusJson {
+    let mismatched = shepr_api::schema::ClientStatusJson {
         version: Some(shepr_protocol::build_version()),
         build_id: Some(other_build.into()),
+        binary: None,
+        session: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
@@ -343,9 +347,11 @@ fn client_build_mismatch_offers_a_separate_remote_session() {
     } else {
         "ffffffffffffffff"
     };
-    let mismatched = RemoteClientStatusJson {
+    let mismatched = shepr_api::schema::ClientStatusJson {
         version: Some(shepr_protocol::build_version()),
         build_id: Some(other_build.into()),
+        binary: None,
+        session: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert!(
@@ -356,9 +362,11 @@ fn client_build_mismatch_offers_a_separate_remote_session() {
 
 #[test]
 fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
-    let mismatched = RemoteClientStatusJson {
+    let mismatched = shepr_api::schema::ClientStatusJson {
         version: Some("1.0\x1b[2J".into()),
         build_id: Some("build id".into()),
+        binary: None,
+        session: None,
     };
     let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
     assert!(

@@ -51,6 +51,8 @@ fn read_server_status(
     shepr_api::read_runtime_status_at(&shepr_api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
 }
 
+/// Checks a local server before attaching. Saved-machine status queries the
+/// remote server through `check_saved_ssh` and its status JSON parser.
 pub fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(

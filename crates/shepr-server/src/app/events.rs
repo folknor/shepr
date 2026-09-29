@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use super::{App, api_helpers::pane_agent_status};
 use shepr_mux::events::AppEvent;
 
@@ -21,7 +19,7 @@ impl App {
         results: Vec<shepr_mux::git::WorkspaceGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, shepr_mux::git::GitStatusCacheEntry)>,
     ) -> bool {
-        self.git_refresh.finish(Instant::now(), cache_updates);
+        self.git_refresh.finish(self.clock.now, cache_updates);
         let changed = self
             .state
             .apply_workspace_git_statuses(&self.terminal_runtimes, results);
@@ -185,7 +183,7 @@ impl App {
         }
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
-            self.request_git_identity_refresh(Instant::now());
+            self.request_git_identity_refresh(self.clock.now);
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }

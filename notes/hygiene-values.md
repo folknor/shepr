@@ -744,28 +744,6 @@ with no log line, so a copy from a pane that silently does nothing cannot be
 diagnosed. A rate-limited log with the byte count (never the content) is the
 fix.
 
-## HYGV-044 - Retry counts and poll intervals are invented per site inside one crate
-
-**Decision (partial):** the enforcement named below is adopted, incrementally as
-part of the hygiene work: `shepr-platform` gets a `limits` module held by the
-duration-and-capacity textlint (HYGV-036). Open: collapsing the duplicated
-values (the two `POLL_INTERVAL`s, 4 versus 16 attempts, the two copy buffers)
-when they move.
-
-Reported by the core/platform hunter as a question 1 finding (the hunters also
-filed the broader "retry policy per call site" pattern under per-call-site
-policy, which is a sibling document; what is here is the duplicated values).
-
-Within `shepr-platform` alone: `STAGING_ATTEMPTS = 4` in `ipc.rs` versus a bare
-`for _ in 0..16` in `ssh_paths.rs` for the same "random name collided, try again"
-policy; `POLL_INTERVAL = 5ms` declared twice in `clipboard.rs`; a hardcoded `100` ms in
-`client_stream.rs::wait_client_stream_readable`; and a `16 * 1024` copy buffer in
-`remote_bridge_io.rs` against `8192` in `child_io.rs::read_limited_reader`.
-
-Enforcement: the per-crate tunables module of HYGV-036 plus a text rule
-forbidding bare integer millisecond literals in `Duration::from_millis` outside
-it.
-
 ## HYGV-045 - The pane teardown budget and the server's wait for it are unrelated numbers in different crates
 
 **Decision (partial):** per-crate `limits` modules are adopted incrementally with
@@ -918,17 +896,6 @@ Reported by the core/platform, protocol/config, remote and server hunters.
   `collect_validated_ids` rejects `0`. Fix: `PaneId::from_raw -> Option<PaneId>`
   is a compiler-enforced signature change; removing the global needs an allocator
   value threaded through `Workspace`, which is the larger and better fix.
-- `crates/shepr-server/src/server/headless.rs` builds the client-shell boot id
-  with `format!("{}-{}", std::process::id(), SystemTime::now()...as_nanos())`
-  inside a struct literal. `shepr_protocol::BootId` is a newtype over `String`
-  with `From<String>` and no constructor that owns the format, so the identity
-  scheme for the whole boot-generation mechanism - compared in
-  `client_commands.rs`, `client_transport.rs`, `surface_reuse.rs` and four places
-  in `shepr-client` - is decided by a `format!` at one call site, and
-  `unwrap_or_default()` means a clock before the epoch collapses every boot id to
-  `pid-0`, silently defeating the stale-boot rejection it exists for. Fix:
-  `BootId::for_this_process()` in `shepr-protocol`, with `From<String>`
-  restricted to deserialization.
 - `crates/shepr-protocol/src/ids.rs`'s doc claims `TerminalId` is an "opaque
   identity for a server-owned terminal ... callers must not derive it from a pane
   id or layout position", while `TerminalId` has a public `From<String>` and a
@@ -953,32 +920,6 @@ This duplication is forced (two hosts, two binaries, one config travelling
 between them). What keeps the two validations in step is the exact-build preamble
 plus the shared crate, and the hunter's recommendation is to say that out loud in
 the `AGENTS.md` sentence, which currently reads as absolute.
-
-On the same path, and reported as hygiene rather than as the defect the hunter
-filed separately: the config is decoded twice per new snapshot on the fanout path
-in `crates/shepr-client/src/shell/endpoints.rs` - `cache_endpoint_snapshot`
-decodes and discards the error with `.ok()`, then `resolve_snapshot_config`
-decodes the same bytes again. Decoding once and keeping the `Result` removes the
-duplication.
-
-## HYGV-091 - Braille spinner glyphs are hard-coded next to a manifest-owned glyph set
-
-Reported by the mux hunter.
-
-`crates/shepr-mux/src/terminal/title.rs` computes
-`matches!(first, '\u{2800}'..='\u{28ff}') || Agent::all().any(|a| a.activity_glyphs().contains(first))`.
-"What counts as an activity glyph" therefore has two owners: the detection
-manifests (`activity_glyphs`) and this literal range. A manifest that lists a
-braille glyph is silently redundant; a spinner style outside braille that nobody
-adds to a manifest is silently not stripped.
-
-Fix: move the braille range into the manifest schema (or a shared `shepr-agent`
-const) so `activity_glyphs` is the only answer, and assert in a test that no
-manifest glyph falls inside a range the code also hard-codes.
-
-Related, and recorded by the agent hunter as data wearing a general mechanism:
-`title_activity_glyphs` is non-empty for Claude alone
-(`CLAUDE_ACTIVITY_GLYPHS`); every other agent has `""`.
 
 ## HYGV-095 - `client_socket_path(paths)` is recomputed four times in one function
 
@@ -1014,12 +955,12 @@ the project's "any config problem fails the launch; no fallbacks".
 Fix: a startup probe on the preferences path, which turns this into a launch
 refusal. Checkable by a test that launches with a read-only state directory.
 
-## HYGV-109 - Installers read hook events two ways
+## HYGV-110 - `INTEGRATION_SPECS.events` restates `Target::hook_events()`
 
-`crates/shepr-agent/src/integration/`: some installers now take their hook
-events from `integration_hook_events(Target)` (the spec row), while others still
-read per-agent `*_HOOK_EVENTS` constants directly. One path for every
-installer, then delete the per-agent constants that only feed it.
+`crates/shepr-agent/src/integration/registry.rs`: each spec row's `events`
+field repeats what `target.hook_events()` already returns; a test now guards
+against a miswired row, but the field itself is the redundancy. Drop it and
+read the target.
 
 ## HYGV-107 - `read_message`'s `max_frame_size` parameter has had one value at every production call site
 

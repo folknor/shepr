@@ -31,35 +31,17 @@ trio no longer returns silently. Open:
 - `crates/shepr-mux/src/pane/runtime.rs::process_cwd_does_not_require_traversing_the_directory_path`
   still prints a skip notice to stderr and passes green when run as root.
 
-## BUG-097 - Git config override read errors are still discarded, and git -c config is not modelled
+## BUG-101 - `git -c` command-scope config is not modelled
 
-`crates/shepr-mux/src/git/config.rs::git_config_override_path` discards read
-errors from `read_path` (`.ok().flatten()`), so a refused `GIT_CONFIG_GLOBAL`
-or `GIT_CONFIG_SYSTEM` still falls back to the default files without saying so.
-`GIT_CONFIG_PARAMETERS` (the `git -c` form of command-scope config, inherited
-by shepr's git subprocesses) is not modelled by the file reader.
+`crates/shepr-mux/src/git/config.rs` models `GIT_CONFIG_COUNT` and its indexed
+pairs, and refused `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` reads now surface as
+errors. Open: `GIT_CONFIG_PARAMETERS` (the `git -c` form inherited by shepr's
+git subprocesses), which git 2.53.0 passes as quoted key/value pairs (with
+`'\''` for an apostrophe) and which overrides a conflicting indexed pair. Its
+reader belongs in the `shepr-core` environment registry, not a raw read in mux.
 
 ## BUG-098 - A malformed inherited `SHELL` fails a config that sets its own shell
 
 `crates/shepr-config/src/validated.rs::resolve_default_shell` reads and
 validates `SHELL` even when `terminal.default_shell` is set, so a broken
 inherited `SHELL` refuses a launch that would never use it.
-
-## BUG-096 - A tab dropped late in restore may already have started shells and queued history
-
-`crates/shepr-mux/src/persist/restore.rs::restore_tab`: a tab rejected late (all
-panes pruned, or refused by `from_saved`) may already have queued
-`history_carry` entries or started shells for panes that are then discarded.
-The invalid-ratio rejection returns before any of that; the later rejections do
-not. Also untested: the server wiring in `crates/shepr-server/src/app/mod.rs`
-that turns a nonzero `dropped_tabs` into a backup of the original session file
-on the first save (the `with_paths` construction path).
-
-## BUG-099 - A layout that cannot be fingerprinted is no longer preserved as a snapshot
-
-`crates/shepr-mux/src/persist/writer.rs`: when the snapshot-preservation paths
-were collapsed into one decision, the case where `layout_fingerprint` returns
-`None` (a fingerprint serialization failure) changed from "preserve" to "skip".
-Only reachable on a serialization failure. Decide which is right; if a layout
-that cannot be fingerprinted should still be preserved, restore that and pin it
-with a test.

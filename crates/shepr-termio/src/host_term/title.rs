@@ -38,17 +38,7 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// written and flushed to the host terminal (whether the terminal honours
 /// OSC 52 cannot be observed). `Err` means the copy did not happen; the caller
 /// logs it with its own context.
-pub fn write_clipboard_bytes(bytes: &[u8]) -> io::Result<()> {
-    if native_clipboard_write_succeeded(bytes) {
-        return Ok(());
-    }
-    let mut stdout = std::io::stdout().lock();
-    write_osc52(bytes, &mut stdout)
-}
-
-/// Writes clipboard bytes using the same native-tool or OSC 52 policy as
-/// `write_clipboard_bytes`, sending any OSC 52 fallback to the supplied sink.
-pub fn write_clipboard_bytes_with_writer<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {
+pub fn write_clipboard_bytes<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {
     if native_clipboard_write_succeeded(bytes) {
         return Ok(());
     }

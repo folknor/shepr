@@ -388,8 +388,19 @@ fn snapshot_history_decision(
 
 fn layout_differs_from_latest(snapshot: &SessionSnapshot, latest: Option<&String>) -> bool {
     !snapshot.workspaces.is_empty()
-        && super::snapshot::layout_fingerprint(snapshot)
-            .is_some_and(|fingerprint| latest != Some(&fingerprint))
+        && layout_fingerprint_differs_from_latest(
+            super::snapshot::layout_fingerprint(snapshot).as_deref(),
+            latest.map(String::as_str),
+        )
+}
+
+fn layout_fingerprint_differs_from_latest(fingerprint: Option<&str>, latest: Option<&str>) -> bool {
+    // A nonempty layout with no fingerprint cannot be proven identical to a
+    // recovery copy, so preserve it conservatively.
+    match fingerprint {
+        Some(fingerprint) => latest != Some(fingerprint),
+        None => true,
+    }
 }
 
 fn preserve_snapshot_after_write(path: &Path, now: SystemTime) -> io::Result<()> {
@@ -709,6 +720,20 @@ mod tests {
         assert_eq!(snapshots(&writer), vec![(1, old)]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
+    }
+
+    #[test]
+    fn an_unfingerprintable_layout_is_not_treated_as_identical() {
+        assert!(layout_fingerprint_differs_from_latest(None, Some("known")));
+        assert!(layout_fingerprint_differs_from_latest(None, None));
+        assert!(!layout_fingerprint_differs_from_latest(
+            Some("same"),
+            Some("same")
+        ));
+        assert!(layout_fingerprint_differs_from_latest(
+            Some("changed"),
+            Some("same")
+        ));
     }
 
     #[test]

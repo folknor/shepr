@@ -2,6 +2,10 @@ use super::*;
 use crate::server::ClientId;
 use crate::server::clients::RenderTargetMode;
 
+fn writer_gone(client_id: ClientId) {
+    debug!(?client_id, "client writer channel closed");
+}
+
 /// How often shell projections are rechecked for inputs that change without
 /// an event: `/proc` cwd and foreground cwd of shells that do not report
 /// OSC 7, and the new-workspace cwd derived from them.
@@ -152,10 +156,7 @@ impl HeadlessServer {
                 }
             };
             if writer.control.send(serialized).is_err() {
-                debug!(
-                    ?client_id,
-                    "client writer channel closed during mouse capture update"
-                );
+                writer_gone(client_id);
                 broken_clients.push(client_id);
                 continue;
             }
@@ -212,6 +213,7 @@ impl HeadlessServer {
                 }
             };
             if writer.control.send(serialized).is_err() {
+                writer_gone(client_id);
                 broken_clients.push(client_id);
                 continue;
             }
@@ -268,10 +270,7 @@ impl HeadlessServer {
                     }
                 };
             if writer.control.send(serialized).is_err() {
-                debug!(
-                    ?client_id,
-                    "client writer channel closed during direct terminal keyboard update"
-                );
+                writer_gone(client_id);
                 broken_clients.push(client_id);
                 continue;
             }
@@ -520,11 +519,7 @@ impl HeadlessServer {
                     &self.app.state,
                     &self.app.terminal_runtimes,
                     &layout,
-                    if cell_size.is_known() {
-                        cell_size
-                    } else {
-                        shepr_termio::host_term::cell_size::HostCellSize::default()
-                    },
+                    cell_size.or_default(),
                 );
             }
         }
@@ -566,11 +561,7 @@ impl HeadlessServer {
                     .get(&client_id)
                     .is_some_and(ClientConnection::is_active_shell_client)
             {
-                let render_cell_size = if cell_size.is_known() {
-                    cell_size
-                } else {
-                    shepr_termio::host_term::cell_size::HostCellSize::default()
-                };
+                let render_cell_size = cell_size.or_default();
                 let result = render_client_shell_pane_surface(
                     &self.app,
                     shell_target.as_ref(),
@@ -659,6 +650,7 @@ impl HeadlessServer {
                             continue;
                         };
                         if writer.control.send(snapshot_framed).is_err() {
+                            writer_gone(client_id);
                             broken_clients.push(client_id);
                             continue;
                         }

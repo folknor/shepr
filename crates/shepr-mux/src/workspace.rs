@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -246,6 +246,39 @@ impl Index<usize> for FocusedTabs {
     }
 }
 
+/// Check a tab collection when it enters a workspace. These checks run on
+/// tab creation and restore, not on the view or render paths.
+fn valid_tabs<'a>(
+    tabs: impl IntoIterator<Item = &'a Tab>,
+    next_pane_number: usize,
+    next_tab_number: usize,
+) -> bool {
+    let mut tab_numbers = HashSet::new();
+    let mut pane_numbers = HashSet::new();
+    let mut pane_ids = HashSet::new();
+    let mut terminal_ids = HashSet::new();
+    for tab in tabs {
+        if tab.number == 0
+            || tab.number >= next_tab_number
+            || !tab_numbers.insert(tab.number)
+            || !tab.has_consistent_panes()
+        {
+            return false;
+        }
+        for (id, pane) in &tab.panes {
+            if pane.public_number == 0
+                || pane.public_number >= next_pane_number
+                || !pane_numbers.insert(pane.public_number)
+                || !pane_ids.insert(*id)
+                || !terminal_ids.insert(pane.attached_terminal_id.clone())
+            {
+                return false;
+            }
+        }
+    }
+    !tab_numbers.is_empty()
+}
+
 pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
     let Some(next) = workspaces
         .iter()
@@ -308,6 +341,9 @@ impl Workspace {
         next_public_tab_number: usize,
     ) -> Option<Self> {
         let tabs = FocusedTabs::new(tabs, active_tab)?;
+        if !valid_tabs(tabs.iter(), next_public_pane_number, next_public_tab_number) {
+            return None;
+        }
         let mut workspace = Self {
             id: id.into(),
             custom_name,
@@ -333,6 +369,10 @@ impl Workspace {
     }
 
     pub fn tabs_mut(&mut self) -> &mut [Tab] {
+        // Callers still need direct mutable tab access for focus, zoom, and
+        // naming. The public Tab fields also permit arbitrary pane and number
+        // edits, so collection-wide uniqueness cannot be guaranteed by this
+        // accessor. Admission checks guard workspace-owned insertion paths.
         self.tabs.as_mut_slice()
     }
 
@@ -606,7 +646,33 @@ impl Workspace {
         Ok((tab, terminal, runtime))
     }
 
-    pub fn commit_new_tab(&mut self, tab: Tab) -> TabCreationOutcome {
+    /// Admit a prepared tab. `None`, with the workspace unchanged, when the tab
+    /// would break the workspace's identity invariants (a duplicate tab, pane
+    /// or terminal identity, or a pane tree that disagrees with its layout).
+    pub fn commit_new_tab(&mut self, tab: Tab) -> Option<TabCreationOutcome> {
+        let next_pane_number = self.next_public_pane_number.max(
+            tab.panes
+                .values()
+                .map(|pane| pane.public_number)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+        );
+        let next_tab_number = self
+            .next_public_tab_number
+            .max(tab.number.saturating_add(1));
+        if !valid_tabs(
+            self.tabs.iter().chain(std::iter::once(&tab)),
+            next_pane_number,
+            next_tab_number,
+        ) {
+            tracing::error!(
+                workspace = %self.id,
+                tab = tab.number,
+                "refused a new tab with invalid or duplicate pane and public identities"
+            );
+            return None;
+        }
         let tab_index = self.tabs.len();
         let root_pane = tab.root_pane;
         let pane_numbers = tab
@@ -620,10 +686,10 @@ impl Workspace {
         }
         let next_tab_number = self.tabs[tab_index].number.saturating_add(1);
         self.next_public_tab_number = self.next_public_tab_number.max(next_tab_number);
-        TabCreationOutcome {
+        Some(TabCreationOutcome {
             tab_index,
             root_pane,
-        }
+        })
     }
 
     pub fn close_tab(&mut self, idx: usize) -> Option<TabRemoval> {

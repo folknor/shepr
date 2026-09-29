@@ -42,13 +42,7 @@ impl Harness {
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        self.write_from_process(0, bytes);
-    }
-
-    fn write_from_process(&mut self, shell_pid: u32, bytes: &[u8]) {
-        let result = self
-            .pane
-            .process_pty_bytes(PaneId::from_raw(1), shell_pid, bytes);
+        let result = self.pane.process_pty_bytes(PaneId::from_raw(1), bytes);
         for reply in result.terminal_responses {
             self.effects.replies.extend_from_slice(&reply);
         }
@@ -115,48 +109,8 @@ impl Harness {
 
 #[test]
 fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
-    // A zero PID would bypass the former process-specific filter entirely.
-    // Use the real foreground-job lookup, with cleanup even on assertion failure.
-    struct ChildGuard(std::process::Child);
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            // Best-effort cleanup that also runs while an assertion unwinds;
-            // panicking here would abort and hide that assertion's message.
-            self.0.kill().ok();
-            self.0.wait().ok();
-        }
-    }
-    let pty = shepr_pty::backend::open_pty(24, 80).expect("open pty");
-    // A fixture stand-in named `droid`, found on the child's PATH, so its
-    // command line is `droid 999` as a launched Droid's would be.
-    let bin = shepr_test_support::ScratchDir::new("droid-bin");
-    let _droid = shepr_test_support::fixture::stand_in(
-        &bin,
-        "droid",
-        &[shepr_test_support::fixture::Step::Sleep(
-            Duration::from_secs(999),
-        )],
-    );
-    let mut command = shepr_pty::PtyCommand::new("droid");
-    command.arg("999");
-    command.env("PATH", bin.path());
-    let child =
-        ChildGuard(shepr_pty::backend::spawn_in_pty(&pty.slave, &command).expect("spawn in pty"));
-    let pid = child.0.id();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let ready = shepr_agent::detect::foreground_job(pid).is_some_and(|job| {
-            job.processes
-                .iter()
-                .any(|process| process.cmdline.as_deref() == Some("droid 999"))
-        });
-        if ready {
-            break;
-        }
-        assert!(Instant::now() < deadline, "Droid foreground job not ready");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
+    // PTY output is parsed the same whatever process wrote it, so no child
+    // process is needed to prove ED3 handling.
     for clear in ["\x1b[3J", "\x1b[?3J"] {
         let prefix = format!("\x1b[?2026h\x1b[2J{clear}\x1b[H");
         let frame = |label: &str| {
@@ -175,7 +129,7 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
             for split in 0..=prefix.len() {
                 let mut harness = Harness::new(80, 24);
                 for bytes in old.as_bytes().chunks(chunk_size) {
-                    harness.write_from_process(pid, bytes);
+                    harness.write(bytes);
                 }
                 assert!(
                     harness
@@ -184,9 +138,9 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
                         .text
                         .contains("old-00")
                 );
-                harness.write_from_process(pid, &new.as_bytes()[..split]);
+                harness.write(&new.as_bytes()[..split]);
                 for bytes in new.as_bytes()[split..].chunks(chunk_size) {
-                    harness.write_from_process(pid, bytes);
+                    harness.write(bytes);
                 }
                 let recent = harness.pane.recent_text_snapshot(256).text;
                 assert!(recent.contains("new-54"), "redraw must complete");

@@ -78,6 +78,16 @@ use shepr_protocol::MAX_FRAME_SIZE;
 #[cfg(test)]
 use shepr_protocol::RenderEncoding;
 
+/// Samples the clock app state reads. App code never reads the clock itself
+/// (the `app-state-reads-the-clock-seam` textlint); the server samples it
+/// here and hands it in with `App::set_clock` before app work runs.
+pub(super) fn sample_app_clock() -> app::AppClock {
+    app::AppClock {
+        now: Instant::now(),
+        wall_now: std::time::SystemTime::now(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Loop event enum for the headless server event loop
 // ---------------------------------------------------------------------------
@@ -302,6 +312,13 @@ impl HeadlessServer {
         })
     }
 
+    /// Hands the app a fresh clock sample and returns its monotonic half.
+    fn refresh_app_clock(&mut self) -> Instant {
+        let clock = sample_app_clock();
+        self.app.set_clock(clock);
+        clock.now
+    }
+
     /// Runs the headless server event loop until shutdown.
     ///
     /// This is the server's main runtime loop. It:
@@ -337,9 +354,13 @@ impl HeadlessServer {
                 break;
             }
 
+            // Every pass through the loop starts with a fresh clock sample, so
+            // the event and API handlers below read this iteration's time.
+            let iteration_start = self.refresh_app_clock();
+
             // A host shutdown warning checkpoints the session and freezes
             // saving; it does not stop the server (see `sync_host_shutdown_freeze`).
-            self.sync_host_shutdown_freeze(Instant::now());
+            self.sync_host_shutdown_freeze(iteration_start);
 
             // Check if we should start shutting down. The drain applies queued
             // state and agent-session reports so the final save carries them;
@@ -365,7 +386,8 @@ impl HeadlessServer {
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 continue;
             }
-            if self.app.expire_due_metadata(Instant::now()) {
+            let drained_at = self.refresh_app_clock();
+            if self.app.expire_due_metadata(drained_at) {
                 render_demand.join(RenderDemand::Full);
             }
 
@@ -389,7 +411,7 @@ impl HeadlessServer {
             }
 
             // 5. Handle scheduled tasks.
-            let now = Instant::now();
+            let now = self.refresh_app_clock();
             if self.handle_scheduled_tasks_headless(now) {
                 self.app.state.mark_shell_projection_dirty();
                 render_demand.join(RenderDemand::Full);
@@ -518,6 +540,9 @@ impl HeadlessServer {
                     },
                 }
             };
+            // The wait above can last until the next deadline; dispatch reads
+            // the time the event arrived, not the time the wait began.
+            self.refresh_app_clock();
 
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 self.initiate_shutdown();
@@ -597,6 +622,7 @@ impl HeadlessServer {
         // Save session on exit. During a host shutdown saving is frozen
         // (session persistence is suspended), so this writes nothing and the
         // checkpoint taken on the warning stands; the writer is still retired.
+        self.refresh_app_clock();
         if self.app.policy.persists_session()
             || self.lifecycle.frozen_session_policy().unwrap_or(false)
         {
@@ -606,6 +632,8 @@ impl HeadlessServer {
         if !self.app.wait_for_pane_teardowns(Duration::from_secs(3)) {
             warn!("pane session teardown did not finish before server exit");
         }
+        // The save and the teardown wait can each take seconds.
+        self.refresh_app_clock();
         self.app.retire_session_writer();
         self.release_sockets_after_save();
 
@@ -672,11 +700,7 @@ impl HeadlessServer {
         };
 
         let terminal_size = client.terminal_size;
-        let host_cell_size = if client.cell_size.is_known() {
-            client.cell_size
-        } else {
-            shepr_termio::host_term::cell_size::HostCellSize::default()
-        };
+        let host_cell_size = client.cell_size.or_default();
         let host_terminal_theme = shell.host_terminal_theme;
         let host_terminal_appearance = shell.host_terminal_appearance;
         let host_terminal_appearance_explicit = shell.host_terminal_appearance_explicit;

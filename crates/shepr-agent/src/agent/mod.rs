@@ -796,6 +796,11 @@ impl Agent {
         self.descriptor().title_activity_glyphs
     }
 
+    /// Whether this agent's OSC title can start with a recognized activity glyph.
+    pub fn has_title_activity_glyph(self, glyph: char) -> bool {
+        is_braille_activity_glyph(glyph) || self.activity_glyphs().contains(glyph)
+    }
+
     pub const fn prompt_observation(self) -> bool {
         self.descriptor().prompt_observation
     }
@@ -835,6 +840,12 @@ impl Agent {
     pub fn screen_manifest_agents() -> impl Iterator<Item = Self> {
         Self::all().filter(|agent| agent.screen_manifest())
     }
+}
+
+const BRAILLE_ACTIVITY_GLYPH_RANGE: std::ops::RangeInclusive<char> = '\u{2800}'..='\u{28ff}';
+
+fn is_braille_activity_glyph(glyph: char) -> bool {
+    BRAILLE_ACTIVITY_GLYPH_RANGE.contains(&glyph)
 }
 
 fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {

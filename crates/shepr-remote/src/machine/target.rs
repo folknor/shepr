@@ -3,61 +3,89 @@ use std::ops::Deref;
 
 const MAX_SSH_TARGET_BYTES: usize = 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshTargetError {
+    Empty,
+    StartsWithDash,
+    ControlCharacters,
+    TooLong,
+    PasswordInAuthority,
+}
+
+impl fmt::Display for SshTargetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("SSH target must not be empty"),
+            Self::StartsWithDash => formatter.write_str("SSH target must not start with '-'"),
+            Self::ControlCharacters => {
+                formatter.write_str("SSH target must not contain control characters")
+            }
+            Self::TooLong => write!(
+                formatter,
+                "SSH target must be at most {MAX_SSH_TARGET_BYTES} bytes"
+            ),
+            Self::PasswordInAuthority => {
+                formatter.write_str("SSH target must not contain a password")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SshTargetError {}
+
 /// A checked SSH destination shared by saved-machine state and SSH transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshTarget(String);
 
 pub trait IntoSshTarget {
-    fn into_ssh_target(self) -> Result<SshTarget, String>;
+    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError>;
 }
 
 impl IntoSshTarget for SshTarget {
-    fn into_ssh_target(self) -> Result<SshTarget, String> {
+    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
         Ok(self)
     }
 }
 
 impl IntoSshTarget for String {
-    fn into_ssh_target(self) -> Result<SshTarget, String> {
+    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
         SshTarget::parse(self)
     }
 }
 
 impl IntoSshTarget for &str {
-    fn into_ssh_target(self) -> Result<SshTarget, String> {
+    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
         SshTarget::parse(self)
     }
 }
 
 impl IntoSshTarget for &String {
-    fn into_ssh_target(self) -> Result<SshTarget, String> {
+    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
         SshTarget::parse(self.clone())
     }
 }
 
 impl SshTarget {
-    pub fn parse(value: impl Into<String>) -> Result<Self, String> {
+    pub fn parse(value: impl Into<String>) -> Result<Self, SshTargetError> {
         let value = value.into();
         if value.is_empty() {
-            return Err("SSH target must not be empty".into());
+            return Err(SshTargetError::Empty);
         }
         if value.starts_with('-') {
-            return Err("SSH target must not start with '-'".into());
+            return Err(SshTargetError::StartsWithDash);
         }
         if value.chars().any(char::is_control) {
-            return Err("SSH target must not contain control characters".into());
+            return Err(SshTargetError::ControlCharacters);
         }
         if value.len() > MAX_SSH_TARGET_BYTES {
-            return Err(format!(
-                "SSH target must be at most {MAX_SSH_TARGET_BYTES} bytes"
-            ));
+            return Err(SshTargetError::TooLong);
         }
         let authority = value.strip_prefix("ssh://").unwrap_or(&value);
         if authority
             .rsplit_once('@')
             .is_some_and(|(userinfo, _)| userinfo.contains(':'))
         {
-            return Err("SSH target must not contain a password".into());
+            return Err(SshTargetError::PasswordInAuthority);
         }
         Ok(Self(value))
     }
@@ -100,6 +128,11 @@ mod tests {
 
     #[test]
     fn ssh_target_rejects_unsafe_or_unsupported_values() {
+        assert_eq!(SshTarget::parse(""), Err(SshTargetError::Empty));
+        assert_eq!(
+            SshTarget::parse("-oProxyCommand=x"),
+            Err(SshTargetError::StartsWithDash)
+        );
         for target in [
             "-oProxyCommand=x",
             "",

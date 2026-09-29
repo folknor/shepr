@@ -92,7 +92,10 @@ pub fn wait_client_stream_readable(
     use std::os::fd::AsFd as _;
     let interprocess::local_socket::Stream::UdSocket(stream) = stream;
     // Bound cancellation latency without polling idle connections hundreds of times per second.
-    match poll_fd_readable(stream.as_fd().as_raw_fd(), 100) {
+    match poll_fd_readable(
+        stream.as_fd().as_raw_fd(),
+        super::limits::CLIENT_STREAM_POLL_INTERVAL_MS,
+    ) {
         Err(error) if error.kind() != std::io::ErrorKind::Interrupted => Err(error),
         _ => Ok(()),
     }

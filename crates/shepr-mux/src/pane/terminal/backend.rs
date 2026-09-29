@@ -139,13 +139,8 @@ impl PaneTerminal {
         }
     }
 
-    pub(crate) fn process_pty_bytes(
-        &self,
-        pane_id: PaneId,
-        shell_pid: u32,
-        bytes: &[u8],
-    ) -> ProcessBytesResult {
-        self.process_pty_bytes_at(pane_id, shell_pid, bytes, Instant::now())
+    pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
+        self.process_pty_bytes_at(pane_id, bytes, Instant::now())
     }
 
     /// [`Self::process_pty_bytes`] at a stated instant, which decides whether
@@ -153,7 +148,6 @@ impl PaneTerminal {
     pub(super) fn process_pty_bytes_at(
         &self,
         pane_id: PaneId,
-        _shell_pid: u32,
         bytes: &[u8],
         now: Instant,
     ) -> ProcessBytesResult {

@@ -154,6 +154,7 @@ impl App {
                 *rows,
                 *cols,
                 allow_empty_theme,
+                now,
             );
             if changed && !self.startup_per_agent_delay.is_zero() {
                 self.next_agent_resume_at = Some(now + self.startup_per_agent_delay);
@@ -369,6 +370,7 @@ impl App {
             rows,
             cols,
             allow_empty_theme,
+            self.clock.now,
         );
         if changed {
             self.schedule_session_save();
@@ -388,6 +390,7 @@ impl App {
         rows: u16,
         cols: u16,
         allow_empty_theme: bool,
+        now: Instant,
     ) -> bool {
         let host_terminal_theme = self.state.host_terminal_theme;
         if host_terminal_theme.is_empty() && !allow_empty_theme {
@@ -436,7 +439,7 @@ impl App {
             if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                 terminal.abandon_agent_resume(
                     "Saved directory is unavailable. Restore the directory and restart this session.".into(),
-                    Instant::now(),
+                    now,
                 );
             }
             return true;
@@ -474,7 +477,7 @@ impl App {
                         format!(
                             "Could not start the saved shell: {err}. Fix the shell configuration and restart this session."
                         ),
-                        Instant::now(),
+                        now,
                     );
                 }
                 return true;
@@ -505,7 +508,7 @@ impl App {
             // (missing directory, unstartable shell) leaves a pane with no
             // runtime at all, where the name is kept like any unavailable
             // restored pane's so a later save writes it back.
-            terminal.begin_managed_agent_resume(Instant::now(), MANAGED_AGENT_RESUME_TIMEOUT);
+            terminal.begin_managed_agent_resume(now, MANAGED_AGENT_RESUME_TIMEOUT);
         }
         true
     }

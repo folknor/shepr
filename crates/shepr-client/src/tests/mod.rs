@@ -3,6 +3,8 @@ use shepr_core::env::EnvVar;
 use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
 
+mod codec;
+
 /// A public pane id from its canonical spelling (`<workspace>:p<number>`).
 /// Test ids go through the parser a server's ids go through, so a test cannot
 /// build an id no server would issue.
@@ -515,10 +517,10 @@ fn forward_clipboard_writes_osc52_to_the_supplied_test_sink() {
     let env = IsolatedEnv::new();
     env.set("SSH_CONNECTION", "1 2 3 4");
     let mut output = Vec::new();
-    clipboard_forwarding::forward_clipboard_with_writer("dGVzdA==", &mut output)
+    clipboard_forwarding::forward_clipboard("dGVzdA==", &mut output)
         .expect("valid base64 is written through OSC 52");
     assert_eq!(output, b"\x1b]52;c;dGVzdA==\x07");
-    let error = clipboard_forwarding::forward_clipboard_with_writer("not base64", &mut output)
+    let error = clipboard_forwarding::forward_clipboard("not base64", &mut output)
         .expect_err("invalid base64 is rejected");
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }

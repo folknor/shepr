@@ -249,7 +249,7 @@ impl AppState {
             .pane_state(pane_id)?
             .attached_terminal_id
             .clone();
-        let now = Instant::now();
+        let now = self.clock_now;
         let (mutation, managed_changed, agent_name_changed, unchanged_change) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
@@ -334,7 +334,7 @@ impl AppState {
         &mut self,
         pane_id: PaneId,
     ) -> Option<PaneStateUpdate> {
-        let observed_at = std::time::Instant::now();
+        let observed_at = self.clock_now;
         let update = self.update_terminal_state(pane_id, |terminal| {
             let agent = terminal.effective_known_agent().or(terminal.detected_agent);
             if agent.is_none() && !terminal.full_lifecycle_hook_authority_active() {

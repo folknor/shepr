@@ -90,7 +90,7 @@ impl AppState {
         focus: bool,
     ) -> Option<shepr_mux::workspace::TabCreationOutcome> {
         let workspace = self.workspaces.get_mut(workspace_index)?;
-        let outcome = workspace.commit_new_tab(tab);
+        let outcome = workspace.commit_new_tab(tab)?;
         self.terminals.insert(terminal.id.clone(), terminal);
         if focus {
             self.switch_workspace_tab(workspace_index, outcome.tab_index);
@@ -110,7 +110,7 @@ impl AppState {
         let outcome = self
             .workspaces
             .get_mut(workspace_index)?
-            .commit_new_tab(tab);
+            .commit_new_tab(tab)?;
         for terminal in terminals {
             self.terminals.insert(terminal.id.clone(), terminal);
         }

@@ -171,7 +171,7 @@ impl App {
         self.state.tab_bar_right.clear();
         self.state.tab_bar_right_separator = TabBarText::new(separator).into_string();
 
-        let now = std::time::Instant::now();
+        let now = self.clock.now;
         for entry in entries {
             match entry {
                 ValidatedTabBarRightEntry::Zoom => {
@@ -279,6 +279,7 @@ impl App {
                 runtime.segment_index,
                 runtime.command.clone(),
                 runtime.timeout,
+                tokio::time::Instant::from_std(now),
                 environment.clone(),
                 cwd.clone(),
             ));
@@ -567,6 +568,7 @@ fn spawn_status_command(
     segment_index: usize,
     command: String,
     timeout: Duration,
+    started_at: tokio::time::Instant,
     environment: Vec<(String, String)>,
     cwd: std::path::PathBuf,
 ) -> StatusCommandTask {
@@ -575,7 +577,7 @@ fn spawn_status_command(
         process_group: Mutex::new(None),
     });
     let task_control = Arc::clone(&control);
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = started_at + timeout;
     let task = tokio::spawn(async move {
         let result = run_status_command(
             task_control.as_ref(),
@@ -611,6 +613,7 @@ async fn run_status_command(
     environment: Vec<(String, String)>,
     cwd: std::path::PathBuf,
 ) -> Result<Option<String>, String> {
+    // clock-io-ok: a task may first be polled after its subprocess deadline.
     if control.is_terminated() || tokio::time::Instant::now() >= deadline {
         return Err(status_command_timeout_error(timeout));
     }
@@ -721,6 +724,7 @@ mod tests {
             3,
             multiline_command(),
             Duration::from_secs(2),
+            tokio::time::Instant::now(),
             Vec::new(),
             command_cwd(),
         );
@@ -748,11 +752,11 @@ mod tests {
             3,
             command,
             Duration::from_secs(1),
+            tokio::time::Instant::now() - Duration::from_secs(2),
             Vec::new(),
             command_cwd(),
         );
 
-        std::thread::sleep(Duration::from_millis(1100));
         let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
             .await
             .expect("status command timed out")
@@ -776,6 +780,7 @@ mod tests {
             3,
             over_cap_command(),
             Duration::from_secs(2),
+            tokio::time::Instant::now(),
             Vec::new(),
             command_cwd(),
         );

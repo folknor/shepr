@@ -261,21 +261,25 @@ pub fn run_remote_api_bridge(
 /// Operator hint lines for a failed saved-machine SSH operation, one per
 /// line and without a trailing newline. Empty when there is no hint. The
 /// binary renders them; this crate does not print.
-pub fn saved_ssh_error_hint(err: &std::io::Error, target: &str) -> Vec<String> {
-    if is_remote_host_key_error(err) {
+pub fn saved_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
+    if err.is_host_key() {
         vec![
             "hint: saved machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
                 .to_string(),
         ]
     } else {
-        remote_error_hint(err, target)
+        remote_error_hint_for_failure(err, target)
     }
 }
 
 /// Operator hint lines for a failed remote launch, one per line and without a
 /// trailing newline. Empty when there is no hint.
-pub fn remote_error_hint(err: &std::io::Error, target: &str) -> Vec<String> {
-    if is_remote_auth_error(err) {
+pub fn remote_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
+    remote_error_hint_for_failure(err, target)
+}
+
+fn remote_error_hint_for_failure(failure: &SshFailureDiagnostic, target: &str) -> Vec<String> {
+    if failure.requires_authentication() {
         vec![
             format!(
                 "hint: verify SSH access first with `{}`.",
@@ -287,14 +291,6 @@ pub fn remote_error_hint(err: &std::io::Error, target: &str) -> Vec<String> {
     } else {
         Vec::new()
     }
-}
-
-fn is_remote_host_key_error(err: &std::io::Error) -> bool {
-    SshFailureDiagnostic::from_error(err).is_host_key()
-}
-
-fn is_remote_auth_error(err: &std::io::Error) -> bool {
-    SshFailureDiagnostic::from_error(err).requires_authentication()
 }
 
 fn ssh_check_command(target: &str) -> String {
@@ -315,11 +311,15 @@ mod tests {
                 Some(SSH_OWN_FAILURE_EXIT_CODE),
                 message.into(),
             );
-            assert!(is_remote_host_key_error(&std::io::Error::other(failure)));
+            assert!(!saved_ssh_error_hint(&failure, "host").is_empty());
         }
-        assert!(!is_remote_host_key_error(&std::io::Error::other(
-            "server closed connection"
-        )));
+        assert!(
+            saved_ssh_error_hint(
+                &SshFailureDiagnostic::from_message("server closed connection"),
+                "host"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -328,9 +328,7 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "remote platform detection failed: user@host: Permission denied (publickey).".into(),
         );
-        let err = std::io::Error::other(diagnostic);
-
-        assert!(is_remote_auth_error(&err));
+        assert!(!remote_error_hint_for_failure(&diagnostic, "host").is_empty());
     }
 
     #[test]
@@ -340,16 +338,16 @@ mod tests {
             "remote server status failed: user@host: Permission denied (keyboard-interactive)."
                 .into(),
         );
-        let err = std::io::Error::other(diagnostic);
-
-        assert!(is_remote_auth_error(&err));
+        assert!(!remote_error_hint_for_failure(&diagnostic, "host").is_empty());
     }
 
     #[test]
     fn remote_auth_error_ignores_non_auth_errors() {
-        let err = std::io::Error::other("remote platform detection failed: unsupported platform");
+        let diagnostic = SshFailureDiagnostic::from_message(
+            "remote platform detection failed: unsupported platform",
+        );
 
-        assert!(!is_remote_auth_error(&err));
+        assert!(remote_error_hint_for_failure(&diagnostic, "host").is_empty());
     }
 
     #[test]
@@ -359,9 +357,7 @@ mod tests {
             "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation"
                 .into(),
         );
-        let err = std::io::Error::other(diagnostic);
-
-        assert!(is_remote_auth_error(&err));
+        assert!(!remote_error_hint_for_failure(&diagnostic, "host").is_empty());
     }
 
     #[test]
@@ -370,9 +366,7 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "Permission denied (publickey). Host key verification failed.".into(),
         );
-        let err = std::io::Error::other(diagnostic);
-
-        assert!(!is_remote_auth_error(&err));
+        assert!(remote_error_hint_for_failure(&diagnostic, "host").is_empty());
     }
 
     #[test]

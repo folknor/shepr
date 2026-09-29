@@ -220,23 +220,6 @@ and `PANE_COLORTERM` directly instead of the hard-coded
 scrub list verbatim, so a key added to production is not tested. Enforcement
 named: export the list and iterate it.
 
-## HYGG-023 - The only codec exercise of `ValidatedConfig` covers the empty case of every interesting field
-
-`codec::to_vec(&ValidatedConfig::test_default())` in `shepr-client`
-(`shell/tests/mod.rs`, `shell_runtime.rs`, `endpoint/activation_tests.rs`) is
-the whole of it. `test_default()` has empty `tab_bar_right`, default sidebar
-rows, no styled tokens, no rules and no `rows_by_agent`, so every interesting
-branch of `shepr-config/src/wire.rs` - `WireTabBarRightEntry::Command`,
-`WireAgentSidebarToken::Styled` with rules, `rows_by_agent` - is encoded by no
-test. It reads as coverage of "config is codec-safe". `shepr-config` cannot test
-this itself: it does not depend on `shepr-protocol`, correctly, by the layering
-in `brokkr.toml`.
-
-Enforcement named: one test in `shepr-client` (or a maximal fixture in
-`shepr-test-support`) that round-trips a config exercising every `wire.rs`
-variant and asserts equality. The hunter calls this the single highest-value
-missing test in that scope, and the data half of HYGG-067.
-
 ## HYGG-034 - `EventHub::events_after` cannot report what its production sibling reports
 
 `crates/shepr-api/src/event_hub.rs`. The test-support method returns
@@ -283,13 +266,6 @@ module, `IsolatedEnv` can iterate that module's full list instead of restating a
 subset, and a `brokkr.toml` text rule forbidding env-name literals elsewhere
 keeps the list complete by construction. Related: HYGG-011 (the same shape
 inside `shepr-agent`'s own test helper).
-
-## HYGG-057 - `is_posix_acl_xattr` is keyed on the `system.posix_acl_` prefix
-
-`shepr-platform/src/config_file.rs`. Correct today; a filesystem that expresses
-access control under another prefix (a security label, richacl) falls into the
-best-effort branch that ignores failures. The comment says as much, which the
-hunter calls the honest version.
 
 ## HYGG-058 - The `SHEPR_` prefix scrub silently keeps a non-UTF-8 key
 
@@ -413,33 +389,6 @@ observable at runtime. Fix named: log
 at `debug` which includes were emitted and which paths were skipped; the path
 list itself cannot be enforced against OpenSSH's actual search order.
 
-## HYGG-080 - The remote `status --json` contract is two independent structs with no shared type
-
-`src/cli/status.rs` defines `ServerStatusJson`/`ClientStatusJson` (`Serialize`);
-`shepr-remote` defines `RemoteServerStatusJson`/`RemoteClientStatusJson`
-(`Deserialize`) and parses the same JSON over SSH. Field names (`running`,
-`version`, `build_id`, `capabilities.detached_server_daemon`) are spelled
-independently on both sides. Renaming `running` in `status.rs` breaks every
-saved machine at runtime and the build says nothing. The only thing pinning them
-is a hardcoded JSON literal in `attach.rs`, written by hand, which can drift
-from `status.rs` freely. Additionally, `ServerStatusJson` carries both
-`status: "running"|"not_running"` and `running: bool` - two representations of
-one fact - and `shepr-remote` reads only `running`, so the `status` string is
-unread by the only programmatic consumer.
-
-Enforcement named: put the shape in `shepr-api::schema` and have both sides use
-the one type; this is a cross-process contract inside one build, so no copy is
-needed at all. Failing that, a test that serialises `ServerStatusJson` and
-deserialises it as `RemoteServerStatusJson` - possible today and absent. A
-related rule the same hunter proposes for the producer side: a test that
-round-trips each generated remote command string
-(`"remote-client-bridge"`, `"remote-api-bridge"`,
-`"--check"`, `"status"`, `"client"`, `"server"`, `"--json"`, `"server stop"`,
-`"--session"`) through `cli::spec::command().try_get_matches_from`, so the
-parser proves the producer - the only current check is byte-for-byte golden
-strings in `attach.rs`, which pin the producer to itself and say nothing about
-the parser.
-
 ## HYGG-081 - Two `shepr-remote` comment claims nothing checks
 
 - `RemoteSsh` doc: "no noninteractive command runs past it [the attempt
@@ -539,39 +488,16 @@ feeds the buffered frame through the parser and mutates the grid), but files it
 as a live defect, so a fix pass should expect that entry in the bug document
 rather than here.
 
-## HYGG-099 - Most workspace invariants are enforced only by opt-in test calls
+## HYGG-127 - Workspace invariants can still be bypassed through public tab fields
 
-**Partly resolved:** the non-empty tab list and the in-range focused tab are now
-structural - a private `FocusedTabs` in `shepr-mux/src/workspace.rs` owns both,
-and the `Deref` impls and their `expect` are gone. `debug_assert!` is banned, so
-checking after every mutation means a real `assert!` or more structure. Open:
-the rest of what `assert_invariants_for_test` states (unique public tab and pane
-numbers, layout pane set equal to the pane records, focused pane in the layout,
-root pane present) still runs only where a test calls it.
-
-`shepr-mux/src/workspace.rs`. `Workspace::assert_invariants_for_test` (150
-lines, `#[cfg(any(test, feature = "test-api"))]`) is the real statement of the
-invariant - non-empty tabs, `active_tab` in range, unique public tab and pane
-numbers, layout pane set exactly equal to the pane record set, focused pane in
-layout, root pane present. It is called from 25 places, all of them individual
-tests that chose to call it; nothing calls it after a mutation in production and
-no mutating method calls it. The recent commit "Enforce the one-tab workspace
-invariant" gets its enforcement from the `Deref` panic plus these opt-in calls.
-
-Which are checkable: all of them, and they are already written down as
-assertions - the gap is only *when* they run. Which are false today: none the
-hunter could find by reading; the adversarial constructor
-`test_adversarial_identity_state` exists precisely to exercise the divergences.
-
-Enforcement named: either call the checker `debug_assert`-style from every
-mutating method's exit, or restructure so the checks are unnecessary -
-`tabs: Vec<Tab>` plus `active_tab: usize` is the whole problem and a
-non-empty-vec type with a focused index is the structural answer. The hunter
-prefers the second given the project's posture. The `Deref` half (an `expect` in
-a `Deref` impl, with `active_tab` public and `tabs_mut()` handing out
-`&mut [Tab]` to any crate, so a server-side caller can put `active_tab` out of
-range and the next `ws.panes` aborts the server) is filed by the hunter under
-errors, so a sibling document may carry it too.
+`shepr-mux/src/workspace.rs` and `workspace/tab.rs`: the non-empty tab list and
+focused tab are structural, and tab creation, restore and pane-tree mutations
+now check unique public tab and pane numbers, unique pane and terminal ids, and
+that each layout matches its pane records and holds its root and focused pane.
+Open: `Tab`'s public fields and `Workspace::tabs_mut()` let any crate change a
+tab without those checks (the reason for leaving them is at `tabs_mut()`).
+Closing it means private fields plus the accessors `shepr-server` actually
+needs, so the fixer must hold both crates.
 
 ## HYGG-103 - The same shape one level down: `SHEPR_*` names spelled as literals in shipped assets with no membership test
 
@@ -618,13 +544,6 @@ alacritty types in public signatures. Two soft spots recorded: the public
 `impl From<Rgb> for RgbColor` and `From<RgbColor> for Rgb`; and `CellStyle`,
 which is `pub` in a private module and reachable through `CellBasicData.style`
 but not re-exported, so callers cannot name it.
-
-## HYGG-118 - A mutation rule in `shepr-vt` that nothing checks
-
-"Every parser-driven mutation must use `with_handler`", and every mutation must
-end with `collect_damage()` (or `bump_full_damage`). Callers do this by hand:
-`write`, `flush`, `mode_set`, `resize`, the scroll methods. Enforcement named,
-structurally: call `collect_damage` inside `with_handler`.
 
 ## HYGG-126 - The `skip_after` test marker is anchored to column 0
 

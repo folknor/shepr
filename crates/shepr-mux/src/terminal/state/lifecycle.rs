@@ -64,6 +64,7 @@ impl TerminalState {
         agent_label: &str,
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
+        self.warn_unrecognized_hook_identity(source, agent_label);
         if self.hook_authority.as_ref().is_some_and(|authority| {
             authority.agent_label != agent_label || authority.source != source
         }) {

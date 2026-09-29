@@ -28,7 +28,7 @@ fn remote_setup_approval_requires_input_and_rejects_unrecognized_answers() {
 fn parse_remote_server_status_json_reads_running_server() {
     assert_eq!(
         parse_remote_server_status_json(
-            r#"{"status":"running","running":true,"version":"0.6.0","build_id":"0123456789abcdef","capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false}}"#
+            r#"{"running":true,"version":"0.6.0","build_id":"0123456789abcdef","capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false},"compatible":true,"socket":"/run/shepr.sock","session":null,"restart_needed":false}"#
         )
         .expect("test precondition"),
         RemoteServerStatus::Running {
@@ -43,7 +43,7 @@ fn parse_remote_server_status_json_reads_running_server() {
 fn parse_remote_server_status_json_reads_stopped_server() {
     assert_eq!(
         parse_remote_server_status_json(
-            r#"{"status":"not_running","running":false,"version":null}"#
+            r#"{"running":false,"version":null,"build_id":null,"capabilities":null,"compatible":null,"socket":"/run/shepr.sock","session":null,"restart_needed":false}"#
         )
         .expect("test precondition"),
         RemoteServerStatus::NotRunning

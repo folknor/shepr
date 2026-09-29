@@ -8,19 +8,35 @@ const PROFILE_ID_BYTES: usize = 16;
 /// `PROFILE_ID_BYTES`, which counts the bytes the full hex id encodes.
 const SHORT_ID_HEX_CHARS: usize = 16;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileIdError {
+    InvalidFormat,
+}
+
+impl fmt::Display for ProfileIdError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidFormat => formatter
+                .write_str("endpoint profile id must be 32 lowercase hexadecimal characters"),
+        }
+    }
+}
+
+impl std::error::Error for ProfileIdError {}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ProfileId(String);
 
 impl ProfileId {
-    pub fn parse(value: impl Into<String>) -> Result<Self, String> {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ProfileIdError> {
         let value = value.into();
         if value.len() != PROFILE_ID_BYTES * 2
             || !value
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            return Err("endpoint profile id must be 32 lowercase hexadecimal characters".into());
+            return Err(ProfileIdError::InvalidFormat);
         }
         Ok(Self(value))
     }
@@ -78,6 +94,10 @@ mod tests {
 
     #[test]
     fn profile_id_deserialization_preserves_the_type_invariant() {
+        assert_eq!(
+            ProfileId::parse("not-a-profile-id"),
+            Err(ProfileIdError::InvalidFormat)
+        );
         assert!(serde_json::from_str::<ProfileId>("\"not-a-profile-id\"").is_err());
     }
 }

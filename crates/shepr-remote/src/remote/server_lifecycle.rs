@@ -1,6 +1,5 @@
 use super::*;
 
-use serde::Deserialize;
 use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,20 +18,6 @@ pub(super) enum RemoteServerStatus {
         detached_server_daemon: bool,
     },
     NotRunning,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct RemoteServerStatusJson {
-    pub(super) running: bool,
-    pub(super) version: Option<String>,
-    #[serde(default)]
-    pub(super) build_id: Option<String>,
-    pub(super) capabilities: Option<RemoteServerCapabilitiesJson>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct RemoteServerCapabilitiesJson {
-    pub(super) detached_server_daemon: bool,
 }
 
 pub(super) fn ensure_remote_server_ready(
@@ -98,9 +83,10 @@ pub(super) fn remote_server_status(
 }
 
 pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
-    let parsed: RemoteServerStatusJson = serde_json::from_str(status).map_err(|err| {
-        io::Error::other(format!("could not parse remote server status JSON: {err}"))
-    })?;
+    let parsed: shepr_api::schema::ServerStatusJson =
+        serde_json::from_str(status).map_err(|err| {
+            io::Error::other(format!("could not parse remote server status JSON: {err}"))
+        })?;
     if !parsed.running {
         return Ok(RemoteServerStatus::NotRunning);
     }

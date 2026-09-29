@@ -741,6 +741,9 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
     }
 }
 
+/// Deserializes the saved shape only. Semantic checks stay in `restore`, so
+/// one invalid tab can be dropped while healthy tabs survive and the caller
+/// can back up the original session file before its next save.
 pub fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
     serde_json::from_str(content).map_err(|e| e.to_string())
 }

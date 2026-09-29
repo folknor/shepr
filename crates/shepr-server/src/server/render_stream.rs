@@ -11,6 +11,26 @@ use shepr_protocol::{
 };
 use shepr_termio::blit::{BlitEncoder, EncodedBlit};
 
+fn warn_surface_encoding_failure(
+    encoding: &'static str,
+    error: &impl std::fmt::Display,
+    last: &PaneSurfaceFrame,
+    surface: &PaneSurfaceFrame,
+) {
+    tracing::warn!(
+        %error,
+        encoding = %encoding,
+        boot_id = %surface.boot_id,
+        base_projection_revision = ?last.projection_revision,
+        base_surface_revision = ?last.surface_revision,
+        projection_revision = ?surface.projection_revision,
+        surface_revision = ?surface.surface_revision,
+        width = surface.frame.width,
+        height = surface.frame.height,
+        "failed to encode compact surface update"
+    );
+}
+
 /// Per-client render baseline for the selected render encoding.
 pub(crate) enum ClientRenderState {
     /// Semantic clients compare full frame data and skip identical frames.
@@ -145,10 +165,15 @@ impl ClientRenderState {
         let committed_surface = surface.clone();
         let mut message = ServerMessage::PaneSurface(surface);
         let delta = last_surface.as_deref().and_then(|last| {
-            shepr_protocol::surface_delta::message(last, &mut message)
-                .map_err(|error| tracing::warn!(%error, "failed to encode surface delta"))
-                .ok()
-                .flatten()
+            match shepr_protocol::surface_delta::message(last, &mut message) {
+                Ok(delta) => delta,
+                Err(error) => {
+                    if let ServerMessage::PaneSurface(surface) = &message {
+                        warn_surface_encoding_failure("delta", &error, last, surface);
+                    }
+                    None
+                }
+            }
         });
         let reused = if let ServerMessage::PaneSurface(surface) = &mut message {
             delta
@@ -156,7 +181,15 @@ impl ClientRenderState {
                 .then_some(last_surface.as_deref())
                 .flatten()
                 .filter(|last| last.frame == surface.frame)
-                .and_then(|last| shepr_protocol::surface_reuse::message(last, surface))
+                .and_then(
+                    |last| match shepr_protocol::surface_reuse::message(last, surface) {
+                        Ok(reused) => reused,
+                        Err(error) => {
+                            warn_surface_encoding_failure("reuse", &error, last, surface);
+                            None
+                        }
+                    },
+                )
         } else {
             None
         };

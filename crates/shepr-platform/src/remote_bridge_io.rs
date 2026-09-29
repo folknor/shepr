@@ -130,7 +130,7 @@ fn is_closed_socket(err: &std::io::Error) -> bool {
 }
 
 fn copy_flush<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::Result<()> {
-    let mut buffer = [0_u8; 16 * 1024];
+    let mut buffer = [0_u8; super::limits::REMOTE_BRIDGE_COPY_BUFFER_BYTES];
     loop {
         let read = match reader.read(&mut buffer) {
             Ok(0) => return Ok(()),

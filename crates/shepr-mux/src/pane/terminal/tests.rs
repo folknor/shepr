@@ -578,10 +578,10 @@ fn process_pty_bytes_reports_latest_working_directory_report() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let partial = pane.process_pty_bytes(pane_id, 0, b"\x1b]7;file:///tmp/shepr%20");
+    let partial = pane.process_pty_bytes(pane_id, b"\x1b]7;file:///tmp/shepr%20");
     assert_eq!(partial.reported_cwd, None);
 
-    let completed = pane.process_pty_bytes(pane_id, 0, b"repo\x07");
+    let completed = pane.process_pty_bytes(pane_id, b"repo\x07");
     assert_eq!(
         completed.reported_cwd,
         Some(std::path::PathBuf::from("/tmp/shepr repo"))
@@ -589,7 +589,6 @@ fn process_pty_bytes_reports_latest_working_directory_report() {
 
     let latest = pane.process_pty_bytes(
         pane_id,
-        0,
         b"\x1b]9;9;/tmp/conemu\x1b\\\x1b]1337;CurrentDir=/tmp/iterm2\x1b\\",
     );
     assert_eq!(
@@ -606,20 +605,20 @@ fn process_pty_bytes_reports_only_completed_title_changes() {
 
     assert!(
         !pane
-            .process_pty_bytes(pane_id, 0, b"\x1b]0;buil")
+            .process_pty_bytes(pane_id, b"\x1b]0;buil")
             .terminal_title_changed
     );
     assert!(
-        pane.process_pty_bytes(pane_id, 0, b"ding\x07")
+        pane.process_pty_bytes(pane_id, b"ding\x07")
             .terminal_title_changed
     );
     assert!(
         !pane
-            .process_pty_bytes(pane_id, 0, b"\x1b]2;building\x07")
+            .process_pty_bytes(pane_id, b"\x1b]2;building\x07")
             .terminal_title_changed
     );
     assert!(
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]2;done\x07")
+        pane.process_pty_bytes(pane_id, b"\x1b]2;done\x07")
             .terminal_title_changed
     );
 }
@@ -629,8 +628,7 @@ fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
     let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = PaneTerminal::new(terminal);
 
-    let result =
-        pane.process_pty_bytes(PaneId::from_raw(1), 0, b"output\x1b]52;c;Y2xpcGJvYXJk\x07");
+    let result = pane.process_pty_bytes(PaneId::from_raw(1), b"output\x1b]52;c;Y2xpcGJvYXJk\x07");
 
     assert!(result.request_render);
     assert_eq!(result.render_delay, None);
@@ -645,7 +643,7 @@ fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
 
-    let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output");
+    let result = pane.process_pty_bytes(PaneId::from_raw(1), b"live output");
 
     assert!(result.clipboard_writes.is_empty());
 }
@@ -656,7 +654,7 @@ fn seeded_history_pwd_does_not_leak_into_live_output() {
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]7;file:///tmp/restored\x07");
 
-    let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output");
+    let result = pane.process_pty_bytes(PaneId::from_raw(1), b"live output");
 
     assert_eq!(result.reported_cwd, None);
 }
@@ -722,7 +720,7 @@ fn cursor_state_uses_terminal_default_until_child_sets_shape() {
         shepr_protocol::CursorShapeParam::Default
     );
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[6 q");
+    pane.process_pty_bytes(pane_id, b"\x1b[6 q");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
@@ -736,13 +734,13 @@ fn cursor_state_returns_terminal_default_after_decscusr_reset() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[2 q");
+    pane.process_pty_bytes(pane_id, b"\x1b[2 q");
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
         shepr_protocol::CursorShapeParam::SteadyBlock
     );
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[0 q");
+    pane.process_pty_bytes(pane_id, b"\x1b[0 q");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
@@ -756,9 +754,9 @@ fn cursor_shape_tracker_handles_split_decscusr_sequences() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[");
-    pane.process_pty_bytes(pane_id, 0, b"5 ");
-    pane.process_pty_bytes(pane_id, 0, b"q");
+    pane.process_pty_bytes(pane_id, b"\x1b[");
+    pane.process_pty_bytes(pane_id, b"5 ");
+    pane.process_pty_bytes(pane_id, b"q");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
@@ -772,8 +770,8 @@ fn cursor_state_reports_the_live_position() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"x");
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[6;21H");
+    pane.process_pty_bytes(pane_id, b"x");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b[6;21H");
 
     assert_eq!(result.render_delay, None);
     assert_eq!(
@@ -789,12 +787,12 @@ fn cursor_state_returns_terminal_default_after_ris() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[4 q");
+    pane.process_pty_bytes(pane_id, b"\x1b[4 q");
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
         shepr_protocol::CursorShapeParam::SteadyUnderline
     );
-    pane.process_pty_bytes(pane_id, 0, b"\x1bc");
+    pane.process_pty_bytes(pane_id, b"\x1bc");
 
     assert_eq!(
         pane.cursor_state().expect("test precondition").shape,
@@ -810,7 +808,7 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[3");
+    pane.process_pty_bytes(pane_id, b"\x1b[3");
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: Some(shepr_termio::host_term::theme::RgbColor {
             r: 0xaa,
@@ -820,7 +818,7 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
         background: None,
         ..Default::default()
     });
-    pane.process_pty_bytes(pane_id, 0, b"1mred");
+    pane.process_pty_bytes(pane_id, b"1mred");
 
     assert_eq!(pane.visible_text(), "red\n");
 }
@@ -835,7 +833,6 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
 
     let begin = pane.process_pty_bytes(
         pane_id,
-        0,
         b"\x1b[?2026h\x1b]52;c;aGk=\x07\x1b]2;framed\x07\x1b[6n",
     );
     assert!(begin.terminal_responses.is_empty());
@@ -875,7 +872,7 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
             .is_empty()
     );
 
-    let next = pane.process_pty_bytes(pane_id, 0, b"x");
+    let next = pane.process_pty_bytes(pane_id, b"x");
     assert!(next.terminal_responses.is_empty());
     assert!(next.clipboard_writes.is_empty());
 }
@@ -886,7 +883,7 @@ fn tick_ends_an_expired_synchronized_update() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let begin = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2026h\x1b[5n");
+    let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
     assert!(begin.render_delay.is_some());
     let deadline = shepr_vt::lock_terminal_core(&pane.core)
         .expect("test precondition")
@@ -913,7 +910,7 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let begin = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2026h\x1b[5n");
+    let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
     assert!(begin.terminal_responses.is_empty());
     let deadline = shepr_vt::lock_terminal_core(&pane.core)
         .expect("test precondition")
@@ -922,13 +919,12 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
         .expect("test precondition");
 
     // Before the deadline the new bytes join the open update.
-    let inside = pane.process_pty_bytes_at(pane_id, 0, b"a", deadline - Duration::from_millis(1));
+    let inside = pane.process_pty_bytes_at(pane_id, b"a", deadline - Duration::from_millis(1));
     assert!(inside.terminal_responses.is_empty());
     assert!(!inside.request_render);
     assert!(inside.render_delay.is_some());
 
-    let late =
-        pane.process_pty_bytes_at(pane_id, 0, b"\x1b[6n", deadline + Duration::from_millis(1));
+    let late = pane.process_pty_bytes_at(pane_id, b"\x1b[6n", deadline + Duration::from_millis(1));
     assert_eq!(
         late.terminal_responses,
         vec![
@@ -1215,7 +1211,7 @@ fn terminal_modified_enter_tracks_live_protocol_negotiation() {
         ("\x1b[>4", mode_two),
         ("n", legacy),
     ] {
-        pane.process_pty_bytes(pane_id, 0, sequence.as_bytes());
+        pane.process_pty_bytes(pane_id, sequence.as_bytes());
         for (modifiers, expected) in [
             KeyModifiers::SHIFT,
             KeyModifiers::CONTROL,
@@ -1441,7 +1437,7 @@ fn terminal_key_encoder_updates_after_terminal_mode_changes() {
     );
     assert_eq!(before, b"\x1b[A");
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[?1h");
+    pane.process_pty_bytes(pane_id, b"\x1b[?1h");
 
     let after = pane.encode_terminal_key(
         shepr_termio::input::TerminalKey::new(
@@ -1465,7 +1461,7 @@ fn terminal_key_encoder_updates_after_kitty_flag_changes() {
 
     let before =
         pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
+    pane.process_pty_bytes(pane_id, b"\x1b[>1u");
     let after =
         pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
 
@@ -1478,7 +1474,7 @@ fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
+    pane.process_pty_bytes(pane_id, b"\x1b[>5u");
 
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
@@ -1512,7 +1508,7 @@ fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
+    pane.process_pty_bytes(pane_id, b"\x1b[>1u");
 
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b\x7f").expect("test precondition");
@@ -1527,7 +1523,7 @@ fn terminal_kitty_pane_preserves_legacy_ctrl_alt_letter() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
+    pane.process_pty_bytes(pane_id, b"\x1b[>5u");
 
     let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b\x06");
     let shepr_termio::input::raw_input::RawInputEvent::Key(key) = events.remove(0) else {
@@ -1572,7 +1568,7 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
 
     let kitty = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
     let pane_id = PaneId::from_raw(1);
-    kitty.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
+    kitty.process_pty_bytes(pane_id, b"\x1b[>1u");
 
     assert_eq!(
         kitty.encode_terminal_key(
@@ -1588,7 +1584,7 @@ fn terminal_key_encoders_are_isolated_per_pane() {
     let first = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
     let second = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
 
-    first.process_pty_bytes(PaneId::from_raw(1), 0, b"\x1b[?1h");
+    first.process_pty_bytes(PaneId::from_raw(1), b"\x1b[?1h");
 
     let first_encoded = first.encode_terminal_key(
         shepr_termio::input::TerminalKey::new(
@@ -1869,11 +1865,7 @@ fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback()
         let pane_id = PaneId::from_raw(1);
 
         pane.resize(shepr_core::geometry::PaneGeometry::new(10, 3, 0, 0));
-        pane.process_pty_bytes(
-            pane_id,
-            0,
-            b"000000\r\n000001\r\n000002\r\n000003\r\n000004",
-        );
+        pane.process_pty_bytes(pane_id, b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
 
         let metrics = pane.scroll_metrics().expect("scroll metrics after output");
         assert_eq!(metrics.offset_from_bottom, 0);
@@ -1893,7 +1885,7 @@ fn resize_that_removes_scrollback_restores_live_follow() {
     let resized = pane.scroll_metrics().expect("scroll metrics after resize");
     assert_eq!(resized.max_offset_from_bottom, 0);
 
-    pane.process_pty_bytes(pane_id, 0, b"\r\n000005\r\n000006");
+    pane.process_pty_bytes(pane_id, b"\r\n000005\r\n000006");
 
     let metrics = pane.scroll_metrics().expect("scroll metrics after output");
     assert_eq!(metrics.offset_from_bottom, 0);
@@ -2024,7 +2016,7 @@ fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
     let cursor = pane.cursor_state().expect("test precondition");
     assert_eq!((cursor.x, cursor.y), (0, 2));
 
-    pane.process_pty_bytes(PaneId::from_raw(1), 0, b"new $ ");
+    pane.process_pty_bytes(PaneId::from_raw(1), b"new $ ");
     assert_eq!(pane.recent_text(5), "output\nuser@host $\nnew $\n");
 }
 
@@ -2193,7 +2185,7 @@ fn process_pty_bytes_answers_xtwinops_size_queries() {
     let pane_id = PaneId::from_raw(1);
     pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
 
     assert_eq!(
         result.terminal_responses,
@@ -2213,7 +2205,7 @@ fn xtwinops_size_queries_follow_successful_resize() {
     pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
     pane.resize(shepr_core::geometry::PaneGeometry::new(100, 30, 10, 20));
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
 
     assert_eq!(
         result.terminal_responses,
@@ -2237,7 +2229,7 @@ fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
             cell_width_px,
             cell_height_px,
         ));
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
+        let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
         // CSI 14 t (pixel geometry) and CSI 16 t (cell size in pixels) stay
         // silent without pixel geometry, but CSI 18 t reports characters,
         // which is always known, so it is answered regardless.
@@ -2253,13 +2245,13 @@ fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() 
     let terminal = shepr_vt::Terminal::new(91, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h");
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049h");
     assert!(
         pane.resize(shepr_core::geometry::PaneGeometry::new(92, 24, 9, 18))
             .is_empty()
     );
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2048h");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b[?2048h");
 
     assert_eq!(
         result.terminal_responses,
@@ -2290,18 +2282,18 @@ fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends(
     let pane_id = PaneId::from_raw(1);
 
     assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
-    pane_terminal.process_pty_bytes(pane_id, 0, b"ordinary output");
+    pane_terminal.process_pty_bytes(pane_id, b"ordinary output");
     assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
 
-    let begin = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h");
+    let begin = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026h");
     assert!(!begin.request_render);
     assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
 
-    let body = pane_terminal.process_pty_bytes(pane_id, 0, b"hello");
+    let body = pane_terminal.process_pty_bytes(pane_id, b"hello");
     assert!(!body.request_render);
     assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
 
-    let end = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026l");
+    let end = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026l");
     assert!(end.request_render);
     assert_eq!(pane_terminal.synchronized_output_state(), (false, 2));
 }
@@ -2495,7 +2487,7 @@ fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b_25a1;s\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b_25a1;s\x1b\\");
 
     assert!(result.terminal_responses.is_empty());
 }
@@ -2506,7 +2498,7 @@ fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[6n");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b[6n");
 
     assert_eq!(result.terminal_responses.len(), 1);
     assert!(String::from_utf8_lossy(&result.terminal_responses[0]).contains('R'));
@@ -2524,13 +2516,13 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
         ))
         .is_none()
     );
-    let query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
+    let query = pane.process_pty_bytes(pane_id, b"\x1b[?996n");
     assert_eq!(
         query.terminal_responses,
         vec![Bytes::from_static(b"\x1b[?997;1n")]
     );
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h");
+    pane.process_pty_bytes(pane_id, b"\x1b[?2031h");
     assert!(
         pane.apply_host_terminal_appearance(Some(
             shepr_termio::host_term::theme::HostAppearance::Dark
@@ -2545,7 +2537,7 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
     );
 
     assert!(pane.apply_host_terminal_appearance(None).is_none());
-    let unknown_query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
+    let unknown_query = pane.process_pty_bytes(pane_id, b"\x1b[?996n");
     assert!(unknown_query.terminal_responses.is_empty());
     assert!(
         pane.apply_host_terminal_appearance(Some(
@@ -2554,7 +2546,7 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
         .is_none()
     );
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1bc");
+    pane.process_pty_bytes(pane_id, b"\x1bc");
     assert!(
         pane.apply_host_terminal_appearance(Some(
             shepr_termio::host_term::theme::HostAppearance::Light
@@ -2571,7 +2563,6 @@ fn process_pty_bytes_returns_xtgettcap_truecolor_query_responses_without_queuing
 
     let result = pane.process_pty_bytes(
         pane_id,
-        0,
         b"\x1bP+q5463;524742;73657472676266;73657472676262\x1b\\",
     );
 
@@ -2609,13 +2600,13 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
                 ..Default::default()
             });
             let mut replies = pane
-                .process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07")
+                .process_pty_bytes(pane_id, b"\x1b]11;?\x07")
                 .terminal_responses;
             for chunk in query.chunks(if fragmented { 1 } else { query.len() }) {
-                replies.extend(pane.process_pty_bytes(pane_id, 0, chunk).terminal_responses);
+                replies.extend(pane.process_pty_bytes(pane_id, chunk).terminal_responses);
             }
             replies.extend(
-                pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x1b\\\x1bP+q5375\x1b\\")
+                pane.process_pty_bytes(pane_id, b"\x1b]11;?\x1b\\\x1bP+q5375\x1b\\")
                     .terminal_responses,
             );
             let expected = if opens_dcs {
@@ -2647,13 +2638,13 @@ fn process_pty_bytes_returns_split_xtgettcap_query_response() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q4");
+    let result = pane.process_pty_bytes(pane_id, b"\x1bP+q4");
     assert!(result.terminal_responses.is_empty());
-    let result = pane.process_pty_bytes(pane_id, 0, b"d73");
+    let result = pane.process_pty_bytes(pane_id, b"d73");
     assert!(result.terminal_responses.is_empty());
     // The parser ends DCS on ESC, before the final ST backslash.
     // Splitting ST must not lose the reply or emit it again on completion.
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b");
 
     assert_eq!(
         result.terminal_responses,
@@ -2662,7 +2653,7 @@ fn process_pty_bytes_returns_split_xtgettcap_query_response() {
             Some(b"\\E]52;%p1%s;%p2%s\\007")
         )]
     );
-    let result = pane.process_pty_bytes(pane_id, 0, b"\\");
+    let result = pane.process_pty_bytes(pane_id, b"\\");
     assert!(result.terminal_responses.is_empty());
 }
 
@@ -2672,7 +2663,7 @@ fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_re
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[c\x1bP+q5463\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b[c\x1bP+q5463\x1b\\");
 
     assert_eq!(result.terminal_responses.len(), 2);
     assert!(String::from_utf8_lossy(&result.terminal_responses[0]).contains('c'));
@@ -2688,7 +2679,7 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_re
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5463\x1b\\\x1b[c");
+    let result = pane.process_pty_bytes(pane_id, b"\x1bP+q5463\x1b\\\x1b[c");
 
     assert_eq!(result.terminal_responses.len(), 2);
     assert_eq!(
@@ -2713,7 +2704,7 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5463\x1b\\\x1b]11;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1bP+q5463\x1b\\\x1b]11;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -2730,7 +2721,7 @@ fn host_theme_update_preserves_child_default_color_override() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07");
     assert!(result.terminal_responses.is_empty());
 
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
@@ -2743,7 +2734,7 @@ fn host_theme_update_preserves_child_default_color_override() {
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;?\x07");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]11;rgb:1111/2222/3333\x07")]
@@ -2756,7 +2747,7 @@ fn child_default_color_reset_restores_cached_host_color() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
+    pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07");
     pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
         foreground: None,
         background: Some(shepr_termio::host_term::theme::RgbColor {
@@ -2766,10 +2757,10 @@ fn child_default_color_reset_restores_cached_host_color() {
         }),
         ..Default::default()
     });
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]111\x07");
+    pane.process_pty_bytes(pane_id, b"\x1b]111\x07");
     assert!(!pane.has_transient_default_color_override());
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;?\x07");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]11;rgb:aaaa/bbbb/cccc\x1b\\")]
@@ -2782,7 +2773,7 @@ fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]0;title\x07\x1bP+q5463\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]0;title\x07\x1bP+q5463\x1b\\");
 
     assert_eq!(
         result.terminal_responses,
@@ -2806,13 +2797,12 @@ fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
 
     // OSC ends at the ESC of its string terminator, so the reply to the
     // query arrives with the chunk that carries that ESC.
-    let result =
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07\x1b]111\x07\x1b]11;?\x1b");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07\x1b]111\x07\x1b]11;?\x1b");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\")]
     );
-    let result = pane.process_pty_bytes(pane_id, 0, b"\\\x1bP+q436f\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\\\x1bP+q436f\x1b\\");
 
     assert_eq!(
         result.terminal_responses,
@@ -2826,7 +2816,7 @@ fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q6E6F7065;4D7\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\x1bP+q6E6F7065;4D7\x1b\\");
 
     assert!(result.terminal_responses.is_empty());
 }
@@ -2837,7 +2827,7 @@ fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5375;536D756C78;536574756C63\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\x1bP+q5375;536D756C78;536574756C63\x1b\\");
 
     assert_eq!(
         result.terminal_responses,
@@ -2914,7 +2904,7 @@ fn process_pty_bytes_orders_default_color_reply_before_following_device_attribut
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07\x1b[c");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;?\x07\x1b[c");
 
     assert_eq!(result.terminal_responses.len(), 2);
     assert_eq!(
@@ -2940,7 +2930,7 @@ fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
         ),
     );
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]4;0;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -2970,7 +2960,7 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
     }
     pane.apply_host_terminal_theme(theme);
 
-    let result = pane.process_pty_bytes(pane_id, 0, queries.as_bytes());
+    let result = pane.process_pty_bytes(pane_id, queries.as_bytes());
 
     assert_eq!(result.terminal_responses.len(), 256);
     assert_eq!(
@@ -2998,7 +2988,7 @@ fn child_palette_override_survives_host_refresh_until_reset() {
             },
         ),
     );
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\");
+    pane.process_pty_bytes(pane_id, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\");
 
     pane.apply_host_terminal_theme(
         shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
@@ -3010,14 +3000,14 @@ fn child_palette_override_survives_host_refresh_until_reset() {
             },
         ),
     );
-    let overridden = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;?\x1b\\");
+    let overridden = pane.process_pty_bytes(pane_id, b"\x1b]4;7;?\x1b\\");
     assert_eq!(
         overridden.terminal_responses,
         vec![Bytes::from_static(b"\x1b]4;7;rgb:aaaa/bbbb/cccc\x1b\\")]
     );
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]104;7\x1b\\");
-    let reset = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;?\x1b\\");
+    pane.process_pty_bytes(pane_id, b"\x1b]104;7\x1b\\");
+    let reset = pane.process_pty_bytes(pane_id, b"\x1b]4;7;?\x1b\\");
     assert_eq!(
         reset.terminal_responses,
         vec![Bytes::from_static(b"\x1b]4;7;rgb:4444/5555/6666\x1b\\")]
@@ -3031,15 +3021,15 @@ fn process_pty_bytes_returns_split_palette_color_query_response() {
     let pane_id = PaneId::from_raw(1);
     let color = current_palette_color(&pane, 255);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;25");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]4;25");
     assert!(result.terminal_responses.is_empty());
     // The OSC is complete at the ESC of its terminator.
-    let result = pane.process_pty_bytes(pane_id, 0, b"5;?\x1b");
+    let result = pane.process_pty_bytes(pane_id, b"5;?\x1b");
     assert_eq!(
         result.terminal_responses,
         vec![expected_osc_rgb_response("4;255", color)]
     );
-    let result = pane.process_pty_bytes(pane_id, 0, b"\\");
+    let result = pane.process_pty_bytes(pane_id, b"\\");
 
     assert!(result.terminal_responses.is_empty());
 }
@@ -3052,7 +3042,6 @@ fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
 
     let result = pane.process_pty_bytes(
             pane_id,
-            0,
             b"\x1b]4;;?\x07\x1b]4;-1;?\x07\x1b]4;256;?\x07\x1b]4;0;?;1;?\x07\x1b]4;0;rgb:1111/2222/3333\x07",
         );
 
@@ -3078,7 +3067,7 @@ fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?\x07\x1b]11;?\x07\x1b[c");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]4;0;?\x07\x1b]11;?\x07\x1b[c");
 
     assert_eq!(result.terminal_responses.len(), 3);
     assert_eq!(
@@ -3107,7 +3096,7 @@ fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -3134,7 +3123,7 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
         ..Default::default()
     });
 
-    let palette = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?;1;?\x1b\\");
+    let palette = pane.process_pty_bytes(pane_id, b"\x1b]4;0;?;1;?\x1b\\");
     let palette_response = palette.terminal_responses.concat();
     assert!(palette_response.starts_with(b"\x1b]4;0;rgb:"));
     assert_eq!(
@@ -3145,7 +3134,7 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
         2
     );
 
-    let defaults = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;?;?\x1b\\");
+    let defaults = pane.process_pty_bytes(pane_id, b"\x1b]10;?;?;?\x1b\\");
     let default_response = defaults.terminal_responses.concat();
     assert!(
         default_response.starts_with(b"\x1b]10;rgb:"),
@@ -3170,7 +3159,7 @@ fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?;1;?\x1b\\\x1b]4;0;?\x1b\\");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]4;0;?;1;?\x1b\\\x1b]4;0;?\x1b\\");
 
     assert_eq!(result.terminal_responses.len(), 3);
     assert!(result.terminal_responses[0].starts_with(b"\x1b]4;0;rgb:"));
@@ -3184,8 +3173,8 @@ fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]10;rgb:11/22/33\x07");
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x1b\\");
+    pane.process_pty_bytes(pane_id, b"\x1b]10;rgb:11/22/33\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]10;?\x1b\\");
 
     assert_eq!(result.terminal_responses.len(), 1);
     assert!(result.terminal_responses[0].starts_with(b"\x1b]10;rgb:1111/2222/3333"));
@@ -3197,7 +3186,7 @@ fn process_pty_bytes_tracks_later_multi_value_color_set() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;rgb:44/55/66\x1b\\");
+    pane.process_pty_bytes(pane_id, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
     let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
     assert_eq!(
@@ -3227,7 +3216,7 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallbac
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]12;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -3250,8 +3239,8 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground()
         ..Default::default()
     });
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]10;rgb:11/22/33\x07");
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07");
+    pane.process_pty_bytes(pane_id, b"\x1b]10;rgb:11/22/33\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]12;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -3274,8 +3263,8 @@ fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
         ..Default::default()
     });
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b]12;rgb:11/22/33\x07");
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07");
+    pane.process_pty_bytes(pane_id, b"\x1b]12;rgb:11/22/33\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]12;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -3302,7 +3291,7 @@ fn process_pty_bytes_returns_default_color_query_responses_in_order() {
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
 
     assert_eq!(
         result.terminal_responses,
@@ -3329,14 +3318,14 @@ fn process_pty_bytes_returns_split_default_color_query_response() {
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11");
     assert!(result.terminal_responses.is_empty());
-    let result = pane.process_pty_bytes(pane_id, 0, b";?\x1b");
+    let result = pane.process_pty_bytes(pane_id, b";?\x1b");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]11;rgb:fdfd/f6f6/e3e3\x1b\\")]
     );
-    let result = pane.process_pty_bytes(pane_id, 0, b"\\");
+    let result = pane.process_pty_bytes(pane_id, b"\\");
 
     assert!(result.terminal_responses.is_empty());
 }
@@ -3356,14 +3345,14 @@ fn process_pty_bytes_returns_split_cursor_color_query_response() {
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]12");
     assert!(result.terminal_responses.is_empty());
-    let result = pane.process_pty_bytes(pane_id, 0, b";?\x1b");
+    let result = pane.process_pty_bytes(pane_id, b";?\x1b");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]12;rgb:fdfd/f6f6/e3e3\x1b\\")]
     );
-    let result = pane.process_pty_bytes(pane_id, 0, b"\\");
+    let result = pane.process_pty_bytes(pane_id, b"\\");
 
     assert!(result.terminal_responses.is_empty());
 }
@@ -3383,13 +3372,13 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
         ..Default::default()
     });
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;rgb:11/22/33\x07\x1b]11;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]11;rgb:11/22/33\x07\x1b]11;?\x07");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]11;rgb:1111/2222/3333\x07")]
     );
 
-    let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]111\x07\x1b]11;?\x07");
+    let result = pane.process_pty_bytes(pane_id, b"\x1b]111\x07\x1b]11;?\x07");
     assert_eq!(
         result.terminal_responses,
         vec![Bytes::from_static(b"\x1b]11;rgb:fdfd/f6f6/e3e3\x1b\\")]
@@ -3602,7 +3591,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     );
 
     for i in 1_100..1_150 {
-        pane.process_pty_bytes(pane_id, 0, format!("{i:06}\r\n").as_bytes());
+        pane.process_pty_bytes(pane_id, format!("{i:06}\r\n").as_bytes());
     }
     assert_eq!(
         pane.scroll_position()
@@ -3841,7 +3830,7 @@ fn full_render_leaves_dirty_rows_for_the_next_patch() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.collect_dirty_patch(8, 4);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[2;1HX");
+    pane.process_pty_bytes(pane_id, b"\x1b[2;1HX");
 
     let backend = ratatui::backend::TestBackend::new(8, 4);
     let mut host = ratatui::Terminal::new(backend).expect("test precondition");
@@ -3862,7 +3851,7 @@ fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.collect_dirty_patch(8, 6);
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[2;3HX\x1b[5;4HY");
+    pane.process_pty_bytes(pane_id, b"\x1b[2;3HX\x1b[5;4HY");
 
     let TerminalDirtyPatchOutcome::Patch(short) = pane.collect_dirty_patch(8, 3) else {
         panic!("expected a patch");
@@ -3906,16 +3895,16 @@ fn primary_history_is_unavailable_on_the_alternate_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.process_pty_bytes(pane_id, 0, b"history one\r\nhistory two\r\nprompt");
+    pane.process_pty_bytes(pane_id, b"history one\r\nhistory two\r\nprompt");
     assert!(
         pane.primary_history_ansi()
             .is_some_and(|ansi| ansi.contains("history one"))
     );
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h\x1b[2J\x1b[Hfull-screen frame");
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049h\x1b[2J\x1b[Hfull-screen frame");
     assert_eq!(pane.primary_history_ansi(), None);
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049l");
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049l");
     assert!(
         pane.primary_history_ansi()
             .is_some_and(|ansi| ansi.contains("history one") && !ansi.contains("full-screen"))
@@ -3927,14 +3916,14 @@ fn screen_text_snapshot_copies_rows_only_on_the_alternate_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = PaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.process_pty_bytes(pane_id, 0, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+    pane.process_pty_bytes(pane_id, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
 
     let (screen, cols, rows) = pane.screen_text_snapshot().expect("snapshot");
     assert_eq!(screen, shepr_vt::ActiveScreen::Primary);
     assert_eq!(cols, 20);
     assert!(rows.is_empty());
 
-    pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h\x1b[2J\x1b[Hframe");
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049h\x1b[2J\x1b[Hframe");
     let (screen, _, rows) = pane.screen_text_snapshot().expect("snapshot");
     assert_eq!(screen, shepr_vt::ActiveScreen::Alternate);
     assert_eq!(rows.len(), 3);
@@ -3945,7 +3934,7 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
     let terminal = shepr_vt::Terminal::new(20, 3, 0);
     let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
     let pane_id = PaneId::from_raw(1);
-    assert!(!pane.process_pty_bytes(pane_id, 0, b"before").core_poisoned);
+    assert!(!pane.process_pty_bytes(pane_id, b"before").core_poisoned);
     assert!(!pane.core_poisoned());
 
     // A render or API read panicking while it holds the core lock.
@@ -3959,5 +3948,5 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
 
     // Visible without any output, for the actor's idle check.
     assert!(pane.core_poisoned());
-    assert!(pane.process_pty_bytes(pane_id, 0, b"after").core_poisoned);
+    assert!(pane.process_pty_bytes(pane_id, b"after").core_poisoned);
 }

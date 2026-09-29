@@ -44,6 +44,7 @@ pub enum TabBarStatusSegment {
 /// `pane_spawn_handles`); state reaches a runtime only through the registry
 /// it is handed, keyed by terminal id.
 pub struct AppState {
+    pub(crate) clock_now: std::time::Instant,
     pub terminals:
         std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
@@ -264,6 +265,7 @@ impl AppState {
     /// Create an AppState for testing - no channels, no PTYs.
     pub fn test_new() -> Self {
         Self {
+            clock_now: super::tests::test_clock().now,
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),

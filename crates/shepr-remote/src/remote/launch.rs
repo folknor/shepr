@@ -9,6 +9,16 @@ pub fn run_remote(
     settings: super::SavedSshSettings,
     paths: &shepr_config::AppPaths,
     operator: &mut dyn Operator,
+) -> Result<(), super::SshFailureDiagnostic> {
+    run_remote_inner(remote, settings, paths, operator)
+        .map_err(|error| super::SshFailureDiagnostic::from_error(&error))
+}
+
+fn run_remote_inner(
+    remote: RemoteLaunch,
+    settings: super::SavedSshSettings,
+    paths: &shepr_config::AppPaths,
+    operator: &mut dyn Operator,
 ) -> io::Result<()> {
     let session_name = paths.session_id().display_name().to_owned();
     let runtime_dir = paths.xdg_runtime_dir();
@@ -78,6 +88,17 @@ pub fn check_saved_ssh(
 }
 
 pub fn prepare_saved_ssh(
+    paths: &shepr_config::AppPaths,
+    target: &SshTarget,
+    session_name: &str,
+    settings: super::SavedSshSettings,
+    operator: &mut dyn Operator,
+) -> Result<RemoteExecutable, super::SshFailureDiagnostic> {
+    prepare_saved_ssh_inner(paths, target, session_name, settings, operator)
+        .map_err(|error| super::SshFailureDiagnostic::from_error(&error))
+}
+
+fn prepare_saved_ssh_inner(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
     session_name: &str,

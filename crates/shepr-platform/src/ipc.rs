@@ -1,8 +1,8 @@
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -283,12 +283,6 @@ pub fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::
 /// Mode applied by [`bind_private_local_listener`]: owner read/write only.
 const PRIVATE_SOCKET_MODE: u32 = 0o600;
 
-/// How many staging directory names are tried before giving up on staging.
-/// A collision needs another process to have created exactly that name, so
-/// more than one retry only matters against someone guessing names in a
-/// shared parent directory.
-const STAGING_ATTEMPTS: u32 = 4;
-
 /// Binds a listener at `path` so the socket is never reachable with anything
 /// looser than owner-only permissions.
 ///
@@ -359,13 +353,18 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // Without a readable identity the directory is staged unmarked, and the
+    // sweep never removes an unmarked directory.
+    let owner = super::process_identity::ProcessIdentity::current()
+        .inspect_err(|error| {
+            tracing::debug!(%error, "could not record socket staging owner identity; a leaked staging directory will be retained");
+        })
+        .ok();
+    sweep_stale_socket_staging_dirs(parent);
     let mut last_error = None;
-    for _ in 0..STAGING_ATTEMPTS {
+    for _ in 0..super::limits::RANDOM_NAME_ATTEMPTS {
         // A compact random name keeps staging usable for socket paths near
         // the socket path limit.
-        // A hard kill can leave this private directory behind. Its name has
-        // no PID to distinguish an abandoned bind from a live one, and adding
-        // one would make staging unavailable for more socket paths.
         let staging_token =
             super::random::unpredictable_token().map_err(StagedBindError::RandomSource)?;
         let staging_name = format!(".s{staging_token:016x}");
@@ -380,27 +379,19 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
             }
             Err(err) => return Err(StagedBindError::Unavailable(err)),
         }
+        if let Some(owner) = owner
+            && let Err(error) = write_staging_owner_marker(&staging_dir, owner)
+        {
+            remove_staging_directory(&staging_dir, Some(owner));
+            return Err(StagedBindError::Unavailable(error));
+        }
         let staged = staging_dir.join("s");
         let result = bind_staged_and_link(&staged, path);
         // The staged name is absent when binding it failed, so NotFound is the
         // expected outcome there. Anything else leaks a private directory in
         // the runtime directory, which an operator needs to see.
-        match fs::remove_file(&staged) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => tracing::warn!(
-                path = %staged.display(),
-                err = %err,
-                "failed to remove staged socket"
-            ),
-        }
-        if let Err(err) = fs::remove_dir(&staging_dir) {
-            tracing::warn!(
-                path = %staging_dir.display(),
-                err = %err,
-                "failed to remove socket staging directory"
-            );
-        }
+        remove_staging_entry(&staged);
+        remove_staging_directory(&staging_dir, owner);
         return result;
     }
     Err(StagedBindError::Unavailable(last_error.unwrap_or_else(
@@ -411,6 +402,155 @@ fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindErro
             )
         },
     )))
+}
+
+const STAGING_OWNER_MARKER: &str = ".owner";
+
+fn write_staging_owner_marker(
+    staging_dir: &Path,
+    owner: super::process_identity::ProcessIdentity,
+) -> io::Result<()> {
+    let mut marker = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(staging_dir.join(STAGING_OWNER_MARKER))?;
+    marker.write_all(owner.tag(0).as_bytes())?;
+    Ok(())
+}
+
+fn remove_staging_entry(path: &Path) -> bool {
+    match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                err = %error,
+                "failed to remove socket staging entry"
+            );
+            false
+        }
+    }
+}
+
+/// Removes a staging directory and its marker. When the directory itself
+/// cannot be removed, the marker is written back so a later sweep can still
+/// prove the directory abandoned.
+fn remove_staging_directory(
+    staging_dir: &Path,
+    owner: Option<super::process_identity::ProcessIdentity>,
+) {
+    let marker_may_be_missing = remove_staging_entry(&staging_dir.join(STAGING_OWNER_MARKER));
+    let error = match fs::remove_dir(staging_dir) {
+        Ok(()) => return,
+        // A concurrent sweep removed it first.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => error,
+    };
+    if marker_may_be_missing
+        && let Some(owner) = owner
+        && let Err(restore_error) = write_staging_owner_marker(staging_dir, owner)
+    {
+        tracing::warn!(
+            path = %staging_dir.display(),
+            err = %restore_error,
+            "failed to restore socket staging owner marker"
+        );
+    }
+    tracing::warn!(
+        path = %staging_dir.display(),
+        err = %error,
+        "failed to remove socket staging directory"
+    );
+}
+
+/// Remove only private staging directories whose marker records a process
+/// that `/proc` proves has exited. An unmarked directory (staged while the
+/// owner identity was unreadable, or whose marker is not yet written) is
+/// retained because its owner cannot be established.
+fn sweep_stale_socket_staging_dirs(parent: &Path) {
+    let uid = super::effective_uid();
+    let Ok(parent_metadata) = fs::symlink_metadata(parent) else {
+        return;
+    };
+    if !parent_metadata.file_type().is_dir()
+        || parent_metadata.uid() != uid
+        || parent_metadata.permissions().mode() & 0o7777 != 0o700
+    {
+        return;
+    }
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::debug!(path = %parent.display(), err = %error, "could not scan socket staging parent");
+            return;
+        }
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(token) = name.to_str().and_then(|name| name.strip_prefix(".s")) else {
+            continue;
+        };
+        if token.len() != 16 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        let staging_dir = entry.path();
+        let Ok(directory_metadata) = fs::symlink_metadata(&staging_dir) else {
+            continue;
+        };
+        if !directory_metadata.file_type().is_dir()
+            || directory_metadata.uid() != uid
+            || directory_metadata.permissions().mode() & 0o777 != 0o700
+        {
+            continue;
+        }
+        let marker_path = staging_dir.join(STAGING_OWNER_MARKER);
+        let Ok(marker_metadata) = fs::symlink_metadata(&marker_path) else {
+            continue;
+        };
+        if !marker_metadata.file_type().is_file()
+            || marker_metadata.uid() != uid
+            || marker_metadata.permissions().mode() & 0o777 != 0o600
+        {
+            continue;
+        }
+        let Ok(marker) = fs::read_to_string(&marker_path) else {
+            continue;
+        };
+        let Some((owner, 0)) = super::process_identity::ProcessIdentity::parse_tag(&marker) else {
+            continue;
+        };
+        if !owner.is_provably_gone() || !staging_contents_are_owned(&staging_dir, uid) {
+            continue;
+        }
+        remove_staging_entry(&staging_dir.join("s"));
+        remove_staging_directory(&staging_dir, Some(owner));
+    }
+}
+
+fn staging_contents_are_owned(staging_dir: &Path, uid: u32) -> bool {
+    let Ok(entries) = fs::read_dir(staging_dir) else {
+        return false;
+    };
+    let mut marker_seen = false;
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let name = entry.file_name();
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            return false;
+        };
+        if metadata.uid() != uid {
+            return false;
+        }
+        match name.to_str() {
+            Some(STAGING_OWNER_MARKER) if metadata.file_type().is_file() => marker_seen = true,
+            Some("s") if metadata.file_type().is_socket() => {}
+            _ => return false,
+        }
+    }
+    marker_seen
 }
 
 fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<LocalListener, StagedBindError> {

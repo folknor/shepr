@@ -733,17 +733,18 @@ fn agent_prompt_observation_changes_readiness_without_state_change() {
         .begin_managed_agent(
             "reviewer".into(),
             Agent::Codex,
-            Instant::now(),
+            app.clock_now,
             std::time::Duration::ZERO,
             std::time::Duration::from_secs(60),
         );
+    // Prompt observations are stamped with the server's clock sample.
     app.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Codex),
         state: AgentState::Unknown,
         visible_blocker: false,
         process_exited: false,
-        observed_at: Instant::now(),
+        observed_at: app.clock_now,
     });
     app.handle_app_event(AppEvent::AgentPromptObserved {
         pane_id,

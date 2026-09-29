@@ -167,11 +167,12 @@ fn wait_child_until(
     child: &mut std::process::Child,
     deadline: Instant,
 ) -> Option<std::process::ExitStatus> {
-    const POLL_INTERVAL: Duration = Duration::from_millis(5);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
+            }
             Ok(None) | Err(_) => {
                 kill_and_reap(child);
                 return None;
@@ -283,15 +284,12 @@ pub(super) fn run_clipboard_command(
 }
 
 fn wait_for_selection_owner_startup(mut child: std::process::Child) -> bool {
-    const STARTUP_WAIT: Duration = Duration::from_millis(100);
-    const POLL_INTERVAL: Duration = Duration::from_millis(5);
-
-    let deadline = Instant::now() + STARTUP_WAIT;
+    let deadline = Instant::now() + super::limits::CLIPBOARD_OWNER_STARTUP_WAIT;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
             Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(POLL_INTERVAL);
+                std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
             }
             Ok(None) => return detach_clipboard_owner(child),
             Err(_) => {

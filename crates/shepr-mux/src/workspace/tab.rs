@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
@@ -67,6 +67,16 @@ pub struct Tab {
 }
 
 impl Tab {
+    pub(super) fn has_consistent_panes(&self) -> bool {
+        let layout_ids = self.layout.pane_ids();
+        let layout_set: HashSet<_> = layout_ids.iter().copied().collect();
+        layout_ids.len() == layout_set.len()
+            && layout_set.len() == self.panes.len()
+            && layout_set.contains(&self.root_pane)
+            && layout_set.contains(&self.layout.focused())
+            && self.panes.keys().all(|id| layout_set.contains(id))
+    }
+
     pub fn new(
         number: usize,
         initial_cwd: PathBuf,
@@ -377,10 +387,12 @@ impl Tab {
     ) -> bool {
         let current_ids = self.layout.pane_ids();
         let prepared_ids = prepared_layout.pane_ids();
-        if self.panes.contains_key(&pane_id)
+        if !self.has_consistent_panes()
+            || self.panes.contains_key(&pane_id)
             || !prepared_ids.contains(&pane_id)
             || prepared_ids.len() != current_ids.len().saturating_add(1)
             || current_ids.iter().any(|id| !prepared_ids.contains(id))
+            || !prepared_ids.contains(&prepared_layout.focused())
         {
             return false;
         }
@@ -397,13 +409,18 @@ impl Tab {
     /// The runtime is left to the caller. `None` when the pane is the tab's
     /// last one (the tab itself must go) or is not in this tab.
     pub fn close_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
-        if self.panes.len() <= 1 {
+        if self.panes.len() <= 1
+            || !self.has_consistent_panes()
+            || !self.panes.contains_key(&pane_id)
+        {
             return None;
         }
 
         let next_root = self.promoted_root_if_needed(pane_id);
 
-        self.layout.close_pane(pane_id);
+        if !self.layout.close_pane(pane_id) {
+            return None;
+        }
 
         let pane = self.panes.remove(&pane_id)?;
         let terminal_id = pane.pane_state.attached_terminal_id;
@@ -433,13 +450,15 @@ impl Tab {
     }
 
     pub fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<MovedPane> {
-        if !self.panes.contains_key(&pane_id) {
+        if !self.has_consistent_panes() || !self.panes.contains_key(&pane_id) {
             return None;
         }
 
         if self.panes.len() > 1 {
             let next_root = self.promoted_root_if_needed(pane_id);
-            self.layout.close_pane(pane_id);
+            if !self.layout.close_pane(pane_id) {
+                return None;
+            }
             if let Some(next_root) = next_root {
                 self.root_pane = next_root;
             }
@@ -458,6 +477,9 @@ impl Tab {
         ratio: f32,
         focus: bool,
     ) -> Result<PaneId, MovedPane> {
+        if self.panes.contains_key(&moved.pane_id) || !self.has_consistent_panes() {
+            return Err(moved);
+        }
         if !self
             .layout
             .insert_pane_near(target_pane_id, moved.pane_id, direction, ratio, focus)

@@ -49,7 +49,7 @@ impl SessionMode {
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
     pub(super) blit_encoder: render_ansi::BlitEncoder,
-    /// Host terminal output used by every composed frame and surface patch.
+    /// Host terminal output shared by frames, host modes, titles, and clipboard writes.
     pub(super) output_writer: Box<dyn io::Write + Send>,
     pub(super) host_modes: terminal_setup::HostModes,
     /// Latest physical host theme observations, retained so an endpoint selected after the

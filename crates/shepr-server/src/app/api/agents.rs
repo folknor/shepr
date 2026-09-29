@@ -345,6 +345,8 @@ fn await_prompt_submission(
 ) -> Result<(), PromptSubmissionError> {
     let closed = || PromptSubmissionError::Failed("pty actor closed".into());
     let received = match deadline {
+        // The PTY completion wait runs on a blocking worker.
+        // clock-io-ok: measure remaining real time when it begins waiting.
         Some(deadline) => match queued
             .completion
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))

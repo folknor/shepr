@@ -21,6 +21,17 @@ skip_after = '^#\[cfg\(test\)\]'
 region = "code"
 message = "pass the operation time into persistence from its caller"
 
+[[textlint]]
+name = "app-state-reads-the-clock-seam"
+pattern = '\b(?:Instant|SystemTime)::now\s*\('
+paths = ["crates/shepr-server/src/app/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "pass the operation time from the server into app state"
+
 # The clippy seals (`clippy.toml`): the environment reader, exits, bool path
 # probes, panic containment, child working directories and debug assertions.
 # Every escape is a scoped `#[expect(clippy::disallowed_methods, reason = ..)]`
@@ -41,6 +52,7 @@ exclude = [
     "crates/shepr-mux/src/persist/writer.rs",
     "crates/shepr-platform/src/host.rs",
     "crates/shepr-platform/src/remote_bridge_tests.rs",
+    "crates/shepr-platform/src/resize_signal_tests.rs",
     "crates/shepr-pty/src/actor.rs",
     "crates/shepr-pty/src/command.rs",
     "crates/shepr-server/src/app/git_refresh.rs",

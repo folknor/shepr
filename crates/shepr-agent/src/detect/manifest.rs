@@ -7,9 +7,10 @@
 //! `crates/shepr-agent/src/detect/manifests/`. A local override at
 //! `<config dir>/agent-detection/<agent label>.toml` replaces the bundled one
 //! wholesale when its `id` (or one of its `aliases`) names that agent. An
-//! override that does not parse, validate or compile is ignored with a warning
-//! and the bundled manifest stays active. Manifests are read once and cached;
-//! `shepr server reload-agent-manifests` rereads them.
+//! override that does not parse, validate or compile is reported as a typed
+//! error. Diagnostic loading keeps the bundled manifest active and attaches a
+//! warning; startup validation can refuse the invalid override. Manifests are
+//! read once and cached; `shepr server reload-agent-manifests` rereads them.
 //!
 //! # Format
 //!
@@ -162,6 +163,92 @@ impl ManifestSource {
     }
 }
 
+/// A local detection manifest override failed before it could be activated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestOverrideError {
+    Load {
+        agent: Agent,
+        path: PathBuf,
+        detail: String,
+    },
+    IdMismatch {
+        agent: Agent,
+        path: PathBuf,
+        manifest_id: String,
+    },
+    Compile {
+        agent: Agent,
+        path: PathBuf,
+        detail: String,
+    },
+}
+
+impl ManifestOverrideError {
+    pub const fn agent(&self) -> Agent {
+        match self {
+            Self::Load { agent, .. }
+            | Self::IdMismatch { agent, .. }
+            | Self::Compile { agent, .. } => *agent,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Load { path, .. }
+            | Self::IdMismatch { path, .. }
+            | Self::Compile { path, .. } => path,
+        }
+    }
+
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Load { .. } => "load",
+            Self::IdMismatch { .. } => "id_mismatch",
+            Self::Compile { .. } => "compile",
+        }
+    }
+}
+
+impl std::fmt::Display for ManifestOverrideError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Load {
+                agent,
+                path,
+                detail,
+            } => write!(
+                formatter,
+                "agent detection manifest override {} for {} could not be read or parsed: {detail}",
+                path.display(),
+                agent_label(*agent)
+            ),
+            Self::IdMismatch {
+                agent,
+                path,
+                manifest_id,
+            } => write!(
+                formatter,
+                "agent detection manifest override {} declares id {}, expected {}",
+                path.display(),
+                manifest_id,
+                agent_label(*agent)
+            ),
+            Self::Compile {
+                agent,
+                path,
+                detail,
+            } => write!(
+                formatter,
+                "agent detection manifest override {} for {} could not be compiled: {detail}",
+                path.display(),
+                agent_label(*agent)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ManifestOverrideError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentManifestSummary {
     pub agent: Agent,
@@ -227,6 +314,7 @@ struct CompiledManifest {
 #[derive(Debug, Clone)]
 struct ManifestCache {
     manifests: Vec<(Agent, Option<Arc<LoadedManifest>>)>,
+    override_errors: Vec<ManifestOverrideError>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -615,8 +703,12 @@ struct ManifestRegistry {
 
 impl ManifestRegistry {
     fn new(override_dir: Option<&Path>) -> Self {
+        Self::from_cache(build_manifest_cache(override_dir))
+    }
+
+    fn from_cache(cache: ManifestCache) -> Self {
         Self {
-            cache: RwLock::new(build_manifest_cache(override_dir)),
+            cache: RwLock::new(cache),
             reload_lock: Mutex::new(()),
         }
     }
@@ -639,6 +731,20 @@ impl ManifestRegistry {
         let summaries = manifest_summaries_from_cache(&cache);
         *self.write_cache() = cache;
         summaries
+    }
+
+    fn try_reload(
+        &self,
+        override_dir: &Path,
+    ) -> Result<Vec<AgentManifestSummary>, ManifestOverrideError> {
+        let _reload_guard = self.lock_reload();
+        let cache = build_manifest_cache(Some(override_dir));
+        if let Some(error) = cache.override_errors.first() {
+            return Err(error.clone());
+        }
+        let summaries = manifest_summaries_from_cache(&cache);
+        *self.write_cache() = cache;
+        Ok(summaries)
     }
 
     fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
@@ -675,6 +781,54 @@ pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
         .summaries()
 }
 
+/// Validate every local screen-detection override in `<config_dir>/agent-detection`.
+pub fn validate_manifest_overrides(config_dir: &Path) -> Result<(), ManifestOverrideError> {
+    let override_dir = manifest_override_dir(config_dir);
+    for agent in Agent::screen_manifest_agents() {
+        let path = override_path(&override_dir, agent);
+        let exists = path
+            .try_exists()
+            .map_err(|err| ManifestOverrideError::Load {
+                agent,
+                path: path.clone(),
+                detail: err.to_string(),
+            })?;
+        if exists {
+            read_override_manifest(agent, &path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reload the registry and refuse to replace it if a local override is invalid.
+/// Server startup uses this before restoring panes that start detection workers.
+pub fn try_reload_manifests(
+    config_dir: &Path,
+) -> Result<Vec<AgentManifestSummary>, ManifestOverrideError> {
+    let override_dir = manifest_override_dir(config_dir);
+    if let Some(registry) = MANIFESTS.get() {
+        return registry.try_reload(&override_dir);
+    }
+
+    let _init_guard = recover_poison(MANIFEST_INIT_LOCK.get_or_init(|| Mutex::new(())).lock());
+    if let Some(registry) = MANIFESTS.get() {
+        return registry.try_reload(&override_dir);
+    }
+
+    let cache = build_manifest_cache(Some(&override_dir));
+    if let Some(error) = cache.override_errors.first() {
+        return Err(error.clone());
+    }
+    let summaries = manifest_summaries_from_cache(&cache);
+    let registry = ManifestRegistry::from_cache(cache);
+    match MANIFESTS.set(registry) {
+        Ok(()) => Ok(summaries),
+        Err(_) => MANIFESTS
+            .get()
+            .map_or(Ok(summaries), |registry| registry.try_reload(&override_dir)),
+    }
+}
+
 // One shepr process owns one headless server. Bootstrap reloads its resolved
 // config before constructing the app (which restores panes) or opening the API
 // socket; later reloads use that app's config. CLI file explain builds a
@@ -688,15 +842,34 @@ fn registry() -> &'static ManifestRegistry {
 }
 
 fn build_manifest_cache(override_dir: Option<&Path>) -> ManifestCache {
+    let mut override_errors = Vec::new();
+    let manifests = Agent::screen_manifest_agents()
+        .map(|agent| {
+            let loaded = match load_manifest_uncached(agent, override_dir) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    tracing::warn!(
+                        agent = agent_label(agent),
+                        path = %error.path().display(),
+                        kind = error.kind(),
+                        error = %error,
+                        "agent detection manifest override was rejected"
+                    );
+                    override_errors.push(error.clone());
+                    let mut fallback = bundled_manifest(agent)
+                        .and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+                    if let Some(loaded) = &mut fallback {
+                        loaded.warning = Some(error.to_string());
+                    }
+                    fallback
+                }
+            };
+            (agent, loaded.map(Arc::new))
+        })
+        .collect();
     ManifestCache {
-        manifests: Agent::screen_manifest_agents()
-            .map(|agent| {
-                (
-                    agent,
-                    load_manifest_uncached(agent, override_dir).map(Arc::new),
-                )
-            })
-            .collect(),
+        manifests,
+        override_errors,
     }
 }
 
@@ -982,45 +1155,36 @@ fn fallback_explain(
     }
 }
 
-fn load_manifest_uncached(agent: Agent, override_dir: Option<&Path>) -> Option<LoadedManifest> {
+fn load_manifest_uncached(
+    agent: Agent,
+    override_dir: Option<&Path>,
+) -> Result<Option<LoadedManifest>, ManifestOverrideError> {
     let bundled = bundled_manifest(agent);
     let Some(path) = override_dir.map(|directory| override_path(directory, agent)) else {
-        return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+        return Ok(bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest)));
     };
-    // A stat error (EACCES, ELOOP) is not absence: the override is reported
-    // as unloadable rather than silently skipped.
-    let override_readable = match path.try_exists() {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+    let override_exists = match path.try_exists() {
+        Ok(exists) => exists,
+        Err(err) => {
+            return Err(ManifestOverrideError::Load {
+                agent,
+                path,
+                detail: err.to_string(),
+            });
         }
-        Err(err) => Err(err.to_string()),
     };
+    if !override_exists {
+        return Ok(bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest)));
+    }
 
-    let warning = match override_readable.and_then(|()| read_override_manifest(&path)) {
-        Ok(manifest) if manifest_matches_agent(&manifest, agent) => {
-            match loaded_manifest(manifest, ManifestSource::Override(path.clone())) {
-                Ok(loaded) => return Some(loaded),
-                Err(err) => format!(
-                    "ignored override {} because it could not be compiled: {err}",
-                    path.display()
-                ),
-            }
-        }
-        Ok(manifest) => format!(
-            "ignored override {} because manifest id {} does not match {}",
-            path.display(),
-            manifest.id,
-            agent_label(agent)
-        ),
-        Err(err) => format!(
-            "ignored override {} because it could not be loaded: {err}",
-            path.display()
-        ),
-    };
-    let mut loaded = bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest))?;
-    loaded.warning = Some(warning);
-    Some(loaded)
+    let manifest = read_override_manifest(agent, &path)?;
+    loaded_manifest(manifest, ManifestSource::Override(path.clone()))
+        .map(Some)
+        .map_err(|detail| ManifestOverrideError::Compile {
+            agent,
+            path,
+            detail,
+        })
 }
 
 fn loaded_manifest(
@@ -1085,9 +1249,37 @@ fn parse_bundled_manifest(key: &str, content: &str) -> Result<AgentManifest, Str
     Ok(manifest)
 }
 
-fn read_override_manifest(path: &Path) -> Result<AgentManifest, String> {
-    let content = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
-    parse_manifest(&content)
+fn read_override_manifest(
+    agent: Agent,
+    path: &Path,
+) -> Result<AgentManifest, ManifestOverrideError> {
+    let content = std::fs::read_to_string(path).map_err(|err| ManifestOverrideError::Load {
+        agent,
+        path: path.to_path_buf(),
+        detail: err.to_string(),
+    })?;
+    let mut manifest =
+        toml::from_str::<AgentManifest>(&content).map_err(|err| ManifestOverrideError::Load {
+            agent,
+            path: path.to_path_buf(),
+            detail: err.to_string(),
+        })?;
+    if !manifest_matches_agent(&manifest, agent) {
+        return Err(ManifestOverrideError::IdMismatch {
+            agent,
+            path: path.to_path_buf(),
+            manifest_id: manifest.id,
+        });
+    }
+    manifest.compiled =
+        Some(
+            validate_manifest(&manifest).map_err(|detail| ManifestOverrideError::Compile {
+                agent,
+                path: path.to_path_buf(),
+                detail,
+            })?,
+        );
+    Ok(manifest)
 }
 
 pub fn agent_state_label(state: AgentState) -> &'static str {

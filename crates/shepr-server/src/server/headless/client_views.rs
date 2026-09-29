@@ -504,11 +504,7 @@ impl HeadlessServer {
             client.terminal_size.cols.get(),
             client.terminal_size.rows.get(),
         );
-        let cell_size = if client.cell_size.is_known() {
-            client.cell_size
-        } else {
-            shepr_termio::host_term::cell_size::HostCellSize::default()
-        };
+        let cell_size = client.cell_size.or_default();
         let area = Rect::new(0, 0, cols, rows);
         if self.app_client_count() == 1 {
             for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {

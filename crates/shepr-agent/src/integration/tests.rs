@@ -1243,7 +1243,7 @@ fn install_devin_writes_hook_and_updates_settings() {
     );
     assert_eq!(hook_content, DEVIN_HOOK_ASSET);
     assert_eq!(settings["theme_mode"], "dark");
-    for hook in DEVIN_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Devin) {
         let action = hook
             .action
             .map(crate::agent::IntegrationHookAction::as_str)
@@ -1278,7 +1278,7 @@ fn install_devin_is_idempotent_for_hook_entries() {
         &fs::read_to_string(devin_dir.join("config.json")).expect("test precondition"),
     )
     .expect("test precondition");
-    for hook in DEVIN_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Devin) {
         assert_eq!(
             settings["hooks"][hook.event]
                 .as_array()
@@ -1417,7 +1417,7 @@ fn install_droid_writes_hook_to_settings() {
             .get("matcher")
             .is_none()
     );
-    for hook in DROID_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Droid) {
         let action = hook
             .action
             .map(crate::agent::IntegrationHookAction::as_str)
@@ -1449,7 +1449,7 @@ fn install_droid_is_idempotent_for_hook_entries() {
         &fs::read_to_string(droid_dir.join("settings.json")).expect("test precondition"),
     )
     .expect("test precondition");
-    for hook in DROID_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Droid) {
         assert_eq!(
             settings["hooks"][hook.event]
                 .as_array()
@@ -2292,7 +2292,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
         .get("hooks")
         .and_then(Value::as_object)
         .expect("hooks should be present");
-    for hook in QODERCLI_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Qodercli) {
         let action = hook
             .action
             .map(crate::agent::IntegrationHookAction::as_str)
@@ -2336,7 +2336,7 @@ fn install_qodercli_is_idempotent_for_hook_entries() {
         .get("hooks")
         .and_then(Value::as_object)
         .expect("test precondition");
-    for hook in QODERCLI_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Qodercli) {
         let entries = hooks
             .get(hook.event)
             .and_then(Value::as_array)
@@ -3252,7 +3252,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
     )
     .expect("test precondition");
     let hooks = hooks_file.as_object().expect("test precondition");
-    for hook in MASTRACODE_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Mastracode) {
         let action = hook
             .action
             .map(crate::agent::IntegrationHookAction::as_str)
@@ -3361,7 +3361,7 @@ fn install_mastracode_is_idempotent_for_hook_entries() {
     )
     .expect("test precondition");
     let hooks = hooks_file.as_object().expect("test precondition");
-    for hook in MASTRACODE_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Mastracode) {
         assert_eq!(
             hooks
                 .get(hook.event)
@@ -3448,7 +3448,7 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
         serde_json::from_str(&fs::read_to_string(&hooks_path).expect("test precondition"))
             .expect("test precondition");
     let hooks = hooks_file.as_object().expect("test precondition");
-    for hook in MASTRACODE_HOOK_EVENTS {
+    for hook in integration_hook_events(crate::agent::IntegrationTarget::Mastracode) {
         if hook.event == "UserPromptSubmit" {
             continue;
         }

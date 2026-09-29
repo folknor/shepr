@@ -32,14 +32,12 @@ use super::registry::{config_file_names, integration_hook_events, integration_ho
 use super::types::{ArtifactRole, InstallOutcome, UninstallOutcome, UninstallState};
 use super::{
     ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, CLAUDE_HOOK_INSTALL_NAME,
-    CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
-    CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_EVENTS,
-    DROID_HOOK_INSTALL_NAME, GROK_HOOK_INSTALL_NAME, KILO_PLUGIN_INSTALL_NAME,
-    KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME, MASTRACODE_HOOK_EVENTS,
+    CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_INSTALL_NAME, CURSOR_HOOK_INSTALL_NAME,
+    DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
+    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION, LETTA_HOOK_INSTALL_NAME,
     MASTRACODE_HOOK_INSTALL_NAME, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME,
     OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
-    PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS,
-    QWEN_HOOK_INSTALL_NAME,
+    PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_INSTALL_NAME,
 };
 
 // Install order for targets that register the hook in an agent config: read,
@@ -273,11 +271,11 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
         "copilot settings",
         "copilot settings hooks",
     )?;
-    for hook in COPILOT_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Copilot) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_direct_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for hook in COPILOT_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Copilot) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_direct_command_hook(
             hooks,
@@ -321,11 +319,11 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
         "devin settings",
         "devin settings hooks",
     )?;
-    for hook in DEVIN_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Devin) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for hook in DEVIN_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Devin) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
@@ -369,11 +367,11 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
         "droid settings",
         "droid settings hooks",
     )?;
-    for hook in DROID_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Droid) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for hook in DROID_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Droid) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
@@ -612,7 +610,7 @@ pub(crate) fn uninstall_copilot(paths: &AgentIntegrationPaths) -> io::Result<Uni
             "copilot settings",
             "copilot settings hooks",
         )? {
-            for hook in COPILOT_HOOK_EVENTS {
+            for hook in integration_hook_events(Target::Copilot) {
                 updated_settings |= remove_direct_hook_commands(
                     hooks,
                     hook.event,
@@ -658,7 +656,7 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Unins
             "devin settings",
             "devin settings hooks",
         )? {
-            for hook in DEVIN_HOOK_EVENTS {
+            for hook in integration_hook_events(Target::Devin) {
                 updated_settings |= remove_hook_commands(
                     hooks,
                     hook.event,
@@ -703,7 +701,7 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Unins
             "droid settings",
             "droid settings hooks",
         )? {
-            for hook in DROID_HOOK_EVENTS {
+            for hook in integration_hook_events(Target::Droid) {
                 updated_settings |= remove_hook_commands(
                     hooks,
                     hook.event,
@@ -810,11 +808,11 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Inst
         "qodercli settings",
         "qodercli settings hooks",
     )?;
-    for hook in QODERCLI_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Qodercli) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for hook in QODERCLI_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Qodercli) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
@@ -859,7 +857,7 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<InstallO
         "qwen settings",
         "qwen settings hooks",
     )?;
-    for hook in QWEN_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Qwen) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
         ensure_command_hook(
@@ -1061,7 +1059,7 @@ pub(crate) fn uninstall_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Un
             "qodercli settings",
             "qodercli settings hooks",
         )? {
-            for hook in QODERCLI_HOOK_EVENTS {
+            for hook in integration_hook_events(Target::Qodercli) {
                 updated_settings |= remove_hook_commands(
                     hooks,
                     hook.event,
@@ -1107,7 +1105,7 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<Uninst
             "qwen settings",
             "qwen settings hooks",
         )? {
-            for hook in QWEN_HOOK_EVENTS {
+            for hook in integration_hook_events(Target::Qwen) {
                 updated_settings |= remove_hook_commands(
                     hooks,
                     hook.event,
@@ -1242,7 +1240,7 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
 
     // This helper writes the Mastracode-specific description, so keep its use
     // scoped to the target that owns that description.
-    for hook in MASTRACODE_HOOK_EVENTS {
+    for hook in integration_hook_events(Target::Mastracode) {
         let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
             continue;
         };
@@ -1288,7 +1286,7 @@ pub(crate) fn uninstall_mastracode(paths: &AgentIntegrationPaths) -> io::Result<
             ))
         })?;
 
-        for hook in MASTRACODE_HOOK_EVENTS {
+        for hook in integration_hook_events(Target::Mastracode) {
             let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
                 continue;
             };

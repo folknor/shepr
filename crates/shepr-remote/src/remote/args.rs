@@ -58,7 +58,7 @@ pub fn remote_launch(
         return Ok(None);
     };
     Ok(Some(RemoteLaunch {
-        target: SshTarget::parse(target.to_owned())?,
+        target: SshTarget::parse(target.to_owned()).map_err(|error| error.to_string())?,
         keybindings,
     }))
 }

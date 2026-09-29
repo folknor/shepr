@@ -52,6 +52,7 @@ impl TerminalState {
         seq: Option<u64>,
         now: Instant,
     ) -> Option<TerminalStateMutation> {
+        self.warn_unrecognized_hook_identity(&source, &agent_label);
         if shepr_agent::detect::session_identity_only_integration(&source, &agent_label) {
             return None;
         }
@@ -156,6 +157,18 @@ impl TerminalState {
             session_ref_changed: previous_session != current_session,
             agent_released: false,
         })
+    }
+
+    pub(super) fn warn_unrecognized_hook_identity(&self, source: &str, agent_label: &str) {
+        // Custom reports remain usable; this warning only makes their unknown owner visible.
+        if shepr_agent::agent::AgentSource::from_pair(source, agent_label).is_none() {
+            tracing::warn!(
+                pane_id = ?self.id,
+                source = %source,
+                agent_label = %agent_label,
+                "hook report uses an unrecognized source or agent label"
+            );
+        }
     }
 
     pub(super) fn hook_authority_not_newer_than(&self, observed_at: Instant) -> bool {

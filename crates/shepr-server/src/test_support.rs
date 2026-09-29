@@ -122,7 +122,7 @@ impl PaneRuntimeFixture for PaneRuntime {
     }
 
     fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        self.output_writer().begin().write(0, bytes);
+        self.output_writer().begin().write(bytes);
     }
 
     fn test_contend_during_dirty_collection(
@@ -147,7 +147,7 @@ impl PaneRuntimeFixture for PaneRuntime {
             let announced = early.is_some();
             ready_tx.send(()).expect("test ready channel is open");
             release_rx.recv().expect("test releases the waiting writer");
-            early.unwrap_or_else(|| writer.begin()).write(0, &bytes);
+            early.unwrap_or_else(|| writer.begin()).write(&bytes);
             announced
         });
         (release_tx, handle)
@@ -218,7 +218,9 @@ impl WorkspaceFixture for Workspace {
             panes: HashMap::from([(root_id, pane)]),
             zoomed: false,
         };
-        self.commit_new_tab(tab).tab_index
+        self.commit_new_tab(tab)
+            .expect("a test tab takes the workspace's next identities")
+            .tab_index
     }
 
     fn test_adversarial_identity_state() -> Self {

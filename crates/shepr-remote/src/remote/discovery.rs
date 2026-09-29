@@ -1,7 +1,6 @@
 use super::*;
 
 use crate::machine::RemoteExecutableError;
-use serde::Deserialize;
 use std::io;
 use std::process::Output;
 
@@ -404,7 +403,7 @@ fn remote_executable_from_path_recording_rejection(
 pub(super) fn remote_client_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
-) -> io::Result<Option<RemoteClientStatusJson>> {
+) -> io::Result<Option<shepr_api::schema::ClientStatusJson>> {
     let output = ssh.sh_output(&remote_shepr.status_client_command())?;
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", &output);
@@ -418,24 +417,21 @@ pub(super) fn remote_client_status(
     )))
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct RemoteClientStatusJson {
-    #[serde(default)]
-    pub(super) version: Option<String>,
-    #[serde(default)]
-    pub(super) build_id: Option<String>,
-}
-
-pub(super) fn parse_client_status_json(status: &str) -> Option<RemoteClientStatusJson> {
+pub(super) fn parse_client_status_json(
+    status: &str,
+) -> Option<shepr_api::schema::ClientStatusJson> {
     status
         .lines()
         .rev()
         .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<RemoteClientStatusJson>(line).ok())
+        .filter_map(|line| serde_json::from_str::<shepr_api::schema::ClientStatusJson>(line).ok())
         .find(|status| status.version.is_some() || status.build_id.is_some())
 }
 
-fn ensure_remote_client_build(target: &str, status: &RemoteClientStatusJson) -> io::Result<()> {
+fn ensure_remote_client_build(
+    target: &str,
+    status: &shepr_api::schema::ClientStatusJson,
+) -> io::Result<()> {
     if status
         .build_id
         .as_deref()
@@ -447,7 +443,10 @@ fn ensure_remote_client_build(target: &str, status: &RemoteClientStatusJson) -> 
     }
 }
 
-fn remote_compatibility_error(target: &str, status: &RemoteClientStatusJson) -> io::Error {
+fn remote_compatibility_error(
+    target: &str,
+    status: &shepr_api::schema::ClientStatusJson,
+) -> io::Error {
     let version = super::server_lifecycle::printable_remote_value(status.version.as_deref());
     let build_id = super::server_lifecycle::printable_remote_value(status.build_id.as_deref());
     io::Error::new(

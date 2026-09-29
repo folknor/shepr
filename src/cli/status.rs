@@ -2,6 +2,7 @@ use serde::Serialize;
 
 use shepr_api as api;
 use shepr_api::client::ApiClientError;
+use shepr_api::schema::{ClientStatusJson, ServerStatusJson};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -181,42 +182,15 @@ struct FullStatusJson {
 }
 
 #[derive(Serialize)]
-struct ClientStatusJson {
-    version: String,
-    build_id: String,
-    binary: String,
-    session: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ServerStatusJson {
-    status: &'static str,
-    running: bool,
-    version: Option<String>,
-    build_id: Option<String>,
-    capabilities: Option<ServerCapabilitiesJson>,
-    compatible: Option<bool>,
-    socket: String,
-    session: Option<String>,
-    restart_needed: bool,
-}
-
-#[derive(Serialize)]
-struct ServerCapabilitiesJson {
-    detached_server_daemon: bool,
-    ssh_agent_registration: bool,
-}
-
-#[derive(Serialize)]
 struct UpdateStatusJson {
     restart_needed: bool,
 }
 
 fn client_status_json(paths: &shepr_config::AppPaths) -> ClientStatusJson {
     ClientStatusJson {
-        version: shepr_protocol::build_version(),
-        build_id: shepr_protocol::BUILD_ID.to_owned(),
-        binary: current_exe_label(),
+        version: Some(shepr_protocol::build_version()),
+        build_id: Some(shepr_protocol::BUILD_ID.to_owned()),
+        binary: Some(current_exe_label()),
         session: paths.session_id().name().map(str::to_owned),
     }
 }
@@ -231,23 +205,16 @@ fn server_status_json(
             build_id,
             capabilities,
         } => ServerStatusJson {
-            status: "running",
             running: true,
             version: version.clone(),
             build_id: Some(build_id.clone()),
-            capabilities: capabilities
-                .as_ref()
-                .map(|capabilities| ServerCapabilitiesJson {
-                    detached_server_daemon: capabilities.detached_server_daemon,
-                    ssh_agent_registration: capabilities.ssh_agent_registration,
-                }),
+            capabilities: capabilities.clone(),
             compatible: build_compatible_bool(server),
             socket: api::socket_path(paths).display().to_string(),
             session: paths.session_id().name().map(str::to_owned),
             restart_needed: restart_needed_bool(server),
         },
         ServerRuntimeStatus::NotRunning => ServerStatusJson {
-            status: "not_running",
             running: false,
             version: None,
             build_id: None,
@@ -342,6 +309,8 @@ mod tests {
                 "ssh_agent_registration": false,
             })
         );
+        assert_eq!(value["running"], true);
+        assert!(value.get("status").is_none());
     }
 
     #[test]

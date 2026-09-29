@@ -192,9 +192,7 @@ impl App {
             }
         }
         let token_changed = tokens.is_some_and(|tokens| {
-            let changed = terminal
-                .metadata_tokens
-                .patch(tokens, ttl, std::time::Instant::now());
+            let changed = terminal.metadata_tokens.patch(tokens, ttl, self.clock.now);
             if changed {
                 terminal.bump_revision();
             }

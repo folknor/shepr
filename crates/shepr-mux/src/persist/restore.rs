@@ -681,6 +681,9 @@ fn restore_tab(
         }
     }
 
+    // A missing saved pane record is skipped before history is carried or a
+    // runtime is spawned. Every branch that performs either effect inserts
+    // its pane here, so this rejection never discards those side effects.
     if panes.is_empty() {
         warn!(
             tab = ?snap.custom_name,
@@ -689,6 +692,8 @@ fn restore_tab(
         return None;
     }
 
+    // Every inserted pane came from a leaf of `node`; if this set is nonempty,
+    // pruning can only collapse missing leaves and cannot reject the tab.
     let surviving: HashSet<PaneId> = panes.keys().copied().collect();
     let Some(node) = prune_restored_node(node, &surviving) else {
         warn!(

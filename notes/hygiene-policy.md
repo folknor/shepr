@@ -77,19 +77,11 @@ handed in, so behaviour that depends on time is untestable without sleeping.
   from before. `src/terminal/state/**` and `src/pane/process_probe.rs` thread
   `now: Instant` through every entry point and are cleanly testable, so the crate
   already knows the pattern.
-- `shepr-server`: the main loop takes `let now = Instant::now()` per iteration
-  and threads it into several handlers, yet roughly 25 production sites inside
-  the same iteration call `Instant::now()` again: `server/headless.rs` (5),
-  `render.rs`, `internal_events.rs`, `client_views.rs`, `app/session.rs` (8),
-  `app/events.rs` (2), `app/agents.rs` (2), `app/agent_resume.rs` (4),
-  `app/api.rs` (2), `app/api/agents.rs`, `app/api/panes/reports.rs`,
-  `app/api/workspaces.rs`, `app/git_refresh.rs` (6), `app/tab_bar_status.rs`,
-  `app/runtime.rs`, `app/mod.rs`. Deadlines set from a fresh `now` and deadlines
-  compared against the threaded `now` disagree by the iteration's duration:
-  harmless at 16 ms, load-bearing for the 250 ms save poll and the 300 ms prompt
-  delay. Consequence: tests sleep (30 ms, 400 ms, 1100 ms, 5 ms loops).
-  `rebuild_shell_session_cache` calls `Instant::now()` while every reader of the
-  resulting `built_at` takes an injected `now`.
+- `shepr-server`: `app/` reads time through its clock seam, held by the
+  `app-state-reads-the-clock-seam` textlint (two marked sites measure elapsed
+  time during I/O). Open: `server/` (`headless.rs`, `render.rs`,
+  `internal_events.rs`, `client_views.rs`) still reads the clock inside the
+  loop iteration, and the remaining test sleeps outside `app/` go with it.
 - `shepr-client` / `shepr-termio`: `endpoint/health.rs` is the model (every
   method takes `now: Instant`, no sleeps in its tests), but
   `EndpointRegistry::insert` does `EndpointHealth::new(Instant::now())` one level
@@ -310,18 +302,6 @@ Reported from seven scopes. Several crates are careful, which is what makes the
 gaps visible; the hunters recorded the good cases too so the absence is on the
 record.
 
-- `shepr-platform`: `ipc.rs::bind_via_private_staging` leaks a 0700 staging
-  directory per failed `remove_dir` (`let _ =`, no log), one per bind attempt in
-  the XDG runtime directory; `ssh_paths.rs::create_remote_ssh_config_dir` creates
-  randomly named directories and never removes them (the doc says
-  "ephemeral" and the caller is responsible; nothing sweeps stale ones from a
-  killed process); `ssh_agent.rs::publish` leaves a randomly named `.new` link
-  behind if `symlink` succeeds and the process dies before `rename`, and since
-  the name is no longer pid-based each hard kill leaves a separate one;
-  `shepr-test-support` kept-scratch directories survive SIGKILL indefinitely
-  (`keep_until_exit` relies on `atexit`, and the only cleanup for a stale one is
-  a later run reusing the same pid). `read_limited_reader` is the good
-  counter-example. Suggested: a startup sweep keyed on "own uid, no live pid".
 - `shepr-vt` / `shepr-pty`: terminal replies that overflow the inbox are dropped
   with no counter and no log (documented as deliberate); resize replies refused
   by `reserve` in `replace_resize`; replies from the timer before the actor
@@ -417,16 +397,6 @@ record.
 `atexit`/`Drop` pair is replaced by a once-resolved base, a claim registry keyed
 by resolved path and a lifetime slot lock. Open: every other bullet.
 
-- `shepr-platform`: `logging.rs::init_file_logging` installs a process-global
-  subscriber and discards a second call's error, so a second caller (two roles in
-  one process, a test harness, a future embed) silently keeps the first
-  subscriber while believing its writer is installed.
-  `host.rs::watch_terminal_resize_signal` installs a process-global SIGWINCH
-  handler and `TERMINAL_RESIZE_SIGNALLED` is a process-global atomic; the test
-  `terminal_resize_signal_is_recorded_once_per_delivery` installs the handler and
-  `raise`s SIGWINCH while every other test in the binary runs concurrently, and
-  survives only because nothing else in the suite touches SIGWINCH; the handler
-  persists for the rest of the process.
 - `shepr-test-support`: `SCRATCH_ROOT_OWNER`, `SCRATCH_ROOT`,
   `KEPT_SCRATCH_DIRS` and `NEXT_SCRATCH` are four separate statics whose
   consistency rests on `ensure_exit_cleanup` being called before any of them are
@@ -480,12 +450,6 @@ by resolved path and a lifetime slot lock. Open: every other bullet.
   hunter names as the pattern the other pairs lack.
 - `shepr-server` `app/state.rs`: `shell_projection_revision` is bumped with
   `wrapping_add` while every other revision now saturates or checks.
-- `shepr-mux` restore path: `parse_snapshot` is `pub` and returns a
-  `SessionSnapshot` whose types encode no validation (`ratio: f32`,
-  `active: Option<usize>`, `selected: usize`, `active_tab: usize`,
-  `focused: Option<u32>`, `root_pane: Option<u32>`, `cwd: PathBuf`). Its one
-  production caller (`persist/io.rs::load`) feeds restore, which validates, so
-  the harm is only that a future consumer gets unvalidated data by default.
 - `shepr-pty` / `shepr-config`: `to_std_command` quietly substitutes home for a
   bad cwd (warn only) while the API validates `new_cwd` upstream - two policies
   for one value.
@@ -543,50 +507,6 @@ Enforcement named: one list in `shepr-config`, plus a test that every
 inherited host and agent variables for pane children; the crate's own `git`
 subprocesses now go through one runner that scrubs repository and askpass
 overrides, so the split denylist is what remains.
-
-## HYGP-020 - "Flush the synchronized-output buffer if it has expired" is re-implemented at six call sites
-
-**Partly resolved:** synchronized-output expiry now goes through one `tick(now)`
-the runtime calls, render and dirty-patch paths read the terminal through a
-shared reference, timer replies are queued as one batch under the order lock,
-and read-callback effects run after the reply lock is released, with the lock
-order documented in `shepr-pty/src/actor.rs`. Open: the hand-copied seqlock
-protocol, the `PaneTerminal` / `GhosttyPaneTerminal` merge (HYGP-035), and the
-`with_handler` / `collect_damage` rule below.
-
-From `shepr-vt` / `shepr-mux`: `Terminal::write`, `render`,
-`collect_dirty_patch`, `synchronized_output_active`, `synchronized_output_state`
-and the runtime timer each re-implement "flush if expired, bump epoch". The epoch
-bump itself (`if before != after { epoch += 1 }`) is repeated four times across
-`backend.rs` and `helpers.rs`. The seqlock protocol on `content_seq` is
-hand-copied at six sites (`on_read`, the timer, `resize`, `clear_screen`,
-`test_process_pty_bytes`, `test_contend_during_dirty_collection`), each locking
-`content_write_lock`, doing `fetch_add(AcqRel)`, the mutation, then
-`fetch_add(Release)`.
-
-The hunter's structural suggestion, which gathers this with several of their
-other findings: one terminal-core owner type in mux (merging `PaneTerminal` and
-`GhosttyPaneTerminal`, see HYGP-035) that owns the seqlock guard (a
-`ContentWriteGuard` whose constructor and `Drop` do the two increments), one
-`tick(now)` flush entry point owned by the runtime with render paths taking
-`&Terminal` only, the reply-producing closure contract, and effect application
-outside the reply lock. "Most findings here are about there being no one place
-where those rules live." The render-mutates-terminal and reply-ordering
-consequences were filed by that hunter as live defects.
-
-Also from the same hunter, an unenforced mutation rule in the same area: "every
-parser-driven mutation must use `with_handler`" and every mutation must end with
-`collect_damage()` (or `bump_full_damage`), which callers do by hand in `write`,
-`flush`, `mode_set`, `resize` and the scroll methods. Suggested: call
-`collect_damage` inside `with_handler`.
-
-## HYGP-024 - "An unknown reported cell size means the default" is implemented at five sites in the hottest function in the server
-
-From `shepr-server`: `server/headless/render.rs` (three sites, all inside
-`render_and_stream`) and `client_views.rs` spell
-`if cell_size.is_known() { cell_size } else { HostCellSize::default() }`.
-Enforcement named: `HostCellSize::or_default(self) -> Self` in `shepr-termio`,
-after which the branch is unspellable at call sites.
 
 ## HYGP-030 - Secrets and personal data reaching logs, diagnostics and world-visible names
 
@@ -791,9 +711,6 @@ for each is the hunter's.
 
 ## HYGP-042 - Flags, parameters and constants that have had one value since they were added
 
-- `shepr-vt`/`shepr-mux`: `hide_kitty_placeholders = true` (twice) and the
-  parameter it feeds; `PtyIoActorConfig.on_reader_exit` and `core_broken` are
-  `Option` while production always passes `Some`.
 - `shepr-protocol`: `read_message`'s `max_frame_size` parameter is passed
   `shepr_protocol::MAX_FRAME_SIZE` at roughly fifteen production call sites
   across `shepr-client` and `shepr-server`; only
@@ -812,22 +729,6 @@ for each is the hunter's.
   constant. `title_activity_glyphs` is non-empty for Claude alone
   (`CLAUDE_ACTIVITY_GLYPHS`) and every other agent has `""` - fine as data, but
   the field reads as a general mechanism and is one agent's detail.
-
-## HYGP-043 - One-variant enums and an `Option` field that cannot be `None`
-
-- `shepr-api` `client.rs`: `ApiClient` now stores `socket_path: PathBuf`, but
-  the one-variant `enum ConnectionTarget { SocketPath(PathBuf) }` and
-  `ApiClient::for_target` remain public, kept only so the CLI
-  (`src/cli/target.rs`) and the other constructors did not need editing. A
-  fixer holding both `shepr-api` and `src/cli/` deletes the enum and constructs
-  from the path.
-
-## HYGP-044 - Parameters that are threaded and then discarded
-
-- `shepr-vt`/`shepr-mux`: `_shell_pid` in `process_pty_bytes`, and `_pane_id` /
-  `_shell_pid` in `flush_expired_synchronized_output` - threaded from the runtime
-  and ignored. One test's whole setup exists to supply a real pid to the first of
-  these (HYGP-036).
 
 ## HYGP-045 - Branches and checks that cannot run
 

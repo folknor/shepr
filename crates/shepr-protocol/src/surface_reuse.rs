@@ -50,25 +50,22 @@ impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
     }
 }
 
-pub fn message(last: &PaneSurfaceFrame, surface: &mut PaneSurfaceFrame) -> Option<ServerMessage> {
+pub fn message(
+    last: &PaneSurfaceFrame,
+    surface: &mut PaneSurfaceFrame,
+) -> Result<Option<ServerMessage>, super::codec::CodecError> {
     let baseline = Baseline::new(
         &last.boot_id,
         last.projection_revision,
         last.surface_revision,
     );
     if !baseline.accepts_surface(surface) {
-        return None;
+        return Ok(None);
     }
     let update = baseline.update(surface, Vec::new());
     let message = ServerMessage::SurfaceUpdate(update);
-    // A failed compact encoding must fall back to a full surface.
-    match super::codec::encoded_len(&message) {
-        Ok(size) => super::frame_payload_fits(size).then_some(message),
-        Err(error) => {
-            tracing::warn!(%error, "failed to size surface reuse");
-            None
-        }
-    }
+    let size = super::codec::encoded_len(&message)?;
+    Ok(super::frame_payload_fits(size).then_some(message))
 }
 
 #[derive(Default)]

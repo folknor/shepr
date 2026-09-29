@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -91,7 +91,11 @@ impl ConfigReader {
 
 #[cfg(test)]
 pub(super) fn read_config(info: &GitWorktreeInfo, branch: &str) -> ConfigCtx {
-    read_config_with_user_paths(info, branch, git_user_config_paths_at(&info.repo_root))
+    read_config_with_user_paths(
+        info,
+        branch,
+        git_user_config_paths_at(&info.repo_root).expect("test environment config paths"),
+    )
 }
 
 pub(super) fn read_config_for_status(
@@ -99,12 +103,16 @@ pub(super) fn read_config_for_status(
     branch: &str,
     errors: &mut Vec<GitReadError>,
 ) -> ConfigCtx {
-    read_config_with_user_paths_and_errors(
-        info,
-        branch,
-        git_user_config_paths_at(&info.repo_root),
-        errors,
-    )
+    let user_config_paths = match git_user_config_paths_at(&info.repo_root) {
+        Ok(paths) => paths,
+        Err(error) => {
+            errors.push(GitReadError::ConfigEnvironment {
+                message: error.to_string(),
+            });
+            return (branch.to_string(), None, Vec::new());
+        }
+    };
+    read_config_with_user_paths_and_errors(info, branch, user_config_paths, errors)
 }
 
 #[cfg(test)]
@@ -208,23 +216,20 @@ fn read_config_with_user_paths_and_errors(
 /// directory. shepr runs every Git command from the repository root, so the
 /// callers pass that root as `cwd` and this reader opens the same files those
 /// commands do, not files relative to the server's own directory.
-pub(super) fn git_user_config_paths_at(cwd: &Path) -> Vec<PathBuf> {
+pub(super) fn git_user_config_paths_at(cwd: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
-    let no_system = shepr_core::env::read_text(shepr_core::env::EnvVar::GitConfigNoSystem)
-        .ok()
-        .flatten()
+    let no_system = shepr_core::env::read_text(shepr_core::env::EnvVar::GitConfigNoSystem)?
         .and_then(|value| git_config_bool(&value))
         .unwrap_or(false);
     if !no_system {
-        let system_path = git_config_override_path(cwd, shepr_core::env::EnvVar::GitConfigSystem)
+        let system_path = git_config_override_path(cwd, shepr_core::env::EnvVar::GitConfigSystem)?
             .unwrap_or_else(|| PathBuf::from("/etc/gitconfig"));
         paths.push(system_path);
     }
-    if let Some(global_path) =
-        git_config_override_path(cwd, shepr_core::env::EnvVar::GitConfigGlobal)
-    {
+    let global_path = git_config_override_path(cwd, shepr_core::env::EnvVar::GitConfigGlobal)?;
+    if let Some(global_path) = global_path {
         paths.push(global_path);
-        return paths;
+        return Ok(paths);
     }
 
     let home = shepr_core::pathutil::home_dir().ok();
@@ -243,17 +248,20 @@ pub(super) fn git_user_config_paths_at(cwd: &Path) -> Vec<PathBuf> {
     if let Some(home) = home {
         paths.push(home.join(".gitconfig"));
     }
-    paths
+    Ok(paths)
 }
 
-fn git_config_override_path(cwd: &Path, var: shepr_core::env::EnvVar) -> Option<PathBuf> {
-    shepr_core::env::read_path(var).ok().flatten().map(|path| {
+fn git_config_override_path(
+    cwd: &Path,
+    var: shepr_core::env::EnvVar,
+) -> io::Result<Option<PathBuf>> {
+    Ok(shepr_core::env::read_path(var)?.map(|path| {
         if path.is_absolute() {
             path
         } else {
             cwd.join(path)
         }
-    })
+    }))
 }
 
 /// Reads the final value for one key across `config_paths`, using the same
@@ -459,13 +467,16 @@ mod xdg_path_tests {
         ];
         for invalid in ["", "relative/config"] {
             env.set("XDG_CONFIG_HOME", invalid);
-            assert_eq!(git_user_config_paths_at(Path::new(".")), expected);
+            assert_eq!(
+                git_user_config_paths_at(Path::new(".")).expect("paths"),
+                expected
+            );
         }
 
         let xdg = env.path().join("xdg-config");
         env.set("XDG_CONFIG_HOME", &xdg);
         assert_eq!(
-            git_user_config_paths_at(Path::new(".")),
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
             vec![xdg.join("git/config"), env.home().join(".gitconfig")]
         );
     }
@@ -475,7 +486,11 @@ mod xdg_path_tests {
         let env = IsolatedEnv::new();
         env.remove("XDG_CONFIG_HOME");
         env.set("HOME", "relative/home");
-        assert!(git_user_config_paths_at(Path::new(".")).is_empty());
+        assert!(
+            git_user_config_paths_at(Path::new("."))
+                .expect("paths")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -485,7 +500,7 @@ mod xdg_path_tests {
         let system = env.path().join("system.gitconfig");
         let global = env.path().join("global.gitconfig");
         assert_eq!(
-            git_user_config_paths_at(Path::new(".")),
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
             vec![
                 PathBuf::from("/etc/gitconfig"),
                 env.home().join(".config/git/config"),
@@ -496,19 +511,19 @@ mod xdg_path_tests {
         env.set(shepr_core::env::EnvVar::GitConfigSystem, &system);
         env.set(shepr_core::env::EnvVar::GitConfigGlobal, &global);
         assert_eq!(
-            git_user_config_paths_at(Path::new(".")),
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
             vec![system.clone(), global.clone()]
         );
 
         env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "yes");
         assert_eq!(
-            git_user_config_paths_at(Path::new(".")),
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
             vec![global.clone()]
         );
 
         env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "false");
         assert_eq!(
-            git_user_config_paths_at(Path::new(".")),
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
             vec![system, global]
         );
     }

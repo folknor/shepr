@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, symlink};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,8 +17,6 @@ use interprocess::ConnectWaitMode;
 use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 
 use super::random::unpredictable_token;
-
-const PROBE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct SshAgentRegistry(Arc<SharedState>);
@@ -121,6 +119,7 @@ fn live_socket(path: &Path) -> bool {
 
 impl SshAgentRegistry {
     pub fn new(path: PathBuf, inherited: Option<PathBuf>) -> io::Result<Self> {
+        sweep_stale_temporary_links(&path);
         let inherited = inherited.filter(|path| !path.as_os_str().is_empty());
         let managed = inherited.is_some()
             || fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink());
@@ -289,11 +288,17 @@ impl PublicationSnapshot {
         if self.identity.is_some() && fs::read_link(&self.path).ok().as_deref() == Some(target) {
             return Ok(());
         }
-        let temporary = self
-            .path
-            .with_extension(format!("{:016x}.new", unpredictable_token()?));
+        let token = unpredictable_token()?;
+        let temporary = match super::process_identity::ProcessIdentity::current() {
+            Ok(owner) => temporary_link_path(&self.path, &owner.tag(token))?,
+            Err(error) => {
+                tracing::debug!(%error, "could not record SSH agent link owner identity; stale links will be retained");
+                self.path.with_extension(format!("{token:016x}.new"))
+            }
+        };
         // A hard kill can leave this unpublished link in the private runtime
-        // directory; it cannot redirect panes or replace the stable address.
+        // directory until a later registry's sweep proves its owner gone; it
+        // cannot redirect panes or replace the stable address.
         symlink(target, &temporary)?;
         let metadata = match fs::symlink_metadata(&temporary) {
             Ok(metadata) => metadata,
@@ -320,6 +325,84 @@ fn remove_temporary_link(path: &Path) {
             err = %error,
             "failed to remove temporary SSH agent link"
         );
+    }
+}
+
+fn temporary_link_path(stable: &Path, tag: &str) -> io::Result<PathBuf> {
+    use std::ffi::OsString;
+
+    let file_name = stable.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SSH agent address must have a file name",
+        )
+    })?;
+    let parent = stable
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary_name = OsString::from(file_name);
+    temporary_name.push(format!(".shepr-{tag}.new"));
+    Ok(parent.join(temporary_name))
+}
+
+/// Sweep only temporary links whose encoded process identity is provably gone.
+/// Random-only names (written when the owner identity could not be read) are
+/// retained because they carry no owner identity.
+fn sweep_stale_temporary_links(stable: &Path) {
+    let Some(stable_name) = stable.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let parent = stable
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let uid = super::effective_uid();
+    let Ok(parent_metadata) = fs::symlink_metadata(parent) else {
+        return;
+    };
+    if !parent_metadata.file_type().is_dir()
+        || parent_metadata.uid() != uid
+        || parent_metadata.permissions().mode() & 0o7777 != 0o700
+    {
+        return;
+    }
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::debug!(path = %parent.display(), err = %error, "could not scan SSH agent link directory");
+            return;
+        }
+    };
+    let prefix = format!("{stable_name}.shepr-");
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(tag) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|name| name.strip_suffix(".new"))
+        else {
+            continue;
+        };
+        let Some((owner, _token)) = super::process_identity::ProcessIdentity::parse_tag(tag) else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_symlink() || metadata.uid() != uid || !owner.is_provably_gone()
+        {
+            continue;
+        }
+        if let Err(error) = fs::remove_file(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                err = %error,
+                "failed to remove stale temporary SSH agent link"
+            );
+        }
     }
 }
 
@@ -356,9 +439,9 @@ impl SshAgentLease {
             // Reserve the shared probe window before dropping the state lock.
             // Other attachments can then skip publication while this one does
             // socket probes and filesystem work outside that lock.
-            let should_publish = state
-                .last_probe
-                .is_none_or(|last| now.saturating_duration_since(last) >= PROBE_INTERVAL);
+            let should_publish = state.last_probe.is_none_or(|last| {
+                now.saturating_duration_since(last) >= super::limits::SSH_AGENT_PROBE_INTERVAL
+            });
             if should_publish {
                 state.last_probe = Some(now);
             }
@@ -481,7 +564,7 @@ mod tests {
                 .is_socket()
         );
         lease_b
-            .refresh_at(Instant::now() + PROBE_INTERVAL)
+            .refresh_at(Instant::now() + super::super::limits::SSH_AGENT_PROBE_INTERVAL)
             .expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_b);
@@ -608,7 +691,7 @@ mod tests {
         assert_eq!(fs::read_link(&stable).expect("test precondition"), a);
         fs::remove_file(&a).expect("test precondition");
         lease_b
-            .refresh_at(Instant::now() + PROBE_INTERVAL)
+            .refresh_at(Instant::now() + super::super::limits::SSH_AGENT_PROBE_INTERVAL)
             .expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_a);

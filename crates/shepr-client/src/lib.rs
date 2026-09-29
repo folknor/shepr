@@ -259,7 +259,7 @@ fn run_client_with_launch_state(
 
     // A shell with saved machines can show connection notices without a server snapshot.
     let direct_attach = attach_escape.is_some();
-    let mut terminal_guard = if direct_attach {
+    let (mut terminal_guard, output_writer) = if direct_attach {
         setup_direct_attach_terminal(mouse_capture)
     } else {
         setup_terminal(mouse_capture)
@@ -305,6 +305,7 @@ fn run_client_with_launch_state(
             loop_config,
             attach_escape,
             &mut direct_notices,
+            output_writer,
             &terminal_guard,
         )
         .await
@@ -353,6 +354,7 @@ async fn run_client_loop(
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
     direct_notices: &mut VecDeque<String>,
+    output_writer: terminal_setup::HostTerminalWriter,
     terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
     let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
@@ -379,7 +381,7 @@ async fn run_client_loop(
     ));
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
-        output_writer: Box::new(io::stdout()),
+        output_writer: Box::new(output_writer),
         host_modes,
         host_theme_updates: Vec::new(),
         reported_geometry: shepr_core::geometry::HostGeometry::new(
@@ -432,12 +434,22 @@ async fn run_client_loop(
 
     let endpoint_commands = endpoint::commands::EndpointCommands::default();
 
-    // Spawn the stdin reader thread.
-    let will_query_host_terminal_theme = !state.mode.is_escape_attach();
+    // Arm reply tracking only after the corresponding query was written successfully.
+    let should_query_host_terminal_theme = !state.mode.is_escape_attach();
+    let host_color_query_sent =
+        should_query_host_terminal_theme && query_host_terminal_theme(&mut state.output_writer);
+    if should_query_host_terminal_theme && state.mode.is_shell() {
+        query_host_terminal_appearance(&mut state.output_writer);
+    }
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
-    let will_query_host_cell_size =
+    let should_query_host_cell_size =
         !state.mode.is_escape_attach() && host_cell_size_query_required();
+    let will_query_host_cell_size =
+        should_query_host_cell_size && query_host_cell_size(&mut state.output_writer);
+
+    // Spawn the stdin reader after query writes so a failed write does not make
+    // its parser wait for a host reply that cannot arrive.
     let stdin_quit = Arc::clone(&should_quit);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
@@ -445,7 +457,7 @@ async fn run_client_loop(
         input::stdin_reader_loop(
             &stdin_tx,
             &stdin_quit,
-            will_query_host_terminal_theme,
+            host_color_query_sent,
             will_query_host_cell_size,
             &stdin_mouse_capture_active,
             &stdin_sgr_pixels_active,
@@ -453,17 +465,6 @@ async fn run_client_loop(
             &stdin_initial_host_input,
         );
     });
-
-    if will_query_host_terminal_theme {
-        query_host_terminal_theme();
-        if state.mode.is_shell() {
-            query_host_terminal_appearance();
-        }
-    }
-
-    if will_query_host_cell_size {
-        query_host_cell_size();
-    }
 
     // Spawn the resize poller thread.
     let resize_quit = Arc::clone(&should_quit);
@@ -706,9 +707,9 @@ impl ClientLoop<'_> {
         // Clean exit (Ctrl+C). Send Detach before closing. The registry records a failed
         // send against the endpoint, and its Drop sends Detach to every connection again.
         self.write_stream.send(&ClientMessage::Detach);
-        // Terminal restore writes and flushes this same stdout buffer next and logs its own
-        // failure, so a failure here would only be reported twice.
-        io::stdout().flush().ok();
+        // Terminal restore writes and flushes through its clone of this output descriptor next
+        // and logs its own failure, so a failure here would only be reported twice.
+        self.state.output_writer.flush().ok();
         Ok(())
     }
 
@@ -799,11 +800,12 @@ impl ClientLoop<'_> {
             }
             if shepr_termio::input::raw_input::events_require_host_mode_refresh(
                 inputs.iter().map(|input| &input.event),
-            ) && let Err(err) =
-                state
-                    .host_modes
-                    .apply_mouse(shell_mode, state.reported_geometry.exact, true)
-            {
+            ) && let Err(err) = state.host_modes.apply_mouse(
+                &mut state.output_writer,
+                shell_mode,
+                state.reported_geometry.exact,
+                true,
+            ) {
                 warn!(error = %err, "failed to re-assert host mouse capture");
             }
             let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
@@ -945,12 +947,12 @@ impl ClientLoop<'_> {
         if shepr_termio::input::raw_input::events_require_host_terminal_appearance_query(
             inputs.iter().map(|input| &input.event),
         ) {
-            query_host_terminal_appearance();
+            query_host_terminal_appearance(&mut state.output_writer);
         }
         if shepr_termio::input::raw_input::events_require_host_terminal_theme_query(
             inputs.iter().map(|input| &input.event),
         ) {
-            query_host_terminal_theme();
+            query_host_terminal_theme(&mut state.output_writer);
         }
         if let Some((width_px, height_px)) =
             reported_cell_size_from_events(inputs.iter().map(|input| &input.event))
@@ -1008,7 +1010,12 @@ impl ClientLoop<'_> {
         );
         state
             .host_modes
-            .apply_mouse(state.mode.is_shell(), pixel_geometry_exact, false)
+            .apply_mouse(
+                &mut state.output_writer,
+                state.mode.is_shell(),
+                pixel_geometry_exact,
+                false,
+            )
             .map_err(ClientError::HostTerminal)?;
         state.set_host_size(new_cols, new_rows);
         // Resizing invalidates the host-side blit baseline. The retained pane surface
@@ -1328,11 +1335,11 @@ impl ClientLoop<'_> {
                 // repaint to fall back on, so a lost write leaves the host terminal out of
                 // step with the pane for the rest of the session. End it like the other
                 // host terminal write failures on this path.
-                let mut stdout = io::stdout();
-                stdout
-                    .write_all(&frame.bytes)
-                    .and_then(|()| stdout.flush())
-                    .map_err(ClientError::HostTerminal)?;
+                let output_result = {
+                    let writer = &mut state.output_writer;
+                    writer.write_all(&frame.bytes).and_then(|()| writer.flush())
+                };
+                output_result.map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::ServerShutdown { reason } => {
                 if local_failure_policy.ends_client_for(endpoint_id) {
@@ -1485,7 +1492,7 @@ impl ClientLoop<'_> {
                 // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
                 // needed here. Once per user copy, so a warn cannot flood; only the
                 // base64 length is logged because the payload is the user's selection.
-                if let Err(error) = forward_clipboard(&data) {
+                if let Err(error) = forward_clipboard(&data, &mut state.output_writer) {
                     warn!(
                         endpoint = %endpoint_id.storage_key(),
                         generation,
@@ -1504,7 +1511,7 @@ impl ClientLoop<'_> {
                 // logged once per cause because titles can change with every agent state.
                 let written = state
                     .host_modes
-                    .write_window_title(&mut io::stdout(), title.as_deref());
+                    .write_window_title(&mut state.output_writer, title.as_deref());
                 state
                     .title_write_failure
                     .observe("window title", &written, None);
@@ -1518,7 +1525,12 @@ impl ClientLoop<'_> {
                     .set_mouse_endpoint_request(enabled, sgr_pixels);
                 state
                     .host_modes
-                    .apply_mouse(state.mode.is_shell(), state.reported_geometry.exact, false)
+                    .apply_mouse(
+                        &mut state.output_writer,
+                        state.mode.is_shell(),
+                        state.reported_geometry.exact,
+                        false,
+                    )
                     .map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::DirectTerminalKeyboardProtocol {
@@ -1529,7 +1541,7 @@ impl ClientLoop<'_> {
                     state
                         .host_modes
                         .set_direct_keyboard_protocol(
-                            &mut io::stdout(),
+                            &mut state.output_writer,
                             flags,
                             modify_other_keys_level,
                         )
@@ -1545,7 +1557,7 @@ impl ClientLoop<'_> {
                     state
                         .host_modes
                         .set_pane_keyboard_report_all(
-                            &mut io::stdout(),
+                            &mut state.output_writer,
                             enabled,
                             shell_requests_report_all,
                         )

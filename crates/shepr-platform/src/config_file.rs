@@ -157,6 +157,10 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
     Ok(())
 }
 
+// This required-copy policy covers Linux POSIX ACL xattrs only. Other ACL
+// families and security labels use separate namespaces and remain best-effort
+// here; this helper does not promise to preserve them when the filesystem
+// refuses a copy.
 fn is_posix_acl_xattr(name: &std::ffi::CStr) -> bool {
     name.to_bytes().starts_with(b"system.posix_acl_")
 }

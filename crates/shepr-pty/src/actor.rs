@@ -94,13 +94,13 @@ pub struct PtyIoActorConfig {
     pub pane_id: PaneId,
     pub master_fd: OwnedFd,
     pub on_read: ReadCallback,
-    pub on_reader_exit: Option<ReaderExitCallback>,
+    pub on_reader_exit: ReaderExitCallback,
     /// Checked on every loop iteration, including the idle poll that fires
     /// at least once a second, so a core poisoned off the reader thread ends
     /// the pane even when the child prints nothing. Without it only the next
     /// read would notice (`PtyReadResult::core_broken`), and an idle pane
     /// would sit frozen, its reads quietly answering empty, indefinitely.
-    pub core_broken: Option<CoreBrokenCheck>,
+    pub core_broken: CoreBrokenCheck,
 }
 
 fn submission_withdrawn_error() -> std::io::Error {
@@ -562,7 +562,7 @@ impl PtyIoActor {
             active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
             on_read: config.on_read,
-            on_reader_exit: config.on_reader_exit,
+            on_reader_exit: Some(config.on_reader_exit),
             core_broken: config.core_broken,
             exit_reason: ReaderExit::Closed,
             poll_observer,
@@ -600,7 +600,7 @@ struct PtyIoActorRunner {
     wake_read_fd: OwnedFd,
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
-    core_broken: Option<CoreBrokenCheck>,
+    core_broken: CoreBrokenCheck,
     exit_reason: ReaderExit,
     poll_observer: Option<std_mpsc::Sender<()>>,
     resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
@@ -649,7 +649,7 @@ impl PtyIoActorRunner {
             if crate::locks::lock_auxiliary(&self.inbox).shutdown {
                 break;
             }
-            if self.core_broken.as_ref().is_some_and(|broken| broken()) {
+            if (self.core_broken)() {
                 error!(
                     pane = self.pane_id.raw(),
                     "terminal core is broken by a panic elsewhere; closing the pane"
@@ -1394,8 +1394,8 @@ mod tests {
                     .expect("read callback receiver alive");
                 PtyReadResult::empty()
             }),
-            on_reader_exit: None,
-            core_broken: None,
+            on_reader_exit: Box::new(|_| {}),
+            core_broken: Box::new(|| false),
         };
         let handle = if let Some(poll_observer) = poll_observer {
             PtyIoActor::spawn_with_poll_observer(config, poll_observer)
@@ -1432,7 +1432,7 @@ mod tests {
             wake_read_fd: wake_pipe.read_fd,
             on_read,
             on_reader_exit: None,
-            core_broken: None,
+            core_broken: Box::new(|| false),
             exit_reason: ReaderExit::Closed,
             poll_observer: None,
             resize_pty: Box::new(resize_pty),
@@ -1506,8 +1506,8 @@ mod tests {
             pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
-            on_reader_exit: None,
-            core_broken: None,
+            on_reader_exit: Box::new(|_| {}),
+            core_broken: Box::new(|| false),
         })
         .expect("actor spawn");
 
@@ -1703,8 +1703,8 @@ mod tests {
             pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
-            on_reader_exit: None,
-            core_broken: None,
+            on_reader_exit: Box::new(|_| {}),
+            core_broken: Box::new(|| false),
         })
         .expect("actor spawn");
 
@@ -1912,7 +1912,7 @@ mod tests {
             pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
-            on_reader_exit: Some(Box::new({
+            on_reader_exit: Box::new({
                 let handle_slot = Arc::clone(&handle_slot);
                 move |_| {
                     let handle = crate::locks::lock_auxiliary(&handle_slot)
@@ -1926,8 +1926,8 @@ mod tests {
                     );
                     attempt_tx.send(attempt).expect("attempt receiver alive");
                 }
-            })),
-            core_broken: None,
+            }),
+            core_broken: Box::new(|| false),
         };
         let handle = PtyIoActor::spawn(config).expect("actor spawn");
         *crate::locks::lock_auxiliary(&handle_slot) = Some(handle);
@@ -1969,12 +1969,12 @@ mod tests {
             pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read,
-            on_reader_exit: Some(Box::new(move |exit| {
+            on_reader_exit: Box::new(move |exit| {
                 // The actor thread can outlive a test that already finished
                 // and dropped the receiver; tests that check the exit hold it.
                 exit_tx.send(exit).ok();
-            })),
-            core_broken,
+            }),
+            core_broken: core_broken.unwrap_or_else(|| Box::new(|| false)),
         })
         .expect("actor spawn");
         (handle, peer, exit_rx)
@@ -2147,10 +2147,10 @@ mod tests {
                     .expect("read receiver stays alive through actor exit");
                 PtyReadResult::empty()
             }),
-            on_reader_exit: Some(Box::new(move |reason| {
+            on_reader_exit: Box::new(move |reason| {
                 exit_tx.send(reason).expect("exit receiver stays alive");
-            })),
-            core_broken: None,
+            }),
+            core_broken: Box::new(|| false),
         })
         .expect("start actor on PTY master");
 
@@ -2260,8 +2260,8 @@ mod tests {
                     .expect("read callback receiver alive");
                 PtyReadResult::empty()
             }),
-            on_reader_exit: None,
-            core_broken: None,
+            on_reader_exit: Box::new(|_| {}),
+            core_broken: Box::new(|| false),
         })
         .expect("actor spawn");
 
@@ -2660,8 +2660,8 @@ mod tests {
                     core_broken: false,
                 }
             }),
-            on_reader_exit: None,
-            core_broken: None,
+            on_reader_exit: Box::new(|_| {}),
+            core_broken: Box::new(|| false),
         })
         .expect("actor spawn");
 

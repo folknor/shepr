@@ -832,6 +832,11 @@ pub(crate) fn integration_status_at(
     if state == super::IntegrationStatusKind::Current
         && !hook_registration_is_current(spec_for(target)?, &path, expected_version)?
     {
+        tracing::warn!(
+            integration = target.label(),
+            path = %path.display(),
+            "integration hook registration is not current"
+        );
         state = super::IntegrationStatusKind::Outdated;
     }
 
@@ -871,6 +876,18 @@ mod registration_tests {
             integration_target_label(IntegrationTarget::AntigravityCli),
             crate::agent::Agent::Antigravity.label()
         );
+    }
+
+    #[test]
+    fn installer_hook_events_match_the_integration_spec_rows() {
+        for spec in INTEGRATION_SPECS {
+            assert_eq!(
+                integration_hook_events(spec.target),
+                spec.target.hook_events(),
+                "{} installer events must come from its integration spec",
+                spec.target.label()
+            );
+        }
     }
 
     #[test]

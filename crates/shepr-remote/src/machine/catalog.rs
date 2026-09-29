@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::error::Error as StdError;
+use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -7,12 +9,106 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{IntoSshTarget, ProfileId, SshTarget};
+use super::{IntoSshTarget, ProfileId, ProfileIdError, SshTarget, SshTargetError};
 
 const MAX_CATALOG_BYTES: u64 = 64 * 1024;
 const MAX_PROFILES: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogErrorKind {
+    InvalidInput,
+    InvalidData,
+    Io,
+    Conflict,
+    Limit,
+    Serialization,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CatalogError {
+    kind: CatalogErrorKind,
+    message: String,
+    io_kind: Option<io::ErrorKind>,
+}
+
+impl CatalogError {
+    fn new(kind: CatalogErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            io_kind: None,
+        }
+    }
+
+    fn from_display(
+        kind: CatalogErrorKind,
+        context: impl Into<String>,
+        source: &impl fmt::Display,
+    ) -> Self {
+        let context = context.into();
+        let message = if context.is_empty() {
+            source.to_string()
+        } else {
+            format!("{context}: {source}")
+        };
+        Self::new(kind, message)
+    }
+
+    fn caused_by_io(context: impl Into<String>, source: &io::Error) -> Self {
+        let context = context.into();
+        let message = if context.is_empty() {
+            source.to_string()
+        } else {
+            format!("{context}: {source}")
+        };
+        Self {
+            kind: CatalogErrorKind::Io,
+            message,
+            io_kind: Some(source.kind()),
+        }
+    }
+
+    pub fn kind(&self) -> CatalogErrorKind {
+        self.kind
+    }
+
+    pub fn io_kind(&self) -> Option<io::ErrorKind> {
+        self.io_kind
+    }
+
+    pub fn with_context(self, context: impl Into<String>) -> Self {
+        let kind = self.kind;
+        let io_kind = self.io_kind;
+        let message = format!("{}: {}", context.into(), self.message);
+        Self {
+            kind,
+            message,
+            io_kind,
+        }
+    }
+}
+
+impl fmt::Display for CatalogError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl StdError for CatalogError {}
+
+impl From<ProfileIdError> for CatalogError {
+    fn from(error: ProfileIdError) -> Self {
+        Self::from_display(CatalogErrorKind::InvalidInput, "", &error)
+    }
+}
+
+impl From<SshTargetError> for CatalogError {
+    fn from(error: SshTargetError) -> Self {
+        Self::from_display(CatalogErrorKind::InvalidInput, "", &error)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,10 +124,11 @@ impl SavedSshEndpoint {
         label: impl Into<String>,
         target: impl IntoSshTarget,
         session: impl Into<String>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, CatalogError> {
         let profile = Self {
-            id: ProfileId::generate()
-                .map_err(|error| format!("failed to generate endpoint profile id: {error}"))?,
+            id: ProfileId::generate().map_err(|error| {
+                CatalogError::caused_by_io("failed to generate endpoint profile id", &error)
+            })?,
             label: label.into(),
             target: target.into_ssh_target()?,
             session: session.into(),
@@ -40,17 +137,25 @@ impl SavedSshEndpoint {
         Ok(profile)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), CatalogError> {
         let label = self.label.trim();
         if label.is_empty() {
-            return Err("SSH endpoint label cannot be empty".into());
-        }
-        if label.len() > MAX_LABEL_BYTES || label.chars().any(char::is_control) {
-            return Err(format!(
-                "SSH endpoint label must be at most {MAX_LABEL_BYTES} bytes and contain no control characters"
+            return Err(CatalogError::new(
+                CatalogErrorKind::InvalidInput,
+                "SSH endpoint label cannot be empty",
             ));
         }
-        shepr_api::session::validate_name(&self.session)?;
+        if label.len() > MAX_LABEL_BYTES || label.chars().any(char::is_control) {
+            return Err(CatalogError::new(
+                CatalogErrorKind::InvalidInput,
+                format!(
+                    "SSH endpoint label must be at most {MAX_LABEL_BYTES} bytes and contain no control characters"
+                ),
+            ));
+        }
+        shepr_api::session::validate_name(&self.session).map_err(|error| {
+            CatalogError::from_display(CatalogErrorKind::InvalidInput, "", &error)
+        })?;
         Ok(())
     }
 }
@@ -86,18 +191,20 @@ impl Default for EndpointCatalog {
 }
 
 impl EndpointCatalog {
-    pub fn load(paths: &shepr_config::AppPaths) -> Result<Self, String> {
+    pub fn load(paths: &shepr_config::AppPaths) -> Result<Self, CatalogError> {
         Self::load_from_paths(&catalog_path(paths), &selection_path(paths))
     }
 
-    pub fn load_profiles(paths: &shepr_config::AppPaths) -> Result<Vec<SavedSshEndpoint>, String> {
+    pub fn load_profiles(
+        paths: &shepr_config::AppPaths,
+    ) -> Result<Vec<SavedSshEndpoint>, CatalogError> {
         // Profiles only: each running client holds its selection in memory, and the
         // selection file only seeds the next launch (the last client to commit a
         // handoff wins).
         Self::load_from_path(&catalog_path(paths)).map(|catalog| catalog.ssh)
     }
 
-    fn load_from_paths(catalog_path: &Path, selection_path: &Path) -> Result<Self, String> {
+    fn load_from_paths(catalog_path: &Path, selection_path: &Path) -> Result<Self, CatalogError> {
         let mut catalog = Self::load_from_path(catalog_path)?;
         catalog.catalog_path = catalog_path.to_path_buf();
         catalog.selection_path = selection_path.to_path_buf();
@@ -139,7 +246,7 @@ impl EndpointCatalog {
     /// command cannot replace another command's completed edit. On success this
     /// catalog holds the stored profiles and they become its new baseline, so
     /// a later store replays only later edits.
-    pub fn store_profiles(&mut self) -> Result<(), String> {
+    pub fn store_profiles(&mut self) -> Result<(), CatalogError> {
         let _lock = acquire_catalog_update_lock(&self.catalog_path)?;
         let mut latest = Self::load_from_path(&self.catalog_path)?;
         self.apply_profile_delta(&mut latest)?;
@@ -150,7 +257,7 @@ impl EndpointCatalog {
     }
 
     /// Saves `selected` (`None` is Local) as the next launch's selection.
-    pub fn store_selection(&self, selected: Option<&ProfileId>) -> Result<(), String> {
+    pub fn store_selection(&self, selected: Option<&ProfileId>) -> Result<(), CatalogError> {
         self.store_selection_to_path(&self.selection_path, selected)
     }
 
@@ -158,15 +265,24 @@ impl EndpointCatalog {
         &self,
         path: &Path,
         selected: Option<&ProfileId>,
-    ) -> Result<(), String> {
+    ) -> Result<(), CatalogError> {
         self.validate()?;
         if selected.is_some_and(|selected| !self.is_selectable(selected)) {
-            return Err("selected SSH endpoint is absent from the catalog".into());
+            return Err(CatalogError::new(
+                CatalogErrorKind::InvalidInput,
+                "selected SSH endpoint is absent from the catalog",
+            ));
         }
         let content = serde_json::to_vec_pretty(&EndpointSelection {
             selected_profile: selected.cloned(),
         })
-        .map_err(|error| format!("failed to encode endpoint selection: {error}"))?;
+        .map_err(|error| {
+            CatalogError::from_display(
+                CatalogErrorKind::Serialization,
+                "failed to encode endpoint selection",
+                &error,
+            )
+        })?;
         store_private_json(path, &content, "endpoint selection")
     }
 
@@ -175,9 +291,12 @@ impl EndpointCatalog {
         label: impl Into<String>,
         target: impl IntoSshTarget,
         session: impl Into<String>,
-    ) -> Result<ProfileId, String> {
+    ) -> Result<ProfileId, CatalogError> {
         if self.ssh.len() >= MAX_PROFILES {
-            return Err(format!("at most {MAX_PROFILES} SSH endpoints can be saved"));
+            return Err(CatalogError::new(
+                CatalogErrorKind::Limit,
+                format!("at most {MAX_PROFILES} SSH endpoints can be saved"),
+            ));
         }
         let profile = SavedSshEndpoint::new(label, target, session)?;
         let id = profile.id.clone();
@@ -198,61 +317,78 @@ impl EndpointCatalog {
         !self.ssh.is_empty()
     }
 
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), CatalogError> {
         if self.ssh.len() > MAX_PROFILES {
-            return Err(format!(
-                "endpoint catalog contains more than {MAX_PROFILES} SSH profiles"
+            return Err(CatalogError::new(
+                CatalogErrorKind::Limit,
+                format!("endpoint catalog contains more than {MAX_PROFILES} SSH profiles"),
             ));
         }
         let mut ids = HashSet::new();
         for profile in &self.ssh {
             profile.validate()?;
             if !ids.insert(profile.id.clone()) {
-                return Err(format!("duplicate endpoint profile id {}", profile.id));
+                return Err(CatalogError::new(
+                    CatalogErrorKind::Conflict,
+                    format!("duplicate endpoint profile id {}", profile.id),
+                ));
             }
         }
         Ok(())
     }
 
-    fn load_from_path(path: &Path) -> Result<Self, String> {
+    fn load_from_path(path: &Path) -> Result<Self, CatalogError> {
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => {
-                return Err(format!(
-                    "failed to open endpoint catalog {}: {error}",
-                    path.display()
+                return Err(CatalogError::caused_by_io(
+                    format!("failed to open endpoint catalog {}", path.display()),
+                    &error,
                 ));
             }
         };
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("failed to inspect endpoint catalog: {error}"))?;
+        let metadata = file.metadata().map_err(|error| {
+            CatalogError::caused_by_io("failed to inspect endpoint catalog", &error)
+        })?;
         if metadata.len() > MAX_CATALOG_BYTES {
-            return Err("endpoint catalog exceeds the storage limit".into());
+            return Err(CatalogError::new(
+                CatalogErrorKind::Limit,
+                "endpoint catalog exceeds the storage limit",
+            ));
         }
         let mut content = String::new();
         file.take(MAX_CATALOG_BYTES + 1)
             .read_to_string(&mut content)
-            .map_err(|error| format!("failed to read endpoint catalog: {error}"))?;
+            .map_err(|error| {
+                CatalogError::caused_by_io("failed to read endpoint catalog", &error)
+            })?;
         if content.len() as u64 > MAX_CATALOG_BYTES {
-            return Err("endpoint catalog exceeds the storage limit".into());
+            return Err(CatalogError::new(
+                CatalogErrorKind::Limit,
+                "endpoint catalog exceeds the storage limit",
+            ));
         }
-        let mut catalog: Self = serde_json::from_str(&content)
-            .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))?;
+        let mut catalog: Self = serde_json::from_str(&content).map_err(|error| {
+            CatalogError::from_display(
+                CatalogErrorKind::InvalidData,
+                "stored endpoint catalog is invalid",
+                &error,
+            )
+        })?;
         catalog.validate()?;
         catalog.catalog_baseline = catalog.ssh.clone();
         Ok(catalog)
     }
 
-    fn apply_profile_delta(&self, latest: &mut Self) -> Result<(), String> {
+    fn apply_profile_delta(&self, latest: &mut Self) -> Result<(), CatalogError> {
         for original in &self.catalog_baseline {
             match self.ssh.iter().find(|profile| profile.id == original.id) {
                 Some(profile) if profile == original => {}
                 Some(_) => {
-                    return Err(format!(
-                        "updating saved endpoint {} is not supported",
-                        original.id
+                    return Err(CatalogError::new(
+                        CatalogErrorKind::Conflict,
+                        format!("updating saved endpoint {} is not supported", original.id),
                     ));
                 }
                 None => latest.ssh.retain(|profile| profile.id != original.id),
@@ -270,7 +406,10 @@ impl EndpointCatalog {
             match latest.ssh.iter().find(|saved| saved.id == profile.id) {
                 Some(saved) if saved == profile => {}
                 Some(_) => {
-                    return Err(format!("endpoint profile id {} already exists", profile.id));
+                    return Err(CatalogError::new(
+                        CatalogErrorKind::Conflict,
+                        format!("endpoint profile id {} already exists", profile.id),
+                    ));
                 }
                 None => latest.ssh.push(profile.clone()),
             }
@@ -278,10 +417,15 @@ impl EndpointCatalog {
         latest.validate()
     }
 
-    fn store_to_path(&self, path: &Path) -> Result<(), String> {
+    fn store_to_path(&self, path: &Path) -> Result<(), CatalogError> {
         self.validate()?;
-        let content = serde_json::to_vec_pretty(self)
-            .map_err(|error| format!("failed to encode endpoint catalog: {error}"))?;
+        let content = serde_json::to_vec_pretty(self).map_err(|error| {
+            CatalogError::from_display(
+                CatalogErrorKind::Serialization,
+                "failed to encode endpoint catalog",
+                &error,
+            )
+        })?;
         store_private_json(path, &content, "endpoint catalog")
     }
 }
@@ -369,7 +513,7 @@ impl EndpointCatalogWatch {
     /// The saved profiles when the file changed since the last poll, or `None` when it did
     /// not (or it is not time to look yet). An unstatable, unreadable or invalid file is
     /// reported once per observed state; the caller keeps the profiles it has.
-    pub fn poll(&mut self, now: Instant) -> Option<Result<Vec<SavedSshEndpoint>, String>> {
+    pub fn poll(&mut self, now: Instant) -> Option<Result<Vec<SavedSshEndpoint>, CatalogError>> {
         if now < self.next_poll {
             return None;
         }
@@ -388,9 +532,9 @@ impl EndpointCatalogWatch {
                     return None;
                 }
                 self.seen = Some(state);
-                return Some(Err(format!(
-                    "failed to inspect endpoint catalog {}: {error}",
-                    self.path.display()
+                return Some(Err(CatalogError::caused_by_io(
+                    format!("failed to inspect endpoint catalog {}", self.path.display()),
+                    &error,
                 )));
             }
         }
@@ -447,32 +591,53 @@ impl EndpointCatalog {
 /// The lock file remains beside the catalog so all writers always lock the same inode.
 fn acquire_catalog_update_lock(
     catalog_path: &Path,
-) -> Result<shepr_platform::ipc::FlockLock, String> {
+) -> Result<shepr_platform::ipc::FlockLock, CatalogError> {
     let parent = catalog_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| format!("invalid endpoint catalog path: {}", catalog_path.display()))?;
-    let file_name = catalog_path
-        .file_name()
-        .ok_or_else(|| format!("invalid endpoint catalog path: {}", catalog_path.display()))?;
+        .ok_or_else(|| {
+            CatalogError::new(
+                CatalogErrorKind::InvalidInput,
+                format!("invalid endpoint catalog path: {}", catalog_path.display()),
+            )
+        })?;
+    let file_name = catalog_path.file_name().ok_or_else(|| {
+        CatalogError::new(
+            CatalogErrorKind::InvalidInput,
+            format!("invalid endpoint catalog path: {}", catalog_path.display()),
+        )
+    })?;
     let mut lock_name = file_name.to_os_string();
     lock_name.push(".lock");
     let lock_path = parent.join(lock_name);
     shepr_platform::ipc::acquire_flock_lock(&lock_path, true)
-        .map_err(|error| format!("failed to lock endpoint catalog: {error}"))
+        .map_err(|error| CatalogError::caused_by_io("failed to lock endpoint catalog", &error))
 }
 
-fn load_selection_from_path(path: &Path) -> Result<Option<EndpointSelection>, String> {
+fn load_selection_from_path(path: &Path) -> Result<Option<EndpointSelection>, CatalogError> {
     let content = match std::fs::read(path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("failed to read endpoint selection: {error}")),
+        Err(error) => {
+            return Err(CatalogError::caused_by_io(
+                "failed to read endpoint selection",
+                &error,
+            ));
+        }
     };
     if content.len() as u64 > MAX_CATALOG_BYTES {
-        return Err("endpoint selection exceeds the storage limit".into());
+        return Err(CatalogError::new(
+            CatalogErrorKind::Limit,
+            "endpoint selection exceeds the storage limit",
+        ));
     }
-    let selection: EndpointSelection = serde_json::from_slice(&content)
-        .map_err(|error| format!("stored endpoint selection is invalid: {error}"))?;
+    let selection: EndpointSelection = serde_json::from_slice(&content).map_err(|error| {
+        CatalogError::from_display(
+            CatalogErrorKind::InvalidData,
+            "stored endpoint selection is invalid",
+            &error,
+        )
+    })?;
     Ok(Some(selection))
 }
 
@@ -480,48 +645,74 @@ pub(super) fn store_private_json(
     path: &Path,
     content: &[u8],
     description: &str,
-) -> Result<(), String> {
+) -> Result<(), CatalogError> {
     if content.len() as u64 > MAX_CATALOG_BYTES {
-        return Err(format!("{description} exceeds the storage limit"));
+        return Err(CatalogError::new(
+            CatalogErrorKind::Limit,
+            format!("{description} exceeds the storage limit"),
+        ));
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("invalid {description} path: {}", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create {description} directory: {error}"))?;
+    let parent = path.parent().ok_or_else(|| {
+        CatalogError::new(
+            CatalogErrorKind::InvalidInput,
+            format!("invalid {description} path: {}", path.display()),
+        )
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        CatalogError::caused_by_io(format!("failed to create {description} directory"), &error)
+    })?;
     if let Ok(metadata) = std::fs::symlink_metadata(path)
         && (metadata.file_type().is_symlink() || !metadata.is_file())
     {
-        return Err(format!(
-            "refusing to replace {description} through a non-file path"
+        return Err(CatalogError::new(
+            CatalogErrorKind::InvalidInput,
+            format!("refusing to replace {description} through a non-file path"),
         ));
     }
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let temp_path = private_json_temp_path(path, std::process::id(), sequence)?;
-    let mut temp = shepr_platform::create_private_file(&temp_path)
-        .map_err(|error| format!("failed to create {description}: {error}"))?;
+    let mut temp = shepr_platform::create_private_file(&temp_path).map_err(|error| {
+        CatalogError::caused_by_io(format!("failed to create {description}"), &error)
+    })?;
     if let Err(error) = temp.write_all(content).and_then(|()| temp.sync_all()) {
         drop(temp);
         remove_abandoned_temp_file(&temp_path, description);
-        return Err(format!("failed to write {description}: {error}"));
+        return Err(CatalogError::caused_by_io(
+            format!("failed to write {description}"),
+            &error,
+        ));
     }
     drop(temp);
     if let Err(error) = std::fs::rename(&temp_path, path) {
         remove_abandoned_temp_file(&temp_path, description);
-        return Err(format!("failed to activate {description}: {error}"));
+        return Err(CatalogError::caused_by_io(
+            format!("failed to activate {description}"),
+            &error,
+        ));
     }
-    shepr_platform::sync_directory(parent)
-        .map_err(|error| format!("failed to persist {description} directory: {error}"))
+    shepr_platform::sync_directory(parent).map_err(|error| {
+        CatalogError::caused_by_io(format!("failed to persist {description} directory"), &error)
+    })
 }
 
-fn private_json_temp_path(path: &Path, process_id: u32, sequence: u64) -> Result<PathBuf, String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("invalid private JSON path: {}", path.display()))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| format!("invalid private JSON path: {}", path.display()))?;
+fn private_json_temp_path(
+    path: &Path,
+    process_id: u32,
+    sequence: u64,
+) -> Result<PathBuf, CatalogError> {
+    let parent = path.parent().ok_or_else(|| {
+        CatalogError::new(
+            CatalogErrorKind::InvalidInput,
+            format!("invalid private JSON path: {}", path.display()),
+        )
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        CatalogError::new(
+            CatalogErrorKind::InvalidInput,
+            format!("invalid private JSON path: {}", path.display()),
+        )
+    })?;
     let mut temp_name = std::ffi::OsString::from(".");
     temp_name.push(file_name);
     temp_name.push(format!("-{process_id}-{sequence}.tmp"));
@@ -654,6 +845,7 @@ mod tests {
             catalog
                 .add_ssh("Build", "ssh://dev:secret@build.example", "default")
                 .expect_err("test precondition")
+                .to_string()
                 .contains("must not contain a password")
         );
         assert!(
@@ -689,6 +881,7 @@ mod tests {
         assert!(
             EndpointCatalog::load_from_path(&path)
                 .expect_err("test precondition")
+                .to_string()
                 .contains("unknown field")
         );
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
@@ -896,7 +1089,12 @@ mod tests {
             .poll(failed_poll)
             .expect("stat failure is reported")
             .expect_err("stat failure must not look like an empty catalog");
-        assert!(error.contains("failed to inspect endpoint catalog"));
+        assert_eq!(error.kind(), CatalogErrorKind::Io);
+        assert!(
+            error
+                .to_string()
+                .contains("failed to inspect endpoint catalog")
+        );
         assert_eq!(watch.poll(failed_poll + CATALOG_POLL_INTERVAL), None);
 
         std::fs::create_dir_all(parent).expect("test precondition");

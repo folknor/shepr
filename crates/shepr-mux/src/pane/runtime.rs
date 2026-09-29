@@ -234,45 +234,67 @@ pub struct PaneOutputWriter {
 /// A write that holds the content write lock and has announced itself.
 pub struct PaneOutputWrite<'a> {
     writer: &'a PaneOutputWriter,
-    _guard: std::sync::MutexGuard<'a, ()>,
+    _guard: ContentWriteGuard<'a>,
+}
+
+/// Keep the content revision odd for the whole terminal mutation, including
+/// unwinding, and release it before unlocking the writer mutex.
+struct ContentWriteGuard<'a> {
+    seq: &'a AtomicU64,
+    _lock: std::sync::MutexGuard<'a, ()>,
+}
+
+impl<'a> ContentWriteGuard<'a> {
+    fn new(seq: &'a AtomicU64, lock: &'a Mutex<()>) -> Self {
+        let guard = shepr_vt::lock_auxiliary(lock);
+        Self::from_lock(seq, guard)
+    }
+
+    fn try_new(seq: &'a AtomicU64, lock: &'a Mutex<()>) -> Option<Self> {
+        shepr_vt::try_lock_auxiliary(lock).map(|guard| Self::from_lock(seq, guard))
+    }
+
+    fn from_lock(seq: &'a AtomicU64, guard: std::sync::MutexGuard<'a, ()>) -> Self {
+        seq.fetch_add(1, Ordering::AcqRel);
+        Self { seq, _lock: guard }
+    }
+}
+
+impl Drop for ContentWriteGuard<'_> {
+    fn drop(&mut self) {
+        self.seq.fetch_add(1, Ordering::Release);
+    }
 }
 
 impl PaneOutputWriter {
     /// Wait for the content write lock, then announce the write.
     pub fn begin(&self) -> PaneOutputWrite<'_> {
-        let guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-        self.content_seq.fetch_add(1, Ordering::AcqRel);
         PaneOutputWrite {
             writer: self,
-            _guard: guard,
+            _guard: ContentWriteGuard::new(&self.content_seq, &self.content_write_lock),
         }
     }
 
     /// Announce the write only if no render or other write holds the content
     /// write lock.
     pub fn try_begin(&self) -> Option<PaneOutputWrite<'_>> {
-        let guard = shepr_vt::try_lock_auxiliary(&self.content_write_lock)?;
-        self.content_seq.fetch_add(1, Ordering::AcqRel);
         Some(PaneOutputWrite {
             writer: self,
-            _guard: guard,
+            _guard: ContentWriteGuard::try_new(&self.content_seq, &self.content_write_lock)?,
         })
     }
 }
 
 impl PaneOutputWrite<'_> {
-    /// Process `bytes` as output of the child `shell_pid` and land the write.
-    pub fn write(self, shell_pid: u32, bytes: &[u8]) {
-        let _ = self.process(shell_pid, bytes);
+    /// Process `bytes` as the child's output and land the write.
+    pub fn write(self, bytes: &[u8]) {
+        let _ = self.process(bytes);
     }
 
-    fn process(self, shell_pid: u32, bytes: &[u8]) -> ProcessBytesResult {
-        let result = self
-            .writer
+    fn process(self, bytes: &[u8]) -> ProcessBytesResult {
+        self.writer
             .terminal
-            .process_pty_bytes(self.writer.pane_id, shell_pid, bytes);
-        self.writer.content_seq.fetch_add(1, Ordering::Release);
-        result
+            .process_pty_bytes(self.writer.pane_id, bytes)
     }
 }
 
@@ -578,10 +600,9 @@ impl PaneReadEffects {
         let mut tick_result = None;
         let mut deferred_ticket = None;
         let mut tick = || {
-            let content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-            self.content_seq.fetch_add(1, Ordering::AcqRel);
+            let content_write_guard =
+                ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
             let mut result = self.terminal.tick(std::time::Instant::now());
-            self.content_seq.fetch_add(1, Ordering::Release);
             drop(content_write_guard);
             deferred_ticket = self.reserve_deferred(&result);
             let replies = std::mem::take(&mut result.terminal_responses);
@@ -852,7 +873,7 @@ impl PaneRuntime {
                 let shell_pid = read_effects.child_liveness.pid();
                 // Ticks an expired synchronized update first, then parses; the
                 // content write lock is released when this returns.
-                let mut result = write.process(shell_pid, bytes);
+                let mut result = write.process(bytes);
                 if result.core_poisoned {
                     // The actor ends the loop and reports the pane dead.
                     return PtyReadResult {
@@ -910,11 +931,11 @@ impl PaneRuntime {
                 pane_id,
                 master_fd,
                 on_read,
-                on_reader_exit: Some(on_reader_exit),
+                on_reader_exit,
                 // A render, detection or API read that panicked while holding
                 // the core lock breaks it for good; end the pane within the
                 // actor's idle poll even if the child never prints again.
-                core_broken: Some(Box::new(move || health_terminal.core_poisoned())),
+                core_broken: Box::new(move || health_terminal.core_poisoned()),
             });
             let actor = match actor {
                 Ok(actor) => actor,
@@ -1408,11 +1429,10 @@ impl PaneRuntime {
             // parses bytes and queues any replies. Resizing the terminal
             // under that lock keeps its replies in the same order as the
             // terminal state that produced them.
-            let _content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-            self.content_seq.fetch_add(1, Ordering::AcqRel);
+            let content_write_guard =
+                ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
             let terminal_responses = self.terminal.resize(size);
-            self.content_seq.fetch_add(1, Ordering::Release);
-            drop(_content_write_guard);
+            drop(content_write_guard);
             terminal_responses
         });
         mark_detection_content_changed(&self.detection_content_seq);
@@ -1429,10 +1449,8 @@ impl PaneRuntime {
     }
 
     pub fn clear_screen(&self) -> Result<(), PaneClearError> {
-        let guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-        self.content_seq.fetch_add(1, Ordering::AcqRel);
+        let guard = ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
         let result = self.terminal.clear_screen();
-        self.content_seq.fetch_add(1, Ordering::Release);
         drop(guard);
         mark_detection_content_changed(&self.detection_content_seq);
         result
@@ -1898,7 +1916,7 @@ impl PaneRuntime {
     }
 
     pub fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        self.output_writer().begin().write(0, bytes);
+        self.output_writer().begin().write(bytes);
     }
 
     pub fn test_with_scrollback_bytes(
@@ -2484,7 +2502,7 @@ mod tests {
             rt: tokio::runtime::Handle::current(),
         });
 
-        let begin = terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026hframe");
+        let begin = terminal.process_pty_bytes(pane_id, b"\x1b[?2026hframe");
         let delay = begin.render_delay.expect("the update is open");
         assert!(terminal.synchronized_output_active());
         let notified = effects.render_notify.notified();

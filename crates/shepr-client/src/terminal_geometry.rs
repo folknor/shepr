@@ -228,12 +228,19 @@ pub(super) fn resize_poll_loop(
 /// Asks the host terminal for its color scheme. A query that fails to go out
 /// gets no reply, so the failure is logged here: without it the client just
 /// keeps its default appearance with nothing saying why.
-pub(super) fn query_host_terminal_appearance() {
-    if let Err(error) = write_host_terminal_appearance_query(io::stdout()) {
-        warn!(
-            error = %error,
-            "failed to send host terminal color scheme query; keeping default appearance"
-        );
+/// Returns whether the query was written. On focus changes, the blocking
+/// reader has already opened its bounded one-flush reply window before the
+/// client loop sends this query, so this wrapper cannot close it on failure.
+pub(super) fn query_host_terminal_appearance(writer: &mut impl io::Write) -> bool {
+    match write_host_terminal_appearance_query(writer) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "failed to send host terminal color scheme query; keeping default appearance"
+            );
+            false
+        }
     }
 }
 
@@ -244,13 +251,18 @@ pub(super) fn write_host_terminal_appearance_query(mut writer: impl io::Write) -
 }
 
 /// Asks the host terminal for its palette. Logged on failure for the same
-/// reason as [`query_host_terminal_appearance`].
-pub(super) fn query_host_terminal_theme() {
-    if let Err(error) = write_host_terminal_theme_query(io::stdout()) {
-        warn!(
-            error = %error,
-            "failed to send host terminal theme query; keeping default theme"
-        );
+/// reason as [`query_host_terminal_appearance`]. Startup uses the result to
+/// arm reply tracking only after this large query was written successfully.
+pub(super) fn query_host_terminal_theme(writer: &mut impl io::Write) -> bool {
+    match write_host_terminal_theme_query(writer) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "failed to send host terminal theme query; keeping default theme"
+            );
+            false
+        }
     }
 }
 
@@ -263,15 +275,20 @@ pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io:
 /// Asks the host terminal for its cell size in pixels. Without a reply the
 /// client falls back to the last or the default cell size, which degrades
 /// pixel mouse and resize reporting to a guess, so a query that never went out
-/// is logged.
-pub(super) fn query_host_cell_size() {
-    if let Err(error) = write_host_cell_size_query(io::stdout()) {
-        warn!(
-            error = %error,
-            default_width_px = DEFAULT_CELL_WIDTH_PX,
-            default_height_px = DEFAULT_CELL_HEIGHT_PX,
-            "failed to send host cell size query; pixel geometry falls back to a guessed cell size"
-        );
+/// is logged. Startup uses the result to arm reply tracking only after the
+/// query was written successfully.
+pub(super) fn query_host_cell_size(writer: &mut impl io::Write) -> bool {
+    match write_host_cell_size_query(writer) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                error = %error,
+                default_width_px = DEFAULT_CELL_WIDTH_PX,
+                default_height_px = DEFAULT_CELL_HEIGHT_PX,
+                "failed to send host cell size query; pixel geometry falls back to a guessed cell size"
+            );
+            false
+        }
     }
 }
 

@@ -57,28 +57,6 @@ value the binary renders) plus a `clippy.toml disallowed_methods` entry for
 `eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
 and phrasing of the messages themselves cannot be held mechanically.
 
-## HYGC-003 - `io::stdout()` is acquired fresh at eighteen production sites; nothing owns host-terminal output
-
-`shepr-client`: `terminal_setup.rs` (11), `terminal_geometry.rs` (3),
-`state.rs` (2), `lib.rs` (5), `shell_runtime.rs` (3), plus `shepr-termio`'s
-`host_term::title::write_clipboard_bytes` (1, and the only one that takes
-`.lock()`). Every write is separately unbuffered and separately unlocked, and
-the client writes frames, mode changes, window titles, queries and OSC 52
-clipboard payloads through them from more than one thread - the clipboard write
-happens on the main loop, terminal restore can happen from the panic hook and
-from `Drop`. There is no `HostTerminalOut` type. The functions that take
-`&mut impl io::Write` are the good half of this and are testable; their callers
-all resolve to a fresh `io::stdout()`.
-
-The termio/client hunter also noted that `shepr-termio` writes to `io::stdout()`
-in exactly one place (`write_clipboard_bytes`) - the only place in the lower
-crate that owns terminal output rather than taking a writer, and the only one
-that locks. Both facts point at giving it a writer parameter.
-
-Enforcement named: one owned writer handed to the client loop, plus a text rule
-"no `io::stdout()` outside `host_out.rs`", the same shape as the existing
-dependency allowlists.
-
 ## HYGC-005 - Operator-facing sentences assembled at the call site, with the phrasing drifting between sites
 
 Reported from five scopes. (The agent install phrasing is resolved: installs
@@ -176,10 +154,6 @@ Six scopes reported this.
   "failed to check server socket" (`remote/local_server.rs`), "saved SSH
   endpoint bridge failed" (`remote/bridge.rs`); `error!` for "remote bridge
   failed to prepare client socket" (`remote/bridge.rs`).
-- `shepr-server/src/server/headless/render.rs`: a closed client writer channel is
-  logged at `debug!` at two sites and logged not at all at a third, all three
-  being the same fact (this client's writer died mid-push) with three treatments
-  in one file.
 - `shepr-client`: a protocol violation is `ClientError::UnexpectedWelcome` from
   `handshake.rs` and a `debug!("received unexpected Welcome in main loop")` in
   `lib.rs` - same class of event (a peer sending a message it must not send at
@@ -206,10 +180,6 @@ first two bullets.
   (`tracing::warn!(event = "persist.snapshot", ...)`,
   `tracing::info!(event = "persist.backup", ...)`). A failed save is an operator
   event and a failed recovery copy is a log line, for no stated reason.
-- `shepr-protocol`: `surface_reuse::message` logs a `warn` and returns `None`
-  when `codec::encoded_len` fails; `surface_delta::message` wraps the identical
-  failure as `SurfaceDeltaError::Encoding` and returns `Err`. Two policies for
-  one class of event, chosen by which file the code landed in.
 - `shepr-remote/src/remote/bridge.rs` picks between `tracing::warn!` and
   `eprintln!` for the same event depending on the `noninteractive` flag (see
   HYGC-001).
@@ -231,9 +201,6 @@ Reported from six scopes.
   pane termination" carries no generation number, though the generation is the
   whole correctness mechanism of that module and does appear in the `debug!`
   release line.
-- `shepr-protocol/src/surface_reuse.rs::message`: `tracing::warn!(%error,
-  "failed to size surface reuse")` omits the boot id, both revisions and the
-  surface dimensions - everything an operator would need.
 - `shepr-mux/src/persist/io.rs`, twenty lines apart: `load()` logs
   `warn!(event = "persist.restore", subsystem = "persist", outcome =
   "read_error", path = %path.display(), err = %err, "failed to read session
@@ -300,54 +267,26 @@ judgement calls only review catches applies throughout.
   suggested fix is a `debug` line naming which includes were emitted and which
   paths were skipped.
 
-`shepr-agent`: nothing is logged when an override manifest is rejected (the
-warning is stored on the `LoadedManifest` and only surfaces through
-`explain`/`reload` summaries, so a bad override at server boot is only visible if
-someone asks), and nothing is logged when `hook_registration_is_current` returns
-false - which is the single most likely "why is my agent not reporting"
-question.
-
 `shepr-mux`: `PaneTerminal::seed_history_ansi` returns `()` and silently does
 nothing when the core lock is poisoned, so restored scrollback is lost with no
 line anywhere (see also HYGC-029).
 
-`shepr-client`: `terminal_geometry.rs`'s three query wrappers
-(`query_host_terminal_appearance`, `query_host_terminal_theme`,
-`query_host_cell_size`) each do `let _ = write_...(io::stdout())`. When a query
-fails to go out, the client waits for a reply that can never come and falls back
-to `DEFAULT_CELL_WIDTH_PX`/`DEFAULT_CELL_HEIGHT_PX` (8x16) with no line logged;
-pixel-accurate mouse and resize reporting silently degrade to a guess.
+`shepr-client`: startup host queries now track replies only for writes that
+succeeded. Open: a reactive query that fails to go out still leaves the input
+reader's focus reply window open for its one-flush hold; the framer state is in
+`shepr-termio/src/input/raw_input.rs`.
 
 `shepr-protocol`/`shepr-config`: the swallowed remote `ValidatedConfig` decode in
 `shepr-client/src/shell/endpoints.rs` leaves a `None` as its only trace. (The
 protocol/config hunter filed that swallow itself as a live defect.)
 
-## HYGC-016 - An unrecognised hook source or agent label silently downgrades a pane, and nothing is logged
+## HYGC-036 - The outdated-registration warning fires on every status check
 
-Reported by the agent and mux hunters as the same fact from both ends.
-
-When a hook reports a source shepr does not recognise, `AgentSource::parse`
-yields `Custom`, and `shepr-mux`'s `terminal/state/hooks.rs::set_hook_authority_at`
-takes a different branch: no authority, no session identity, no log. The same
-for an `agent_label` that is not a canonical label
-(`PersistedAgentSession::from_report` returns `None`). `AgentSource::from_pair`
-returning `None` falls through silently at five mux sites
-(`terminal/state/hooks.rs` x3, `sessions.rs`, `persist/snapshot.rs`), and
-`full_lifecycle_hook_authority` / `session_identity_only_integration` are
-consulted at ten further sites across `terminal/state/hooks.rs`, `lifecycle.rs`
-and `sessions.rs`, each yielding `false` for an unrecognised pair.
-
-These are exactly the failures an asset typo produces, and they are invisible:
-the failure mode is "the sidebar became less accurate", which is the kind of
-regression nobody bisects. A hook reporting an unrecognised source is
-indistinguishable from no hook at all, in the logs and on screen.
-
-Enforcement named: a `tracing::warn!` with pane id, source and label at each
-site costs nothing on this path (once per session report, not per byte). The
-complementary mechanical check - a test extracting every source and agent-label
-literal from the shipped assets and asserting `AgentSource::from_pair` accepts
-each one - belongs to the guards sibling document, where the asset-literal
-finding is filed.
+`crates/shepr-agent/src/integration/registry.rs::integration_status_at` now
+warns when a hook registration is not current, which answers "why is my agent
+not reporting" - but it fires on every status check, so anything that polls
+status repeats it. Warn once per target per process, or log at the install
+decision rather than the read.
 
 ## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
 
@@ -402,28 +341,6 @@ subject impossible to omit; a lint cannot.
 
 ## HYGC-023 - Stringly-typed errors, and classification by `ErrorKind`, shed the category
 
-- `shepr-remote`: every validation and IO failure in `machine/catalog.rs`,
-  `target.rs` and `profile_id.rs` is a `String` (`executable.rs` now returns a
-  typed `RemoteExecutableError`).
-  `src/cli/machine.rs` then wraps them with `std::io::Error::other(error)` and
-  sometimes prefixes them ("remote prepared, but machine was not saved:
-  {error}"). Nothing downstream can branch on why the catalog was rejected -
-  compare `SshFailureDiagnostic`, which exists in the same crate and does this
-  properly.
-- `shepr-remote`: `print_saved_ssh_error_hint` reclassifies an error by
-  re-parsing it - `is_remote_host_key_error` / `is_remote_auth_error` call
-  `SshFailureDiagnostic::from_error`, which for an error that is not already a
-  diagnostic falls back to classifying by `ErrorKind`. So a hint is chosen from a
-  downgraded classification whenever the typed value did not survive the
-  journey. The crate's own comment says "Text classification is reserved for the
-  SSH process boundary", and this is the one place that re-derives it afterwards.
-- `shepr-agent`: `load_manifest_uncached` collapses three distinct failures
-  (unreadable or unparseable, id mismatch, compile failure) into one
-  `warning: String` attached to the fallback manifest. The subject is in the
-  text, but the caller cannot act on the category and `build_manifest_cache` has
-  no way to refuse. Given the project's "any config problem fails the launch"
-  posture, an override that does not compile arguably ought to fail
-  `shepr config check` rather than warn at runtime.
 - `shepr-mux`: `AppEvent::TabBarCommandFinished` carries
   `Result<Option<String>, String>` across an internal channel. The subject
   (which command, which segment's configured argv) is not in the error, only in
@@ -432,25 +349,10 @@ subject impossible to omit; a lint cannot.
   `TerminalState::restore_error: Option<String>` is the same shape (see
   HYGC-005).
 
-Enforcement named: typed errors - `CatalogError` mirroring
-`SshFailureDiagnostic`'s design; `print_saved_ssh_error_hint` taking `&SshFailureDiagnostic` rather than
-`&io::Error`, so the typed value must be threaded; a typed
-`ManifestOverrideError` plus a `config check` path that loads overrides; a typed
-error carrying the segment's configured command.
-
-## HYGC-024 - Multi-line error strings, and a renderer that mangles them
-
-`shepr-remote/src/remote/local_server.rs::validate_running_server_compatibility`
-builds a five-line multi-paragraph error inside an `io::Error` via `format!`
-with embedded `\n\n`. `src/cli/machine.rs::status` then `escape_debug`s an
-`io::Error` message into one line - so that carefully formatted multi-line text
-reaches the operator as one very long line with `\n` escapes in it. The two
-sites disagree about whether error strings may contain newlines, and one of them
-mangles the other.
-
-Enforcement named: errors carry structure (subject, cause, guidance as fields)
-and the binary formats; then a test that no error message produced by the crate
-contains `\n`.
+Enforcement named: a typed error carrying the segment's configured command, and
+a typed restore failure (HYGC-005). Also open: `shepr-client/src/lib.rs`'s
+fallback catalog load formats the now-typed `CatalogError` into an `io::Error`,
+losing the category on that route.
 
 ## HYGC-026 - Failures discarded with `let _ =` at cleanup, permission and signal sites
 
@@ -548,10 +450,6 @@ structurally cannot.
   API responses as a valid-looking value, and a `""` workspace id in a response
   is indistinguishable from a real one to the client. The sibling functions
   `public_tab_id` and `public_pane_id` return `Option<String>`.
-- `shepr-server/src/server/headless.rs`'s client-shell boot id is
-  `format!("{}-{}", std::process::id(), SystemTime::now()...as_nanos())` with
-  `unwrap_or_default()`, so a clock before the epoch collapses every boot id to
-  `pid-0`, silently defeating the stale-boot rejection it exists for.
 - `shepr-vt`'s `synchronized_output_state` returning `(true, 0)` on a poisoned
   core (HYGC-029) is the same shape.
 
@@ -566,17 +464,6 @@ with piece 4 of the test-isolation work adopted from broadarrow (test-only code
 leaves production crates' `test-support` features for dev-only crates, held by
 `never-ships` dependency rules). Open: every other bullet.
 
-- `shepr-mux/src/workspace.rs`: `impl Deref for Workspace` resolves to
-  `self.tabs.get(self.active_tab).expect("workspace must have a tab when
-  implicitly dereferenced")`. Every `Tab` method is silently available on
-  `Workspace`, and the one-tab invariant is enforced by an `expect` in a `Deref`
-  impl - the least visible possible place for an abort. `active_tab` is also
-  `pub`, and `tabs_mut()` hands out `&mut [Tab]` to any crate, so a server-side
-  caller can put `active_tab` out of range and the next `ws.panes` (which reads
-  as a field access) aborts the server. Enforcement named: delete the
-  `Deref`/`DerefMut` impls, make `active_tab` private, and require
-  `active_tab()` / `active_tab_mut()`, which already exist and return `Option` -
-  that turns an abort into a refusal and makes the invariant structural.
 - `shepr-agent`: `Agent::descriptor` indexes an array with `&AGENTS[self as
   usize]` in a `const fn`, relying on `#[repr(usize)]` and on declaration order
   matching the array. This is a panic on mis-ordering, not on caller input, and

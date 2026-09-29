@@ -252,7 +252,7 @@ impl App {
         let Some(workspace) = self.state.workspaces.get_mut(index) else {
             return Err(workspace_not_found(&params.workspace_id));
         };
-        let now = std::time::Instant::now();
+        let now = self.clock.now;
         if !shepr_mux::terminal::metadata_tokens::sequence_is_fresh(
             &workspace.metadata_token_sequences,
             &source,

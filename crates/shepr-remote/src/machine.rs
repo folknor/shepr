@@ -5,9 +5,10 @@ mod ssh_metadata;
 mod target;
 
 pub use catalog::{
-    EndpointCatalog, EndpointCatalogChanges, EndpointCatalogWatch, SavedSshEndpoint,
+    CatalogError, CatalogErrorKind, EndpointCatalog, EndpointCatalogChanges, EndpointCatalogWatch,
+    SavedSshEndpoint,
 };
 pub use executable::{RemoteExecutable, RemoteExecutableError};
-pub use profile_id::ProfileId;
+pub use profile_id::{ProfileId, ProfileIdError};
 pub use ssh_metadata::SshMetadataCache;
-pub use target::{IntoSshTarget, SshTarget};
+pub use target::{IntoSshTarget, SshTarget, SshTargetError};

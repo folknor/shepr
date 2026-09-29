@@ -228,7 +228,7 @@ fn load_launch_endpoint_catalog(
 ) -> CliResult<shepr_remote::machine::EndpointCatalog> {
     shepr_remote::machine::EndpointCatalog::load(paths).map_err(|error| {
         CliError::Client(shepr_client::ClientRunError::Launch(io::Error::other(
-            format!("saved SSH endpoint catalog is unavailable: {error}"),
+            error.with_context("saved SSH endpoint catalog is unavailable"),
         )))
     })
 }

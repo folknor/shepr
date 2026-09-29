@@ -430,7 +430,6 @@ impl Terminal {
         if written < bytes.len() {
             self.advance(&bytes[written..]);
         }
-        self.collect_damage();
     }
 
     fn advance(&mut self, bytes: &[u8]) {
@@ -473,6 +472,7 @@ impl Terminal {
         };
         rows.finish(term, *history_lines);
         self.drain_events();
+        self.collect_damage();
         result
     }
 
@@ -501,7 +501,6 @@ impl Terminal {
             .is_some_and(|deadline| now >= deadline);
         if expired {
             self.with_handler(|handler, parser| parser.stop_sync(handler));
-            self.collect_damage();
         }
         expired
     }
@@ -758,7 +757,6 @@ impl Terminal {
                 Handler::unset_private_mode(handler, private_mode);
             }
         });
-        self.collect_damage();
         Ok(())
     }
 

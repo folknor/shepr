@@ -51,6 +51,7 @@ impl TerminalState {
         seq: Option<u64>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
     ) -> Option<TerminalStateMutation> {
+        self.warn_unrecognized_hook_identity(&source, &agent_label);
         let session_ref = session_ref?;
         let known_agent = shepr_agent::detect::parse_agent_label(&agent_label);
         let process_present = known_agent.is_some()

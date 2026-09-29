@@ -28,7 +28,14 @@ mod terminal_titles;
 mod window_title;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+
+/// One sample supplied by the server at the start of an iteration.
+#[derive(Clone, Copy)]
+pub(crate) struct AppClock {
+    pub(crate) now: Instant,
+    pub(crate) wall_now: SystemTime,
+}
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
@@ -66,6 +73,7 @@ impl AppPolicy {
 /// report through, and async I/O.
 pub struct App {
     pub state: AppState,
+    pub(crate) clock: AppClock,
     pub(crate) pixel_mouse_available: bool,
     pub(crate) terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
@@ -134,6 +142,7 @@ impl App {
             api_rx,
             event_hub,
             Vec::new(),
+            tests::test_clock(),
         )
     }
 
@@ -145,6 +154,7 @@ impl App {
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         event_hub: shepr_api::EventHub,
         agent_manifest_summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
+        clock: AppClock,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
@@ -202,7 +212,7 @@ impl App {
                 &render_notify,
                 &render_dirty,
                 &pane_teardowns,
-                Instant::now(),
+                clock.now,
             );
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
@@ -251,6 +261,7 @@ impl App {
             .get(selected)
             .map(|workspace| workspace.id.clone());
         let mut state = AppState {
+            clock_now: clock.now,
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
@@ -296,11 +307,12 @@ impl App {
         });
         let mut app = Self {
             state,
+            clock,
             pixel_mouse_available: false,
             terminal_runtimes: restored_terminal_runtimes,
             event_tx,
             event_rx,
-            git_refresh: git_refresh::GitRefreshScheduler::new(Instant::now()),
+            git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
             startup_per_agent_delay: Duration::from_millis(
@@ -331,6 +343,12 @@ impl App {
         );
         app.configure_validated_window_title(config.ui().window_title.as_ref());
         app
+    }
+
+    /// The server supplies a fresh sample before dispatching an iteration.
+    pub(crate) fn set_clock(&mut self, clock: AppClock) {
+        self.clock = clock;
+        self.state.clock_now = clock.now;
     }
 
     /// The channels a newly spawned pane runtime reports through. Every call
@@ -424,6 +442,13 @@ mod tests {
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
+
+    pub(super) fn test_clock() -> AppClock {
+        AppClock {
+            now: Instant::now(),
+            wall_now: SystemTime::now(),
+        }
+    }
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1566,12 +1591,20 @@ mod tests {
     fn session_dirty_flag_schedules_debounced_save() {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
+        let sample = AppClock {
+            now: app.clock.now + Duration::from_secs(42),
+            wall_now: app.clock.wall_now,
+        };
+        app.set_clock(sample);
         app.state.session_dirty = true;
 
         app.sync_session_save_schedule();
 
         assert!(!app.state.session_dirty);
-        assert!(app.session_saver.session_save_deadline.is_some());
+        assert_eq!(
+            app.session_saver.session_save_deadline,
+            Some(sample.now + SESSION_SAVE_DEBOUNCE)
+        );
     }
 
     #[test]

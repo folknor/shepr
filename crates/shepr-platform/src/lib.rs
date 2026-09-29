@@ -11,14 +11,18 @@ mod executable;
 pub mod git;
 mod host;
 pub mod ipc;
+mod limits;
 pub mod logging;
 mod private_file;
 mod process;
+mod process_identity;
 mod random;
 mod remote_bridge;
 mod remote_bridge_io;
 #[cfg(test)]
 mod remote_bridge_tests;
+#[cfg(test)]
+mod resize_signal_tests;
 mod shutdown;
 pub mod ssh_agent;
 mod ssh_paths;
