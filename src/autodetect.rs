@@ -78,7 +78,12 @@ mod tests {
     fn the_local_startup_notice_carries_the_whole_refusal() {
         let error = io::Error::other(format!(
             "the running shepr server is a different build.\n\n{}",
-            shepr_api::session::restart_after_update_guidance("shepr server stop", Some("shepr"))
+            shepr_api::guidance::operator_guidance(
+                shepr_api::guidance::OperatorGuidance::LocalBuildMismatch {
+                    stop_command: "shepr server stop",
+                    attach_command: Some("shepr"),
+                },
+            )
         ));
         let notice = local_startup_notice(&error);
         assert!(notice.contains("saved machines stay available"), "{notice}");

@@ -11,51 +11,60 @@ pub fn client_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::IsolatedEnv;
-    use std::path::Path;
+    use crate::test_support::{IsolatedEnv, ScratchDir};
 
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
         let env = IsolatedEnv::new();
+        let scratch = ScratchDir::new("socket-paths-api-override");
+        let api_socket = scratch.join("test-shepr.sock");
+        let expected_client = scratch.join("test-shepr-client.sock");
         env.set(
             shepr_core::env::EnvVar::SheprSocketPath,
-            "/tmp/test-shepr.sock",
+            api_socket.as_os_str(),
         );
         let paths = shepr_config::AppPaths::resolve().expect("API socket override resolves");
         assert_eq!(
             paths.server_address().client_socket(),
-            Path::new("/tmp/test-shepr-client.sock")
+            expected_client.as_path()
         );
     }
 
     #[test]
     fn client_socket_path_api_override_takes_precedence_over_client_override() {
         let env = IsolatedEnv::new();
+        let scratch = ScratchDir::new("socket-paths-api-precedence");
+        let api_socket = scratch.join("test-shepr.sock");
+        let client_override = scratch.join("client.sock");
+        let expected_client = scratch.join("test-shepr-client.sock");
         env.set(
             shepr_core::env::EnvVar::SheprSocketPath,
-            "/tmp/test-shepr.sock",
+            api_socket.as_os_str(),
         );
         env.set(
             shepr_core::env::EnvVar::SheprClientSocketPath,
-            "/tmp/client.sock",
+            client_override.as_os_str(),
         );
         let paths = shepr_config::AppPaths::resolve().expect("socket overrides resolve");
         assert_eq!(
             paths.server_address().client_socket(),
-            Path::new("/tmp/test-shepr-client.sock")
+            expected_client.as_path()
         );
     }
 
     #[test]
     fn explicit_session_address_ignores_both_socket_overrides() {
         let env = IsolatedEnv::new();
+        let scratch = ScratchDir::new("socket-paths-session-overrides");
+        let api_socket = scratch.join("other-api.sock");
+        let client_socket = scratch.join("other-client.sock");
         env.set(
             shepr_core::env::EnvVar::SheprSocketPath,
-            "/tmp/other-api.sock",
+            api_socket.as_os_str(),
         );
         env.set(
             shepr_core::env::EnvVar::SheprClientSocketPath,
-            "/tmp/other-client.sock",
+            client_socket.as_os_str(),
         );
         let session = shepr_config::SessionId::parse("work").expect("test precondition");
         let paths = shepr_config::AppPaths::resolve_with_session(Some(session.clone()))
@@ -75,17 +84,16 @@ mod tests {
     #[test]
     fn client_socket_path_respects_client_override_without_api_override() {
         let env = IsolatedEnv::new();
+        let scratch = ScratchDir::new("socket-paths-client-override");
+        let client_socket = scratch.join("test-shepr-client.sock");
         env.set(
             shepr_core::env::EnvVar::SheprClientSocketPath,
-            "/tmp/test-shepr-client.sock",
+            client_socket.as_os_str(),
         );
         let paths = shepr_config::AppPaths::resolve().expect("client socket override resolves");
         let address = paths.server_address();
         let expected_api = paths.runtime_dir().join("shepr.sock");
-        assert_eq!(
-            address.client_socket(),
-            Path::new("/tmp/test-shepr-client.sock")
-        );
+        assert_eq!(address.client_socket(), client_socket.as_path());
         assert_eq!(address.api_socket(), expected_api.as_path());
     }
 
@@ -100,20 +108,20 @@ mod tests {
 
     #[test]
     fn named_session_client_socket_matches_derived_api_socket_name() {
+        let runtime = ScratchDir::new("socket-paths-runtime");
         let session = shepr_config::SessionId::parse("work").expect("test precondition");
-        let api = session.api_socket_path_under(Path::new("/tmp/runtime"));
-        let client = session.client_socket_path_under(Path::new("/tmp/runtime"));
+        let api = session.api_socket_path_under(runtime.path());
+        let client = session.client_socket_path_under(runtime.path());
         let derived = derive_client_socket_from_api_socket(&api);
         assert_eq!(client, derived);
-        assert_eq!(
-            client,
-            Path::new("/tmp/runtime/sessions/work/shepr-client.sock")
-        );
+        assert_eq!(client, runtime.join("sessions/work/shepr-client.sock"));
     }
 
     #[test]
     fn derive_client_socket_from_api_socket_without_sock_extension() {
-        let derived = derive_client_socket_from_api_socket(Path::new("/tmp/custom-api"));
-        assert_eq!(derived, PathBuf::from("/tmp/custom-api-client.sock"));
+        let runtime = ScratchDir::new("socket-paths-without-extension");
+        let api = runtime.join("custom-api");
+        let derived = derive_client_socket_from_api_socket(&api);
+        assert_eq!(derived, runtime.join("custom-api-client.sock"));
     }
 }

@@ -683,7 +683,10 @@ pub(super) fn store_private_json(
     }
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-    let temp_path = private_json_temp_path(path, std::process::id(), sequence)?;
+    let token = shepr_platform::unpredictable_token().map_err(|error| {
+        CatalogError::caused_by_io("failed to allocate a temporary private JSON name", &error)
+    })?;
+    let temp_path = private_json_temp_path(path, token, sequence)?;
     let mut temp = shepr_platform::create_private_file(&temp_path).map_err(|error| {
         CatalogError::caused_by_io(format!("failed to create {description}"), &error)
     })?;
@@ -708,11 +711,7 @@ pub(super) fn store_private_json(
     })
 }
 
-fn private_json_temp_path(
-    path: &Path,
-    process_id: u32,
-    sequence: u64,
-) -> Result<PathBuf, CatalogError> {
+fn private_json_temp_path(path: &Path, token: u64, sequence: u64) -> Result<PathBuf, CatalogError> {
     let parent = path.parent().ok_or_else(|| {
         CatalogError::new(
             CatalogErrorKind::InvalidInput,
@@ -727,7 +726,7 @@ fn private_json_temp_path(
     })?;
     let mut temp_name = std::ffi::OsString::from(".");
     temp_name.push(file_name);
-    temp_name.push(format!("-{process_id}-{sequence}.tmp"));
+    temp_name.push(format!("-{token:016x}-{sequence}.tmp"));
     Ok(parent.join(temp_name))
 }
 
@@ -769,14 +768,11 @@ impl Drop for AbandonedTempFile<'_> {
 }
 
 fn catalog_path(paths: &shepr_config::AppPaths) -> PathBuf {
-    paths.state_dir().join("client").join("endpoints.json")
+    paths.client_state_dir().join("endpoints.json")
 }
 
 fn selection_path(paths: &shepr_config::AppPaths) -> PathBuf {
-    paths
-        .state_dir()
-        .join("client")
-        .join("endpoint-selection.json")
+    paths.client_state_dir().join("endpoint-selection.json")
 }
 
 #[cfg(test)]
@@ -786,9 +782,9 @@ mod tests {
     /// A catalog path whose directory does not exist yet, in a fresh scratch
     /// directory.
     fn path(name: &str) -> PathBuf {
-        shepr_test_support::ScratchDir::new(name)
-            .join("client")
-            .join("endpoints.json")
+        let scratch = shepr_test_support::ScratchDir::new(name);
+        let paths = shepr_config::AppPaths::rooted_at(&scratch, None, None);
+        paths.client_state_dir().join("endpoints.json")
     }
 
     #[test]
@@ -1150,7 +1146,7 @@ mod tests {
             target
                 .parent()
                 .expect("test precondition")
-                .join(".endpoint-selection.json-42-7.tmp")
+                .join(".endpoint-selection.json-000000000000002a-7.tmp")
         );
     }
 

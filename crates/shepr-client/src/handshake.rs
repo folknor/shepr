@@ -167,6 +167,7 @@ pub(super) fn do_handshake(
     };
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
+    // clock-io-ok: bound the real handshake reads after writing the hello.
     let read_deadline = Deadline::after(std::time::Instant::now(), read_timeout);
     let read_deadline = deadline.map_or(read_deadline, |deadline| {
         read_deadline.min(Deadline::at(deadline))

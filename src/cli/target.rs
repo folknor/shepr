@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::io;
 use std::ops::Deref;
 
@@ -7,19 +7,28 @@ use shepr_remote::machine::{EndpointCatalog, SavedSshEndpoint};
 
 struct MachineTarget {
     profile: SavedSshEndpoint,
-    bridge: Option<shepr_remote::SavedSshApiBridge>,
+    bridge: Option<MachineBridge>,
     ssh_settings: shepr_remote::SavedSshSettings,
 }
 
+struct MachineBridge {
+    bridge: shepr_remote::SavedSshApiBridge,
+    // The status applies to this bridge; replacing the bridge starts unchecked.
+    build_checked: bool,
+}
+
+#[expect(
+    variant_size_differences,
+    reason = "a CLI process holds one target; boxing the local flag would only move one byte to the heap"
+)]
 enum ApiTarget {
-    Local,
+    Local { build_checked: bool },
     Machine(Box<MachineTarget>),
 }
 
 pub(super) struct CliContext {
     paths: shepr_config::AppPaths,
     target: RefCell<ApiTarget>,
-    build_checked: Cell<bool>,
     caller_pane_id: Option<String>,
     caller_socket: Option<std::path::PathBuf>,
 }
@@ -35,8 +44,9 @@ impl CliContext {
         use shepr_core::env::{EnvVar, read_path, read_text};
         Ok(Self {
             paths,
-            target: RefCell::new(ApiTarget::Local),
-            build_checked: Cell::new(false),
+            target: RefCell::new(ApiTarget::Local {
+                build_checked: false,
+            }),
             caller_pane_id: read_text(EnvVar::SheprPaneId)?,
             caller_socket: read_path(EnvVar::SheprSocketPath)?,
         })
@@ -46,8 +56,9 @@ impl CliContext {
     pub(super) fn test_local(paths: shepr_config::AppPaths) -> Self {
         Self {
             paths,
-            target: RefCell::new(ApiTarget::Local),
-            build_checked: Cell::new(false),
+            target: RefCell::new(ApiTarget::Local {
+                build_checked: false,
+            }),
             caller_pane_id: None,
             caller_socket: None,
         }
@@ -65,18 +76,30 @@ impl CliContext {
                 bridge: None,
                 ssh_settings,
             }))),
-            build_checked: Cell::new(false),
             caller_pane_id: None,
             caller_socket: None,
         }
     }
 
     pub(super) fn build_checked(&self) -> bool {
-        self.build_checked.get()
+        match &*self.target.borrow() {
+            ApiTarget::Local { build_checked } => *build_checked,
+            ApiTarget::Machine(target) => target
+                .bridge
+                .as_ref()
+                .is_some_and(|bridge| bridge.build_checked),
+        }
     }
 
     pub(super) fn mark_build_checked(&self) {
-        self.build_checked.set(true);
+        match &mut *self.target.borrow_mut() {
+            ApiTarget::Local { build_checked } => *build_checked = true,
+            ApiTarget::Machine(target) => {
+                if let Some(bridge) = target.bridge.as_mut() {
+                    bridge.build_checked = true;
+                }
+            }
+        }
     }
 
     pub(super) fn is_remote(&self) -> bool {
@@ -98,7 +121,7 @@ pub(super) fn run_on_machine(
     paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
     let Some(command) = command else {
-        return usage_error("usage: shepr --machine <label-or-id> <command>");
+        return usage_error(&format!("usage: shepr --machine {selector} <command>"));
     };
     if let Err(error) = validate_machine_command(command) {
         return usage_error(&error);
@@ -141,13 +164,16 @@ pub(super) fn api_client(context: &CliContext) -> super::CliResult<ApiClient> {
             )
         })?;
         warn_metadata_store_failure(&target.profile, &bridge);
-        target.bridge = Some(bridge);
+        target.bridge = Some(MachineBridge {
+            bridge,
+            build_checked: false,
+        });
     }
     let bridge = target
         .bridge
         .as_ref()
         .ok_or_else(|| io::Error::other("machine bridge unavailable"))?;
-    Ok(ApiClient::for_socket(bridge.socket_path()))
+    Ok(ApiClient::for_socket(bridge.bridge.socket_path()))
 }
 
 pub(super) fn server_status(
@@ -175,10 +201,10 @@ pub(super) fn server_status(
         let Some(bridge) = target.bridge.as_ref() else {
             return Err(error);
         };
-        let Some(failure) = bridge.reported_failure() else {
+        let Some(failure) = bridge.bridge.reported_failure() else {
             return Err(error);
         };
-        if !bridge.used_cached_metadata
+        if !bridge.bridge.used_cached_metadata
             || !shepr_remote::SavedSshApiBridge::stale_metadata_failure(&failure)
         {
             return Err(failure.into());
@@ -187,11 +213,11 @@ pub(super) fn server_status(
         // hint that could not be removed is overwritten by the retry's own store;
         // only when that store fails too does the stale hint outlive this command,
         // and the retry's store failure is reported below.
-        if let Err(error) = bridge.invalidate_metadata() {
+        if let Err(error) = bridge.bridge.invalidate_metadata() {
             eprintln!(
                 "warning: machine '{}': could not remove stale SSH metadata {}: {error}",
                 target.profile.label,
-                bridge.metadata_path().display()
+                bridge.bridge.metadata_path().display()
             );
         }
         target.bridge.take();
@@ -204,7 +230,10 @@ pub(super) fn server_status(
             target.ssh_settings,
         )?;
         warn_metadata_store_failure(&target.profile, &bridge);
-        target.bridge = Some(bridge);
+        target.bridge = Some(MachineBridge {
+            bridge,
+            build_checked: false,
+        });
         Ok(())
     };
     retried?;
@@ -236,7 +265,7 @@ pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error 
     let error = target
         .bridge
         .as_ref()
-        .and_then(shepr_remote::SavedSshApiBridge::reported_failure)
+        .and_then(|bridge| bridge.bridge.reported_failure())
         .unwrap_or(error);
     // Keep the typed SSH failure so callers can still tell authentication,
     // host-key and link failures apart after the machine name is added.
@@ -249,23 +278,15 @@ pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error 
 
 pub(super) fn restart_guidance(context: &CliContext) -> String {
     match &*context.target.borrow() {
-        ApiTarget::Machine(target) => machine_restart_guidance(
-            &target.profile.label,
-            &target.profile.session,
-            target.profile.id.as_str(),
+        ApiTarget::Machine(target) => shepr_api::guidance::operator_guidance(
+            shepr_api::guidance::OperatorGuidance::MachineBuildMismatch {
+                label: &target.profile.label,
+                session: &target.profile.session,
+                id: target.profile.id.as_str(),
+            },
         ),
-        ApiTarget::Local => shepr_api::session::restart_after_update_guidance_for(context),
+        ApiTarget::Local { .. } => shepr_api::session::restart_after_update_guidance_for(context),
     }
-}
-
-/// The saved-machine form of the mismatch guidance: like the local one, the
-/// way that keeps the running server and its panes comes first, and the stop
-/// it names is the forced one a mismatched stop requires.
-fn machine_restart_guidance(label: &str, session: &str, id: &str) -> String {
-    format!(
-        "Install the same Shepr build on machine '{label}'. To keep its running server (session {session}) and its panes, save the machine again with a session of its own: `shepr machine add <ssh-target> --label <label> --remote-session <name>`. To replace that server instead, stop it with `shepr --machine {id} server stop {}`; the next connection starts it again. Stopping the server exits its pane processes.",
-        shepr_api::session::FORCE_STOP_FLAG
-    )
 }
 
 pub(super) fn remote_identity(context: &CliContext) -> Option<(String, String)> {
@@ -274,7 +295,7 @@ pub(super) fn remote_identity(context: &CliContext) -> Option<(String, String)> 
             target.profile.id.to_string(),
             target.profile.session.clone(),
         )),
-        ApiTarget::Local => None,
+        ApiTarget::Local { .. } => None,
     }
 }
 
@@ -442,7 +463,13 @@ mod tests {
 
     #[test]
     fn machine_guidance_offers_a_separate_session_and_the_forced_stop() {
-        let guidance = machine_restart_guidance("mac", "agents", "m1");
+        let guidance = shepr_api::guidance::operator_guidance(
+            shepr_api::guidance::OperatorGuidance::MachineBuildMismatch {
+                label: "mac",
+                session: "agents",
+                id: "m1",
+            },
+        );
         let session = guidance
             .find("--remote-session <name>")
             .expect("the separate-session option is offered");
@@ -512,6 +539,11 @@ mod tests {
         let error = run_on_machine("mac", None, &shepr_config::AppPaths::test_default())
             .expect_err("a missing command is a usage error");
         assert_eq!(error.exit_code(), 2);
+        assert!(matches!(
+            error,
+            super::super::CliError::Usage(message)
+                if message == "usage: shepr --machine mac <command>"
+        ));
     }
 
     #[test]

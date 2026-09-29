@@ -979,9 +979,14 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::*;
+
+    std::thread_local! {
+        static RESTORE_TEST_SCRATCH: crate::test_support::ScratchDir =
+            crate::test_support::ScratchDir::new("restore-test-paths");
+    }
 
     fn test_restore_now() -> std::time::Instant {
         std::time::Instant::now()
@@ -991,12 +996,12 @@ mod tests {
     /// it, and a pane only exports it as SHEPR_SOCKET_PATH.
     const TEST_API_SOCKET: &str = "/run/user/1000/shepr-test.sock";
 
+    fn restore_test_path(name: &str) -> PathBuf {
+        RESTORE_TEST_SCRATCH.with(|scratch| scratch.join(name))
+    }
+
     fn test_session_path(name: &str) -> String {
-        std::env::current_dir()
-            .expect("test precondition")
-            .join(name)
-            .display()
-            .to_string()
+        restore_test_path(name).display().to_string()
     }
 
     fn test_restore_shell() -> &'static str {
@@ -1075,7 +1080,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_drops_layout_leaves_without_saved_state() {
-        let (mut snapshot, _) = snapshot_with_saved_pane_history();
+        let scratch = crate::test_support::ScratchDir::new("restore-drop-layout-leaves");
+        let (mut snapshot, _) = snapshot_with_saved_pane_history(scratch.path());
         let cwd = snapshot.workspaces[0].tabs[0].panes[&0].cwd.clone();
         // Pane 0 appears twice and pane 7 has no entry in `panes`.
         snapshot.workspaces[0].tabs[0].layout = LayoutSnapshot::Split {
@@ -1144,7 +1150,8 @@ mod tests {
             (false, true, false),
             (false, false, true),
         ] {
-            let (mut snapshot, mut history) = snapshot_with_saved_pane_history();
+            let scratch = crate::test_support::ScratchDir::new("restore-runtime-history");
+            let (mut snapshot, mut history) = snapshot_with_saved_pane_history(scratch.path());
             let pane = snapshot.workspaces[0].tabs[0]
                 .panes
                 .get_mut(&0)
@@ -1300,9 +1307,7 @@ mod tests {
     /// A pane snapshot whose saved directory does not exist, so restore keeps
     /// it without starting a shell.
     fn runtimeless_pane() -> super::super::snapshot::PaneSnapshot {
-        let cwd = std::env::current_dir()
-            .expect("test precondition")
-            .join("__shepr_missing_restore_directory__");
+        let cwd = restore_test_path("__shepr_missing_restore_directory__");
         assert!(!cwd.try_exists().expect("test stat"));
         super::super::snapshot::PaneSnapshot {
             cwd,
@@ -1836,7 +1841,8 @@ mod tests {
                 "selected": 0
             }))
             .expect("test precondition");
-            let cwd = std::env::current_dir().expect("test precondition");
+            let scratch = crate::test_support::ScratchDir::new("restore-cold-cwd");
+            let cwd = scratch.to_path_buf();
             let missing = cwd.join("__shepr_missing_restore_directory__");
             assert!(!missing.try_exists().expect("test stat"));
             for workspace in &mut snapshot.workspaces {
@@ -1939,7 +1945,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
-        let cwd = std::env::current_dir().expect("test precondition");
+        let scratch = crate::test_support::ScratchDir::new("restore-agent-metadata-cwd");
+        let cwd = scratch.to_path_buf();
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
@@ -2021,7 +2028,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_preserves_public_id_mapping_after_pane_id_remap() {
-        let cwd = std::env::current_dir().expect("test precondition");
+        let scratch = crate::test_support::ScratchDir::new("restore-public-id-cwd");
+        let cwd = scratch.to_path_buf();
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
@@ -2216,7 +2224,8 @@ mod tests {
 
     #[tokio::test]
     async fn cold_restore_with_gapped_public_tab_numbers_drops_unmanaged_agent_name() {
-        let cwd = std::env::current_dir().expect("test precondition");
+        let scratch = crate::test_support::ScratchDir::new("restore-public-tab-cwd");
+        let cwd = scratch.to_path_buf();
         let pane_snap = |id: &str| {
             (
                 id.parse::<u32>().expect("test precondition"),
@@ -2328,7 +2337,8 @@ mod tests {
 
     #[tokio::test]
     async fn native_agent_restore_defers_runtime_launch() {
-        let cwd = std::env::current_dir().expect("test precondition");
+        let scratch = crate::test_support::ScratchDir::new("restore-native-agent-cwd");
+        let cwd = scratch.to_path_buf();
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
@@ -2413,7 +2423,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_seeds_saved_pane_history_into_runtime() {
-        let (snapshot, history) = snapshot_with_saved_pane_history();
+        let scratch = crate::test_support::ScratchDir::new("restore-seed-pane-history");
+        let (snapshot, history) = snapshot_with_saved_pane_history(scratch.path());
         let (events, _events_rx) = mpsc::channel(8);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(RenderSignal::new());
@@ -2453,7 +2464,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_without_history_snapshot_keeps_pane_contents_empty() {
-        let (snapshot, _history) = snapshot_with_saved_pane_history();
+        let scratch = crate::test_support::ScratchDir::new("restore-without-pane-history");
+        let (snapshot, _history) = snapshot_with_saved_pane_history(scratch.path());
         let (events, _events_rx) = mpsc::channel(8);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(RenderSignal::new());
@@ -2494,7 +2506,8 @@ mod tests {
     #[tokio::test]
     async fn restore_rejects_history_from_another_layout_or_without_provenance() {
         for missing_fingerprint in [false, true] {
-            let (snapshot, history) = snapshot_with_saved_pane_history();
+            let scratch = crate::test_support::ScratchDir::new("restore-history-provenance");
+            let (snapshot, history) = snapshot_with_saved_pane_history(scratch.path());
             let mut value = serde_json::to_value(history).expect("test precondition");
             let fields = value.as_object_mut().expect("test precondition");
             if missing_fingerprint {
@@ -2540,8 +2553,8 @@ mod tests {
         }
     }
 
-    fn snapshot_with_saved_pane_history() -> (SessionSnapshot, SessionHistorySnapshot) {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    fn snapshot_with_saved_pane_history(cwd: &Path) -> (SessionSnapshot, SessionHistorySnapshot) {
+        let cwd = cwd.to_path_buf();
         let mut panes = HashMap::new();
         panes.insert(
             0,

@@ -174,6 +174,7 @@ impl EndpointCommands {
         &mut self,
         endpoint_id: &ClientEndpointId,
         endpoints: &mut EndpointRegistry,
+        now: Instant,
     ) -> Vec<String> {
         let lane = self.lanes.entry(endpoint_id.clone()).or_default();
         let mut cancelled = Vec::new();
@@ -209,7 +210,7 @@ impl EndpointCommands {
                     request_id: request_id.into(),
                 },
                 response: Vec::new(),
-                sent_at: Instant::now(),
+                sent_at: now,
             });
             break;
         }
@@ -519,8 +520,22 @@ mod tests {
     #[test]
     fn in_flight_endpoint_command_expires_and_releases_the_lane() {
         let mut commands = commands_with_in_flight();
+        let start = Instant::now();
+        commands
+            .lanes
+            .get_mut(&endpoint())
+            .expect("test command lane")
+            .in_flight
+            .as_mut()
+            .expect("test in-flight command")
+            .sent_at = start;
+        assert!(
+            commands
+                .expire(start + ENDPOINT_COMMAND_TIMEOUT - Duration::from_nanos(1))
+                .is_empty()
+        );
         let expired = commands
-            .expire(std::time::Instant::now() + ENDPOINT_COMMAND_TIMEOUT)
+            .expire(start + ENDPOINT_COMMAND_TIMEOUT)
             .pop()
             .expect("expired endpoint command");
 
@@ -535,11 +550,7 @@ mod tests {
             }) if code == "endpoint_timeout"
         ));
         assert!(!has_in_flight(&commands));
-        assert!(
-            commands
-                .expire(std::time::Instant::now() + ENDPOINT_COMMAND_TIMEOUT)
-                .is_empty()
-        );
+        assert!(commands.expire(start + ENDPOINT_COMMAND_TIMEOUT).is_empty());
         let late_response = serde_json::to_vec(&SuccessResponse {
             id: "request-a".into(),
             result: ResponseResult::Ok {},

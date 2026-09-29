@@ -10,32 +10,28 @@ pub struct RgbColor {
 }
 
 impl RgbColor {
-    pub fn inferred_appearance(self) -> ColorScheme {
-        let luminance = u32::from(self.r) * 299 + u32::from(self.g) * 587 + u32::from(self.b) * 114;
-        if luminance >= 128_000 {
-            ColorScheme::Light
-        } else {
-            ColorScheme::Dark
-        }
-    }
-}
-
-impl From<Rgb> for RgbColor {
-    fn from(value: Rgb) -> Self {
+    pub(super) fn from_vte(value: Rgb) -> Self {
         Self {
             r: value.r,
             g: value.g,
             b: value.b,
         }
     }
-}
 
-impl From<RgbColor> for Rgb {
-    fn from(value: RgbColor) -> Self {
+    pub(super) fn into_vte(self) -> Rgb {
         Rgb {
-            r: value.r,
-            g: value.g,
-            b: value.b,
+            r: self.r,
+            g: self.g,
+            b: self.b,
+        }
+    }
+
+    pub fn inferred_appearance(self) -> ColorScheme {
+        let luminance = u32::from(self.r) * 299 + u32::from(self.g) * 587 + u32::from(self.b) * 114;
+        if luminance >= 128_000 {
+            ColorScheme::Light
+        } else {
+            ColorScheme::Dark
         }
     }
 }
@@ -159,7 +155,7 @@ impl ColorQuery {
     /// Encode a reply in the form the query asked for (same OSC number and
     /// terminator).
     pub fn encode(&self, color: RgbColor) -> Vec<u8> {
-        (*self.format)(color.into()).into_bytes()
+        (*self.format)(color.into_vte()).into_bytes()
     }
 }
 
@@ -182,21 +178,21 @@ impl Terminal {
         match target {
             ColorQueryTarget::Palette(index) => Some(self.effective_palette_color(index)),
             ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
-                .map(RgbColor::from)
+                .map(RgbColor::from_vte)
                 .or(self.host_foreground),
             ColorQueryTarget::Background => colors[NamedColor::Background]
-                .map(RgbColor::from)
+                .map(RgbColor::from_vte)
                 .or(self.host_background),
             ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
                 .or(colors[NamedColor::Foreground])
-                .map(RgbColor::from)
+                .map(RgbColor::from_vte)
                 .or(self.host_foreground),
         }
     }
 
     fn effective_palette_color(&self, index: u8) -> RgbColor {
         let index = usize::from(index);
-        self.term.colors()[index].map_or(self.default_palette[index], RgbColor::from)
+        self.term.colors()[index].map_or(self.default_palette[index], RgbColor::from_vte)
     }
 
     pub(super) fn render_colors(&self) -> RenderColors {
@@ -204,16 +200,16 @@ impl Terminal {
         let mut palette = self.default_palette;
         for (index, slot) in palette.iter_mut().enumerate() {
             if let Some(color) = colors[index] {
-                *slot = color.into();
+                *slot = RgbColor::from_vte(color);
             }
         }
         RenderColors {
             background: colors[NamedColor::Background]
-                .map(RgbColor::from)
+                .map(RgbColor::from_vte)
                 .or(self.host_background)
                 .unwrap_or(DEFAULT_BACKGROUND),
             foreground: colors[NamedColor::Foreground]
-                .map(RgbColor::from)
+                .map(RgbColor::from_vte)
                 .or(self.host_foreground)
                 .unwrap_or(DEFAULT_FOREGROUND),
             palette,
@@ -250,7 +246,7 @@ impl Terminal {
 
     /// The default colour the child set with OSC 10/11, if it has one.
     pub fn default_color_override(&self, color: DefaultColor) -> Option<RgbColor> {
-        self.term.colors()[color.named()].map(RgbColor::from)
+        self.term.colors()[color.named()].map(RgbColor::from_vte)
     }
 
     /// Drops the child's OSC 10/11 overrides, as OSC 110/111 would, so the

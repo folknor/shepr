@@ -3,11 +3,47 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
+use std::sync::OnceLock;
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+static TEST_TEMP_TOKEN: OnceLock<u64> = OnceLock::new();
+
+fn temporary_path(parent: &Path, prefix: &str, sequence: u64) -> io::Result<PathBuf> {
+    let token = temporary_token()?;
+
+    Ok(parent.join(format!("{prefix}-{token:016x}-{sequence}.tmp")))
+}
+
+fn temporary_token() -> io::Result<u64> {
+    #[cfg(test)]
+    if let Some(token) = TEST_TEMP_TOKEN.get() {
+        return Ok(*token);
+    }
+
+    shepr_platform::unpredictable_token()
+}
 
 #[cfg(test)]
 pub(super) fn reset_temp_sequence(sequence: u64) {
     NEXT_TEMP.store(sequence, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn set_temp_token_for_test(token: u64) {
+    let stored = *TEST_TEMP_TOKEN.get_or_init(|| token);
+    assert_eq!(stored, token, "the test temp token is set once per process");
+}
+
+#[cfg(test)]
+pub(super) fn temporary_path_for_test(
+    parent: &Path,
+    prefix: &str,
+    sequence: u64,
+) -> io::Result<PathBuf> {
+    temporary_path(parent, prefix, sequence)
 }
 
 /// How the staged file gets its permissions: managed assets are created
@@ -41,10 +77,9 @@ impl AtomicReplace {
 
         for _ in 0..128 {
             let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(
-                "{temporary_prefix}-{}-{sequence}.tmp",
-                std::process::id()
-            ));
+            // The kernel-random token separates processes; the atomic sequence
+            // separates threads, and create_new arbitrates collisions.
+            let temporary = temporary_path(parent, temporary_prefix, sequence)?;
             let created = match policy {
                 PermissionPolicy::ManagedAsset { .. } => OpenOptions::new()
                     .write(true)

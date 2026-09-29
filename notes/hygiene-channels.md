@@ -44,9 +44,8 @@ the capitalisation are still decided per remaining site), `writeln!(io::stderr()
 ..)` is not a print macro so the rule does not catch it, and
 `shepr-platform/src/ipc.rs::prepare_socket_path`'s `busy_message` closure still
 has the platform layer's caller format operator text rather than the platform
-layer staying silent on it. Also still open: `shepr-server/src/server/headless/bootstrap.rs`
-and `crates/shepr-server/src/server/socket_paths.rs` spell "shepr server is
-already running" independently (reduced from three copies to two).
+layer staying silent on it. (The server's "already running" text now has one
+owner, `RunServerError`'s `Display`.)
 
 Recorded absence, so it is not re-hunted: the protocol/config hunter verified by
 grep that neither `crates/shepr-protocol/src` nor `crates/shepr-config/src`
@@ -62,13 +61,6 @@ and phrasing of the messages themselves cannot be held mechanically.
 Reported from five scopes. (The agent install phrasing is resolved: installs
 return one outcome shape formatted in one place.)
 
-- `shepr-api::session::restart_after_update_guidance` / `..._for` own the local
-  "stop the server to use this build" text; `src/cli/target.rs::restart_guidance`
-  re-authors the whole paragraph for the `--machine` case in a single `format!`;
-  `src/cli/server_not_running.rs` authors a third variant ("no shepr server is
-  running at ...; run `X` to start or attach it"). All three answer "what should
-  the operator type next", and the two-sentence structure ("Stopping exits pane
-  processes") appears in two of them with different wording.
 - `shepr-mux/src/persist/restore.rs` builds two operator-facing restore failure
   strings at the failure site ("Saved directory is unavailable. Restore the
   directory and restart this session." and "Could not start the saved shell:
@@ -158,31 +150,6 @@ to `shepr_platform::logging` and hold it with a text rule banning `tracing::` in
 `fn writer_gone(client_id)` helper for the render branches so they cannot
 disagree.
 
-## HYGC-012 - Log lines that omit the identifiers someone would need to act
-
-Reported from six scopes.
-
-- `shepr-mux/src/persist/io.rs`, twenty lines apart: `load()` logs
-  `warn!(event = "persist.restore", subsystem = "persist", outcome =
-  "read_error", path = %path.display(), err = %err, "failed to read session
-  file")` while `load_history()` logs `warn!(err = %err, "failed to read session
-  history file")` - no path, no event, no subsystem, no outcome. An operator
-  cannot tell which session directory failed, which matters precisely because
-  named sessions put the file somewhere non-obvious. The parse-error pair has the
-  same asymmetry.
-- `shepr-agent`, for contrast, was reported as mostly fine on field content:
-  `installed_integration_statuses` logs `integration` and `error`,
-  `process_detection_mode` logs `variable` and `value`, `config_file.rs::Drop`
-  logs the temp path. The agent hunter's finding there is coverage, not quality
-  (HYGC-014, HYGC-016).
-
-Enforcement named: partly holdable. A test can assert required fields per event
-if the events become structs rather than free functions with positional
-arguments; one helper taking `(path, err, outcome)` with required parameters for
-the persist pair; and a `tracing::Span` built once at construction (per endpoint
-in the client loop, per connector and per bridge in `shepr-remote`) attaches the
-identifier structurally, which is the closest thing to enforcement available.
-
 ## HYGC-013 - Structured field names for the same thing differ across sites
 
 `shepr-client` now keys every failure field `error`. Open: the same audit across
@@ -218,13 +185,6 @@ protocol/config hunter filed that swallow itself as a live defect.)
   response-write IO failures from clients that disconnect abruptly; watch it for
   noise and split the disconnect case if it is.
 
-## HYGC-038 - An internal client invariant breach is answered by reconnecting
-
-`crates/shepr-client/src/lib.rs`: a `SurfaceUpdate` reaching presentation
-undecoded can only mean a client bug, since the reader thread always decodes it
-first; it now fails the endpoint, which reconnects and hides the bug. Log it at
-error with the endpoint and generation so it is seen, whatever the recovery.
-
 ## HYGC-018 - Drops on the terminal-reply and dirty-patch paths with no counter and no log
 
 Residue. The pty and mux drops are now counted and reported once per actor or
@@ -252,13 +212,6 @@ Gathered from six scopes.
   remaining" - no host, no endpoint, no session.
 - `FramingError::SurfaceDecode(String)` and `CodecError::Message(String)` flow to
   the client with no pane, boot id or revision attached.
-
-`src/cli`: `target.rs::run_on_machine` returns
-`usage_error("usage: shepr --machine <label-or-id> <command>")` when no command
-was given - the message does not repeat the selector the user typed, so with
-several shells open it names no subject. `resolve_machine`'s errors do name it
-("unknown machine 'x'; use `shepr machine list`"), which is the standard to
-match.
 
 Enforcement named: partly. A typed error per module carrying the subject makes the
 subject impossible to omit; a lint cannot.
@@ -298,24 +251,6 @@ currently in the lint table, and adding it is a finding somebody could pay for
 once. The termio/client hunter's dissenting view on the same lint: an allow-list
 for it would be "too noisy to be worth it", and those sites are individual
 fixes.
-
-## HYGC-029 - Poisoned locks answered with success, a fabricated value, or a silent drop
-
-
-Note on disagreement across scopes: `shepr-platform`'s log writer recovers a poisoned
-mutex and records the gap, `shepr-vt::lock_terminal_core` treats
-poisoning as terminal for the pane, `shepr-mux/src/render_signal.rs` continues on
-poisoned state at eight sites, and `shepr-server/src/app/session.rs` both
-recovers and refuses on the *same* mutex twenty lines apart. The hunters did not
-agree on which is right; the per-call-site-policy half of this is filed in the
-policy sibling document, and only the swallowing is here.
-
-## HYGC-032 - Failures answered with a valid-looking sentinel instead of a refusal
-
-
-Enforcement named: return `Option<String>` like the siblings;
-`BootId::for_this_process()` in `shepr-protocol` with `From<String>` restricted
-to deserialization.
 
 ## HYGC-033 - Aborts and panics on state a caller or operator can reach
 

@@ -4673,10 +4673,11 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     let path = dir.join("client.sock");
 
     let (listener, startup_lock, _) = shepr_platform::ipc::bind_private_socket(&path, |path| {
-        format!(
-            "shepr server is already running (socket busy at {})",
-            path.display()
-        )
+        RunServerError::AlreadyRunning {
+            socket: ServerSocket::Client,
+            path: path.to_path_buf(),
+        }
+        .to_string()
     })
     .expect("bind");
     let mode = fs::metadata(&path)
@@ -4701,10 +4702,11 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     assert!(listener.accept().is_ok());
     // A second server never replaces a socket that is already there.
     let err = shepr_platform::ipc::bind_private_socket(&path, |path| {
-        format!(
-            "shepr server is already running (socket busy at {})",
-            path.display()
-        )
+        RunServerError::AlreadyRunning {
+            socket: ServerSocket::Client,
+            path: path.to_path_buf(),
+        }
+        .to_string()
     })
     .err()
     .expect("startup lock is held");

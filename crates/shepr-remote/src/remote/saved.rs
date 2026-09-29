@@ -379,12 +379,8 @@ impl SavedSshApiBridge {
         // ControlMaster options are still applied by the bridge's SSH subprocess.
         let path = shepr_platform::remote_bridge_endpoint_path(
             paths.xdg_runtime_dir(),
-            &format!("shepr-api-ssh-{}-{profile_id}.sock", std::process::id()),
-            &format!(
-                "shepr-api-{}-{}.sock",
-                std::process::id(),
-                profile_id.short()
-            ),
+            &format!("shepr-api-ssh-{profile_id}.sock"),
+            &format!("shepr-api-{}.sock", profile_id.short()),
         )?;
         let bridge = SshStdioBridge::start_command(
             target.clone(),
@@ -446,9 +442,8 @@ pub fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
 }
 
 fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
-    let pid = std::process::id();
-    let readable = format!("shepr-ssh-{pid}-{profile_id}.sock");
-    let short = format!("shepr-s-{pid}-{}.sock", profile_id.short());
+    let readable = format!("shepr-ssh-{profile_id}.sock");
+    let short = format!("shepr-s-{}.sock", profile_id.short());
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
 }
 

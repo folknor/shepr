@@ -36,8 +36,6 @@ mod timer;
 mod transport;
 mod workspace_label;
 
-#[cfg(test)]
-use clipboard_forwarding::decode_clipboard_payload;
 use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
 use loop_config::{ClientLoopConfig, ClientSettings};
@@ -50,12 +48,6 @@ pub use startup::{run_client, run_terminal_attach};
 
 use terminal_geometry::query_host_terminal_appearance;
 use terminal_geometry::{AtomicCellSize, reported_cell_size_from_events, store_reported_cell_size};
-#[cfg(test)]
-use terminal_geometry::{
-    cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,
-    resize_report_required, write_host_cell_size_query, write_host_terminal_appearance_query,
-    write_host_terminal_theme_query,
-};
 use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
     query_host_terminal_theme, resize_poll_loop,
@@ -65,19 +57,11 @@ use terminal_setup::{
     should_draw_host_cursor,
 };
 
-#[cfg(test)]
-use terminal_setup::{
-    HostModes, effective_mouse_capture, effective_sgr_pixel_mouse,
-    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
-};
-
 use attach::AttachEscapeState;
 use attach::direct_attach_pixel_mouse;
 use attach::{AttachInputAction, attach_semantic_message};
 use errors::ClientErrorContext;
 pub use errors::{ClientError, ClientExit, ClientRunError};
-#[cfg(test)]
-use handshake::REMOTE_HANDSHAKE_READ_TIMEOUT;
 use handshake::{ClientProcessRole, do_handshake};
 
 use std::collections::VecDeque;
@@ -381,6 +365,8 @@ async fn run_client_loop(
         config.settings.mouse_capture_active(),
         config.settings.mouse_capture_active(),
     ));
+    // client-clock-sample-ok: sample launch time for initial shell and endpoint state.
+    let launch_now = std::time::Instant::now();
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
         output_writer: Box::new(output_writer),
@@ -394,7 +380,11 @@ async fn run_client_loop(
             initial_pixel_geometry_exact,
         ),
         settings: config.settings,
-        mode: match config.shell_config.take().map(shell::ClientShellState::new) {
+        mode: match config
+            .shell_config
+            .take()
+            .map(|config| shell::ClientShellState::new_at(config, launch_now))
+        {
             Some(shell) => SessionMode::Shell(Box::new(shell)),
             None => SessionMode::DirectAttach(AttachSession {
                 escape: attach_escape,
@@ -411,7 +401,7 @@ async fn run_client_loop(
     // Only a client that loaded the saved machines follows them; attach and remote-client
     // processes run with an empty catalog.
     let catalog_watch = (state.mode.is_shell() && config.role == ClientProcessRole::Local)
-        .then(|| endpoint::EndpointCatalogWatch::new(&config.paths, std::time::Instant::now()));
+        .then(|| endpoint::EndpointCatalogWatch::new(&config.paths, launch_now));
     let freeze_recovery_attempted = None;
     if let Some(shell) = state.mode.shell_mut() {
         shell.set_endpoint_catalog(&endpoint_catalog.ssh);
@@ -508,12 +498,8 @@ async fn run_client_loop(
             1,
             surface_decoder,
         )?;
-        let mut registry = endpoint::EndpointRegistry::with_local_link(
-            transport,
-            1,
-            local_link,
-            std::time::Instant::now(),
-        );
+        let mut registry =
+            endpoint::EndpointRegistry::with_local_link(transport, 1, local_link, launch_now);
         if state.mode.is_shell() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
@@ -527,7 +513,7 @@ async fn run_client_loop(
         shepr_remote::SavedSshSettings {
             manage_ssh_config: config.settings.manage_ssh_config(),
         },
-        std::time::Instant::now(),
+        launch_now,
     )
     .map_err(ClientError::EndpointSetup)?;
     if local_failure_policy.reconnects_local() {
@@ -536,7 +522,7 @@ async fn run_client_loop(
             write_stream
                 .connection(&endpoint::ClientEndpointId::Local)
                 .map(|connection| connection.generation.get()),
-            std::time::Instant::now(),
+            launch_now,
         );
     }
     if local_unavailable
@@ -636,6 +622,8 @@ struct ClientLoop<'a> {
 impl ClientLoop<'_> {
     async fn run(&mut self) -> Result<(), ClientError> {
         while !self.should_quit.load(Ordering::Acquire) {
+            // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
+            let loop_now = std::time::Instant::now();
             // Handoffs finish or roll back in many places; judge the requested selection once
             // nothing is in flight, so a rolled-back target neither stays selected nor persists.
             self.selection.settle_and_persist(
@@ -665,7 +653,7 @@ impl ClientLoop<'_> {
                     self.state.reported_geometry.exact,
                 );
                 self.supervisors.spawn_due(
-                    std::time::Instant::now(),
+                    loop_now,
                     endpoint::EndpointConnectOptions {
                         geometry: shepr_core::geometry::HostGeometry::new(
                             self.state.reported_geometry.cols(),
@@ -688,11 +676,9 @@ impl ClientLoop<'_> {
                 .mode
                 .shell()
                 .map_or(limits::MAX_CLIENT_TIMER_DELAY, |shell| {
-                    shell.timer_delay(std::time::Instant::now())
+                    shell.timer_delay(loop_now)
                 });
-            let timer_deadline = self
-                .client_timer
-                .deadline(std::time::Instant::now(), timer_delay);
+            let timer_deadline = self.client_timer.deadline(loop_now, timer_delay);
             let event = if let Some(event) = self.scheduled_activation.take() {
                 event
             } else {
@@ -703,6 +689,7 @@ impl ClientLoop<'_> {
                     ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
                 }
             };
+            // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
             if self.handle_event(event, now)? == ClientLoopAction::Exit {
                 return Ok(());
@@ -723,6 +710,9 @@ impl ClientLoop<'_> {
         event: ClientLoopEvent,
         now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
+        if let Some(shell) = self.state.mode.shell_mut() {
+            shell.now = now;
+        }
         match event {
             ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs, now),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
@@ -1687,7 +1677,7 @@ impl ClientLoop<'_> {
                 return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::SurfaceUpdate(_) => {
-                warn!(
+                tracing::error!(
                     endpoint = %endpoint_id.storage_key(),
                     generation,
                     "surface update reached presentation before decoding; failing its connection"
@@ -1887,5 +1877,20 @@ impl ClientLoop<'_> {
     }
 }
 
+#[cfg(test)]
+use clipboard_forwarding::decode_clipboard_payload;
+#[cfg(test)]
+use handshake::REMOTE_HANDSHAKE_READ_TIMEOUT;
+#[cfg(test)]
+use terminal_geometry::{
+    cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,
+    resize_report_required, write_host_cell_size_query, write_host_terminal_appearance_query,
+    write_host_terminal_theme_query,
+};
+#[cfg(test)]
+use terminal_setup::{
+    HostModes, effective_mouse_capture, effective_sgr_pixel_mouse,
+    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
+};
 #[cfg(test)]
 mod tests;

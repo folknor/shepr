@@ -693,6 +693,8 @@ impl HeadlessServer {
                         self.send_to_client(
                             client_id,
                             &ServerMessage::ServerShutdown {
+                                // Include the id because this is the attach client's only
+                                // diagnostic when its server-side terminal runtime disappears.
                                 reason: Some(shepr_protocol::ShutdownReason::Message(format!(
                                     "terminal attach ended: terminal {terminal_id} not found"
                                 ))),

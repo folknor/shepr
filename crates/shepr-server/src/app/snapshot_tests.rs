@@ -11,14 +11,6 @@ use shepr_mux::persist::snapshot::*;
 use shepr_mux::terminal::TerminalState;
 use shepr_mux::workspace::Workspace;
 
-fn test_session_path(name: &str) -> String {
-    std::env::current_dir()
-        .expect("test precondition")
-        .join(name)
-        .display()
-        .to_string()
-}
-
 fn state_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
     state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
@@ -443,7 +435,8 @@ fn capture_contract_tracks_public_id_counters() {
 
 #[tokio::test]
 async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
-    let old = std::env::current_dir().expect("test precondition");
+    let old_scratch = crate::test_support::ScratchDir::new("persist-cwd-old");
+    let old = std::fs::canonicalize(old_scratch.path()).expect("test precondition");
     let scratch = crate::test_support::ScratchDir::new("persist-cwd");
     let new = std::fs::canonicalize(scratch.path()).expect("test precondition");
     let mut state = AppState::test_new();
@@ -557,8 +550,10 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
 #[test]
 fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
     let mut state = state_with_workspaces(&["one"]);
+    let pion_cwd = ScratchDir::new("snapshot-pion-cwd").to_path_buf();
+    let shepr_cwd = ScratchDir::new("snapshot-shepr-cwd").to_path_buf();
     let root = state.workspaces[0].tabs()[0].root_pane();
-    state.workspaces[0].identity_cwd = PathBuf::from("/tmp/pion");
+    state.workspaces[0].identity_cwd = pion_cwd.clone();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     state.ensure_test_terminals();
     let root_terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
@@ -566,22 +561,22 @@ fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
         .clone();
     state.terminals.insert(
         root_terminal_id.clone(),
-        TerminalState::new(root_terminal_id.clone(), PathBuf::from("/tmp/pion")),
+        TerminalState::new(root_terminal_id.clone(), pion_cwd.clone()),
     );
     let second_terminal_id = state.workspaces[0].tabs()[0].panes()[&second]
         .attached_terminal_id
         .clone();
     state.terminals.insert(
         second_terminal_id.clone(),
-        TerminalState::new(second_terminal_id.clone(), PathBuf::from("/tmp/shepr")),
+        TerminalState::new(second_terminal_id.clone(), shepr_cwd.clone()),
     );
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
     let tab = &workspace.tabs[0];
-    assert_eq!(workspace.identity_cwd, PathBuf::from("/tmp/pion"));
-    assert_eq!(tab.panes[&root.raw()].cwd, PathBuf::from("/tmp/pion"));
-    assert_eq!(tab.panes[&second.raw()].cwd, PathBuf::from("/tmp/shepr"));
+    assert_eq!(workspace.identity_cwd, pion_cwd);
+    assert_eq!(tab.panes[&root.raw()].cwd, pion_cwd);
+    assert_eq!(tab.panes[&second.raw()].cwd, shepr_cwd);
 }
 
 #[tokio::test]
@@ -784,7 +779,8 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
 #[test]
 fn capture_contract_tracks_hook_authority_agent_session() {
     let mut state = state_with_workspaces(&["one"]);
-    let session_path = test_session_path("pi-session.jsonl");
+    let session_dir = ScratchDir::new("pi-session");
+    let session_path = session_dir.join("pi-session.jsonl").display().to_string();
     let root = state.workspaces[0].tabs()[0].root_pane();
     state.ensure_test_terminals();
     let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
@@ -872,7 +868,7 @@ fn other_or_missing_version_is_rejected() {
 
 #[test]
 fn active_tab_default_is_zero() {
-    let json = r#"{"custom_name":"test","identity_cwd":"/tmp","tabs":[]}"#;
+    let json = r#"{"custom_name":"test","identity_cwd":"/nonexistent/fixture-cwd","tabs":[]}"#;
     let ws: WorkspaceSnapshot = serde_json::from_str(json).expect("test precondition");
     assert_eq!(ws.active_tab, 0);
 }

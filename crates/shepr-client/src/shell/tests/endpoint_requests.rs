@@ -68,6 +68,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
         false,
         None,
         &mut scheduled,
+        std::time::Instant::now(),
     );
     let next = scheduled.take().or_else(|| rx.try_recv().ok());
     assert!(matches!(next, Some(ClientLoopEvent::ActivateEndpoint {
@@ -96,6 +97,7 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
             false,
             Some(&mut state),
             &mut scheduled,
+            std::time::Instant::now(),
         );
         assert!(repaint);
         assert!(state.pending_requests.is_empty());
@@ -133,7 +135,11 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
         }
     }
     let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 2);
-    let cancelled = commands.send_next(&ClientEndpointId::Local, &mut endpoints);
+    let cancelled = commands.send_next(
+        &ClientEndpointId::Local,
+        &mut endpoints,
+        std::time::Instant::now(),
+    );
     assert_eq!(cancelled, vec![stale_id.clone()]);
     state.cancel_endpoint_request(&stale_id);
     assert!(!commands.accepts_response(&ClientEndpointId::Local, 1, "boot-1", &stale_id));

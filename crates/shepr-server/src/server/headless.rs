@@ -253,10 +253,11 @@ impl HeadlessServer {
         let client_path = client_socket_path(&app.paths);
         let (listener, client_socket_startup_lock, client_socket_identity) =
             bind_private_socket(&client_path, |path| {
-                format!(
-                    "shepr server is already running (socket busy at {})",
-                    path.display()
-                )
+                RunServerError::AlreadyRunning {
+                    socket: ServerSocket::Client,
+                    path: path.to_path_buf(),
+                }
+                .to_string()
             })?;
         info!(path = %client_path.display(), "client protocol socket listening");
 

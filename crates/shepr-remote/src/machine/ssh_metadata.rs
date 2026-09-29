@@ -30,8 +30,8 @@ impl SshMetadataCache {
     ) -> Self {
         Self {
             path: paths
-                .state_dir()
-                .join("client/ssh-metadata")
+                .client_state_dir()
+                .join("ssh-metadata")
                 .join(format!("{profile_id}.json")),
             target: target.to_owned(),
             session: session.to_owned(),

@@ -116,16 +116,15 @@ pub const SCRATCH_DIR_ENV: &str = "SHEPR_TEST_SCRATCH_DIR";
 ///
 /// Sized to the deepest socket tests bind straight into a scratch root: the
 /// remote bridge's hashed fallback name,
-/// `shepr-r-<pid>-<target prefix>-<hash>.<token>.sock`, with a seven-digit pid
-/// (the largest Linux hands out), an eight-character target prefix and two
-/// sixteen-digit hex fields.
+/// `shepr-r-<target prefix>-<hash>.<token>.sock`, with an eight-character
+/// target prefix and two sixteen-digit hex fields.
 ///
 /// Deliberately not budgeted: the shared OpenSSH control socket, whose
 /// staging name leaves room only for a runtime directory as short as a real
 /// `/run/user/<uid>`, which no directory under a checkout's build tree is.
 /// Tests of that name exercise its arithmetic over the real directory's
 /// spelling instead.
-pub const SOCKET_LEAF_BUDGET: usize = 63;
+pub const SOCKET_LEAF_BUDGET: usize = 55;
 
 /// The width of every scratch root's name.
 ///
@@ -237,6 +236,46 @@ pub fn scratch_base() -> &'static Path {
             )
         })
     })
+}
+
+/// Removes DAC override and search from the calling thread's effective Linux
+/// capability set. A permission test can call this in a worker thread so
+/// mode bits are enforced even when the test process runs as root; the test
+/// runner and its other threads keep their capabilities.
+///
+/// Lowering the effective set requires no privilege. Linux capabilities are
+/// per-thread, so this affects only the thread that calls the function.
+pub fn drop_dac_capabilities_on_this_thread() {
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: libc::c_int,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    const CAP_DAC_OVERRIDE: u32 = 1;
+    const CAP_DAC_READ_SEARCH: u32 = 2;
+
+    let mut header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let mut data = [CapData::default(); 2];
+    // SAFETY: version 3 capget reads one header and writes two data structs,
+    // which `header` and `data` provide.
+    let status = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
+    assert_eq!(status, 0, "capget: {}", io::Error::last_os_error());
+    data[0].effective &= !((1 << CAP_DAC_OVERRIDE) | (1 << CAP_DAC_READ_SEARCH));
+    // SAFETY: version 3 capset reads one header and two data structs; pid 0
+    // targets only the calling thread.
+    let status = unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) };
+    assert_eq!(status, 0, "capset: {}", io::Error::last_os_error());
 }
 
 /// This process's slot among the live processes of its test executable.

@@ -20,6 +20,65 @@ pub(super) const OUTER_TERMINAL_IDENTITY_ENV: &[&str] = &[
     ChildEnv::ZellijPaneId.name(),
 ];
 
+/// Policy for core's process-variable registry. `PtyCommand` supplies the
+/// inherited base environment; terminal identity and agent-specific variables
+/// remain handled by their launch layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneEnvPolicy {
+    /// The inherited value or shepr's replacement remains visible to the child.
+    Allowed,
+    /// The inherited value is removed, but explicit launch values may opt back in.
+    Scrubbed,
+    /// The value is removed even if explicit launch values contain it.
+    ServerOnly,
+}
+
+fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
+    match variable {
+        EnvVar::SheprStartupCwd | EnvVar::SheprDebugOscEvidence => PaneEnvPolicy::ServerOnly,
+        EnvVar::Tmux | EnvVar::WeztermPane => PaneEnvPolicy::Scrubbed,
+        EnvVar::SheprConfigPath
+        | EnvVar::SheprSession
+        | EnvVar::SheprSocketPath
+        | EnvVar::SheprClientSocketPath
+        | EnvVar::SheprPaneId
+        | EnvVar::SheprEnv
+        | EnvVar::SheprReattachCommand
+        | EnvVar::SheprRemoteKeybindings
+        | EnvVar::SheprLog
+        | EnvVar::Home
+        | EnvVar::XdgConfigHome
+        | EnvVar::XdgStateHome
+        | EnvVar::XdgRuntimeDir
+        | EnvVar::Shell
+        | EnvVar::Path
+        | EnvVar::SshAuthSock
+        | EnvVar::SshConnection
+        | EnvVar::SshTty
+        | EnvVar::VscodeIpcHookCli
+        | EnvVar::TermProgram
+        | EnvVar::WaylandDisplay
+        | EnvVar::Display
+        | EnvVar::PiCodingAgentDir
+        | EnvVar::PiConfigDir
+        | EnvVar::ClaudeConfigDir
+        | EnvVar::CodexHome
+        | EnvVar::KimiCodeHome
+        | EnvVar::CopilotHome
+        | EnvVar::QoderConfigDir
+        | EnvVar::QwenHome
+        | EnvVar::CursorConfigDir
+        | EnvVar::AntigravityCliConfigDir
+        | EnvVar::GrokHome
+        | EnvVar::GitCeilingDirectories
+        | EnvVar::GitConfigGlobal
+        | EnvVar::GitConfigSystem
+        | EnvVar::GitConfigNoSystem
+        | EnvVar::GitConfigCount
+        | EnvVar::GitConfigParameters => PaneEnvPolicy::Allowed,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {
     #[default]
@@ -91,12 +150,22 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     for key in shepr_agent::agent::launch_env_to_scrub() {
         cmd.env_remove(key);
     }
+    for &variable in EnvVar::ALL {
+        if pane_env_policy(variable) != PaneEnvPolicy::Allowed {
+            cmd.env_remove(variable);
+        }
+    }
     for (key, value) in &launch_env.extra {
         cmd.env(key, value);
     }
-    // The startup directory is a one-time client-to-server handoff. Scrub it
-    // from each child instead of mutating the server's process environment.
-    cmd.env_remove(EnvVar::SheprStartupCwd);
+    // The startup directory is a one-time handoff, and OSC evidence capture
+    // belongs to this server because it can log pane payloads. Neither setting
+    // is part of the environment passed to a pane child.
+    for &variable in EnvVar::ALL {
+        if pane_env_policy(variable) == PaneEnvPolicy::ServerOnly {
+            cmd.env_remove(variable);
+        }
+    }
     cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
     cmd.env(EnvVar::SheprSocketPath, &launch_env.api_socket_path);
     if let Ok(executable) = shepr_platform::launch_executable() {
@@ -126,4 +195,45 @@ impl<'a> PaneShellConfig<'a> {
 /// again when it builds the child command and uses it for exec and `SHELL`.
 pub(super) fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
     PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_registered_environment_variable_has_a_pane_policy() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let mut command = PtyCommand::new("shell");
+        for &variable in EnvVar::ALL {
+            command.env(variable, "inherited");
+        }
+
+        apply_pane_terminal_env(&mut command);
+        apply_pane_launch_env(
+            &mut command,
+            &PaneLaunchEnv::from_extra(
+                vec![
+                    (EnvVar::SheprStartupCwd.name().into(), "override".into()),
+                    (EnvVar::SheprDebugOscEvidence.name().into(), "true".into()),
+                ],
+                "/run/user/1000/shepr-test.sock".into(),
+            ),
+        );
+
+        for &variable in EnvVar::ALL {
+            match pane_env_policy(variable) {
+                PaneEnvPolicy::Allowed => assert!(
+                    command.get_env(variable).is_some(),
+                    "{} must remain available to pane children",
+                    variable.name()
+                ),
+                PaneEnvPolicy::Scrubbed | PaneEnvPolicy::ServerOnly => assert!(
+                    command.get_env(variable).is_none(),
+                    "{} must not reach pane children",
+                    variable.name()
+                ),
+            }
+        }
+    }
 }

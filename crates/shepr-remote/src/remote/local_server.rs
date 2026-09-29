@@ -255,7 +255,7 @@ fn wait_for_server_socket_with(
 mod tests {
     use super::*;
     use shepr_test_fixtures::AppPathsFixture as _;
-    use shepr_test_support::{IsolatedEnv, ScratchDir};
+    use shepr_test_support::{IsolatedEnv, ScratchDir, drop_dac_capabilities_on_this_thread};
     use std::ffi::OsStr;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::fs::PermissionsExt as _;
@@ -270,7 +270,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a non-root test process because root bypasses mode-000 directory checks"]
     fn is_server_listening_returns_permission_errors_instead_of_false() {
         let dir = ScratchDir::new("inaccessible");
         let parent = dir.join("private");
@@ -282,13 +281,18 @@ mod tests {
         std::fs::set_permissions(&parent, permissions).expect("restrict directory permissions");
 
         let path = parent.join("s.sock");
-        let result = is_server_listening_at(&path);
+        let probe = std::thread::spawn(move || {
+            drop_dac_capabilities_on_this_thread();
+            is_server_listening_at(&path)
+        })
+        .join();
 
         let mut permissions = std::fs::metadata(&parent)
             .expect("read inaccessible directory metadata")
             .permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&parent, permissions).expect("restore directory permissions");
+        let result = probe.expect("permission probe thread completes");
         assert_eq!(
             result
                 .expect_err("permission errors must not mean no server")
@@ -505,7 +509,7 @@ mod tests {
         let env = IsolatedEnv::new();
         env.set(EnvVar::SheprSession, "work");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-        let path = shepr_api::session::api_socket_path_for(&paths, paths.session_id());
+        let path = paths.session_id().api_socket_path(&paths);
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener = UnixListener::bind(&path).expect("test precondition");

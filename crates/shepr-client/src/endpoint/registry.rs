@@ -68,8 +68,15 @@ impl EndpointRegistry {
         }
     }
 
+    #[cfg(test)]
     pub fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
-        Self::with_local_link(local, generation, LocalEndpointLink::Socket, Instant::now())
+        // clock-io-ok: this test-only constructor stands in for the client launch.
+        Self::new_at(local, generation, Instant::now())
+    }
+
+    /// A registry whose Local slot is a server socket on this host, connected at `now`.
+    pub fn new_at(local: impl EndpointTransport + 'static, generation: u64, now: Instant) -> Self {
+        Self::with_local_link(local, generation, LocalEndpointLink::Socket, now)
     }
 
     pub(crate) fn with_local_link(
@@ -337,6 +344,7 @@ impl EndpointRegistry {
 
 impl Drop for EndpointRegistry {
     fn drop(&mut self) {
+        // clock-io-ok: bound the best-effort Detach flush during shutdown.
         let deadline =
             crate::limits::Deadline::after(Instant::now(), std::time::Duration::from_millis(250));
         // Detach is a courtesy on the way out: every connection is disconnected just

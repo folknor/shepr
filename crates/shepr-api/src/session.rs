@@ -163,18 +163,11 @@ impl From<SessionError> for String {
 /// its own leaves it alone; stopping it exits its panes, and because the stop
 /// is refused against a mismatched server without [`FORCE_STOP_FLAG`], the
 /// command named here carries the flag.
-pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
-    let restart = match attach_command {
-        Some(command) => {
-            format!("Run `{stop_command} {FORCE_STOP_FLAG}`, then run `{command}` again.")
-        }
-        None => format!(
-            "Run `{stop_command} {FORCE_STOP_FLAG}`, then restart Shepr with the same socket override."
-        ),
-    };
-    format!(
-        "To keep the running server and its panes, run this build in a session of its own: pass `--session <name>` with a name no running server uses.\nTo use this build here instead, stop the running server; stopping exits its pane processes. {restart}"
-    )
+fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
+    crate::guidance::operator_guidance(crate::guidance::OperatorGuidance::LocalBuildMismatch {
+        stop_command,
+        attach_command,
+    })
 }
 
 pub fn restart_after_update_guidance_for(paths: &shepr_config::AppPaths) -> String {
@@ -189,10 +182,6 @@ pub fn data_dir(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.session_id().data_dir(paths)
 }
 
-pub fn data_dir_for(paths: &shepr_config::AppPaths, session: &SessionId) -> PathBuf {
-    session.data_dir(paths)
-}
-
 pub fn sessions_dir(paths: &shepr_config::AppPaths) -> PathBuf {
     sessions_dir_under(paths.state_dir())
 }
@@ -201,16 +190,8 @@ fn sessions_dir_under(state_dir: &Path) -> PathBuf {
     state_dir.join("sessions")
 }
 
-pub fn api_socket_path_for(paths: &shepr_config::AppPaths, session: &SessionId) -> PathBuf {
-    session.api_socket_path(paths)
-}
-
 pub fn active_api_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.server_address().api_socket().to_path_buf()
-}
-
-pub fn client_socket_path_for(paths: &shepr_config::AppPaths, session: &SessionId) -> PathBuf {
-    session.client_socket_path(paths)
 }
 
 pub fn list_sessions(paths: &shepr_config::AppPaths) -> std::io::Result<Vec<SessionInfo>> {
@@ -250,8 +231,8 @@ pub fn session_info(
 ) -> std::io::Result<SessionInfo> {
     let default = session.is_default();
     let display_name = session.display_name().to_string();
-    let socket_path = api_socket_path_for(paths, session);
-    let session_dir = data_dir_for(paths, session);
+    let socket_path = session.api_socket_path(paths);
+    let session_dir = session.data_dir(paths);
     Ok(SessionInfo {
         name: display_name,
         default,
@@ -401,8 +382,8 @@ fn stop_session_with_timeout(
     force: bool,
     timeout: Duration,
 ) -> Result<SessionInfo, SessionError> {
-    let socket_path = api_socket_path_for(paths, session);
-    let client_socket_path = client_socket_path_for(paths, session);
+    let socket_path = session.api_socket_path(paths);
+    let client_socket_path = session.client_socket_path(paths);
     let label = format!("session {}", session.display_name());
     guard_mismatched_stop(
         &label,
@@ -460,7 +441,7 @@ pub fn delete_session(
     let Some(dir) = exact_session_dir_for_delete(paths, name)? else {
         return session_info(paths, session).map_err(SessionError::from);
     };
-    let socket_path = api_socket_path_for(paths, session);
+    let socket_path = session.api_socket_path(paths);
     if is_running_at(&socket_path).map_err(|source| SessionError::Io {
         context: format!(
             "failed to inspect session {name} socket {}",
@@ -711,7 +692,7 @@ mod tests {
         let session = SessionId::parse(session_name).expect("test precondition");
         let paths = shepr_config::AppPaths::resolve_with_session(Some(session.clone()))
             .expect("isolated paths resolve");
-        let socket_path = api_socket_path_for(&paths, &session);
+        let socket_path = session.api_socket_path(&paths);
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener =
@@ -833,15 +814,15 @@ mod tests {
         let named = SessionId::parse("work").expect("valid name");
         assert_eq!(data_dir(&paths), paths.state_dir());
         assert_eq!(
-            data_dir_for(&paths, &named),
+            named.data_dir(&paths),
             paths.state_dir().join("sessions/work")
         );
         assert_eq!(
-            api_socket_path_for(&paths, &named),
+            named.api_socket_path(&paths),
             paths.runtime_dir().join("sessions/work/shepr.sock")
         );
         assert_eq!(
-            client_socket_path_for(&paths, &named),
+            named.client_socket_path(&paths),
             paths.runtime_dir().join("sessions/work/shepr-client.sock")
         );
     }
@@ -1062,7 +1043,7 @@ mod tests {
     fn session_stop_refuses_a_server_of_another_build_without_sending_stop() {
         let (_env, paths) = isolated_config_env();
         let session = SessionId::parse("work").expect("test precondition");
-        let socket_path = api_socket_path_for(&paths, &session);
+        let socket_path = session.api_socket_path(&paths);
         let (keep_running, handle) = serve_build(&socket_path, other_build());
 
         let error =
@@ -1173,7 +1154,7 @@ mod tests {
         let session = SessionId::parse(session_name).expect("test precondition");
         let paths = shepr_config::AppPaths::resolve_with_session(Some(session.clone()))
             .expect("isolated paths resolve");
-        let socket_path = api_socket_path_for(&paths, &session);
+        let socket_path = session.api_socket_path(&paths);
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener =

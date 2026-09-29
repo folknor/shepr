@@ -530,14 +530,20 @@ pub fn load_history(lease: &DataDirLease) -> Option<SessionHistorySnapshot> {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
-            warn!(err = %err, "failed to read session history file");
+            warn!(
+                event = "persist.restore", subsystem = "persist", outcome = "read_error",
+                path = %path.display(), err = %err, "failed to read session history file"
+            );
             return None;
         }
     };
     match parse_history_snapshot(&content) {
         Ok(snapshot) => Some(snapshot),
         Err(err) => {
-            warn!(err = %err, "failed to parse session history file, ignoring");
+            warn!(
+                event = "persist.restore", subsystem = "persist", outcome = "parse_error",
+                path = %path.display(), err = %err, "failed to parse session history file, ignoring"
+            );
             None
         }
     }

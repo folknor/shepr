@@ -138,6 +138,12 @@ impl AppPaths {
         &self.state_dir
     }
 
+    /// The client-owned state directory beneath the shared application state
+    /// directory.
+    pub fn client_state_dir(&self) -> PathBuf {
+        self.state_dir.join("client")
+    }
+
     /// The XDG runtime root before the application-specific directory is added.
     pub fn xdg_runtime_dir(&self) -> &Path {
         &self.xdg_runtime_dir

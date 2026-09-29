@@ -48,7 +48,7 @@ pub use cell::RenderColors;
 #[cfg(test)]
 use cell::cell_style;
 pub use cell::{
-    CellBasicData, CellColor, CellView, CellWide, UnderlineStyle,
+    CellBasicData, CellColor, CellStyle, CellView, CellWide, UnderlineStyle,
     is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
     unicode_codepoint_width, unicode_text_width,
 };
@@ -358,7 +358,10 @@ pub struct Terminal {
 
 /// VTE calls `set_timeout` while parsing BSU, but its default handler reads
 /// the process clock there. The caller sets `now` before each parser advance;
-/// the parser then owns the deadline and the runtime only decides when to tick.
+/// `Processor::sync_timeout` exposes only a shared reference, so the adapter
+/// uses cells for the caller's clock and VTE's timeout state. Keep `pending`
+/// separate from the optional runtime deadline because it is the trait state
+/// VTE checks while buffering synchronized output.
 #[derive(Debug, Default)]
 struct SyncUpdateTimeout {
     now: ClockCell<Option<Instant>>,
@@ -1002,7 +1005,7 @@ impl Terminal {
     /// The cursor colour set with OSC 12, if any.
     #[cfg(test)]
     fn effective_cursor_color(&self) -> Option<RgbColor> {
-        self.term.colors()[NamedColor::Cursor].map(RgbColor::from)
+        self.term.colors()[NamedColor::Cursor].map(RgbColor::from_vte)
     }
 
     pub fn width_px(&self) -> u32 {

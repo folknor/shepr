@@ -333,7 +333,7 @@ impl ClientShellState {
                 message: "This server action was interrupted. Check its state before retrying."
                     .into(),
             }),
-            std::time::Instant::now(),
+            self.now,
         );
         // A cancelled copy-mode request does not continue its key queue
         // (`continue_queue` is false on every error), so nothing but a repaint
@@ -364,6 +364,7 @@ impl ClientShellState {
         request_id: &str,
         result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> ClientShellInput {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.handle_endpoint_result_at(boot_id, request_id, result, std::time::Instant::now())
     }
 

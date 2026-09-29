@@ -1301,9 +1301,15 @@ pub struct NewTabMove {
 }
 
 #[cfg(test)]
+std::thread_local! {
+    static TEST_WORKSPACE_CWD: crate::test_support::ScratchDir =
+        crate::test_support::ScratchDir::new("workspace-test-cwd");
+}
+
+#[cfg(test)]
 impl Workspace {
     pub fn test_new(name: &str) -> Self {
-        let identity_cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
+        let identity_cwd = TEST_WORKSPACE_CWD.with(|cwd| cwd.to_path_buf());
         let (layout, root_id) = TileLayout::new();
         let terminal_id = TerminalId::alloc();
         let mut panes = HashMap::new();

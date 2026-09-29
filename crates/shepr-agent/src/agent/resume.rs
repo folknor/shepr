@@ -461,11 +461,8 @@ mod tests {
     }
 
     fn absolute_test_path(name: &str) -> String {
-        std::env::current_dir()
-            .expect("test precondition")
-            .join(name)
-            .display()
-            .to_string()
+        // Planner tests validate these references but never open the paths.
+        format!("/shepr-agent-test/{name}")
     }
 
     #[test]

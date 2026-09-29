@@ -2305,43 +2305,6 @@ mod tests {
         );
     }
 
-    /// Drops `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` from the calling
-    /// thread's effective set, so mode bits bind it even when the test runs as
-    /// root. Linux keeps capabilities per thread: the test's other threads
-    /// keep theirs. Lowering the effective set needs no privilege.
-    fn drop_dac_capabilities_on_this_thread() {
-        #[repr(C)]
-        struct CapHeader {
-            version: u32,
-            pid: libc::c_int,
-        }
-        #[repr(C)]
-        #[derive(Clone, Copy, Default)]
-        struct CapData {
-            effective: u32,
-            permitted: u32,
-            inheritable: u32,
-        }
-        const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
-        const CAP_DAC_OVERRIDE: u32 = 1;
-        const CAP_DAC_READ_SEARCH: u32 = 2;
-
-        let mut header = CapHeader {
-            version: LINUX_CAPABILITY_VERSION_3,
-            pid: 0,
-        };
-        let mut data = [CapData::default(); 2];
-        // SAFETY: version 3 capget reads one header and writes two data
-        // structs, which `header` and `data` provide.
-        let status = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
-        assert_eq!(status, 0, "capget: {}", std::io::Error::last_os_error());
-        data[0].effective &= !((1 << CAP_DAC_OVERRIDE) | (1 << CAP_DAC_READ_SEARCH));
-        // SAFETY: version 3 capset reads one header and two data structs; pid
-        // 0 targets only the calling thread.
-        let status = unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_ptr()) };
-        assert_eq!(status, 0, "capset: {}", std::io::Error::last_os_error());
-    }
-
     #[test]
     fn process_cwd_does_not_require_traversing_the_directory_path() {
         use std::os::unix::fs::PermissionsExt;
@@ -2365,7 +2328,7 @@ mod tests {
         let pid = child.id();
         let probe_cwd = cwd.clone();
         let probe = std::thread::spawn(move || {
-            drop_dac_capabilities_on_this_thread();
+            shepr_test_support::drop_dac_capabilities_on_this_thread();
             (
                 std::fs::metadata(&probe_cwd).map(|_| ()),
                 absolute_process_cwd(pid),

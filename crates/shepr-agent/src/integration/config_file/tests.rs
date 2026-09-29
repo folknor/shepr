@@ -317,11 +317,11 @@ fn existing_permissions_and_new_file_defaults_are_preserved() {
 #[test]
 #[expect(
     clippy::disallowed_methods,
-    reason = "SHEPR_CONFIG_READ_ONLY_TEST is this test's own re-exec harness probe, not a shepr setting"
+    reason = "AGENT_TEST_CONFIG_READ_ONLY_PATH is this test's own re-exec harness probe, not a shepr setting"
 )]
 fn writable_directory_does_not_bypass_read_only_config() {
     use std::os::unix::{fs::PermissionsExt, process::CommandExt};
-    const CHILD: &str = "SHEPR_CONFIG_READ_ONLY_TEST";
+    const CHILD: &str = "AGENT_TEST_CONFIG_READ_ONLY_PATH";
     if let Some(path) = std::env::var_os(CHILD) {
         let error =
             write_config(Path::new(&path), b"must not replace").expect_err("test precondition");
@@ -378,15 +378,18 @@ fn writable_directory_does_not_bypass_read_only_config() {
 #[test]
 #[expect(
     clippy::disallowed_methods,
-    reason = "SHEPR_CONFIG_PARTIAL_WRITE_TEST is this test's own re-exec harness probe, not a shepr setting"
+    reason = "AGENT_TEST_CONFIG_PARTIAL_WRITE_DIR is this test's own re-exec harness probe, not a shepr setting"
 )]
 fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
-    const CHILD: &str = "SHEPR_CONFIG_PARTIAL_WRITE_TEST";
+    const CHILD: &str = "AGENT_TEST_CONFIG_PARTIAL_WRITE_DIR";
     if let Some(path) = std::env::var_os(CHILD) {
         let dir = PathBuf::from(path);
         // This process runs only this test. A collision must neither be used nor removed.
         crate::integration::atomic_replace::reset_temp_sequence(0);
-        let collision = dir.join(format!(".shepr-config-{}-0.tmp", std::process::id()));
+        crate::integration::atomic_replace::set_temp_token_for_test(0);
+        let collision =
+            crate::integration::atomic_replace::temporary_path_for_test(&dir, ".shepr-config", 0)
+                .expect("test precondition");
         fs::write(&collision, b"unrelated file").expect("test precondition");
         for name in ["existing", "new"] {
             let error =

@@ -142,13 +142,13 @@ impl ClientShellState {
                 1,
                 &self.config.palette,
             );
-            self.endpoint_notice_drawn(std::time::Instant::now());
+            self.endpoint_notice_drawn(self.now);
         }
         FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
     }
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
-        self.last_composed_at = Some(std::time::Instant::now());
+        self.last_composed_at = Some(self.now);
         self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
@@ -567,7 +567,7 @@ impl ClientShellState {
         }
         // This path draws a visible notice unconditionally (above), so this is where its
         // lifetime starts.
-        self.endpoint_notice_drawn(std::time::Instant::now());
+        self.endpoint_notice_drawn(self.now);
         Some(frame)
     }
 }

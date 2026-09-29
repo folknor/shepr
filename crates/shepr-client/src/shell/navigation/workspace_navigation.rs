@@ -171,7 +171,7 @@ impl ClientShellState {
                     target,
                     request_id: request.id.clone().into(),
                     // A later focus can be coalesced with this one before a snapshot is sent.
-                    expires_at: std::time::Instant::now() + std::time::Duration::from_secs(1),
+                    expires_at: self.now + std::time::Duration::from_secs(1),
                 });
                 self.reconcile_pending_workspace_highlight();
             }

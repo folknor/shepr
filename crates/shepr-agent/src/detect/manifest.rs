@@ -1265,6 +1265,10 @@ pub fn agent_state_label(state: AgentState) -> &'static str {
 }
 
 pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
+    // The server uses this payload for explicit agent.explain requests. Its
+    // bounded preview contains pane text, and an override source includes the
+    // config path; both help the caller diagnose the selected rule. Keep this
+    // diagnostic payload out of logs and unsolicited broadcasts.
     let matched_rule = explain.matched_rule.as_ref().map(|rule| {
         serde_json::json!({
             "id": rule.id,

@@ -236,11 +236,10 @@ impl ClientShellState {
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(true, &mut outcome);
         let previous = self.host_mouse_pixels.replace(pixels);
-        self.handle_raw_event(
-            RawInputEvent::Mouse(mouse),
-            std::time::Instant::now(),
-            &mut outcome,
-        );
+        // clock-io-ok: this test-only entry stands in for the client loop.
+        let now = std::time::Instant::now();
+        self.now = now;
+        self.handle_raw_event(RawInputEvent::Mouse(mouse), now, &mut outcome);
         self.host_mouse_pixels = previous;
         outcome
     }
@@ -253,6 +252,7 @@ impl ClientShellState {
         host_reports_all_keys: bool,
         now: std::time::Instant,
     ) -> ClientShellInput {
+        self.now = now;
         self.host_reports_all_keys = host_reports_all_keys;
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(!inputs.is_empty(), &mut outcome);
@@ -391,7 +391,9 @@ impl ClientShellState {
 
     #[cfg(test)]
     pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
+        // clock-io-ok: this test-only entry stands in for the client loop.
         let now = std::time::Instant::now();
+        self.now = now;
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(!events.is_empty(), &mut outcome);
         for event in events {

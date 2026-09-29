@@ -13,6 +13,14 @@ pub fn home_dir() -> io::Result<PathBuf> {
     home_dir_from_value(env::read_path(EnvVar::Home))
 }
 
+/// Resolves a `HOME` value already captured in a child environment.
+///
+/// This applies the same registered environment policy as [`home_dir`]
+/// without rereading the process environment.
+pub fn home_dir_from_env_value(value: Option<&OsStr>) -> io::Result<PathBuf> {
+    home_dir_from_value(env::resolve_path(EnvVar::Home, value))
+}
+
 /// Expands a leading bare `~` or `~/` to `$HOME`. The `~user` form is left
 /// untouched: resolving another user's home needs a passwd lookup, and
 /// silently turning `~bob/x` into `$HOME/bob/x` would point at the wrong place.
@@ -89,7 +97,7 @@ mod tests {
 
     /// `HOME` as the environment would hand it in, read under the policy.
     fn home_from(raw: Option<&str>) -> io::Result<PathBuf> {
-        home_dir_from_value(env::resolve_path(EnvVar::Home, raw.map(OsStr::new)))
+        home_dir_from_env_value(raw.map(OsStr::new))
     }
 
     fn expand(path: &str, raw_home: Option<&str>) -> io::Result<PathBuf> {

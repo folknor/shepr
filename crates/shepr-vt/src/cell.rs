@@ -264,7 +264,7 @@ fn cell_color(color: Color) -> Option<CellColor> {
                 .then(|| CellColor::Palette(u8::try_from(index).unwrap_or(u8::MAX)))
         }
         Color::Indexed(index) => Some(CellColor::Palette(index)),
-        Color::Spec(rgb) => Some(CellColor::Rgb(rgb.into())),
+        Color::Spec(rgb) => Some(CellColor::Rgb(RgbColor::from_vte(rgb))),
     }
 }
 

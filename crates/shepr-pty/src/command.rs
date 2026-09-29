@@ -95,16 +95,18 @@ impl PtyCommand {
         self.envs.get(key.as_ref()).map(OsString::as_os_str)
     }
 
-    /// Working directory. A missing or non-directory path falls back to a
-    /// usable home directory, then `/` if no home directory is available.
+    /// Working directory. If the path is missing or stops being a directory
+    /// before spawn, the pane uses a usable `HOME`, then the passwd home, then
+    /// `/`.
     pub fn cwd<D: AsRef<OsStr>>(&mut self, dir: D) {
         self.cwd = Some(dir.as_ref().to_owned());
     }
 
     /// Build the `std::process::Command`: resolved program and argv0, working
     /// directory, and exactly this command's environment (the process
-    /// environment is cleared first). PTY stdio and session setup are added by
-    /// `crate::backend`.
+    /// environment is cleared first). If a requested cwd became unusable after
+    /// validation, it starts in a usable `HOME`, then the passwd home, then
+    /// `/`. PTY stdio and session setup are added by `crate::backend`.
     pub fn to_std_command(&self) -> io::Result<std::process::Command> {
         let dir: OsString = match self.cwd.as_ref() {
             Some(dir) if usable_directory(Path::new(dir), "pty working directory") => dir.clone(),
@@ -179,14 +181,17 @@ impl PtyCommand {
     }
 
     fn home_dir(&self) -> OsString {
-        let usable = |home: &OsStr| {
-            Path::new(home).is_absolute() && usable_directory(Path::new(home), "home directory")
-        };
-        if let Some(home) = self.get_env(EnvVar::Home).filter(|home| usable(home)) {
-            return home.to_owned();
+        let usable_home =
+            |home: &Path| home.is_absolute() && usable_directory(home, "home directory");
+        // Apply the shared policy to the command's captured HOME. A stale cwd
+        // is recoverable, so unusable HOME falls through to passwd and `/`.
+        if let Ok(home) = shepr_core::pathutil::home_dir_from_env_value(self.get_env(EnvVar::Home))
+            && usable_home(&home)
+        {
+            return home.into_os_string();
         }
         passwd_field(|entry| entry.pw_dir.cast_const())
-            .filter(|home| usable(home.as_os_str()))
+            .filter(|home| usable_home(Path::new(home)))
             .unwrap_or_else(|| OsString::from("/"))
     }
 
@@ -329,6 +334,8 @@ fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<OsSt
 }
 
 fn access_ok(path: &Path, mode: libc::c_int) -> bool {
+    // This is the local twin of `shepr_platform::has_execute_access`; the
+    // PTY dependency policy keeps `shepr-platform` out of this crate.
     let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
         return false;
     };
@@ -503,6 +510,20 @@ mod tests {
             assert!(Path::new(&home).is_absolute());
             assert!(is_directory(Path::new(&home)).expect("test precondition"));
         }
+    }
+
+    #[test]
+    fn unusable_requested_cwd_starts_in_the_validated_home_fallback() {
+        let scratch = shepr_test_support::ScratchDir::new("pty-stale-cwd");
+        let mut cmd = PtyCommand::new(fixture::path());
+        cmd.env(EnvVar::Home, scratch.path());
+        cmd.cwd(scratch.join("removed-before-spawn"));
+
+        let std_cmd = cmd
+            .to_std_command()
+            .expect("build command with cwd fallback");
+
+        assert_eq!(std_cmd.get_current_dir(), Some(scratch.path()));
     }
 
     #[test]

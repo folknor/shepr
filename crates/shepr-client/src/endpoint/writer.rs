@@ -165,9 +165,11 @@ impl EndpointTransport for NativeEndpointTransport {
         self.sender
             .try_send(WriterCommand::Flush(done))
             .map_err(|_| queue_full())?;
+        // clock-io-ok: the flush wait must account for time spent enqueueing it.
         completion
             .recv_timeout(
                 crate::limits::Deadline::at(deadline)
+                    // clock-io-ok: compute the remaining time after the flush was queued.
                     .remaining(Instant::now())
                     .unwrap_or_default(),
             )
@@ -229,6 +231,7 @@ fn write_frame(
     mut frame: &[u8],
     stopped: &AtomicBool,
 ) -> io::Result<()> {
+    // clock-io-ok: measure elapsed time while the worker writes a frame.
     let deadline =
         crate::limits::Deadline::after(Instant::now(), crate::limits::ENDPOINT_WRITE_TIMEOUT);
     while !frame.is_empty() && !stopped.load(Ordering::Acquire) {
@@ -243,6 +246,7 @@ fn write_frame(
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error),
         }
+        // clock-io-ok: check elapsed time after a blocked frame write.
         if deadline.is_expired(Instant::now()) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,

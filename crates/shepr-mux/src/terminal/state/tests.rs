@@ -1,15 +1,16 @@
 use super::*;
 
+std::thread_local! {
+    static TEST_SESSION_ROOT: crate::test_support::ScratchDir =
+        crate::test_support::ScratchDir::new("terminal-state-session-paths");
+}
+
 fn test_terminal() -> TerminalState {
     TerminalState::new(TerminalId::alloc(), "/tmp".into())
 }
 
 fn test_session_path(name: &str) -> String {
-    std::env::current_dir()
-        .expect("test precondition")
-        .join(name)
-        .display()
-        .to_string()
+    TEST_SESSION_ROOT.with(|root| root.join(name).display().to_string())
 }
 
 fn anchor_full_lifecycle_session(

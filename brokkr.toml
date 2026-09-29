@@ -73,6 +73,29 @@ allow_marker_above = 3
 message = "take the clock as a parameter; mark the entry point that supplies the real one"
 
 [[textlint]]
+name = "client-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-client/src/**/*.rs"]
+exclude = ["crates/shepr-client/src/lib.rs", "**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "pass time from the client loop or IO owner; mark elapsed real IO reads"
+
+# The client event loop samples the clock at launch, before it waits and once
+# an event arrives; everything it dispatches takes those samples.
+[[textlint]]
+name = "client-loop-clock-is-sampled"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-client/src/lib.rs"]
+skip_after = '^#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "client-clock-sample-ok"
+allow_marker_above = 3
+message = "only the client launch and event loop sample the clock"
+
+[[textlint]]
 name = "agent-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-agent/src/**/*.rs"]

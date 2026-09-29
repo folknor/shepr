@@ -8,6 +8,7 @@ pub(super) fn dispatch_client_shell_actions(
     prefers_osc52_clipboard: bool,
     mut shell: Option<&mut shell::ClientShellState>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    now: std::time::Instant,
 ) -> bool {
     let mut repaint = false;
     for action in actions {
@@ -62,7 +63,7 @@ pub(super) fn dispatch_client_shell_actions(
     // that must reject it; completion below resumes the committed owner's lane.
     if endpoints.active_surface_available() {
         let active_endpoint = endpoints.active_id().clone();
-        let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
+        let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
         if let Some(shell) = shell {
             for request_id in cancelled {
                 repaint |= shell.cancel_endpoint_request(&request_id);
@@ -257,6 +258,7 @@ pub(super) fn begin_endpoint_activation(
                 state.settings.prefers_osc52_clipboard(),
                 Some(shell),
                 scheduled_activation,
+                now,
             );
             if repaint
                 && let Some(frame) = shell.compose(
@@ -420,7 +422,7 @@ pub(super) fn complete_endpoint_activation(
     if successor.is_none() {
         correct_committed_surface_size(state, endpoints, requested_surface_size);
         let active_endpoint = endpoints.active_id().clone();
-        let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
+        let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
         if let Some(shell) = state.mode.shell_mut() {
             for request_id in cancelled {
                 shell.cancel_endpoint_request(&request_id);
@@ -865,6 +867,7 @@ pub(super) fn finish_client_shell_input(
         state.settings.prefers_osc52_clipboard(),
         state.mode.shell_mut(),
         scheduled_activation,
+        now,
     );
     let frame = if dispatch_repaint {
         state.mode.shell_mut().and_then(|shell| {

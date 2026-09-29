@@ -107,6 +107,9 @@ impl SessionWriter {
 
     fn preserve_snapshot_history(&self, now: SystemTime) {
         if let Err(err) = preserve_snapshot_after_write(&self.path, now) {
+            // `shepr_platform::logging` names save, clear and restore outcomes
+            // only. A failed snapshot copy is not a failed save, so it logs
+            // here under its own event rather than through `session_save_failed`.
             tracing::warn!(
                 event = "persist.snapshot", outcome = "error", path = %self.path.display(),
                 err = %err, "failed to preserve session snapshot"
@@ -201,6 +204,8 @@ impl SessionWriter {
         replacement: &SessionSnapshot,
         now: SystemTime,
     ) -> SnapshotHistoryPlan {
+        // Snapshot-preservation outcomes log here, not through
+        // `shepr_platform::logging`, so they stay distinct from save failures.
         match snapshot_history_decision(&self.path, Some(replacement), now) {
             Ok(SnapshotHistoryPlan::PreserveBeforeWrite) => {
                 match preserve_existing_in(
@@ -449,6 +454,8 @@ fn preserve_existing_in(
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
         }
+        // A recovery copy is its own outcome, not a session write, so it logs
+        // here rather than through `shepr_platform::logging::session_saved`.
         tracing::info!(
             event = "persist.backup", subsystem = "persist", outcome = "ok",
             path = %path.display(), backup_path = %backup.display(),

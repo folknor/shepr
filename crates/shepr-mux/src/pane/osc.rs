@@ -245,6 +245,9 @@ impl Default for OscDebugTracker {
 /// `SHEPR_DEBUG_OSC_EVIDENCE`, read once per process under the environment
 /// policy (exactly `1`, `0`, `true` or `false`). Pane construction has no
 /// error path, so a refused value is logged and leaves the capture off.
+/// Pane runtime construction takes no launch-resolved settings from the
+/// server, so this is read at the first pane rather than at server startup.
+/// Pane children never see the variable (`pane::launch` scrubs it).
 fn osc_debug_enabled_from_env() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {

@@ -146,9 +146,11 @@ fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u
     // Bypass StdinLock's shared buffer so poll and read observe the same bytes.
     let stdin = io::stdin();
     let stdin_fd = stdin.as_raw_fd();
+    // clock-io-ok: bound the host terminal query and its poll/read loop.
     let deadline = crate::limits::Deadline::after(Instant::now(), HOST_KEYBOARD_QUERY_TIMEOUT);
     let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
     while !responses.primary_device_attributes && buffered_input.len() < MAX_BUFFERED_HOST_INPUT {
+        // clock-io-ok: account for elapsed poll and read time in the query budget.
         let Some(timeout_ms) = deadline.remaining_millis_i32(Instant::now()) else {
             break;
         };

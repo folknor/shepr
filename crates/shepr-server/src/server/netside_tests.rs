@@ -178,10 +178,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         session: "main".into(),
     };
     let target_id = ClientEndpointId::Ssh(profile.id.clone());
-    let mut shell = shepr_client::ClientShellState::new(
+    let now = std::time::Instant::now();
+    let mut shell = shepr_client::ClientShellState::new_at(
         shepr_client::ClientShellConfig::from_validated_config(
             &shepr_config::ValidatedConfig::test_default(),
         ),
+        now,
     );
     shell.set_endpoint_catalog(&[profile]);
     shell.set_endpoint_snapshot_for_generation(
@@ -194,16 +196,17 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
 
     let source_sent = Arc::new(Mutex::new(Vec::new()));
     let target_sent = Arc::new(Mutex::new(Vec::new()));
-    let mut endpoints = EndpointRegistry::new(
+    let mut endpoints = EndpointRegistry::new_at(
         CapturingEndpointTransport(Arc::clone(&source_sent)),
         SOURCE_GENERATION,
+        now,
     );
     endpoints.insert(
         target_id.clone(),
         CapturingEndpointTransport(Arc::clone(&target_sent)),
         TARGET_GENERATION,
         false,
-        std::time::Instant::now(),
+        now,
     );
     let mut activation = begin_activation(&shell, &mut endpoints, &target_id, 41);
 

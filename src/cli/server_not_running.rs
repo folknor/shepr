@@ -14,15 +14,15 @@ pub(super) fn response(
     // this), so the address's own attach command names the server that was
     // not found, whatever session or socket override selected it.
     let attach_command = paths.server_address().attach_command(paths.session_id());
+    let message = shepr_api::guidance::operator_guidance(
+        shepr_api::guidance::OperatorGuidance::ServerNotRunning {
+            socket_path,
+            attach_command: &attach_command,
+        },
+    );
     ErrorResponse {
         id: request_id.to_string(),
-        error: ErrorBody::new(
-            &shepr_api::error::ApiErrorCode::ServerNotRunning,
-            format!(
-                "no shepr server is running at {}; run `{attach_command}` to start or attach it",
-                socket_path.display()
-            ),
-        ),
+        error: ErrorBody::new(&shepr_api::error::ApiErrorCode::ServerNotRunning, message),
     }
 }
 

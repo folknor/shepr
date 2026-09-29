@@ -20,88 +20,6 @@ pass should expect that.
 
 ---
 
-## HYGG-010 - Tests that take their inputs from the developer's directory layout
-
-**Decision (partial):** `snapshot_tests.rs`'s raw `std::env::var("HOME")` is
-banned by piece 1 (the `shepr-core` environment registry, raw reads denied in
-`clippy.toml`), and piece 2 (scratch under the project's `target/` tree) is where
-its existing cwd comes from instead. The owner also adopted broadarrow's rule
-that every child gets a stated working directory (a `clippy.toml` seal on
-`std::process::Command::new`, tests spawning through one helper that sets a
-scratch working directory), which settles that a test's directory comes from a
-`ScratchDir`; but the seal covers spawned children, not a test reading
-`std::env::current_dir()`, so it catches none of the sites below (HYGP-005).
-Open: the `std::env::current_dir()` sites, the fixed `/tmp/...` missing-cwd
-literal, and the `_env` binding name.
-
-`shepr-agent/src/agent/resume.rs` tests build paths from
-`std::env::current_dir()` (`absolute_test_path`). The test only needs "some
-absolute path", so this is an ambient dependency taken for convenience; a fixed
-absolute literal or a `ScratchDir` would be hermetic.
-
-`shepr-mux`: `pane/runtime.rs`, eight sites in `persist/restore.rs`, and
-`workspace.rs`'s `test_adversarial_identity_state` use
-`std::env::current_dir()` as a test cwd, so the tests depend on where the runner
-was invoked.
-
-`shepr-server/src/app/snapshot_tests.rs` reads the real `$HOME` with no
-`IsolatedEnv`:
-
-```rust
-cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-shepr-test"),
-...
-cwd: std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp")),
-```
-
-The test means "one pane with a missing cwd, one with an existing cwd" and gets
-the second from the developer's `$HOME`; if `$HOME` is unset the fallback
-silently changes the test's meaning. `ScratchDir` gives both cases
-deterministically. The hunter notes this breaks two of the project's own rules
-at once (tests touching the environment hold an `IsolatedEnv`; never read or
-write from `/tmp`) - see HYGG-012.
-
-`shepr-api`/CLI: `terminal_and_agent_attach_reject_invalid_config_before_connecting`
-in `src/cli.rs` binds the env guard as `let _env = ...::IsolatedEnv::new();` and
-then calls `_env.set(..)`. It works, but the underscore prefix conventionally
-means "held only for Drop", so a reader deleting the apparently unused binding
-breaks the test's isolation.
-
-The `shepr-protocol`/`shepr-config` hunter reports the contrasting positive:
-in that scope no environment-dependent tests were found, path-touching tests use
-`IsolatedEnv` / `ScratchDir` as `AGENTS.md` requires, `AppPaths::default()`
-deliberately points at `/nonexistent/shepr-test-config` so a slip fails loudly,
-and `wire_tests::framing_over_unix_socketpair` uses an in-process socket pair
-rather than the network.
-
-Enforcement rule named: a brokkr text rule forbidding `"/tmp` literals and
-`env::var("HOME")` in `crates/*/src` outside `shepr-test-support`.
-
-## HYGG-012 - Fixed `/tmp` literals remain in test data, standing in for a scratch directory
-
-**Decision (partial):** piece 2 of the test-isolation work adopted from
-broadarrow (scratch directories move under the project's `target/` tree, named
-by fixed-width digests budgeted against `sun_path`, with per-process slot locks
-so a rerun reuses and clears its trees in place, a claim registry, and
-`std::env::temp_dir` banned) closes the scratch root's own `/tmp` use and the
-SIGKILL leak that came with it. Open: the fixed `/tmp` literals below, which are
-test data rather than the scratch root itself.
-
-Fixed `/tmp` paths inside test data elsewhere: `shepr-mux/src/persist/writer.rs`'s
-`snapshot()` helper builds JSON containing
-`"identity_cwd": "/tmp/shepr-writer-test"`, and
-`src/workspace/aggregate.rs`'s tests use `"/tmp".into()` as a `TerminalState`
-cwd. Nothing is written there, so the rule is not broken in effect - but these
-are fixed shared paths standing in for a scratch directory, and if validation is
-ever added at the snapshot boundary they become load-bearing on `/tmp` existing
-and being a directory. `shepr-server/src/server/socket_paths.rs` also uses
-`/tmp/...` path strings, only as env values never touched on disk - harmless,
-though it defeats the same grep. `shepr-server/src/app/snapshot_tests.rs` has a
-real one (HYGG-010).
-
-Enforcement rules named: a gremlin-style text rule forbidding `temp_dir`
-outside `shepr-test-support` plus a documented exemption; a text rule against
-`/tmp` literals in `shepr-mux` and in `crates/*/src` generally.
-
 ## HYGG-067 - Claim: "Wire types must not use `skip_serializing_if`, `flatten`, `untagged` or tagged enums"
 
 `AGENTS.md` and the `shepr-protocol/src/codec.rs` module doc. The hunter's
@@ -220,23 +138,6 @@ not hold for `PaneRuntime`, which mixes a PTY actor handle, a tokio abort handle
 four `Arc`-shared atomics, three mutexes, a `Cell` and forty pure-read
 delegations in one type. The claim is "true about the name and misleading about
 the shape."
-
-## HYGG-116 - Claim: alacritty types never leak out of `shepr-vt`
-
-The dependency rule enforces this at crate level, and the hunter found no
-alacritty types in public signatures. Two soft spots recorded: the public
-`impl From<Rgb> for RgbColor` and `From<RgbColor> for Rgb`; and `CellStyle`,
-which is `pub` in a private module and reachable through `CellBasicData.style`
-but not re-exported, so callers cannot name it.
-
-## HYGG-128 - A permission test stays ignored where a per-thread capability drop would run it
-
-`crates/shepr-remote/src/remote/local_server.rs`:
-`is_server_listening_returns_permission_errors_instead_of_false` is ignored,
-so it runs nowhere. `crates/shepr-mux/src/pane/runtime.rs` now makes a similar
-test meaningful for every user by running the probe on a thread that drops
-`CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH` from its own effective set. Move
-that helper into `shepr-test-support` and use it here.
 
 ## HYGG-126 - The `skip_after` test marker is anchored to column 0
 

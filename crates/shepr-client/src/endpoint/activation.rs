@@ -241,6 +241,7 @@ impl PendingEndpointActivation {
         target: Option<crate::shell::ClientEndpointFocusTarget>,
         endpoints: &mut EndpointRegistry,
     ) -> ActivationRollback {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.supersede_at(endpoint_id, target, endpoints, Instant::now())
     }
 
@@ -376,6 +377,7 @@ impl PendingEndpointActivation {
             request_id,
             data,
             endpoints,
+            // clock-io-ok: this test-only wrapper stands in for the client loop.
             Instant::now(),
         )
     }
@@ -638,6 +640,7 @@ impl PendingEndpointActivation {
         resize: &shepr_protocol::ClientMessage,
         endpoints: &mut EndpointRegistry,
     ) -> Result<(), String> {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.update_resize_at(resize, endpoints, Instant::now())
     }
 
@@ -690,6 +693,7 @@ impl PendingEndpointActivation {
         focused: bool,
         endpoints: &mut EndpointRegistry,
     ) -> Result<(), String> {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.update_host_focus_at(focused, endpoints, Instant::now())
     }
 
@@ -785,6 +789,7 @@ impl PendingEndpointActivation {
         endpoint_id: &ClientEndpointId,
         error: String,
     ) -> ActivationRollback {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.endpoint_disconnected_at(endpoints, endpoint_id, error, Instant::now())
     }
 
@@ -884,6 +889,7 @@ impl PendingEndpointActivation {
         error: &str,
         source_release_rejected: bool,
     ) -> ActivationRollback {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.rollback_at(endpoints, error, source_release_rejected, Instant::now())
     }
 
@@ -966,6 +972,7 @@ impl PendingEndpointActivation {
         shell: &mut crate::shell::ClientShellState,
         endpoints: &mut EndpointRegistry,
     ) -> Result<ActivationCompletion, String> {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
         self.complete_at(shell, endpoints, Instant::now())
     }
 

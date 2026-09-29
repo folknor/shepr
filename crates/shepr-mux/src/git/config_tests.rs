@@ -19,6 +19,23 @@ fn tilde_git_config_paths_require_a_valid_home() {
     }
 }
 
+/// Git reads `~//x` as a file under HOME; joining the raw suffix would
+/// replace HOME with the filesystem root.
+#[test]
+fn tilde_git_config_paths_with_repeated_slashes_stay_under_home() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let config = env.path().join("config");
+    env.set("HOME", "/home/tester");
+    assert_eq!(
+        resolve_include_path(&config, "~//included.cfg"),
+        Some(std::path::PathBuf::from("/home/tester/included.cfg"))
+    );
+    assert_eq!(
+        normalize_gitdir_include_pattern("~//repo", &config).as_deref(),
+        Some("/home/tester/repo")
+    );
+}
+
 /// A directory laid out as a Git directory (`HEAD`, `objects`, `refs`) whose
 /// own `config` holds `config`.
 fn bare_layout(name: &str, config: &str) -> std::path::PathBuf {

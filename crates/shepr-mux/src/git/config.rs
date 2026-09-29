@@ -1037,12 +1037,11 @@ pub(super) fn normalize_gitdir_include_pattern(
     pattern: &str,
     config_path: &Path,
 ) -> Option<String> {
-    let mut pattern = if let Some(rest) = pattern.strip_prefix("~/") {
-        // `home_dir` rejects unusable HOME values instead of resolving this
-        // Git config path relative to the server's current directory.
-        shepr_core::pathutil::home_dir()
+    let mut pattern = if pattern.starts_with("~/") {
+        // Use the shared tilde resolver so unusable HOME never turns this
+        // Git config path into one relative to the server's current directory.
+        shepr_core::pathutil::expand_tilde_path(pattern)
             .ok()?
-            .join(rest)
             .display()
             .to_string()
     } else if let Some(rest) = pattern.strip_prefix("./") {
@@ -1106,10 +1105,11 @@ fn quoted_config_subsection<'a>(section: &'a str, name: &str) -> Option<&'a str>
 /// `HOME` is unusable: the include is then skipped, rather than read from a
 /// path relative to the including file.
 pub(super) fn resolve_include_path(config_path: &Path, include_path: &str) -> Option<PathBuf> {
-    let include_path = match include_path.strip_prefix("~/") {
-        // Keep tilde includes under the shared absolute HOME policy.
-        Some(rest) => shepr_core::pathutil::home_dir().ok()?.join(rest),
-        None => PathBuf::from(include_path),
+    let include_path = if include_path.starts_with("~/") {
+        // Keep tilde includes under the shared expansion and HOME policy.
+        shepr_core::pathutil::expand_tilde_path(include_path).ok()?
+    } else {
+        PathBuf::from(include_path)
     };
     Some(if include_path.is_absolute() {
         include_path
