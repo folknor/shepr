@@ -5,6 +5,9 @@ edition = "2024"
 description = "terminal workspace manager for AI coding agents"
 license = "Apache-2.0"
 publish = false
+# build.rs at the root is shared source, included by path from the build scripts
+# of shepr-protocol and shepr-config; this package uses none of its output.
+build = false
 repository = "https://github.com/folknor/shepr"
 rust-version = "1.99"
 

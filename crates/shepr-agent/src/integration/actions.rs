@@ -1,17 +1,87 @@
 use std::io;
 
+use crate::agent::IntegrationTarget;
 use crate::limits::VERSION_PROBE_TIMEOUT;
 
 use super::env::AgentIntegrationPaths;
 use super::registry::{
-    action_label, install_operation, integration_target_label, uninstall_operation,
+    action_label, agent_present, install_operation, integration_status, integration_target_label,
 };
-use super::types::{InstallOutcome, InstallOutput, UninstallOutcome};
+use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
 use super::version::{agent_version_requirement, enforce_agent_version};
 
-pub fn install_target(
+/// Installs or updates shepr's hooks for every supported agent present on
+/// this host, the way a server does at launch.
+///
+/// An agent is present when its own config directory already exists; an
+/// absent agent is skipped and its directory is never created. A target
+/// whose installed integration is already current is left untouched, so a
+/// launch that finds nothing to do writes nothing. Everything is reported
+/// through `tracing`: a target that cannot be checked or installed is logged
+/// and the others still run, and nothing here fails the caller.
+///
+/// This does file IO and may run an agent's `--version` probe (bounded by a
+/// timeout), so a server calls it off its startup path.
+pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
+    for target in IntegrationTarget::all() {
+        let label = integration_target_label(target);
+        match install_if_present(paths, target) {
+            Ok(Some(output)) => {
+                for message in output.messages {
+                    tracing::info!(integration = label, "{message}");
+                }
+                for warning in output.warnings {
+                    tracing::warn!(integration = label, "{warning}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    integration = label,
+                    %error,
+                    "could not install the agent integration"
+                );
+            }
+        }
+    }
+}
+
+/// The install output when `target`'s agent is present and its integration
+/// was missing or outdated, `None` when there was nothing to do.
+fn install_if_present(
     paths: &AgentIntegrationPaths,
-    target: crate::agent::IntegrationTarget,
+    target: IntegrationTarget,
+) -> io::Result<Option<InstallOutput>> {
+    if !agent_present(paths, target)? {
+        tracing::debug!(
+            integration = integration_target_label(target),
+            "agent not present; integration skipped"
+        );
+        return Ok(None);
+    }
+    let status = integration_status(paths, target)?;
+    if status.state == IntegrationStatusKind::Current {
+        tracing::debug!(
+            integration = integration_target_label(target),
+            path = %status.path.display(),
+            "integration is current"
+        );
+        return Ok(None);
+    }
+    tracing::info!(
+        integration = integration_target_label(status.target),
+        path = %status.path.display(),
+        state = ?status.state,
+        installed_version = ?status.installed_version,
+        expected_version = status.expected_version,
+        "installing the agent integration"
+    );
+    install_target(paths, target).map(Some)
+}
+
+pub(crate) fn install_target(
+    paths: &AgentIntegrationPaths,
+    target: IntegrationTarget,
 ) -> io::Result<InstallOutput> {
     let result = install_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
@@ -21,7 +91,7 @@ pub fn install_target(
 
 fn install_target_inner(
     paths: &AgentIntegrationPaths,
-    target: crate::agent::IntegrationTarget,
+    target: IntegrationTarget,
 ) -> io::Result<InstallOutput> {
     let version_warning = match agent_version_requirement(target) {
         Some(requirement) => enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)?,
@@ -42,34 +112,4 @@ fn install_messages(label: &str, outcome: InstallOutcome) -> Vec<String> {
         .collect::<Vec<_>>();
     messages.extend(outcome.notices);
     messages
-}
-
-pub fn uninstall_target(
-    paths: &AgentIntegrationPaths,
-    target: crate::agent::IntegrationTarget,
-) -> io::Result<Vec<String>> {
-    let result = uninstall_target_inner(paths, target);
-    let outcome = if result.is_ok() { "ok" } else { "error" };
-    crate::logging::integration_action("uninstall", integration_target_label(target), outcome);
-    result
-}
-
-fn uninstall_target_inner(
-    paths: &AgentIntegrationPaths,
-    target: crate::agent::IntegrationTarget,
-) -> io::Result<Vec<String>> {
-    let outcome = uninstall_operation(paths, target)?;
-    Ok(uninstall_messages(action_label(target), &outcome))
-}
-
-fn uninstall_messages(label: &str, outcome: &UninstallOutcome) -> Vec<String> {
-    outcome
-        .artifacts
-        .iter()
-        .filter_map(|artifact| {
-            artifact
-                .role
-                .uninstall_message(label, &artifact.path, artifact.state)
-        })
-        .collect()
 }

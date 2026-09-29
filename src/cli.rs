@@ -20,7 +20,6 @@ macro_rules! println {
 
 mod detect;
 mod error;
-mod integration;
 mod matches;
 mod server;
 mod server_not_running;
@@ -44,7 +43,6 @@ pub(crate) enum CliCommand {
     Status(status::Command),
     Server(server::Command),
     Detect(detect::Command),
-    Integration(integration::Command),
 }
 
 impl CliCommand {
@@ -53,7 +51,6 @@ impl CliCommand {
             COMMAND_STATUS => Self::Status(status::parse(matches)?),
             COMMAND_SERVER => Self::Server(server::parse(matches)?),
             "detect" => Self::Detect(detect::parse(matches)?),
-            "integration" => Self::Integration(integration::parse(matches)?),
             _ => return None,
         })
     }
@@ -163,9 +160,6 @@ fn dispatch(command: &CliCommand, context: &target::CliContext) -> CliResult<i32
         CliCommand::Status(command) => status::run_status_command(*command, context),
         CliCommand::Server(command) => server::run_server_command(command.clone(), context),
         CliCommand::Detect(command) => detect::run_detect_command(command.clone(), context),
-        CliCommand::Integration(command) => {
-            integration::run_integration_command(command.clone(), context)
-        }
     }
 }
 
@@ -281,11 +275,10 @@ mod tests {
 
     #[test]
     fn every_cli_spec_root_has_typed_parser() {
-        let samples: [(&str, &[&str]); 4] = [
+        let samples: [(&str, &[&str]); 3] = [
             ("status", &["status"]),
             ("server", &["server", "stop"]),
             ("detect", &["detect", "capture", "w1:p1"]),
-            ("integration", &["integration", "status"]),
         ];
         let launch_only = ["client", "remote-client-bridge"];
         let spec = super::spec::command();
@@ -410,6 +403,9 @@ mod tests {
             &["config", "reset-keys"],
             &["config", "check"],
             &["config"],
+            &["integration", "status"],
+            &["integration", "install", "claude"],
+            &["integration", "uninstall", "claude"],
             &["--remote", "host"],
             &["--remote", "host", "--remote-keybindings", "local"],
             &["--remote-keybindings", "server"],

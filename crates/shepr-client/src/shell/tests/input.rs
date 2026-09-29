@@ -183,21 +183,21 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     let matches = vec![
         shepr_api::schema::PaneTextRange {
             start: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(5),
+                row: shepr_vt::AbsRow(5),
                 col: 2,
             },
             end: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(5),
+                row: shepr_vt::AbsRow(5),
                 col: 7,
             },
         },
         shepr_api::schema::PaneTextRange {
             start: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(15),
+                row: shepr_vt::AbsRow(15),
                 col: 1,
             },
             end: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(15),
+                row: shepr_vt::AbsRow(15),
                 col: 6,
             },
         },

@@ -334,7 +334,7 @@ impl<P: HostReplyPolicy> RawInputFramer<P> {
 }
 
 #[derive(Default)]
-pub struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
+struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
     buffer: Vec<u8>,
     discard_until: Option<ControlStringFamily>,
     discarded_tail_bytes: usize,
@@ -357,7 +357,7 @@ pub struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
 }
 
 impl<P: HostReplyPolicy> RawInputByteFramer<P> {
-    pub fn for_host_input() -> Self {
+    fn for_host_input() -> Self {
         Self {
             split_coalesced_escape: true,
             ..Self::default()
@@ -365,7 +365,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     }
 
     /// Timestamp this chunk at the input boundary; timing behavior is driven by `push_at`.
-    pub fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
+    fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         self.push_at(data, std::time::Instant::now())
     }
 
@@ -463,46 +463,46 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
 
     /// Hold a lone trailing ESC for one idle flush so an OSC 10/11 reply split
     /// at its ESC introducer stitches back together instead of leaking.
-    pub fn host_color_query_sent(&mut self) {
+    fn host_color_query_sent(&mut self) {
         self.host_replies.color_query_sent();
         self.held_pending_host_reply_esc = false;
     }
 
     /// Same hold window as `host_color_query_sent`, for the XTWINOPS cell size
     /// reply.
-    pub fn host_cell_size_query_sent(&mut self) {
+    fn host_cell_size_query_sent(&mut self) {
         self.host_replies.cell_size_query_sent();
         self.held_pending_host_reply_esc = false;
     }
 
-    pub fn enable_host_color_scheme_change_tracking(&mut self) {
+    fn enable_host_color_scheme_change_tracking(&mut self) {
         self.host_replies.enable_color_scheme_tracking();
     }
 
     /// Arm a possible appearance-reply window after focus gain. If no reply
     /// arrives, a lone Escape is held for one idle flush and released on the next.
-    pub fn enable_host_appearance_query_on_focus(&mut self) {
+    fn enable_host_appearance_query_on_focus(&mut self) {
         self.host_replies.enable_appearance_query_on_focus();
     }
 
-    pub fn has_pending_input(&self) -> bool {
+    fn has_pending_input(&self) -> bool {
         !self.buffer.is_empty()
     }
 
-    pub fn set_host_escape_disambiguation_active(&mut self, active: bool) {
+    fn set_host_escape_disambiguation_active(&mut self, active: bool) {
         self.host_escape_disambiguation_active = active;
     }
 
-    pub fn has_pending_lone_escape(&self) -> bool {
+    fn has_pending_lone_escape(&self) -> bool {
         self.buffer.as_slice() == [ESC]
     }
 
-    pub fn has_pending_incomplete_mouse_sequence(&self) -> bool {
+    fn has_pending_incomplete_mouse_sequence(&self) -> bool {
         starts_with_incomplete_sgr_mouse_sequence(&self.buffer)
             || starts_with_incomplete_default_mouse_sequence(&self.buffer)
     }
 
-    pub fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
+    fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
 
         // Idle is not evidence that a paste has ended either; the retained

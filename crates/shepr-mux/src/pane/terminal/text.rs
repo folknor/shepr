@@ -11,7 +11,7 @@ enum TextClass {
 /// `None`). Rows are absolute.
 #[derive(Debug)]
 struct TextAtom {
-    point: Option<TerminalTextPoint<AbsRow>>,
+    point: Option<TerminalTextPoint>,
     end_col: u16,
     class: TextClass,
 }
@@ -21,8 +21,8 @@ struct TextAtom {
 struct TextSpan {
     byte_start: usize,
     byte_end: usize,
-    start: TerminalTextPoint<AbsRow>,
-    end: TerminalTextPoint<AbsRow>,
+    start: TerminalTextPoint,
+    end: TerminalTextPoint,
 }
 
 /// The text of one hard line (soft-wrapped rows joined), trailing blanks
@@ -219,7 +219,7 @@ impl RetainedTextBuffer {
         row: AbsRow,
         col: u16,
         motion: TerminalWordMotion,
-    ) -> Option<TerminalTextPoint<AbsRow>> {
+    ) -> Option<TerminalTextPoint> {
         let current = self.atoms.iter().position(|atom| {
             atom.point
                 .is_some_and(|point| point.row == row && col >= point.col && col <= atom.end_col)
@@ -234,7 +234,7 @@ impl RetainedTextBuffer {
         }
     }
 
-    fn next_word_start(&self, current: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn next_word_start(&self, current: usize) -> Option<TerminalTextPoint> {
         let current_class = self.atoms.get(current)?.class;
         let mut next = current.saturating_add(1);
         if current_class != TextClass::Whitespace {
@@ -256,7 +256,7 @@ impl RetainedTextBuffer {
         self.next_point(next)
     }
 
-    fn previous_word_start(&self, current: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn previous_word_start(&self, current: usize) -> Option<TerminalTextPoint> {
         let mut previous = current.checked_sub(1)?;
         while self
             .atoms
@@ -277,7 +277,7 @@ impl RetainedTextBuffer {
         self.previous_point(previous)
     }
 
-    fn next_word_end(&self, current: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn next_word_end(&self, current: usize) -> Option<TerminalTextPoint> {
         let mut next = current.saturating_add(1);
         while self
             .atoms
@@ -297,7 +297,7 @@ impl RetainedTextBuffer {
         self.previous_point(next)
     }
 
-    fn next_big_word_start(&self, current: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn next_big_word_start(&self, current: usize) -> Option<TerminalTextPoint> {
         let mut next = current.saturating_add(1);
         if self
             .atoms
@@ -322,7 +322,7 @@ impl RetainedTextBuffer {
         self.next_point(next)
     }
 
-    fn previous_big_word_start(&self, current: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn previous_big_word_start(&self, current: usize) -> Option<TerminalTextPoint> {
         let mut previous = current.checked_sub(1)?;
         while self
             .atoms
@@ -342,7 +342,7 @@ impl RetainedTextBuffer {
         self.previous_point(previous)
     }
 
-    fn next_big_word_end(&self, current: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn next_big_word_end(&self, current: usize) -> Option<TerminalTextPoint> {
         let mut next = current.saturating_add(1);
         while self
             .atoms
@@ -362,7 +362,7 @@ impl RetainedTextBuffer {
         self.previous_point(next)
     }
 
-    fn next_point(&self, mut index: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn next_point(&self, mut index: usize) -> Option<TerminalTextPoint> {
         while let Some(atom) = self.atoms.get(index) {
             if let Some(point) = atom.point {
                 return Some(point);
@@ -372,7 +372,7 @@ impl RetainedTextBuffer {
         None
     }
 
-    fn previous_point(&self, mut index: usize) -> Option<TerminalTextPoint<AbsRow>> {
+    fn previous_point(&self, mut index: usize) -> Option<TerminalTextPoint> {
         loop {
             if let Some(point) = self.atoms.get(index)?.point {
                 return Some(point);
@@ -381,7 +381,7 @@ impl RetainedTextBuffer {
         }
     }
 
-    fn point_is_final_atom(&self, point: TerminalTextPoint<AbsRow>) -> bool {
+    fn point_is_final_atom(&self, point: TerminalTextPoint) -> bool {
         // Word motion targets are atom start points, so compare against the
         // final atom's start point. Comparing against `end_col` would never
         // match a wide glyph, whose end column is one past its start.
@@ -412,29 +412,6 @@ fn text_fingerprint(text: &str) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn absolute_point(
-    point: TerminalTextPoint<ScreenRow>,
-    origin: AbsRow,
-) -> TerminalTextPoint<AbsRow> {
-    TerminalTextPoint {
-        row: point.row.absolute(origin),
-        col: point.col,
-    }
-}
-
-pub(super) fn screen_point(
-    point: TerminalTextPoint<AbsRow>,
-    origin: AbsRow,
-) -> TerminalTextPoint<ScreenRow> {
-    TerminalTextPoint {
-        row: point
-            .row
-            .screen_row(origin)
-            .unwrap_or(ScreenRow(usize::MAX)),
-        col: point.col,
-    }
-}
-
 /// One copy-mode search: logical lines are fed in reading order and only the
 /// matches that can end up in the returned window are kept, so memory stays
 /// bounded by the window size however long the history is.
@@ -448,8 +425,8 @@ impl TextSearch {
         query: &str,
         case_sensitive: bool,
         direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint<AbsRow>,
-        previous: Option<(TerminalTextPoint<AbsRow>, TerminalTextPoint<AbsRow>)>,
+        cursor: TerminalTextPoint,
+        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
         limit: usize,
     ) -> Option<Self> {
         if query.is_empty() || limit == 0 {
@@ -510,7 +487,7 @@ impl TextSearch {
         }
     }
 
-    pub(super) fn finish(self) -> TerminalSearchWindow<AbsRow> {
+    pub(super) fn finish(self) -> TerminalSearchWindow {
         self.window.finish()
     }
 }
@@ -527,21 +504,21 @@ impl TextSearch {
 /// always (for a forward wrap).
 pub(super) struct MatchWindow {
     pub(super) direction: TerminalSearchDirection,
-    pub(super) origin: TerminalTextPoint<AbsRow>,
+    pub(super) origin: TerminalTextPoint,
     pub(super) limit: usize,
     pub(super) total: usize,
     pub(super) target: Option<usize>,
-    pub(super) first: Vec<TerminalTextMatch<AbsRow>>,
+    pub(super) first: Vec<TerminalTextMatch>,
     /// The last `limit` matches before `boundary` (before the end while no
     /// boundary is set).
-    pub(super) recent: VecDeque<TerminalTextMatch<AbsRow>>,
+    pub(super) recent: VecDeque<TerminalTextMatch>,
     /// Index of the first match kept in `after`, once the target is known.
     pub(super) boundary: Option<usize>,
-    pub(super) after: Vec<TerminalTextMatch<AbsRow>>,
+    pub(super) after: Vec<TerminalTextMatch>,
 }
 
 impl MatchWindow {
-    pub(super) fn push(&mut self, text_match: TerminalTextMatch<AbsRow>) {
+    pub(super) fn push(&mut self, text_match: TerminalTextMatch) {
         let index = self.total;
         self.total = self.total.saturating_add(1);
         if self.first.len() < self.limit {
@@ -579,7 +556,7 @@ impl MatchWindow {
         }
     }
 
-    pub(super) fn get(&self, index: usize) -> Option<TerminalTextMatch<AbsRow>> {
+    pub(super) fn get(&self, index: usize) -> Option<TerminalTextMatch> {
         if let Some(text_match) = self.first.get(index) {
             return Some(*text_match);
         }
@@ -595,7 +572,7 @@ impl MatchWindow {
         self.recent.get(index.checked_sub(recent_start)?).copied()
     }
 
-    pub(super) fn finish(self) -> TerminalSearchWindow<AbsRow> {
+    pub(super) fn finish(self) -> TerminalSearchWindow {
         let total = self.total;
         if total == 0 {
             return TerminalSearchWindow::empty();
@@ -623,9 +600,9 @@ impl MatchWindow {
 /// edge (a word continuing across a soft wrap at the window's edge).
 pub(super) fn word_motion_in(
     terminal: &shepr_vt::Terminal,
-    point: TerminalTextPoint<AbsRow>,
+    point: TerminalTextPoint,
     motion: TerminalWordMotion,
-) -> Option<TerminalTextPoint<AbsRow>> {
+) -> Option<TerminalTextPoint> {
     let total_rows = terminal.total_rows();
     let row = terminal.screen_row_for_absolute(point.row)?.0;
     let backward = matches!(
@@ -676,7 +653,7 @@ pub(super) fn paragraph_motion_in(
     terminal: &shepr_vt::Terminal,
     row: AbsRow,
     direction: i8,
-) -> Option<TerminalTextPoint<AbsRow>> {
+) -> Option<TerminalTextPoint> {
     let total_rows = terminal.total_rows();
     let current = terminal.screen_row_for_absolute(row)?.0;
     if direction == 0 {
@@ -760,7 +737,7 @@ impl OwnedTextBuffer {
         row: AbsRow,
         col: u16,
         motion: TerminalWordMotion,
-    ) -> Option<TerminalTextPoint<AbsRow>> {
+    ) -> Option<TerminalTextPoint> {
         self.words.word_motion(row, col, motion)
     }
 
@@ -770,10 +747,10 @@ impl OwnedTextBuffer {
         case_sensitive: bool,
         active_screen: shepr_vt::ActiveScreen,
         direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint<AbsRow>,
-        previous: Option<(TerminalTextPoint<AbsRow>, TerminalTextPoint<AbsRow>)>,
+        cursor: TerminalTextPoint,
+        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
         limit: usize,
-    ) -> TerminalSearchWindow<AbsRow> {
+    ) -> TerminalSearchWindow {
         let Some(mut search) =
             TextSearch::new(query, case_sensitive, direction, cursor, previous, limit)
         else {

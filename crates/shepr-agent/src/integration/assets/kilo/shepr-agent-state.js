@@ -89,17 +89,15 @@ function requestOnce(method, params) {
     return Promise.resolve();
   }
 
-  const requestId = `${SOURCE}:${Date.now()}:${Math.floor(Math.random() * 1_000_000)
-    .toString()
-    .padStart(6, "0")}`;
+  const seq = nextReportSeq();
   const request = {
-    id: requestId,
+    id: `${SOURCE}:${seq}`,
     method,
     params: {
       pane_id: paneId,
       source: SOURCE,
       agent: AGENT,
-      seq: nextReportSeq(),
+      seq,
       ...params,
     },
   };

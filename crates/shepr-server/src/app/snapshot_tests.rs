@@ -162,7 +162,6 @@ fn round_trip_full_workspace_snapshot() {
             cwd: PathBuf::from("/home/can/Projects/shepr"),
             label: None,
             agent_session: None,
-            launch_argv: None,
         },
     );
     panes.insert(
@@ -171,7 +170,6 @@ fn round_trip_full_workspace_snapshot() {
             cwd: PathBuf::from("/home/can/Projects/website"),
             label: Some("website".into()),
             agent_session: None,
-            launch_argv: None,
         },
     );
 
@@ -854,7 +852,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
             cwd: missing_cwd.clone(),
             label: None,
             agent_session: None,
-            launch_argv: None,
         },
     );
     panes.insert(
@@ -863,7 +860,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
             cwd: existing_cwd.clone(),
             label: None,
             agent_session: None,
-            launch_argv: None,
         },
     );
 

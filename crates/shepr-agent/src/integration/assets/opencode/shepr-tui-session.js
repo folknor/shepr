@@ -27,10 +27,10 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
     return Promise.resolve(true);
   }
 
+  // A selection report has no seq; its id takes a clock reading in the seq's
+  // unit instead, so the id keeps the `<source>:<seq>` shape of every hook.
   const request = {
-    id: `${SOURCE}:tui:${Date.now()}:${Math.floor(Math.random() * 1_000_000)
-      .toString()
-      .padStart(6, "0")}`,
+    id: `${SOURCE}:${state === undefined ? Date.now() * 1000 : seq}`,
     method: state === undefined ? "pane.report_agent_session" : "pane.report_agent",
     params: {
       pane_id: paneId,

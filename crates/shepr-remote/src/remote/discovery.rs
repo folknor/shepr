@@ -131,7 +131,7 @@ fn path_lookup_result_with_rejected_candidate(
 /// Discovery is several round trips (a login-shell `command -v`, a `/bin/sh` `command -v`
 /// when that finds nothing, the known-locations script, then a status probe per candidate
 /// until one matches), and without connection sharing each is a cold SSH connect. On a
-/// slow enough link they do not all fit in one saved-machine attempt's budget. A saved
+/// slow enough link they do not all fit in one connection attempt's budget. A configured
 /// machine's connector keeps its progress across attempts, so the next attempt resumes
 /// with the first round trip that has not completed instead of starting over. Every
 /// round trip is capped well below the attempt budget, so each attempt completes at
@@ -240,6 +240,20 @@ impl DiscoveryProgress {
     pub(crate) fn has_progress(&self) -> bool {
         self.login_shell_path.is_some()
     }
+}
+
+/// Whether `candidate` (a remembered executable) still passes discovery's
+/// verification: it runs, is this build, and has this build's sibling server.
+/// `Ok(false)` means it is gone; a wrong build is an error, as in discovery.
+pub(super) fn verify_remote_shepr(
+    ssh: &RemoteSsh,
+    candidate: &RemoteExecutable,
+) -> io::Result<bool> {
+    SshDiscovery {
+        ssh,
+        rejected_shell_unsafe_candidate: None,
+    }
+    .matches(candidate)
 }
 
 /// Continue status-probe discovery, resuming from and recording into `progress`.

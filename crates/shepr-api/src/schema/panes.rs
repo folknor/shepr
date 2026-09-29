@@ -120,8 +120,6 @@ pub struct LayoutPane {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,16 +144,11 @@ pub struct PaneScrollParams {
     pub offset_from_bottom: u64,
 }
 
-/// A terminal text point addressed by retained-screen rows.
+/// A terminal cell addressed by a stable absolute row: output and history
+/// eviction never make it name another line. Selections, copy-mode cursors
+/// and search matches all use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTextPoint {
-    pub row: shepr_vt::ScreenRow,
-    pub col: u16,
-}
-
-/// A selection point addressed by stable absolute row IDs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneSelectionPoint {
     pub row: shepr_vt::AbsRow,
     pub col: u16,
 }
@@ -163,8 +156,8 @@ pub struct PaneSelectionPoint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSelectionReadParams {
     pub pane_id: String,
-    pub anchor: PaneSelectionPoint,
-    pub cursor: PaneSelectionPoint,
+    pub anchor: PaneTextPoint,
+    pub cursor: PaneTextPoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_revision: Option<u64>,
 }
@@ -189,8 +182,6 @@ pub struct PaneCopyMotionParams {
     pub pane_id: String,
     pub cursor: PaneTextPoint,
     pub motion: PaneCopyMotion,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,7 +203,6 @@ pub struct PaneCopySearchParams {
     pub query: String,
     pub direction: PaneCopySearchDirection,
     pub cursor: PaneTextPoint,
-    pub content_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<PaneTextRange>,
 }

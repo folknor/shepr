@@ -1,8 +1,6 @@
-use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::agent::IntegrationTarget as Target;
@@ -10,9 +8,9 @@ use crate::agent::IntegrationTarget as Target;
 use super::command::hook_command;
 use super::config_edit::{direct_command_field, is_matching_command_hook};
 use super::env::{AgentIntegrationPaths, DirectoryKey};
-use super::types::{InstallOutcome, UninstallOutcome};
+use super::types::InstallOutcome;
 
-pub fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
+pub(crate) fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
     target.label()
 }
 
@@ -22,8 +20,8 @@ struct IntegrationSpec {
     assets: &'static [&'static str],
     directory: DirectoryKey,
     /// Agent-owned config files in `directory` that install edits. Install
-    /// and uninstall vet them before touching anything, and the registration
-    /// check reads them from the directory `path` is installed under.
+    /// vets them before touching anything, and the registration check reads
+    /// them from the directory `path` is installed under.
     config_files: &'static [&'static str],
     /// How status confirms the agent's own config still runs the hook.
     registration: RegistrationCheck,
@@ -32,7 +30,6 @@ struct IntegrationSpec {
     hook_timeout: Option<Duration>,
     action_label: &'static str,
     install: fn(&AgentIntegrationPaths) -> io::Result<InstallOutcome>,
-    uninstall: fn(&AgentIntegrationPaths) -> io::Result<UninstallOutcome>,
 }
 
 #[derive(Clone, Copy)]
@@ -62,7 +59,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::DirectoryLoaded,
         action_label: "pi",
         install: super::targets::install_pi,
-        uninstall: super::targets::uninstall_pi,
         assets: &[super::PI_EXTENSION_ASSET],
         directory: DirectoryKey::PiExtension,
         path: &[super::PI_EXTENSION_INSTALL_NAME],
@@ -75,7 +71,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::DirectoryLoaded,
         action_label: "omp",
         install: super::targets::install_omp,
-        uninstall: super::targets::uninstall_omp,
         assets: &[super::OMP_EXTENSION_ASSET],
         directory: DirectoryKey::OmpExtension,
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
@@ -91,7 +86,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         },
         action_label: "claude",
         install: super::targets::install_claude,
-        uninstall: super::targets::uninstall_claude,
         assets: &[super::CLAUDE_HOOK_ASSET],
         directory: DirectoryKey::Claude,
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
@@ -104,7 +98,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::Codex,
         action_label: "codex",
         install: super::targets::install_codex,
-        uninstall: super::targets::uninstall_codex,
         assets: &[super::CODEX_HOOK_ASSET],
         directory: DirectoryKey::Codex,
         path: &[super::CODEX_HOOK_INSTALL_NAME],
@@ -120,7 +113,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         },
         action_label: "copilot",
         install: super::targets::install_copilot,
-        uninstall: super::targets::uninstall_copilot,
         assets: &[super::COPILOT_HOOK_ASSET],
         directory: DirectoryKey::Copilot,
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
@@ -136,7 +128,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         },
         action_label: "devin",
         install: super::targets::install_devin,
-        uninstall: super::targets::uninstall_devin,
         assets: &[super::DEVIN_HOOK_ASSET],
         directory: DirectoryKey::Devin,
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
@@ -152,7 +143,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         },
         action_label: "droid",
         install: super::targets::install_droid,
-        uninstall: super::targets::uninstall_droid,
         assets: &[super::DROID_HOOK_ASSET],
         directory: DirectoryKey::Droid,
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
@@ -165,7 +155,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::Kimi,
         action_label: "kimi",
         install: super::targets::install_kimi,
-        uninstall: super::targets::uninstall_kimi,
         assets: &[super::KIMI_HOOK_ASSET],
         directory: DirectoryKey::Kimi,
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
@@ -182,7 +171,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::Opencode,
         action_label: "opencode",
         install: super::targets::install_opencode,
-        uninstall: super::targets::uninstall_opencode,
         assets: &[
             super::OPENCODE_PLUGIN_ASSET,
             super::OPENCODE_TUI_PLUGIN_ASSET,
@@ -199,7 +187,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::DirectoryLoaded,
         action_label: "kilo",
         install: super::targets::install_kilo,
-        uninstall: super::targets::uninstall_kilo,
         assets: &[super::KILO_PLUGIN_ASSET],
         directory: DirectoryKey::Kilo,
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
@@ -215,7 +202,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         },
         action_label: "cursor",
         install: super::targets::install_cursor,
-        uninstall: super::targets::uninstall_cursor,
         assets: &[super::CURSOR_HOOK_ASSET],
         directory: DirectoryKey::Cursor,
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
@@ -231,7 +217,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         },
         action_label: "mastracode",
         install: super::targets::install_mastracode,
-        uninstall: super::targets::uninstall_mastracode,
         assets: &[super::MASTRACODE_HOOK_ASSET],
         directory: DirectoryKey::Mastracode,
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
@@ -244,7 +229,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::AntigravityCli,
         action_label: "antigravity-cli",
         install: super::targets::install_antigravity_cli,
-        uninstall: super::targets::uninstall_antigravity_cli,
         assets: &[super::ANTIGRAVITY_CLI_HOOK_ASSET],
         directory: DirectoryKey::AntigravityCli,
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
@@ -257,7 +241,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         registration: RegistrationCheck::Grok,
         action_label: "grok",
         install: super::targets::install_grok,
-        uninstall: super::targets::uninstall_grok,
         assets: &[super::GROK_HOOK_ASSET],
         directory: DirectoryKey::Grok,
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
@@ -306,18 +289,6 @@ pub(crate) fn install_operation(
     (spec.install)(paths)
 }
 
-pub(crate) fn uninstall_operation(
-    paths: &AgentIntegrationPaths,
-    target: Target,
-) -> io::Result<UninstallOutcome> {
-    let Some(spec) = INTEGRATION_SPECS.iter().find(|spec| spec.target == target) else {
-        return Err(io::Error::other(format!(
-            "missing integration spec for {target:?}"
-        )));
-    };
-    (spec.uninstall)(paths)
-}
-
 pub(crate) fn integration_asset(target: crate::agent::IntegrationTarget) -> Option<&'static str> {
     INTEGRATION_SPECS
         .iter()
@@ -335,106 +306,48 @@ pub(crate) fn integration_hook_events(
         .map_or(&[], |spec| spec.target.hook_events())
 }
 
-/// One row per supported target, in spec order, for `integration status`.
-/// Includes `NotInstalled` rows because the command reports the full
-/// supported-target inventory. A target whose directory could not be resolved,
-/// or whose installed file could not be stat'ed, is an error row, so the CLI
-/// can print it instead of silently omitting it.
-pub fn integration_status_rows(
-    paths: &super::env::AgentIntegrationPaths,
-) -> Vec<Result<super::IntegrationStatus, super::IntegrationStatusError>> {
-    integration_specs(paths)
-        .map(|(target, path, expected_version)| {
-            path.and_then(|path| integration_status_at(target, path, expected_version))
-                .map_err(|error| super::IntegrationStatusError {
-                    target,
-                    message: error.to_string(),
-                })
-        })
-        .collect()
-}
-
-/// The resolvable rows of [`integration_status_rows`]. Targets that could not
-/// be checked are logged and skipped: callers here only act on installed
-/// integrations.
-pub(crate) fn installed_integration_statuses(
-    paths: &super::env::AgentIntegrationPaths,
-) -> Vec<super::IntegrationStatus> {
-    integration_status_rows(paths)
-        .into_iter()
-        .filter_map(|row| match row {
-            Ok(status) => Some(status),
-            Err(error) => {
-                tracing::warn!(
-                    integration = error.target.label(),
-                    error = %error.message,
-                    "could not check integration status"
-                );
-                None
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn outdated_installed_integrations(
-    paths: &super::env::AgentIntegrationPaths,
-) -> Vec<super::IntegrationStatus> {
-    installed_integration_statuses(paths)
-        .into_iter()
-        .filter(|status| status.state == super::IntegrationStatusKind::Outdated)
-        .collect()
-}
-
-fn integration_specs(
-    paths: &super::env::AgentIntegrationPaths,
-) -> impl Iterator<Item = (crate::agent::IntegrationTarget, io::Result<PathBuf>, u32)> + '_ {
-    INTEGRATION_SPECS.iter().copied().map(move |spec| {
-        let path = paths.directory(spec.directory).map(|mut path| {
-            for part in spec.path {
-                path.push(part);
-            }
-            path
-        });
-        (spec.target, path, spec.version)
-    })
-}
-
-pub(crate) fn integration_update_instructions(
-    targets: &[crate::agent::IntegrationTarget],
-) -> String {
-    let commands: Vec<String> = targets
-        .iter()
-        .map(|target| {
-            format!(
-                "`shepr integration install {}`",
-                integration_target_label(*target)
-            )
-        })
-        .collect();
-
-    match commands.as_slice() {
-        [] => String::new(),
-        [command] => format!("run {command}"),
-        [rest @ .., last] => format!("run {} and {last}", rest.join(", ")),
+/// The file `spec`'s integration installs, whose version marker the status
+/// check reads.
+fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> io::Result<PathBuf> {
+    let mut path = paths.directory(spec.directory)?;
+    for part in spec.path {
+        path.push(part);
     }
+    Ok(path)
 }
 
-/// The operator notice for outdated installed integrations, or `None` when
-/// every installed integration is current. The caller decides where it goes.
-pub fn outdated_update_notice(paths: &super::env::AgentIntegrationPaths) -> Option<String> {
-    let outdated = outdated_installed_integrations(paths);
-    if outdated.is_empty() {
-        return None;
-    }
+/// The status of `target`'s integration on this host. A directory that could
+/// not be resolved, or an installed file that could not be stat'ed, is an
+/// error, not `NotInstalled`.
+pub(crate) fn integration_status(
+    paths: &AgentIntegrationPaths,
+    target: Target,
+) -> io::Result<super::IntegrationStatus> {
+    let spec = spec_for(target)?;
+    integration_status_at(target, installed_path(paths, spec)?, spec.version)
+}
 
-    let targets = outdated
-        .iter()
-        .map(|integration| integration.target)
-        .collect::<Vec<_>>();
-    Some(format!(
-        "installed shepr integrations need updating; {}.",
-        integration_update_instructions(&targets).replace('`', "")
-    ))
+/// Whether `target`'s agent is present on this host: its own config
+/// directory already exists. Install never creates that directory, only
+/// shepr's files and subdirectories inside it. Pi and OMP resolve to the
+/// `extensions` directory inside the agent directory, which install creates
+/// when missing, so for them the agent directory is its parent.
+pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> io::Result<bool> {
+    let spec = spec_for(target)?;
+    let directory = paths.directory(spec.directory)?;
+    let agent_directory = match spec.directory {
+        DirectoryKey::PiExtension | DirectoryKey::OmpExtension => {
+            directory.parent().map(Path::to_path_buf).ok_or_else(|| {
+                io::Error::other(format!(
+                    "{} extension directory {} has no parent",
+                    target.label(),
+                    directory.display()
+                ))
+            })?
+        }
+        _ => directory,
+    };
+    super::file_ops::is_dir(&agent_directory)
 }
 
 /// Whether the Shepr-owned Grok hook config exactly matches the installed
@@ -752,31 +665,11 @@ fn integration_state_for_path(
     Ok((state, installed_version))
 }
 
-fn warn_stale_registration_once(target: Target, path: &Path) {
-    // Status can be polled frequently, so report each target once per process.
-    static WARNED_TARGETS: OnceLock<Mutex<HashSet<Target>>> = OnceLock::new();
-    let mut warned_targets = match WARNED_TARGETS
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-    {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let should_warn = warned_targets.insert(target);
-    drop(warned_targets);
-
-    if should_warn {
-        tracing::warn!(
-            integration = target.label(),
-            path = %path.display(),
-            "integration hook registration is not current"
-        );
-    }
-}
-
 /// The status of the integration installed at `path`. A stat error on the
 /// installed file (or on a file its validity depends on) is returned, not
-/// reported as `NotInstalled`.
+/// reported as `NotInstalled`. A current hook file whose registration in the
+/// agent's own config is missing or drifted reads `Outdated`, so the next
+/// install repairs it.
 pub(crate) fn integration_status_at(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
@@ -787,7 +680,6 @@ pub(crate) fn integration_status_at(
     if state == super::IntegrationStatusKind::Current
         && !hook_registration_is_current(spec_for(target)?, &path, expected_version)?
     {
-        warn_stale_registration_once(target, &path);
         state = super::IntegrationStatusKind::Outdated;
     }
 
@@ -813,6 +705,17 @@ pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
             .parse()
             .ok()
     })
+}
+
+/// One status per supported target, in spec order.
+#[cfg(test)]
+pub(crate) fn integration_status_rows(
+    paths: &AgentIntegrationPaths,
+) -> Vec<io::Result<super::IntegrationStatus>> {
+    INTEGRATION_SPECS
+        .iter()
+        .map(|spec| integration_status(paths, spec.target))
+        .collect()
 }
 
 #[cfg(test)]
@@ -886,9 +789,11 @@ mod registration_tests {
         assert_eq!(rows.len(), INTEGRATION_SPECS.len(), "one row per target");
         let errors = rows.iter().filter(|row| row.is_err()).count();
         assert!(errors > 0, "targets under HOME cannot resolve without it");
-        assert_eq!(
-            installed_integration_statuses(&paths).len(),
-            rows.len() - errors
+        // An unresolved directory is an error for the presence check too, so
+        // auto-install logs it instead of reading the agent as absent.
+        assert!(
+            IntegrationTarget::all().any(|target| agent_present(&paths, target).is_err()),
+            "presence under HOME cannot resolve without it"
         );
     }
 
@@ -1260,17 +1165,40 @@ mod registration_tests {
     }
 
     #[test]
-    fn every_target_has_exactly_one_status_spec() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let paths = super::super::env::AgentIntegrationPaths::resolve();
-        let specs = integration_specs(&paths).collect::<Vec<_>>();
+    fn every_target_has_exactly_one_spec() {
         for target in IntegrationTarget::all() {
             assert_eq!(
-                specs.iter().filter(|(spec, _, _)| *spec == target).count(),
+                INTEGRATION_SPECS
+                    .iter()
+                    .filter(|spec| spec.target == target)
+                    .count(),
                 1,
                 "{target:?}"
             );
         }
+        assert_eq!(INTEGRATION_SPECS.len(), IntegrationTarget::all().count());
+    }
+
+    #[test]
+    fn agent_presence_is_the_agent_config_directory() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let home = env.home();
+        let paths = super::super::env::AgentIntegrationPaths::resolve();
+        for target in IntegrationTarget::all() {
+            assert!(
+                !agent_present(&paths, target).expect("presence resolves"),
+                "{target:?} is absent in a fresh home"
+            );
+        }
+
+        // Pi's agent directory exists but its extensions directory does not:
+        // the agent is present, and install creates `extensions`.
+        fs::create_dir_all(home.join(".pi").join("agent")).expect("test precondition");
+        fs::create_dir_all(home.join(".claude")).expect("test precondition");
+        let paths = super::super::env::AgentIntegrationPaths::resolve();
+        assert!(agent_present(&paths, IntegrationTarget::Pi).expect("presence resolves"));
+        assert!(agent_present(&paths, IntegrationTarget::Claude).expect("presence resolves"));
+        assert!(!agent_present(&paths, IntegrationTarget::Codex).expect("presence resolves"));
     }
 
     #[test]

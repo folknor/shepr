@@ -103,7 +103,7 @@ fn enforce_agent_version_with_clock(
 
     if found < required {
         return Err(io::Error::other(format!(
-            "{label} {}.{}.{} is too old: shepr hooks require {label} {min} or newer. upgrade {label}, then re-run install",
+            "{label} {}.{}.{} is too old: shepr hooks require {label} {min} or newer. upgrade {label}; the next shepr server launch installs the hooks",
             found.0,
             found.1,
             found.2,

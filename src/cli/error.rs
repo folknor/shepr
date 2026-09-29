@@ -34,6 +34,10 @@ impl CliError {
             Self::ServerStop(error) if error.is_boot_mismatch() => {
                 shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
             }
+            // Likewise "there was no server to stop" (it had already exited).
+            Self::ServerStop(error) if error.is_not_running() => {
+                shepr_api::server_stop::NO_SERVER_EXIT_CODE
+            }
             _ => 1,
         }
     }
@@ -175,5 +179,18 @@ mod tests {
             "bad".into(),
         ));
         assert_eq!(failed.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_stop_with_no_server_has_its_own_exit_code() {
+        let none = CliError::ServerStop(shepr_api::server_stop::ServerStopError::NotRunning {
+            label: "server".into(),
+            path: "/run/shepr/shepr.sock".into(),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        });
+        assert_eq!(
+            none.exit_code(),
+            shepr_api::server_stop::NO_SERVER_EXIT_CODE
+        );
     }
 }

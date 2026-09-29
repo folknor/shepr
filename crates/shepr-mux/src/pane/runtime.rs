@@ -24,8 +24,8 @@ use crate::UsableCwd;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
 use shepr_core::layout::PaneId;
+use shepr_pty::ChildIo;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
-use shepr_pty::{ChildIo, PtyCommand};
 
 pub struct TerminalDirtyPatchSnapshot {
     pub patch: TerminalDirtyPatchOutcome,
@@ -719,44 +719,7 @@ impl PaneRuntime {
         cmd.cwd(cwd);
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(&mut cmd, launch_env);
-        Self::spawn_command_builder(
-            pane_id,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            events,
-            render_notify,
-            render_dirty,
-            pane_teardowns,
-            &cmd,
-            "failed to spawn shell",
-            initial_history_ansi,
-            launch_env.purpose(),
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
-    )]
-    fn spawn_command_builder(
-        pane_id: PaneId,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        events: &mpsc::Sender<AppEvent>,
-        render_notify: &Arc<Notify>,
-        render_dirty: &Arc<RenderSignal>,
-        pane_teardowns: &Arc<PaneTeardownTracker>,
-        cmd: &PtyCommand,
-        spawn_error_message: &'static str,
-        initial_history_ansi: Option<&str>,
-        launch_purpose: LaunchPurpose,
-    ) -> std::io::Result<Self> {
+        let launch_purpose = launch_env.purpose();
         let teardown_tracker = Arc::clone(pane_teardowns);
         let size = shepr_core::geometry::GridSize::clamped_pane(cols, rows);
         let rows = size.rows.get();
@@ -773,8 +736,8 @@ impl PaneRuntime {
         let terminal = Arc::new(pane_terminal);
         let content_write_lock = Arc::new(Mutex::new(()));
 
-        let spawned = shepr_pty::backend::spawn_pty(rows, cols, cmd).inspect_err(
-            |err| error!(pane = pane_id.raw(), error = %err, "{spawn_error_message}"),
+        let spawned = shepr_pty::backend::spawn_pty(rows, cols, &cmd).inspect_err(
+            |err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"),
         )?;
 
         let mut child = spawned.child;
@@ -1367,7 +1330,7 @@ impl PaneRuntime {
 
     pub fn word_motion_target(
         &self,
-        row: shepr_vt::ScreenRow,
+        row: shepr_vt::AbsRow,
         col: u16,
         motion: crate::pane::TerminalWordMotion,
     ) -> Option<crate::pane::TerminalTextPoint> {
@@ -1380,7 +1343,7 @@ impl PaneRuntime {
 
     pub fn paragraph_motion_target(
         &self,
-        row: shepr_vt::ScreenRow,
+        row: shepr_vt::AbsRow,
         direction: i8,
     ) -> Option<crate::pane::TerminalTextPoint> {
         self.terminal.paragraph_motion_target(row, direction)
@@ -1772,6 +1735,7 @@ impl PaneRuntime {
 mod tests {
     use super::*;
     use shepr_agent::detect::Agent;
+    use shepr_pty::PtyCommand;
     use shepr_test_support::fixture::{self, Held, Signal, Step};
 
     fn shell_probe(

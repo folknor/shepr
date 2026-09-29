@@ -133,6 +133,7 @@ pub fn run_server(
     // restores PTYs whose detection workers consult them, and after logging
     // starts, so a bundled manifest that fails to compile reaches the log.
     shepr_agent::detect::manifest::compile_bundled_manifests();
+    spawn_integration_install();
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
@@ -190,6 +191,23 @@ pub fn run_server(
     rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
     crate::logging::shutdown("server");
     result
+}
+
+/// Installs or updates the agent hooks on this host in a detached thread, so
+/// the file IO and any agent version probe stay off the startup path. The
+/// agent config locations are read from the environment here, before the
+/// thread starts. Every outcome goes to the log; nothing here can fail the
+/// launch. A server that stops while the thread runs leaves at most a
+/// half-finished install, which the next launch completes: every file is
+/// replaced by rename, never rewritten in place.
+fn spawn_integration_install() {
+    let paths = shepr_agent::integration::AgentIntegrationPaths::resolve();
+    if let Err(error) = std::thread::Builder::new()
+        .name("integration-install".into())
+        .spawn(move || shepr_agent::integration::install_present_integrations(&paths))
+    {
+        warn!(%error, "could not start the agent integration install");
+    }
 }
 
 fn encode_resolved_config(config: &shepr_config::ValidatedConfig) -> io::Result<Vec<u8>> {

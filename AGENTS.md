@@ -27,7 +27,9 @@ Kept:
 - Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
   compiled into the binary
 - Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
-  own config that report state and session IDs back to shepr
+  own config that report state and session IDs back to shepr. The server
+  installs or updates them at launch for every agent whose config directory
+  exists on its host; there is no install or uninstall command
 - Session restore (layout saved to disk, rebuilt with fresh shells) and agent
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)
@@ -35,8 +37,8 @@ Kept:
 - The JSON API over the server socket. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
   configured machine. `status`, `server stop`, `detect capture` and `detect explain
-  <PANE>` talk to the local server over its socket; `integration`
-  and `detect explain --file` manage local state in the CLI process
+  <PANE>` talk to the local server over its socket; `detect explain --file`
+  runs in the CLI process
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr is deliberately not kept, and
@@ -48,8 +50,7 @@ detection manifest overrides and their reload: a detection change ships as a
 new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
-the subcommands are `status`, `server`, `integration` and
-`detect`. Workspaces, tabs and panes are managed from the TUI only; there
+the subcommands are `status`, `server` and `detect`. Workspaces, tabs and panes are managed from the TUI only; there
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the text the detector evaluates for a pane, and
 `shepr detect explain <pane>` says which rule decided its state.

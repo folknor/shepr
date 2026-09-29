@@ -36,7 +36,6 @@ mod terminal_geometry;
 mod terminal_setup;
 mod timer;
 mod transport;
-mod workspace_label;
 
 use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
@@ -74,7 +73,7 @@ use shepr_termio::blit as render_ansi;
 
 /// Runs the local shell client with startup settings already loaded by the
 /// launch coordinator. The binary launcher installs the process-wide file
-/// logger before calling this function. The saved machines are the launch
+/// logger before calling this function. The machines are the launch
 /// config's `[[machines]]`, fixed for the life of the client.
 fn run_launched_client(
     config: &shepr_config::ValidatedConfig,
@@ -101,7 +100,7 @@ fn run_launched_client(
     let initial_stream = match shepr_platform::ipc::connect_trusted_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
         Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
-            warn!(%error, "Local is unavailable; keeping saved machines available");
+            warn!(%error, "Local is unavailable; keeping configured machines available");
             None
         }
         Err(error) => {
@@ -122,8 +121,10 @@ fn run_launched_client(
         .map(|mut stream| {
             do_handshake(
                 &mut stream,
-                geometry,
-                shell_surface_size,
+                handshake::HandshakeGeometry {
+                    host: geometry,
+                    surface_size: shell_surface_size,
+                },
                 loop_config.settings.mouse_capture_active(),
                 true,
                 None,
@@ -135,13 +136,13 @@ fn run_launched_client(
     let initial = match initial {
         Ok(initial) => initial,
         Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
-            warn!(%error, "Local handshake failed; keeping saved machines available");
+            warn!(%error, "Local handshake failed; keeping configured machines available");
             None
         }
         Err(error) => return Err(ClientRunError::Launch(error)),
     };
 
-    // A shell with saved machines can show connection notices without a server snapshot.
+    // A shell with configured machines can show connection notices without a server snapshot.
     let (mut terminal_guard, output_writer) =
         setup_terminal(mouse_capture, loop_config.settings.modify_other_keys_mode()).map_err(
             |err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")),
@@ -422,26 +423,6 @@ enum ClientLoopAction {
     Exit,
 }
 
-fn spawn_workspace_label_lookup(
-    (id, cwd): (u64, String),
-    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
-) {
-    tokio::spawn(async move {
-        let label = tokio::task::spawn_blocking(move || {
-            crate::workspace_label::derive_label_from_cwd(std::path::Path::new(&cwd))
-        })
-        .await;
-        let Ok(label) = label else {
-            tracing::debug!("workspace label lookup stopped; keeping the path-based suggestion");
-            return;
-        };
-        event_tx
-            .send(ClientLoopEvent::WorkspaceLabelLookupFinished { id, label })
-            .await
-            .ok();
-    });
-}
-
 struct ClientLoop {
     state: ClientState,
     local_failure_policy: endpoint::LocalFailurePolicy,
@@ -497,17 +478,19 @@ impl ClientLoop {
             self.supervisors.spawn_due(
                 loop_now,
                 endpoint::EndpointConnectOptions {
-                    geometry: shepr_core::geometry::HostGeometry::new(
-                        self.state.reported_geometry.cols(),
-                        self.state.reported_geometry.rows(),
-                        cell.width(),
-                        cell.height(),
-                        cell.exact,
-                    ),
-                    surface_size: self.state.shell.surface_size(
-                        self.state.reported_geometry.cols(),
-                        self.state.reported_geometry.rows(),
-                    ),
+                    geometry: handshake::HandshakeGeometry {
+                        host: shepr_core::geometry::HostGeometry::new(
+                            self.state.reported_geometry.cols(),
+                            self.state.reported_geometry.rows(),
+                            cell.width(),
+                            cell.height(),
+                            cell.exact,
+                        ),
+                        surface_size: self.state.shell.surface_size(
+                            self.state.reported_geometry.cols(),
+                            self.state.reported_geometry.rows(),
+                        ),
+                    },
                     mouse_capture: self.state.host_modes.mouse_shell_preference(),
                 },
                 &self.supervisor_tx,
@@ -560,9 +543,6 @@ impl ClientLoop {
             ClientLoopEvent::EndpointSupervisor(event) => {
                 self.handle_endpoint_supervisor(event, now)
             }
-            ClientLoopEvent::WorkspaceLabelLookupFinished { id, label } => {
-                self.handle_workspace_label_lookup_finished(id, label)
-            }
             ClientLoopEvent::ActivateEndpoint {
                 endpoint_id,
                 target,
@@ -582,25 +562,6 @@ impl ClientLoop {
         }
     }
 
-    fn handle_workspace_label_lookup_finished(
-        &mut self,
-        id: u64,
-        label: String,
-    ) -> Result<ClientLoopAction, ClientError> {
-        let cols = self.state.reported_geometry.cols();
-        let rows = self.state.reported_geometry.rows();
-        let shell = &mut self.state.shell;
-        let frame = shell
-            .apply_workspace_label_lookup(id, label)
-            .then(|| shell.compose(cols, rows))
-            .flatten();
-        if let Some(frame) = frame {
-            self.state
-                .present_chrome(frame, self.pending_activation.is_some());
-        }
-        Ok(ClientLoopAction::NextEvent)
-    }
-
     fn handle_stdin_input(
         &mut self,
         inputs: Vec<ParsedHostInput>,
@@ -612,7 +573,6 @@ impl ClientLoop {
             pending_activation,
             endpoint_commands,
             scheduled_activation,
-            event_tx,
             reported_cell_size,
             will_query_host_cell_size,
             ..
@@ -635,7 +595,6 @@ impl ClientLoop {
         let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
         let shell = &mut state.shell;
         let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
-        let label_lookup = shell.take_workspace_label_lookup();
         let frame = outcome
             .repaint
             .then(|| {
@@ -656,9 +615,6 @@ impl ClientLoop {
             now,
         )? {
             return Ok(ClientLoopAction::Exit);
-        }
-        if let Some(request) = label_lookup {
-            spawn_workspace_label_lookup(request, event_tx.clone());
         }
         Ok(ClientLoopAction::NextEvent)
     }
@@ -1277,24 +1233,6 @@ impl ClientLoop {
                         force: false,
                     });
                 }
-            }
-            ServerMessage::Welcome { .. } => {
-                // A protocol violation by this one endpoint. Fail its connection so
-                // the supervisor disconnects, reports and reconnects it; the client
-                // and its other endpoints keep running.
-                warn!(
-                    endpoint = %endpoint_id.storage_key(),
-                    generation,
-                    "endpoint sent a Welcome after its handshake; failing its connection"
-                );
-                write_stream.fail(
-                    endpoint_id,
-                    &io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "protocol error: Welcome received after the handshake",
-                    ),
-                );
-                return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::SurfaceUpdate(_) => {
                 tracing::error!(

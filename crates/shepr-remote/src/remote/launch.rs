@@ -4,34 +4,13 @@ use std::io;
 
 pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
-/// Checks, without prompting, that the configured machine can be served: SSH
-/// works, a matching shepr and sibling `shepr-server` pair is found (discovery
-/// checks both builds), and whether a server already running there is this build.
-/// A stopped server is [`SavedSshCheck::Ready`], since the bridge starts one on
-/// attach. A running server of another build is not an error when it can be
-/// restarted: it comes back as [`SavedSshCheck::DifferentBuild`] with the
-/// discovered executable and the observed boot identity. No SSH command starts
-/// once `deadline` has passed, and each is cut short at it.
-pub fn check_saved_ssh(
-    paths: &shepr_config::AppPaths,
-    target: &SshTarget,
-    settings: super::SavedSshSettings,
-    deadline: std::time::Instant,
-) -> io::Result<SavedSshCheck> {
-    let mut ssh =
-        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
-    ssh.set_attempt_deadline(Some(deadline));
-    let remote = locate_remote_shepr(&ssh)?;
-    let status = remote_server_status(&ssh, &remote)?;
-    judge_remote_server(ssh.target(), &remote, &status)
-}
-
 /// Stops the remote server instance that reported `server.boot_id`, and no
 /// other, by running the discovered remote `shepr server stop --expect-boot` over
 /// a noninteractive connection. The remote command waits for the server's
 /// sockets to close and exits with
 /// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answered
-/// (nothing was stopped).
+/// (nothing was stopped), or `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when
+/// no server was left to stop.
 pub fn stop_remote_server(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
@@ -51,7 +30,13 @@ pub fn stop_remote_server(
     if output.status.success() {
         return Ok(RemoteStop::Stopped);
     }
-    if output.status.code() == Some(shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE) {
+    if matches!(
+        output.status.code(),
+        Some(
+            shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
+                | shepr_api::server_stop::NO_SERVER_EXIT_CODE
+        )
+    ) {
         return Ok(RemoteStop::BootChanged);
     }
     Err(command_failed("remote server stop failed", &output))
@@ -62,8 +47,8 @@ pub fn stop_remote_server(
 pub enum RemoteStop {
     /// The observed instance was stopped and its sockets are gone.
     Stopped,
-    /// The server that answered is not the instance that was observed, so
-    /// nothing was stopped.
+    /// The server that answered is not the instance that was observed, or none
+    /// answered any more, so nothing was left to stop.
     BootChanged,
 }
 

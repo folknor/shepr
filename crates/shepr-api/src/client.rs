@@ -56,7 +56,7 @@ impl ApiClient {
         request: &Request,
         timeout: Duration,
     ) -> Result<serde_json::Value, ApiClientError> {
-        let mut stream = self.connect()?;
+        let mut stream = self.connect(timeout)?;
         stream.set_send_timeout(Some(timeout))?;
         write_request(&mut stream, request).map_err(normalize_socket_timeout)?;
 
@@ -73,7 +73,11 @@ impl ApiClient {
         request: &Request,
         deadline: Instant,
     ) -> Result<serde_json::Value, ApiClientDeadlineError> {
-        let mut stream = self.connect().map_err(ApiClientDeadlineError::Connect)?;
+        // clock-io-ok: the connect is bounded by what is left of the deadline.
+        let connect_timeout = deadline.saturating_duration_since(Instant::now());
+        let mut stream = self
+            .connect(connect_timeout)
+            .map_err(ApiClientDeadlineError::Connect)?;
         // clock-io-ok: the socket connect above may have used the budget.
         let send_timeout = deadline.saturating_duration_since(Instant::now());
         if send_timeout.is_zero() {
@@ -126,10 +130,11 @@ impl ApiClient {
         }
     }
 
-    fn connect(&self) -> io::Result<LocalStream> {
-        // Every request (status, stop, detect) checks who serves the socket
-        // before the first byte is written to it.
-        shepr_platform::ipc::connect_trusted_local_stream(&self.socket_path)
+    /// Every request (status, stop, detect) checks who serves the socket
+    /// before the first byte is written to it, and waits at most `timeout` for
+    /// a listener whose backlog is full (`ErrorKind::TimedOut`).
+    fn connect(&self, timeout: Duration) -> io::Result<LocalStream> {
+        shepr_platform::ipc::connect_trusted_local_stream_within(&self.socket_path, timeout)
     }
 }
 

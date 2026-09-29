@@ -8,6 +8,14 @@ use std::time::Duration;
 /// format, not a tunable.
 pub(super) const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 
+/// How long a connect to a local server socket waits for a listener whose
+/// backlog is full before it gives up. A healthy server accepts at once, so
+/// this only bounds a wedged one.
+pub(super) const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Pause between connect attempts while a listener's backlog is full.
+pub(super) const LOCAL_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Attempts before random-name staging fails in socket and SSH config paths.
 /// The retry cap makes collision handling finite while keeping exhaustion unlikely.
 pub(super) const RANDOM_NAME_ATTEMPTS: u32 = 16;

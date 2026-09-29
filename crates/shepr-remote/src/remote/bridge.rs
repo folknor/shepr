@@ -1,6 +1,6 @@
 use super::*;
 
-use super::process::{PipeCapture, PipeEcho, kill_and_reap, kill_child};
+use super::process::{PipeCapture, kill_and_reap, kill_child};
 use interprocess::TryClone as _;
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
@@ -28,8 +28,8 @@ pub(crate) struct SshStdioBridge {
     should_stop: Arc<AtomicBool>,
     // The accept thread clears a previous report before each accepted stream.
     // A generation slot would also need the caller to pass the stream's
-    // generation into reported_failure; the current SavedSshStream and API
-    // bridge handles carry no such identity.
+    // generation into reported_failure; the current SavedSshStream handle
+    // carries no such identity.
     failure_rx: Arc<std::sync::Mutex<mpsc::Receiver<io::Error>>>,
     thread: Option<JoinHandle<()>>,
     // Dropped after `Drop::drop` has removed the socket; see `TeardownRegistry`.
@@ -454,7 +454,7 @@ pub(super) fn bridge_connection(
         child.child()?.stderr.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stderr missing")
         })?;
-    let stderr_reader = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::None);
+    let stderr_reader = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT);
     let stream_to_child = stream.try_clone()?;
     shepr_platform::ipc::set_local_stream_polling(&mut stream, true)?;
     let mut child_to_stream = stream;

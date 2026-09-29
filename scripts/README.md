@@ -28,4 +28,6 @@ Three standings:
 | `check_seal_paths.py` | gate | the `seal-paths` check: every `clippy.toml` seal is a path with a reason, the root `clippy.toml` is the only one, and both `disallowed_*` lints are denied (clippy itself refuses a path that no longer resolves) |
 | `notes_drop.py` | tool | removes whole findings entries by ID from a notes document |
 | `notes_drop_bullet.py` | tool | removes single top-level bullets from a notes document by the start of their first line; each prefix must match exactly one bullet |
+| `upstream_watch.py` | tool | reports what upstream herdr changed in the integration assets, detection manifests and related sources since the recorded baseline, mapped to our files; `--advance` moves the baseline, `--fork-point` checks it |
+| `upstream_baseline.txt` | tool | data for `upstream_watch.py`: the upstream herdr commit shepr has caught up to |
 | `fix_unwraps.py` | tool | one-off: replaced `.unwrap()` in test code for clippy's `unwrap_used` |

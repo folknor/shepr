@@ -2252,7 +2252,7 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
 
 #[tokio::test]
 async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
-    use shepr_api::schema::{Method, PaneSelectionPoint, PaneSelectionReadParams};
+    use shepr_api::schema::{Method, PaneSelectionReadParams, PaneTextPoint};
 
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("default-focus-cache");
@@ -2323,11 +2323,11 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
                 id: "read-selection".into(),
                 method: Method::PaneSelectionRead(PaneSelectionReadParams {
                     pane_id: first_pane_id.to_string(),
-                    anchor: PaneSelectionPoint {
+                    anchor: PaneTextPoint {
                         row: shepr_vt::AbsRow(0),
                         col: 0,
                     },
-                    cursor: PaneSelectionPoint {
+                    cursor: PaneTextPoint {
                         row: shepr_vt::AbsRow(0),
                         col: 0,
                     },

@@ -21,7 +21,6 @@ command -v python3 >/dev/null 2>&1 || exit 0
 SHEPR_HOOK_INPUT_FILE="$hook_input_file" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
-import random
 import socket
 import time
 
@@ -68,15 +67,16 @@ if not isinstance(session_id, str) or not session_id:
 if not isinstance(session_id, str) or not session_id:
     raise SystemExit(0)
 
+report_seq = time.time_ns()
 request = {
-    "id": f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}",
+    "id": f"{source}:{report_seq}",
     "method": "pane.report_agent_session",
     "params": {
         "pane_id": pane_id,
         "source": source,
         "agent": "copilot",
         "agent_session_id": session_id,
-        "seq": time.time_ns(),
+        "seq": report_seq,
     },
 }
 

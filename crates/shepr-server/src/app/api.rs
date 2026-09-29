@@ -1,3 +1,4 @@
+mod checkout_root;
 mod cwd;
 mod detect;
 mod env;
@@ -70,6 +71,7 @@ impl App {
             Method::WorkspaceCreate(params) => self.handle_workspace_create(params),
             Method::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
             Method::WorkspaceRename(params) => self.handle_workspace_rename(params),
+            Method::WorkspaceCheckoutRoot(params) => self.handle_workspace_checkout_root(&params),
             Method::WorkspaceMove(params) => self.handle_workspace_move(&params),
             Method::WorkspaceClose(target) => self.handle_workspace_close(&target),
             Method::TabCreate(params) => self.handle_tab_create(params),

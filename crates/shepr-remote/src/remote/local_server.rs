@@ -34,7 +34,7 @@ use tracing::info;
 use shepr_api::schema::SiblingServerJson;
 
 use crate::limits::{
-    LAUNCH_LOCK_WAIT_GRACE, LEASE_RELEASE_WAIT, SIBLING_VERSION_OUTPUT_BYTES,
+    BOOT_LOG_MAX_BYTES, LAUNCH_LOCK_WAIT_GRACE, SIBLING_VERSION_OUTPUT_BYTES,
     SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT,
 };
 
@@ -89,10 +89,6 @@ pub fn ensure_running(
         Probed::NoServer => {}
     }
 
-    // A server that was just stopped closes its sockets before it releases its
-    // data directory lease, and one started into the held lease exits at once.
-    wait_for_lease_release(paths, &mut real_now, &mut std::thread::sleep);
-
     info!(server = %server.display(), "no server running, starting the server daemon");
     let status = launch_daemon(paths, &server, timeout)?;
     accept_running(paths, &status, build_check)
@@ -108,43 +104,6 @@ pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Optio
         Probed::Running(status) => Ok(Some(status)),
         Probed::NoServer => Ok(None),
         Probed::Unresponsive => Err(unresponsive_error(paths)),
-    }
-}
-
-/// The lease file inside the data directory. This is `shepr-mux`'s
-/// `persist::lock::LOCK_FILE_NAME`, which the client does not link; the two must
-/// stay equal.
-const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
-
-/// Waits, bounded by [`LEASE_RELEASE_WAIT`], until the data directory lease is
-/// free, by taking and dropping its lock. A lease that never frees is not an
-/// error here: the daemon reports its own already-running refusal. A data
-/// directory with no lease file has never been served, so there is nothing to
-/// wait for (and nothing is created).
-fn wait_for_lease_release(
-    paths: &shepr_config::AppPaths,
-    now: &mut impl FnMut() -> Instant,
-    sleep: &mut impl FnMut(Duration),
-) {
-    let lease_path = paths.data_dir().join(DATA_DIR_LEASE_FILE_NAME);
-    if !matches!(lease_path.try_exists(), Ok(true)) {
-        return;
-    }
-    let deadline = now() + LEASE_RELEASE_WAIT;
-    loop {
-        match shepr_platform::ipc::acquire_flock_lock(&lease_path, false) {
-            Ok(_free) => return,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => {
-                tracing::warn!(path = %lease_path.display(), %error, "cannot check the data directory lease");
-                return;
-            }
-        }
-        if now() >= deadline {
-            tracing::warn!(path = %lease_path.display(), "the data directory lease is still held");
-            return;
-        }
-        sleep(SOCKET_POLL_INTERVAL);
     }
 }
 
@@ -576,6 +535,17 @@ fn launch_with(
             ),
         )
     })?;
+    // The launcher's own handle on the log, to bound its size while the daemon
+    // boots and to empty it once the daemon is up.
+    let boot_log_handle = boot_log.try_clone().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot open the server boot log {}: {error}",
+                files.boot_log.display()
+            ),
+        )
+    })?;
     let child = spawn(Stdio::from(boot_log)).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -613,6 +583,11 @@ fn launch_with(
         };
         if let Probed::Running(status) = probed {
             if shepr_protocol::is_this_build(&status.build_id) {
+                // Nothing in the boot log matters once the daemon is up, and
+                // the daemon keeps the descriptor for its whole life.
+                if let Err(error) = boot_log_handle.set_len(0) {
+                    tracing::debug!(%error, "could not empty the server boot log");
+                }
                 daemon.disarm();
                 return Ok(status);
             }
@@ -624,6 +599,12 @@ fn launch_with(
         }
         if let Some(status) = failed {
             return Err(boot_failure(files, status));
+        }
+        if boot_log_handle
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > BOOT_LOG_MAX_BYTES)
+        {
+            return Err(boot_log_overflow(files));
         }
         if now() >= deadline {
             return Err(boot_timeout(files, timeout, exited.is_some()));
@@ -638,6 +619,16 @@ fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> io::Error {
     let mut message = format!(
         "{SERVER_BINARY_NAME} {} ({status})",
         class.describe_boot_end()
+    );
+    append_boot_log(&mut message, files);
+    io::Error::other(message)
+}
+
+/// The daemon printed more than [`BOOT_LOG_MAX_BYTES`] while booting; the
+/// caller's guard stops it.
+fn boot_log_overflow(files: &LaunchFiles<'_>) -> io::Error {
+    let mut message = format!(
+        "{SERVER_BINARY_NAME} wrote more than {BOOT_LOG_MAX_BYTES} bytes to its boot log while starting and was stopped"
     );
     append_boot_log(&mut message, files);
     io::Error::other(message)

@@ -135,7 +135,6 @@ impl App {
             cwd: tab
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            command: terminal.and_then(|terminal| terminal.launch_argv.clone()),
         })
     }
 }

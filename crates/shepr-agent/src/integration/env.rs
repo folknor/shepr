@@ -87,9 +87,10 @@ pub(crate) enum DirectoryKey {
     Grok,
 }
 
-/// Agent-owned config locations resolved at the integration command boundary.
-/// Install and status code receives this value and never consults the process
-/// environment while it is choosing files to read or write.
+/// Agent-owned config locations, resolved once by the caller that starts an
+/// install (the server, at launch). Install and status code receives this
+/// value and never consults the process environment while it is choosing
+/// files to read or write.
 #[derive(Clone, Debug)]
 pub struct AgentIntegrationPaths {
     directories: HashMap<DirectoryKey, CapturedDirectory>,

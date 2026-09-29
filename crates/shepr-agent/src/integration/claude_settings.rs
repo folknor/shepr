@@ -13,9 +13,7 @@ use crate::agent::resume::AgentSessionStartSource;
 use crate::agent::{IntegrationHookAction, IntegrationHookEvent};
 
 use super::command::hook_command;
-use super::config_edit::{
-    ensure_command_hook, ensure_hooks_object, hooks_object_if_present, is_matching_command_hook,
-};
+use super::config_edit::{ensure_command_hook, ensure_hooks_object, is_matching_command_hook};
 
 // This is Claude's event-source subset; the shared source enum covers the
 // broader vocabulary reported by the other integrations.
@@ -59,7 +57,7 @@ pub(crate) fn install(
         "claude settings hooks",
     )?;
     let canonical = canonical_hook_value(hook_path, &matcher, action, timeout.as_secs());
-    apply_value_removals(hooks, hook_path, Some(&canonical), event, action)?;
+    apply_value_removals(hooks, hook_path, &canonical, event, action)?;
     ensure_command_hook(
         hooks,
         event,
@@ -76,48 +74,6 @@ pub(crate) fn install(
         content,
         settings_path,
         hook_path,
-        EditKind::Install,
-        &desired,
-        &matcher,
-        event,
-        action,
-        timeout.as_secs(),
-    )
-}
-
-pub(crate) fn uninstall(
-    content: &str,
-    settings_path: &Path,
-    hook_path: &Path,
-    events: &[IntegrationHookEvent],
-    timeout: Duration,
-) -> io::Result<String> {
-    let hook = claude_hook_event(events)?;
-    let event = hook.event;
-    let action = hook.action.map(IntegrationHookAction::as_str);
-    let original = parse_value(content, settings_path)?;
-    let matcher = claude_session_start_matcher();
-    let mut desired = original.clone();
-    let mut removed = false;
-
-    if let Some(hooks) = hooks_object_if_present(
-        &mut desired,
-        settings_path,
-        "claude settings",
-        "claude settings hooks",
-    )? {
-        removed = apply_value_removals(hooks, hook_path, None, event, action)?;
-    }
-
-    if !removed {
-        return Ok(content.to_string());
-    }
-
-    rewrite(
-        content,
-        settings_path,
-        hook_path,
-        EditKind::Uninstall,
         &desired,
         &matcher,
         event,
@@ -139,64 +95,52 @@ fn claude_hook_event(events: &[IntegrationHookEvent]) -> io::Result<&Integration
 fn apply_value_removals(
     hooks: &mut Map<String, Value>,
     hook_path: &Path,
-    canonical: Option<&Value>,
+    canonical: &Value,
     event: &str,
     action: Option<&str>,
-) -> io::Result<bool> {
+) -> io::Result<()> {
     let command = hook_command(hook_path, action);
     remove_value_event_commands(hooks, event, &[command], canonical)
 }
 
+/// Strips every entry carrying one of `commands` from `event`, except the
+/// first entry that is already exactly `canonical`.
 fn remove_value_event_commands(
     hooks: &mut Map<String, Value>,
     event: &str,
     commands: &[String],
-    canonical: Option<&Value>,
-) -> io::Result<bool> {
+    canonical: &Value,
+) -> io::Result<()> {
     let Some(entries_value) = hooks.get_mut(event) else {
-        return Ok(false);
+        return Ok(());
     };
     let entries = entries_value
         .as_array_mut()
         .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-    let mut removed = false;
     let mut canonical_preserved = false;
 
     entries.retain_mut(|entry| {
-        if !canonical_preserved && canonical.is_some_and(|canonical| entry == canonical) {
+        if !canonical_preserved && entry == canonical {
             canonical_preserved = true;
             return true;
         }
         let Some(command_entries) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
             return true;
         };
-        let before = command_entries.len();
         command_entries.retain(|entry| {
             !commands
                 .iter()
                 .any(|command| is_matching_command_hook(entry, command))
         });
-        removed |= command_entries.len() != before;
         !command_entries.is_empty()
     });
-
-    if entries.is_empty() && canonical.is_none() {
-        hooks.remove(event);
-    }
-    Ok(removed)
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EditKind {
-    Install,
-    Uninstall,
+    Ok(())
 }
 
 fn rewrite(
     content: &str,
     settings_path: &Path,
     hook_path: &Path,
-    kind: EditKind,
     desired: &Value,
     matcher: &str,
     event: &str,
@@ -230,9 +174,7 @@ fn rewrite(
                 settings_path.display()
             ))
         })?,
-        None if kind == EditKind::Install
-            && direct_children_are_compact(&root_object.children()) =>
-        {
+        None if direct_children_are_compact(&root_object.children()) => {
             let updated = append_hooks_property_compact(
                 content,
                 hook_path,
@@ -244,24 +186,17 @@ fn rewrite(
             )?;
             return verify_updated(updated, settings_path, desired);
         }
-        None if kind == EditKind::Install => root_object
+        None => root_object
             .append("hooks", CstInputValue::Object(Vec::new()))
             .object_value()
             .ok_or_else(|| io::Error::other("failed to create claude settings hooks object"))?,
-        None => return Ok(content.to_string()),
     };
 
     let canonical = canonical_hook_value(hook_path, matcher, action, timeout_seconds);
     let command = hook_command(hook_path, action);
-    let canonical_preserved = remove_event_commands(
-        &hooks,
-        event,
-        &[command],
-        kind == EditKind::Install,
-        &canonical,
-    )?;
+    let canonical_preserved = remove_event_commands(&hooks, event, &[command], &canonical)?;
 
-    if kind == EditKind::Install && !canonical_preserved {
+    if !canonical_preserved {
         match hooks.get(event) {
             Some(property) => {
                 let session_start = property.array_value().ok_or_else(|| {
@@ -322,7 +257,6 @@ fn remove_event_commands(
     hooks: &CstObject,
     event: &str,
     commands: &[String],
-    installing: bool,
     canonical: &Value,
 ) -> io::Result<bool> {
     let Some(event_property) = hooks.get(event) else {
@@ -334,8 +268,7 @@ fn remove_event_commands(
     let mut canonical_preserved = false;
 
     for entry in entries.elements() {
-        if installing && !canonical_preserved && entry.to_serde_value().as_ref() == Some(canonical)
-        {
+        if !canonical_preserved && entry.to_serde_value().as_ref() == Some(canonical) {
             canonical_preserved = true;
             continue;
         }
@@ -364,10 +297,6 @@ fn remove_event_commands(
         if command_entries.elements().is_empty() {
             entry.remove();
         }
-    }
-
-    if entries.elements().is_empty() && !installing {
-        event_property.remove();
     }
 
     Ok(canonical_preserved)
@@ -664,21 +593,6 @@ mod tests {
         )
     }
 
-    fn uninstall_for_test(
-        content: &str,
-        settings_path: &Path,
-        hook_path: &Path,
-    ) -> io::Result<String> {
-        let target = crate::agent::IntegrationTarget::Claude;
-        super::uninstall(
-            content,
-            settings_path,
-            hook_path,
-            super::super::registry::integration_hook_events(target),
-            super::super::registry::integration_hook_timeout(target)?,
-        )
-    }
-
     fn paths() -> (&'static Path, &'static Path) {
         (
             Path::new("/home/test/.claude/settings.json"),
@@ -858,57 +772,6 @@ mod tests {
             install_for_test(&installed, settings_path, hook_path).expect("test precondition"),
             installed
         );
-
-        let removed =
-            uninstall_for_test(&installed, settings_path, hook_path).expect("test precondition");
-        assert!(removed.contains(user_hook));
-        assert!(!removed.contains(&command));
-        let settings: Value = serde_json::from_str(&removed).expect("test precondition");
-        assert_eq!(
-            settings["hooks"]["SessionStart"]
-                .as_array()
-                .expect("test precondition")
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn uninstall_preserves_unrelated_hook_text() {
-        let (settings_path, hook_path) = paths();
-        let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
-            .expect("test precondition");
-        let input = format!(
-            concat!(
-                "{{\n",
-                "    \"before\" : \"\\u0061\",\n",
-                "    \"hooks\" : {{\n",
-                "        \"SessionStart\" : [{{\n",
-                "            \"matcher\" : \"*\",\n",
-                "            \"hooks\" : [\n",
-                "                {{\"type\":\"command\",\"command\":{command},\"timeout\":10}},\n",
-                "                {{  \"type\" : \"command\", \"command\" : \"echo keep\"  }}\n",
-                "            ]\n",
-                "        }}]\n",
-                "    }},\n",
-                "    \"after\" : 1e+02\n",
-                "}}\n\n",
-            ),
-            command = command,
-        );
-
-        let updated =
-            uninstall_for_test(&input, settings_path, hook_path).expect("test precondition");
-
-        assert_ne!(updated, input);
-        assert!(!updated.contains(&command));
-        assert!(
-            updated.contains(
-                "                {  \"type\" : \"command\", \"command\" : \"echo keep\"  }"
-            )
-        );
-        assert!(updated.starts_with("{\n    \"before\" : \"\\u0061\","));
-        assert!(updated.ends_with("    \"after\" : 1e+02\n}\n\n"));
     }
 
     #[test]

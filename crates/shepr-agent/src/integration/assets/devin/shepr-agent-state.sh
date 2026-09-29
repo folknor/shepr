@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import socket
 import subprocess
 import time
@@ -144,8 +143,8 @@ hook_input = load_hook_input(os.environ.get("SHEPR_HOOK_INPUT_FILE"))
 if not pane_id or not socket_path:
     raise SystemExit(0)
 
-request_id = f"{SOURCE}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 report_seq = time.time_ns()
+request_id = f"{SOURCE}:{report_seq}"
 
 session_id = resolve_session_id(project_dir, hook_input)
 if not session_id:

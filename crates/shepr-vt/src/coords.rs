@@ -70,16 +70,6 @@ impl AbsRow {
     }
 }
 
-impl ScreenRow {
-    /// Convert a retained-buffer index to its stable row identity.
-    pub fn absolute(self, origin: AbsRow) -> AbsRow {
-        origin
-            .0
-            .saturating_add(u64::try_from(self.0).unwrap_or(u64::MAX))
-            .into()
-    }
-}
-
 impl From<u64> for AbsRow {
     fn from(row: u64) -> Self {
         Self(row)

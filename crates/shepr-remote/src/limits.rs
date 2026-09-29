@@ -52,13 +52,11 @@ pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// overloaded local server check.
 pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long a launch waits, under the launch lock, for the data directory lease
-/// of a server that has closed its sockets but is still saving its layout. A
-/// stop returns once the sockets are gone, and the lease is released only after
-/// the shutdown drain, so a server started at once would find the lease held
-/// and exit. A lease still held after this is left to the daemon's own
-/// already-running handling.
-pub(crate) const LEASE_RELEASE_WAIT: Duration = Duration::from_secs(10);
+/// The most a launched server's boot log may hold. A launch that finds more
+/// (a server printing without end while it boots) fails and kills the server,
+/// and one that boots successfully empties the log. The cap keeps a runaway
+/// server from filling the runtime directory, which is usually a small tmpfs.
+pub(crate) const BOOT_LOG_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Time allowed for the SSH command that stops a remote server. The remote
 /// `server stop` itself waits up to its own stop deadline for the server to
@@ -153,10 +151,6 @@ pub(crate) const BRIDGE_WRITE_CHUNK_BYTES: usize = 4 * 1024;
 /// Initial capacity reserved for remote CLI arguments. This covers the common
 /// command shape; `Vec` still grows if a command needs more.
 pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
-
-/// Buffer size for filtering remote SSH stderr before displaying it locally.
-/// A fixed chunk keeps each read bounded while passing prompts through promptly.
-pub(crate) const REMOTE_STDERR_FILTER_BUFFER_BYTES: usize = 4 * 1024;
 
 /// Noninteractive SSH command budget, shared with the core SSH request budget
 /// so retries and discovery use the same time limit.

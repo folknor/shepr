@@ -550,16 +550,11 @@ pub(crate) fn handle_client_handshake(
 
     let ClientMessage::EndpointHello(hello) = hello else {
         debug!(?client_id, "first message was not a handshake, closing");
-        let welcome = ServerMessage::Welcome {
-            error: Some(shepr_protocol::HandshakeRefusal::ExpectedHello),
-        };
-        if let Err(err) = shepr_protocol::write_message(&mut stream, &welcome) {
-            debug!(
-                ?client_id,
-                error = %err,
-                "client left before its handshake refusal was written"
-            );
-        }
+        write_endpoint_rejection(
+            &mut stream,
+            client_id,
+            shepr_protocol::HandshakeRefusal::ExpectedHello,
+        );
         return Ok(());
     };
     let cell = shepr_protocol::ProtocolCellSize::from_wire(

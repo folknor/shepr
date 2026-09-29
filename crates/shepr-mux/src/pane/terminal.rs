@@ -29,18 +29,18 @@ use super::osc::{
     parse_reported_cwd, restore_host_terminal_theme_if_needed,
 };
 
-/// A cell position in terminal text. `R` distinguishes the retained-buffer
-/// index from a stable absolute row identity.
+/// A cell position in terminal text, on a stable absolute row: output and
+/// history eviction never make it name another line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TerminalTextPoint<R = ScreenRow> {
-    pub row: R,
+pub struct TerminalTextPoint {
+    pub row: AbsRow,
     pub col: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TerminalTextMatch<R = ScreenRow> {
-    pub start: TerminalTextPoint<R>,
-    pub end: TerminalTextPoint<R>,
+pub struct TerminalTextMatch {
+    pub start: TerminalTextPoint,
+    pub end: TerminalTextPoint,
     pub source_fingerprint: u64,
     pub scan_cols: u16,
     pub scan_screen: shepr_vt::ActiveScreen,
@@ -53,14 +53,14 @@ pub enum TerminalSearchDirection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TerminalSearchWindow<R = ScreenRow> {
-    pub matches: Vec<TerminalTextMatch<R>>,
+pub struct TerminalSearchWindow {
+    pub matches: Vec<TerminalTextMatch>,
     pub current: Option<usize>,
     pub current_global: Option<usize>,
     pub total: usize,
 }
 
-impl<R> TerminalSearchWindow<R> {
+impl TerminalSearchWindow {
     fn empty() -> Self {
         Self {
             matches: Vec::new(),
@@ -236,83 +236,9 @@ impl PaneTerminal {
         shepr_vt::terminal_core_is_poisoned(&self.core)
     }
 
-    /// Copy-mode search with screen rows. Screen rows shift once history at
-    /// its limit evicts lines; [`PaneTerminal::search_text_window_absolute`]
-    /// takes and returns absolute rows, which do not.
-    pub(crate) fn search_text_window(
-        &self,
-        query: &str,
-        case_sensitive: bool,
-        direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint,
-        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
-        limit: usize,
-    ) -> TerminalSearchWindow {
-        let Some(origin) = self.history_origin() else {
-            return TerminalSearchWindow::empty();
-        };
-        let window = self.search_text_window_absolute(
-            query,
-            case_sensitive,
-            direction,
-            absolute_point(cursor, origin),
-            previous
-                .map(|(start, end)| (absolute_point(start, origin), absolute_point(end, origin))),
-            limit,
-        );
-        TerminalSearchWindow {
-            matches: window
-                .matches
-                .into_iter()
-                .map(|text_match| TerminalTextMatch {
-                    start: screen_point(text_match.start, origin),
-                    end: screen_point(text_match.end, origin),
-                    source_fingerprint: text_match.source_fingerprint,
-                    scan_cols: text_match.scan_cols,
-                    scan_screen: text_match.scan_screen,
-                })
-                .collect(),
-            current: window.current,
-            current_global: window.current_global,
-            total: window.total,
-        }
-    }
-
-    /// Word motion with screen rows; see
-    /// [`PaneTerminal::word_motion_target_absolute`].
-    pub(crate) fn word_motion_target(
-        &self,
-        row: ScreenRow,
-        col: u16,
-        motion: TerminalWordMotion,
-    ) -> Option<TerminalTextPoint> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        let origin = core.terminal.history_origin();
-        let target = word_motion_in(
-            &core.terminal,
-            absolute_point(TerminalTextPoint { row, col }, origin),
-            motion,
-        )?;
-        Some(screen_point(target, origin))
-    }
-
     pub(crate) fn dimensions(&self) -> Option<(u16, u16)> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         Some((core.terminal.cols(), core.terminal.rows()))
-    }
-
-    /// Paragraph motion with screen rows; see
-    /// [`PaneTerminal::paragraph_motion_target_absolute`].
-    pub(crate) fn paragraph_motion_target(
-        &self,
-        row: ScreenRow,
-        direction: i8,
-    ) -> Option<TerminalTextPoint> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        let origin = core.terminal.history_origin();
-        let absolute = row.absolute(origin);
-        let target = paragraph_motion_in(&core.terminal, absolute, direction)?;
-        Some(screen_point(target, origin))
     }
 
     pub(crate) fn keyboard_protocol(
@@ -322,40 +248,25 @@ impl PaneTerminal {
         self.negotiated_keyboard_protocol().unwrap_or(fallback)
     }
 
-    /// Where a copy-mode word motion from `row`/`col` lands, with absolute
-    /// rows. `None` when the row is no longer retained.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the absolute-row reader is retained for focused tests"
-        )
-    )]
-    pub(crate) fn word_motion_target_absolute(
+    /// Where a copy-mode word motion from `row`/`col` lands. `None` when the
+    /// row is no longer retained.
+    pub(crate) fn word_motion_target(
         &self,
         row: AbsRow,
         col: u16,
         motion: TerminalWordMotion,
-    ) -> Option<TerminalTextPoint<AbsRow>> {
+    ) -> Option<TerminalTextPoint> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         word_motion_in(&core.terminal, TerminalTextPoint { row, col }, motion)
     }
 
-    /// The next blank row above (`direction < 0`) or below `row`, with
-    /// absolute rows, looking at most 1000 rows away. `None` when the row is
-    /// no longer retained.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the absolute-row reader is retained for focused tests"
-        )
-    )]
-    pub(crate) fn paragraph_motion_target_absolute(
+    /// The next blank row above (`direction < 0`) or below `row`, looking at
+    /// most 1000 rows away. `None` when the row is no longer retained.
+    pub(crate) fn paragraph_motion_target(
         &self,
         row: AbsRow,
         direction: i8,
-    ) -> Option<TerminalTextPoint<AbsRow>> {
+    ) -> Option<TerminalTextPoint> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         paragraph_motion_in(&core.terminal, row, direction)
     }

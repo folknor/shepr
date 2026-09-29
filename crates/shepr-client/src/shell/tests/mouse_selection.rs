@@ -97,7 +97,7 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method,
                 shepr_api::schema::Method::PaneSelectionRead(params)
-                    if params.cursor == shepr_api::schema::PaneSelectionPoint {
+                    if params.cursor == shepr_api::schema::PaneTextPoint {
                         row: shepr_vt::AbsRow(0),
                         col: 2,
                     })
@@ -499,11 +499,11 @@ fn double_click_drag_waits_for_latest_row_before_copying() {
         assert!(
             matches!(&copy[..], [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
-                if params.anchor == shepr_api::schema::PaneSelectionPoint {
+                if params.anchor == shepr_api::schema::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 6,
                 }
-                    && params.cursor == shepr_api::schema::PaneSelectionPoint {
+                    && params.cursor == shepr_api::schema::PaneTextPoint {
                         row: shepr_vt::AbsRow(2),
                         col: 9,
                     }))

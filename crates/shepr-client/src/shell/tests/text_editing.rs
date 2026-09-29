@@ -14,7 +14,7 @@ fn shell(field: usize) -> ClientShellState {
     state.set_pane_surface(frame);
     state.compose(106, 30).expect("initial shell");
     match field {
-        0 => state.open_new_workspace_overlay(),
+        0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
         1 => state.open_rename_workspace_overlay(),
         2 => state.open_new_tab_overlay(),
         3 => state.open_rename_tab_overlay(),
@@ -77,21 +77,90 @@ fn all_eight_fields_route_shared_text_editing() {
     }
 }
 
-#[test]
-fn local_new_workspace_label_lookup_is_deferred_and_stale_results_are_ignored() {
-    let mut state = shell(0);
-    let (stale_id, stale_cwd) = state
-        .take_workspace_label_lookup()
-        .expect("local workspace label lookup is queued");
-    assert_eq!(stale_cwd, "/repo");
+/// Opens the new-workspace prompt and returns the checkout-root request it
+/// sent, with the request id and its lookup id.
+fn open_new_workspace(state: &mut ClientShellState) -> (String, u64, String) {
+    let mut outcome = ClientShellInput::default();
+    state.open_new_workspace_overlay(&mut outcome);
+    let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
+        panic!("expected one endpoint request, got {:?}", outcome.actions);
+    };
+    let shepr_api::schema::Method::WorkspaceCheckoutRoot(params) = &request.method else {
+        panic!("expected a checkout root request, got {:?}", request.method);
+    };
+    let Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+        target:
+            ClientRenameTarget::NewWorkspace {
+                label_lookup_id: Some(lookup_id),
+                ..
+            },
+        ..
+    })) = state.overlay.as_ref()
+    else {
+        panic!("the overlay awaits a label lookup");
+    };
+    (request.id.clone(), *lookup_id, params.cwd.clone())
+}
 
-    state.open_new_workspace_overlay();
-    let (current_id, _) = state
-        .take_workspace_label_lookup()
-        .expect("reopened overlay queues its own lookup");
-    assert!(!state.apply_workspace_label_lookup(stale_id, "stale-label".into()));
-    assert!(state.apply_workspace_label_lookup(current_id, "checkout-label".into()));
+fn checkout_root_answer(root: Option<&str>) -> shepr_api::schema::ResponseResult {
+    shepr_api::schema::ResponseResult::WorkspaceCheckoutRoot {
+        root: root.map(str::to_owned),
+        home: None,
+    }
+}
+
+#[test]
+fn new_workspace_label_comes_from_the_endpoint_and_stale_answers_are_ignored() {
+    let mut state = shell(0);
+    let boot_id = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    let (stale_request, stale_id, cwd) = open_new_workspace(&mut state);
+    assert_eq!(cwd, "/repo");
+
+    let (current_request, current_id, _) = open_new_workspace(&mut state);
+    assert_ne!(stale_id, current_id);
+    state.handle_endpoint_result_at(
+        &boot_id,
+        &stale_request,
+        Ok(checkout_root_answer(Some("/elsewhere/stale-label"))),
+        state.now,
+    );
+    assert_eq!(editor(&mut state).as_str(), "repo");
+
+    let outcome = state.handle_endpoint_result_at(
+        &boot_id,
+        &current_request,
+        Ok(checkout_root_answer(Some("/srv/checkout-label"))),
+        state.now,
+    );
+    assert!(outcome.repaint);
     assert_eq!(editor(&mut state).as_str(), "checkout-label");
+}
+
+#[test]
+fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggestion() {
+    let mut state = shell(0);
+    let boot_id = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    let (request, _, _) = open_new_workspace(&mut state);
+    *editor(&mut state) = TextEditor::from("mine");
+    state.handle_endpoint_result_at(
+        &boot_id,
+        &request,
+        Ok(checkout_root_answer(Some("/srv/checkout-label"))),
+        state.now,
+    );
+    assert_eq!(editor(&mut state).as_str(), "mine");
+
+    let (request, _, _) = open_new_workspace(&mut state);
+    state.handle_endpoint_result_at(
+        &boot_id,
+        &request,
+        Err(ClientShellEndpointError {
+            code: Some("internal_error".into()),
+            message: "git failed".into(),
+        }),
+        state.now,
+    );
+    assert_eq!(editor(&mut state).as_str(), "repo");
 }
 
 #[test]

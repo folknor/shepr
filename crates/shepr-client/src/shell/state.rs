@@ -414,6 +414,9 @@ impl ClientShellOverlay {
 pub(super) enum PendingEndpointKind {
     Generic,
     SelectionCopy,
+    WorkspaceLabel {
+        lookup_id: u64,
+    },
     PaneScroll {
         pane_id: shepr_protocol::PublicPaneId,
         serial: u64,
@@ -455,7 +458,7 @@ pub(super) enum ClientEndpointNoticeKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ClientEndpointNoticeKey {
     /// The server boot the notice is about; `None` for a notice no server
-    /// boot raised (no snapshot yet, or a saved machine's diagnostic).
+    /// boot raised (no snapshot yet, or a configured machine's diagnostic).
     pub(super) boot_id: Option<shepr_protocol::BootId>,
     pub(super) kind: ClientEndpointNoticeKind,
     pub(super) code: String,
@@ -553,7 +556,6 @@ pub(super) enum ClientCopyOperation {
 }
 
 pub(super) struct ClientCopySearchResult {
-    pub(super) content_revision: u64,
     pub(super) matches: Vec<shepr_api::schema::PaneTextRange>,
     pub(super) total: u64,
     pub(super) current: Option<usize>,
@@ -563,7 +565,7 @@ pub(super) struct ClientCopySearchResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientCopyModeState {
     pub(super) pane_id: shepr_protocol::PublicPaneId,
-    pub(super) content_revision: u64,
+    pub(super) history_origin: shepr_vt::AbsRow,
     pub(super) geometry: (u16, u16),
     pub(super) alternate_screen_active: bool,
     pub(super) cursor: shepr_api::schema::PaneTextPoint,
@@ -596,9 +598,9 @@ pub struct ClientShellState {
     /// A future projection surface waits here until its matching snapshot arrives. The visible
     /// pane surface always remains an exact snapshot pair.
     pub(super) pending_pane_surface: Option<PaneSurfaceFrame>,
-    /// Identifies the currently active endpoint's boot so a switch or restart is detectable.
-    /// Retained now purely for that change-detection; Shepr no longer forwards pane images.
-    pub(super) graphics_scope: String,
+    /// Identifies the currently active endpoint and its boot, so a switch of endpoint or a
+    /// restart of its server is detectable when the next snapshot arrives.
+    pub(super) active_boot_key: String,
     pub(super) sidebar_collapsed: bool,
     pub(super) sidebar_collapsed_manual: bool,
     pub(super) sidebar_width: u16,
@@ -630,7 +632,6 @@ pub struct ClientShellState {
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
     pub(super) next_workspace_label_lookup_id: u64,
-    pub(super) pending_workspace_label_lookup: Option<(u64, String)>,
     pub(super) previous_pane_id: Option<shepr_protocol::PublicPaneId>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) selection: Option<shepr_vt::selection::Selection<shepr_protocol::PublicPaneId>>,
@@ -700,7 +701,7 @@ impl ClientShellState {
             pane_surface_generation: None,
             pane_surface: None,
             pending_pane_surface: None,
-            graphics_scope: String::new(),
+            active_boot_key: String::new(),
             sidebar_collapsed,
             sidebar_collapsed_manual: preferences.sidebar_collapsed.is_some(),
             sidebar_width,
@@ -732,7 +733,6 @@ impl ClientShellState {
             reveal_navigation_workspace: false,
             overlay,
             next_workspace_label_lookup_id: 1,
-            pending_workspace_label_lookup: None,
             previous_pane_id: None,
             pane_mouse_gesture: None,
             selection: None,
@@ -900,13 +900,12 @@ impl ClientShellState {
         generation: Option<u64>,
         snapshot_config: &std::sync::Arc<shepr_config::ValidatedConfig>,
     ) {
-        let graphics_scope = match &self.active_endpoint_id {
-            // Local direct uploads use image IDs authored by the server from its boot ID.
+        let active_boot_key = match &self.active_endpoint_id {
             ClientEndpointId::Local => snapshot.boot_id.to_string(),
             endpoint_id => format!("{}:{}", endpoint_id.storage_key(), snapshot.boot_id),
         };
         let endpoint_boot_changed =
-            self.snapshot.is_some() && self.graphics_scope != graphics_scope;
+            self.snapshot.is_some() && self.active_boot_key != active_boot_key;
         let generation_changed = self.active_snapshot_generation != generation;
         if !endpoint_boot_changed
             && !generation_changed
@@ -928,7 +927,7 @@ impl ClientShellState {
             self.pending_pane_surface = None;
         }
         self.active_snapshot_generation = generation;
-        self.graphics_scope = graphics_scope;
+        self.active_boot_key = active_boot_key;
         // The keymap follows the endpoint's resolved config.
         let snapshot_keybindings_changed = endpoint_keybindings_changed;
         let boot_changed = endpoint_boot_changed
@@ -1234,14 +1233,13 @@ impl ClientShellState {
             let geometry = (pane.inner_rect.width, pane.inner_rect.height);
             let coordinates_changed = copy_mode.geometry != geometry
                 || copy_mode.alternate_screen_active != pane.alternate_screen_active;
-            if copy_mode.content_revision != pane.content_revision || coordinates_changed {
-                copy_mode.content_revision = pane.content_revision;
+            // Copy-mode points are absolute rows, so output alone moves nothing; a
+            // resize or a screen switch reflows or replaces the rows they name.
+            if coordinates_changed {
                 copy_mode.geometry = geometry;
                 copy_mode.alternate_screen_active = pane.alternate_screen_active;
-                if coordinates_changed {
-                    copy_mode.selection = None;
-                    invalidated_copy_pane = Some(copy_mode.pane_id.clone());
-                }
+                copy_mode.selection = None;
+                invalidated_copy_pane = Some(copy_mode.pane_id.clone());
                 copy_mode.search_matches.clear();
                 copy_mode.search_total = 0;
                 copy_mode.search_current = None;
@@ -1250,6 +1248,7 @@ impl ClientShellState {
                 copy_mode.copy_after_search = false;
             }
             if let Some(scroll) = pane.scroll {
+                copy_mode.history_origin = scroll.history_origin;
                 let actual_offset =
                     usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
                 if !self.pane_scroll_targets.contains_key(&pane.pane_id) {

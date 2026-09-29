@@ -20,13 +20,13 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
     state.mode = ClientShellMode::Copy;
     state.copy_mode = Some(ClientCopyModeState {
         pane_id: test_pane_id("w1:p1"),
-        content_revision: 0,
         geometry: (80, 24),
         alternate_screen_active: false,
         cursor: shepr_api::schema::PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 0,
         },
+        history_origin: shepr_vt::AbsRow(0),
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         entry_offset_from_bottom: 0,
@@ -111,14 +111,14 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 
     // Scrolled back, a motion onto the covered row scrolls one line instead of hiding the
     // cursor under the bar.
-    let height = usize::from(area.height);
+    let height = u64::from(area.height);
     if let Some(copy_mode) = state.copy_mode.as_mut() {
         copy_mode.offset_from_bottom = 10;
-        copy_mode.cursor.row = shepr_vt::ScreenRow(40 + height - 2);
+        copy_mode.cursor.row = shepr_vt::AbsRow(40 + height - 2);
     }
     state.handle_input_bytes(b"j");
     let copy_mode = state.copy_mode.as_ref().expect("still in copy mode");
-    assert_eq!(copy_mode.cursor.row, shepr_vt::ScreenRow(40 + height - 1));
+    assert_eq!(copy_mode.cursor.row, shepr_vt::AbsRow(40 + height - 1));
     assert_eq!(copy_mode.offset_from_bottom, 9);
 }
 
@@ -267,11 +267,11 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         &request.method,
         shepr_api::schema::Method::PaneSelectionRead(params)
             if params.pane_id == "w1:p1"
-                && params.anchor == shepr_api::schema::PaneSelectionPoint {
+                && params.anchor == shepr_api::schema::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
                 }
-                && params.cursor == shepr_api::schema::PaneSelectionPoint {
+                && params.cursor == shepr_api::schema::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 2,
                 }
@@ -488,7 +488,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::ScreenRow(21))
+        Some(shepr_vt::AbsRow(21))
     );
     assert!(enter.actions.is_empty());
 
@@ -506,7 +506,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     )]);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::ScreenRow(20))
+        Some(shepr_vt::AbsRow(20))
     );
     assert!(matches!(
         &page.actions[..],
@@ -528,7 +528,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(top.actions.is_empty());
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::ScreenRow(0))
+        Some(shepr_vt::AbsRow(0))
     );
     let (_, top_actions) = state
         .handle_endpoint_result(
@@ -673,19 +673,14 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     };
     let found = shepr_api::schema::PaneTextRange {
         start: shepr_api::schema::PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 0,
         },
         end: shepr_api::schema::PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 3,
         },
     };
-    let to_selection_point =
-        |point: shepr_api::schema::PaneTextPoint| shepr_api::schema::PaneSelectionPoint {
-            row: point.row.absolute(shepr_vt::AbsRow(0)),
-            col: point.col,
-        };
     state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &request.id,
@@ -704,8 +699,8 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, shepr_api::schema::Method::PaneSelectionRead(params)
-                if params.anchor == to_selection_point(found.start)
-                    && params.cursor == to_selection_point(found.end)
+                if params.anchor == found.start
+                    && params.cursor == found.end
                     && params.content_revision == Some(0))
     )));
 }
@@ -757,7 +752,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
 }
 
 #[test]
-fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
+fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -799,7 +794,6 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
                     row: origin.row,
                     col: 3,
                 },
-                content_revision: 0,
             }),
         )
         .into_parts();
@@ -856,7 +850,6 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
                 row: origin.row,
                 col: 3,
             },
-            content_revision: 0,
         }),
     );
     assert_eq!(state.mode, ClientShellMode::Terminal);
@@ -955,21 +948,21 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let matches = vec![
         shepr_api::schema::PaneTextRange {
             start: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(5),
+                row: shepr_vt::AbsRow(5),
                 col: 2,
             },
             end: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(5),
+                row: shepr_vt::AbsRow(5),
                 col: 7,
             },
         },
         shepr_api::schema::PaneTextRange {
             start: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(15),
+                row: shepr_vt::AbsRow(15),
                 col: 1,
             },
             end: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(15),
+                row: shepr_vt::AbsRow(15),
                 col: 6,
             },
         },
@@ -984,7 +977,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(repaint);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::ScreenRow(5))
+        Some(shepr_vt::AbsRow(5))
     );
     assert!(actions.iter().any(|action| matches!(
         action,
@@ -1066,7 +1059,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     }
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::ScreenRow(15))
+        Some(shepr_vt::AbsRow(15))
     );
     assert!(
         state
@@ -2192,7 +2185,6 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
                 cursor: intermediate,
-                content_revision: 0,
             }),
         )
         .into_parts();
@@ -2242,7 +2234,6 @@ fn queued_copy_keys_preserve_prefix_order() {
         Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
             pane_id: "w1:p1".into(),
             cursor: origin,
-            content_revision: 0,
         }),
     );
     assert_eq!(state.mode, ClientShellMode::Prefix);
@@ -2318,11 +2309,6 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         row: origin.row,
         col: 2,
     };
-    let selection_point =
-        |point: shepr_api::schema::PaneTextPoint| shepr_api::schema::PaneSelectionPoint {
-            row: point.row.absolute(shepr_vt::AbsRow(0)),
-            col: point.col,
-        };
     let (_, actions) = state
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
@@ -2330,7 +2316,6 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
                 cursor: target,
-                content_revision: 0,
             }),
         )
         .into_parts();
@@ -2341,14 +2326,15 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
             if matches!(
                 &request.method,
                 shepr_api::schema::Method::PaneSelectionRead(params)
-                    if params.anchor == selection_point(origin)
-                        && params.cursor == selection_point(target)
+                    if params.anchor == origin && params.cursor == target
             )
     )));
 }
 
+/// Search matches name absolute rows, so output (evicting history or not)
+/// leaves them in place; a resize re-wraps the text under them and drops them.
 #[test]
-fn new_content_revision_invalidates_copy_search_coordinates() {
+fn copy_search_matches_survive_output_but_not_a_resize() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -2371,11 +2357,11 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
         .search_matches
         .push(shepr_api::schema::PaneTextRange {
             start: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(0),
+                row: shepr_vt::AbsRow(0),
                 col: 0,
             },
             end: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(0),
+                row: shepr_vt::AbsRow(0),
                 col: 1,
             },
         });
@@ -2383,7 +2369,27 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
     copy_mode.search_current = Some(0);
     copy_mode.search_current_global = Some(0);
 
+    pane_surface.surface_revision = pane_surface
+        .surface_revision
+        .checked_next()
+        .expect("test precondition");
     pane_surface.panes[0].content_revision = 2;
+    pane_surface.panes[0]
+        .scroll
+        .as_mut()
+        .expect("scroll metrics")
+        .history_origin = shepr_vt::AbsRow(5);
+    state.set_pane_surface(pane_surface.clone());
+    let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
+    assert_eq!(copy_mode.search_matches.len(), 1);
+    assert_eq!(copy_mode.search_current, Some(0));
+    assert_eq!(copy_mode.history_origin, shepr_vt::AbsRow(5));
+
+    pane_surface.surface_revision = pane_surface
+        .surface_revision
+        .checked_next()
+        .expect("test precondition");
+    pane_surface.panes[0].inner_rect.width -= 1;
     state.set_pane_surface(pane_surface);
     let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
     assert!(copy_mode.search_matches.is_empty());
@@ -2524,7 +2530,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                 .copy_mode
                 .as_ref()
                 .map(|copy_mode| copy_mode.cursor.row),
-            Some(shepr_vt::ScreenRow(19))
+            Some(shepr_vt::AbsRow(19))
         );
     }
 }

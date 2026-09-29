@@ -4,7 +4,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
 use sha2::{Digest as _, Sha256};
@@ -130,7 +130,7 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent)?;
+        super::create_private_directory_all(parent)?;
     }
 
     let file = fs::OpenOptions::new()
@@ -279,7 +279,7 @@ pub fn bind_single_use_private_socket(
 /// A sidecar created here and then not locked is removed again.
 fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
     let parent = socket_parent(socket_path)?;
-    fs::create_dir_all(parent)?;
+    super::create_private_directory_all(parent)?;
     let lock_path = socket_startup_lock_path(socket_path);
     let file = match fs::OpenOptions::new()
         .read(true)
@@ -449,11 +449,104 @@ pub fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
     name.into()
 }
 
+/// Connects to a local socket, giving up with `TimedOut` after
+/// `LOCAL_CONNECT_TIMEOUT` (see [`connect_local_stream_within`]).
 pub fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
-    use interprocess::local_socket::{GenericFilePath, prelude::*};
+    connect_local_stream_within(path, super::limits::LOCAL_CONNECT_TIMEOUT)
+}
 
-    let name = path.to_fs_name::<GenericFilePath>()?;
-    LocalStream::connect(name)
+/// Connects to the socket at `path`, waiting at most `timeout`.
+///
+/// A blocking `connect` to a Unix socket whose listen backlog is full waits
+/// until the listener accepts, which a wedged server never does. The connect
+/// here is nonblocking: a full backlog answers `EAGAIN`, which is retried until
+/// the deadline and then reported as `TimedOut`. Every other error is the
+/// connect's own (`NotFound`, `ConnectionRefused`, `PermissionDenied`), so
+/// callers classify them as they would a blocking connect's.
+pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result<LocalStream> {
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+    use std::os::unix::net::UnixStream;
+
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: `sockaddr_un` is plain data for which all-zero bytes is a valid
+    // (empty) value.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.len() >= address.sun_path.len() || bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("socket path {} cannot be connected to", path.display()),
+        ));
+    }
+    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)
+        .map_err(|_| io::Error::other("AF_UNIX does not fit sa_family_t"))?;
+    for (target, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *target = libc::c_char::from_ne_bytes([*byte]);
+    }
+    let address_len = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_un>())
+        .map_err(|_| io::Error::other("sockaddr_un does not fit socklen_t"))?;
+
+    // SAFETY: socket(2) takes no pointers; the returned descriptor is checked
+    // and immediately owned.
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            0,
+        )
+    };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a fresh descriptor nothing else owns.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    // clock-io-ok: the deadline bounds a real socket connect.
+    let deadline = Instant::now() + timeout;
+    loop {
+        // SAFETY: `address` is a valid `sockaddr_un` of `address_len` bytes and
+        // `socket` stays open for the call.
+        let result = unsafe {
+            libc::connect(
+                socket.as_raw_fd(),
+                (&raw const address).cast::<libc::sockaddr>(),
+                address_len,
+            )
+        };
+        if result == 0 {
+            break;
+        }
+        let error = io::Error::last_os_error();
+        match error.kind() {
+            io::ErrorKind::Interrupted => {}
+            io::ErrorKind::WouldBlock => {
+                // clock-io-ok: same real deadline as above.
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out connecting to {}: the server is not accepting connections",
+                            path.display()
+                        ),
+                    ));
+                }
+                std::thread::sleep(super::limits::LOCAL_CONNECT_RETRY_INTERVAL);
+            }
+            _ => return Err(error),
+        }
+    }
+
+    // SAFETY: fcntl(2) with F_GETFL/F_SETFL on a descriptor this function owns.
+    let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(LocalStream::from(
+        interprocess::os::unix::uds_local_socket::Stream::from(UnixStream::from(socket)),
+    ))
 }
 
 /// Connects to a server socket and checks its owner before returning the
@@ -467,7 +560,16 @@ pub fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
 /// names the socket; every connect error of [`connect_local_stream`] is passed
 /// through unchanged.
 pub fn connect_trusted_local_stream(path: &Path) -> io::Result<LocalStream> {
-    let stream = connect_local_stream(path)?;
+    connect_trusted_local_stream_within(path, super::limits::LOCAL_CONNECT_TIMEOUT)
+}
+
+/// [`connect_trusted_local_stream`] with the connect bounded by `timeout`
+/// (see [`connect_local_stream_within`]).
+pub fn connect_trusted_local_stream_within(
+    path: &Path,
+    timeout: Duration,
+) -> io::Result<LocalStream> {
+    let stream = connect_local_stream_within(path, timeout)?;
     match peer_is_same_user(&stream) {
         Ok(true) => Ok(stream),
         Ok(false) => Err(io::Error::new(
@@ -535,7 +637,7 @@ pub fn probe(path: &Path) -> Liveness {
 /// caller that does not own the path.
 fn prepare_socket_path(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        super::create_private_directory_all(parent)?;
     }
 
     match probe(path) {

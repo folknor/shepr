@@ -161,17 +161,11 @@ mod tests {
     // ---- Round-trip: ServerMessage ----
 
     #[test]
-    fn server_welcome_roundtrip() -> TestResult {
-        let msg = ServerMessage::Welcome { error: None };
-        assert_eq!(roundtrip(&msg)?, msg);
-        Ok(())
-    }
-
-    #[test]
     fn server_welcome_with_error_roundtrip() -> TestResult {
-        let msg = ServerMessage::Welcome {
-            error: Some(crate::HandshakeRefusal::ExpectedHello),
-        };
+        let msg =
+            ServerMessage::EndpointWelcome(crate::endpoint::EndpointServerWelcome::incompatible(
+                crate::HandshakeRefusal::ExpectedHello,
+            ));
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
     }

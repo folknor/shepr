@@ -8,28 +8,22 @@ use serde_json::{Map, Value, json};
 
 use crate::agent::{IntegrationHookAction, IntegrationTarget as Target};
 
-use super::claude_settings::{
-    install as install_claude_settings, uninstall as uninstall_claude_settings,
-};
+use super::claude_settings::install as install_claude_settings;
 use super::command::{hook_command, hook_command_with_interpreter};
 use super::config_edit::{
     build_codex_config_with_hooks, build_kimi_config_with_hooks, ensure_command_hook,
     ensure_direct_command_hook, ensure_flat_command_hook, ensure_hooks_object,
-    ensure_simple_command_hook, hooks_object_if_present, remove_direct_hook_commands,
-    remove_flat_command_hook, remove_hook_commands, remove_kimi_config_block,
-    remove_simple_command_hook,
+    ensure_simple_command_hook, remove_direct_hook_commands, remove_flat_command_hook,
+    remove_hook_commands, remove_simple_command_hook,
 };
 use super::config_file::{check_config_targets, lock_config_for_update, write_config};
 use super::env::{AgentIntegrationPaths, DirectoryKey};
-use super::file_ops::{
-    is_dir, is_file, remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset,
-};
+use super::file_ops::{is_dir, is_file, write_managed_asset};
 use super::opencode_config::{
-    PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, remove_cli_plugin, remove_tui_plugin,
-    validate_tui_plugin_config,
+    PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, validate_tui_plugin_config,
 };
 use super::registry::{config_file_names, integration_hook_events, integration_hook_timeout};
-use super::types::{ArtifactRole, InstallOutcome, UninstallOutcome, UninstallState};
+use super::types::{ArtifactRole, InstallOutcome};
 use super::{
     ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, CLAUDE_HOOK_INSTALL_NAME,
     CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_INSTALL_NAME, CURSOR_HOOK_INSTALL_NAME,
@@ -43,8 +37,8 @@ use super::{
 // Install order for targets that register the hook in an agent config: read,
 // parse and edit the config in memory first, then write the hook script, then
 // the config. A config that cannot be edited then fails the install before
-// anything is written, instead of leaving a hook script that `integration
-// status` would see while the agent never runs it.
+// anything is written, instead of leaving a current hook script the agent
+// never runs, which the status check would then take for installed.
 
 /// Write one asset described by the integration spec via temp-file-and-rename.
 fn write_target_asset(target: Target, path: &Path, executable: bool) -> io::Result<()> {
@@ -441,7 +435,7 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Inst
     outcome = outcome.with_artifact(ArtifactRole::TuiConfig, tui_config_path);
     if cli_config_path.is_none() {
         outcome = outcome.with_notice(
-            "to enable OpenCode V2, start opencode2 once, then reinstall this integration"
+            "OpenCode V2 is not set up yet; start opencode2 once and the next shepr server launch registers it"
                 .to_string(),
         );
     }
@@ -465,318 +459,6 @@ pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<InstallO
 
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Plugin, plugin_path);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let extension_path = paths
-        .directory(DirectoryKey::PiExtension)?
-        .join(PI_EXTENSION_INSTALL_NAME);
-    let removed_extension = remove_file_if_exists(&extension_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Extension, extension_path, removed_extension);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_omp(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let extension_path = paths
-        .directory(DirectoryKey::OmpExtension)?
-        .join(OMP_EXTENSION_INSTALL_NAME);
-    let removed_extension = remove_file_if_exists(&extension_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Extension, extension_path, removed_extension);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory(DirectoryKey::Claude)?;
-    check_config_targets(&dir, config_file_names(Target::Claude)?)?;
-    let hook_path = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
-    let settings_path = dir.join(super::CLAUDE_SETTINGS_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
-    let mut updated_settings = false;
-
-    if is_file(&settings_path)? {
-        let existing_settings = fs::read_to_string(&settings_path)?;
-        let new_settings = uninstall_claude_settings(
-            &existing_settings,
-            &settings_path,
-            &hook_path,
-            integration_hook_events(Target::Claude),
-            integration_hook_timeout(Target::Claude)?,
-        )?;
-        updated_settings = new_settings != existing_settings;
-        if updated_settings {
-            write_config(&settings_path, new_settings)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let codex_dir = paths.directory(DirectoryKey::Codex)?;
-    // Uninstall leaves `config.toml` and its hooks feature switch alone
-    // (reported as preserved below), so only the file it edits is vetted.
-    check_config_targets(&codex_dir, &[super::CODEX_HOOKS_NAME])?;
-    let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
-    let hooks_path = codex_dir.join(super::CODEX_HOOKS_NAME);
-    let config_path = codex_dir.join(super::CODEX_CONFIG_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
-    let mut updated_hooks = false;
-
-    if is_file(&hooks_path)? {
-        let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
-            .map_err(|err| {
-                io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-            })?;
-
-        if let Some(hooks) = hooks_object_if_present(
-            &mut hooks_file,
-            &hooks_path,
-            "codex hooks file",
-            "codex hooks file hooks",
-        )? {
-            updated_hooks |=
-                remove_hook_commands(hooks, "SessionStart", &hook_path, Some("session"))?;
-        }
-
-        if updated_hooks {
-            write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
-    outcome.record(ArtifactRole::Config, config_path, UninstallState::Preserved);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let kimi_dir = paths.directory(DirectoryKey::Kimi)?;
-    check_config_targets(&kimi_dir, config_file_names(Target::Kimi)?)?;
-    let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
-    let config_path = kimi_dir.join(super::KIMI_CONFIG_NAME);
-    let _config_lock = lock_config_for_update(&config_path)?;
-    let mut updated_config = false;
-
-    if is_file(&config_path)? {
-        let existing_config = fs::read_to_string(&config_path)?;
-        let new_config = remove_kimi_config_block(&existing_config)?;
-        if new_config != existing_config {
-            write_config(&config_path, new_config)?;
-            updated_config = true;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Config, config_path, updated_config);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_copilot(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let copilot_dir = paths.directory(DirectoryKey::Copilot)?;
-    check_config_targets(&copilot_dir, config_file_names(Target::Copilot)?)?;
-    let hook_path = copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME);
-    let settings_path = copilot_dir.join(super::COPILOT_SETTINGS_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
-    let mut updated_settings = false;
-
-    if is_file(&settings_path)? {
-        let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
-            .map_err(|err| {
-                io::Error::other(format!(
-                    "failed to parse {}: {err}",
-                    settings_path.display()
-                ))
-            })?;
-
-        if let Some(hooks) = hooks_object_if_present(
-            &mut settings,
-            &settings_path,
-            "copilot settings",
-            "copilot settings hooks",
-        )? {
-            for hook in integration_hook_events(Target::Copilot) {
-                updated_settings |= remove_direct_hook_commands(
-                    hooks,
-                    hook.event,
-                    &hook_path,
-                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
-                )?;
-            }
-        }
-
-        if updated_settings {
-            write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let devin_dir = paths.directory(DirectoryKey::Devin)?;
-    check_config_targets(&devin_dir, config_file_names(Target::Devin)?)?;
-    let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
-    let settings_path = devin_dir.join(super::DEVIN_CONFIG_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
-    let mut updated_settings = false;
-
-    if is_file(&settings_path)? {
-        let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
-            .map_err(|err| {
-                io::Error::other(format!(
-                    "failed to parse {}: {err}",
-                    settings_path.display()
-                ))
-            })?;
-
-        if let Some(hooks) = hooks_object_if_present(
-            &mut settings,
-            &settings_path,
-            "devin settings",
-            "devin settings hooks",
-        )? {
-            for hook in integration_hook_events(Target::Devin) {
-                updated_settings |= remove_hook_commands(
-                    hooks,
-                    hook.event,
-                    &hook_path,
-                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
-                )?;
-            }
-        }
-
-        if updated_settings {
-            write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let droid_dir = paths.directory(DirectoryKey::Droid)?;
-    check_config_targets(&droid_dir, config_file_names(Target::Droid)?)?;
-    let hook_path = droid_dir.join("hooks").join(DROID_HOOK_INSTALL_NAME);
-    let settings_path = droid_dir.join(super::DROID_SETTINGS_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
-    let mut updated_settings = false;
-
-    if is_file(&settings_path)? {
-        let mut settings = serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?)
-            .map_err(|err| {
-                io::Error::other(format!(
-                    "failed to parse {}: {err}",
-                    settings_path.display()
-                ))
-            })?;
-        if let Some(hooks) = hooks_object_if_present(
-            &mut settings,
-            &settings_path,
-            "droid settings",
-            "droid settings hooks",
-        )? {
-            for hook in integration_hook_events(Target::Droid) {
-                updated_settings |= remove_hook_commands(
-                    hooks,
-                    hook.event,
-                    &hook_path,
-                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
-                )?;
-            }
-        }
-
-        if updated_settings {
-            write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Settings, settings_path, updated_settings);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_opencode(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory(DirectoryKey::Opencode)?;
-    check_config_targets(&dir, config_file_names(Target::Opencode)?)?;
-    let plugin_path = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
-    let tui_plugin_path = dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME);
-    let mut errors = Vec::new();
-    remove_cli_plugin(&dir, super::OPENCODE_V2_TUI_PLUGIN_SPEC).unwrap_or_else(|err| {
-        errors.push(err.to_string());
-        false
-    });
-    let v2_dir = dir.join(super::OPENCODE_V2_TUI_PLUGIN_DIR);
-    remove_dir_all_if_exists(&v2_dir).unwrap_or_else(|err| {
-        errors.push(format!("failed to remove {}: {err}", v2_dir.display()));
-        false
-    });
-    let updated_tui_configs =
-        remove_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC).unwrap_or_else(|err| {
-            errors.push(err.to_string());
-            Vec::new()
-        });
-    let removed_plugin = remove_file_if_exists(&plugin_path).unwrap_or_else(|err| {
-        errors.push(format!("failed to remove {}: {err}", plugin_path.display()));
-        false
-    });
-    let removed_tui_plugin = remove_file_if_exists(&tui_plugin_path).unwrap_or_else(|err| {
-        errors.push(format!(
-            "failed to remove {}: {err}",
-            tui_plugin_path.display()
-        ));
-        false
-    });
-    if !errors.is_empty() {
-        return Err(io::Error::other(errors.join("; ")));
-    }
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Plugin, plugin_path, removed_plugin);
-    outcome.record_removal(ArtifactRole::TuiPlugin, tui_plugin_path, removed_tui_plugin);
-    for path in updated_tui_configs {
-        outcome.record(ArtifactRole::TuiConfig, path, UninstallState::Updated);
-    }
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let plugin_path = paths
-        .directory(DirectoryKey::Kilo)?
-        .join("plugin")
-        .join(KILO_PLUGIN_INSTALL_NAME);
-    let removed_plugin = remove_file_if_exists(&plugin_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Plugin, plugin_path, removed_plugin);
     Ok(outcome)
 }
 
@@ -817,7 +499,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
     let session_command = hook_command(&hook_path, Some("session"));
     // Strip every entry carrying the command first, as the other targets do,
     // so a hand-edited one (a matcher added, say) is replaced by the canonical
-    // entry that `integration status` looks for instead of being kept as-is.
+    // entry that the status check looks for instead of being kept as-is.
     remove_simple_command_hook(hooks, "sessionStart", &session_command)?;
     ensure_simple_command_hook(hooks, "sessionStart", &session_command)?;
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
@@ -828,45 +510,6 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
     outcome = outcome.with_artifact(ArtifactRole::UpdatedHooks, hooks_path);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let cursor_home = paths.directory(DirectoryKey::Cursor)?;
-    check_config_targets(&cursor_home, config_file_names(Target::Cursor)?)?;
-    let hook_path = cursor_home.join(CURSOR_HOOK_INSTALL_NAME);
-    let hooks_path = cursor_home.join(super::CURSOR_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
-    let mut updated_hooks = false;
-
-    if is_file(&hooks_path)? {
-        let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
-            .map_err(|err| {
-                io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-            })?;
-
-        if let Some(hooks) = hooks_object_if_present(
-            &mut hooks_file,
-            &hooks_path,
-            "cursor hooks file",
-            "cursor hooks file hooks",
-        )? {
-            let session_command = hook_command(&hook_path, Some("session"));
-            updated_hooks |= remove_simple_command_hook(hooks, "sessionStart", &session_command)?;
-        }
-
-        if updated_hooks {
-            write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    // Install canonicalizes Cursor's hooks file; uninstall only removes
-    // shepr-owned entries, so its artifact role describes that narrower action.
-    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
     Ok(outcome)
 }
 
@@ -920,52 +563,6 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
     outcome = outcome.with_artifact(ArtifactRole::Hooks, hooks_path);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_mastracode(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let mastracode_home = paths.directory(DirectoryKey::Mastracode)?;
-    check_config_targets(&mastracode_home, config_file_names(Target::Mastracode)?)?;
-    let hook_path = mastracode_home
-        .join("hooks")
-        .join(MASTRACODE_HOOK_INSTALL_NAME);
-    let hooks_path = mastracode_home.join(super::MASTRACODE_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
-    let mut updated_hooks = false;
-
-    if is_file(&hooks_path)? {
-        let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
-            .map_err(|err| {
-                io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-            })?;
-        let hooks = hooks_file.as_object_mut().ok_or_else(|| {
-            io::Error::other(format!(
-                "mastracode hooks file at {} must be a JSON object",
-                hooks_path.display()
-            ))
-        })?;
-
-        for hook in integration_hook_events(Target::Mastracode) {
-            let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
-                continue;
-            };
-            updated_hooks |= remove_flat_command_hook(
-                hooks,
-                hook.event,
-                &hook_command(&hook_path, Some(action)),
-            )?;
-        }
-
-        if updated_hooks {
-            write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
     Ok(outcome)
 }
 
@@ -1036,44 +633,6 @@ pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> io::Result<Value> 
     Ok(Value::Object(block))
 }
 
-pub(crate) fn uninstall_antigravity_cli(
-    paths: &AgentIntegrationPaths,
-) -> io::Result<UninstallOutcome> {
-    let dir = paths.directory(DirectoryKey::AntigravityCli)?;
-    check_config_targets(&dir, config_file_names(Target::AntigravityCli)?)?;
-    let hook_path = dir.join("hooks").join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
-    let hooks_path = dir.join(super::ANTIGRAVITY_CLI_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
-    let mut updated_hooks = false;
-
-    if is_file(&hooks_path)? {
-        let mut hooks_file = serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?)
-            .map_err(|err| {
-                io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-            })?;
-
-        let hooks = hooks_file.as_object_mut().ok_or_else(|| {
-            io::Error::other(format!(
-                "antigravity cli hooks file at {} must be a JSON object",
-                hooks_path.display()
-            ))
-        })?;
-
-        updated_hooks = hooks.remove(ANTIGRAVITY_CLI_HOOK_BLOCK_NAME).is_some();
-
-        if updated_hooks {
-            write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
-        }
-    }
-
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_update(ArtifactRole::Hooks, hooks_path, updated_hooks);
-    Ok(outcome)
-}
-
 /// Grok's hook asset is a POSIX `sh` script, so it runs under `sh` rather than
 /// the `bash` the shared command formatter uses for the other hooks.
 fn grok_hook_command(hook_path: &Path, action: Option<IntegrationHookAction>) -> String {
@@ -1135,21 +694,6 @@ pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
     outcome = outcome.with_artifact(ArtifactRole::HookConfig, config_path);
-    Ok(outcome)
-}
-
-pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<UninstallOutcome> {
-    let hooks_dir = paths.directory(DirectoryKey::Grok)?.join("hooks");
-    let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
-    let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
-
-    // shepr owns both files outright, so removal is a straight delete.
-    let removed_config_file = remove_file_if_exists(&config_path)?;
-    let removed_hook_file = remove_file_if_exists(&hook_path)?;
-
-    let mut outcome = UninstallOutcome::default();
-    outcome.record_removal(ArtifactRole::Hook, hook_path, removed_hook_file);
-    outcome.record_removal(ArtifactRole::HookConfig, config_path, removed_config_file);
     Ok(outcome)
 }
 

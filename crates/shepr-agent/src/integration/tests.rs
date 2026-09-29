@@ -1,3 +1,4 @@
+use super::actions::install_target;
 use super::command::*;
 use super::config_edit::*;
 use super::env::*;
@@ -27,43 +28,6 @@ fn install_path(outcome: &InstallOutcome, role: ArtifactRole) -> PathBuf {
         .expect("expected install artifact")
         .path
         .clone()
-}
-
-fn uninstall_path(outcome: &UninstallOutcome, role: ArtifactRole) -> PathBuf {
-    outcome
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.role == role)
-        .expect("expected uninstall artifact")
-        .path
-        .clone()
-}
-
-fn uninstall_was_removed(outcome: &UninstallOutcome, role: ArtifactRole) -> bool {
-    outcome
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.role == role && artifact.state == UninstallState::Removed)
-}
-
-fn uninstall_was_updated(outcome: &UninstallOutcome, role: ArtifactRole) -> bool {
-    outcome
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.role == role && artifact.state == UninstallState::Updated)
-}
-
-fn uninstall_paths_with_state(
-    outcome: &UninstallOutcome,
-    role: ArtifactRole,
-    state: UninstallState,
-) -> Vec<PathBuf> {
-    outcome
-        .artifacts
-        .iter()
-        .filter(|artifact| artifact.role == role && artifact.state == state)
-        .map(|artifact| artifact.path.clone())
-        .collect()
 }
 
 #[test]
@@ -347,34 +311,6 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
 }
 
 #[test]
-fn uninstall_omp_removes_embedded_extension_when_present() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let ext_dir = home.join(".omp/agent/extensions");
-    fs::create_dir_all(&ext_dir).expect("test precondition");
-    fs::write(
-        ext_dir.join(OMP_EXTENSION_INSTALL_NAME),
-        OMP_EXTENSION_ASSET,
-    )
-    .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    assert_eq!(
-        uninstall_path(&result, ArtifactRole::Extension),
-        ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
-    );
-    assert!(uninstall_was_removed(&result, ArtifactRole::Extension));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Extension)
-            .try_exists()
-            .expect("stat")
-    );
-}
-
-#[test]
 fn install_omp_errors_when_extension_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -390,32 +326,7 @@ fn install_omp_errors_when_extension_dir_missing() {
 }
 
 #[test]
-fn uninstall_pi_removes_embedded_extension_when_present() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let ext_dir = home.join(".pi/agent/extensions");
-    fs::create_dir_all(&ext_dir).expect("test precondition");
-    fs::write(ext_dir.join(PI_EXTENSION_INSTALL_NAME), PI_EXTENSION_ASSET)
-        .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    assert_eq!(
-        uninstall_path(&result, ArtifactRole::Extension),
-        ext_dir.join(PI_EXTENSION_INSTALL_NAME)
-    );
-    assert!(uninstall_was_removed(&result, ArtifactRole::Extension));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Extension)
-            .try_exists()
-            .expect("stat")
-    );
-}
-
-#[test]
-fn outdated_integrations_treat_missing_version_marker_as_outdated() {
+fn a_missing_version_marker_reads_outdated() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -425,17 +336,20 @@ fn outdated_integrations_treat_missing_version_marker_as_outdated() {
     fs::write(&extension_path, "// installed by shepr\n").expect("test precondition");
     env.set("HOME", &home);
 
-    let outdated = outdated_installed_integrations(&AgentIntegrationPaths::resolve());
+    let status = integration_status(
+        &AgentIntegrationPaths::resolve(),
+        crate::agent::IntegrationTarget::Pi,
+    )
+    .expect("status resolves");
 
-    assert_eq!(outdated.len(), 1);
-    assert_eq!(outdated[0].target, crate::agent::IntegrationTarget::Pi);
-    assert_eq!(outdated[0].path, extension_path);
-    assert_eq!(outdated[0].installed_version, None);
-    assert_eq!(outdated[0].expected_version, PI_INTEGRATION_VERSION);
+    assert_eq!(status.state, IntegrationStatusKind::Outdated);
+    assert_eq!(status.path, extension_path);
+    assert_eq!(status.installed_version, None);
+    assert_eq!(status.expected_version, PI_INTEGRATION_VERSION);
 }
 
 #[test]
-fn outdated_integrations_accept_current_version_marker() {
+fn a_current_version_marker_reads_current() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -445,7 +359,82 @@ fn outdated_integrations_accept_current_version_marker() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    assert!(outdated_installed_integrations(&AgentIntegrationPaths::resolve()).is_empty());
+    assert_eq!(
+        status_of(crate::agent::IntegrationTarget::Pi),
+        IntegrationStatusKind::Current
+    );
+}
+
+/// The server's launch install: present agents get their hooks, absent ones
+/// are skipped without their directory being created, a current install is
+/// left untouched, and a drifted one is repaired.
+#[test]
+fn launch_install_covers_present_agents_only() {
+    use crate::agent::IntegrationTarget as Target;
+
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    let pi_agent_dir = home.join(".pi/agent");
+    fs::create_dir_all(&claude_dir).expect("test precondition");
+    fs::create_dir_all(&pi_agent_dir).expect("test precondition");
+    env.set("HOME", &home);
+    let paths = AgentIntegrationPaths::resolve();
+
+    install_present_integrations(&paths);
+
+    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
+    assert_eq!(status_of(Target::Pi), IntegrationStatusKind::Current);
+    for absent in [Target::Codex, Target::Droid, Target::Cursor] {
+        assert_eq!(
+            status_of(absent),
+            IntegrationStatusKind::NotInstalled,
+            "{absent:?}"
+        );
+    }
+    assert!(!home.join(".codex").stat_is_dir());
+    assert!(!home.join(".factory").stat_is_dir());
+
+    // A current install is not rewritten: the hook keeps its inode.
+    let hook = claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
+    let inode = |path: &Path| {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).expect("stat hook").ino()
+    };
+    let before = inode(&hook);
+    install_present_integrations(&paths);
+    assert_eq!(inode(&hook), before);
+
+    // A registration the user removed is put back.
+    fs::write(claude_dir.join("settings.json"), "{}").expect("test precondition");
+    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Outdated);
+    install_present_integrations(&paths);
+    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
+}
+
+/// One agent whose install fails does not stop the others.
+#[test]
+fn launch_install_failure_for_one_agent_leaves_the_others() {
+    use crate::agent::IntegrationTarget as Target;
+
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    let droid_dir = home.join(".factory");
+    fs::create_dir_all(&claude_dir).expect("test precondition");
+    fs::create_dir_all(&droid_dir).expect("test precondition");
+    fs::write(claude_dir.join("settings.json"), "{ not json").expect("test precondition");
+    env.set("HOME", &home);
+
+    install_present_integrations(&AgentIntegrationPaths::resolve());
+
+    assert_eq!(
+        status_of(Target::Claude),
+        IntegrationStatusKind::NotInstalled
+    );
+    assert_eq!(status_of(Target::Droid), IntegrationStatusKind::Current);
 }
 
 #[test]
@@ -563,60 +552,6 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
-}
-
-#[test]
-fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let claude_dir = home.join(".claude");
-    let hooks_dir = claude_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir).expect("test precondition");
-    let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, CLAUDE_HOOK_ASSET).expect("test precondition");
-    let settings = serde_json::json!({
-        "hooks": {
-            "SessionStart": [{
-                "matcher": "*",
-                "hooks": [
-                    {"type": "command", "command": format!("bash '{}' session", hook_path.display()), "timeout": 10},
-                    {"type": "command", "command": "echo keep", "timeout": 10}
-                ]
-            }]
-        }
-    });
-    fs::write(
-        claude_dir.join("settings.json"),
-        serde_json::to_string(&settings).expect("test precondition"),
-    )
-    .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let settings: Value = serde_json::from_str(
-        &fs::read_to_string(claude_dir.join("settings.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Hook)
-            .try_exists()
-            .expect("stat")
-    );
-    assert_eq!(
-        settings["hooks"]["SessionStart"][0]["hooks"]
-            .as_array()
-            .expect("test precondition")
-            .len(),
-        1
-    );
-    assert_eq!(
-        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "echo keep"
-    );
 }
 
 #[test]
@@ -779,64 +714,6 @@ fn install_codex_only_migrates_top_level_feature_flags() {
 }
 
 #[test]
-fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let codex_dir = home.join(".codex");
-    fs::create_dir_all(&codex_dir).expect("test precondition");
-    let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, CODEX_HOOK_ASSET).expect("test precondition");
-    let hooks = serde_json::json!({
-        "hooks": {
-            "SessionStart": [{"hooks": [
-                {"type": "command", "command": format!("bash '{}' session", hook_path.display()), "timeout": 10},
-                {"type": "command", "command": "echo keep", "timeout": 10}
-            ]}]
-        }
-    });
-    fs::write(
-        codex_dir.join("hooks.json"),
-        serde_json::to_string(&hooks).expect("test precondition"),
-    )
-    .expect("test precondition");
-    fs::write(
-        codex_dir.join("config.toml"),
-        "[features]\nhooks = true\nother = true\n",
-    )
-    .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hooks: Value = serde_json::from_str(
-        &fs::read_to_string(codex_dir.join("hooks.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-    let config = fs::read_to_string(codex_dir.join("config.toml")).expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Hook)
-            .try_exists()
-            .expect("stat")
-    );
-    assert_eq!(
-        hooks["hooks"]["SessionStart"][0]["hooks"]
-            .as_array()
-            .expect("test precondition")
-            .len(),
-        1
-    );
-    assert_eq!(
-        hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "echo keep"
-    );
-    assert!(config.contains("hooks = true"));
-    assert!(config.contains("other = true"));
-}
-
-#[test]
 fn install_codex_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -980,47 +857,6 @@ fn install_kimi_is_idempotent_for_config_block() {
 }
 
 #[test]
-fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let kimi_dir = home.join(".kimi-code");
-    fs::create_dir_all(&kimi_dir).expect("test precondition");
-    env.set("HOME", &home);
-
-    let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    fs::write(
-            install_path(&installed, ArtifactRole::Config),
-            format!(
-                "default_model = \"moonshot\"\n\n[[hooks]]\nevent = \"Notification\"\ncommand = \"echo keep\"\n\n{}",
-                fs::read_to_string(install_path(&installed, ArtifactRole::Config)).expect("test precondition")
-            ),
-        )
-        .expect("test precondition");
-
-    let result = uninstall_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let config = fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition");
-    let hooks = kimi_config_hooks(&config);
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Config));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Hook)
-            .try_exists()
-            .expect("stat")
-    );
-    assert!(config.contains("default_model = \"moonshot\""));
-    assert!(config.contains("command = \"echo keep\""));
-    assert!(!config.contains(KIMI_CONFIG_BLOCK_BEGIN));
-    assert!(!config.contains(KIMI_CONFIG_BLOCK_END));
-    assert_eq!(hooks.len(), 1);
-    assert_eq!(
-        hooks[0].get("event").and_then(toml::Value::as_str),
-        Some("Notification")
-    );
-}
-
-#[test]
 fn install_kimi_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1120,58 +956,6 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
 }
 
 #[test]
-fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let copilot_dir = home.join(".copilot");
-    let hooks_dir = copilot_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir).expect("test precondition");
-    let hook_path = hooks_dir.join(COPILOT_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, COPILOT_HOOK_ASSET).expect("test precondition");
-    let command = format!(
-        "bash {}",
-        shell_single_quote(&hook_path.display().to_string())
-    );
-    let settings = serde_json::json!({
-        "hooks": {
-            "SessionStart": [
-                {"type": "command", direct_command_field(): command, "timeoutSec": 10},
-                {"type": "command", "command": "echo keep", "timeoutSec": 10}
-            ]
-        }
-    });
-    fs::write(
-        copilot_dir.join("settings.json"),
-        serde_json::to_string(&settings).expect("test precondition"),
-    )
-    .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let settings: Value = serde_json::from_str(
-        &fs::read_to_string(copilot_dir.join("settings.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Hook)
-            .try_exists()
-            .expect("stat")
-    );
-    assert_eq!(
-        settings["hooks"]["SessionStart"]
-            .as_array()
-            .expect("test precondition")
-            .len(),
-        1
-    );
-    assert_eq!(settings["hooks"]["SessionStart"][0]["command"], "echo keep");
-}
-
-#[test]
 fn install_copilot_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1264,67 +1048,6 @@ fn install_devin_is_idempotent_for_hook_entries() {
             hook.event
         );
     }
-}
-
-#[test]
-fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let xdg_config = base.join("xdg");
-    let devin_dir = xdg_config.join("devin");
-    fs::create_dir_all(&devin_dir).expect("test precondition");
-    env.set("XDG_CONFIG_HOME", &xdg_config);
-    env.set("HOME", base.join("home"));
-
-    install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
-    let mut settings: Value = serde_json::from_str(
-        &fs::read_to_string(devin_dir.join("config.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-    settings["hooks"]["UserPromptSubmit"]
-        .as_array_mut()
-        .expect("test precondition")
-        .push(json!({
-            "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": "echo keep",
-                "timeout": 10
-            }]
-        }));
-    fs::write(
-        devin_dir.join("config.json"),
-        serde_json::to_string_pretty(&settings).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    let result = uninstall_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let settings: Value = serde_json::from_str(
-        &fs::read_to_string(devin_dir.join("config.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
-    assert!(!hook_path.try_exists().expect("stat"));
-    assert_eq!(
-        settings["hooks"]["UserPromptSubmit"]
-            .as_array()
-            .expect("test precondition")
-            .len(),
-        1
-    );
-    assert_eq!(
-        settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
-        "echo keep"
-    );
-    assert!(settings["hooks"].get("SessionStart").is_none());
-    assert!(settings["hooks"].get("PreToolUse").is_none());
-    assert!(settings["hooks"].get("PermissionRequest").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
-    assert!(settings["hooks"].get("SessionEnd").is_none());
 }
 
 #[test]
@@ -1432,44 +1155,6 @@ fn install_droid_is_idempotent_for_hook_entries() {
 }
 
 #[test]
-fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let droid_dir = home.join(".factory");
-    let hooks_dir = droid_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir).expect("test precondition");
-    let hook_path = hooks_dir.join(DROID_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, DROID_HOOK_ASSET).expect("test precondition");
-    let command = hook_command(&hook_path, Some("session"));
-    fs::write(
-            droid_dir.join("settings.json"),
-            format!(
-                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command":{},"timeout":10}}]}}],"PostToolUse":[{{"matcher":"Edit","hooks":[{{"type":"command","command":"echo post","timeout":10}}]}}]}}}}"#,
-                serde_json::to_string(&command).expect("test precondition"),
-            ),
-        )
-        .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let settings: Value = serde_json::from_str(
-        &fs::read_to_string(droid_dir.join("settings.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Settings));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Hook)
-            .try_exists()
-            .expect("stat")
-    );
-    assert!(settings["hooks"].get("SessionStart").is_none());
-    assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Edit");
-}
-
-#[test]
 fn install_droid_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1571,7 +1256,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     }
 
     // OpenCode reads both files, so the plugin can be registered in each (a
-    // hand-added entry beside shepr's); uninstall removes it from both.
+    // hand-added entry beside shepr's); install reuses the jsonc one.
     let jsonc_path = dir.join("tui.jsonc");
     fs::write(
         &jsonc_path,
@@ -1585,40 +1270,11 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
         ),
         jsonc_path
     );
-    let result = uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
-        uninstall_paths_with_state(&result, ArtifactRole::TuiConfig, UninstallState::Updated),
-        vec![jsonc_path.clone(), json_path.clone()]
-    );
-    let json = fs::read_to_string(&json_path).expect("test precondition");
-    assert!(json.contains("// User preferences"));
-    assert!(!json.contains("shepr-tui-session.js"));
-    assert!(json.contains("\"other\""));
-    assert!(json.contains("\"system\""));
-    assert_eq!(
-        serde_json::from_str::<Value>(&fs::read_to_string(jsonc_path).expect("test precondition"))
-            .expect("test precondition"),
-        json!({"plugin":["another"]})
-    );
-    assert!(
-        uninstall_paths_with_state(
-            &uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition"),
-            ArtifactRole::TuiConfig,
-            UninstallState::Updated
-        )
-        .is_empty()
+        fs::read_to_string(&json_path).expect("test precondition"),
+        original
     );
     assert_eq!(fs::read_link(&dir).expect("test precondition"), dotfiles);
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Plugin)
-            .try_exists()
-            .expect("stat")
-    );
-    assert!(
-        !uninstall_path(&result, ArtifactRole::TuiPlugin)
-            .try_exists()
-            .expect("stat")
-    );
     fs::remove_dir_all(base).expect("test precondition");
 }
 
@@ -1644,7 +1300,7 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
 }
 
 #[test]
-fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
+fn opencode_v2_install_and_status_preserve_cli_preferences() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -1677,21 +1333,26 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
     fs::remove_file(&entry).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
     install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    super::opencode_config::remove_cli_plugin(&dir, OPENCODE_V2_TUI_PLUGIN_SPEC)
-        .expect("test precondition");
+    assert_eq!(status(), IntegrationStatusKind::Current);
+    // The user dropping shepr's cli.json entry reads outdated, and a reinstall
+    // puts it back beside their own preferences.
+    fs::write(
+        &cli,
+        r#"{"theme":{"name":"catppuccin"},"plugins":["other"]}"#,
+    )
+    .expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
     install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(!entry.try_exists().expect("stat"));
+    assert_eq!(status(), IntegrationStatusKind::Current);
     assert_eq!(
         serde_json::from_str::<Value>(&fs::read_to_string(cli).expect("test precondition"))
             .expect("test precondition"),
-        json!({"theme":{"name":"catppuccin"},"plugins":["other"]})
+        json!({"theme":{"name":"catppuccin"},"plugins":["other", OPENCODE_V2_TUI_PLUGIN_SPEC]})
     );
 }
 
 #[test]
-fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
+fn opencode_hard_link_rejection_precedes_install_asset_changes() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -1706,13 +1367,10 @@ fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
     let alias = base.join("linked-config");
     fs::hard_link(&config, &alias).expect("test precondition");
     let target = crate::agent::IntegrationTarget::Opencode;
-    for error in [
-        install_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition"),
-        uninstall_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition"),
-    ] {
-        assert!(error.to_string().contains("multiple hard links"));
-        assert!(error.to_string().contains("cli.json"));
-    }
+    let error =
+        install_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition");
+    assert!(error.to_string().contains("multiple hard links"));
+    assert!(error.to_string().contains("cli.json"));
     assert_eq!(
         fs::read_to_string(&plugin).expect("test precondition"),
         "previous integration"
@@ -1760,13 +1418,9 @@ fn opencode_json_config_validation_precedes_asset_changes() {
     fs::write(&config, original).expect("test precondition");
     let alias = base.join("linked-config");
     fs::hard_link(&config, &alias).expect("test precondition");
-    for error in [
-        install_opencode(&AgentIntegrationPaths::resolve()).expect_err("test precondition"),
-        uninstall_opencode(&AgentIntegrationPaths::resolve()).expect_err("test precondition"),
-    ] {
-        assert!(error.to_string().contains("multiple hard links"));
-        assert!(error.to_string().contains("tui.json"));
-    }
+    let error = install_opencode(&AgentIntegrationPaths::resolve()).expect_err("test precondition");
+    assert!(error.to_string().contains("multiple hard links"));
+    assert!(error.to_string().contains("tui.json"));
     assert_eq!(
         fs::read_to_string(&plugin).expect("test precondition"),
         "previous integration"
@@ -1830,54 +1484,9 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
         OPENCODE_TUI_PLUGIN_ASSET,
     )
     .expect("test precondition");
-    super::opencode_config::remove_tui_plugin(&opencode_dir, OPENCODE_TUI_PLUGIN_SPEC)
-        .expect("test precondition");
+    assert_eq!(status(), IntegrationStatusKind::Current);
+    fs::write(install_path(&installed, ArtifactRole::TuiConfig), "{}").expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-}
-
-#[test]
-fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let opencode_dir = home.join(".config/opencode");
-    fs::create_dir_all(&opencode_dir).expect("test precondition");
-    env.set("HOME", &home);
-    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    let result = uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Plugin));
-    assert!(uninstall_was_removed(&result, ArtifactRole::TuiPlugin));
-    assert_eq!(
-        uninstall_paths_with_state(&result, ArtifactRole::TuiConfig, UninstallState::Updated),
-        vec![install_path(&installed, ArtifactRole::TuiConfig).clone()]
-    );
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Plugin)
-            .try_exists()
-            .expect("stat")
-    );
-    assert!(
-        !uninstall_path(&result, ArtifactRole::TuiPlugin)
-            .try_exists()
-            .expect("stat")
-    );
-    assert!(
-        install_path(&installed, ArtifactRole::TuiConfig)
-            .try_exists()
-            .expect("stat")
-    );
-    let tui_config: Value = serde_json::from_str(
-        &fs::read_to_string(install_path(&installed, ArtifactRole::TuiConfig))
-            .expect("test precondition"),
-    )
-    .expect("test precondition");
-    assert_eq!(tui_config, json!({}));
-    assert_eq!(
-        install_path(&installed, ArtifactRole::Plugin),
-        uninstall_path(&result, ArtifactRole::Plugin)
-    );
 }
 
 #[test]
@@ -1907,41 +1516,6 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
             .join(OPENCODE_TUI_PLUGIN_INSTALL_NAME)
             .try_exists()
             .expect("stat")
-    );
-}
-
-#[test]
-fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let opencode_dir = home.join(".config/opencode");
-    let plugins_dir = opencode_dir.join("plugins");
-    fs::create_dir_all(&plugins_dir).expect("test precondition");
-    let plugin_path = plugins_dir.join(OPENCODE_PLUGIN_INSTALL_NAME);
-    let tui_plugin_path = opencode_dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME);
-    fs::write(&plugin_path, OPENCODE_PLUGIN_ASSET).expect("test precondition");
-    fs::write(&tui_plugin_path, OPENCODE_TUI_PLUGIN_ASSET).expect("test precondition");
-    fs::write(opencode_dir.join("tui.jsonc"), "{\"plugin\":").expect("test precondition");
-    let json_path = opencode_dir.join("tui.json");
-    fs::write(
-        &json_path,
-        r#"{"plugin":["./shepr-tui-session.js","other"]}"#,
-    )
-    .expect("test precondition");
-    env.set("HOME", &home);
-
-    let err = uninstall_opencode(&AgentIntegrationPaths::resolve())
-        .expect_err("test precondition")
-        .to_string();
-
-    assert!(err.contains("failed to parse OpenCode TUI config"));
-    assert!(!plugin_path.try_exists().expect("stat"));
-    assert!(!tui_plugin_path.try_exists().expect("stat"));
-    assert_eq!(
-        serde_json::from_str::<Value>(&fs::read_to_string(json_path).expect("test precondition"))
-            .expect("test precondition"),
-        json!({"plugin":["other"]})
     );
 }
 
@@ -1978,30 +1552,6 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
         kilo_dir.join("plugin").join(KILO_PLUGIN_INSTALL_NAME)
     );
     assert_eq!(plugin_content, KILO_PLUGIN_ASSET);
-}
-
-#[test]
-fn uninstall_kilo_removes_plugin_when_present() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let kilo_plugin_dir = home.join(".config/kilo/plugin");
-    fs::create_dir_all(&kilo_plugin_dir).expect("test precondition");
-    fs::write(
-        kilo_plugin_dir.join(KILO_PLUGIN_INSTALL_NAME),
-        KILO_PLUGIN_ASSET,
-    )
-    .expect("test precondition");
-    env.set("HOME", &home);
-
-    let result = uninstall_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    assert!(uninstall_was_removed(&result, ArtifactRole::Plugin));
-    assert!(
-        !uninstall_path(&result, ArtifactRole::Plugin)
-            .try_exists()
-            .expect("stat")
-    );
 }
 
 #[test]
@@ -2573,45 +2123,6 @@ fn install_cursor_is_idempotent_for_hook_entries() {
 }
 
 #[test]
-fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let cursor_dir = base.join(".cursor");
-    fs::create_dir_all(&cursor_dir).expect("test precondition");
-    env.set(EnvVar::CursorConfigDir, &cursor_dir);
-
-    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let mut hooks_file: Value = serde_json::from_str(
-        &fs::read_to_string(cursor_dir.join("hooks.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-    hooks_file["hooks"]["beforeSubmitPrompt"] = json!([{ "command": "echo user-defined" }]);
-    fs::write(
-        cursor_dir.join("hooks.json"),
-        serde_json::to_string_pretty(&hooks_file).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    let result = uninstall_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
-    assert!(!cursor_dir.join(CURSOR_HOOK_INSTALL_NAME).stat_is_file());
-
-    let hooks_file: Value = serde_json::from_str(
-        &fs::read_to_string(cursor_dir.join("hooks.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-    let hooks = hooks_file
-        .get("hooks")
-        .and_then(Value::as_object)
-        .expect("test precondition");
-    assert!(!hooks.contains_key("sessionStart"));
-    assert!(hooks.contains_key("beforeSubmitPrompt"));
-
-    env.remove(EnvVar::CursorConfigDir);
-}
-
-#[test]
 fn install_cursor_uses_cursor_config_dir_env() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2643,11 +2154,11 @@ fn cursor_integration_status_is_current_after_install() {
     // just the script.
     install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    let statuses = installed_integration_statuses(&AgentIntegrationPaths::resolve());
-    let cursor = statuses
-        .iter()
-        .find(|status| status.target == crate::agent::IntegrationTarget::Cursor)
-        .expect("cursor integration status");
+    let cursor = integration_status(
+        &AgentIntegrationPaths::resolve(),
+        crate::agent::IntegrationTarget::Cursor,
+    )
+    .expect("cursor integration status");
     assert_eq!(cursor.state, IntegrationStatusKind::Current);
     assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
 }
@@ -2862,65 +2373,6 @@ fn install_mastracode_refuses_when_config_dir_missing() {
 }
 
 #[test]
-fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    fs::create_dir_all(base.join(".mastracode")).expect("test precondition");
-    env.set("HOME", &base);
-
-    install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let hooks_path = base.join(".mastracode").join("hooks.json");
-    let mut hooks_file: Value =
-        serde_json::from_str(&fs::read_to_string(&hooks_path).expect("test precondition"))
-            .expect("test precondition");
-    hooks_file["UserPromptSubmit"]
-        .as_array_mut()
-        .expect("test precondition")
-        .push(json!({ "type": "command", "command": "echo user-defined" }));
-    fs::write(
-        &hooks_path,
-        serde_json::to_string_pretty(&hooks_file).expect("test precondition"),
-    )
-    .expect("test precondition");
-
-    let result =
-        uninstall_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
-    assert!(
-        !base
-            .join(".mastracode")
-            .join("hooks")
-            .join(MASTRACODE_HOOK_INSTALL_NAME)
-            .stat_is_file()
-    );
-
-    let hooks_file: Value =
-        serde_json::from_str(&fs::read_to_string(&hooks_path).expect("test precondition"))
-            .expect("test precondition");
-    let hooks = hooks_file.as_object().expect("test precondition");
-    for hook in integration_hook_events(crate::agent::IntegrationTarget::Mastracode) {
-        if hook.event == "UserPromptSubmit" {
-            continue;
-        }
-        assert!(
-            !hooks.contains_key(hook.event),
-            "{} should be removed",
-            hook.event
-        );
-    }
-    let user_prompt_submit = hooks
-        .get("UserPromptSubmit")
-        .and_then(Value::as_array)
-        .expect("test precondition");
-    assert_eq!(user_prompt_submit.len(), 1);
-    assert_eq!(
-        user_prompt_submit[0].get("command").and_then(Value::as_str),
-        Some("echo user-defined")
-    );
-}
-
-#[test]
 fn install_grok_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2937,27 +2389,6 @@ fn install_grok_errors_when_config_dir_missing() {
         err.contains("grok config directory not found"),
         "unexpected error: {err}"
     );
-}
-
-#[test]
-fn uninstall_grok_removes_files() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let grok_dir = base.join(".grok");
-    fs::create_dir_all(&grok_dir).expect("test precondition");
-    env.set(EnvVar::GrokHome, &grok_dir);
-
-    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    let result = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(uninstall_was_removed(&result, ArtifactRole::HookConfig));
-    assert!(!uninstall_path(&result, ArtifactRole::Hook).stat_is_file());
-    assert!(!uninstall_path(&result, ArtifactRole::HookConfig).stat_is_file());
-
-    // Uninstalling again is a no-op.
-    let again = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(!uninstall_was_removed(&again, ArtifactRole::Hook));
-    assert!(!uninstall_was_removed(&again, ArtifactRole::HookConfig));
 }
 
 #[test]
@@ -2992,25 +2423,6 @@ fn install_mastracode_errors_when_event_value_not_array() {
     env.set("HOME", &base);
 
     let err = install_mastracode(&AgentIntegrationPaths::resolve())
-        .expect_err("test precondition")
-        .to_string();
-    assert!(
-        err.contains("hook entries for SessionStart must be an array"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn uninstall_mastracode_errors_when_event_value_not_array() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let mastracode_dir = base.join(".mastracode");
-    fs::create_dir_all(&mastracode_dir).expect("test precondition");
-    fs::write(mastracode_dir.join("hooks.json"), r#"{"SessionStart":{}}"#)
-        .expect("test precondition");
-    env.set("HOME", &base);
-
-    let err = uninstall_mastracode(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
     assert!(
@@ -3204,11 +2616,11 @@ fn grok_integration_status_is_current_after_install() {
     // A real install writes both the hook script and hooks/shepr.json.
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    let statuses = installed_integration_statuses(&AgentIntegrationPaths::resolve());
-    let grok = statuses
-        .iter()
-        .find(|status| status.target == crate::agent::IntegrationTarget::Grok)
-        .expect("grok integration status");
+    let grok = integration_status(
+        &AgentIntegrationPaths::resolve(),
+        crate::agent::IntegrationTarget::Grok,
+    )
+    .expect("grok integration status");
     assert_eq!(grok.state, IntegrationStatusKind::Current);
     assert_eq!(grok.installed_version, Some(GROK_INTEGRATION_VERSION));
 }
@@ -3223,13 +2635,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME);
 
-    let grok_state = || {
-        installed_integration_statuses(&AgentIntegrationPaths::resolve())
-            .into_iter()
-            .find(|status| status.target == crate::agent::IntegrationTarget::Grok)
-            .expect("grok integration status")
-            .state
-    };
+    let grok_state = || status_of(crate::agent::IntegrationTarget::Grok);
 
     // Missing config: grok never runs the hook, so the install is not current.
     fs::remove_file(&config_path).expect("test precondition");
@@ -3306,44 +2712,6 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     // Reinstall repairs both files.
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(grok_state(), IntegrationStatusKind::Current);
-}
-
-#[test]
-fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let agy_dir = base.join(".gemini").join("config");
-    fs::create_dir_all(&agy_dir).expect("test precondition");
-    fs::write(
-        agy_dir.join("hooks.json"),
-        r#"{"lint-checker":{"PreInvocation":[{"type":"command","command":"echo keep-me"}]}}"#,
-    )
-    .expect("test precondition");
-    env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
-
-    // Install first
-    let installed =
-        install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(install_path(&installed, ArtifactRole::Hook).stat_is_file());
-
-    // Uninstall
-    let result =
-        uninstall_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    assert!(uninstall_was_removed(&result, ArtifactRole::Hook));
-    assert!(!install_path(&installed, ArtifactRole::Hook).stat_is_file());
-    assert!(uninstall_was_updated(&result, ArtifactRole::Hooks));
-
-    let hooks_file: Value = serde_json::from_str(
-        &fs::read_to_string(agy_dir.join("hooks.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
-    let hooks = hooks_file.as_object().expect("test precondition");
-
-    // The Shepr block is gone and unrelated named hooks survive.
-    assert!(hooks.get(ANTIGRAVITY_CLI_HOOK_BLOCK_NAME).is_none());
-    assert!(hooks.contains_key("lint-checker"));
-
-    env.remove(EnvVar::AntigravityCliConfigDir);
 }
 
 #[test]
@@ -3469,17 +2837,15 @@ fn codex_features_hooks_follow_the_users_features_shape() {
 }
 
 fn status_of(target: crate::agent::IntegrationTarget) -> IntegrationStatusKind {
-    integration_status_rows(&AgentIntegrationPaths::resolve())
-        .into_iter()
-        .find_map(|row| row.ok().filter(|status| status.target == target))
-        .expect("the target has a status row")
+    integration_status(&AgentIntegrationPaths::resolve(), target)
+        .expect("the target's status resolves")
         .state
 }
 
-/// The operator messages of an install and uninstall round trip, one target
-/// per artifact wording, and the status the round trip leaves behind.
+/// The messages an install logs, one target per artifact wording, and the
+/// status the install leaves behind.
 #[test]
-fn install_and_uninstall_messages_name_every_artifact() {
+fn install_messages_name_every_artifact() {
     use crate::agent::IntegrationTarget as Target;
 
     let env = IsolatedEnv::new();
@@ -3514,38 +2880,10 @@ fn install_and_uninstall_messages_name_every_artifact() {
                     shown(claude.join("settings.json"))
                 ),
             ],
-            vec![
-                format!(
-                    "removed claude hook at {}",
-                    shown(claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "removed shepr claude hook entries from {}",
-                    shown(claude.join("settings.json"))
-                ),
-            ],
-            vec![
-                format!(
-                    "no claude hook found at {}",
-                    shown(claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "no shepr claude hook entries found in {}",
-                    shown(claude.join("settings.json"))
-                ),
-            ],
         ),
         (
             Target::Pi,
             vec![format!("installed pi integration to {}", shown(pi.clone()))],
-            vec![format!(
-                "removed pi integration extension at {}",
-                shown(pi.clone())
-            )],
-            vec![format!(
-                "no pi integration extension found at {}",
-                shown(pi.clone())
-            )],
         ),
         (
             Target::Droid,
@@ -3556,26 +2894,6 @@ fn install_and_uninstall_messages_name_every_artifact() {
                 ),
                 format!(
                     "ensured droid hooks at {}",
-                    shown(droid.join("settings.json"))
-                ),
-            ],
-            vec![
-                format!(
-                    "removed droid hook at {}",
-                    shown(droid.join("hooks").join(DROID_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "removed shepr droid hook entries from {}",
-                    shown(droid.join("settings.json"))
-                ),
-            ],
-            vec![
-                format!(
-                    "no droid hook found at {}",
-                    shown(droid.join("hooks").join(DROID_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "no shepr droid hook entries found in {}",
                     shown(droid.join("settings.json"))
                 ),
             ],
@@ -3592,30 +2910,10 @@ fn install_and_uninstall_messages_name_every_artifact() {
                     shown(grok.join(GROK_HOOK_CONFIG_NAME))
                 ),
             ],
-            vec![
-                format!(
-                    "removed grok hook at {}",
-                    shown(grok.join(GROK_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "removed grok hook config at {}",
-                    shown(grok.join(GROK_HOOK_CONFIG_NAME))
-                ),
-            ],
-            vec![
-                format!(
-                    "no grok hook found at {}",
-                    shown(grok.join(GROK_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "no grok hook config found at {}",
-                    shown(grok.join(GROK_HOOK_CONFIG_NAME))
-                ),
-            ],
         ),
     ];
 
-    for (target, installed, removed, absent) in cases {
+    for (target, installed) in cases {
         assert_eq!(
             status_of(target),
             IntegrationStatusKind::NotInstalled,
@@ -3629,27 +2927,12 @@ fn install_and_uninstall_messages_name_every_artifact() {
             IntegrationStatusKind::Current,
             "{target:?}"
         );
-        assert_eq!(
-            uninstall_target(&paths, target).expect("uninstall succeeds"),
-            removed,
-            "{target:?}"
-        );
-        assert_eq!(
-            status_of(target),
-            IntegrationStatusKind::NotInstalled,
-            "{target:?}"
-        );
-        assert_eq!(
-            uninstall_target(&paths, target).expect("a repeat uninstall succeeds"),
-            absent,
-            "{target:?}"
-        );
     }
 }
 
-/// The notices and the codex config line that only some targets print.
+/// The notices and the wordings that only some targets print.
 #[test]
-fn install_and_uninstall_messages_keep_target_specific_lines() {
+fn install_messages_keep_target_specific_lines() {
     let path = Path::new("/shepr-test/file");
     let outcome = InstallOutcome::default()
         .with_artifact(ArtifactRole::Config, path.to_path_buf())
@@ -3666,14 +2949,6 @@ fn install_and_uninstall_messages_keep_target_specific_lines() {
             "ensured kimi config at /shepr-test/file".to_string(),
             format!("requires kimi code {KIMI_MIN_VERSION} or newer"),
         ]
-    );
-    assert_eq!(
-        ArtifactRole::Config.uninstall_message("codex", path, UninstallState::Preserved),
-        Some("left codex config unchanged at /shepr-test/file".to_string())
-    );
-    assert_eq!(
-        ArtifactRole::TuiConfig.uninstall_message("opencode", path, UninstallState::Updated),
-        Some("removed shepr opencode plugin entry from /shepr-test/file".to_string())
     );
     assert_eq!(
         ArtifactRole::UpdatedHooks.install_message("cursor", path),
@@ -3761,4 +3036,82 @@ fn every_shepr_name_in_the_shipped_assets_is_owned_or_asset_internal() {
     ] {
         assert!(seen.contains(contract), "no asset reads {contract}");
     }
+}
+
+/// Every hook asset that reports to the API socket builds the one envelope
+/// shape: the request id is `<source>:<seq>`, never a random token, and every
+/// socket attempt waits 500 ms for the reply. The TypeScript tests beside the
+/// assets are not assets and are skipped.
+#[test]
+fn hook_assets_share_one_envelope() {
+    let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/integration/assets");
+    let mut files = Vec::new();
+    collect_asset_files(&assets, &mut files);
+
+    let id = regex::Regex::new(
+        r#"(?:"id": |\bid: )(?:f"(?:\{source\}|\{SOURCE\}|(shepr:[a-z]+)):\{(?:report_seq|seq)\}"|`\$\{(?:source|SOURCE)\}:\$\{[^`]+\}`|request_id)"#,
+    )
+    .expect("test precondition");
+    let request_id = regex::Regex::new(r#"request_id = f"\{(?:source|SOURCE)\}:\{report_seq\}""#)
+        .expect("test precondition");
+    let python_timeout = regex::Regex::new(r"settimeout\(([^)]*)\)").expect("test precondition");
+    let js_timeout = regex::Regex::new(
+        r"(?:client\.setTimeout\(|settle\(false\), |sendRequestAttempt\(request, )(\d[\d_]*)",
+    )
+    .expect("test precondition");
+
+    let mut reporters = 0;
+    for file in &files {
+        if file.to_string_lossy().ends_with(".test.ts") {
+            continue;
+        }
+        let text = fs::read_to_string(file).expect("read an asset");
+        if !text.contains("pane.report_agent") {
+            continue;
+        }
+        reporters += 1;
+        let name = file.display();
+
+        assert!(
+            !text.contains("import random") && !text.contains("Math.random"),
+            "{name} draws a random request id"
+        );
+        let ids: Vec<_> = id.captures_iter(&text).collect();
+        assert!(
+            !ids.is_empty(),
+            "{name} builds no `<source>:<seq>` request id"
+        );
+        for literal_source in ids.iter().filter_map(|capture| capture.get(1)) {
+            let source = literal_source.as_str();
+            assert!(
+                text.contains(&format!("\"source\": \"{source}\"")),
+                "{name} spells the id prefix {source}, which is not its report source"
+            );
+        }
+        if text.contains("\"id\": request_id") {
+            assert!(
+                request_id.is_match(&text),
+                "{name} builds request_id from something other than its source and seq"
+            );
+        }
+
+        let mut timeouts = python_timeout
+            .captures_iter(&text)
+            .map(|capture| (capture[1].to_owned(), "0.5"))
+            .chain(
+                js_timeout
+                    .captures_iter(&text)
+                    .map(|capture| (capture[1].to_owned(), "500")),
+            )
+            .peekable();
+        assert!(timeouts.peek().is_some(), "{name} sets no socket timeout");
+        for (found, expected) in timeouts {
+            assert_eq!(found, expected, "{name} waits {found}, not {expected}");
+        }
+    }
+    assert!(
+        reporters > 0,
+        "no reporting assets under {}",
+        assets.display()
+    );
 }

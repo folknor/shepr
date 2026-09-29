@@ -60,7 +60,7 @@ if transcript_path is not None:
     params["agent_session_path"] = transcript_path
 
 request = json.dumps({
-    "id": f"shepr:antigravity_cli:{seq}",
+    "id": f"shepr:agy:{seq}",
     "method": "pane.report_agent_session",
     "params": params,
 })

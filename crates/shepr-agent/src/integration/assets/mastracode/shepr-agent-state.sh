@@ -34,7 +34,6 @@ command -v python3 >/dev/null 2>&1 || exit 0
 SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="$hook_seq" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
-import random
 import socket
 import time
 
@@ -61,10 +60,10 @@ if hook_input_file:
 if not isinstance(hook_input, dict):
     hook_input = {}
 
-request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 raw_seq = os.environ.get("SHEPR_HOOK_SEQ", "")
 # `date` without %N support prints a literal N; fall back to our own clock.
 report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
+request_id = f"{source}:{report_seq}"
 session_id = hook_input.get("session_id")
 if isinstance(session_id, str) and session_id:
     agent_session_id = session_id

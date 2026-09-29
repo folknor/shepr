@@ -29,7 +29,9 @@ use crate::limits::MAX_LOCAL_OFFERS;
 /// unknown or changed is named so the operator can fix it. A server left
 /// running is reported with what to do about it.
 pub(crate) fn run(config: &shepr_config::ValidatedConfig, paths: &shepr_config::AppPaths) {
-    let can_prompt = std::io::stdin().is_terminal();
+    // Questions go to stderr and answers come from stdin, and ssh prompts use
+    // the terminal too, so asking needs both to be a terminal.
+    let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let machines = config.machines();
     let settings = shepr_remote::SavedSshSettings {
         manage_ssh_config: config.remote().manage_ssh_config,

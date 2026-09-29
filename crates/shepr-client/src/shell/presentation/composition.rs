@@ -623,6 +623,7 @@ fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &P
                 && hit.scroll.is_some_and(|scroll| {
                     scroll.offset_from_bottom == copy_mode.offset_from_bottom
                         && scroll.max_offset_from_bottom == copy_mode.max_offset_from_bottom
+                        && scroll.history_origin == copy_mode.history_origin
                 })
         })
 }
@@ -636,22 +637,20 @@ fn client_copy_cursor_cell(
     let hit = hits.iter().find(|hit| {
         hit.pane_id == copy_mode.pane_id && client_copy_surface_coherent(Some(copy_mode), hit)
     })?;
-    let viewport_top = shepr_vt::ScreenRow(
-        copy_mode
-            .max_offset_from_bottom
-            .saturating_sub(copy_mode.offset_from_bottom),
-    );
-    let viewport_row = copy_mode.cursor.row.0.checked_sub(viewport_top.0)?;
-    if viewport_row >= usize::from(hit.inner_rect.height)
-        || copy_mode.cursor.col >= hit.inner_rect.width
-    {
+    let viewport_row = copy_mode
+        .cursor
+        .row
+        .0
+        .checked_sub(copy_mode.viewport_top().0)?;
+    let viewport_row = u16::try_from(viewport_row)
+        .ok()
+        .filter(|row| *row < hit.inner_rect.height)?;
+    if copy_mode.cursor.col >= hit.inner_rect.width {
         return None;
     }
     Some((
         hit.inner_rect.x.saturating_add(copy_mode.cursor.col),
-        hit.inner_rect
-            .y
-            .saturating_add(u16::try_from(viewport_row).unwrap_or(u16::MAX)),
+        hit.inner_rect.y.saturating_add(viewport_row),
     ))
 }
 
@@ -668,15 +667,8 @@ fn render_client_copy_search_highlights(
     if hit.inner_rect.is_empty() {
         return;
     }
-    let top = shepr_vt::ScreenRow(
-        copy_mode
-            .max_offset_from_bottom
-            .saturating_sub(copy_mode.offset_from_bottom),
-    );
-    let bottom = shepr_vt::ScreenRow(
-        top.0
-            .saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1))),
-    );
+    let top = copy_mode.viewport_top();
+    let bottom = top.saturating_add(u64::from(hit.inner_rect.height.saturating_sub(1)));
     let style = if current_only {
         Style::default()
             .fg(panel_contrast_fg(palette))
@@ -731,14 +723,14 @@ mod tests {
     use super::*;
     use shepr_api::schema::{PaneTextPoint, PaneTextRange};
 
-    fn text_range(row: usize, start_col: u16, end_col: u16) -> PaneTextRange {
+    fn text_range(row: u64, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {
             start: PaneTextPoint {
-                row: shepr_vt::ScreenRow(row),
+                row: shepr_vt::AbsRow(row),
                 col: start_col,
             },
             end: PaneTextPoint {
-                row: shepr_vt::ScreenRow(row),
+                row: shepr_vt::AbsRow(row),
                 col: end_col,
             },
         }
@@ -767,13 +759,13 @@ mod tests {
         };
         let copy_mode = ClientCopyModeState {
             pane_id: crate::tests::test_pane_id("w1:p1"),
-            content_revision: 0,
             geometry: (6, 4),
             alternate_screen_active: false,
             cursor: PaneTextPoint {
-                row: shepr_vt::ScreenRow(3),
+                row: shepr_vt::AbsRow(3),
                 col: 0,
             },
+            history_origin: shepr_vt::AbsRow(0),
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,

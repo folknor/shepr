@@ -14,12 +14,9 @@ mod targets;
 mod types;
 mod version;
 
-pub use actions::{install_target, uninstall_target};
+pub use actions::install_present_integrations;
 pub use env::AgentIntegrationPaths;
-pub use registry::{integration_status_rows, integration_target_label, outdated_update_notice};
-pub use types::{
-    InstallOutput, InstallWarning, IntegrationStatus, IntegrationStatusError, IntegrationStatusKind,
-};
+pub(crate) use types::{IntegrationStatus, IntegrationStatusKind};
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");
@@ -80,7 +77,7 @@ const ANTIGRAVITY_CLI_HOOK_ASSET: &str =
 // limits-exempt: format version, matched against the one the adjacent asset carries.
 const ANTIGRAVITY_CLI_INTEGRATION_VERSION: u32 = 1;
 /// Antigravity CLI keys `hooks.json` by hook name, so every Shepr entry lives
-/// under one Shepr-owned block that install rewrites and uninstall removes.
+/// under one Shepr-owned block that install rewrites.
 const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
@@ -96,10 +93,17 @@ const GROK_INTEGRATION_VERSION: u32 = 2;
 // host agent may show a failing hook to the operator. The server refuses a
 // report for a pane it does not know or with an empty agent label; the hook
 // drops that refusal like any other failure.
+//
+// Every asset opens the API socket itself and builds one envelope shape: a
+// single JSON request line whose `id` is `<source>:<seq>`, the report's own
+// `source` and `seq` params (the OpenCode TUI's session selection report has
+// no seq and puts a clock reading in the seq's unit there), and every socket
+// attempt waits at most 500 ms for the reply. `hook_assets_share_one_envelope`
+// in the tests holds the assets to it.
 
 // Each agent's own config files, named once. The `IntegrationSpec` rows list
-// them for the registration check, and install and uninstall join the same
-// constants, so the three can never spell a file differently.
+// them for the registration check, and install joins the same constants, so
+// the two can never spell a file differently.
 const CLAUDE_SETTINGS_NAME: &str = "settings.json";
 const CODEX_HOOKS_NAME: &str = "hooks.json";
 const CODEX_CONFIG_NAME: &str = "config.toml";

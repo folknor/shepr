@@ -148,8 +148,10 @@ impl ClientShellState {
             })
     }
 
-    pub(super) fn open_new_workspace_overlay(&mut self) {
-        self.pending_workspace_label_lookup = None;
+    /// Opens the new-workspace name prompt with the path-based label and asks
+    /// the active endpoint's server, local or remote, for the cwd's checkout
+    /// root; the answer replaces the suggestion unless the user has edited it.
+    pub(super) fn open_new_workspace_overlay(&mut self, outcome: &mut ClientShellInput) {
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.snapshot.as_deref().and_then(|snapshot| {
             let workspace_id = source_workspace_id.as_ref()?;
@@ -159,19 +161,7 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == *workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
-        let mut label_lookup_id = None;
         let suggested_name = match cwd.as_deref() {
-            Some(cwd) if self.active_endpoint_id.is_local() => {
-                let id = self.next_workspace_label_lookup_id;
-                self.next_workspace_label_lookup_id = id.wrapping_add(1).max(1);
-                label_lookup_id = Some(id);
-                self.pending_workspace_label_lookup = Some((id, cwd.to_owned()));
-                shepr_core::workspace_label::workspace_label_from_cwd(
-                    std::path::Path::new(cwd),
-                    None,
-                    None,
-                )
-            }
             Some(cwd) => shepr_core::workspace_label::workspace_label_from_cwd(
                 std::path::Path::new(cwd),
                 None,
@@ -179,6 +169,25 @@ impl ClientShellState {
             ),
             None => "workspace".to_owned(),
         };
+        let mut label_lookup_id = None;
+        if let Some(cwd) = cwd.as_deref()
+            && self.endpoint_is_online(&self.active_endpoint_id)
+        {
+            let id = self.next_workspace_label_lookup_id;
+            self.next_workspace_label_lookup_id = id.wrapping_add(1).max(1);
+            let sent = self.push_endpoint_method_with_kind(
+                shepr_api::schema::Method::WorkspaceCheckoutRoot(
+                    shepr_api::schema::WorkspaceCheckoutRootParams {
+                        cwd: cwd.to_owned(),
+                    },
+                ),
+                PendingEndpointKind::WorkspaceLabel { lookup_id: id },
+                outcome,
+            );
+            if sent {
+                label_lookup_id = Some(id);
+            }
+        }
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new workspace",
             input: TextEditor::new(&suggested_name, true),
@@ -191,15 +200,19 @@ impl ClientShellState {
         }));
     }
 
-    pub(crate) fn take_workspace_label_lookup(&mut self) -> Option<(u64, String)> {
-        self.pending_workspace_label_lookup.take()
-    }
-
-    pub(crate) fn apply_workspace_label_lookup(&mut self, id: u64, label: String) -> bool {
+    /// Applies the answer to a `workspace.checkout_root` request. An answer for
+    /// an overlay that is gone or was reopened since is ignored, and a failed
+    /// lookup keeps the path-based suggestion. Returns whether to repaint.
+    pub(super) fn complete_workspace_label_lookup(
+        &mut self,
+        id: u64,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
             return false;
         };
         let ClientRenameTarget::NewWorkspace {
+            cwd,
             suggested_name,
             label_lookup_id,
             ..
@@ -211,6 +224,20 @@ impl ClientShellState {
             return false;
         }
         *label_lookup_id = None;
+        let Ok(shepr_api::schema::ResponseResult::WorkspaceCheckoutRoot { root, home }) = result
+        else {
+            return false;
+        };
+        let Some(cwd) = cwd.as_deref() else {
+            return false;
+        };
+        // Only a cwd outside Git can be labelled `~`.
+        let home = if root.is_none() { home } else { None };
+        let label = shepr_core::workspace_label::workspace_label_from_cwd(
+            std::path::Path::new(cwd),
+            root.as_deref().map(std::path::Path::new),
+            home.as_deref().map(std::path::Path::new),
+        );
         if rename.input.as_str() == suggested_name.as_str() {
             rename.input = TextEditor::new(&label, true);
         }

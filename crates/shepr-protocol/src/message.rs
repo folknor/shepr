@@ -73,15 +73,6 @@ impl std::fmt::Display for ShutdownReason {
 /// Messages sent from the server to the client over the client protocol socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
-    /// Terminal-client handshake response. A client-owned shell is answered
-    /// with `EndpointWelcome` instead; errors report why the server rejected
-    /// the hello.
-    Welcome {
-        /// If present, the handshake failed and this describes why.
-        /// The client should exit with a clear error message.
-        error: Option<HandshakeRefusal>,
-    },
-
     /// Server is shutting down. Clients should exit gracefully.
     ServerShutdown {
         /// Optional reason for the shutdown.

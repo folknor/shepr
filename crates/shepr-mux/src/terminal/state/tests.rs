@@ -3107,14 +3107,6 @@ fn detected_agent_clear_does_not_clear_current_session_ref() {
 }
 
 #[test]
-fn launch_command_alone_does_not_make_a_terminal_an_agent() {
-    let mut terminal = test_terminal();
-    terminal.launch_argv = Some(vec!["just".into(), "dev".into()]);
-
-    assert!(!terminal.is_agent_terminal());
-}
-
-#[test]
 fn process_exit_clears_matching_persisted_session_ref() {
     let mut terminal = test_terminal();
     let session_ref =

@@ -23,7 +23,6 @@ impl TerminalState {
             stale_full_lifecycle_hook_sessions: HashMap::new(),
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
-            launch_argv: None,
             recent_agent_process_exit: None,
             pending_agent_resume_plan: None,
             restore_error: None,

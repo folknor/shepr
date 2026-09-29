@@ -5,7 +5,9 @@ use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-pub(super) const LOCK_FILE_NAME: &str = "session.lock";
+/// The name is owned by `shepr-config`, where a stop (which does not link this
+/// crate) finds the same file to wait for its release.
+pub(super) const LOCK_FILE_NAME: &str = shepr_config::DATA_DIR_LEASE_FILE_NAME;
 
 /// Acquired before restore and held through the final save. Possession of this
 /// value is required to construct a session writer.

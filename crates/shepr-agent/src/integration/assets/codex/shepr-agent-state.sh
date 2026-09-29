@@ -27,7 +27,6 @@ command -v python3 >/dev/null 2>&1 || exit 0
 SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
-import random
 import socket
 import time
 
@@ -58,8 +57,8 @@ hook_event_name = str(hook_input.get("hook_event_name") or "")
 if hook_event_name and hook_event_name != "SessionStart":
     raise SystemExit(0)
 
-request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 report_seq = time.time_ns()
+request_id = f"{source}:{report_seq}"
 session_id = hook_input.get("session_id")
 agent_session_id = session_id if isinstance(session_id, str) and session_id else None
 transcript_path = hook_input.get("transcript_path")

@@ -11,15 +11,13 @@ use crate::limits::{
     ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, STABLE_CONNECTION_PERIOD,
 };
 use interprocess::TryClone as _;
-use shepr_protocol::ClientSurfaceSize;
 
 // An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
-    pub(crate) geometry: shepr_core::geometry::HostGeometry,
-    pub(crate) surface_size: ClientSurfaceSize,
+    pub(crate) geometry: crate::handshake::HandshakeGeometry,
     pub(crate) mouse_capture: bool,
 }
 
@@ -73,7 +71,7 @@ impl EndpointSupervisorEvent {
     }
 }
 
-/// A saved machine's connector, boxed so the events and targets that carry
+/// A configured machine's connector, boxed so the events and targets that carry
 /// it between the loop and an attempt stay small.
 type OwnedConnector = Box<shepr_remote::SavedSshConnector>;
 
@@ -86,7 +84,7 @@ enum ConnectTarget {
         path: PathBuf,
         mismatch_guidance: Arc<str>,
     },
-    /// One connector per saved machine with the same target: it carries the
+    /// One connector per configured machine with the same target: it carries the
     /// launch-time ssh settings, the temporary ssh config and the remembered remote
     /// executable from one attempt to the next. An attempt takes ownership and returns it
     /// in its event.
@@ -142,7 +140,7 @@ impl ReconnectState {
 
 pub(crate) struct EndpointSupervisors {
     endpoints: HashMap<ClientEndpointId, ReconnectState>,
-    /// Launch-time ssh settings (config is read once), applied to every saved machine.
+    /// Launch-time ssh settings (config is read once), applied to every configured machine.
     ssh_settings: shepr_remote::SavedSshSettings,
     paths: shepr_config::AppPaths,
     next_generation: shepr_protocol::ConnectionGeneration,
@@ -487,7 +485,6 @@ fn establish(
     super::super::do_handshake(
         &mut stream,
         options.geometry,
-        options.surface_size,
         options.mouse_capture,
         false,
         Some(deadline),
@@ -532,7 +529,7 @@ fn establish(
 }
 
 /// `mismatch_guidance` is the Local endpoint's way out of a build mismatch;
-/// a saved machine has none here, its bridge reports its own.
+/// a configured machine has none here, its bridge reports its own.
 fn handshake_error(error: crate::ClientError, mismatch_guidance: Option<&str>) -> std::io::Error {
     use crate::ClientError;
     use shepr_protocol::FramingError;
@@ -591,7 +588,7 @@ const HANDSHAKE_CONTEXT: &str = "handshake failed";
 
 /// The Local endpoint's build-mismatch diagnostic, on one line for the
 /// endpoint status: both builds, then the guidance the launch
-/// check prints when no saved machines keep the client running.
+/// check prints when no configured machines keep the client running.
 fn local_build_mismatch(running: &str, guidance: &str) -> String {
     format!(
         "build mismatch: the Local server runs shepr build {running}; this client is build {}. {}",
@@ -662,7 +659,7 @@ mod tests {
             .expect("test precondition");
         state.generation = Some(shepr_protocol::ConnectionGeneration::new(2));
         let ConnectTarget::Ssh { connector, .. } = &mut state.target else {
-            panic!("saved machine must have an SSH target");
+            panic!("a configured machine must have an SSH target");
         };
         let connector = connector.take().expect("test connector is present");
         assert!(matches!(
@@ -885,7 +882,7 @@ mod tests {
         ))
     }
 
-    /// With saved machines the launch check's refusal cannot fail the launch,
+    /// With configured machines the launch check's refusal cannot fail the launch,
     /// so the Local endpoint's own diagnostic carries it: both builds, the
     /// forced stop and the plain attach command.
     #[test]
@@ -927,7 +924,7 @@ mod tests {
         assert!(!message.contains('\n'), "{message}");
     }
 
-    /// A saved machine's mismatch keeps the generic preamble text; its bridge
+    /// A configured machine's mismatch keeps the generic preamble text; its bridge
     /// and remote checks report the machine-specific way out.
     #[test]
     fn a_machine_build_mismatch_keeps_the_preamble_text() {

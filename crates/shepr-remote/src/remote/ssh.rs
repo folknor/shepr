@@ -1,17 +1,14 @@
 use super::*;
 
-use super::process::{PipeCapture, PipeEcho, wait_with_output_timeout};
+use super::process::wait_with_output_timeout;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
-use crate::limits::{
-    NONINTERACTIVE_SSH_COMMAND_TIMEOUT, PIPE_DRAIN_GRACE, REMOTE_STDERR_FILTER_BUFFER_BYTES,
-    SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
-};
+use crate::limits::NONINTERACTIVE_SSH_COMMAND_TIMEOUT;
 
 pub(super) mod ssh_options {
     use std::process::Command;
@@ -272,64 +269,40 @@ pub(super) fn authentication_command_with_config(
     }
 }
 
+/// A configured machine's ssh, always noninteractive (BatchMode): every
+/// command it builds fails rather than prompting. Interactive authentication
+/// goes through [`ssh_authentication_command`], not this type.
 pub(crate) struct RemoteSsh {
     target: SshTarget,
     managed_config: Option<ManagedSshConfig>,
-    noninteractive: bool,
-    /// Bounds noninteractive commands launched by `sh_output` and
-    /// `framed_user_shell_output`: each gets
-    /// the shorter of its own timeout and the time left, and none starts once it has passed.
-    /// A saved-machine connection attempt sets it so discovery cannot outlast its budget.
+    /// Bounds commands launched by `sh_output` and `posix_user_shell_output`:
+    /// each gets the shorter of its own timeout and the time left, and none
+    /// starts once it has passed. A machine connection attempt sets it so
+    /// discovery cannot outlast its budget.
     attempt_deadline: Option<Instant>,
 }
 
 impl RemoteSsh {
-    pub(super) fn new(
-        target: SshTarget,
-        manage_ssh_config: bool,
-        paths: &shepr_config::AppPaths,
-    ) -> io::Result<Self> {
-        let control_dir = if manage_ssh_config {
-            Some(SshControlDir::runtime(paths)?)
-        } else {
-            None
-        };
-        Self::with_control_dir(target, control_dir, paths)
-    }
-
-    /// As [`RemoteSsh::new`], with the managed config's control directory
-    /// given: `None` leaves the user's SSH config unmanaged.
-    pub(super) fn with_control_dir(
-        target: SshTarget,
-        control_dir: Option<SshControlDir<'_>>,
-        paths: &shepr_config::AppPaths,
-    ) -> io::Result<Self> {
-        let managed_config = match control_dir {
-            Some(control_dir) => Some(write_managed_ssh_config(
-                target.as_str(),
-                paths,
-                control_dir,
-            )?),
-            None => None,
-        };
-
-        Ok(Self {
-            target,
-            managed_config,
-            noninteractive: false,
-            attempt_deadline: None,
-        })
-    }
-
     /// For long-lived callers that already hold the launch-time config.
     pub(crate) fn new_noninteractive_with(
         target: SshTarget,
         manage_ssh_config: bool,
         paths: &shepr_config::AppPaths,
     ) -> io::Result<Self> {
-        let mut ssh = Self::new(target, manage_ssh_config, paths)?;
-        ssh.noninteractive = true;
-        Ok(ssh)
+        let managed_config = if manage_ssh_config {
+            Some(write_managed_ssh_config(
+                target.as_str(),
+                paths,
+                SshControlDir::runtime(paths)?,
+            )?)
+        } else {
+            None
+        };
+        Ok(Self {
+            target,
+            managed_config,
+            attempt_deadline: None,
+        })
     }
 
     pub(crate) fn set_attempt_deadline(&mut self, deadline: Option<Instant>) {
@@ -358,17 +331,10 @@ impl RemoteSsh {
     }
 
     pub(super) fn command(&self) -> Command {
-        let mut command = self.base_command();
-        if self.noninteractive {
-            apply_noninteractive_ssh_options(&mut command);
-        }
-        command.arg("-T").arg(self.target.as_str());
-        command
-    }
-
-    pub(super) fn base_command(&self) -> Command {
         let mut command = ssh_command();
         apply_managed_ssh_options(&mut command, self.options());
+        apply_noninteractive_ssh_options(&mut command);
+        command.arg("-T").arg(self.target.as_str());
         command
     }
 
@@ -391,13 +357,6 @@ impl RemoteSsh {
             .stderr(Stdio::piped())
             .spawn()?;
 
-        if !self.noninteractive {
-            return normalize_remote_output(output_with_forwarded_stderr(
-                child,
-                Some(script.as_bytes()),
-            )?);
-        }
-
         let write_result = if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(script.as_bytes())
         } else {
@@ -411,125 +370,18 @@ impl RemoteSsh {
         normalize_remote_output(output)
     }
 
-    pub(super) fn framed_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
+    /// Runs `remote_command` under `/bin/sh` through the remote user's login
+    /// shell, so the command sees the user's `PATH`.
+    pub(super) fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
         let mut command = self.command();
         command
-            .arg(remote_command)
+            .arg(posix_remote_output_command(remote_command))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = if self.noninteractive {
-            // clock-io-ok: earlier SSH round trips may have used the attempt budget.
-            let timeout = self.noninteractive_timeout(Instant::now())?;
-            wait_with_output_timeout(command.spawn()?, timeout)
-        } else {
-            output_with_forwarded_stderr(command.spawn()?, None)
-        }?;
-        normalize_remote_output(output)
-    }
-
-    pub(super) fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
-        self.framed_user_shell_output(&posix_remote_output_command(remote_command))
-    }
-}
-
-// Only interactive setup uses this relay. Background probes retain their
-// capture-only timeout path so SSH diagnostics cannot overwrite the active TUI.
-pub(super) fn output_with_forwarded_stderr(
-    mut child: Child,
-    stdin: Option<&[u8]>,
-) -> io::Result<Output> {
-    let child_stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh command stderr missing"))?;
-    let child_stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh command stdout missing"))?;
-    // A ControlPersist master forked by this command may keep stderr open after the
-    // command exits; the capture stops waiting for it shortly after the exit.
-    let stdout_capture =
-        PipeCapture::spawn_tail(child_stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
-    let stderr_relay = PipeCapture::spawn(
-        PrintableRemoteStderr::new(child_stderr),
-        SSH_STDERR_CAPTURE_LIMIT,
-        PipeEcho::Stderr,
-    );
-
-    let write_result = if let Some(bytes) = stdin {
-        if let Some(mut child_stdin) = child.stdin.take() {
-            child_stdin.write_all(bytes)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "ssh bootstrap stdin missing",
-            ))
-        }
-    } else {
-        Ok(())
-    };
-    // OpenSSH points a daemonized master's stdin and stdout at /dev/null; only its
-    // stderr handling has varied between releases. Reader threads drain both pipes
-    // while retaining bounded output.
-    let status_result = child.wait();
-    let stdout_result = stdout_capture.finish(PIPE_DRAIN_GRACE);
-    let stderr_result = stderr_relay.finish(PIPE_DRAIN_GRACE);
-
-    let status = status_result?;
-    write_result?;
-    Ok(Output {
-        status,
-        stdout: stdout_result?,
-        stderr: stderr_result?,
-    })
-}
-
-/// Sanitizes untrusted SSH diagnostics before `PipeCapture` relays them to the
-/// local terminal, with the shared remote-text filter. Each chunk is filtered
-/// and handed on as soon as it is read, never held back for a line ending, so
-/// a prompt written without a trailing newline still appears at once.
-struct PrintableRemoteStderr<R> {
-    reader: R,
-    pending: Vec<u8>,
-    offset: usize,
-}
-
-impl<R> PrintableRemoteStderr<R> {
-    fn new(reader: R) -> Self {
-        Self {
-            reader,
-            pending: Vec::new(),
-            offset: 0,
-        }
-    }
-}
-
-impl<R: io::Read> io::Read for PrintableRemoteStderr<R> {
-    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
-        if destination.is_empty() {
-            return Ok(0);
-        }
-        // A chunk of only carriage returns filters to nothing; returning 0 for
-        // it would read as end of stream, so read on.
-        while self.offset == self.pending.len() {
-            let mut incoming = [0_u8; REMOTE_STDERR_FILTER_BUFFER_BYTES];
-            let read = io::Read::read(&mut self.reader, &mut incoming)?;
-            if read == 0 {
-                return Ok(0);
-            }
-            let printable = super::server_lifecycle::printable_remote_text(
-                &String::from_utf8_lossy(&incoming[..read]),
-            );
-            self.pending = printable.into_bytes();
-            self.offset = 0;
-        }
-
-        let available = self.pending.len() - self.offset;
-        let read = available.min(destination.len());
-        destination[..read].copy_from_slice(&self.pending[self.offset..self.offset + read]);
-        self.offset += read;
-        Ok(read)
+        // clock-io-ok: earlier SSH round trips may have used the attempt budget.
+        let timeout = self.noninteractive_timeout(Instant::now())?;
+        normalize_remote_output(wait_with_output_timeout(command.spawn()?, timeout)?)
     }
 }
 
@@ -734,12 +586,10 @@ impl RemoteSsh {
     pub(super) fn test_with_state(
         target: SshTarget,
         managed_config: Option<ManagedSshConfig>,
-        noninteractive: bool,
     ) -> Self {
         Self {
             target,
             managed_config,
-            noninteractive,
             attempt_deadline: None,
         }
     }
@@ -750,57 +600,6 @@ impl<'a> SshControlDir<'a> {
     /// A directory taken as given, for tests that never bind the socket.
     pub(super) fn unchecked(path: &'a Path) -> Self {
         Self { path }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::PrintableRemoteStderr;
-    use std::io::Read as _;
-
-    #[test]
-    fn interactive_remote_stderr_is_filtered_before_echo() {
-        let input = b"Connection refused\n\x1b[2J\n";
-        let mut reader = PrintableRemoteStderr::new(&input[..]);
-        let mut output = String::new();
-        reader
-            .read_to_string(&mut output)
-            .expect("read sanitized remote stderr");
-        assert_eq!(output, "Connection refused\n?[2J\n");
-        assert!(!output.contains('\x1b'));
-    }
-
-    #[test]
-    fn interactive_remote_stderr_passes_prompts_and_crlf_through_at_once() {
-        // A prompt with no line ending is handed on from the first read.
-        let prompt = b"Are you sure you want to continue connecting (yes/no)? ";
-        let mut reader = PrintableRemoteStderr::new(&prompt[..]);
-        let mut buffer = [0_u8; 256];
-        let read = reader.read(&mut buffer).expect("read prompt");
-        assert_eq!(&buffer[..read], &prompt[..]);
-
-        // OpenSSH's CRLF line endings lose the carriage return, including a
-        // chunk that holds nothing else.
-        let chunks = [&b"Warning: added host\r"[..], b"\r", b"\npassword: "];
-        let mut reader = PrintableRemoteStderr::new(ChunkedReader(chunks.iter()));
-        let mut output = String::new();
-        reader
-            .read_to_string(&mut output)
-            .expect("read sanitized remote stderr");
-        assert_eq!(output, "Warning: added host\npassword: ");
-    }
-
-    /// Returns one given chunk per read, as a pipe would.
-    struct ChunkedReader<'a>(std::slice::Iter<'a, &'a [u8]>);
-
-    impl std::io::Read for ChunkedReader<'_> {
-        fn read(&mut self, destination: &mut [u8]) -> std::io::Result<usize> {
-            let Some(chunk) = self.0.next() else {
-                return Ok(0);
-            };
-            destination[..chunk.len()].copy_from_slice(chunk);
-            Ok(chunk.len())
-        }
     }
 }
 

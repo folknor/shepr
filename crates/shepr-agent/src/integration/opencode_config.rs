@@ -145,66 +145,6 @@ fn prepare_plugin(
     })
 }
 
-pub(crate) fn remove_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<Vec<PathBuf>> {
-    let mut updated = Vec::new();
-    let mut errors = Vec::new();
-    for path in tui_config_paths(config_dir) {
-        match remove_plugin(&path, "plugin", plugin_spec) {
-            Ok(true) => updated.push(path),
-            Ok(false) => {}
-            Err(err) => errors.push(err.to_string()),
-        }
-    }
-    if errors.is_empty() {
-        Ok(updated)
-    } else {
-        Err(io::Error::other(errors.join("; ")))
-    }
-}
-
-pub(crate) fn remove_cli_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<bool> {
-    remove_plugin(
-        &config_dir.join(super::OPENCODE_CLI_CONFIG_NAME),
-        "plugins",
-        plugin_spec,
-    )
-}
-
-fn remove_plugin(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
-    check_config_target(config_path)?;
-    let _update_lock = lock_config_for_update(config_path)?;
-    let Some(content) = read_if_file(config_path)? else {
-        return Ok(false);
-    };
-    let root = parse_root(&content, config_path)?;
-    let object = root_object(&root, config_path)?;
-    let Some(property) = object.get(key) else {
-        return Ok(false);
-    };
-    let plugins = property
-        .array_value()
-        .ok_or_else(|| invalid_plugin_list(config_path))?;
-    let mut removed = false;
-    for entry in plugins.elements() {
-        if entry
-            .to_serde_value()
-            .is_some_and(|entry| plugin_entry_matches(&entry, plugin_spec))
-        {
-            entry.remove();
-            removed = true;
-        }
-    }
-    if !removed {
-        return Ok(false);
-    }
-    if plugins.elements().is_empty() {
-        property.remove();
-    }
-
-    write_config(config_path, root.to_string())?;
-    Ok(true)
-}
-
 pub(crate) fn tui_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> bool {
     tui_config_paths(config_dir)
         .iter()
@@ -384,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn add_and_remove_tui_plugin_preserves_jsonc_config() {
+    fn add_tui_plugin_preserves_jsonc_config() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let config_path = dir.join("tui.jsonc");
@@ -415,19 +355,6 @@ mod tests {
             ])
         );
 
-        assert_eq!(
-            remove_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition"),
-            vec![config_path.clone()]
-        );
-        let removed_content = fs::read_to_string(&config_path).expect("test precondition");
-        assert!(removed_content.contains("// Keep this comment."));
-        let removed = parse_config(&config_path);
-        assert_eq!(removed["theme"], "system");
-        assert_eq!(
-            removed["plugin"],
-            json!(["example", ["configured", {"enabled": true}]])
-        );
-
         fs::remove_dir_all(dir).expect("test precondition");
     }
 
@@ -451,22 +378,6 @@ mod tests {
             parse_config(&config_path),
             json!({ "plugin": ["./shepr-tui-state.js"] })
         );
-
-        fs::remove_dir_all(dir).expect("test precondition");
-    }
-
-    #[test]
-    fn remove_tui_plugin_leaves_empty_managed_config() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let dir = unique_dir();
-        let config_path = add_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition");
-
-        assert_eq!(
-            remove_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition"),
-            vec![config_path.clone()]
-        );
-        assert!(fs::metadata(&config_path).expect("stat config").is_file());
-        assert_eq!(parse_config(&config_path), json!({}));
 
         fs::remove_dir_all(dir).expect("test precondition");
     }
@@ -499,10 +410,6 @@ mod tests {
         .expect("test precondition");
 
         assert!(tui_plugin_is_configured(&dir, "./shepr-tui-state.js"));
-        assert_eq!(
-            remove_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition"),
-            vec![dir.join("tui.jsonc")]
-        );
 
         fs::remove_dir_all(dir).expect("test precondition");
     }
@@ -524,14 +431,13 @@ mod tests {
             2
         );
         assert_eq!(parse_config(&path)["plugins"][0]["options"]["custom"], true);
-        assert!(remove_cli_plugin(&dir, "./shepr-opencode").expect("test precondition"));
-        assert_eq!(parse_config(&path)["plugins"], json!(["example"]));
         assert_eq!(parse_config(&path)["theme"]["name"], "catppuccin");
-        add_cli_plugin(&dir, &state, "./shepr-opencode").expect("test precondition");
+        let registered = parse_config(&path);
         add_cli_plugin(&dir, &state, "./shepr-opencode").expect("test precondition");
         assert_eq!(
-            parse_config(&path)["plugins"],
-            json!(["example", "./shepr-opencode"])
+            parse_config(&path),
+            registered,
+            "a repeat registration is a no-op"
         );
         fs::remove_dir_all(dir).expect("test precondition");
         fs::remove_dir_all(state).expect("test precondition");

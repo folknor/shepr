@@ -109,20 +109,6 @@ impl App {
         else {
             return Err(pane_not_found(Some(&params.pane_id)));
         };
-        let before = runtime.content_seq();
-        if params
-            .content_revision
-            .is_some_and(|revision| revision != before || !before.is_multiple_of(2))
-        {
-            return failure(
-                shepr_api::error::ApiErrorCode::StaleContent,
-                "pane content changed",
-            );
-        }
-        let origin = runtime
-            .scroll_metrics()
-            .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin);
-        let absolute_cursor_row = params.cursor.row.absolute(origin);
         let target = match params.motion {
             PaneCopyMotion::LineEnd | PaneCopyMotion::FirstNonBlank => {
                 let width = runtime
@@ -130,8 +116,8 @@ impl App {
                     .map_or(1, |(cols, _)| cols.max(1));
                 let selection = shepr_vt::selection::Selection::range(
                     pane_id,
-                    shepr_vt::Point::new(absolute_cursor_row, 0),
-                    shepr_vt::Point::new(absolute_cursor_row, width.saturating_sub(1)),
+                    shepr_vt::Point::new(params.cursor.row, 0),
+                    shepr_vt::Point::new(params.cursor.row, width.saturating_sub(1)),
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
                     return failure(
@@ -188,20 +174,12 @@ impl App {
                     },
                 ),
         };
-        let after = runtime.content_seq();
-        if params.content_revision.is_some() && after != before {
-            return failure(
-                shepr_api::error::ApiErrorCode::StaleContent,
-                "pane content changed",
-            );
-        }
         success(ResponseResult::PaneCopyMotion {
             pane_id: params.pane_id,
-            cursor: shepr_api::schema::PaneTextPoint {
+            cursor: PaneTextPoint {
                 row: target.row,
                 col: target.col,
             },
-            content_revision: after,
         })
     }
 
@@ -222,13 +200,6 @@ impl App {
             return failure(
                 shepr_api::error::ApiErrorCode::QueryTooLarge,
                 "copy search query is too large",
-            );
-        }
-        let before = runtime.content_seq();
-        if before != params.content_revision || !before.is_multiple_of(2) {
-            return failure(
-                shepr_api::error::ApiErrorCode::StaleContent,
-                "pane content changed",
             );
         }
         let cursor = shepr_mux::pane::TerminalTextPoint {
@@ -259,13 +230,6 @@ impl App {
             previous,
             MAX_RETURNED_MATCHES,
         );
-        let after = runtime.content_seq();
-        if after != before || !after.is_multiple_of(2) {
-            return failure(
-                shepr_api::error::ApiErrorCode::StaleContent,
-                "pane content changed",
-            );
-        }
         let matches = result
             .matches
             .into_iter()
@@ -282,7 +246,6 @@ impl App {
             .collect();
         success(ResponseResult::PaneCopySearch {
             pane_id: params.pane_id,
-            content_revision: after,
             matches,
             total: u64::try_from(result.total).unwrap_or(u64::MAX),
             current: result.current.and_then(|index| u32::try_from(index).ok()),

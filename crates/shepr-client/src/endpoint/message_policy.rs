@@ -39,7 +39,6 @@ impl PresentationGate {
                 | ServerMessage::PresentationReady(_)
                 | ServerMessage::HealthPong
                 | ServerMessage::ServerShutdown { .. }
-                | ServerMessage::Welcome { .. }
         ) {
             return PresentationDecision::Apply;
         }

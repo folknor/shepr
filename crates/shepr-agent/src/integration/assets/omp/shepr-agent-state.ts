@@ -55,7 +55,7 @@ async function sendRequestNow(request: unknown): Promise<void> {
   if (await sendRequestAttempt(request, 500)) {
     return;
   }
-  await sendRequestAttempt(request, 1500);
+  await sendRequestAttempt(request, 500);
 }
 
 function sendRequest(request: unknown): Promise<void> {
@@ -157,14 +157,15 @@ function reportSession(sessionStartSource = "startup"): Promise<void> {
     return Promise.resolve();
   }
 
+  const seq = nextReportSeq();
   return sendRequest({
-    id: `${source}:session:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    id: `${source}:${seq}`,
     method: "pane.report_agent_session",
     params: {
       pane_id: paneId,
       source,
       agent: "omp",
-      seq: nextReportSeq(),
+      seq,
       session_start_source: sessionStartSource,
       ...sessionRef,
     },
@@ -173,7 +174,7 @@ function reportSession(sessionStartSource = "startup"): Promise<void> {
 
 function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<void> {
   return sendRequest({
-    id: `${source}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    id: `${source}:${seq}`,
     method: "pane.report_agent",
     params: withSessionRef({
       pane_id: paneId,

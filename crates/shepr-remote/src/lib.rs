@@ -37,9 +37,7 @@ pub use crate::machine::SshTarget;
 pub use args::*;
 pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
-pub use launch::{
-    RemoteStop, check_saved_ssh, interactive_shell_command, shell_quote, stop_remote_server,
-};
+pub use launch::{RemoteStop, interactive_shell_command, shell_quote, stop_remote_server};
 pub use preflight::{
     MachineCheck, PreflightOutcome, PreflightSsh, RestartDecision, RestartResult,
     SavedSshPreflight, classify_check, preflight, restart_different_builds,
@@ -233,13 +231,13 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
     )
 }
 
-/// Operator hint lines for a failed saved-machine SSH operation, one per
+/// Operator hint lines for a failed configured-machine SSH operation, one per
 /// line and without a trailing newline. Empty when there is no hint. The
 /// binary renders them; this crate does not print.
 pub fn saved_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
     if err.is_host_key() {
         vec![
-            "hint: saved machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
+            "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
                 .to_string(),
         ]
     } else {

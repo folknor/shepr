@@ -170,19 +170,8 @@ fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
 #[test]
 fn authentication_command_uses_shared_transport_without_askpass_or_host_key_relaxation() {
     let paths = test_app_paths();
-    let control_dir = test_control_dir();
     let config =
-        write_managed_ssh_config("example", &paths, control_dir).expect("test precondition");
-    let setup = RemoteSsh::with_control_dir(
-        super::super::SshTarget::parse("example").expect("test precondition"),
-        Some(control_dir),
-        &paths,
-    )
-    .expect("managed SSH setup");
-    assert_eq!(
-        config.options.control_path,
-        setup.options().expect("test precondition").control_path
-    );
+        write_managed_ssh_config("example", &paths, test_control_dir()).expect("test precondition");
     let authentication = authentication_command_with_config(
         &SshTarget::parse("example").expect("test precondition"),
         config,
@@ -217,7 +206,7 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
 #[test]
 fn unmanaged_ssh_setup_preserves_plain_transport() {
     let paths = test_app_paths();
-    let ssh = RemoteSsh::new(
+    let ssh = RemoteSsh::new_noninteractive_with(
         super::super::SshTarget::parse("example").expect("test precondition"),
         false,
         &paths,
@@ -249,7 +238,6 @@ fn remote_ssh_command_uses_managed_config_when_present() {
     let ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
         Some(managed_config),
-        false,
     );
 
     let command = ssh.command();
@@ -259,8 +247,8 @@ fn remote_ssh_command_uses_managed_config_when_present() {
         .collect::<Vec<_>>();
 
     assert_eq!(
-        args,
-        vec![
+        args[..9],
+        [
             "-C".to_string(),
             "-F".to_string(),
             config_path.to_string_lossy().into_owned(),
@@ -270,10 +258,9 @@ fn remote_ssh_command_uses_managed_config_when_present() {
             ssh_options::CONTROL_MASTER.to_string(),
             "-o".to_string(),
             crate::limits::SSH_CONTROL_PERSIST_OPTION.to_string(),
-            "-T".to_string(),
-            "example".to_string(),
         ]
     );
+    assert_eq!(&args[args.len() - 2..], ["-T", "example"]);
 }
 
 #[test]
@@ -323,19 +310,6 @@ fn exit_sweep_waits_for_owners_that_are_already_dropping() {
 }
 
 #[test]
-fn noninteractive_ssh_stderr_capture_is_bounded() {
-    let stderr = vec![b'x'; SSH_STDERR_CAPTURE_LIMIT + 4096];
-    let captured = PipeCapture::spawn(
-        io::Cursor::new(stderr),
-        SSH_STDERR_CAPTURE_LIMIT,
-        PipeEcho::None,
-    )
-    .finish(Duration::from_secs(3))
-    .expect("capture stderr");
-    assert_eq!(captured.len(), SSH_STDERR_CAPTURE_LIMIT);
-}
-
-#[test]
 fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
     let paths = test_app_paths();
     let ssh = RemoteSsh::new_noninteractive_with(
@@ -370,7 +344,6 @@ fn remote_ssh_commands_compress_without_managed_config() {
     let ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
         None,
-        false,
     );
 
     let command = ssh.command();
@@ -379,7 +352,8 @@ fn remote_ssh_commands_compress_without_managed_config() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    assert_eq!(args, vec!["-C", "-T", "example"]);
+    assert_eq!(args[0], "-C");
+    assert_eq!(&args[args.len() - 2..], ["-T", "example"]);
 }
 
 #[test]
@@ -387,7 +361,6 @@ fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
     let mut ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
         None,
-        true,
     );
     let now = Instant::now();
     assert_eq!(

@@ -127,7 +127,7 @@ fn search_primary(
     buffer: &OwnedTextBuffer,
     query: &str,
     case_sensitive: bool,
-) -> Vec<TerminalTextMatch<AbsRow>> {
+) -> Vec<TerminalTextMatch> {
     buffer
         .search_window(
             query,
@@ -477,13 +477,14 @@ fn live_terminal_word_motion_expands_across_long_blank_history() {
     for _ in 0..80 {
         terminal.write(b"\r\n");
     }
-    let last_row = ScreenRow(terminal.total_rows().saturating_sub(1));
+    let last_row =
+        terminal.absolute_row_for_screen(ScreenRow(terminal.total_rows().saturating_sub(1)));
     let pane = PaneTerminal::new(terminal);
 
     assert_eq!(
         pane.word_motion_target(last_row, 0, TerminalWordMotion::PreviousStart),
         Some(TerminalTextPoint {
-            row: ScreenRow(0),
+            row: AbsRow(0),
             col: 0,
         })
     );
@@ -501,7 +502,7 @@ fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
             true,
             TerminalSearchDirection::Forward,
             TerminalTextPoint {
-                row: ScreenRow(0),
+                row: AbsRow(0),
                 col: 0,
             },
             None,
@@ -532,7 +533,7 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
             true,
             TerminalSearchDirection::Forward,
             TerminalTextPoint {
-                row: ScreenRow(0),
+                row: AbsRow(0),
                 col: 0,
             },
             None,
@@ -3555,10 +3556,10 @@ fn trim_trailing_blank_rows_drops_empty_viewport_tail() {
     assert_eq!(rows, vec!["hello".to_string()]);
 }
 
-/// Once history is full every line of output evicts one: screen rows
-/// drift onto other lines, absolute rows stay on theirs.
+/// Once history is full every line of output evicts one; absolute rows still
+/// name the lines they named before.
 #[test]
-fn absolute_rows_survive_eviction_where_screen_rows_drift() {
+fn absolute_rows_survive_eviction() {
     // One byte of budget buys the minimum history.
     let mut terminal = shepr_vt::Terminal::new(10, 3, 1);
     write_numbered_lines(&mut terminal, 1_100);
@@ -3578,7 +3579,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     );
 
     // Line i was written on absolute row i.
-    let found = pane.search_text_window_absolute(
+    let found = pane.search_text_window(
         "001050",
         true,
         TerminalSearchDirection::Forward,
@@ -3617,21 +3618,14 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
         Some("001050")
     );
     assert_eq!(
-        pane.word_motion_target_absolute(line, 0, TerminalWordMotion::NextEnd),
+        pane.word_motion_target(line, 0, TerminalWordMotion::NextEnd),
         Some(TerminalTextPoint { row: line, col: 5 })
     );
-    // The screen-row entry points agree with the absolute ones at the
-    // moment they are called.
     let origin = pane
         .scroll_position()
         .expect("test precondition")
         .metrics
         .history_origin;
-    let now = line.screen_row(origin).expect("line remains retained");
-    assert_eq!(
-        pane.word_motion_target(now, 0, TerminalWordMotion::NextEnd),
-        Some(TerminalTextPoint { row: now, col: 5 })
-    );
 
     // An evicted row is refused rather than read.
     let evicted = origin.saturating_sub(1);
@@ -3642,10 +3636,10 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     );
     assert_eq!(pane.extract_selection(&gone), None);
     assert_eq!(
-        pane.word_motion_target_absolute(evicted, 0, TerminalWordMotion::NextStart),
+        pane.word_motion_target(evicted, 0, TerminalWordMotion::NextStart),
         None
     );
-    assert_eq!(pane.paragraph_motion_target_absolute(evicted, 1), None);
+    assert_eq!(pane.paragraph_motion_target(evicted, 1), None);
 }
 
 #[test]
@@ -3654,26 +3648,19 @@ fn paragraph_motion_finds_blank_rows_by_absolute_row() {
     write_numbered_lines(&mut terminal, 1_100);
     terminal.write(b"\r\npara\r\ngraph");
     let pane = PaneTerminal::new(terminal);
-    let origin = pane
-        .scroll_position()
-        .expect("test precondition")
-        .metrics
-        .history_origin;
+    assert!(
+        pane.scroll_position()
+            .expect("test precondition")
+            .metrics
+            .history_origin
+            > AbsRow(0),
+        "history must be full"
+    );
     // Rows: ..., 001099 on row 1099, blank on 1100, "para" on 1101.
     assert_eq!(
-        pane.paragraph_motion_target_absolute(AbsRow(1_101), -1),
+        pane.paragraph_motion_target(AbsRow(1_101), -1),
         Some(TerminalTextPoint {
             row: AbsRow(1_100),
-            col: 0
-        })
-    );
-    let para = AbsRow(1_101)
-        .screen_row(origin)
-        .expect("row remains retained");
-    assert_eq!(
-        pane.paragraph_motion_target(para, -1),
-        Some(TerminalTextPoint {
-            row: ScreenRow(para.0 - 1),
             col: 0
         })
     );
@@ -3723,10 +3710,10 @@ fn chunked_search_matches_a_whole_buffer_search() {
             None,
             16,
         );
-        let actual = pane.search_text_window_absolute(query, true, direction, cursor, None, 16);
+        let actual = pane.search_text_window(query, true, direction, cursor, None, 16);
         assert_eq!(actual, expected, "{query} {direction:?} from {cursor:?}");
     }
-    let word = pane.search_text_window_absolute(
+    let word = pane.search_text_window(
         "abcdefghijklmnopqrstuvwxyz",
         true,
         TerminalSearchDirection::Forward,
@@ -3753,7 +3740,7 @@ fn chunked_search_matches_a_whole_buffer_search() {
 /// complete match list, for every target position and window size.
 #[test]
 fn match_window_agrees_with_the_complete_match_list() {
-    let all: Vec<TerminalTextMatch<AbsRow>> = (0..40u64)
+    let all: Vec<TerminalTextMatch> = (0..40u64)
         .map(|row| TerminalTextMatch {
             start: TerminalTextPoint {
                 row: AbsRow(row),
@@ -3768,36 +3755,35 @@ fn match_window_agrees_with_the_complete_match_list() {
             scan_screen: shepr_vt::ActiveScreen::Primary,
         })
         .collect();
-    let complete =
-        |direction: TerminalSearchDirection, origin: TerminalTextPoint<AbsRow>, limit: usize| {
-            let mut target = None;
-            for (index, text_match) in all.iter().enumerate() {
-                match direction {
-                    TerminalSearchDirection::Forward
-                        if target.is_none() && text_match.start > origin =>
-                    {
-                        target = Some(index);
-                    }
-                    TerminalSearchDirection::Backward if text_match.end < origin => {
-                        target = Some(index);
-                    }
-                    _ => {}
+    let complete = |direction: TerminalSearchDirection, origin: TerminalTextPoint, limit: usize| {
+        let mut target = None;
+        for (index, text_match) in all.iter().enumerate() {
+            match direction {
+                TerminalSearchDirection::Forward
+                    if target.is_none() && text_match.start > origin =>
+                {
+                    target = Some(index);
                 }
+                TerminalSearchDirection::Backward if text_match.end < origin => {
+                    target = Some(index);
+                }
+                _ => {}
             }
-            let total = all.len();
-            let target = target.unwrap_or(match direction {
-                TerminalSearchDirection::Forward => 0,
-                TerminalSearchDirection::Backward => total - 1,
-            });
-            let retained = limit.min(total);
-            let start = target.saturating_sub(retained / 2).min(total - retained);
-            TerminalSearchWindow {
-                matches: all[start..start + retained].to_vec(),
-                current: Some(target - start),
-                current_global: Some(target),
-                total,
-            }
-        };
+        }
+        let total = all.len();
+        let target = target.unwrap_or(match direction {
+            TerminalSearchDirection::Forward => 0,
+            TerminalSearchDirection::Backward => total - 1,
+        });
+        let retained = limit.min(total);
+        let start = target.saturating_sub(retained / 2).min(total - retained);
+        TerminalSearchWindow {
+            matches: all[start..start + retained].to_vec(),
+            current: Some(target - start),
+            current_global: Some(target),
+            total,
+        }
+    };
     for direction in [
         TerminalSearchDirection::Forward,
         TerminalSearchDirection::Backward,

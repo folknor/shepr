@@ -396,7 +396,6 @@ fn restored_terminal(
     if let Some(label) = pane.label.clone() {
         terminal.set_manual_label(label);
     }
-    terminal.launch_argv = pane.launch_argv.clone();
     let duplicate_agent_session = matches!(
         start,
         RestoredPaneStart::Running {
@@ -1111,7 +1110,7 @@ mod tests {
     /// a pane without a runtime keeps its saved screen history in later saves
     /// until a runtime of its own replaces it.
     #[tokio::test]
-    async fn restored_panes_keep_launch_argv_and_runtimeless_history() {
+    async fn restored_panes_keep_saved_fields_and_runtimeless_history() {
         // (resume agents, saved cwd missing, shell missing)
         for (resume, missing_cwd, missing_shell) in [
             (false, false, false),
@@ -1126,7 +1125,6 @@ mod tests {
                 .get_mut(&0)
                 .expect("test precondition");
             pane.label = Some("keep me".into());
-            pane.launch_argv = Some(vec!["just".into(), "dev".into()]);
             pane.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "shepr:codex".into(),
                 agent: shepr_agent::agent::Agent::Codex,
@@ -1187,11 +1185,6 @@ mod tests {
                 .values()
                 .next()
                 .expect("test precondition");
-            assert_eq!(
-                pane.launch_argv.as_deref(),
-                Some(["just".to_string(), "dev".to_string()].as_slice()),
-                "{case}"
-            );
             assert_eq!(pane.label.as_deref(), Some("keep me"), "{case}");
             assert_eq!(pane.cwd, saved_cwd, "{case}");
             assert_eq!(
@@ -1282,7 +1275,6 @@ mod tests {
             cwd,
             label: None,
             agent_session: None,
-            launch_argv: None,
         }
     }
 
@@ -1939,7 +1931,6 @@ mod tests {
                                 )
                                 .expect("test precondition"),
                             }),
-                            launch_argv: None,
                         },
                     )]),
                     zoomed: false,
@@ -2018,7 +2009,6 @@ mod tests {
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_session: None,
-                                launch_argv: None,
                             },
                         ),
                         (
@@ -2027,7 +2017,6 @@ mod tests {
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_session: None,
-                                launch_argv: None,
                             },
                         ),
                     ]),
@@ -2082,7 +2071,6 @@ mod tests {
             cwd: PathBuf::from("/"),
             label: None,
             agent_session: None,
-            launch_argv: None,
         };
         let tab = |layout: LayoutSnapshot, panes: &[u32]| TabSnapshot {
             custom_name: None,
@@ -2149,7 +2137,6 @@ mod tests {
                         cwd: PathBuf::from("/"),
                         label: None,
                         agent_session: None,
-                        launch_argv: None,
                     },
                 )]),
                 zoomed: false,
@@ -2187,7 +2174,6 @@ mod tests {
                     cwd: cwd.clone(),
                     label: None,
                     agent_session: None,
-                    launch_argv: None,
                 },
             )
         };
@@ -2200,7 +2186,6 @@ mod tests {
                 session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             }),
-            launch_argv: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2314,7 +2299,6 @@ mod tests {
                                 )
                                 .expect("test precondition"),
                             }),
-                            launch_argv: None,
                         },
                     )]),
                     zoomed: false,
@@ -2508,7 +2492,6 @@ mod tests {
                 cwd: cwd.clone(),
                 label: None,
                 agent_session: None,
-                launch_argv: None,
             },
         );
         let mut history = SessionHistorySnapshot {

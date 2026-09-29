@@ -33,31 +33,6 @@ pub(crate) fn ensure_hooks_object<'a>(
     })
 }
 
-pub(crate) fn hooks_object_if_present<'a>(
-    settings: &'a mut Value,
-    settings_path: &Path,
-    root_description: &str,
-    hooks_description: &str,
-) -> io::Result<Option<&'a mut Map<String, Value>>> {
-    let root = settings.as_object_mut().ok_or_else(|| {
-        io::Error::other(format!(
-            "{root_description} at {} must be a JSON object",
-            settings_path.display()
-        ))
-    })?;
-
-    let Some(hooks) = root.get_mut("hooks") else {
-        return Ok(None);
-    };
-
-    hooks.as_object_mut().map(Some).ok_or_else(|| {
-        io::Error::other(format!(
-            "{hooks_description} at {} must be a JSON object",
-            settings_path.display()
-        ))
-    })
-}
-
 pub(crate) fn ensure_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -111,7 +86,7 @@ pub(crate) fn ensure_command_hook(
 //   { "matcher": "...", "hooks": [{ "type": "command", ... }] }
 // Copilot uses the flatter settings shape:
 //   { "type": "command", "matcher": "...", "bash": "...", ... }
-// Keep the helpers separate so install/uninstall preserves unrelated hooks in
+// Keep the helpers separate so install preserves unrelated hooks in
 // each agent's native format instead of normalizing user configuration.
 // Appends unconditionally: the caller strips entries carrying the command
 // with `remove_flat_command_hook` first.
@@ -286,7 +261,7 @@ pub(crate) fn remove_direct_command_hook(
 
 // Cursor hooks.json uses the minimal shape `{ "command": "..." }` documented at
 // https://cursor.com/docs/hooks. Keep this separate from the nested codex and
-// flat copilot helpers so install/uninstall does not rewrite unrelated hooks.
+// flat copilot helpers so install does not rewrite unrelated hooks.
 // Appends unconditionally: the caller strips entries carrying the command
 // with `remove_simple_command_hook` first.
 pub(crate) fn ensure_simple_command_hook(

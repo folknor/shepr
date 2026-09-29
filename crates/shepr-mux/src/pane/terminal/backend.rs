@@ -440,22 +440,17 @@ impl PaneTerminal {
         Some(terminal_scroll_metrics(&core.terminal))
     }
 
-    pub(crate) fn history_origin(&self) -> Option<AbsRow> {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .map(|core| core.terminal.history_origin())
-    }
-
-    /// Chunked copy-mode search with stable absolute rows.
-    pub(crate) fn search_text_window_absolute(
+    /// Chunked copy-mode search. The terminal lock is released between
+    /// chunks; rows are absolute, so output meanwhile does not move them.
+    pub(crate) fn search_text_window(
         &self,
         query: &str,
         case_sensitive: bool,
         direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint<AbsRow>,
-        previous: Option<(TerminalTextPoint<AbsRow>, TerminalTextPoint<AbsRow>)>,
+        cursor: TerminalTextPoint,
+        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
         limit: usize,
-    ) -> TerminalSearchWindow<AbsRow> {
+    ) -> TerminalSearchWindow {
         let Some(mut search) =
             TextSearch::new(query, case_sensitive, direction, cursor, previous, limit)
         else {

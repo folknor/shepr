@@ -9,7 +9,13 @@ use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 // `ipc::bind_private_local_listener` in the server and API, and the peer check
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
-use crate::limits::{STOP_WAIT_POLL, STOP_WAIT_TIMEOUT};
+use crate::limits::{STOP_LEASE_WAIT_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT};
+
+/// The exit status `shepr server stop` ends with when no server is running at
+/// the address, so a caller that ran it over SSH can tell "the server already
+/// exited" from any other failure without parsing stderr.
+// limits-exempt: process exit status shared by the server stop command and its SSH caller.
+pub const NO_SERVER_EXIT_CODE: i32 = 4;
 
 /// The exit status `shepr server stop --expect-boot` ends with when the server
 /// that answered is not the boot it named, so a caller that ran it over SSH can
@@ -33,6 +39,13 @@ pub enum ServerStopError {
         label: String,
         timeout: Duration,
         reachable: Vec<PathBuf>,
+    },
+    /// The sockets are gone but the server still holds its data directory lease:
+    /// it is still saving its layout, or is stuck.
+    LeaseHeld {
+        label: String,
+        timeout: Duration,
+        path: PathBuf,
     },
     Io {
         context: String,
@@ -63,6 +76,11 @@ impl ServerStopError {
     /// boot; nothing was stopped.
     pub fn is_boot_mismatch(&self) -> bool {
         matches!(self, Self::BootMismatch { .. })
+    }
+
+    /// Whether the stop found no server at the address; nothing was stopped.
+    pub fn is_not_running(&self) -> bool {
+        matches!(self, Self::NotRunning { .. })
     }
 }
 
@@ -101,6 +119,16 @@ impl std::fmt::Display for ServerStopError {
                     .map(|path| path.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::LeaseHeld {
+                label,
+                timeout,
+                path,
+            } => write!(
+                f,
+                "{label} closed its sockets but still held {} {}ms later; it may still be saving its layout",
+                path.display(),
+                timeout.as_millis()
             ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
             Self::BootMismatch {
@@ -200,15 +228,20 @@ fn stop_active_server_with_timeout(
     stop_socket_with_timeout(
         &socket_path,
         &[socket_path.clone(), client_socket_path],
+        Some((&paths.data_dir_lease_path(), STOP_LEASE_WAIT_TIMEOUT)),
         timeout,
         "server",
         expected_boot_id,
     )
 }
 
+/// Stops the server at `socket_path` and waits until `stopped_socket_paths`
+/// are gone and, with `lease` (the lease file and how long to wait for it), the
+/// server has released its data directory lease as well.
 fn stop_socket_with_timeout(
     socket_path: &Path,
     stopped_socket_paths: &[PathBuf],
+    lease: Option<(&Path, Duration)>,
     timeout: Duration,
     label: &str,
     expected_boot_id: Option<&str>,
@@ -236,7 +269,49 @@ fn stop_socket_with_timeout(
             reachable,
         });
     }
+    if let Some((lease_path, lease_timeout)) = lease {
+        // clock-io-ok: the lease wait polls another process's lock.
+        let lease_deadline = Instant::now() + lease_timeout;
+        let released = wait_for_lease_release(lease_path, lease_deadline).map_err(|source| {
+            ServerStopError::Io {
+                context: format!(
+                    "could not check whether {label} released {}",
+                    lease_path.display()
+                ),
+                source,
+            }
+        })?;
+        if !released {
+            return Err(ServerStopError::LeaseHeld {
+                label: label.into(),
+                timeout: lease_timeout,
+                path: lease_path.into(),
+            });
+        }
+    }
     Ok(())
+}
+
+/// Waits until `deadline` for the data directory lease at `lease_path` to be
+/// free, by taking and dropping its lock. A directory with no lease file has
+/// never been served, so there is nothing to wait for (and nothing is created).
+fn wait_for_lease_release(lease_path: &Path, deadline: Instant) -> io::Result<bool> {
+    if !lease_path.try_exists()? {
+        return Ok(true);
+    }
+    loop {
+        match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
+            Ok(_free) => return Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+        // clock-io-ok: polls another process's lock while it shuts down.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        std::thread::sleep(STOP_WAIT_POLL.min(remaining));
+    }
 }
 
 fn send_stop_request(
@@ -726,6 +801,23 @@ mod tests {
         );
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
+    }
+
+    #[test]
+    fn lease_wait_sees_a_held_lease_and_its_release() {
+        let scratch = ScratchDir::new("stop-lease");
+        let lease_path = scratch.join("session.lock");
+        let soon = || Instant::now() + Duration::from_millis(60);
+
+        // No lease file: never served, nothing to wait for, nothing created.
+        assert!(wait_for_lease_release(&lease_path, soon()).expect("absent lease"));
+        assert!(!lease_path.try_exists().expect("test precondition"));
+
+        let held =
+            shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("hold the lease");
+        assert!(!wait_for_lease_release(&lease_path, soon()).expect("held lease"));
+        drop(held);
+        assert!(wait_for_lease_release(&lease_path, soon()).expect("released lease"));
     }
 
     #[test]

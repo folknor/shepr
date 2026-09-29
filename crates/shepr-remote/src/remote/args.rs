@@ -32,6 +32,7 @@ pub enum RemoteCliCommand<'a> {
     /// Stops only the server whose status reported this boot identity; a
     /// server of another boot refuses and keeps running, and the remote
     /// command then exits with `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE`.
+    /// With no server running it exits with `NO_SERVER_EXIT_CODE`.
     ServerStop {
         expected_boot: &'a str,
     },

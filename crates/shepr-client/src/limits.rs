@@ -110,7 +110,7 @@ pub(super) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 /// This is an overall deadline for the frame, not a per-read idle timeout.
 ///
 /// A local client talks to an already-connected server, so this deadline only
-/// needs room for the welcome response. A saved-machine endpoint shell that is
+/// needs room for the welcome response. A configured machine's endpoint shell that is
 /// not the active surface also waits on a fresh SSH connection, including key
 /// exchange and authentication, which needs more room on high-latency links.
 pub(super) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -184,7 +184,7 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// The case that can overrun is a cache miss or a stale remembered path on a slow link
 /// without connection sharing, where each of discovery's several round trips, a status
 /// probe per candidate, and the bridge each need their own cold connect.
-/// That case is handled by resuming, not by a larger budget: the saved-machine connector
+/// That case is handled by resuming, not by a larger budget: the machine connector
 /// keeps what discovery completed when an attempt ends on a timeout or other link
 /// failure (any other error clears it) and the next attempt continues from there, and it
 /// keeps a freshly discovered executable when only the bridge ran out of time. No

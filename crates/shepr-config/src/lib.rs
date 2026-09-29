@@ -32,7 +32,7 @@ pub use self::model::Config;
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::ConfigDiagnostic,
-    io::{AppPaths, BuildProfile, load_validated},
+    io::{AppPaths, BuildProfile, DATA_DIR_LEASE_FILE_NAME, load_validated},
     keybinds::{
         ActionKeybinds, BindingConfig, BindingKey, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,

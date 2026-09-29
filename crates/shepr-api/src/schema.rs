@@ -15,7 +15,6 @@ pub use panes::*;
 pub use response::*;
 pub use server::*;
 pub use session::*;
-pub use shepr_agent::agent::IntegrationTarget;
 pub use tabs::*;
 pub use workspaces::*;
 
@@ -157,6 +156,11 @@ define_methods! {
     WorkspaceRename(WorkspaceRenameParams) => "workspace.rename" {
         client_shell: true, mutates_ui: true, changes_topology: false,
         changes_geometry: false, claims_shell_geometry: true,
+        runs_on_socket_thread: false, routine: false,
+    };
+    WorkspaceCheckoutRoot(WorkspaceCheckoutRootParams) => "workspace.checkout_root" {
+        client_shell: true, mutates_ui: false, changes_topology: false,
+        changes_geometry: false, claims_shell_geometry: false,
         runs_on_socket_thread: false, routine: false,
     };
     WorkspaceMove(WorkspaceMoveParams) => "workspace.move" {

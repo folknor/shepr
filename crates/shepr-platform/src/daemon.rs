@@ -25,10 +25,12 @@ pub fn create_private_directory_all(path: &Path) -> io::Result<()> {
 /// a reader that went away. It is opened owner-only without following a
 /// symlink, and refused unless it is a regular file this user owns, so a
 /// planted link or foreign file in the runtime directory is never written
-/// through. It is emptied only after those checks.
+/// through. It is emptied only after those checks. It is opened for append, so
+/// the launcher can empty or inspect it through its own handle while the
+/// daemon keeps writing at the end.
 pub fn open_boot_log(path: &Path) -> io::Result<File> {
     let file = fs::OpenOptions::new()
-        .write(true)
+        .append(true)
         .create(true)
         .truncate(false)
         .mode(0o600)

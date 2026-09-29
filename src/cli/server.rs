@@ -31,7 +31,9 @@ pub(super) fn run_server_command(
 /// Skips the per-command build check: the build-mismatch error tells the user
 /// to stop the server, so this must be able to stop a server of another build,
 /// and it does so without further ceremony. Stopping ends every live pane in the
-/// server, which the operator asked for by running it.
+/// server, which the operator asked for by running it. With no server running
+/// it fails with `shepr_api::server_stop::NO_SERVER_EXIT_CODE`, and a refused
+/// conditional stop with `BOOT_MISMATCH_EXIT_CODE` (see `CliError::exit_code`).
 fn server_stop(
     paths: &super::target::CliContext,
     expected_boot: Option<&str>,

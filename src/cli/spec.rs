@@ -28,7 +28,6 @@ pub(super) fn command() -> Command {
         .subcommand(status_command())
         .subcommand(server_command())
         .subcommand(detect_command())
-        .subcommand(integration_command())
         .subcommand(
             Command::new(COMMAND_CLIENT)
                 .hide(true)
@@ -158,40 +157,6 @@ fn pane_id(value: &str) -> Result<String, String> {
         .map_err(|_| format!("{value:?} is not a pane id (expected e.g. w1:p1)"))
 }
 
-fn integration_command() -> Command {
-    group("integration")
-        .about("Manage built-in agent integrations")
-        .subcommand(
-            Command::new("install")
-                .about("Install an integration")
-                .arg(integration_target_arg()),
-        )
-        .subcommand(
-            Command::new("uninstall")
-                .about("Uninstall an integration")
-                .arg(integration_target_arg()),
-        )
-        .subcommand(
-            Command::new("status")
-                .about("Show integration status")
-                .arg(flag("outdated-only")),
-        )
-}
-
-fn integration_target_arg() -> Arg {
-    Arg::new("target")
-        .value_name("TARGET")
-        .required(true)
-        .value_parser(integration_target_values())
-}
-
-fn integration_target_values() -> Vec<&'static str> {
-    let values: Vec<&'static str> = shepr_api::schema::IntegrationTarget::all()
-        .map(shepr_agent::integration::integration_target_label)
-        .collect();
-    values
-}
-
 fn json_flag() -> Arg {
     flag(option_name_from_flag(FLAG_JSON))
 }
@@ -243,23 +208,6 @@ fn path_option(name: &'static str, value_name: &'static str) -> Arg {
 #[cfg(test)]
 mod tests {
     use clap::{Arg, ArgAction, Command};
-
-    fn command_path<'a>(cmd: &'a Command, path: &[&str]) -> &'a Command {
-        let mut current = cmd;
-        for name in path {
-            current = current
-                .get_subcommands()
-                .find(|subcommand| subcommand.get_name() == *name)
-                .unwrap_or_else(|| panic!("missing command path segment {name}"));
-        }
-        current
-    }
-
-    fn argument<'a>(cmd: &'a Command, id: &str) -> &'a Arg {
-        cmd.get_arguments()
-            .find(|arg| arg.get_id() == id)
-            .unwrap_or_else(|| panic!("missing argument {id}"))
-    }
 
     fn collect_subcommand_paths(
         cmd: &Command,
@@ -516,25 +464,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_matches_all_integration_targets() {
-        let cmd = super::command();
-        let install = command_path(&cmd, &["integration", "install"]);
-        let expected: Vec<String> = shepr_api::schema::IntegrationTarget::all()
-            .map(shepr_agent::integration::integration_target_label)
-            .map(str::to_string)
-            .collect();
-        assert_eq!(
-            argument(install, "target")
-                .get_value_parser()
-                .possible_values()
-                .expect("test precondition")
-                .map(|value| value.get_name().to_string())
-                .collect::<Vec<_>>(),
-            expected
-        );
-    }
-
-    #[test]
     fn spec_has_only_the_kept_command_groups() {
         let cmd = super::command();
         let mut names = cmd
@@ -547,7 +476,6 @@ mod tests {
             [
                 "client",
                 "detect",
-                "integration",
                 "remote-client-bridge",
                 "server",
                 "status",

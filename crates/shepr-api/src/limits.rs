@@ -64,6 +64,13 @@ pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// leaving time for orderly shutdown before reporting a stall.
 pub(crate) const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Maximum time a server stop waits, once the sockets are gone, for the server
+/// to release its data directory lease. The server closes its sockets first
+/// and releases the lease after the shutdown drain has saved its layout, so a
+/// stop that returned at the sockets would let a new server start into a held
+/// lease and exit at once.
+pub(crate) const STOP_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Poll interval while waiting for server sockets to disappear. It bounds
 /// shutdown detection latency without rapid repeated probes.
 pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);

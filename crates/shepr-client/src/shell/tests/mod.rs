@@ -181,7 +181,6 @@ fn copy_search_result(
     let total = matches.len() as u64;
     shepr_api::schema::ResponseResult::PaneCopySearch {
         pane_id: "w1:p1".into(),
-        content_revision: 0,
         matches,
         total,
         current,

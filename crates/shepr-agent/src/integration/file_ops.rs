@@ -4,22 +4,6 @@ use std::path::Path;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 
-pub(crate) fn remove_file_if_exists(path: &Path) -> io::Result<bool> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
-    }
-}
-
-pub(crate) fn remove_dir_all_if_exists(path: &Path) -> io::Result<bool> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
-    }
-}
-
 /// Whether `path` is a regular file (following symlinks). Absence is `false`;
 /// any other stat error (`EACCES`, `ELOOP`) is returned, not read as absence.
 pub(crate) fn is_file(path: &Path) -> io::Result<bool> {

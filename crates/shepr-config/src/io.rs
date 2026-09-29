@@ -17,6 +17,11 @@ include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 /// below the state directory of this name.
 const SHARED_APP_DIR_NAME: &str = "shepr";
 
+/// The lease file inside the data directory. The server locks it for as long as
+/// it owns the directory (`shepr-mux`'s `DataDirLease`), and a stop waits for
+/// its release. One name for both.
+pub const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
+
 /// The build profile a binary was compiled with, which decides where it keeps
 /// its runtime sockets and its saved layout and history.
 ///
@@ -189,6 +194,13 @@ impl AppPaths {
     /// sibling of it.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The lease file inside [`data_dir`](Self::data_dir): the server that holds
+    /// an exclusive lock on it owns the directory. It is never removed, so every
+    /// contender locks the same inode.
+    pub fn data_dir_lease_path(&self) -> PathBuf {
+        self.data_dir.join(DATA_DIR_LEASE_FILE_NAME)
     }
 
     /// The client-owned state directory beneath the shared application state

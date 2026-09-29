@@ -8,7 +8,7 @@ pub(crate) enum LocalFailurePolicy {
 }
 
 impl LocalFailurePolicy {
-    /// Resolve the client lifetime rule from its configured saved machines.
+    /// Resolve the client lifetime rule from its configured machines.
     pub(crate) fn for_machines(machines: &[shepr_config::MachineConfig]) -> Self {
         if !machines.is_empty() {
             Self::Reconnect

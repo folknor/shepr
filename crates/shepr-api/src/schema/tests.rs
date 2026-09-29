@@ -23,6 +23,7 @@ fn method_names_and_traits_share_unique_schema_entries() {
             "workspace.create",
             "workspace.focus",
             "workspace.rename",
+            "workspace.checkout_root",
             "workspace.move",
             "workspace.close",
             "tab.create",

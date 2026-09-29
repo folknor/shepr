@@ -9,7 +9,7 @@ use std::time::Duration;
 /// A running server of a different build fails the launch with guidance for
 /// the resolved socket target. The startup step before this one
 /// (`preflight::run`) has already offered to restart it; what reaches here is a
-/// server the operator kept, or one that could not be asked about. With saved machines configured, a
+/// server the operator kept, or one that could not be asked about. With machines configured, a
 /// local startup failure does not end the launch, so the remote machines stay
 /// reachable. It is still refused, not swallowed: the failure is printed to
 /// stderr before the TUI takes the terminal, where it is on screen again once
@@ -49,7 +49,7 @@ pub(crate) fn auto_detect_launch<T>(
             return Err(error);
         }
         // Keep the full refusal visible even though the client will remain open
-        // for saved machines; the endpoint state omits this startup detail.
+        // for the configured machines; the endpoint state omits this startup detail.
         crate::cli::print_notice(&local_startup_notice(&error));
     }
 
@@ -57,9 +57,9 @@ pub(crate) fn auto_detect_launch<T>(
 }
 
 /// What the operator is told when Local fails to start or is refused while
-/// saved machines keep the client running.
+/// configured machines keep the client running.
 fn local_startup_notice(error: &io::Error) -> String {
-    format!("shepr: Local is unavailable; saved machines stay available.\n{error}")
+    format!("shepr: Local is unavailable; configured machines stay available.\n{error}")
 }
 
 #[cfg(test)]
@@ -80,7 +80,10 @@ mod tests {
             )
         ));
         let notice = local_startup_notice(&error);
-        assert!(notice.contains("saved machines stay available"), "{notice}");
+        assert!(
+            notice.contains("configured machines stay available"),
+            "{notice}"
+        );
         assert!(notice.contains("`shepr server stop`"), "{notice}");
         assert!(!notice.contains("--force"), "{notice}");
     }

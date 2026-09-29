@@ -56,7 +56,7 @@ impl ClientShellState {
                 }
                 if action == shepr_termio::input::KeybindAction::NewWorkspace {
                     if self.config.prompt_new_workspace_name {
-                        self.open_new_workspace_overlay();
+                        self.open_new_workspace_overlay(outcome);
                     } else {
                         self.push_endpoint_method(
                             shepr_api::schema::Method::WorkspaceCreate(
@@ -171,11 +171,11 @@ impl ClientShellState {
             shepr_api::schema::Method::PaneSelectionRead(
                 shepr_api::schema::PaneSelectionReadParams {
                     pane_id: pane_id.to_string(),
-                    anchor: shepr_api::schema::PaneSelectionPoint {
+                    anchor: shepr_api::schema::PaneTextPoint {
                         row: anchor.0,
                         col: anchor.1,
                     },
-                    cursor: shepr_api::schema::PaneSelectionPoint {
+                    cursor: shepr_api::schema::PaneTextPoint {
                         row: cursor.0,
                         col: cursor.1,
                     },
@@ -438,6 +438,12 @@ impl ClientShellState {
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
+            PendingEndpointKind::WorkspaceLabel { lookup_id } => {
+                return (
+                    self.complete_workspace_label_lookup(lookup_id, result),
+                    Vec::new(),
+                );
+            }
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
                 let repaint = self.complete_pane_scroll(&pane_id, serial, result, now, outcome);
                 return (repaint, Vec::new());
@@ -487,15 +493,8 @@ impl ClientShellState {
                     Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                         pane_id: returned_pane_id,
                         cursor,
-                        content_revision,
                     }) if returned_pane_id == pane_id => (
-                        self.apply_copy_motion_target(
-                            &pane_id,
-                            origin,
-                            cursor,
-                            content_revision,
-                            outcome,
-                        ),
+                        self.apply_copy_motion_target(&pane_id, origin, cursor, outcome),
                         true,
                     ),
                     Ok(shepr_api::schema::ResponseResult::PaneCopyMotion { .. }) => (false, false),
@@ -523,7 +522,6 @@ impl ClientShellState {
                 let (repaint, continue_queue) = match result {
                     Ok(shepr_api::schema::ResponseResult::PaneCopySearch {
                         pane_id: returned_pane_id,
-                        content_revision,
                         matches,
                         total,
                         current,
@@ -537,7 +535,6 @@ impl ClientShellState {
                             repeat,
                             generation,
                             ClientCopySearchResult {
-                                content_revision,
                                 matches,
                                 total,
                                 current: current.and_then(|index| usize::try_from(index).ok()),

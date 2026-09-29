@@ -63,7 +63,7 @@ impl EndpointRegistry {
         registry
     }
 
-    /// Every connection that crosses SSH (the saved machines) gets heartbeats and a
+    /// Every connection that crosses SSH (the configured machines) gets heartbeats and a
     /// silence deadline. The Local slot is a socket on this host: a dead server shows up
     /// as a transport error, so it needs none.
     fn crosses_ssh(endpoint_id: &ClientEndpointId) -> bool {

@@ -4,8 +4,77 @@ use std::path::PathBuf;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
+    DiscoveryProgress, RemoteSsh, SavedSshCheck, SshStdioBridge, is_ssh_link_failure,
+    judge_remote_server, locate_remote_shepr, remote_server_status,
+    resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
+
+/// Checks, without prompting, that the configured machine can be served: SSH
+/// works, a matching shepr and sibling `shepr-server` pair is found, and whether a
+/// server already running there is this build. A stopped server is
+/// [`SavedSshCheck::Ready`], since the bridge starts one on attach. A running
+/// server of another build comes back as [`SavedSshCheck::DifferentBuild`] when it
+/// can be restarted. No SSH command starts once `deadline` has passed, and each is
+/// cut short at it.
+///
+/// The executable comes from the on-disk metadata cache when it is there and still
+/// verifies (one round trip instead of full discovery). One that no longer verifies
+/// is dropped, and full discovery runs; what discovery finds is recorded, so the
+/// connector that follows does not repeat the round trips.
+pub fn check_saved_ssh(
+    paths: &shepr_config::AppPaths,
+    target: &SshTarget,
+    settings: SavedSshSettings,
+    deadline: std::time::Instant,
+) -> io::Result<SavedSshCheck> {
+    let mut ssh =
+        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
+    ssh.set_attempt_deadline(Some(deadline));
+    let cache = SshMetadataCache::new(paths, target);
+    let remote = resolve_remote_shepr(
+        &cache,
+        |candidate| verify_remote_shepr(&ssh, candidate),
+        || locate_remote_shepr(&ssh),
+    )?;
+    let status = remote_server_status(&ssh, &remote)?;
+    judge_remote_server(ssh.target(), &remote, &status)
+}
+
+/// The remote executable for a check: the cached one when `verify` accepts it,
+/// otherwise whatever `discover` finds, which is then cached. A link failure while
+/// verifying says nothing about the cached path and is returned as it is. Any other
+/// verification result drops the cache entry first, so a stale hint is not tried
+/// again. Cache failures are logged and never fail the check.
+fn resolve_remote_shepr(
+    cache: &SshMetadataCache,
+    mut verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
+    discover: impl FnOnce() -> io::Result<RemoteExecutable>,
+) -> io::Result<RemoteExecutable> {
+    if let Some(cached) = cache.load() {
+        match verify(&cached) {
+            Ok(true) => return Ok(cached),
+            Err(error) if is_ssh_link_failure(&error) => return Err(error),
+            Ok(false) | Err(_) => {
+                if let Err(error) = cache.invalidate() {
+                    tracing::warn!(
+                        %error,
+                        path = %cache.path().display(),
+                        "could not drop stale SSH machine metadata"
+                    );
+                }
+            }
+        }
+    }
+    let discovered = discover()?;
+    if let Err(error) = cache.store(&discovered) {
+        tracing::warn!(
+            %error,
+            path = %cache.path().display(),
+            "could not cache SSH machine metadata; later connections rediscover the remote shepr"
+        );
+    }
+    Ok(discovered)
+}
 
 pub struct SavedSshBridge {
     bridge: SshStdioBridge,
@@ -25,7 +94,7 @@ pub struct SavedSshStream {
     pub bridge: SavedSshBridge,
 }
 
-/// Settings a saved-machine connector takes from the config. A client reads its
+/// Settings a configured-machine connector takes from the config. A client reads its
 /// config once at launch and hands these in, so reconnects never re-read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SavedSshSettings {
@@ -347,7 +416,7 @@ fn bridge_name_fragment(label: &MachineLabel) -> String {
         .collect()
 }
 
-/// A fresh socket path for one saved-machine attach bridge. The prefix is
+/// A fresh socket path for one configured-machine attach bridge. The prefix is
 /// distinct from the `shepr-ssh-` SSH config directories, whose sweep matches
 /// on that prefix.
 fn saved_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
@@ -356,9 +425,10 @@ fn saved_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io:
 }
 
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
-    // This launch-time classifier is only called for saved bridge
-    // paths and SSH path setup. RemoteExecutable parsing happens during discovery after this
-    // point and cannot reach it; those local InvalidInput failures are permanent setup errors.
+    // Whether a local setup failure can never succeed on retry. Only the
+    // bridge socket path and ssh config setup are classified here; discovery
+    // errors never reach it. Invalid input, such as a runtime directory that can
+    // never hold the bridge socket, is permanent.
     if error.kind() == io::ErrorKind::InvalidInput {
         return true;
     }
@@ -387,6 +457,87 @@ mod tests {
         )));
     }
 
+    fn cache_in(scratch: &shepr_test_support::ScratchDir) -> SshMetadataCache {
+        let paths = shepr_config::AppPaths::rooted_at(scratch, None, None);
+        SshMetadataCache::new(
+            &paths,
+            &SshTarget::parse("build.example").expect("test precondition"),
+        )
+    }
+
+    fn executable(path: &str) -> RemoteExecutable {
+        RemoteExecutable::parse(path).expect("test precondition")
+    }
+
+    #[test]
+    fn a_verified_cached_executable_skips_discovery() {
+        let scratch = shepr_test_support::ScratchDir::new("saved-check-cached");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/cached/shepr"))
+            .expect("test precondition");
+        let found = resolve_remote_shepr(
+            &cache,
+            |_| Ok(true),
+            || panic!("a verified cache entry needs no discovery"),
+        )
+        .expect("resolved");
+        assert_eq!(found, executable("/cached/shepr"));
+    }
+
+    #[test]
+    fn a_stale_cached_executable_is_dropped_and_discovery_is_recorded() {
+        let scratch = shepr_test_support::ScratchDir::new("saved-check-stale");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/old/shepr"))
+            .expect("test precondition");
+        let found = resolve_remote_shepr(&cache, |_| Ok(false), || Ok(executable("/new/shepr")))
+            .expect("resolved");
+        assert_eq!(found, executable("/new/shepr"));
+        assert_eq!(cache.load(), Some(executable("/new/shepr")));
+
+        let found = resolve_remote_shepr(
+            &cache,
+            |_| Err(io::Error::new(io::ErrorKind::Unsupported, "another build")),
+            || Ok(executable("/newer/shepr")),
+        )
+        .expect("resolved");
+        assert_eq!(found, executable("/newer/shepr"));
+        assert_eq!(cache.load(), Some(executable("/newer/shepr")));
+    }
+
+    #[test]
+    fn a_link_failure_while_verifying_keeps_the_cache_and_skips_discovery() {
+        let scratch = shepr_test_support::ScratchDir::new("saved-check-link");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/cached/shepr"))
+            .expect("test precondition");
+        let error = resolve_remote_shepr(
+            &cache,
+            |_| Err(io::Error::from(io::ErrorKind::TimedOut)),
+            || panic!("a link failure says nothing about the cached path"),
+        )
+        .expect_err("link failure");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(cache.load(), Some(executable("/cached/shepr")));
+    }
+
+    #[test]
+    fn discovery_without_a_cache_entry_is_recorded() {
+        let scratch = shepr_test_support::ScratchDir::new("saved-check-empty");
+        let cache = cache_in(&scratch);
+        let found = resolve_remote_shepr(
+            &cache,
+            |_| panic!("nothing cached to verify"),
+            || Ok(executable("/found/shepr")),
+        )
+        .expect("resolved");
+        assert_eq!(found, executable("/found/shepr"));
+        assert_eq!(cache.load(), Some(executable("/found/shepr")));
+    }
+
     #[test]
     fn bridge_paths_use_the_label_not_the_target() {
         let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-paths");
@@ -413,7 +564,7 @@ mod tests {
         assert_eq!(path.parent(), Some(runtime_dir.path()));
     }
 
-    /// Two clients attached to one saved machine each bind a bridge socket of
+    /// Two clients attached to one configured machine each bind a bridge socket of
     /// their own at the same time, and dropping them leaves the runtime
     /// directory empty.
     #[test]

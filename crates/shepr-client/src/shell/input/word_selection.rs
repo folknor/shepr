@@ -82,8 +82,8 @@ impl ClientShellState {
         let pane_id = gesture.pane_id.clone();
         let params = shepr_api::schema::PaneSelectionReadParams {
             pane_id: pane_id.to_string(),
-            anchor: shepr_api::schema::PaneSelectionPoint { row, col: 0 },
-            cursor: shepr_api::schema::PaneSelectionPoint {
+            anchor: shepr_api::schema::PaneTextPoint { row, col: 0 },
+            cursor: shepr_api::schema::PaneTextPoint {
                 row,
                 col: gesture.end_col,
             },

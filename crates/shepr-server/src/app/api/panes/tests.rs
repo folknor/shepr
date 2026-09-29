@@ -141,11 +141,11 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
     assert_ne!(runtime.content_seq(), revision);
     let mut params = PaneSelectionReadParams {
         pane_id: public_pane_id.clone(),
-        anchor: shepr_api::schema::PaneSelectionPoint {
+        anchor: PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 0,
         },
-        cursor: shepr_api::schema::PaneSelectionPoint {
+        cursor: PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 4,
         },
@@ -181,12 +181,11 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
 
     let response = app.handle_pane_copy_motion(PaneCopyMotionParams {
         pane_id: public_pane_id.clone(),
-        cursor: shepr_api::schema::PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+        cursor: PaneTextPoint {
+            row: shepr_vt::AbsRow(0),
             col: 0,
         },
         motion: PaneCopyMotion::NextWordStart,
-        content_revision: None,
     });
 
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -194,11 +193,82 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
         success.result,
         ResponseResult::PaneCopyMotion {
             pane_id: public_pane_id,
-            cursor: shepr_api::schema::PaneTextPoint {
-                row: shepr_vt::ScreenRow(0),
+            cursor: PaneTextPoint {
+                row: shepr_vt::AbsRow(0),
                 col: 6
             },
-            content_revision: 0,
+        }
+    );
+}
+
+/// Output that evicts history between two requests does not move the line a
+/// copy-mode point names: motions and searches read absolute rows.
+#[tokio::test]
+async fn api_copy_motion_and_search_keep_their_line_across_eviction() {
+    let (mut app, public_pane_id) = app_with_test_workspace();
+    let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+    let initial: String = (0..1_100).map(|i| format!("{i:06}\r\n")).collect();
+    // One byte of scrollback budget buys the minimum history, so every
+    // further line evicts one.
+    app.insert_test_runtime(
+        pane_id,
+        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(10, 3, 1, initial.as_bytes()),
+    );
+    let search = |app: &mut App| {
+        let response = app.handle_pane_copy_search(PaneCopySearchParams {
+            pane_id: public_pane_id.clone(),
+            query: "001099".into(),
+            direction: PaneCopySearchDirection::Forward,
+            cursor: PaneTextPoint {
+                row: shepr_vt::AbsRow(0),
+                col: 0,
+            },
+            previous: None,
+        });
+        let success: SuccessResponse = crate::test_support::test_success(&response);
+        let ResponseResult::PaneCopySearch { matches, .. } = success.result else {
+            panic!("expected copy search response");
+        };
+        matches
+    };
+    let found = search(&mut app);
+    assert_eq!(found.len(), 1);
+    let line = found[0].start;
+    assert_eq!(line.row, shepr_vt::AbsRow(1_099));
+
+    let runtime = app
+        .state
+        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+        .expect("test precondition");
+    let origin_before = runtime
+        .scroll_metrics()
+        .expect("test precondition")
+        .history_origin;
+    runtime.test_process_pty_bytes(b"x\r\n");
+    assert!(
+        runtime
+            .scroll_metrics()
+            .expect("test precondition")
+            .history_origin
+            > origin_before,
+        "the output must evict history"
+    );
+
+    assert_eq!(search(&mut app)[0].start, line);
+    let response = app.handle_pane_copy_motion(PaneCopyMotionParams {
+        pane_id: public_pane_id.clone(),
+        cursor: line,
+        motion: PaneCopyMotion::NextWordEnd,
+    });
+    let success: SuccessResponse = crate::test_support::test_success(&response);
+    assert_eq!(
+        success.result,
+        ResponseResult::PaneCopyMotion {
+            pane_id: public_pane_id,
+            cursor: PaneTextPoint {
+                row: line.row,
+                col: 5
+            },
         }
     );
 }
@@ -214,11 +284,10 @@ async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
     let response = app.handle_pane_copy_motion(PaneCopyMotionParams {
         pane_id: public_pane_id.clone(),
         cursor: PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 2,
         },
         motion: PaneCopyMotion::NextParagraph,
-        content_revision: None,
     });
     let success: SuccessResponse = crate::test_support::test_success(&response);
     assert_eq!(
@@ -226,10 +295,9 @@ async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
         ResponseResult::PaneCopyMotion {
             pane_id: public_pane_id,
             cursor: PaneTextPoint {
-                row: shepr_vt::ScreenRow(1),
+                row: shepr_vt::AbsRow(1),
                 col: 2
             },
-            content_revision: 0,
         }
     );
 }
@@ -243,20 +311,14 @@ async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta alpha"),
     );
 
-    let content_revision = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
-        .expect("runtime")
-        .content_seq();
     let response = app.handle_pane_copy_search(PaneCopySearchParams {
         pane_id: public_pane_id.clone(),
         query: "alpha".into(),
         direction: PaneCopySearchDirection::Forward,
         cursor: PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 0,
         },
-        content_revision,
         previous: None,
     });
 
@@ -277,14 +339,14 @@ async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
     assert_eq!(
         matches[0].start,
         PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 0
         }
     );
     assert_eq!(
         matches[1].start,
         PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 11
         }
     );
@@ -302,21 +364,14 @@ async fn api_copy_search_bounds_returned_matches_but_keeps_exact_total() {
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(200, 20, 4000, text.as_bytes()),
     );
-    let content_revision = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
-        .expect("runtime")
-        .content_seq();
-
     let response = app.handle_pane_copy_search(PaneCopySearchParams {
         pane_id: public_pane_id,
         query: "a".into(),
         direction: PaneCopySearchDirection::Forward,
         cursor: PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 0,
         },
-        content_revision,
         previous: None,
     });
     let success: SuccessResponse = crate::test_support::test_success(&response);
@@ -325,28 +380,6 @@ async fn api_copy_search_bounds_returned_matches_but_keeps_exact_total() {
     };
     assert_eq!(total, 1500);
     assert_eq!(matches.len(), 1024);
-}
-
-#[tokio::test]
-async fn api_copy_search_rejects_stale_content_revision() {
-    let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-    app.insert_test_runtime(
-        pane_id,
-        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta"),
-    );
-    let response = app.handle_pane_copy_search(PaneCopySearchParams {
-        pane_id: public_pane_id,
-        query: "alpha".into(),
-        direction: PaneCopySearchDirection::Forward,
-        cursor: PaneTextPoint {
-            row: shepr_vt::ScreenRow(0),
-            col: 0,
-        },
-        content_revision: 2,
-        previous: None,
-    });
-    assert!(crate::test_support::test_json(&response).contains("stale_content"));
 }
 
 #[test]

@@ -335,8 +335,8 @@ static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The stamp every terminal ID of this process carries, taken at the first
 /// allocation. It only has to tell one server lifetime from another (the
-/// counter restarts with each process), so a stale attach target from an
-/// earlier server never names a new terminal. It is identity, not a time any
+/// counter restarts with each process), so an id remembered from an earlier
+/// server never names a new terminal. It is identity, not a time any
 /// decision reads, which is why it is sampled here once rather than passed in
 /// through the clock seam.
 static TERMINAL_ID_STAMP: OnceLock<Result<Duration, Duration>> = OnceLock::new();

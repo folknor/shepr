@@ -839,7 +839,6 @@ mod tests {
             cwd: scratch.join("missing-cwd"),
             label: None,
             agent_session: None,
-            launch_argv: None,
         };
         let tab = |name: &str, layout: LayoutSnapshot, ids: &[u32]| TabSnapshot {
             custom_name: Some(name.into()),

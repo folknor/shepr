@@ -60,6 +60,13 @@ pub enum ResponseResult {
         tab: TabInfo,
         root_pane: PaneInfo,
     },
+    /// The Git checkout root of the asked directory, `None` outside any
+    /// repository, and the home directory of the server's host (`None` when it
+    /// has no usable one), which a directory outside Git is compared with.
+    WorkspaceCheckoutRoot {
+        root: Option<String>,
+        home: Option<String>,
+    },
     WorkspaceList {
         workspaces: Vec<WorkspaceInfo>,
     },
@@ -98,11 +105,9 @@ pub enum ResponseResult {
     PaneCopyMotion {
         pane_id: String,
         cursor: PaneTextPoint,
-        content_revision: u64,
     },
     PaneCopySearch {
         pane_id: String,
-        content_revision: u64,
         matches: Vec<PaneTextRange>,
         total: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -10,6 +10,14 @@ use shepr_protocol::{ClientMessage, ServerMessage};
 use super::ClientError;
 use crate::limits::{Deadline, LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_READ_TIMEOUT};
 
+/// What the hello reports: the host terminal (its cell size) and the size of
+/// the pane surface the shell asks the server to render.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HandshakeGeometry {
+    pub(crate) host: shepr_core::geometry::HostGeometry,
+    pub(crate) surface_size: shepr_protocol::ClientSurfaceSize,
+}
+
 fn set_handshake_recv_timeout(
     stream: &LocalStream,
     timeout: Option<Duration>,
@@ -47,21 +55,21 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 /// then sends its endpoint hello, and the welcome does not negotiate an encoding.
 ///
 /// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
-/// saved-machine endpoint supervisor bounds each whole connection attempt by its
+/// machine endpoint supervisor bounds each whole connection attempt by its
 /// attempt budget.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
-    geometry: shepr_core::geometry::HostGeometry,
-    surface_size: shepr_protocol::ClientSurfaceSize,
+    geometry: HandshakeGeometry,
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
+    let surface_size = geometry.surface_size;
     let (cell_width_px, cell_height_px, exact_cell_size) =
         super::terminal_geometry::bounded_cell_geometry(
-            geometry.cell_width(),
-            geometry.cell_height(),
-            geometry.exact,
+            geometry.host.cell_width(),
+            geometry.host.cell_height(),
+            geometry.host.exact,
         );
     stream
         .set_nonblocking(false)
@@ -148,6 +156,13 @@ mod tests {
     use interprocess::local_socket::traits::Listener as _;
     use std::io;
 
+    fn test_geometry() -> HandshakeGeometry {
+        HandshakeGeometry {
+            host: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            surface_size: shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
+        }
+    }
+
     fn socket_pair(name: &str) -> (LocalStream, LocalStream) {
         let path = shepr_test_support::ScratchDir::new(name).join("s.sock");
         let listener =
@@ -172,15 +187,8 @@ mod tests {
             )
             .expect("test precondition");
         });
-        let error = do_handshake(
-            &mut client,
-            shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-            false,
-            true,
-            None,
-        )
-        .expect_err("a shutdown notice is not a welcome");
+        let error = do_handshake(&mut client, test_geometry(), false, true, None)
+            .expect_err("a shutdown notice is not a welcome");
         peer.join().expect("test precondition");
         error
     }
@@ -220,15 +228,8 @@ mod tests {
             // The client may reset rather than close cleanly; either ends the hold.
             drop(std::io::Read::read_to_end(&mut server, &mut rest));
         });
-        let error = do_handshake(
-            &mut client,
-            shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-            false,
-            true,
-            None,
-        )
-        .expect_err("the opening is not this build");
+        let error = do_handshake(&mut client, test_geometry(), false, true, None)
+            .expect_err("the opening is not this build");
         // Hanging up is what releases the peer's hold.
         drop(client);
         peer.join().expect("test precondition");
@@ -238,19 +239,12 @@ mod tests {
     #[test]
     fn an_attempt_deadline_caps_a_silent_peer_below_the_read_timeout() {
         let (mut client, server) = socket_pair("deadline-silent-peer");
-        // A saved-machine handshake (endpoint shell, surface off) would otherwise wait the
+        // A machine's handshake (endpoint shell, surface off) would otherwise wait the
         // full remote read timeout for a peer that never answers.
         let started = std::time::Instant::now();
         let deadline = started + Duration::from_millis(200);
-        let error = do_handshake(
-            &mut client,
-            shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-            false,
-            false,
-            Some(deadline),
-        )
-        .expect_err("a silent peer never welcomes");
+        let error = do_handshake(&mut client, test_geometry(), false, false, Some(deadline))
+            .expect_err("a silent peer never welcomes");
         let elapsed = started.elapsed();
         drop(server);
         let maximum_elapsed = deadline.saturating_duration_since(started) + Duration::from_secs(1);
@@ -290,8 +284,8 @@ mod tests {
     #[test]
     fn peer_without_a_preamble_is_not_mistaken_for_a_closed_connection() {
         // A peer that answers straight with a codec frame.
-        let mut opening = shepr_protocol::encode_frame(&ServerMessage::Welcome { error: None })
-            .expect("test precondition");
+        let mut opening =
+            shepr_protocol::encode_frame(&ServerMessage::HealthPong).expect("test precondition");
         opening.resize(opening.len().max(shepr_protocol::preamble::PREAMBLE_LEN), 0);
         match handshake_against_opening("preamble-missing", opening) {
             ClientError::Preamble(error) => {

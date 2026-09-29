@@ -31,6 +31,13 @@ pub struct WorkspaceRenameParams {
     pub label: String,
 }
 
+/// Asks the server for the Git checkout root of a directory on the server's
+/// own host, which is what a new workspace's default label derives from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceCheckoutRootParams {
+    pub cwd: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceMoveParams {
     pub workspace_id: String,
