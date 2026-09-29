@@ -5,10 +5,8 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
-use crate::limits::{
-    KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_CODE_POINT_BUFFER_BYTES,
-    UTF8_MOUSE_REPORT_INITIAL_CAPACITY,
-};
+use crate::limits::{KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_MOUSE_REPORT_INITIAL_CAPACITY};
+use shepr_core::limits::UTF8_MAX_BYTES_PER_CODEPOINT;
 use shepr_protocol::KittyKeyboardFlags;
 
 /// Encode a key event for a PTY child using the supported subset of the pane's
@@ -219,7 +217,7 @@ fn encode_mouse_cb(
 
 fn push_mouse_codepoint(bytes: &mut Vec<u8>, value: u32) -> Option<()> {
     let ch = char::from_u32(value)?;
-    let mut buf = [0u8; UTF8_CODE_POINT_BUFFER_BYTES];
+    let mut buf = [0u8; UTF8_MAX_BYTES_PER_CODEPOINT];
     bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
     Some(())
 }
@@ -641,7 +639,7 @@ fn kitty_modifier(mods: KeyModifiers) -> u32 {
 
 fn encode_text_input(key: &TerminalKey) -> Option<Vec<u8>> {
     let ch = text_char_for_key(key)?;
-    let mut buf = [0u8; UTF8_CODE_POINT_BUFFER_BYTES];
+    let mut buf = [0u8; UTF8_MAX_BYTES_PER_CODEPOINT];
     Some(ch.encode_utf8(&mut buf).as_bytes().to_vec())
 }
 
@@ -779,7 +777,7 @@ fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
                 } else {
                     ch
                 };
-                let mut buf = [0u8; UTF8_CODE_POINT_BUFFER_BYTES];
+                let mut buf = [0u8; UTF8_MAX_BYTES_PER_CODEPOINT];
                 ch.encode_utf8(&mut buf).as_bytes().to_vec()
             }
         }

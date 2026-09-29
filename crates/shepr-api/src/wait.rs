@@ -37,7 +37,7 @@ pub(super) fn wait_for_output(
             )));
         }
     };
-    shepr_platform::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
+    crate::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
 
     let regex = match &params.r#match {
         crate::schema::OutputMatch::Regex { value } => {
@@ -56,19 +56,11 @@ pub(super) fn wait_for_output(
 
     loop {
         if server_is_stopping(server_stop) {
-            shepr_platform::logging::api_wait_completed(
-                &request_id,
-                &params.pane_id,
-                "server_stopping",
-            );
+            crate::logging::api_wait_completed(&request_id, &params.pane_id, "server_stopping");
             return Ok(Some(shutdown_response(request_id)));
         }
         if should_stop_connection(stream, running)? {
-            shepr_platform::logging::api_wait_completed(
-                &request_id,
-                &params.pane_id,
-                "client_disconnected",
-            );
+            crate::logging::api_wait_completed(&request_id, &params.pane_id, "client_disconnected");
             return Ok(None);
         }
 
@@ -108,7 +100,7 @@ pub(super) fn wait_for_output(
         let matched_line = match_output(&read.text, &params.r#match, regex.as_ref());
         if matched_line.is_some() {
             let revision = read.revision;
-            shepr_platform::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
+            crate::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
             let response = SuccessResponse {
                 id: request_id,
                 result: ResponseResult::OutputMatched {
@@ -125,7 +117,7 @@ pub(super) fn wait_for_output(
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            shepr_platform::logging::api_wait_timed_out(&request_id, &params.pane_id);
+            crate::logging::api_wait_timed_out(&request_id, &params.pane_id);
             let response = ErrorResponse {
                 id: request_id,
                 error: crate::error::ApiError::new(

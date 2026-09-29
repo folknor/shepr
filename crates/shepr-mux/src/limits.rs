@@ -3,14 +3,15 @@
 use std::time::Duration;
 
 /// Heuristic fraction of comparable viewport rows needed to reuse a read
-/// snapshot. Seven in ten tolerates a small changing status area while
+/// snapshot. A high overlap tolerates a small changing status area while
 /// rejecting a substantially different screen; it is not a measured rate.
 pub(crate) const SIMILAR_VIEWPORT_RATIO_PERCENT: usize = 70;
 /// Heuristic minimum fraction of overlapping nonblank rows needed to align
-/// upward history. Three in ten tolerates pinned headers and changing status
+/// upward history. A lower overlap tolerates pinned headers and changing status
 /// rows while still requiring more than an isolated accidental match.
 pub(crate) const MIN_ALIGNMENT_RATIO_PERCENT: usize = 30;
 /// Percent denominator shared by the two screen similarity thresholds.
+// limits-exempt: percentage values use the conventional hundred-point scale.
 pub(crate) const PERCENT_DENOMINATOR: usize = 100;
 
 /// Hook reports are ordered per source by the `seq` each hook process takes
@@ -57,8 +58,8 @@ pub(crate) const PROCESS_ACQUISITION_WINDOW: Duration = Duration::from_secs(8);
 pub(crate) const PROCESS_ACQUISITION_FAST_WINDOW: Duration = Duration::from_millis(1500);
 /// Poll cadence within the fast acquisition window.
 pub(crate) const PROCESS_ACQUISITION_FAST_RECHECK: Duration = Duration::from_millis(500);
-/// Poll cadence after fast acquisition; the eight-second window still gets
-/// several attempts without continuous /proc work.
+/// Poll cadence after fast acquisition; the window still gets several attempts
+/// without continuous /proc work.
 pub(crate) const PROCESS_ACQUISITION_SLOW_RECHECK: Duration = Duration::from_secs(2);
 /// Idle time before restarting acquisition after process activity subsides.
 pub(crate) const PROCESS_ACQUISITION_IDLE_RESET: Duration = Duration::from_secs(2);
@@ -92,11 +93,11 @@ pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = MANAGED_AGENT_RESUME_TIM
 /// shell time to put initial output on the screen.
 pub(crate) const INITIAL_DETECTION_DELAY: Duration = Duration::from_millis(50);
 /// Tries to read a stable screen snapshot across concurrent PTY updates.
-/// Three attempts tolerate a brief write without spinning indefinitely.
+/// Retries tolerate a brief write without spinning indefinitely.
 pub(crate) const SCREEN_SNAPSHOT_READ_ATTEMPTS: usize = 3;
 
 /// Default screen depth sampled for agent detection when no caller supplies
-/// one; 24 rows covers a conventional terminal viewport.
+/// one; it covers a conventional terminal viewport.
 pub(crate) const DEFAULT_DETECTION_ROWS: usize = 24;
 /// Slack after synchronized output's deadline before a follow-up render, so
 /// the terminal can finish its batch.
@@ -125,13 +126,13 @@ pub(crate) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
 /// and subprocess work for a broken or unavailable checkout.
 pub(crate) const GIT_STATUS_RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// Interval between layout snapshots; four copies per hour gives recovery
-/// points without writing a new file for every save.
+/// Interval between layout snapshots; this gives recovery points without
+/// writing a new file for every save.
 pub(crate) const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
-/// Recovery span retained at the snapshot cadence; twelve hours covers an
-/// overnight failure while keeping the snapshot directory bounded.
+/// Recovery span retained at the snapshot cadence; this covers an overnight
+/// failure while keeping the snapshot directory bounded.
 pub(crate) const SNAPSHOT_RECOVERY_WINDOW: Duration = Duration::from_secs(12 * 60 * 60);
-/// Twelve hours of quarter-hour recovery points.
+/// Number of recovery points retained across the bounded recovery span.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the snapshot count is a few dozen, which fits any usize"
@@ -147,15 +148,11 @@ pub(crate) const RECOVERY_SEQUENCE_LIMIT: usize = 128;
 /// This is the session-history writer's file budget and restore uses the same
 /// bound. `serialize_history` trims pane text to it; if the workspace/tab shape
 /// alone is larger, it writes a compact history with no pane entries. The
-/// fingerprint in that compact form is a fixed 64-character SHA-256 digest.
+/// fingerprint in that compact form is a fixed SHA-256 digest.
 pub(crate) const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
 /// Maximum symlink hops when finding a writable session path; bounds cycles
 /// while allowing an ordinary chain of user-managed links.
 pub(crate) const MAX_SESSION_PATH_SYMLINK_HOPS: usize = 16;
-/// Palette entries copied from saved theme state; terminal colors have 256
-/// indexed slots.
-pub(crate) const TERMINAL_PALETTE_COLORS: usize = 256;
-
 /// Grace per pane teardown signal before escalating to the next signal.
 pub(crate) const PANE_TEARDOWN_STEP: Duration = Duration::from_millis(250);
 /// Total teardown wait: the sum of the grace intervals in `PANE_TEARDOWN_STEPS`.
@@ -168,8 +165,8 @@ pub(crate) const PANE_TEARDOWN_BUDGET: Duration = {
     }
     budget
 };
-/// Escalation sequence for a pane session, using one grace interval after
-/// each signal before the next round.
+/// Escalation sequence for a pane session, using a grace interval after each
+/// signal before the next round.
 pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [
     (shepr_platform::Signal::Hangup, PANE_TEARDOWN_STEP),
     (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),

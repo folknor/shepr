@@ -804,15 +804,10 @@ impl PaneRuntime {
         let size = shepr_core::geometry::GridSize::clamped_pane(cols, rows);
         let rows = size.rows.get();
         let cols = size.cols.get();
-        shepr_platform::logging::pane_spawn_started(
-            pane_id.raw(),
-            rows,
-            cols,
-            scrollback_limit_bytes,
-        );
+        crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
-        let pane_terminal = PaneTerminal::new(terminal);
+        let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal);
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
         if let Some(ansi) = initial_history_ansi {
@@ -827,7 +822,7 @@ impl PaneRuntime {
         let mut child = spawned.child;
         let master_fd = spawned.master_fd;
         let pid = child.id();
-        shepr_platform::logging::pane_spawned(pane_id.raw(), pid);
+        crate::logging::pane_spawned(pane_id.raw(), pid);
         // Opened before the watcher below exists, so nothing can have reaped
         // the child yet and the pid is certainly still this child's.
         let leader = shepr_platform::ProcessHandle::open(pid);
@@ -962,14 +957,10 @@ impl PaneRuntime {
                     }
                     match child.wait() {
                         Ok(status) => {
-                            let status_text = status.to_string();
-                            shepr_platform::logging::pane_exited(pane_id.raw(), &status_text);
+                            crate::logging::pane_exited(pane_id.raw(), &status);
                         }
                         Err(wait_err) => {
-                            shepr_platform::logging::pane_exit_failed(
-                                pane_id.raw(),
-                                &wait_err.to_string(),
-                            );
+                            crate::logging::pane_exit_failed(pane_id.raw(), &wait_err.to_string());
                         }
                     }
                     startup_child_liveness.mark_wait_completed();
@@ -1008,12 +999,11 @@ impl PaneRuntime {
                 let exit_reason = match wait_for_child_exit(child, pidfd).await {
                     Ok(status) => {
                         let exit_reason = shepr_platform::classify_child_exit(&status);
-                        let status_text = status.to_string();
-                        shepr_platform::logging::pane_exited(pane_id.raw(), &status_text);
+                        crate::logging::pane_exited(pane_id.raw(), &status);
                         exit_reason
                     }
                     Err(e) => {
-                        shepr_platform::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
+                        crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
                         shepr_platform::ChildExitReason::WaitFailed
                     }
                 };

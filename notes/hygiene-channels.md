@@ -56,27 +56,6 @@ value the binary renders) plus a `clippy.toml disallowed_methods` entry for
 `eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
 and phrasing of the messages themselves cannot be held mechanically.
 
-## HYGC-009 - The domain event catalogue, and one API level policy, live in the bottom platform crate
-
-`shepr-platform/src/logging.rs` holds 25 functions named after concepts the
-crate knows nothing about: `workspace_created`, `tab_renamed`, `pane_spawned`,
-`session_saved`, `api_request_started`, `integration_action`. Each has one to
-three call sites in `shepr-mux`, `shepr-api`, `shepr-server` or `shepr-agent`.
-Adding a workspace event therefore requires editing the crate at the bottom of
-the layering, and `api_request_started`'s level policy (info when
-`mutates_ui && !routine`, debug otherwise) - an API-semantics decision - is
-encoded three layers below the API. Related: `pane_exited(pane_id, status: &str)`
-takes a pre-formatted status string built at the call site, so the format of the
-most-read pane line is decided outside the module that owns the channel.
-
-The channel itself (rotating writer, filter, mode, file names) genuinely belongs
-in `shepr-platform`; the catalogue belongs beside each subject.
-
-Enforcement named: a `brokkr.toml` text rule forbidding the identifiers
-`workspace`/`tab`/`pane`/`api`/`session` in `shepr-platform` public item names,
-or simply moving the functions so the existing dependency allowlists do the
-work.
-
 ## HYGC-013 - Structured field names for the same thing differ across sites
 
 `shepr-client` keys every failure field `error`. Every other crate mixes `err`
@@ -90,49 +69,34 @@ one helper.
 
 ## HYGC-037 - Once-only drop and failure reports that lose their subject or their total
 
-- `shepr-mux`: the terminal mutation-failure `error!` names no pane, because
-  `PaneTerminal` does not know its id.
-- `shepr-platform`: `api_request_failed` is now `error!`, including
+- `api_request_failed` (now in `shepr-api`'s logging module) is `error!`, including
   response-write IO failures from clients that disconnect abruptly; watch it for
   noise and split the disconnect case if it is.
 
 ## HYGC-022 - Errors that reach an operator naming no subject
 
-`shepr-config`/`shepr-protocol`:
+Surface decode errors, endpoint reader errors and cached endpoint config errors
+now carry their subject as typed values. Open:
 
-- "invalid endpoint configuration: unexpected end of input: needed 1 bytes, 0
-  remaining" - no host, no endpoint, no session.
-- `FramingError::SurfaceDecode(String)` and `CodecError::Message(String)` flow to
-  the client with no pane, boot id or revision attached.
+- Client handshake failures: `do_handshake` does not know the endpoint id, and
+  the local session is only known at its callers in
+  `shepr-client/src/endpoint/supervisor.rs` and `shepr-client/src/lib.rs`,
+  which must pass that context in.
+- `shepr-server/src/server/client_transport.rs`: framing read failures log the
+  `client_id` but no session.
 
 Enforcement named: partly. A typed error per module carrying the subject makes the
 subject impossible to omit; a lint cannot.
 
-## HYGC-026 - Failures discarded with `let _ =` at cleanup, permission and signal sites
+## HYGC-052 - New typed client errors print their cause twice in a chain
 
-The `shepr-platform` and `shepr-pty` sites are all checked, logged or returned
-now. Open:
-
-- `shepr-server/src/app/api/workspaces.rs`: `let _ =
-  std::fs::remove_dir_all(&source_cwd)` - a recursive delete whose failure is
-  discarded. The hunter noted it is fixture teardown in test code, but a
-  recursive delete of a path derived from workspace state is the one operation
-  you want logged either way, and suggested a text rule banning
-  `remove_dir_all` outside `shepr-test-support`.
-
-Enforcement named for the class: `clippy::let_underscore_must_use` in the
-workspace lint table would flag all of them and force an explicit
-`if let Err(e) = ... { tracing::debug!(...) }` decision at each site. It is not
-currently in the lint table, and adding it is a finding somebody could pay for
-once. The termio/client hunter's dissenting view on the same lint: an allow-list
-for it would be "too noisy to be worth it", and those sites are individual
-fixes.
-
-## HYGC-051 - A corrupt client preferences file is dropped silently
-
-`shepr-client/src/shell/overlays/preferences.rs::load` discards an unreadable or
-unparseable preferences file with `.ok()` and falls back to defaults with no log
-line. Log a warning for any failure other than not-found.
+`shepr-protocol`'s `SurfaceDecodeError` and `shepr-client`'s
+`EndpointFramingError` include their source in `Display` and also return it
+from `source()`, as the older `FramingError` does, so any chain printer shows
+the cause twice. Pick one convention for the crate's errors. Related: client
+disconnect messages now begin "endpoint <id> connection generation N:", and
+that text reaches `EndpointTransportFailure.message` and possibly the UI;
+decide whether the generation belongs in operator text or only in the log.
 
 ## HYGC-050 - Pane restore failure wording is owned by the UI module and reached from the app layer
 

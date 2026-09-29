@@ -1,7 +1,128 @@
 use super::*;
 use crate::tests::test_pane_id;
 use shepr_test_fixtures::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+impl PendingEndpointActivation {
+    pub fn begin(
+        shell: &crate::shell::ClientShellState,
+        endpoints: &mut EndpointRegistry,
+        target: &ClientEndpointId,
+        focus: Option<crate::shell::ClientEndpointFocusTarget>,
+        resize: shepr_protocol::ClientMessage,
+        serial: u64,
+        now: Instant,
+    ) -> Result<Self, ActivationBeginError> {
+        Self::prepare(shell, endpoints, target, focus, resize, serial, now)?
+            .start_at(endpoints, now)
+    }
+
+    /// Replace an in-flight handoff with the latest endpoint-qualified intent. The current
+    /// transaction is still reversed through target-off/source-on; the replacement is launched
+    /// by the caller only after the source's coherent restoration commits.
+    pub(crate) fn supersede(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        target: Option<crate::shell::ClientEndpointFocusTarget>,
+        endpoints: &mut EndpointRegistry,
+    ) -> ActivationRollback {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.supersede_at(endpoint_id, target, endpoints, Instant::now())
+    }
+
+    pub fn receive_response(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        request_id: &str,
+        data: &[u8],
+        endpoints: &mut EndpointRegistry,
+    ) -> SurfaceActivationProgress {
+        let boot_id = if self.source.endpoint_id == *endpoint_id {
+            self.source.boot_id.clone()
+        } else {
+            self.target.boot_id.clone()
+        };
+        self.receive_response_for_boot(
+            endpoint_id,
+            generation,
+            &boot_id,
+            request_id,
+            data,
+            endpoints,
+        )
+    }
+
+    pub fn receive_response_for_boot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        boot_id: &str,
+        request_id: &str,
+        data: &[u8],
+        endpoints: &mut EndpointRegistry,
+    ) -> SurfaceActivationProgress {
+        self.receive_response_for_boot_at(
+            endpoint_id,
+            generation,
+            boot_id,
+            request_id,
+            data,
+            endpoints,
+            // clock-io-ok: this test-only wrapper stands in for the client loop.
+            Instant::now(),
+        )
+    }
+
+    pub(crate) fn update_resize(
+        &mut self,
+        resize: &shepr_protocol::ClientMessage,
+        endpoints: &mut EndpointRegistry,
+    ) -> Result<(), String> {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.update_resize_at(resize, endpoints, Instant::now())
+    }
+
+    pub(crate) fn update_host_focus(
+        &mut self,
+        focused: bool,
+        endpoints: &mut EndpointRegistry,
+    ) -> Result<(), String> {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.update_host_focus_at(focused, endpoints, Instant::now())
+    }
+
+    /// Losing the source revokes its surface and removes the rollback destination; it must not
+    /// cancel a healthy target. Losing the target restores the source when it is still available.
+    pub(crate) fn endpoint_disconnected(
+        &mut self,
+        endpoints: &mut EndpointRegistry,
+        endpoint_id: &ClientEndpointId,
+        error: String,
+    ) -> ActivationRollback {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.endpoint_disconnected_at(endpoints, endpoint_id, error, Instant::now())
+    }
+
+    pub(crate) fn rollback(
+        &mut self,
+        endpoints: &mut EndpointRegistry,
+        error: &str,
+        source_release_rejected: bool,
+    ) -> ActivationRollback {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.rollback_at(endpoints, error, source_release_rejected, Instant::now())
+    }
+
+    pub fn complete(
+        &mut self,
+        shell: &mut crate::shell::ClientShellState,
+        endpoints: &mut EndpointRegistry,
+    ) -> Result<ActivationCompletion, String> {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.complete_at(shell, endpoints, Instant::now())
+    }
+}
 
 fn endpoint() -> ClientEndpointId {
     ClientEndpointId::Ssh(

@@ -564,6 +564,8 @@ pub(super) fn bridge_connection(
     }
 }
 
+/// Classify an SSH bridge exit. The remote stderr goes into the message
+/// unredacted, for the reason given at `ssh::command_failed`.
 pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = super::server_lifecycle::printable_remote_text(stderr.trim());
@@ -831,6 +833,12 @@ pub(super) fn run_client_process(
     }
 }
 
+/// The `--remote` bridge's local socket. The name carries the SSH target
+/// (`user@host`) so the owner can tell sockets apart; that is not a leak,
+/// because `remote_bridge_endpoint_path` only accepts a runtime directory
+/// owned by the user with mode 0700, so no one else can list it. Saved
+/// machines name theirs by profile id because the profile, not the target,
+/// is their identity.
 pub(super) fn local_forward_socket_path(
     runtime_dir: &Path,
     target: &str,

@@ -76,7 +76,7 @@ impl App {
                     && let Some(workspace) = self.state.workspaces.get_mut(index)
                 {
                     workspace.set_custom_name(label);
-                    shepr_platform::logging::workspace_renamed(&workspace.id);
+                    crate::logging::workspace_renamed(&workspace.id);
                 }
                 self.emit_workspace_open_events(index);
                 match self.workspace_created_result(index) {
@@ -117,7 +117,7 @@ impl App {
             return Err(workspace_not_found(&params.workspace_id));
         };
         ws.set_custom_name(params.label.clone());
-        shepr_platform::logging::workspace_renamed(&ws.id);
+        crate::logging::workspace_renamed(&ws.id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             data: EventData::WorkspaceRenamed {

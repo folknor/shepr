@@ -134,7 +134,7 @@ impl App {
         let terminal_id = terminal.id.clone();
         let outcome = self.state.commit_workspace_creation(ws, terminal, focus);
         self.terminal_runtimes.insert(terminal_id, runtime);
-        shepr_platform::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
+        crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
         self.schedule_session_save();
         Ok(outcome.workspace_index)
     }

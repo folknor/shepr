@@ -1,84 +1,84 @@
 /// Default approximate scrollback budget in bytes for each pane.
 ///
-/// Ten million bytes is a useful per-pane starting budget while remaining
+/// The default is a useful per-pane starting budget while remaining
 /// predictable across a workspace; the configured value is converted to a
 /// line count, with a separate minimum-line policy documented on the setting.
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 
 /// Default number of pane lines moved by each mouse-wheel notch.
 ///
-/// Three lines make a wheel step useful without jumping a large part of the
+/// A small number of lines makes a wheel step useful without jumping a large part of the
 /// visible history.
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 
 /// Initial virtual terminal width when the server has no attached client.
 ///
-/// 120 columns give headless shells a conventional wide terminal before an
+/// This gives headless shells a conventional wide terminal before an
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 
 /// Initial virtual terminal height when the server has no attached client.
 ///
-/// 40 rows give headless shells a useful multi-pane workspace before an
+/// This gives headless shells a useful multi-pane workspace before an
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 /// Maximum byte length of a session name.
 ///
-/// Session names are ASCII path-safe identifiers; 64 bytes bound the name
+/// Session names are ASCII path-safe identifiers; the byte cap bounds the name
 /// while leaving room for descriptive names.
 pub(crate) const MAX_SESSION_NAME_LEN: usize = 64;
 
 /// Maximum rows accepted in each configured sidebar layout.
 ///
-/// Sixteen rows permit detailed layouts while bounding config-authored UI
+/// The row cap permits detailed layouts while bounding config-authored UI
 /// structure.
 pub(crate) const MAX_SIDEBAR_ROWS: usize = 16;
 
 /// Maximum tokens accepted in one configured sidebar row.
 ///
-/// Sixteen columns of tokens allow detailed rows while keeping each row's
+/// The token cap allows detailed rows while keeping each row's
 /// rendering work bounded.
 pub(crate) const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
 
 /// Maximum comparison rules accepted for one styled sidebar token.
 ///
-/// Sixteen rules allow layered matching without letting one token carry an
+/// The cap allows layered matching without letting one token carry an
 /// unbounded rule list.
 pub(crate) const MAX_SIDEBAR_RULES: usize = 16;
 
 /// Default blank rows between entries in expanded sidebars.
 ///
-/// Zero keeps the default sidebar compact; users can add spacing in config.
+/// No blank rows keep the default sidebar compact; users can add spacing in config.
 pub(crate) const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 
 /// Maximum byte length of a custom sidebar token name.
 ///
 /// Custom names are ASCII identifiers, so this also caps their character
-/// count; 32 bytes permits readable names while keeping metadata compact.
+/// count; the cap permits readable names while keeping metadata compact.
 pub(crate) const MAX_CUSTOM_SIDEBAR_TOKEN_NAME_BYTES: usize = 32;
 
 /// Maximum number of characters written to the outer terminal window title.
 ///
-/// A 200-character title preserves long workspace and pane names while
+/// The title limit preserves long workspace and pane names while
 /// bounding the control string sent to the terminal.
 pub(crate) const MAX_WINDOW_TITLE_CHARS: usize = 200;
 
 /// Maximum number of entries accepted in the right side of the tab bar.
 ///
-/// Sixteen status items leave room for useful context while keeping one
+/// The cap leaves room for useful context while keeping one
 /// config value from overwhelming the tab row.
 pub(crate) const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
 
 /// Default refresh interval in seconds for a tab-bar command entry.
 ///
-/// Five seconds refreshes status often enough to feel current without
+/// This refreshes status often enough to feel current without
 /// needlessly launching a command every render.
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 5;
 
 /// Default timeout in seconds for a tab-bar command entry.
 ///
-/// Two seconds allows ordinary status commands to finish while bounding how
+/// This allows ordinary status commands to finish while bounding how
 /// long one command can hold its refresh slot.
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 2;
 
@@ -90,7 +90,7 @@ pub(crate) const MIN_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 1;
 
 /// Maximum accepted refresh interval in seconds for a tab-bar command.
 ///
-/// 365 days permits annual refreshes while placing a finite bound on the
+/// The limit permits infrequent refreshes while placing a finite bound on the
 /// interval value.
 pub(crate) const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 365 * 24 * 60 * 60;
 
@@ -102,7 +102,7 @@ pub(crate) const MIN_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 1;
 
 /// Maximum accepted timeout in seconds for a tab-bar command.
 ///
-/// One hour is a generous ceiling for a status command while bounding a
+/// The ceiling allows a long status command while bounding a
 /// stalled child process.
 pub(crate) const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 60 * 60;
 
@@ -114,34 +114,38 @@ pub(crate) const MAX_MOUSE_SCROLL_LINES: u16 = u16::MAX;
 
 /// Minimum accepted mouse-wheel scroll step.
 ///
-/// A zero-line step has no effect, so the setting requires at least one line.
+/// A zero-line step has no effect, so the setting requires a positive step.
 pub(crate) const MIN_MOUSE_SCROLL_LINES: u16 = 1;
 
 /// Lowest digit accepted for indexed workspace, tab, and agent bindings.
 ///
-/// Indexed actions use one-based digit keys so their visible labels match the
-/// selected item numbers.
+/// Indexed actions use the digit keys shown by their visible labels.
+// limits-exempt: indexed action bindings use a fixed decimal key syntax.
 pub(crate) const FIRST_INDEXED_BINDING_KEY: char = '1';
 
 /// Highest digit accepted for indexed workspace, tab, and agent bindings.
 ///
-/// The one-digit binding syntax supports nine indexed actions.
+/// This is the upper key in the fixed indexed-action range.
+// limits-exempt: indexed action bindings use a fixed decimal key syntax.
 pub(crate) const LAST_INDEXED_BINDING_KEY: char = '9';
 
 /// Range token parsed by the keybinding config for all indexed digits.
 ///
-/// This spells the same fixed one-digit range shown by indexed binding help.
+/// This spells the fixed range shown by indexed binding help.
+// limits-exempt: the config grammar uses this literal range token.
 pub(crate) const INDEXED_BINDING_RANGE_SYNTAX: &str = "1..9";
 
 /// Lowest supported function-key number in config and API key names.
 ///
-/// Function-key numbering starts at F1; zero is not a terminal function key.
+/// Function-key numbering starts with the first function key, so zero is invalid.
+// limits-exempt: function-key numbering follows the terminal key model.
 pub(crate) const MIN_FUNCTION_KEY_NUMBER: u8 = 1;
 
 /// Highest function-key number accepted by Crossterm's Unix keyboard parser.
 ///
-/// The parser supports extended function keys through F35, so larger names
+/// The parser supports extended function keys through its maximum, so larger names
 /// cannot be represented by the key event source used by Shepr.
+// limits-exempt: this upper function-key number follows Crossterm's Unix key model.
 pub(crate) const MAX_FUNCTION_KEY_NUMBER: u8 = 35;
 
 macro_rules! count_key_binding_fields {

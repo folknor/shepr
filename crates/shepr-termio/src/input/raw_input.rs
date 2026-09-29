@@ -246,9 +246,9 @@ impl HostReplyPolicy for HostReplies {
             }
             RawInputEvent::HostCellSizeReport { .. } => self.cell_size = false,
             RawInputEvent::OuterFocusGained if self.query_appearance_on_focus => {
-                // The blocking reader cannot see whether the main-loop query write
-                // succeeded. Keep the window for a split terminal reply; timeout
-                // handling delays an ambiguous Escape by only one flush.
+                // The reader cannot observe whether the main-loop query write
+                // succeeded. A lone Escape without a reply is held for one idle
+                // flush, then released on the next.
                 self.appearance = true;
             }
             RawInputEvent::HostColorSchemeChanged(_) => {
@@ -536,8 +536,8 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         self.host_replies.enable_color_scheme_tracking();
     }
 
-    /// Arm the bounded host-reply window when focus gain will emit an appearance query.
-    /// If the write or reply fails, a lone Escape is delayed for only one extra flush.
+    /// Arm a possible appearance-reply window after focus gain. If no reply
+    /// arrives, a lone Escape is held for one idle flush and released on the next.
     pub fn enable_host_appearance_query_on_focus(&mut self) {
         self.host_replies.enable_appearance_query_on_focus();
     }

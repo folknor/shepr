@@ -135,7 +135,7 @@ impl EndpointTransport for NativeEndpointTransport {
         // in the shell's input handling, and never get this far.
         let mut frame = Vec::new();
         shepr_protocol::write_message(&mut frame, message)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let len = frame.len();
         if self
             .queued_bytes

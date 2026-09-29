@@ -198,7 +198,7 @@ pub fn run_server(
     });
 
     rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
-    shepr_platform::logging::shutdown("server");
+    crate::logging::shutdown("server");
     result
 }
 

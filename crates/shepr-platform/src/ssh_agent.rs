@@ -398,7 +398,7 @@ fn sweep_stale_temporary_links(stable: &Path) {
     };
     if !parent_metadata.file_type().is_dir()
         || parent_metadata.uid() != uid
-        || parent_metadata.permissions().mode() & 0o7777 != 0o700
+        || parent_metadata.permissions().mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
     {
         return;
     }

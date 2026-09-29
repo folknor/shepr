@@ -85,8 +85,29 @@ pub(super) fn path_for_local_endpoint(state_dir: &Path, socket_path: &Path) -> P
 }
 
 pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to read client chrome preferences; using defaults"
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(preferences) => Some(preferences),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to parse client chrome preferences; using defaults"
+            );
+            None
+        }
+    }
 }
 
 pub(super) fn probe_writable(path: &Path) -> io::Result<()> {

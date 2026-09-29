@@ -210,7 +210,7 @@ fn send_unix_input_chunks(
             if let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry) {
                 pending_palette.push(input);
             }
-            if pending_palette.len() == shepr_termio::host_term::theme::HOST_PALETTE_COLOR_COUNT
+            if pending_palette.len() == shepr_core::limits::PALETTE_COLOR_COUNT
                 && !flush_unix_palette_input(event_tx, pending_palette)
             {
                 return false;

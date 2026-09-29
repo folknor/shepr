@@ -82,7 +82,7 @@ pub(super) fn server_reader_thread(
         let message = shepr_protocol::read_message(&mut stream).and_then(|message| {
             surface_decoder
                 .decode(message)
-                .map_err(|error| shepr_protocol::FramingError::SurfaceDecode(error.to_string()))
+                .map_err(shepr_protocol::FramingError::SurfaceDecode)
         });
         match message {
             Ok(msg) => {
@@ -103,7 +103,11 @@ pub(super) fn server_reader_thread(
                     ClientLoopEvent::ServerDisconnected {
                         endpoint_id: endpoint_id.clone(),
                         generation,
-                        error: framing_error_to_io(shepr_protocol::FramingError::UnexpectedEof),
+                        error: framing_error_to_io(
+                            shepr_protocol::FramingError::UnexpectedEof,
+                            endpoint_id.clone(),
+                            generation,
+                        ),
                     },
                 );
                 break;
@@ -121,7 +125,7 @@ pub(super) fn server_reader_thread(
                     ClientLoopEvent::ServerDisconnected {
                         endpoint_id: endpoint_id.clone(),
                         generation,
-                        error: framing_error_to_io(err),
+                        error: framing_error_to_io(err, endpoint_id.clone(), generation),
                     },
                 );
                 break;
@@ -140,13 +144,52 @@ fn report_disconnect(
     event_tx.blocking_send(disconnect).ok();
 }
 
-fn framing_error_to_io(error: shepr_protocol::FramingError) -> io::Error {
-    match error {
-        shepr_protocol::FramingError::UnexpectedEof => {
-            io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection")
+fn framing_error_to_io(
+    error: shepr_protocol::FramingError,
+    endpoint_id: endpoint::ClientEndpointId,
+    generation: u64,
+) -> io::Error {
+    let kind = match &error {
+        shepr_protocol::FramingError::UnexpectedEof => io::ErrorKind::UnexpectedEof,
+        shepr_protocol::FramingError::Io(error) => error.kind(),
+        _ => io::ErrorKind::InvalidData,
+    };
+    io::Error::new(
+        kind,
+        EndpointFramingError {
+            endpoint_id,
+            generation,
+            source: error,
+        },
+    )
+}
+
+#[derive(Debug)]
+struct EndpointFramingError {
+    endpoint_id: endpoint::ClientEndpointId,
+    generation: u64,
+    source: shepr_protocol::FramingError,
+}
+
+impl std::fmt::Display for EndpointFramingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "endpoint {} connection generation {}: ",
+            self.endpoint_id.storage_key(),
+            self.generation
+        )?;
+        if matches!(&self.source, shepr_protocol::FramingError::UnexpectedEof) {
+            formatter.write_str("server closed connection")
+        } else {
+            write!(formatter, "{}", self.source)
         }
-        shepr_protocol::FramingError::Io(error) => error,
-        error => io::Error::new(io::ErrorKind::InvalidData, error),
+    }
+}
+
+impl std::error::Error for EndpointFramingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -176,7 +219,7 @@ pub(crate) fn write_to_local_server(
     stream: &mut LocalStream,
     msg: &ClientMessage,
 ) -> io::Result<()> {
-    shepr_protocol::write_message(stream, msg).map_err(|error| io::Error::other(error.to_string()))
+    shepr_protocol::write_message(stream, msg).map_err(io::Error::other)
 }
 
 pub(super) trait ClientMessageSink {
@@ -215,21 +258,36 @@ mod tests {
 
     #[test]
     fn server_reader_errors_keep_eof_io_and_decode_causes() {
-        let eof = framing_error_to_io(shepr_protocol::FramingError::UnexpectedEof);
+        let endpoint_id = endpoint::ClientEndpointId::Local;
+        let eof = framing_error_to_io(
+            shepr_protocol::FramingError::UnexpectedEof,
+            endpoint_id.clone(),
+            7,
+        );
         assert_eq!(eof.kind(), io::ErrorKind::UnexpectedEof);
         assert!(eof.to_string().contains("server closed connection"));
+        assert!(eof.to_string().contains("endpoint local"));
+        assert!(eof.to_string().contains("generation 7"));
 
-        let io_error = framing_error_to_io(shepr_protocol::FramingError::Io(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "peer reset",
-        )));
+        let io_error = framing_error_to_io(
+            shepr_protocol::FramingError::Io(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "peer reset",
+            )),
+            endpoint_id.clone(),
+            7,
+        );
         assert_eq!(io_error.kind(), io::ErrorKind::BrokenPipe);
         assert!(io_error.to_string().contains("peer reset"));
 
-        let decode_error = framing_error_to_io(shepr_protocol::FramingError::Oversized {
-            claimed: 32,
-            max: 16,
-        });
+        let decode_error = framing_error_to_io(
+            shepr_protocol::FramingError::Oversized {
+                claimed: 32,
+                max: 16,
+            },
+            endpoint_id.clone(),
+            7,
+        );
         assert_eq!(decode_error.kind(), io::ErrorKind::InvalidData);
         assert!(
             decode_error
@@ -237,14 +295,45 @@ mod tests {
                 .contains("frame size 32 exceeds maximum 16")
         );
 
-        let surface_error = framing_error_to_io(shepr_protocol::FramingError::SurfaceDecode(
-            "baseline mismatch".into(),
-        ));
+        let surface_error = framing_error_to_io(
+            shepr_protocol::FramingError::SurfaceDecode(
+                shepr_protocol::surface_reuse::SurfaceDecodeError::WithSubject {
+                    source: Box::new(
+                        shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch,
+                    ),
+                    subject: shepr_protocol::surface_reuse::SurfaceDecodeSubject {
+                        boot_id: "boot".into(),
+                        projection_revision: shepr_protocol::ProjectionRevision::new(2),
+                        surface_revision: shepr_protocol::SurfaceRevision::new(3),
+                        pane_ids: Vec::new(),
+                    },
+                },
+            ),
+            endpoint_id,
+            7,
+        );
         assert_eq!(surface_error.kind(), io::ErrorKind::InvalidData);
         assert!(matches!(
-            surface_error.get_ref().and_then(|error| error.downcast_ref::<shepr_protocol::FramingError>()),
-            Some(shepr_protocol::FramingError::SurfaceDecode(message)) if message == "baseline mismatch"
+            surface_error.get_ref().and_then(|error| error.downcast_ref::<EndpointFramingError>()),
+            Some(error) if matches!(
+                &error.source,
+                shepr_protocol::FramingError::SurfaceDecode(
+                    shepr_protocol::surface_reuse::SurfaceDecodeError::WithSubject {
+                        subject,
+                        source,
+                    }
+                ) if subject.boot_id == "boot"
+                    && subject.projection_revision == 2
+                    && subject.surface_revision == 3
+                    && matches!(
+                        source.as_ref(),
+                        shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch
+                    )
+            ) && error.endpoint_id == endpoint::ClientEndpointId::Local
+                && error.generation == 7
         ));
+        assert!(surface_error.to_string().contains("boot boot"));
+        assert!(surface_error.to_string().contains("projection revision 2"));
     }
 
     #[test]

@@ -2,20 +2,31 @@
 
 use std::time::Duration;
 
+/// Bytes in one binary kibibyte, the unit byte budgets are written in. A
+/// defined unit, not a tunable.
+pub const KIBIBYTE_BYTES: usize = 1024;
+
+/// Longest UTF-8 encoding of one Unicode scalar value, in bytes: the stack
+/// buffer `char::encode_utf8` needs. Fixed by the encoding, not a tunable.
+pub const UTF8_MAX_BYTES_PER_CODEPOINT: usize = 4;
+
+/// Entries in the indexed terminal palette: one for every value its `u8`
+/// index can address. Fixed by the xterm palette format, not a tunable.
+pub const PALETTE_COLOR_COUNT: usize = 1usize << u8::BITS;
+
 /// An SSH bridge must outlive several client heartbeat cycles while idle.
-/// The one-minute window gives a healthy bridge multiple chances to answer
-/// five-second endpoint probes; its minimum ratio is checked below.
+/// This gives a healthy bridge multiple chances to answer endpoint probes;
+/// its minimum cycle ratio is checked below.
 pub const BRIDGE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A connected client probes an endpoint after this much silence.
-/// Five seconds gives routine SSH and server scheduling room between probes.
+/// The interval leaves room for routine SSH and server scheduling delays.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// One cold SSH round trip, including a noninteractive command or status probe.
-/// Fifteen seconds bounds a slow startup without letting a hung host block the
-/// caller.
+/// This bounds a slow startup without letting a hung host block the caller.
 pub const SSH_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Minimum number of client heartbeat intervals that a quiet bridge survives.
-/// Three cycles allow multiple delayed probes before the bridge is considered
+/// Several cycles allow delayed probes before the bridge is considered
 /// idle.
 pub(crate) const BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES: u32 = 3;
 
@@ -26,16 +37,17 @@ const _: () = assert!(
             .as_millis()
 );
 
-/// Total share represented by both children of a normalized split; 1.0 is the
-/// full layout area.
+/// Total share represented by both children of a normalized split, covering
+/// the full layout area.
+// limits-exempt: normalized layout shares represent the full split area.
 pub(crate) const SPLIT_RATIO_TOTAL: f32 = 1.0;
-/// Smallest permitted first-child share; ten percent keeps an asymmetric split
-/// from collapsing either pane.
+/// Smallest permitted first-child share; this keeps an asymmetric split from
+/// collapsing either pane.
 pub const MIN_SPLIT_RATIO: f32 = 0.1;
 /// Largest permitted first-child share, leaving the minimum share to the
 /// second pane.
 pub const MAX_SPLIT_RATIO: f32 = SPLIT_RATIO_TOTAL - MIN_SPLIT_RATIO;
-/// First-child share used when a split has no explicit ratio; half gives both
+/// First-child share used when a split has no explicit ratio; this gives both
 /// children equal space.
 pub const EVEN_SPLIT: f32 = 0.5;
 
@@ -51,13 +63,13 @@ pub(crate) const FIRST_PANE_ID: u32 = 1;
 pub(crate) const PLACEHOLDER_PANE_ID: u32 = 0;
 
 /// Divider distance in cells accepted when selecting a split for keyboard
-/// resize. One cell absorbs integer-coordinate edge rounding.
+/// resize. This absorbs integer-coordinate edge rounding.
 pub(crate) const SPLIT_EDGE_MATCH_TOLERANCE_CELLS: u32 = 1;
 /// Minimum number of cells assigned to each child when a split has room for
-/// both. One cell keeps each child representable.
+/// both. This keeps each child representable.
 pub(crate) const MIN_SPLIT_CHILD_CELLS: u16 = 1;
 /// Axis size needed to give both children their minimum extent, derived from
-/// the one-cell minimum for each child.
+/// each child's minimum.
 pub(crate) const MIN_SPLIT_EXTENT_CELLS: u16 = MIN_SPLIT_CHILD_CELLS + MIN_SPLIT_CHILD_CELLS;
-/// A workspace keeps at least one pane when removing or moving panes.
+/// Fewest panes a workspace keeps when removing or moving panes.
 pub(crate) const MIN_WORKSPACE_PANES: usize = 1;

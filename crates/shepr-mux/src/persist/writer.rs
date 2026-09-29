@@ -172,14 +172,14 @@ impl SessionWriter {
             // too and the unloaded-file guard is released, exactly as for a
             // durable save.
             Ok(super::io::Published::NotDurable(err)) => {
-                shepr_platform::logging::session_save_failed(
+                crate::logging::session_save_failed(
                     &self.path,
                     &format!("saved, but syncing its directory failed: {err}"),
                 );
                 failure = Some(err);
             }
             Err(err) => {
-                shepr_platform::logging::session_save_failed(&self.path, &err.to_string());
+                crate::logging::session_save_failed(&self.path, &err.to_string());
                 return Err(err);
             }
         }
@@ -190,13 +190,13 @@ impl SessionWriter {
             super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = self.save_history(&history_path, history) {
             self.written_history = None;
-            shepr_platform::logging::session_save_failed(&history_path, &err.to_string());
+            crate::logging::session_save_failed(&history_path, &err.to_string());
             if failure.is_none() {
                 failure = Some(err);
             }
         }
         if failure.is_none() {
-            shepr_platform::logging::session_saved(&self.path, snapshot.workspaces.len());
+            crate::logging::session_saved(&self.path, snapshot.workspaces.len());
         }
         failure.map_or(Ok(()), Err)
     }
@@ -315,16 +315,16 @@ impl SessionWriter {
             super::io::clear_path(&self.path)
         });
         if let Err(err) = result {
-            shepr_platform::logging::session_clear_failed(&self.path, &err.to_string());
+            crate::logging::session_clear_failed(&self.path, &err.to_string());
             return Err(err);
         }
         let history_path =
             super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = super::io::clear_path(&history_path) {
-            shepr_platform::logging::session_clear_failed(&history_path, &err.to_string());
+            crate::logging::session_clear_failed(&history_path, &err.to_string());
             return Err(err);
         }
-        shepr_platform::logging::session_cleared(&self.path);
+        crate::logging::session_cleared(&self.path);
         Ok(())
     }
 }

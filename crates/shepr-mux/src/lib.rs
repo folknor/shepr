@@ -4,6 +4,7 @@ pub mod events;
 pub use cwd::UsableCwd;
 pub mod git;
 mod limits;
+pub(crate) mod logging;
 pub mod pane;
 pub mod persist;
 pub mod render_signal;

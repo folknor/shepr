@@ -200,7 +200,7 @@ fn push_host_theme_update(
         && let Some(ClientMessage::ClientShellHostTheme {
             update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(pending),
         }) = requests.last_mut()
-        && pending.len() + colors.len() <= shepr_termio::host_term::theme::HOST_PALETTE_COLOR_COUNT
+        && pending.len() + colors.len() <= shepr_core::limits::PALETTE_COLOR_COUNT
     {
         pending.extend_from_slice(colors);
         return;

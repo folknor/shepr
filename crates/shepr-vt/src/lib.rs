@@ -56,6 +56,7 @@ pub use cell::{
 use cell::{CellText, cell_graphemes, cell_text, cell_text_into, cell_wide};
 pub use cell::{RowWrap, ScreenTextCell, ScreenTextRow, unicode_display_units};
 pub use modes::DecMode;
+// limits-exempt: this fixed terminfo name advertises the pane terminal type.
 pub const PANE_TERM: &str = "xterm-256color";
 const PANE_TRUECOLOR_BITS_PER_CHANNEL: Option<&'static [u8]> = Some(b"8");
 pub const PANE_COLORTERM: &str = match PANE_TRUECOLOR_BITS_PER_CHANNEL {
@@ -326,7 +327,7 @@ pub struct Terminal {
     scanner: Scanner,
     max_scrollback: usize,
     history_lines: usize,
-    default_palette: [RgbColor; 256],
+    default_palette: [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
     cell: Option<shepr_core::geometry::CellPx>,
     modes: ExtraModes,
     color_scheme: Option<ColorScheme>,
@@ -338,6 +339,7 @@ pub struct Terminal {
     responses: Vec<PtyResponse>,
     pwd_changes: Vec<WorkingDirectoryReport>,
     clipboard_writes: Vec<Vec<u8>>,
+    dropped_clipboard_store_bytes: Vec<usize>,
     /// The latest title change not yet collected.
     title_update: Option<TitleUpdate>,
     /// The latest OSC 9;4 progress payload (after `9;`) not yet collected.
@@ -431,6 +433,7 @@ impl Terminal {
             responses: Vec::new(),
             pwd_changes: Vec::new(),
             clipboard_writes: Vec::new(),
+            dropped_clipboard_store_bytes: Vec::new(),
             title_update: None,
             progress_update: None,
             default_color_set: false,
@@ -665,6 +668,14 @@ impl Terminal {
                 {
                     self.clipboard_writes.push(text.into_bytes());
                 }
+                Event::ClipboardStore(ClipboardType::Clipboard, text)
+                    if text.len() > MAX_CLIPBOARD_BYTES =>
+                {
+                    // `text` is already decoded valid UTF-8, so `len()` is
+                    // the decoded OSC 52 store size in bytes. Keep only that
+                    // count for the pane's diagnostic; never retain the text.
+                    self.dropped_clipboard_store_bytes.push(text.len());
+                }
                 Event::Title(title) => self.title_update = Some(TitleUpdate::Set(title)),
                 Event::ResetTitle => self.title_update = Some(TitleUpdate::Reset),
                 _ => {}
@@ -776,6 +787,13 @@ impl Terminal {
 
     pub fn take_clipboard_writes(&mut self) -> Vec<Vec<u8>> {
         mem::take(&mut self.clipboard_writes)
+    }
+
+    /// Returns byte counts for oversized OSC 52 clipboard stores that were
+    /// dropped since the previous collection. The clipboard content is not
+    /// retained.
+    pub fn take_dropped_clipboard_store_bytes(&mut self) -> Vec<usize> {
+        mem::take(&mut self.dropped_clipboard_store_bytes)
     }
 
     /// The live value of a DEC private mode; `false` when the table in

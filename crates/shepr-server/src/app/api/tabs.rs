@@ -115,7 +115,7 @@ impl App {
                         self.public_workspace_id(ws_idx),
                         self.public_tab_id(ws_idx, tab_idx),
                     ) {
-                        shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
+                        crate::logging::tab_renamed(&workspace_id, &tab_id);
                     }
                 }
                 self.schedule_session_save();
@@ -160,7 +160,7 @@ impl App {
         if !workspace.set_tab_custom_name(tab_idx, Some(params.label.clone())) {
             return Err(tab_not_found(&params.tab_id));
         }
-        shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
+        crate::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             data: EventData::TabRenamed {

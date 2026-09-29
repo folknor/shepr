@@ -44,7 +44,10 @@ pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathB
             None => format!("shepr-ssh-{token:016x}"),
         };
         let dir = runtime_dir.join(name);
-        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        match std::fs::DirBuilder::new()
+            .mode(super::limits::PRIVATE_DIRECTORY_MODE)
+            .create(&dir)
+        {
             Ok(()) => return Ok(dir),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -261,7 +264,9 @@ pub fn validate_ssh_runtime_dir(runtime_dir: &Path) -> std::io::Result<()> {
 pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(dir)?;
-    if !metadata.is_dir() || metadata.uid() != effective_uid() || metadata.mode() & 0o7777 != 0o700
+    if !metadata.is_dir()
+        || metadata.uid() != effective_uid()
+        || metadata.mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
     {
         // Keep this typed error as io::Error's direct payload: shepr-remote
         // downcasts it to classify launch failures. Carry the rejected path so
@@ -293,8 +298,9 @@ impl std::fmt::Display for UnsafeSshRuntimeDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "SSH runtime directory {} must be owned by the current user, mode 0700, and not a symlink",
+            "SSH runtime directory {} must be owned by the current user, mode {:04o}, and not a symlink",
             self.path.display(),
+            super::limits::PRIVATE_DIRECTORY_MODE,
         )
     }
 }

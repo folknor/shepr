@@ -1,7 +1,19 @@
 use super::*;
 
 impl PaneTerminal {
-    pub(crate) fn new(mut terminal: shepr_vt::Terminal) -> Self {
+    /// Construct a terminal that belongs to no pane: for tests, and for the
+    /// `PaneRuntime::with_child_io` seam, whose runtime has no real pane.
+    /// A spawned pane uses [`Self::new_with_pane_id`].
+    pub(crate) fn new(terminal: shepr_vt::Terminal) -> Self {
+        Self::new_inner(None, terminal)
+    }
+
+    /// Construct a pane terminal with the id needed by later mutation reports.
+    pub(crate) fn new_with_pane_id(pane_id: PaneId, terminal: shepr_vt::Terminal) -> Self {
+        Self::new_inner(Some(pane_id), terminal)
+    }
+
+    fn new_inner(pane_id: Option<PaneId>, mut terminal: shepr_vt::Terminal) -> Self {
         // Replies to anything written before the pane existed have no reader.
         let _ = terminal.take_pty_responses();
 
@@ -24,7 +36,9 @@ impl PaneTerminal {
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
             }),
+            pane_id,
             mutation_failure_reported: AtomicBool::new(false),
+            oversized_clipboard_reported: AtomicBool::new(false),
             dirty_patch_fallback_reported: AtomicBool::new(false),
         }
     }
@@ -215,7 +229,11 @@ impl PaneTerminal {
         } else {
             None
         };
+        let dropped_clipboard_store_bytes = effects.dropped_clipboard_store_bytes.first().copied();
         drop(core);
+        if let Some(bytes) = dropped_clipboard_store_bytes {
+            self.report_oversized_clipboard_store(pane_id, bytes);
+        }
         ProcessBytesResult {
             request_render,
             render_delay,
@@ -286,6 +304,14 @@ impl PaneTerminal {
         let effects = collect_core_effects(&mut core);
         let default_color_generation = core.default_color_generation;
         drop(core);
+        // A synchronized update parses its buffered bytes when it flushes, so
+        // an oversized OSC 52 store inside one surfaces here, not on a read.
+        if let (Some(pane_id), Some(bytes)) = (
+            self.pane_id,
+            effects.dropped_clipboard_store_bytes.first().copied(),
+        ) {
+            self.report_oversized_clipboard_store(pane_id, bytes);
+        }
         ProcessBytesResult {
             request_render: flushed,
             render_delay: None,

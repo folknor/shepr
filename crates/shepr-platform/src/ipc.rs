@@ -320,9 +320,9 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 ///
 /// Binding at `path` and then chmodding leaves the socket connectable with
 /// umask-derived permissions in between. Instead the socket is bound inside a
-/// fresh 0700 staging directory next to `path`, restricted to 0600 there, and
-/// then hard-linked into place. `link` fails if `path` already exists, so a
-/// listener that raced us to the path is never replaced (a `bind` at the path
+/// fresh private staging directory next to `path`, given owner-only socket
+/// permissions, and then hard-linked into place. `link` fails if `path` already
+/// exists, so a listener that raced us to the path is never replaced (a `bind` at the path
 /// would have failed the same way); that is reported as `AddrInUse`. The
 /// listener is bound to the inode, so connections through the new name reach
 /// it, and a socket identity recorded from `path` afterwards is that inode.
@@ -439,7 +439,10 @@ fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<LocalListener,
         let staging_dir = parent.join(staging_name);
         // A name somebody else already created is never used: the directory
         // must be ours and fresh for the 0700 guarantee to hold.
-        match fs::DirBuilder::new().mode(0o700).create(&staging_dir) {
+        match fs::DirBuilder::new()
+            .mode(super::limits::PRIVATE_DIRECTORY_MODE)
+            .create(&staging_dir)
+        {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 last_error = Some(err);
@@ -544,7 +547,7 @@ fn sweep_stale_socket_staging_dirs(parent: &Path) {
     };
     if !parent_metadata.file_type().is_dir()
         || parent_metadata.uid() != uid
-        || parent_metadata.permissions().mode() & 0o7777 != 0o700
+        || parent_metadata.permissions().mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
     {
         return;
     }
@@ -570,7 +573,8 @@ fn sweep_stale_socket_staging_dirs(parent: &Path) {
         };
         if !directory_metadata.file_type().is_dir()
             || directory_metadata.uid() != uid
-            || directory_metadata.permissions().mode() & 0o777 != 0o700
+            || directory_metadata.permissions().mode() & 0o777
+                != super::limits::PRIVATE_DIRECTORY_MODE
         {
             continue;
         }

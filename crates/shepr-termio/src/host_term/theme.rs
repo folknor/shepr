@@ -1,14 +1,12 @@
 pub use shepr_vt::{ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor};
 
-/// Number of indexed colors in the terminal color palette format.
-// limits-exempt: the size of the xterm 256-color palette.
-pub const HOST_PALETTE_COLOR_COUNT: usize = 256;
+use shepr_core::limits::PALETTE_COLOR_COUNT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalTheme {
     pub foreground: Option<RgbColor>,
     pub background: Option<RgbColor>,
-    pub palette: [Option<RgbColor>; HOST_PALETTE_COLOR_COUNT],
+    pub palette: [Option<RgbColor>; PALETTE_COLOR_COUNT],
 }
 
 impl Default for TerminalTheme {
@@ -16,7 +14,7 @@ impl Default for TerminalTheme {
         Self {
             foreground: None,
             background: None,
-            palette: [None; HOST_PALETTE_COLOR_COUNT],
+            palette: [None; PALETTE_COLOR_COUNT],
         }
     }
 }
@@ -178,7 +176,7 @@ mod tests {
         assert!(query.starts_with(HOST_COLOR_QUERY_SEQUENCE));
         assert!(query.contains("\x1b]4;0;?\x1b\\"));
         assert!(query.ends_with("\x1b]4;255;?\x1b\\"));
-        assert_eq!(query.matches("\x1b]4;").count(), 256);
+        assert_eq!(query.matches("\x1b]4;").count(), PALETTE_COLOR_COUNT);
     }
 
     #[test]

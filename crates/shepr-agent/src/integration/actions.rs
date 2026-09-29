@@ -15,11 +15,7 @@ pub fn install_target(
 ) -> io::Result<InstallOutput> {
     let result = install_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
-    shepr_platform::logging::integration_action(
-        "install",
-        integration_target_label(target),
-        outcome,
-    );
+    crate::logging::integration_action("install", integration_target_label(target), outcome);
     result
 }
 
@@ -54,11 +50,7 @@ pub fn uninstall_target(
 ) -> io::Result<Vec<String>> {
     let result = uninstall_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
-    shepr_platform::logging::integration_action(
-        "uninstall",
-        integration_target_label(target),
-        outcome,
-    );
+    crate::logging::integration_action("uninstall", integration_target_label(target), outcome);
     result
 }
 

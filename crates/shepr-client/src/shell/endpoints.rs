@@ -24,7 +24,66 @@ pub(crate) struct CachedEndpointConfig {
 #[derive(Clone, Debug)]
 pub(crate) struct CachedEndpointConfigError {
     pub(crate) wire: Vec<u8>,
-    pub(crate) message: String,
+    pub(crate) error: shepr_protocol::codec::CodecError,
+}
+
+#[derive(Clone, Debug)]
+struct EndpointConfigurationError {
+    endpoint_id: ClientEndpointId,
+    cause: EndpointConfigurationCause,
+}
+
+#[derive(Clone, Debug)]
+enum EndpointConfigurationCause {
+    Decode(shepr_protocol::codec::CodecError),
+    EndpointUnavailable,
+    MissingConfiguration,
+}
+
+impl EndpointConfigurationError {
+    fn decode(endpoint_id: &ClientEndpointId, error: shepr_protocol::codec::CodecError) -> Self {
+        Self {
+            endpoint_id: endpoint_id.clone(),
+            cause: EndpointConfigurationCause::Decode(error),
+        }
+    }
+
+    fn unavailable(endpoint_id: &ClientEndpointId) -> Self {
+        Self {
+            endpoint_id: endpoint_id.clone(),
+            cause: EndpointConfigurationCause::EndpointUnavailable,
+        }
+    }
+
+    fn missing(endpoint_id: &ClientEndpointId) -> Self {
+        Self {
+            endpoint_id: endpoint_id.clone(),
+            cause: EndpointConfigurationCause::MissingConfiguration,
+        }
+    }
+}
+
+impl std::fmt::Display for EndpointConfigurationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.cause {
+            EndpointConfigurationCause::Decode(error) => write!(formatter, "{error}"),
+            EndpointConfigurationCause::EndpointUnavailable => {
+                formatter.write_str("endpoint is no longer available")
+            }
+            EndpointConfigurationCause::MissingConfiguration => formatter
+                .write_str("endpoint snapshot omitted configuration without a cached value"),
+        }
+    }
+}
+
+impl std::error::Error for EndpointConfigurationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.cause {
+            EndpointConfigurationCause::Decode(error) => Some(error),
+            EndpointConfigurationCause::EndpointUnavailable
+            | EndpointConfigurationCause::MissingConfiguration => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for CachedEndpointConfig {
@@ -159,11 +218,10 @@ impl ClientShellState {
         };
         if endpoint.status != ClientEndpointStatus::Online {
             if let Some(error) = endpoint.resolved_config_error.as_ref() {
-                let label = endpoint.label.clone();
-                let message = error.message.clone();
-                self.set_endpoint_error(format!(
-                    "{label}: invalid endpoint configuration: {message}"
-                ));
+                let error =
+                    EndpointConfigurationError::decode(&endpoint.endpoint_id, error.error.clone());
+                let message = self.endpoint_configuration_message(&error);
+                self.set_endpoint_error(message);
             }
             return false;
         }
@@ -177,10 +235,8 @@ impl ClientShellState {
         let snapshot_config = match self.resolve_snapshot_config(endpoint_id, &snapshot) {
             Ok(config) => config,
             Err(error) => {
-                let label = self.endpoint_label(endpoint_id).to_owned();
-                self.set_endpoint_error(format!(
-                    "{label}: invalid endpoint configuration: {error}"
-                ));
+                let message = self.endpoint_configuration_message(&error);
+                self.set_endpoint_error(message);
                 return false;
             }
         };
@@ -454,10 +510,8 @@ impl ClientShellState {
             match self.resolve_snapshot_config(endpoint_id, &snapshot) {
                 Ok(config) => self.apply_active_snapshot(snapshot, generation, &config),
                 Err(error) => {
-                    let label = self.endpoint_label(endpoint_id).to_owned();
-                    self.set_endpoint_error(format!(
-                        "{label}: invalid endpoint configuration: {error}"
-                    ));
+                    let message = self.endpoint_configuration_message(&error);
+                    self.set_endpoint_error(message);
                 }
             }
         }
@@ -467,12 +521,12 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         snapshot: &ClientShellSnapshot,
-    ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, String> {
+    ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, EndpointConfigurationError> {
         let endpoint = self
             .endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .ok_or_else(|| "endpoint is no longer available".to_owned())?;
+            .ok_or_else(|| EndpointConfigurationError::unavailable(endpoint_id))?;
         let cached_error = endpoint
             .resolved_config_error
             .as_ref()
@@ -480,9 +534,9 @@ impl ClientShellState {
             .filter(|cached| {
                 snapshot.resolved_config.is_empty() || cached.wire == snapshot.resolved_config
             })
-            .map(|cached| cached.message.clone());
+            .map(|cached| cached.error.clone());
         if let Some(error) = cached_error {
-            return Err(error);
+            return Err(EndpointConfigurationError::decode(endpoint_id, error));
         }
         let cached_config = endpoint
             .resolved_config
@@ -496,9 +550,7 @@ impl ClientShellState {
         }
 
         if snapshot.resolved_config.is_empty() {
-            return Err(
-                "endpoint snapshot omitted configuration without a cached value".to_owned(),
-            );
+            return Err(EndpointConfigurationError::missing(endpoint_id));
         }
         self.cache_endpoint_config(endpoint_id, &snapshot.resolved_config)
     }
@@ -507,20 +559,23 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         wire: &[u8],
-    ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, String> {
+    ) -> Result<std::sync::Arc<shepr_config::ValidatedConfig>, EndpointConfigurationError> {
         let Some(index) = self
             .endpoints
             .iter()
             .position(|endpoint| &endpoint.endpoint_id == endpoint_id)
         else {
-            return Err("endpoint is no longer available".to_owned());
+            return Err(EndpointConfigurationError::unavailable(endpoint_id));
         };
         if let Some(cached) = self.endpoints[index]
             .resolved_config_error
             .as_ref()
             .filter(|cached| cached.wire == wire)
         {
-            return Err(cached.message.clone());
+            return Err(EndpointConfigurationError::decode(
+                endpoint_id,
+                cached.error.clone(),
+            ));
         }
         if let Some(config) = self.endpoints[index]
             .resolved_config
@@ -552,29 +607,34 @@ impl ClientShellState {
                 Ok(config)
             }
             Err(error) => {
-                let message = error.to_string();
+                let error_message = error.to_string();
                 let label = self.endpoints[index].label.clone();
                 {
                     let endpoint = &mut self.endpoints[index];
                     endpoint.resolved_config_error = Some(CachedEndpointConfigError {
                         wire: wire.to_vec(),
-                        message: message.clone(),
+                        error: error.clone(),
                     });
                 }
                 self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Attention);
                 self.set_machine_error(
                     endpoint_id,
-                    &format!("invalid endpoint configuration: {message}"),
+                    &format!("invalid endpoint configuration: {error_message}"),
                 );
                 tracing::warn!(
                     endpoint = %endpoint_id.storage_key(),
                     label = %label,
-                    error = %message,
+                    error = %error_message,
                     "endpoint configuration could not be decoded"
                 );
-                Err(message)
+                Err(EndpointConfigurationError::decode(endpoint_id, error))
             }
         }
+    }
+
+    fn endpoint_configuration_message(&self, error: &EndpointConfigurationError) -> String {
+        let label = self.endpoint_label(&error.endpoint_id);
+        format!("{label}: invalid endpoint configuration: {error}")
     }
 }
 

@@ -566,6 +566,23 @@ fn clipboard_queries_never_disclose_contents_and_split_writes_complete_once() {
 }
 
 #[test]
+fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
+    let mut terminal = Terminal::new(10, 3, 0);
+    let encoded_payload = "A".repeat((MAX_CLIPBOARD_BYTES / 3 + 1) * 4);
+    let decoded_bytes = encoded_payload.len() / 4 * 3;
+    let sequence = format!("\x1b]52;c;{encoded_payload}\x07");
+
+    terminal.write(sequence.as_bytes());
+
+    assert!(terminal.take_clipboard_writes().is_empty());
+    assert_eq!(
+        terminal.take_dropped_clipboard_store_bytes(),
+        vec![decoded_bytes]
+    );
+    assert!(terminal.take_dropped_clipboard_store_bytes().is_empty());
+}
+
+#[test]
 fn osc52_writes_complete_for_bel_and_st_without_queries() {
     let mut terminal = Terminal::new(10, 5, 0);
     terminal.write(b"\x1b]52;c;aGVs");

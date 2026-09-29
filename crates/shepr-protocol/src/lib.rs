@@ -22,7 +22,14 @@ pub mod surface_reuse;
 mod theme_conversion;
 #[cfg(test)]
 mod wire_tests;
-pub use limits::frame_payload_fits;
+pub use limits::{
+    BUILD_ID, MAX_CELL_SIZE_PX, MAX_CLIENT_REQUEST_BYTES, MAX_ENDPOINT_COMMAND_BYTES,
+    MAX_ENDPOINT_RESPONSE_CHUNK_BYTES, MAX_FRAME_SIZE, MAX_INITIAL_REQUEST_BYTES,
+    MAX_INPUT_PAYLOAD, MAX_SURFACE_CELLS, MAX_SURFACE_DIMENSION, MAX_SURFACE_HYPERLINKS,
+    MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS, MAX_SURFACE_SPLIT_PATH, MAX_SURFACE_SPLITS,
+    MAX_TERMINAL_FRAME_BYTES, MIN_SURFACE_DIMENSION, SURFACE_BYTES_PER_CELL, frame_payload_fits,
+    surface_grid_size,
+};
 
 pub use frame::*;
 pub use framing::*;
@@ -34,7 +41,6 @@ pub use ids::{
 };
 pub use ids::{TerminalId, WorkspaceId};
 pub use input::*;
-pub use limits::*;
 pub use message::*;
 pub use projection::*;
 pub use revision::*;

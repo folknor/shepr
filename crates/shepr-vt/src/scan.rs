@@ -365,6 +365,7 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
     match cap_hex {
         // TN: terminal name.
         b"544E" => Some(Some(super::PANE_TERM.as_bytes())),
+        // limits-exempt: XTGETTCAP requires the indexed palette size as decimal bytes.
         // Co / colors: palette size.
         b"436F" | b"636F6C6F7273" => Some(Some(b"256")),
         // Tc, RGB and the RGB setters follow the same truecolor capability as COLORTERM.
@@ -383,6 +384,7 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
         // Smulx: underline style.
         b"536D756C78" => Some(Some(b"\\E[4:%p1%dm")),
         // Setulc: underline color.
+        // limits-exempt: this terminfo string encodes fixed RGB channel conversion parameters.
         b"536574756C63" => Some(Some(
             b"\\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m",
         )),

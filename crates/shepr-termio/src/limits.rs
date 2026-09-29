@@ -4,12 +4,12 @@ use std::time::Duration;
 
 /// Idle time before an incomplete raw terminal key sequence is flushed.
 ///
-/// Ten milliseconds keeps lone Escape responsive while allowing bytes from one
+/// A short delay keeps lone Escape responsive while allowing bytes from one
 /// terminal write to arrive together.
 pub const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
 
 /// Wait this long before flushing a possible mouse sequence when host mouse
-/// reporting is active; 150 milliseconds accommodates fragmented reports.
+/// reporting is active; the interval accommodates fragmented reports.
 pub const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
 
 /// Largest bracketed paste body the framer holds while waiting for its
@@ -32,41 +32,35 @@ pub(crate) const PASTE_STALL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Number of color-query replies expected from the full host theme query.
 ///
-/// The count is the 256 indexed palette entries plus the foreground and
+/// The count includes every indexed palette entry plus foreground and
 /// background replies.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the palette size plus two replies fits in u16"
 )]
 pub(crate) const MAX_HOST_COLOR_QUERY_REPLIES: u16 =
-    crate::host_term::theme::HOST_PALETTE_COLOR_COUNT as u16 + 2;
+    shepr_core::limits::PALETTE_COLOR_COUNT as u16 + 2;
 
 /// Maximum length of an orphaned SGR mouse tail accepted by the parser.
 ///
-/// Thirty-two bytes cover decimal coordinates in a complete supported mouse
-/// report; longer tails are not retained as plausible reports.
+/// The bound covers decimal coordinates in a complete supported mouse report;
+/// longer tails are not retained as plausible reports.
 pub(crate) const MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES: usize = 32;
 
 /// Maximum bytes retained while discarding an incomplete terminal control tail.
 ///
-/// The 128-byte ceiling allows supported host replies to finish while bounding
+/// The ceiling allows supported host replies to finish while bounding
 /// malformed or unterminated control input.
 pub(crate) const MAX_DISCARDED_CONTROL_TAIL_BYTES: usize = 128;
 
 /// Initial allocation for a UTF-8 mouse report.
 ///
-/// Sixteen bytes fit the complete supported report, including the escape
-/// prefix and three encoded coordinates, without growing the common buffer.
+/// The initial capacity fits a complete supported report, including its escape
+/// prefix and encoded coordinates, without growing the common buffer.
 pub(crate) const UTF8_MOUSE_REPORT_INITIAL_CAPACITY: usize = 16;
 
 /// Initial allocation for the common kitty key encoding before optional text.
 ///
-/// Thirty-two bytes avoid growth for ordinary key sequences while allowing the
-/// associated-text path to expand when needed.
+/// The initial capacity avoids growth for ordinary key sequences while
+/// allowing the associated-text path to expand when needed.
 pub(crate) const KITTY_KEY_SEQUENCE_INITIAL_CAPACITY: usize = 32;
-
-/// Maximum UTF-8 byte width of one Unicode scalar value.
-///
-/// Unicode encodes each scalar in at most four bytes, which is the fixed
-/// stack-buffer size needed before appending its encoded bytes.
-pub(crate) const UTF8_CODE_POINT_BUFFER_BYTES: usize = 4;

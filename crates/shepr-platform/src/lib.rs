@@ -19,16 +19,10 @@ mod process_identity;
 mod random;
 mod remote_bridge;
 mod remote_bridge_io;
-#[cfg(test)]
-mod remote_bridge_tests;
-#[cfg(test)]
-mod resize_signal_tests;
 mod shutdown;
 pub mod ssh_agent;
 mod ssh_paths;
 mod terminal_environment;
-#[cfg(test)]
-mod tests;
 
 pub use child_io::{ChildExitReason, classify_child_exit, poll_fd_readable, read_fd};
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
@@ -86,3 +80,10 @@ use process::process_exists;
 use remote_bridge_io::forward_remote_bridge_stdio_with_timeout;
 #[cfg(test)]
 use ssh_paths::{validate_shared_ssh_dir, with_name_token};
+
+#[cfg(test)]
+mod remote_bridge_tests;
+#[cfg(test)]
+mod resize_signal_tests;
+#[cfg(test)]
+mod tests;

@@ -61,6 +61,9 @@ impl Registration {
                 }
 
                 // Retry both initial API readiness and connections lost during handoff.
+                // There is no attempt budget on purpose: the worker lives exactly as long
+                // as the bridge attachment (Drop stops and unparks it), the delay is capped,
+                // and a server that comes up late should still get the agent.
                 match connect(&path, &socket_path) {
                     Ok(None) => break,
                     Ok(Some(connection)) => {

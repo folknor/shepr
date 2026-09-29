@@ -21,7 +21,7 @@ pub enum FramingError {
     /// Encoding or decoding the payload with the wire codec failed.
     Codec(CodecError),
     /// A decoded surface update did not match the connection's surface baseline.
-    SurfaceDecode(String),
+    SurfaceDecode(super::surface_reuse::SurfaceDecodeError),
     /// The connection was closed before a complete frame could be read.
     UnexpectedEof,
 }
@@ -45,6 +45,7 @@ impl std::error::Error for FramingError {
         match self {
             FramingError::Io(e) => Some(e),
             FramingError::Codec(e) => Some(e),
+            FramingError::SurfaceDecode(e) => Some(e),
             _ => None,
         }
     }

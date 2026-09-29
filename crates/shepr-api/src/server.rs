@@ -436,7 +436,7 @@ fn handle_connection_with_stop(
 
     let request_id = request.id.clone();
     let method_traits = request.method.traits();
-    shepr_platform::logging::api_request_started(
+    crate::logging::api_request_started(
         &request_id,
         method_traits.name,
         method_traits.mutates_ui,
@@ -508,7 +508,7 @@ fn handle_connection_with_stop(
                 server_stop,
             );
             match &result {
-                Ok(()) => shepr_platform::logging::api_request_completed(
+                Ok(()) => crate::logging::api_request_completed(
                     &request_id,
                     method_traits.name,
                     method_traits.mutates_ui,
@@ -516,7 +516,7 @@ fn handle_connection_with_stop(
                     "stream_closed",
                 ),
                 Err(err) => {
-                    shepr_platform::logging::api_request_failed(
+                    crate::logging::api_request_failed(
                         &request_id,
                         method_traits.name,
                         &err.to_string(),
@@ -594,7 +594,7 @@ fn finish_wait_response(
     method: MethodTraits,
 ) -> std::io::Result<()> {
     let Some(response) = response else {
-        shepr_platform::logging::api_request_completed(
+        crate::logging::api_request_completed(
             request_id,
             method.name,
             method.mutates_ui,
@@ -614,7 +614,7 @@ fn finish_api_response(
 ) -> std::io::Result<()> {
     let result = write_text_line_allow_disconnect(stream, &response.body);
     match &result {
-        Ok(()) => shepr_platform::logging::api_request_completed(
+        Ok(()) => crate::logging::api_request_completed(
             request_id,
             method.name,
             method.mutates_ui,
@@ -622,7 +622,7 @@ fn finish_api_response(
             response.outcome.as_str(),
         ),
         Err(err) => {
-            shepr_platform::logging::api_request_failed(request_id, method.name, &err.to_string());
+            crate::logging::api_request_failed(request_id, method.name, &err.to_string());
         }
     }
     result

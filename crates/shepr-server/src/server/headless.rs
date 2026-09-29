@@ -340,7 +340,7 @@ impl HeadlessServer {
     /// - Handles scheduled tasks (session save, metadata expiry, etc.)
     /// - Renders virtually and streams frames to clients
     pub async fn run(&mut self) -> io::Result<()> {
-        shepr_platform::logging::startup("server");
+        crate::logging::startup("server");
         let listener_fd = match &self.client_listener {
             LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
         };

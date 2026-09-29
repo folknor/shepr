@@ -1,4 +1,3 @@
-use crate::limits::TERMINAL_PALETTE_COLORS;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -8,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::pane::PaneRuntimeRegistry;
 use crate::workspace::Workspace;
 use shepr_core::layout::Node;
+use shepr_core::limits::PALETTE_COLOR_COUNT;
 use shepr_protocol::TerminalId;
 
 /// Current snapshot format version. Deserialization rejects every other value.
@@ -146,12 +146,7 @@ impl SavedHostTheme {
             background: self.background,
             ..Default::default()
         };
-        for (index, color) in self
-            .palette
-            .iter()
-            .take(TERMINAL_PALETTE_COLORS)
-            .enumerate()
-        {
+        for (index, color) in self.palette.iter().take(PALETTE_COLOR_COUNT).enumerate() {
             theme.palette[index] = *color;
         }
         theme

@@ -652,6 +652,11 @@ fn local_build_mismatch(running: &str, guidance: &str) -> String {
     )
 }
 
+/// Endpoint reconnect backoff: doubling from `INITIAL_RETRY_DELAY` to the
+/// `MAX_RETRY_DELAY` ceiling that `shepr machine reconnect` promises. This
+/// policy is the client's alone; the other retry loops in the tree (the SSH
+/// agent registration worker, the API accept loop, the CLI's status probe)
+/// answer different failures and deliberately do not share it.
 fn retry_delay(attempt: u32) -> Duration {
     INITIAL_RETRY_DELAY
         .saturating_mul(

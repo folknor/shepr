@@ -25,6 +25,7 @@ pub(crate) mod host_replies;
 mod input;
 pub(crate) mod input_wire;
 mod limits;
+pub(crate) mod logging;
 mod loop_config;
 mod shell;
 mod shell_runtime;
@@ -172,7 +173,7 @@ fn run_client_with_launch_state(
         shell_config,
     };
 
-    shepr_platform::logging::startup("client");
+    crate::logging::startup("client");
     info!(path = %socket_path.display(), "{log_message}");
 
     let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
@@ -300,7 +301,7 @@ fn run_client_with_launch_state(
     let terminal_restore_failed = terminal_guard.restore().is_err();
     rt.shutdown_timeout(limits::CLIENT_RUNTIME_SHUTDOWN_TIMEOUT);
     shepr_remote::release_ssh_resources_before_exit(limits::SSH_RESOURCE_RELEASE_TIMEOUT);
-    shepr_platform::logging::shutdown("client");
+    crate::logging::shutdown("client");
 
     // A later successful detach does not erase notices collected while forwarding earlier input.
     let notices = Vec::from(direct_notices);

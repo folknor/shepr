@@ -1,9 +1,11 @@
 use super::*;
+use shepr_core::limits::PALETTE_COLOR_COUNT;
 
 /// What the core queued for the pane to deliver.
 pub(super) struct CoreEffects {
     pub(super) terminal_title_changed: bool,
     pub(super) clipboard_writes: Vec<Vec<u8>>,
+    pub(super) dropped_clipboard_store_bytes: Vec<usize>,
     pub(super) reported_cwd: Option<std::path::PathBuf>,
     pub(super) terminal_responses: Vec<Bytes>,
     /// The child set a default colour: the program that did it is to be
@@ -20,6 +22,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
         .agent_osc_state
         .apply_terminal_updates(&mut core.terminal);
     let clipboard_writes = core.terminal.take_clipboard_writes();
+    let dropped_clipboard_store_bytes = core.terminal.take_dropped_clipboard_store_bytes();
     let reported_cwd = core
         .terminal
         .take_pwd_changes()
@@ -30,6 +33,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
     CoreEffects {
         terminal_title_changed,
         clipboard_writes,
+        dropped_clipboard_store_bytes,
         reported_cwd,
         terminal_responses,
         default_color_owner_pending,
@@ -41,6 +45,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
 pub(super) fn discard_core_effects(terminal: &mut shepr_vt::Terminal) {
     let _ = terminal.take_pty_responses();
     let _ = terminal.take_clipboard_writes();
+    let _ = terminal.take_dropped_clipboard_store_bytes();
     let _ = terminal.take_pwd_changes();
     let _ = terminal.take_title_update();
     let _ = terminal.take_progress_update();
@@ -751,14 +756,14 @@ pub(super) fn terminal_default_bg(
 // host makes it resolve against the host's own palette, discarding the redefinition.
 // Only overridden entries become RGB; the rest stay indexed and keep following the
 // host theme. None when nothing was redefined, which is the common case.
-pub(super) struct PaletteOverrides([Option<shepr_vt::RgbColor>; 256]);
+pub(super) struct PaletteOverrides([Option<shepr_vt::RgbColor>; PALETTE_COLOR_COUNT]);
 
 impl PaletteOverrides {
     pub(super) fn new(
-        active: &[shepr_vt::RgbColor; 256],
-        default: &[shepr_vt::RgbColor; 256],
+        active: &[shepr_vt::RgbColor; PALETTE_COLOR_COUNT],
+        default: &[shepr_vt::RgbColor; PALETTE_COLOR_COUNT],
     ) -> Option<Self> {
-        let mut overrides = [None; 256];
+        let mut overrides = [None; PALETTE_COLOR_COUNT];
         let mut any = false;
         for (index, (active, default)) in active.iter().zip(default.iter()).enumerate() {
             if active != default {

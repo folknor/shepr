@@ -249,7 +249,7 @@ impl App {
             } else {
                 "ok"
             };
-            shepr_platform::logging::session_restored(
+            crate::logging::session_restored(
                 &lease
                     .directory()
                     .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),

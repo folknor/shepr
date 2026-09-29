@@ -55,7 +55,7 @@ pub struct CellStyle {
 pub struct RenderColors {
     pub background: RgbColor,
     pub foreground: RgbColor,
-    pub palette: [RgbColor; 256],
+    pub palette: [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -20,7 +20,7 @@ use ratatui::style::{Color, Style};
 use ratatui::{Frame, layout::Rect};
 #[cfg(test)]
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use unicode_width::UnicodeWidthStr;
 
 use shepr_core::layout::PaneId;
@@ -208,7 +208,11 @@ pub(crate) struct PaneTerminal {
     /// not treat a poisoned lock as a successful mutation: operations without
     /// a failure return log their skipped operation once per pane.
     pub core: Mutex<PaneTerminalCore>,
+    /// Set on production construction so mutations without a pane-id
+    /// argument can identify their owner in a failure report.
+    pane_id: Option<PaneId>,
     mutation_failure_reported: AtomicBool,
+    oversized_clipboard_reported: AtomicBool,
     dirty_patch_fallback_reported: AtomicBool,
 }
 
@@ -234,9 +238,28 @@ pub(crate) struct PaneTerminalCore {
 impl PaneTerminal {
     fn report_terminal_mutation_failure(&self, operation: &'static str) {
         if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
-            error!(
-                operation,
-                "terminal core lock poisoned; mutation was not applied"
+            if let Some(pane_id) = self.pane_id {
+                error!(
+                    pane = pane_id.raw(),
+                    operation, "terminal core lock poisoned; mutation was not applied"
+                );
+            } else {
+                error!(
+                    operation,
+                    "terminal core lock poisoned; mutation was not applied"
+                );
+            }
+        }
+    }
+
+    fn report_oversized_clipboard_store(&self, pane_id: PaneId, bytes: usize) {
+        if !self
+            .oversized_clipboard_reported
+            .swap(true, Ordering::Relaxed)
+        {
+            warn!(
+                pane = pane_id.raw(),
+                bytes, "dropped oversized OSC 52 clipboard store"
             );
         }
     }

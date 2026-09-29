@@ -22,16 +22,20 @@ pub(super) struct SectionSplit(f32);
 
 impl SectionSplit {
     pub(super) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
-    const MIN: f32 = shepr_core::layout::MIN_SPLIT_RATIO;
-    const MAX: f32 = shepr_core::layout::MAX_SPLIT_RATIO;
 
     pub(super) fn new(value: f32) -> Option<Self> {
-        (value.is_finite() && (Self::MIN..=Self::MAX).contains(&value)).then_some(Self(value))
+        (value.is_finite()
+            && (shepr_core::layout::MIN_SPLIT_RATIO..=shepr_core::layout::MAX_SPLIT_RATIO)
+                .contains(&value))
+        .then_some(Self(value))
     }
 
     pub(super) fn from_drag(value: f32) -> Self {
         Self(if value.is_finite() {
-            value.clamp(Self::MIN, Self::MAX)
+            value.clamp(
+                shepr_core::layout::MIN_SPLIT_RATIO,
+                shepr_core::layout::MAX_SPLIT_RATIO,
+            )
         } else {
             Self::DEFAULT.get()
         })
@@ -45,8 +49,8 @@ impl SectionSplit {
 impl<'de> serde::Deserialize<'de> for SectionSplit {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-        let min = Self::MIN;
-        let max = Self::MAX;
+        let min = shepr_core::layout::MIN_SPLIT_RATIO;
+        let max = shepr_core::layout::MAX_SPLIT_RATIO;
         Self::new(value).ok_or_else(|| {
             serde::de::Error::custom(format!("sidebar split must be between {min} and {max}"))
         })
@@ -143,13 +147,13 @@ mod split_tests {
 
     #[test]
     fn section_split_validates_saved_values_and_drag_bounds() {
-        assert!(SectionSplit::new(SectionSplit::MIN - f32::EPSILON).is_none());
+        assert!(SectionSplit::new(shepr_core::layout::MIN_SPLIT_RATIO - f32::EPSILON).is_none());
         assert!(SectionSplit::new(f32::INFINITY).is_none());
-        let invalid_value = SectionSplit::MAX + f32::EPSILON;
+        let invalid_value = shepr_core::layout::MAX_SPLIT_RATIO + f32::EPSILON;
         assert!(serde_json::from_str::<SectionSplit>(&invalid_value.to_string()).is_err());
         assert_eq!(
-            SectionSplit::from_drag(SectionSplit::MAX + 1.0).get(),
-            SectionSplit::MAX
+            SectionSplit::from_drag(shepr_core::layout::MAX_SPLIT_RATIO + 1.0).get(),
+            shepr_core::layout::MAX_SPLIT_RATIO
         );
         assert_eq!(SectionSplit::from_drag(f32::NAN), SectionSplit::DEFAULT);
     }

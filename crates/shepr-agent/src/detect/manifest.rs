@@ -36,12 +36,13 @@ use std::{
 
 use regex::Regex;
 use serde::Deserialize;
+use shepr_core::limits::UTF8_MAX_BYTES_PER_CODEPOINT;
 
 use super::{Agent, AgentDetection, AgentState, agent_label, parse_agent_label};
 use crate::limits::{
     MAX_GATE_DEPTH, MAX_MANIFEST_PREVIEW_CHARS, MAX_MATCHER_CHARS, MAX_MATCHERS_PER_GATE,
     MAX_REGION_LINE_COUNT, MAX_REGIONS_PER_MANIFEST, MAX_RULES_PER_MANIFEST, MAX_TOTAL_GATES,
-    MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT, UTF8_MAX_BYTES_PER_CODEPOINT,
+    MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT,
 };
 
 pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";

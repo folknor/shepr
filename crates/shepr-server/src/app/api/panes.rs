@@ -2,11 +2,7 @@ use bytes::Bytes;
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 
 use crate::app::App;
-#[cfg(test)]
-use crate::app::Mode;
 use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
-#[cfg(test)]
-use shepr_api::schema::EventKind;
 use shepr_api::schema::{
     EventData, EventEnvelope, PaneClearAgentAuthorityParams, PaneCopyMotion, PaneCopyMotionParams,
     PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams, PaneDirection,
@@ -30,8 +26,6 @@ use super::super::api_helpers::{
     normalize_reported_agent_label, pane_in_workspace_not_found, pane_not_found,
     tab_for_pane_not_found, tab_not_found, target_pane_not_found, workspace_not_found,
 };
-#[cfg(test)]
-use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
 use super::responses::{failure, success};
 
 mod copy;

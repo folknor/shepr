@@ -163,20 +163,6 @@ impl PendingEndpointActivation {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub fn begin(
-        shell: &crate::shell::ClientShellState,
-        endpoints: &mut EndpointRegistry,
-        target: &ClientEndpointId,
-        focus: Option<crate::shell::ClientEndpointFocusTarget>,
-        resize: shepr_protocol::ClientMessage,
-        serial: u64,
-        now: Instant,
-    ) -> Result<Self, ActivationBeginError> {
-        Self::prepare(shell, endpoints, target, focus, resize, serial, now)?
-            .start_at(endpoints, now)
-    }
-
     pub(crate) fn abandon(&self, endpoints: &mut EndpointRegistry) {
         endpoints.freeze_input();
         for lease in [&self.source, &self.target] {
@@ -228,20 +214,6 @@ impl PendingEndpointActivation {
                 self.phase,
                 ActivationPhase::ReleasingSource { .. } | ActivationPhase::ActivatingTarget { .. }
             )
-    }
-
-    /// Replace an in-flight handoff with the latest endpoint-qualified intent. The current
-    /// transaction is still reversed through target-off/source-on; the replacement is launched
-    /// by the caller only after the source's coherent restoration commits.
-    #[cfg(test)]
-    pub(crate) fn supersede(
-        &mut self,
-        endpoint_id: ClientEndpointId,
-        target: Option<crate::shell::ClientEndpointFocusTarget>,
-        endpoints: &mut EndpointRegistry,
-    ) -> ActivationRollback {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.supersede_at(endpoint_id, target, endpoints, Instant::now())
     }
 
     pub(crate) fn supersede_at(
@@ -333,52 +305,6 @@ impl PendingEndpointActivation {
 
     pub(crate) fn expired(&self, now: Instant) -> bool {
         crate::limits::Deadline::at(self.deadline).is_expired(now)
-    }
-
-    #[cfg(test)]
-    pub fn receive_response(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        generation: u64,
-        request_id: &str,
-        data: &[u8],
-        endpoints: &mut EndpointRegistry,
-    ) -> SurfaceActivationProgress {
-        let boot_id = if self.source.endpoint_id == *endpoint_id {
-            self.source.boot_id.clone()
-        } else {
-            self.target.boot_id.clone()
-        };
-        self.receive_response_for_boot(
-            endpoint_id,
-            generation,
-            &boot_id,
-            request_id,
-            data,
-            endpoints,
-        )
-    }
-
-    #[cfg(test)]
-    pub fn receive_response_for_boot(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        generation: u64,
-        boot_id: &str,
-        request_id: &str,
-        data: &[u8],
-        endpoints: &mut EndpointRegistry,
-    ) -> SurfaceActivationProgress {
-        self.receive_response_for_boot_at(
-            endpoint_id,
-            generation,
-            boot_id,
-            request_id,
-            data,
-            endpoints,
-            // clock-io-ok: this test-only wrapper stands in for the client loop.
-            Instant::now(),
-        )
     }
 
     pub fn receive_response_for_boot_at(
@@ -633,16 +559,6 @@ impl PendingEndpointActivation {
         self.send_latest_focus(endpoints)
     }
 
-    #[cfg(test)]
-    pub(crate) fn update_resize(
-        &mut self,
-        resize: &shepr_protocol::ClientMessage,
-        endpoints: &mut EndpointRegistry,
-    ) -> Result<(), String> {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.update_resize_at(resize, endpoints, Instant::now())
-    }
-
     pub(crate) fn update_resize_at(
         &mut self,
         resize: &shepr_protocol::ClientMessage,
@@ -684,16 +600,6 @@ impl PendingEndpointActivation {
             return Err("pending endpoint resize could not be sent".into());
         }
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn update_host_focus(
-        &mut self,
-        focused: bool,
-        endpoints: &mut EndpointRegistry,
-    ) -> Result<(), String> {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.update_host_focus_at(focused, endpoints, Instant::now())
     }
 
     pub(crate) fn update_host_focus_at(
@@ -777,19 +683,6 @@ impl PendingEndpointActivation {
             | ActivationPhase::RestoringSource { evidence, .. } => evidence.invalidate_surface(),
             _ => {}
         }
-    }
-
-    /// Losing the source revokes its surface and removes the rollback destination; it must not
-    /// cancel a healthy target. Losing the target restores the source when it is still available.
-    #[cfg(test)]
-    pub(crate) fn endpoint_disconnected(
-        &mut self,
-        endpoints: &mut EndpointRegistry,
-        endpoint_id: &ClientEndpointId,
-        error: String,
-    ) -> ActivationRollback {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.endpoint_disconnected_at(endpoints, endpoint_id, error, Instant::now())
     }
 
     pub(crate) fn endpoint_disconnected_at(
@@ -881,17 +774,6 @@ impl PendingEndpointActivation {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn rollback(
-        &mut self,
-        endpoints: &mut EndpointRegistry,
-        error: &str,
-        source_release_rejected: bool,
-    ) -> ActivationRollback {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.rollback_at(endpoints, error, source_release_rejected, Instant::now())
-    }
-
     pub(crate) fn rollback_at(
         &mut self,
         endpoints: &mut EndpointRegistry,
@@ -963,16 +845,6 @@ impl PendingEndpointActivation {
                 "{error}; source endpoint could not be restored safely: {rollback_error}"
             )),
         }
-    }
-
-    #[cfg(test)]
-    pub fn complete(
-        &mut self,
-        shell: &mut crate::shell::ClientShellState,
-        endpoints: &mut EndpointRegistry,
-    ) -> Result<ActivationCompletion, String> {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.complete_at(shell, endpoints, Instant::now())
     }
 
     pub fn complete_at(

@@ -59,8 +59,17 @@ pub enum UiPreferenceKey {
 
 /// Origins for every value in the resolved config, plus direct typed queries
 /// for settings where persisted runtime preferences yield to config.
+///
+/// Every value is stringified and shipped to each attached client for
+/// display, paths and `tab_bar_right` command lines included. That is fine
+/// while no config key holds a credential; a key that does must be left out
+/// of `values`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigProvenance {
+    /// One entry per resolved config leaf, so the local config file bounds
+    /// its length. It needs no field cap of its own on the wire: it travels only
+    /// inside the client snapshot's resolved config blob, which is capped at
+    /// the frame size and decoded under the codec's collection limit.
     values: Vec<ConfigValueOrigin>,
     ui_sidebar_width: ConfigSource,
     ui_sidebar_start_collapsed: ConfigSource,

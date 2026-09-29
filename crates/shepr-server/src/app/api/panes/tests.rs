@@ -1,7 +1,9 @@
 use super::*;
+use crate::app::Mode;
+use crate::app::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
 use crate::test_support::*;
 use shepr_agent::detect::{Agent, AgentState};
-use shepr_api::schema::{ErrorResponse, SplitDirection, SuccessResponse};
+use shepr_api::schema::{ErrorResponse, EventKind, SplitDirection, SuccessResponse};
 use shepr_config::Config;
 use shepr_mux::workspace::Workspace;
 

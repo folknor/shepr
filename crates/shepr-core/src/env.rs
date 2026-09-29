@@ -158,7 +158,11 @@ env_vocabulary! {
         /// `SHEPR_LOG`: the `tracing` filter directives for the file logs.
         SheprLog => "SHEPR_LOG",
         /// `SHEPR_DEBUG_OSC_EVIDENCE`: logs selected OSC sequences each pane
-        /// receives, pane content included.
+        /// receives, pane content included. The payloads (window titles,
+        /// progress text) are child-controlled and routinely carry paths,
+        /// branch names and ticket numbers; they are truncated but not
+        /// filtered. Meant for capturing evidence while writing agent
+        /// manifests, not for leaving on.
         SheprDebugOscEvidence => "SHEPR_DEBUG_OSC_EVIDENCE",
         /// `HOME`: the user's home directory, the parent of every default path.
         Home => "HOME",

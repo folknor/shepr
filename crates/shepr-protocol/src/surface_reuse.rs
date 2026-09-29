@@ -1,6 +1,9 @@
 //! Optional endpoint encoding that retains unchanged terminal cells across projections.
 
-use super::{CellData, PaneSurfaceFrame, ProjectionRevision, ServerMessage, SurfaceRevision};
+use super::{
+    BootId, CellData, PaneSurfaceFrame, PaneSurfacePatch, ProjectionRevision, PublicPaneId,
+    ServerMessage, SurfaceRevision, SurfaceUpdate,
+};
 
 #[derive(Debug)]
 pub enum SurfaceDecodeError {
@@ -16,6 +19,44 @@ pub enum SurfaceDecodeError {
     InvalidRows(&'static str),
     Delta(super::surface_delta::SurfaceDeltaError),
     RejectedPatch(super::surface_delta::SurfaceDeltaError),
+    /// Identifies the surface whose validation failed.
+    WithSubject {
+        subject: SurfaceDecodeSubject,
+        source: Box<Self>,
+    },
+}
+
+/// Wire identity known when a decoded surface fails semantic validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDecodeSubject {
+    pub boot_id: BootId,
+    pub projection_revision: ProjectionRevision,
+    pub surface_revision: SurfaceRevision,
+    pub pane_ids: Vec<PublicPaneId>,
+}
+
+impl std::fmt::Display for SurfaceDecodeSubject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "boot {}, projection revision {}, surface revision {}",
+            self.boot_id,
+            self.projection_revision.get(),
+            self.surface_revision.get()
+        )?;
+        if !self.pane_ids.is_empty() {
+            f.write_str(", panes ")?;
+            let mut first = true;
+            for pane_id in &self.pane_ids {
+                if !first {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{pane_id}")?;
+                first = false;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for SurfaceDecodeError {
@@ -38,11 +79,29 @@ impl std::fmt::Display for SurfaceDecodeError {
                 f,
                 "surface patch rejected against the cell baseline: {error}"
             ),
+            Self::WithSubject { subject, source } => write!(f, "{subject}: {source}"),
         }
     }
 }
 
-impl std::error::Error for SurfaceDecodeError {}
+impl std::error::Error for SurfaceDecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Delta(error) | Self::RejectedPatch(error) => Some(error),
+            Self::WithSubject { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl SurfaceDecodeError {
+    fn with_subject(self, subject: SurfaceDecodeSubject) -> Self {
+        Self::WithSubject {
+            subject,
+            source: Box::new(self),
+        }
+    }
+}
 
 impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
     fn from(error: super::surface_delta::SurfaceDeltaError) -> Self {
@@ -77,6 +136,56 @@ struct CellBaseline {
     height: u16,
     cells: Vec<CellData>,
     meta: Option<super::surface::SurfaceMeta>,
+}
+
+impl SurfaceDecodeSubject {
+    /// Names the update's panes, or the baseline's when the update keeps the
+    /// previous metadata.
+    fn from_update(update: &SurfaceUpdate, baseline: Option<&CellBaseline>) -> Self {
+        let meta = update
+            .meta
+            .as_ref()
+            .or_else(|| baseline.and_then(|base| base.meta.as_ref()));
+        Self::from_update_header(
+            &update.boot_id,
+            update.projection_revision,
+            update.surface_revision,
+            meta.map_or(&[], |meta| meta.panes.as_slice()),
+        )
+    }
+
+    fn from_update_header(
+        boot_id: &BootId,
+        projection_revision: ProjectionRevision,
+        surface_revision: SurfaceRevision,
+        panes: &[super::PaneSurfacePane],
+    ) -> Self {
+        Self {
+            boot_id: boot_id.clone(),
+            projection_revision,
+            surface_revision,
+            pane_ids: panes.iter().map(|pane| pane.pane_id.clone()).collect(),
+        }
+    }
+
+    fn from_surface(surface: &PaneSurfaceFrame) -> Self {
+        Self::from_update_header(
+            &surface.boot_id,
+            surface.projection_revision,
+            surface.surface_revision,
+            &surface.panes,
+        )
+    }
+
+    /// Names the panes whose content the patch changed.
+    fn from_patch(patch: &PaneSurfacePatch) -> Self {
+        Self::from_update_header(
+            &patch.boot_id,
+            patch.projection_revision,
+            patch.surface_revision,
+            &patch.panes,
+        )
+    }
 }
 
 pub struct Baseline<'a> {
@@ -177,7 +286,8 @@ impl Decoder {
         let message = match message {
             ServerMessage::SurfaceUpdate(update) => {
                 let Some(base) = &mut self.baseline else {
-                    return Err(SurfaceDecodeError::MissingBaseline);
+                    return Err(SurfaceDecodeError::MissingBaseline
+                        .with_subject(SurfaceDecodeSubject::from_update(&update, None)));
                 };
                 if !base.revisions().accepts(
                     &update.boot_id,
@@ -187,13 +297,34 @@ impl Decoder {
                     update.projection_revision,
                 ) || super::surface_grid_size(base.width, base.height) != Some(base.cells.len())
                 {
-                    return Err(SurfaceDecodeError::BaselineMismatch);
+                    return Err(SurfaceDecodeError::BaselineMismatch
+                        .with_subject(SurfaceDecodeSubject::from_update(&update, Some(base))));
                 }
-                let Some(meta) = update.meta.or_else(|| base.meta.clone()) else {
-                    return Err(SurfaceDecodeError::MissingMetadata);
+                let meta = match update.meta {
+                    Some(meta) => meta,
+                    None => match base.meta.clone() {
+                        Some(meta) => meta,
+                        None => {
+                            return Err(SurfaceDecodeError::MissingMetadata.with_subject(
+                                SurfaceDecodeSubject::from_update_header(
+                                    &update.boot_id,
+                                    update.projection_revision,
+                                    update.surface_revision,
+                                    &[],
+                                ),
+                            ));
+                        }
+                    },
                 };
                 if meta.frame.width != base.width || meta.frame.height != base.height {
-                    return Err(SurfaceDecodeError::MetadataMismatch);
+                    return Err(SurfaceDecodeError::MetadataMismatch.with_subject(
+                        SurfaceDecodeSubject::from_update_header(
+                            &update.boot_id,
+                            update.projection_revision,
+                            update.surface_revision,
+                            &meta.panes,
+                        ),
+                    ));
                 }
                 // When topology and hyperlink indices are stable, forward an
                 // internal patch so the client shell can update only touched
@@ -209,13 +340,30 @@ impl Decoder {
                         .zip(&previous.panes)
                         .all(|(next, old)| next.pane_id == old.pane_id)
                 {
-                    super::validate_patch_rows(base.width, base.height, &update.spans)
-                        .map_err(SurfaceDecodeError::InvalidRows)?;
+                    super::validate_patch_rows(base.width, base.height, &update.spans).map_err(
+                        |reason| {
+                            SurfaceDecodeError::InvalidRows(reason).with_subject(
+                                SurfaceDecodeSubject::from_update_header(
+                                    &update.boot_id,
+                                    update.projection_revision,
+                                    update.surface_revision,
+                                    &meta.panes,
+                                ),
+                            )
+                        },
+                    )?;
                     if update.spans.iter().flat_map(|row| &row.cells).any(|cell| {
                         cell.hyperlink
                             .is_some_and(|index| index as usize >= meta.frame.hyperlinks.len())
                     }) {
-                        return Err(SurfaceDecodeError::InvalidHyperlink);
+                        return Err(SurfaceDecodeError::InvalidHyperlink.with_subject(
+                            SurfaceDecodeSubject::from_update_header(
+                                &update.boot_id,
+                                update.projection_revision,
+                                update.surface_revision,
+                                &meta.panes,
+                            ),
+                        ));
                     }
                     let changed_panes = meta
                         .panes
@@ -238,7 +386,11 @@ impl Decoder {
                         base.width,
                         base.height,
                         &patch.rows,
-                    )?;
+                    )
+                    .map_err(|error| {
+                        SurfaceDecodeError::from(error)
+                            .with_subject(SurfaceDecodeSubject::from_patch(&patch))
+                    })?;
                     base.meta = Some(meta);
                     base.surface_revision = patch.surface_revision;
                     return Ok(ServerMessage::PaneSurfacePatch(patch));
@@ -254,12 +406,17 @@ impl Decoder {
                     base.width,
                     base.height,
                     &update.spans,
-                )?;
+                )
+                .map_err(|error| {
+                    SurfaceDecodeError::from(error)
+                        .with_subject(SurfaceDecodeSubject::from_surface(&surface))
+                })?;
                 if surface.frame.cells.iter().any(|cell| {
                     cell.hyperlink
                         .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
                 }) {
-                    return Err(SurfaceDecodeError::InvalidHyperlink);
+                    return Err(SurfaceDecodeError::InvalidHyperlink
+                        .with_subject(SurfaceDecodeSubject::from_surface(&surface)));
                 }
                 base.cells.clone_from(&surface.frame.cells);
                 base.meta = Some(meta);
@@ -282,16 +439,19 @@ impl Decoder {
                 let Some(expected) =
                     super::surface_grid_size(surface.frame.width, surface.frame.height)
                 else {
-                    return Err(SurfaceDecodeError::InvalidDimensions);
+                    return Err(SurfaceDecodeError::InvalidDimensions
+                        .with_subject(SurfaceDecodeSubject::from_surface(surface)));
                 };
                 if surface.frame.cells.len() != expected {
-                    return Err(SurfaceDecodeError::InvalidCellCount);
+                    return Err(SurfaceDecodeError::InvalidCellCount
+                        .with_subject(SurfaceDecodeSubject::from_surface(surface)));
                 }
                 if surface.frame.cells.iter().any(|cell| {
                     cell.hyperlink
                         .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
                 }) {
-                    return Err(SurfaceDecodeError::InvalidHyperlink);
+                    return Err(SurfaceDecodeError::InvalidHyperlink
+                        .with_subject(SurfaceDecodeSubject::from_surface(surface)));
                 }
                 let base = self.baseline.get_or_insert_with(CellBaseline::default);
                 base.boot_id.clone_from(&surface.boot_id);
@@ -304,7 +464,8 @@ impl Decoder {
             }
             ServerMessage::PaneSurfacePatch(patch) => {
                 let Some(base) = &mut self.baseline else {
-                    return Err(SurfaceDecodeError::MissingPatchBaseline);
+                    return Err(SurfaceDecodeError::MissingPatchBaseline
+                        .with_subject(SurfaceDecodeSubject::from_patch(patch)));
                 };
                 if !base.revisions().accepts(
                     &patch.boot_id,
@@ -313,7 +474,8 @@ impl Decoder {
                     base.projection_revision,
                     patch.projection_revision,
                 ) {
-                    return Err(SurfaceDecodeError::PatchBaselineMismatch);
+                    return Err(SurfaceDecodeError::PatchBaselineMismatch
+                        .with_subject(SurfaceDecodeSubject::from_patch(patch)));
                 }
                 // `apply_rows` checks every span before touching the grid, so a
                 // bad patch does not leave the baseline half-applied.
@@ -323,7 +485,10 @@ impl Decoder {
                     base.height,
                     &patch.rows,
                 )
-                .map_err(SurfaceDecodeError::RejectedPatch)?;
+                .map_err(|error| {
+                    SurfaceDecodeError::RejectedPatch(error)
+                        .with_subject(SurfaceDecodeSubject::from_patch(patch))
+                })?;
                 base.surface_revision = patch.surface_revision;
             }
             _ => {}
@@ -414,10 +579,19 @@ mod tests {
             meta: None,
             spans: Vec::new(),
         };
+        let error = decoder
+            .decode(ServerMessage::SurfaceUpdate(update))
+            .expect_err("stale baseline is rejected");
+        let SurfaceDecodeError::WithSubject { subject, source } = error else {
+            panic!("surface errors retain their subject");
+        };
         assert!(matches!(
-            decoder.decode(ServerMessage::SurfaceUpdate(update)),
-            Err(SurfaceDecodeError::BaselineMismatch)
+            source.as_ref(),
+            SurfaceDecodeError::BaselineMismatch
         ));
+        assert_eq!(subject.boot_id, "boot");
+        assert_eq!(subject.projection_revision, 1);
+        assert_eq!(subject.surface_revision, 2);
     }
 
     #[test]

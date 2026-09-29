@@ -42,8 +42,8 @@ impl RgbColor {
     }
 }
 
-/// The built-in 256-colour palette used until the host theme overrides it.
-pub fn default_palette() -> [RgbColor; 256] {
+/// The built-in indexed palette used until the host theme overrides it.
+pub fn default_palette() -> [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT] {
     const NAMED: [(u8, u8, u8); NAMED_COLOR_COUNT] = [
         (0x1d, 0x1f, 0x21),
         (0xcc, 0x66, 0x66),
@@ -62,10 +62,11 @@ pub fn default_palette() -> [RgbColor; 256] {
         (0x70, 0xc0, 0xb1),
         (0xea, 0xea, 0xea),
     ];
-    let mut palette = [RgbColor::default(); 256];
+    let mut palette = [RgbColor::default(); shepr_core::limits::PALETTE_COLOR_COUNT];
     for (slot, (r, g, b)) in palette.iter_mut().zip(NAMED) {
         *slot = RgbColor { r, g, b };
     }
+    // limits-exempt: xterm's indexed color cube dimensions and formulas define its palette format.
     let cube = |value: usize| -> u8 {
         if value == 0 {
             0
@@ -83,8 +84,11 @@ pub fn default_palette() -> [RgbColor; 256] {
             b: cube(offset % 6),
         };
     }
-    // 232..256 are the final 24 grayscale slots in the xterm 256-color palette.
-    for (offset, slot) in palette[232..256].iter_mut().enumerate() {
+    // The remaining xterm slots after the color cube are the grayscale palette.
+    for (offset, slot) in palette[232..shepr_core::limits::PALETTE_COLOR_COUNT]
+        .iter_mut()
+        .enumerate()
+    {
         // `offset` is 0..24 here, so `offset * 10 + 8` maxes at 238.
         let value = u8::try_from(offset * 10 + 8).unwrap_or(u8::MAX);
         *slot = RgbColor {
@@ -109,7 +113,9 @@ impl ColorQueryTarget {
     pub(super) fn from_index(index: usize) -> Option<Self> {
         match index {
             // xterm palette indexes cover every value in one byte.
-            0..=255 => Some(Self::Palette(u8::try_from(index).unwrap_or(u8::MAX))),
+            index if index <= usize::from(u8::MAX) => {
+                Some(Self::Palette(u8::try_from(index).unwrap_or(u8::MAX)))
+            }
             index if index == NamedColor::Foreground as usize => Some(Self::Foreground),
             index if index == NamedColor::Background as usize => Some(Self::Background),
             index if index == NamedColor::Cursor as usize => Some(Self::Cursor),
@@ -228,14 +234,17 @@ impl Terminal {
 }
 
 impl Terminal {
-    pub fn set_default_palette(&mut self, palette: &[RgbColor; 256]) {
+    pub fn set_default_palette(
+        &mut self,
+        palette: &[RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
+    ) {
         if self.default_palette != *palette {
             self.default_palette = *palette;
             self.bump_full_damage();
         }
     }
 
-    pub fn default_palette(&self) -> [RgbColor; 256] {
+    pub fn default_palette(&self) -> [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT] {
         self.default_palette
     }
 

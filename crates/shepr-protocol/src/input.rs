@@ -1,5 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
+use shepr_core::limits::PALETTE_COLOR_COUNT;
 
 // ---------------------------------------------------------------------------
 // Server-side client render mode
@@ -475,8 +476,8 @@ pub enum ClientHostThemeUpdate {
     },
     PaletteColors(
         #[serde(
-            serialize_with = "codec::serialize_bounded_vec::<MAX_CLIENT_HOST_PALETTE_COLORS, _, _>",
-            deserialize_with = "codec::deserialize_bounded_vec::<MAX_CLIENT_HOST_PALETTE_COLORS, _, _>"
+            serialize_with = "codec::serialize_bounded_vec::<PALETTE_COLOR_COUNT, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<PALETTE_COLOR_COUNT, _, _>"
         )]
         Vec<(u8, ClientHostColor)>,
     ),

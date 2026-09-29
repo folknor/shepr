@@ -173,107 +173,6 @@ impl ClientWriter {
     pub(crate) fn flush(&self) -> tokio::sync::oneshot::Receiver<()> {
         self.control.flush()
     }
-
-    #[cfg(test)]
-    pub(crate) fn test_close(&self) {
-        self.render.queue.close_writer();
-    }
-
-    /// A writer over the production queue whose far side a test reads in
-    /// place of the socket writer thread: control items arrive on the
-    /// returned channel (flush barriers are acknowledged as they are
-    /// reached), and the render slot is read through [`RenderLaneReceiver`].
-    /// The server side sends through exactly the code production uses, so the
-    /// one-slot render backpressure a test sees is the real one: a render the
-    /// test has not read keeps the slot full.
-    #[cfg(test)]
-    pub(crate) fn test_pair() -> (Self, std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver) {
-        let queue = ClientWriterQueue::new();
-        let writer = Self {
-            control: ClientControlWriter::queue(Arc::clone(&queue)),
-            render: ClientRenderWriter::queue(Arc::clone(&queue)),
-        };
-        let (control_tx, control_rx) = std::sync::mpsc::channel();
-        let drain = Arc::clone(&queue);
-        std::thread::spawn(move || {
-            while let Some(item) = drain.recv_control_for_test() {
-                match item {
-                    ClientControlItem::Data(data) => {
-                        if control_tx.send(data).is_err() {
-                            // The test dropped its control receiver: the
-                            // client is gone, as a failed socket write says.
-                            drain.close_writer();
-                            return;
-                        }
-                    }
-                    ClientControlItem::Flush(ack) => {
-                        // Same contract as the socket writer: a waiter that
-                        // stopped waiting dropped its receiver, and the
-                        // barrier was reached either way.
-                        ack.send(()).ok();
-                    }
-                }
-            }
-        });
-        (writer, control_rx, RenderLaneReceiver { queue })
-    }
-}
-
-/// How often a test reader re-checks the queue. The queue's condvar wakes one
-/// waiter, and a test can have two (the control drain and a render read), so
-/// test readers poll rather than rely on being the one woken.
-#[cfg(test)]
-const TEST_LANE_POLL: Duration = Duration::from_millis(2);
-
-/// The test side of a writer's render slot, read the way the socket writer
-/// thread takes it. Mirrors the `std::sync::mpsc::Receiver` methods tests use.
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct RenderLaneReceiver {
-    queue: Arc<ClientWriterQueue>,
-}
-
-#[cfg(test)]
-impl RenderLaneReceiver {
-    pub(crate) fn try_recv(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
-        self.queue.take_render_for_test()
-    }
-
-    pub(crate) fn recv(&self) -> Result<Vec<u8>, std::sync::mpsc::RecvError> {
-        loop {
-            match self.queue.take_render_for_test() {
-                Ok(data) => return Ok(data),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    return Err(std::sync::mpsc::RecvError);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.queue.wait_for_test(TEST_LANE_POLL);
-                }
-            }
-        }
-    }
-
-    pub(crate) fn recv_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<Vec<u8>, std::sync::mpsc::RecvTimeoutError> {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            match self.queue.take_render_for_test() {
-                Ok(data) => return Ok(data),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    return Err(std::sync::mpsc::RecvTimeoutError::Disconnected);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
-            }
-            self.queue
-                .wait_for_test(TEST_LANE_POLL.min(deadline.saturating_duration_since(now)));
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -454,52 +353,6 @@ impl ClientWriterQueue {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-/// The far side of the queue as a test reads it, standing in for
-/// `client_writer_loop`. Only the consumer side is replaced; every send goes
-/// through the production methods above.
-#[cfg(test)]
-impl ClientWriterQueue {
-    /// The next control item, or `None` once the lane can produce no more.
-    fn recv_control_for_test(&self) -> Option<ClientControlItem> {
-        let mut state = self.lock_state();
-        loop {
-            if let Some(item) = state.control.pop_front() {
-                return Some(item);
-            }
-            if state.senders == 0 || !state.writer_alive {
-                return None;
-            }
-            state = self
-                .ready
-                .wait_timeout(state, TEST_LANE_POLL)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
-    }
-
-    /// Takes the render slot, as the writer thread does before writing it.
-    fn take_render_for_test(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
-        let mut state = self.lock_state();
-        if let Some(data) = state.render.take() {
-            return Ok(data);
-        }
-        if state.senders == 0 || !state.writer_alive {
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        } else {
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        }
-    }
-
-    fn wait_for_test(&self, timeout: Duration) {
-        let state = self.lock_state();
-        drop(
-            self.ready
-                .wait_timeout(state, timeout)
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
     }
 }
 
@@ -996,17 +849,6 @@ fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
     true
 }
 
-/// The client read loop - reads messages from the client and forwards to the server event channel.
-#[cfg(test)]
-fn client_read_loop(
-    stream: LocalStream,
-    client_id: ClientId,
-    server_event_tx: &mpsc::Sender<ServerEvent>,
-    should_quit: &Arc<AtomicBool>,
-) -> io::Result<()> {
-    client_read_loop_with_endpoint_controls(stream, client_id, server_event_tx, should_quit, None)
-}
-
 fn client_read_loop_with_endpoint_controls(
     mut stream: LocalStream,
     client_id: ClientId,
@@ -1303,10 +1145,173 @@ fn client_read_loop_with_endpoint_controls(
 }
 
 #[cfg(test)]
+pub(crate) use tests::RenderLaneReceiver;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
     use std::path::PathBuf;
+
+    /// How often a test reader re-checks the queue. The queue's condvar wakes one
+    /// waiter, and a test can have two (the control drain and a render read), so
+    /// test readers poll rather than rely on being the one woken.
+    const TEST_LANE_POLL: Duration = Duration::from_millis(2);
+
+    /// The test side of a writer's render slot, read the way the socket writer
+    /// thread takes it. Mirrors the `std::sync::mpsc::Receiver` methods tests use.
+    #[derive(Debug)]
+    pub(crate) struct RenderLaneReceiver {
+        queue: Arc<ClientWriterQueue>,
+    }
+
+    impl RenderLaneReceiver {
+        pub(crate) fn try_recv(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
+            self.queue.take_render_for_test()
+        }
+
+        pub(crate) fn recv(&self) -> Result<Vec<u8>, std::sync::mpsc::RecvError> {
+            loop {
+                match self.queue.take_render_for_test() {
+                    Ok(data) => return Ok(data),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Err(std::sync::mpsc::RecvError);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.queue.wait_for_test(TEST_LANE_POLL);
+                    }
+                }
+            }
+        }
+
+        pub(crate) fn recv_timeout(
+            &self,
+            timeout: Duration,
+        ) -> Result<Vec<u8>, std::sync::mpsc::RecvTimeoutError> {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                match self.queue.take_render_for_test() {
+                    Ok(data) => return Ok(data),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Err(std::sync::mpsc::RecvTimeoutError::Disconnected);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+                }
+                self.queue
+                    .wait_for_test(TEST_LANE_POLL.min(deadline.saturating_duration_since(now)));
+            }
+        }
+    }
+
+    impl ClientWriter {
+        pub(crate) fn test_close(&self) {
+            self.render.queue.close_writer();
+        }
+
+        /// A writer over the production queue whose far side a test reads in
+        /// place of the socket writer thread: control items arrive on the
+        /// returned channel (flush barriers are acknowledged as they are
+        /// reached), and the render slot is read through [`RenderLaneReceiver`].
+        /// The server side sends through exactly the code production uses, so the
+        /// one-slot render backpressure a test sees is the real one: a render the
+        /// test has not read keeps the slot full.
+        pub(crate) fn test_pair() -> (Self, std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver)
+        {
+            let queue = ClientWriterQueue::new();
+            let writer = Self {
+                control: ClientControlWriter::queue(Arc::clone(&queue)),
+                render: ClientRenderWriter::queue(Arc::clone(&queue)),
+            };
+            let (control_tx, control_rx) = std::sync::mpsc::channel();
+            let drain = Arc::clone(&queue);
+            std::thread::spawn(move || {
+                while let Some(item) = drain.recv_control_for_test() {
+                    match item {
+                        ClientControlItem::Data(data) => {
+                            if control_tx.send(data).is_err() {
+                                // The test dropped its control receiver: the
+                                // client is gone, as a failed socket write says.
+                                drain.close_writer();
+                                return;
+                            }
+                        }
+                        ClientControlItem::Flush(ack) => {
+                            // Same contract as the socket writer: a waiter that
+                            // stopped waiting dropped its receiver, and the
+                            // barrier was reached either way.
+                            ack.send(()).ok();
+                        }
+                    }
+                }
+            });
+            (writer, control_rx, RenderLaneReceiver { queue })
+        }
+    }
+
+    /// The far side of the queue as a test reads it, standing in for
+    /// `client_writer_loop`. Only the consumer side is replaced; every send goes
+    /// through the production methods above.
+    impl ClientWriterQueue {
+        /// The next control item, or `None` once the lane can produce no more.
+        fn recv_control_for_test(&self) -> Option<ClientControlItem> {
+            let mut state = self.lock_state();
+            loop {
+                if let Some(item) = state.control.pop_front() {
+                    return Some(item);
+                }
+                if state.senders == 0 || !state.writer_alive {
+                    return None;
+                }
+                state = self
+                    .ready
+                    .wait_timeout(state, TEST_LANE_POLL)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+            }
+        }
+
+        /// Takes the render slot, as the writer thread does before writing it.
+        fn take_render_for_test(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
+            let mut state = self.lock_state();
+            if let Some(data) = state.render.take() {
+                return Ok(data);
+            }
+            if state.senders == 0 || !state.writer_alive {
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            } else {
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            }
+        }
+
+        fn wait_for_test(&self, timeout: Duration) {
+            let state = self.lock_state();
+            drop(
+                self.ready
+                    .wait_timeout(state, timeout)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+    }
+
+    /// The client read loop - reads messages from the client and forwards to the server event channel.
+    fn client_read_loop(
+        stream: LocalStream,
+        client_id: ClientId,
+        server_event_tx: &mpsc::Sender<ServerEvent>,
+        should_quit: &Arc<AtomicBool>,
+    ) -> io::Result<()> {
+        client_read_loop_with_endpoint_controls(
+            stream,
+            client_id,
+            server_event_tx,
+            should_quit,
+            None,
+        )
+    }
 
     struct TestSocketPath(PathBuf);
 

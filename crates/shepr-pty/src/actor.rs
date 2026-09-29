@@ -17,7 +17,7 @@ use crate::{
     limits::{
         ACTOR_IDLE_POLL_MS, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS,
         MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP, MIN_POLL_TIMEOUT_MS,
-        PTY_READ_BUFFER_BYTES, RESIZE_HOLD_ATTEMPTS, RESIZE_RETRY_BASE, RESIZE_RETRY_MAX,
+        PTY_READ_BUFFER_BYTES,
     },
     submission::{EnterStart, SharedSubmissionState, SubmissionPart, SubmissionState, lock_state},
 };
@@ -149,8 +149,6 @@ struct QueuedResize {
     order: u64,
     resize: PtyResize,
     terminal_responses: Vec<Bytes>,
-    retry_at: Option<Instant>,
-    attempts: u8,
 }
 
 impl PtyIoInbox {
@@ -311,8 +309,6 @@ impl PtyIoInbox {
             order,
             resize: PtyResize { geometry },
             terminal_responses: accepted_responses,
-            retry_at: None,
-            attempts: 0,
         });
         if should_report_drop {
             self.mark_terminal_response_drops_reported()
@@ -347,9 +343,9 @@ impl PtyIoInbox {
         }
     }
 
-    /// Whether a failed resize still holds its replies ahead of an entry.
-    /// Everything queued after those replies waits with them, so no later
-    /// reply overtakes them.
+    /// Whether a resize not yet applied holds its replies ahead of an entry.
+    /// Everything queued after the resize waits until the actor applies it
+    /// (on its next inbox pass), so no later reply overtakes its replies.
     fn resize_holds(&self, order: u64) -> bool {
         self.latest_resize
             .as_ref()
@@ -610,6 +606,7 @@ impl PtyIoActor {
             exit_reason: ReaderExit::Closed,
             poll_observer,
             resize_pty: Box::new(resize_pty),
+            resize_failure_logged: false,
             poll_pty_and_wake: fd::poll_pty_and_wake,
             drain_wake_fd: fd::drain_wake_fd,
         };
@@ -647,6 +644,8 @@ struct PtyIoActorRunner {
     exit_reason: ReaderExit,
     poll_observer: Option<std_mpsc::Sender<()>>,
     resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
+    /// Whether a resize failure was already reported at warn level.
+    resize_failure_logged: bool,
     poll_pty_and_wake: fn(RawFd, RawFd, bool, i32) -> std::io::Result<fd::PtyWakeReadiness>,
     drain_wake_fd: fn(RawFd) -> std::io::Result<()>,
 }
@@ -816,10 +815,10 @@ impl PtyIoActorRunner {
         while self.process_next_inbox_event(now()) || self.schedule_submission_enter(now()) {}
     }
 
-    /// Apply a due resize, or start the submission at the front of the
+    /// Apply a pending resize, or start the submission at the front of the
     /// queue. Returns whether anything changed.
     fn process_next_inbox_event(&mut self, now: Instant) -> bool {
-        if self.apply_due_resize(now) {
+        if self.apply_pending_resize() {
             return true;
         }
         // One submission at a time; the rest wait in queue order.
@@ -891,21 +890,22 @@ impl PtyIoActorRunner {
         true
     }
 
-    /// Apply the pending resize if it is due. The ioctl runs as soon as the
-    /// request arrives, not behind queued writes: a child that is not reading
-    /// stdin must still get its SIGWINCH. Only the replies take the request's
-    /// place in the sequence. The runtime has already resized the emulator,
-    /// so a failed ioctl is retried with backoff until it succeeds or a newer
-    /// request replaces it. Returns whether anything changed.
-    fn apply_due_resize(&mut self, now: Instant) -> bool {
+    /// Apply the pending resize. The ioctl runs as soon as the request
+    /// arrives, not behind queued writes: a child that is not reading stdin
+    /// must still get its SIGWINCH. Only the replies take the request's place
+    /// in the sequence. Returns whether anything changed.
+    ///
+    /// A failed ioctl is logged and not retried. TIOCSWINSZ on a PTY master
+    /// this actor owns has no transient failure: Linux resizes the pair under
+    /// a plain mutex and fails only on a bad fd, a bad pointer or a non-tty,
+    /// none of which a later attempt changes. The replies go out either way:
+    /// they describe the emulator, which the runtime has already resized.
+    fn apply_pending_resize(&mut self) -> bool {
         let (order, resize) = {
             let inbox = crate::locks::lock_auxiliary(&self.inbox);
             let Some(pending) = inbox.latest_resize.as_ref() else {
                 return false;
             };
-            if pending.retry_at.is_some_and(|retry_at| retry_at > now) {
-                return false;
-            }
             (pending.order, pending.resize)
         };
         let result = (self.resize_pty)(self.file.as_raw_fd(), resize);
@@ -919,68 +919,25 @@ impl PtyIoActorRunner {
             // Replaced during the ioctl; the newer request is applied next.
             return true;
         }
-        match result {
-            Ok(()) => {
-                if let Some(done) = inbox.latest_resize.take() {
-                    if done.attempts > 0 {
-                        debug!(
-                            pane = self.pane_id.raw(),
-                            attempts = done.attempts,
-                            "PTY resize applied after retrying"
-                        );
-                    }
-                    inbox.insert_resize_replies(done.order, done.terminal_responses);
-                }
-                true
-            }
-            Err(err) => {
-                let Some(pending) = inbox.latest_resize.as_mut() else {
-                    return false;
-                };
-                pending.attempts = pending.attempts.saturating_add(1);
-                let attempts = pending.attempts;
-                let shift = u32::from(attempts.saturating_sub(1));
-                let multiplier = 1u32.checked_shl(shift).unwrap_or(u32::MAX);
-                let delay = RESIZE_RETRY_BASE
-                    .saturating_mul(multiplier)
-                    .min(RESIZE_RETRY_MAX);
-                pending.retry_at = Some(now + delay);
-                // Holding the replies keeps them ordered, but it also holds
-                // every write queued after them. Past a few attempts the
-                // replies go out without the ioctl (they describe the
-                // emulator, which has the new size) and input flows again.
-                let released = if attempts >= RESIZE_HOLD_ATTEMPTS {
-                    std::mem::take(&mut pending.terminal_responses)
-                } else {
-                    Vec::new()
-                };
-                let released_any = !released.is_empty();
-                inbox.insert_resize_replies(order, released);
-                drop(inbox);
-                if attempts == 1 {
-                    warn!(
-                        pane = self.pane_id.raw(),
-                        err = %err,
-                        "PTY resize failed; retrying with backoff"
-                    );
-                } else if released_any {
-                    warn!(
-                        pane = self.pane_id.raw(),
-                        err = %err,
-                        attempts,
-                        "PTY resize still failing; releasing its replies and retrying"
-                    );
-                } else {
-                    debug!(
-                        pane = self.pane_id.raw(),
-                        err = %err,
-                        attempts,
-                        "PTY resize retry failed"
-                    );
-                }
-                released_any
+        if let Some(done) = inbox.latest_resize.take() {
+            inbox.insert_resize_replies(done.order, done.terminal_responses);
+        }
+        drop(inbox);
+        if let Err(err) = result {
+            // A failure that cannot clear would repeat on every resize, so
+            // only the first one per pane is a warning.
+            if self.resize_failure_logged {
+                debug!(pane = self.pane_id.raw(), err = %err, "PTY resize failed");
+            } else {
+                self.resize_failure_logged = true;
+                warn!(
+                    pane = self.pane_id.raw(),
+                    err = %err,
+                    "PTY resize failed; the child keeps its previous window size"
+                );
             }
         }
+        true
     }
 
     /// A write failure usually means the child has gone (the master reports EIO
@@ -1237,16 +1194,7 @@ impl PtyIoActorRunner {
             .active_submission
             .as_ref()
             .and_then(|submission| lock_state(&submission.state).deadline());
-        let resize_deadline = crate::locks::lock_auxiliary(&self.inbox)
-            .latest_resize
-            .as_ref()
-            .and_then(|resize| resize.retry_at);
-        let deadline = match (submission_deadline, resize_deadline) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        };
-        let Some(deadline) = deadline else {
+        let Some(deadline) = submission_deadline else {
             return ACTOR_IDLE_POLL_MS;
         };
         i32::try_from(
@@ -1527,6 +1475,7 @@ mod tests {
             exit_reason: ReaderExit::Closed,
             poll_observer: None,
             resize_pty: Box::new(resize_pty),
+            resize_failure_logged: false,
             poll_pty_and_wake: fd::poll_pty_and_wake,
             drain_wake_fd: fd::drain_wake_fd,
         };
@@ -2573,77 +2522,17 @@ mod tests {
     }
 
     #[test]
-    fn failed_resize_is_retried_without_dropping_its_reply() {
+    fn failed_resize_is_not_retried_and_its_replies_keep_their_place() {
         let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let resize_calls = Arc::clone(&calls);
-        runner.resize_pty = Box::new(move |_, _| {
-            if resize_calls.fetch_add(1, Ordering::AcqRel) == 0 {
-                Err(std::io::Error::other("temporary ioctl failure"))
-            } else {
-                Ok(())
-            }
-        });
-        handle.resize(
-            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
-            || vec![Bytes::from_static(b"resize-reply")],
-        );
-        handle.write_terminal_response(|| Some(Bytes::from_static(b"later")));
-
-        runner.pump().expect("pump with a failing resize");
-        {
-            let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
-            let resize = inbox
-                .latest_resize
-                .as_mut()
-                .expect("failed resize stays queued");
-            assert_eq!(resize.attempts, 1);
-            assert!(resize.retry_at.is_some());
-            assert_eq!(
-                resize.terminal_responses,
-                [Bytes::from_static(b"resize-reply")]
-            );
-            resize.retry_at = Some(Instant::now());
-        }
-        // The later reply waits behind the held one.
-        peer.set_nonblocking(true).expect("peer nonblocking");
-        let mut probe = [0u8; 1];
-        assert!(
-            peer.read(&mut probe).is_err(),
-            "nothing overtakes a held resize reply"
-        );
-        peer.set_nonblocking(false).expect("peer blocking");
-
-        runner.pump().expect("resize reply write succeeds");
-        assert_eq!(calls.load(Ordering::Acquire), 2);
-        assert!(
-            crate::locks::lock_auxiliary(&runner.inbox)
-                .latest_resize
-                .is_none()
-        );
-        let mut response = [0; 17];
-        peer.read_exact(&mut response)
-            .expect("reply follows successful resize retry");
-        assert_eq!(&response, b"resize-replylater");
-    }
-
-    #[test]
-    fn a_resize_that_keeps_failing_stops_holding_input_and_a_newer_one_replaces_it() {
-        let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
-        let succeed = Arc::new(AtomicBool::new(false));
-        let applied = Arc::new(Mutex::new(Vec::new()));
         runner.resize_pty = Box::new({
-            let succeed = Arc::clone(&succeed);
-            let applied = Arc::clone(&applied);
-            move |_, resize| {
-                if succeed.load(Ordering::Acquire) {
-                    crate::locks::lock_auxiliary(&applied).push(resize.geometry);
-                    Ok(())
-                } else {
-                    Err(std::io::Error::other("persistent ioctl failure"))
-                }
+            let calls = Arc::clone(&calls);
+            move |_, _| {
+                calls.fetch_add(1, Ordering::AcqRel);
+                Err(std::io::Error::other("ioctl failure"))
             }
         });
+        handle.write_terminal_response(|| Some(Bytes::from_static(b"earlier")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
             || vec![Bytes::from_static(b"reply")],
@@ -2652,45 +2541,21 @@ mod tests {
             .try_write_user_input(Bytes::from_static(b"typed"))
             .expect("input queues");
 
-        for attempt in 1..=RESIZE_HOLD_ATTEMPTS {
-            runner.pump().expect("pump with a failing resize");
-            let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
-            let resize = inbox
-                .latest_resize
-                .as_mut()
-                .expect("failed resize stays queued");
-            assert_eq!(resize.attempts, attempt);
-            let retry_in = resize
-                .retry_at
-                .expect("failure schedules a retry")
-                .saturating_duration_since(Instant::now());
-            assert!(retry_in > Duration::ZERO && retry_in <= RESIZE_RETRY_MAX);
-            resize.retry_at = Some(Instant::now());
-        }
-        // Released: the reply and the input behind it go out, the ioctl is
-        // still pending.
-        let mut received = [0; 10];
+        runner.pump().expect("pump with a failing resize");
+        let mut received = [0; 17];
         peer.read_exact(&mut received)
-            .expect("held reply and input are released");
-        assert_eq!(&received, b"replytyped");
+            .expect("replies and input go out despite the failed ioctl");
+        assert_eq!(&received, b"earlierreplytyped");
         assert!(
             crate::locks::lock_auxiliary(&runner.inbox)
                 .latest_resize
-                .as_ref()
-                .is_some_and(|resize| resize.terminal_responses.is_empty()),
-            "the ioctl keeps retrying after the replies are released"
+                .is_none(),
+            "a failed resize is dropped, not kept for a retry"
         );
+        assert!(runner.resize_failure_logged);
 
-        let newer = shepr_core::geometry::PaneGeometry::new(120, 50, 9, 18);
-        handle.resize(newer, Vec::new);
-        succeed.store(true, Ordering::Release);
-        runner.pump().expect("newer resize applies");
-        assert_eq!(*crate::locks::lock_auxiliary(&applied), [newer]);
-        assert!(
-            crate::locks::lock_auxiliary(&runner.inbox)
-                .latest_resize
-                .is_none()
-        );
+        runner.pump().expect("idle pump");
+        assert_eq!(calls.load(Ordering::Acquire), 1, "the ioctl is not retried");
     }
 
     #[test]

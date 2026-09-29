@@ -40,129 +40,128 @@ impl Deadline {
     }
 }
 
-/// Two clicks on the same spot within 350 milliseconds are treated as a double click.
+/// Repeated clicks on the same spot within the gesture interval are a double click.
 ///
 /// This keeps the gesture in the usual short desktop double-click window.
 pub(super) const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 /// Minimum spacing between requests sent by scrollbar and split drags.
 ///
-/// Thirty-three milliseconds caps updates near thirty frames per second.
+/// This caps updates near the usual desktop frame cadence.
 pub(super) const MOUSE_DRAG_SEND_INTERVAL: Duration = Duration::from_millis(33);
 /// Tick spacing for scrolling a selection while the pointer is outside the pane.
 ///
-/// Thirty milliseconds keeps edge scrolling responsive without scheduling at every input event.
+/// This keeps edge scrolling responsive without scheduling at every input event.
 pub(super) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 /// Minimum spacing of the frames a selection drag rebuilds.
 ///
-/// Sixteen milliseconds bounds redraw work to about sixty frames per second.
+/// This bounds redraw work to a practical frame cadence.
 pub(super) const SELECTION_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
 /// The longest the client loop sleeps when no shell timer is due sooner.
 ///
-/// One tenth of a second bounds input and resize latency when no timer is armed.
+/// The short delay bounds input and resize latency when no timer is armed.
 pub(super) const MAX_CLIENT_TIMER_DELAY: Duration = Duration::from_millis(100);
 /// Poll spacing for terminal size changes that do not arrive through a signal.
 ///
-/// One tenth of a second keeps polling responsive while avoiding a busy loop.
+/// The interval keeps polling responsive while avoiding a busy loop.
 pub(super) const TERMINAL_RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Bound runtime shutdown so terminal restoration and process exit are not held by idle tasks.
 ///
-/// A tenth of a second gives cooperative tasks a brief drain window without stalling exit.
+/// A brief drain window gives cooperative tasks time to finish without stalling exit.
 pub(super) const CLIENT_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 /// Bound SSH helper cleanup while the client is exiting.
 ///
-/// One second allows ordinary helper teardown but keeps exit bounded.
+/// The timeout allows ordinary helper teardown but keeps exit bounded.
 pub(super) const SSH_RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Time an endpoint error stays visible without another input event.
 ///
-/// Five seconds leaves time to read a transient error before it clears.
+/// The timeout leaves time to read a transient error before it clears.
 pub(super) const ENDPOINT_ERROR_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an endpoint notice card stays up before it hides itself. A click on the card hides
 /// it sooner; the timeout is what dismisses it when `ui.mouse_capture` is off.
-/// Ten seconds keeps a notice available through a short recovery without leaving stale cards up.
+/// The timeout keeps a notice available through a short recovery without leaving stale cards up.
 pub(super) const ENDPOINT_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Retain at most 64 recent direct-attach notices while startup or forwarding is failing.
+/// Retain recent direct-attach notices while startup or forwarding is failing.
 ///
 /// This preserves a useful burst of recent errors while bounding memory per client.
 pub(super) const MAX_NOTICES: usize = 64;
 /// How long one endpoint frame write, or an input flush, may block.
 ///
-/// Five seconds absorbs short socket stalls and fails a wedged endpoint promptly.
+/// The timeout absorbs short socket stalls and fails a wedged endpoint promptly.
 pub(super) const ENDPOINT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Poll spacing while an endpoint writer waits for socket progress.
 ///
-/// Two milliseconds keeps stalled writes responsive without a tight polling loop.
+/// The interval keeps stalled writes responsive without a tight polling loop.
 pub(super) const ENDPOINT_IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// Deadline for the best-effort Detach flush while the endpoint registry is dropping.
 ///
-/// A quarter second gives the courtesy message a chance to leave before shutdown disconnects.
+/// A brief flush gives the courtesy message a chance to leave before shutdown disconnects.
 pub(super) const ENDPOINT_DETACH_FLUSH_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Bound the keyboard-capability query's wait for a host terminal response.
 ///
-/// A quarter second covers normal terminal replies while keeping startup interactive.
+/// A short wait covers normal terminal replies while keeping startup interactive.
 pub(super) const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
 /// Maximum host input buffered while the keyboard-capability query is pending.
 ///
-/// Sixty-four KiB holds multiple terminal replies but bounds input from an unresponsive host.
+/// The capacity holds terminal replies while bounding input from an unresponsive host.
 pub(super) const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
 /// Scratch buffer size for each read from the outer terminal.
 ///
-/// Four KiB keeps blocking reads page-sized and bounds each temporary read buffer.
+/// The chunk keeps blocking reads page-sized and bounds each temporary read buffer.
 pub(super) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 
 /// Time to wait for the server's complete Welcome reply during the handshake.
 /// This is an overall deadline for the frame, not a per-read idle timeout.
 ///
-/// A local client talks to an already-connected server, so 5s is plenty. The
-/// remote bridge client (`shepr --remote`) sits behind a fresh per-attach ssh
-/// connection whose cold-connect (TCP + key exchange + auth) happens inside this
-/// window; on a high-latency link that easily exceeds 5s, so it gets a far
-/// larger budget.
+/// A local client talks to an already-connected server. The remote bridge client
+/// (`shepr --remote`) performs a fresh SSH connection, including key exchange
+/// and authentication, inside this window, so it needs more room on high-latency
+/// links.
 pub(super) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// The remote counterpart of `LOCAL_HANDSHAKE_READ_TIMEOUT`.
+/// Allows a fresh remote SSH connection to finish before the welcome reply is due.
 pub(super) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Timeout for a client request sent to an endpoint.
 ///
-/// One minute allows slow remote reads while preventing a request from waiting forever.
+/// The deadline allows slow remote reads while preventing a request from waiting forever.
 pub(super) const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum retired request IDs retained per endpoint to ignore late responses.
 ///
-/// The 128-entry window tolerates a burst of cancelled requests without unbounded per-endpoint growth.
+/// The window tolerates a burst of cancelled requests without unbounded per-endpoint growth.
 pub(super) const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
 /// Maximum response body retained for one endpoint request.
 ///
-/// Sixty-four MiB accommodates large pane reads while bounding response memory.
+/// The cap accommodates large pane reads while bounding response memory.
 pub(super) const MAX_ENDPOINT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum time an endpoint surface activation may remain pending.
 ///
-/// Five seconds allows a slow endpoint to acknowledge activation without leaving input blocked.
+/// The timeout allows a slow endpoint to acknowledge activation without leaving input blocked.
 pub(super) const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Endpoint heartbeat interval shared with the server's core timing policy.
 pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_core::limits::HEARTBEAT_INTERVAL;
 /// Expire an endpoint that has not returned a heartbeat within this interval.
 ///
-/// Ten seconds permits missed scheduling and transport jitter before marking the endpoint offline.
+/// The timeout permits missed scheduling and transport jitter before marking the endpoint offline.
 pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Initial reconnect delay before exponential backoff.
 ///
-/// Half a second retries quickly after a transient local or SSH failure.
+/// The delay retries quickly after a transient local or SSH failure.
 pub(super) const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Every endpoint, Local or saved machine, retries at least this often. `shepr machine
-/// reconnect` tells the user that open clients retry within 30 seconds once the machine is
-/// reachable again; a longer backoff for a reconnecting machine would make that untrue.
+/// Every endpoint, Local or saved machine, retries at least this often. The
+/// `shepr machine reconnect` promise requires open clients to retry promptly once
+/// the machine is reachable again; a longer backoff would make that untrue.
 ///
 /// An attempt's own failure schedules the next one from when that attempt started, not
 /// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
 /// keep the promise with an attempt already in flight: from any moment, the next attempt
 /// starts once the current one ends or its retry delay (counted from its start) is up,
-/// whichever is later, and both fall within 30 seconds.
+/// whichever is later, within the retry bound.
 pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// A connection stable for this interval resets its accumulated retry state.
 ///
-/// One minute distinguishes a durable connection from a brief success between failures.
+/// The interval distinguishes a durable connection from a brief success between failures.
 pub(super) const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 /// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
 pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
@@ -170,10 +169,10 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// The longest one connection attempt may run: the SSH discovery commands, the bridge and
 /// the endpoint handshake all stop at this deadline. Without it an attempt against a host
-/// that hangs ran for minutes (each discovery command may take
-/// `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
+/// that stalls could hold the endpoint indefinitely (each discovery command may
+/// take `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
 /// `REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it, which broke the
-/// 30-second reconnect promise. `do_handshake` takes this deadline and stops at whichever
+/// reconnect promise. `do_handshake` takes this deadline and stops at whichever
 /// of it and the handshake timeout comes first.
 ///
 /// A healthy attempt needs far less: every noninteractive discovery command already had
@@ -184,10 +183,10 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// discovery of the remote executable. Most attempts do not: `shepr machine add` seeds
 /// the metadata cache and a reconnect launches the bridge from the remembered executable.
 /// With the default managed ssh config every command after the first reuses one shared
-/// connection (ControlMaster, persisting ten minutes), so only one cold connect is paid.
+/// connection (ControlMaster), so only one cold connect is paid.
 /// The case that can overrun is a cache miss or a stale remembered path on a slow link
-/// without connection sharing, where each of discovery's round trips (up to three
-/// commands, a status probe per candidate, then the bridge) is its own cold connect.
+/// without connection sharing, where each of discovery's several round trips, a status
+/// probe per candidate, and the bridge each need their own cold connect.
 /// That case is handled by resuming, not by a larger budget: the saved-machine connector
 /// keeps what discovery completed when an attempt ends on a timeout or other link
 /// failure (any other error clears it) and the next attempt continues from there, and it
@@ -196,43 +195,43 @@ pub(super) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// exceeds it by `SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
 /// completes at least one, and discovery finishes after a bounded number of attempts;
 /// after that the bridge and handshake need to fit one attempt, as on every ordinary
-/// reconnect. A larger budget for discovery attempts would stretch the 30-second
-/// reconnect promise exactly where the link is slowest, and would still fail on a link
-/// one step slower.
+/// reconnect. A larger discovery budget would stretch the reconnect promise exactly where
+/// the link is slowest, and would still fail on an even slower link.
 pub(super) const ATTEMPT_BUDGET: Duration =
     shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
 
 /// Maximum queued frame batches waiting for the endpoint writer.
 ///
-/// A 256-batch queue absorbs short input bursts while limiting queued command objects.
+/// The queue absorbs short input bursts while limiting queued command objects.
 pub(super) const MAX_QUEUED_BATCHES: usize = 256;
 /// Maximum bytes coalesced into one endpoint writer batch.
 ///
-/// Sixty-four KiB bounds each write batch so one large burst does not monopolize the writer.
+/// The cap bounds each write batch so a large burst does not monopolize the writer.
 pub(super) const MAX_BATCH_BYTES: usize = 64 * 1024;
-/// Maximum endpoint writer backlog, allowing two maximum-sized protocol frames.
+/// Maximum endpoint writer backlog, leaving room for frames already in flight
+/// while bounding queued memory.
 pub(super) const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
 
 /// Maximum time Ctrl+V waits for the clipboard helper in a modal input.
 ///
-/// Half a second keeps a stalled clipboard owner from freezing modal input.
+/// The timeout keeps a stalled clipboard owner from freezing modal input.
 pub(super) const MODAL_PASTE_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(500);
 /// Keep a completed word-selection highlight visible for this interval.
 ///
-/// Half a second leaves brief visual feedback after the selection copy completes.
+/// The timeout leaves brief visual feedback after the selection copy completes.
 pub(super) const WORD_SELECTION_HIGHLIGHT_TIMEOUT: Duration = Duration::from_millis(500);
 /// Keep workspace navigation feedback visible while its focus request is pending.
 ///
-/// One second covers the normal focus round trip without leaving stale feedback on screen.
+/// The timeout covers the normal focus round trip without leaving stale feedback on screen.
 pub(super) const WORKSPACE_HIGHLIGHT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Fallback terminal cell width when the host does not report pixel geometry.
 ///
-/// Eight pixels is the conventional fallback width used to map cell coordinates.
+/// The conventional fallback width maps cell coordinates when the host omits pixel geometry.
 pub(super) const DEFAULT_CELL_WIDTH_PX: u32 = 8;
 /// Fallback terminal cell height when the host does not report pixel geometry.
 ///
-/// Sixteen pixels is the conventional fallback height used to map cell coordinates.
+/// The conventional fallback height maps cell coordinates when the host omits pixel geometry.
 pub(super) const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
 /// Smallest tab width that still leaves room for its label.
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
@@ -265,28 +264,28 @@ pub(super) const MIN_NAVIGATOR_OVERLAY_HEIGHT: u16 = 9;
 pub(super) const MAX_MACHINE_DIAGNOSTIC_CHARS: usize = 4096;
 /// Maximum lines scrolled for each pointer row beyond a selection edge.
 ///
-/// Three lines per pointer row makes edge scrolling accelerate with distance.
+/// Scaling lines with pointer distance makes edge scrolling accelerate smoothly.
 pub(super) const SELECTION_EDGE_SCROLL_LINES_PER_ROW: usize = 3;
 /// Minimum lines moved on an edge-scroll tick.
 ///
-/// Three lines keep the first edge-scroll step visible.
+/// This keeps the first edge-scroll step visible.
 pub(super) const MIN_SELECTION_EDGE_SCROLL_LINES: usize = 3;
 /// Maximum lines moved on an edge-scroll tick.
 ///
-/// Fifteen lines cap acceleration so a small pointer movement cannot skip too far.
+/// The cap prevents a small pointer movement from skipping too far.
 pub(super) const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
 
 /// Event queue capacity shared by the resize and server-reader threads.
 ///
-/// 256 pending events absorbs short bursts without allowing unlimited event accumulation.
+/// The capacity absorbs short bursts without allowing unlimited event accumulation.
 pub(super) const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
 /// Event queue capacity for endpoint supervisor notifications.
 ///
-/// 64 pending notifications cover endpoint status bursts while keeping the queue bounded.
+/// The capacity covers endpoint status bursts while keeping the queue bounded.
 pub(super) const ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY: usize = 64;
-/// Single-result channel capacity for the asynchronous clipboard helper.
+/// Channel capacity for the asynchronous clipboard helper.
 ///
-/// One result is sufficient because each read has exactly one receiver and one completion.
+/// The channel suffices because every read has its receiver and completes once.
 pub(super) const CLIPBOARD_RESULT_QUEUE_CAPACITY: usize = 1;
 
 const _: () = assert!(ENDPOINT_IO_POLL_INTERVAL.as_millis() < ENDPOINT_WRITE_TIMEOUT.as_millis());
