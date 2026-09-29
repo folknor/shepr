@@ -8,7 +8,6 @@ pub const REMOTE_INSTALL_NAME: &str = "shepr";
 
 pub const FLAG_SESSION: &str = "--session";
 pub const FLAG_JSON: &str = "--json";
-pub const FLAG_CHECK: &str = "--check";
 
 pub fn option_name_from_flag(flag: &'static str) -> &'static str {
     flag.strip_prefix("--").unwrap_or(flag)
@@ -19,7 +18,6 @@ pub const COMMAND_SERVER: &str = "server";
 pub const COMMAND_CLIENT: &str = "client";
 pub const COMMAND_STOP: &str = "stop";
 pub const COMMAND_REMOTE_CLIENT_BRIDGE: &str = "remote-client-bridge";
-pub const COMMAND_REMOTE_API_BRIDGE: &str = "remote-api-bridge";
 
 /// A `shepr` command line that shepr builds for another `shepr` process to parse.
 ///
@@ -31,7 +29,6 @@ pub enum RemoteCliCommand<'a> {
     ClientStatus,
     ServerStatus { session: &'a str },
     ClientBridge { session: &'a str },
-    ApiBridge { session: &'a str, check: bool },
     ServerStop { session: &'a str, force: bool },
 }
 
@@ -43,7 +40,6 @@ impl<'a> RemoteCliCommand<'a> {
         let session = match self {
             Self::ServerStatus { session }
             | Self::ClientBridge { session }
-            | Self::ApiBridge { session, .. }
             | Self::ServerStop { session, .. } => Some(session),
             Self::ClientStatus => None,
         };
@@ -59,12 +55,6 @@ impl<'a> RemoteCliCommand<'a> {
                 args.extend([COMMAND_STATUS, COMMAND_SERVER, FLAG_JSON]);
             }
             Self::ClientBridge { .. } => args.push(COMMAND_REMOTE_CLIENT_BRIDGE),
-            Self::ApiBridge { check, .. } => {
-                args.push(COMMAND_REMOTE_API_BRIDGE);
-                if check {
-                    args.push(FLAG_CHECK);
-                }
-            }
             Self::ServerStop { force, .. } => {
                 args.extend([COMMAND_SERVER, COMMAND_STOP]);
                 if force {

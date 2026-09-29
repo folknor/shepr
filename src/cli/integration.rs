@@ -9,22 +9,6 @@ pub(crate) enum Command {
     Status { outdated_only: bool },
 }
 
-impl Command {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            Self::Install { .. } => "install",
-            Self::Uninstall { .. } => "uninstall",
-            Self::Status { .. } => "status",
-        }
-    }
-
-    pub(super) fn can_run_on_machine(&self) -> bool {
-        match self {
-            Self::Install { .. } | Self::Uninstall { .. } | Self::Status { .. } => false,
-        }
-    }
-}
-
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
         Some(("install", command)) => Some(Command::Install {

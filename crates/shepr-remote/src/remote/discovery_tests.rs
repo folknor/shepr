@@ -499,17 +499,6 @@ fn known_remote_binary_candidate_script_includes_cargo_home_and_local_bin() {
 }
 
 #[test]
-fn api_forwarding_check_runs_the_candidate_for_the_session() {
-    let remote_shepr =
-        remote_executable_from_path_discovery("/home/u/.cargo/bin/shepr\n").expect("path");
-
-    assert_eq!(
-        remote_shepr.api_bridge_check_command("agents"),
-        "test -x /home/u/.cargo/bin/shepr && /home/u/.cargo/bin/shepr status client --json && /home/u/.cargo/bin/shepr --session agents remote-api-bridge --check </dev/null"
-    );
-}
-
-#[test]
 fn remote_path_discovery_ignores_relative_paths() {
     let remote_shepr = remote_executable_from_path_discovery("bin/shepr\n");
 

@@ -3,8 +3,8 @@ use clap::ArgMatches;
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::Request;
 use shepr_remote::{
-    COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
-    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_SESSION, option_name_from_flag,
+    COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
+    FLAG_SESSION, option_name_from_flag,
 };
 
 macro_rules! print {
@@ -43,7 +43,6 @@ pub(crate) enum Launch {
     Tui { attached_session: Option<String> },
     HeadlessServer,
     Client,
-    ApiBridge { check: bool },
     ClientBridge,
     Cli(Box<CliCommand>),
 }
@@ -68,41 +67,6 @@ impl CliCommand {
             "integration" => Self::Integration(integration::parse(matches)?),
             _ => return None,
         })
-    }
-
-    pub(crate) fn name(&self) -> &'static str {
-        match self {
-            Self::Status(_) => COMMAND_STATUS,
-            Self::Machine(_) => "machine",
-            Self::Server(_) => COMMAND_SERVER,
-            Self::Detect(_) => "detect",
-            Self::Session(_) => "session",
-            Self::Integration(_) => "integration",
-        }
-    }
-
-    /// A command group may represent a valid invocation with no nested
-    /// command, such as the `status` overview; absent names use `None`.
-    pub(crate) fn subcommand_name(&self) -> Option<&'static str> {
-        match self {
-            Self::Status(command) => command.name(),
-            Self::Machine(command) => Some(command.name()),
-            Self::Server(command) => Some(command.name()),
-            Self::Detect(command) => Some(command.name()),
-            Self::Session(command) => Some(command.name()),
-            Self::Integration(command) => Some(command.name()),
-        }
-    }
-
-    pub(crate) fn can_run_on_machine(&self) -> bool {
-        match self {
-            Self::Status(command) => command.can_run_on_machine(),
-            Self::Machine(command) => command.can_run_on_machine(),
-            Self::Server(command) => command.can_run_on_machine(),
-            Self::Detect(command) => command.can_run_on_machine(),
-            Self::Session(command) => command.can_run_on_machine(),
-            Self::Integration(command) => command.can_run_on_machine(),
-        }
     }
 }
 
@@ -141,20 +105,6 @@ impl SessionCommand {
             _ => None,
         }
     }
-
-    fn name(&self) -> &'static str {
-        match self {
-            Self::List { .. } => "list",
-            Self::Stop { .. } => COMMAND_STOP,
-            Self::Delete { .. } => "delete",
-        }
-    }
-
-    fn can_run_on_machine(&self) -> bool {
-        match self {
-            Self::List { .. } | Self::Stop { .. } | Self::Delete { .. } => false,
-        }
-    }
 }
 
 /// Values parsed from the root options plus one typed launch. Launch options
@@ -163,7 +113,6 @@ impl SessionCommand {
 pub(crate) struct Invocation {
     pub(crate) launch: Launch,
     session: Option<String>,
-    machine: Option<String>,
     help: bool,
     version: bool,
 }
@@ -181,9 +130,6 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                     Launch::HeadlessServer
                 }
                 Some((COMMAND_CLIENT, _)) => Launch::Client,
-                Some((COMMAND_REMOTE_API_BRIDGE, matches)) => Launch::ApiBridge {
-                    check: matches::flag(matches, option_name_from_flag(FLAG_CHECK)),
-                },
                 Some((COMMAND_REMOTE_CLIENT_BRIDGE, _)) => Launch::ClientBridge,
                 Some(("session", matches))
                     if matches
@@ -211,7 +157,6 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
             Ok(Invocation {
                 launch,
                 session: matches::string(&matches, option_name_from_flag(FLAG_SESSION)),
-                machine: matches::string(&matches, "machine"),
                 help: matches::flag(&matches, "help"),
                 version: matches::flag(&matches, "version"),
             })
@@ -229,10 +174,6 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
 impl Invocation {
     pub(crate) fn session(&self) -> Option<String> {
         self.session.clone()
-    }
-
-    pub(crate) fn machine(&self) -> Option<String> {
-        self.machine.clone()
     }
 
     pub(crate) fn help_requested(&self) -> bool {
@@ -304,13 +245,6 @@ pub(crate) fn print_help(requested_session: Option<shepr_config::SessionId>) {
     );
 }
 
-/// Runs the invocation's subcommand against the saved machine named by
-/// `--machine`.
-pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> CliResult<i32> {
-    let paths = resolve_machine_app_paths()?;
-    target::run_on_machine(selector, command, &paths)
-}
-
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(
     command: &CliCommand,
@@ -338,15 +272,6 @@ fn resolve_app_paths(
     requested_session: Option<shepr_config::SessionId>,
 ) -> CliResult<shepr_config::AppPaths> {
     shepr_config::AppPaths::resolve_with_session(requested_session).map_err(|diagnostics| {
-        CliError::Io(std::io::Error::other(format!(
-            "application paths could not be resolved:\n  {}",
-            diagnostics.join("\n  ")
-        )))
-    })
-}
-
-fn resolve_machine_app_paths() -> CliResult<shepr_config::AppPaths> {
-    shepr_config::AppPaths::resolve_for_machine().map_err(|diagnostics| {
         CliError::Io(std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
@@ -441,30 +366,9 @@ fn session_delete(name: &str, json: bool, paths: &shepr_config::AppPaths) -> Cli
     }
 }
 
-fn print_response_error(response: &serde_json::Value) -> CliResult<bool> {
-    if response.get("error").is_none() {
-        return Ok(false);
-    }
-    eprintln!(
-        "{}",
-        serde_json::to_string(response).map_err(std::io::Error::other)?
-    );
-    Ok(true)
-}
-
 fn send_request(context: &target::CliContext, request: &Request) -> CliResult<serde_json::Value> {
-    let client = target::api_client(context)?;
+    let client = target::api_client(context);
     ensure_server_build_matches(context, &client, &request.id)?;
-    client
-        .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
-}
-
-fn send_request_unchecked(
-    context: &target::CliContext,
-    request: &Request,
-) -> CliResult<serde_json::Value> {
-    let client = target::api_client(context)?;
     client
         .request_value(request)
         .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
@@ -479,7 +383,8 @@ fn ensure_server_build_matches(
     if context.build_checked() {
         return Ok(());
     }
-    let status = target::server_status(context, client)
+    let status = client
+        .status()
         .map_err(|err| map_server_not_running_or_io(context, err, request_id, client))?;
     if shepr_protocol::is_this_build(&status.build_id) {
         context.mark_build_checked();
@@ -518,9 +423,6 @@ fn map_server_not_running_or_io(
     request_id: &str,
     client: &ApiClient,
 ) -> CliError {
-    if context.is_remote() {
-        return target::remote_error(context, api_client_error_to_io(err)).into();
-    }
     match err {
         ApiClientError::Io(_)
             if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
@@ -628,7 +530,7 @@ mod tests {
             ("session", &["session", "list"]),
             ("integration", &["integration", "status"]),
         ];
-        let launch_only = ["client", "remote-api-bridge", "remote-client-bridge"];
+        let launch_only = ["client", "remote-client-bridge"];
         let spec = super::spec::command();
         let mut spec_groups = spec
             .get_subcommands()
@@ -640,12 +542,12 @@ mod tests {
         sampled_groups.sort_unstable();
         assert_eq!(spec_groups, sampled_groups);
 
-        for (name, args) in samples {
+        for (_, args) in samples {
             let invocation = parse(args);
-            match invocation.launch {
-                Launch::Cli(command) => assert_eq!(command.name(), name, "{args:?}"),
-                _ => panic!("{args:?} should produce a typed CLI command"),
-            }
+            assert!(
+                matches!(invocation.launch, Launch::Cli(_)),
+                "{args:?} should produce a typed CLI command"
+            );
         }
     }
 
@@ -699,7 +601,6 @@ mod tests {
             &["server", "stop", "--session=api"][..],
             &["session", "list", "--session", "work"],
             &["status", "--remote", "host"],
-            &["detect", "capture", "w1:p1", "--machine", "mac"],
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }
@@ -803,14 +704,6 @@ mod tests {
             parse(&["--session", "work", "remote-client-bridge"]).launch,
             Launch::ClientBridge
         ));
-        assert!(matches!(
-            parse(&["remote-api-bridge", "--check"]).launch,
-            Launch::ApiBridge { check: true }
-        ));
-        assert!(matches!(
-            parse(&["remote-api-bridge"]).launch,
-            Launch::ApiBridge { check: false }
-        ));
     }
 
     #[test]
@@ -832,6 +725,11 @@ mod tests {
             &["--remote", "host", "--remote-keybindings", "local"],
             &["--remote-keybindings", "server"],
             &["--default-config"],
+            &["--machine", "mac", "status"],
+            &["--machine=mac", "server", "stop"],
+            &["status", "--machine", "mac"],
+            &["remote-api-bridge"],
+            &["remote-api-bridge", "--check"],
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }

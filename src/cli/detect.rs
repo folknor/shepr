@@ -24,22 +24,6 @@ pub(crate) struct ExplainArgs {
     pub(super) verbose: bool,
 }
 
-impl Command {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            Self::Capture { .. } => "capture",
-            Self::Explain(_) => "explain",
-        }
-    }
-
-    pub(super) fn can_run_on_machine(&self) -> bool {
-        match self {
-            Self::Capture { .. } => true,
-            Self::Explain(args) => args.file.is_none(),
-        }
-    }
-}
-
 pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
         Some(("capture", command)) => Some(Command::Capture {
@@ -350,16 +334,6 @@ mod tests {
         ] {
             assert_eq!(rejected(args).exit_code(), 2, "{args:?}");
         }
-    }
-
-    #[test]
-    fn machine_policy_keeps_file_mode_local() {
-        assert!(command(&["detect", "capture", "w1:p1"]).can_run_on_machine());
-        assert!(command(&["detect", "explain", "w1:p1"]).can_run_on_machine());
-        assert!(
-            !command(&["detect", "explain", "--file", "s.txt", "--agent", "codex"])
-                .can_run_on_machine()
-        );
     }
 
     #[test]

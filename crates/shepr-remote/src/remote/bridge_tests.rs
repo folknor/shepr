@@ -336,9 +336,6 @@ fn only_ssh_own_exit_code_counts_as_a_link_failure() {
         missing.to_string(),
         "remote command failed (exit status 127): sh: 1: exec: /old/shepr: not found"
     );
-    let stale = ssh_bridge_exit_error(exit_status(78), super::STALE_API_METADATA.as_bytes());
-    assert!(!is_ssh_link_failure(&stale));
-    assert!(crate::SavedSshApiBridge::stale_metadata_failure(&stale));
     assert!(is_ssh_link_failure(&io::Error::new(
         io::ErrorKind::TimedOut,
         "handshake timed out"

@@ -12,23 +12,6 @@ pub(crate) enum Command {
     Client { json: bool },
 }
 
-impl Command {
-    pub(super) fn name(self) -> Option<&'static str> {
-        match self {
-            Self::Overview { .. } => None,
-            Self::Server { .. } => Some(COMMAND_SERVER),
-            Self::Client { .. } => Some(COMMAND_CLIENT),
-        }
-    }
-
-    pub(super) fn can_run_on_machine(self) -> bool {
-        match self {
-            Self::Overview { .. } | Self::Server { .. } => true,
-            Self::Client { .. } => false,
-        }
-    }
-}
-
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     let root_json = super::matches::flag(matches, option_name_from_flag(FLAG_JSON));
     match matches.subcommand() {
@@ -142,16 +125,13 @@ fn print_server_status_body(
 fn read_server_runtime_status(
     paths: &super::target::CliContext,
 ) -> super::CliResult<ServerRuntimeStatus> {
-    let client = super::target::api_client(paths)?;
-    match super::target::server_status(paths, &client) {
+    let client = super::target::api_client(paths);
+    match client.status() {
         Ok(status) => Ok(ServerRuntimeStatus::Running {
             version: status.version,
             build_id: status.build_id,
             capabilities: status.capabilities,
         }),
-        Err(err) if paths.is_remote() => {
-            Err(super::target::remote_error(paths, super::api_client_error_to_io(err)).into())
-        }
         Err(ApiClientError::Io(error)) => {
             match super::server_not_running_error(&client.socket_path()) {
                 Ok(true) => Ok(ServerRuntimeStatus::NotRunning),
@@ -200,7 +180,7 @@ fn server_status_json(
     paths: &super::target::CliContext,
     server: &ServerRuntimeStatus,
 ) -> ServerStatusJson {
-    let mut status = match server {
+    match server {
         ServerRuntimeStatus::Running {
             version,
             build_id,
@@ -225,12 +205,7 @@ fn server_status_json(
             session: paths.session_id().name().map(str::to_owned),
             restart_needed: false,
         },
-    };
-    if let Some((_, session)) = super::target::remote_identity(paths) {
-        status.socket = super::target::socket_label(paths);
-        status.session = Some(session);
     }
-    status
 }
 
 fn update_status_json(server: &ServerRuntimeStatus) -> UpdateStatusJson {

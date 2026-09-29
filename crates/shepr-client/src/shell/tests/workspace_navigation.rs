@@ -814,7 +814,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
     let mut config = Config::default();
     config.keys.focus_agent = shepr_config::BindingConfig::one("ctrl+alt+1");
     let mut projected = workspaces(3);
-    projected.agents.push(agent("agent", AgentStatus::Idle, 1));
+    projected.agents.push(agent(AgentStatus::Idle, 1));
 
     for pending in [false, true] {
         let mut state = local_navigation_state(false);

@@ -16,11 +16,7 @@ fn remote_profile() -> SavedSshEndpoint {
 
 /// The first argument only documents which agent a test means; agents carry
 /// no name of their own.
-fn agent(
-    _description: &str,
-    status: shepr_api::schema::AgentStatus,
-    state_change_seq: u64,
-) -> ClientShellAgent {
+fn agent(status: shepr_api::schema::AgentStatus, state_change_seq: u64) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
         workspace_id: test_workspace_id("w1"),
@@ -283,7 +279,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
                     index + 1,
                 ),
                 focused: index == 0,
-                ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
+                ..agent(AgentStatus::Idle, 1)
             })
             .collect();
         projection.panes = projection
@@ -998,12 +994,12 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
-    remote.agents = vec![agent("remote agent", AgentStatus::Blocked, 1)];
+    remote.agents = vec![agent(AgentStatus::Blocked, 1)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -1061,16 +1057,16 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    local.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    remote.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
 
     let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 2)];
+    local.agents = vec![agent(AgentStatus::Idle, 2)];
     state.set_snapshot(Box::new(local));
     let frame_text = |state: &mut ClientShellState| {
         let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -1091,7 +1087,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
             < text.find("Build · pi").expect("remote agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Working, 2)];
+    remote.agents = vec![agent(AgentStatus::Working, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     let text = frame_text(&mut state);
     assert!(
@@ -1099,7 +1095,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
             < text.find("Local · pi").expect("local agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
+    remote.agents = vec![agent(AgentStatus::Idle, 3)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     let text = frame_text(&mut state);
     assert!(
@@ -1127,10 +1123,10 @@ fn unselected_endpoint_snapshot_keeps_server_idle_status() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
-    remote.agents = vec![agent("background agent", AgentStatus::Working, 2)];
+    remote.agents = vec![agent(AgentStatus::Working, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     remote.revision = shepr_protocol::ProjectionRevision::new(2);
-    remote.agents = vec![agent("background agent", AgentStatus::Idle, 3)];
+    remote.agents = vec![agent(AgentStatus::Idle, 3)];
 
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
@@ -1589,7 +1585,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
     endpoint.snapshot.as_mut().expect("remote snapshot").agents =
-        vec![agent("remote agent", AgentStatus::Blocked, 1)];
+        vec![agent(AgentStatus::Blocked, 1)];
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
@@ -1847,7 +1843,7 @@ fn focus_agent_index_uses_online_aggregate_rows() {
         .snapshot
         .as_mut()
         .expect("remote snapshot")
-        .agents = vec![agent("remote agent", AgentStatus::Working, 2)];
+        .agents = vec![agent(AgentStatus::Working, 2)];
     let focus_agent = |index| {
         shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::FocusAgent(
             index,

@@ -15,28 +15,6 @@ pub(crate) enum Command {
     Remove { machine: String },
 }
 
-impl Command {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            Self::List { .. } => "list",
-            Self::Status { .. } => "status",
-            Self::Reconnect { .. } => "reconnect",
-            Self::Add(_) => "add",
-            Self::Remove { .. } => "remove",
-        }
-    }
-
-    pub(super) fn can_run_on_machine(&self) -> bool {
-        match self {
-            Self::List { .. }
-            | Self::Status { .. }
-            | Self::Reconnect { .. }
-            | Self::Add(_)
-            | Self::Remove { .. } => false,
-        }
-    }
-}
-
 pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
         Some(("list", command)) => Some(Command::List {

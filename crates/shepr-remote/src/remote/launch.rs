@@ -102,28 +102,15 @@ impl RemoteExecutable {
         format!("test -x {} && {}", self.quoted(), self.command(&args))
     }
 
-    pub(super) fn api_bridge_check_command(&self, session_name: &str) -> String {
-        let path = self.quoted();
-        let status = self.command(&RemoteCliCommand::ClientStatus.args());
-        let check = self.command(
-            &RemoteCliCommand::ApiBridge {
-                session: session_name,
-                check: true,
-            }
-            .args(),
-        );
-        format!("test -x {path} && {status} && {check} </dev/null")
-    }
-
     pub(super) fn bridge_command(&self, session_name: &str) -> String {
         let args = RemoteCliCommand::ClientBridge {
             session: session_name,
         }
         .args();
         // sshd hands this string to the user's login shell, which need not be POSIX
-        // (xonsh, fish, nushell). Run the script under /bin/sh, as the API bridge does
-        // (discovery feeds its script to `/bin/sh -s` instead), so the login shell only
-        // has to launch one quoted command.
+        // (xonsh, fish, nushell). Run the script under /bin/sh (discovery feeds its
+        // script to `/bin/sh -s` instead), so the login shell only has to launch one
+        // quoted command.
         posix_shell_command(&posix_remote_output_command(&self.command(&args)))
     }
 
@@ -161,41 +148,6 @@ pub(super) fn posix_remote_output_command(command: &str) -> String {
 /// Runs a POSIX script under `/bin/sh` regardless of the remote login shell.
 pub(super) fn posix_shell_command(script: &str) -> String {
     format!("/bin/sh -c {}", shell_quote(script))
-}
-
-pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale";
-/// Remote shell status identifying the sysexits configuration error used when
-/// a cached bridge command names stale API metadata. This stays distinct from
-/// SSH's own failure status and the remote-status remapping.
-// limits-exempt: a sysexits status, part of the remote launch contract.
-pub(crate) const STALE_API_METADATA_EXIT_CODE: i32 = 78;
-
-pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: &str) -> String {
-    let check_args = RemoteCliCommand::ApiBridge {
-        session,
-        check: true,
-    }
-    .args();
-    let bridge_args = RemoteCliCommand::ApiBridge {
-        session,
-        check: false,
-    }
-    .args();
-    let check_command = executable.command(&check_args);
-    let bridge_command = executable.command(&bridge_args);
-    // The API bridge's stdin is the data channel, so unlike discovery this
-    // script cannot be fed to `/bin/sh -s`; it has to reach the login shell as
-    // `/bin/sh -c '<script>'`. Keep it to one line with no single quote,
-    // backslash or double quote inside, so the login shell (xonsh, fish,
-    // nushell or POSIX) sees one plain single-quoted word with nothing to
-    // escape, the same as the client bridge command. A path or session that
-    // needs quoting would bring `'\''` back; paths come from discovery and
-    // session names are validated.
-    let script = format!(
-        "if {check_command} </dev/null >/dev/null 2>&1; then {}; else echo {STALE_API_METADATA} >&2; exit {STALE_API_METADATA_EXIT_CODE}; fi",
-        posix_remote_output_command(&bridge_command),
-    );
-    posix_shell_command(&script)
 }
 
 pub fn shell_quote(value: &str) -> String {
@@ -239,13 +191,13 @@ mod shell_command_tests {
     }
 
     #[test]
-    fn api_forwarding_probe_runs_status_and_check_under_posix_sh() {
+    fn status_probe_runs_under_posix_sh() {
         use shepr_test_support::fixture::{self, Step};
         use std::process::Stdio;
 
-        // The remote shepr: a fixture stand-in answering exactly the two
-        // invocations the probe makes, and failing any other.
-        let scratch = shepr_test_support::ScratchDir::new("api-forwarding-probe");
+        // The remote shepr: a fixture stand-in answering exactly the
+        // invocation the probe makes, and failing any other.
+        let scratch = shepr_test_support::ScratchDir::new("status-probe");
         let answers = |operands: &[&str], steps: Vec<Step>| Step::When {
             operands: operands
                 .iter()
@@ -266,14 +218,6 @@ mod shell_command_tests {
                         Step::Exit(0),
                     ],
                 ),
-                answers(
-                    &RemoteCliCommand::ApiBridge {
-                        session: "agents",
-                        check: true,
-                    }
-                    .args(),
-                    vec![Step::Exit(0)],
-                ),
                 Step::Exit(64),
             ],
         );
@@ -284,16 +228,15 @@ mod shell_command_tests {
                 .expect("scratch path is valid UTF-8"),
         )
         .expect("fake executable path is valid");
-        let script = posix_remote_output_command(&executable.api_bridge_check_command("agents"));
+        let script = posix_remote_output_command(&executable.status_client_command());
         // host-program-ok: the generated remote script is the subject, run as sshd runs it
-        let mut child =
-            shepr_test_support::command_in_scratch("/bin/sh", "api-forwarding-probe-sh")
-                .arg("-s")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("start POSIX shell");
+        let mut child = shepr_test_support::command_in_scratch("/bin/sh", "status-probe-sh")
+            .arg("-s")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start POSIX shell");
         child
             .stdin
             .take()

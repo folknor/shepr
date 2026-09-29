@@ -32,10 +32,11 @@ Kept:
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)
 - Mouse selection, copy mode, keybinding help, window title templating
-- The JSON API over the server socket; every CLI subcommand that acts on a
-  running server goes through it. Commands that manage local state (`session
-  list/delete`, `integration`, `machine`, `detect explain --file`) run in the
-  CLI process and cannot be sent with `--machine`
+- The JSON API over the server socket. The CLI is local-only: every
+  subcommand acts on this host's server or state, and none can be aimed at a
+  saved machine. `status`, `detect capture` and `detect explain <PANE>` query
+  the local server over its socket; `server stop`, `session`, `integration`,
+  `machine` and `detect explain --file` manage local state in the CLI process
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr is deliberately not kept, and

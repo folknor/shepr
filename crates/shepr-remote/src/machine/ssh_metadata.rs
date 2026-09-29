@@ -14,7 +14,7 @@ struct StoredMetadata {
 }
 
 pub struct SshMetadataCache {
-    // Saved endpoint discovery and the CLI API bridge use this same per-profile hint.
+    // Saved endpoint discovery and the machine commands use this same per-profile hint.
     path: PathBuf,
     target: String,
     session: String,

@@ -4,20 +4,18 @@
 //! validation lives here as value parsers, so a bad value is a usage error
 //! (exit 2) instead of a transport error.
 
-use clap::builder::NonEmptyStringValueParser;
 use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_remote::{
-    COMMAND_CLIENT, COMMAND_REMOTE_API_BRIDGE, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
-    COMMAND_STATUS, COMMAND_STOP, FLAG_CHECK, FLAG_JSON, FLAG_SESSION, PROGRAM_NAME,
-    option_name_from_flag,
+    COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
+    FLAG_JSON, FLAG_SESSION, PROGRAM_NAME, option_name_from_flag,
 };
 
 mod machine;
 
 pub(super) fn command() -> Command {
     // Launch options are root arguments, not `global` ones: clap accepts them
-    // only before the subcommand, so a trailing `--session` or `--machine` is a
+    // only before the subcommand, so a trailing `--session` is a
     // usage error instead of a silent retarget.
     let command = Command::new(PROGRAM_NAME)
         .bin_name(PROGRAM_NAME)
@@ -28,12 +26,6 @@ pub(super) fn command() -> Command {
         .arg(
             option(option_name_from_flag(FLAG_SESSION), "NAME")
                 .help("Use or create a named persistent session"),
-        )
-        .arg(
-            option("machine", "LABEL-OR-ID")
-                .value_parser(NonEmptyStringValueParser::new())
-                .conflicts_with_all([option_name_from_flag(FLAG_SESSION), "version", "help"])
-                .help("Run an API command on a saved SSH machine (uses that machine's session)"),
         )
         .arg(
             Arg::new("version")
@@ -57,12 +49,6 @@ pub(super) fn command() -> Command {
             Command::new(COMMAND_REMOTE_CLIENT_BRIDGE)
                 .hide(true)
                 .about("Relay a remote client connection over stdio"),
-        )
-        .subcommand(
-            Command::new(COMMAND_REMOTE_API_BRIDGE)
-                .hide(true)
-                .about("Relay the API socket over stdio")
-                .arg(flag(option_name_from_flag(FLAG_CHECK))),
         );
     configure_help(command, 0)
 }
@@ -505,15 +491,6 @@ mod tests {
             assert!(matches!(invocation.launch, Launch::ClientBridge));
             assert_eq!(invocation.session, parsed_session(session));
 
-            for check in [false, true] {
-                let invocation = parse(RemoteCliCommand::ApiBridge { session, check });
-                assert!(matches!(
-                    invocation.launch,
-                    Launch::ApiBridge { check: parsed } if parsed == check
-                ));
-                assert_eq!(invocation.session, parsed_session(session));
-            }
-
             for force in [false, true] {
                 let invocation = parse(RemoteCliCommand::ServerStop { session, force });
                 assert!(matches!(
@@ -532,13 +509,11 @@ mod tests {
 
     #[test]
     fn every_cli_spec_leaf_parses_to_a_typed_command() {
-        // Every leaf must reach a typed variant. The variant's `--machine`
-        // policy is then an exhaustive `can_run_on_machine` match, so the
-        // compiler, not this test, makes a new variant decide it.
+        // Every leaf must reach a typed variant.
         let spec = super::command();
         let mut paths = Vec::new();
         collect_leaf_subcommand_paths(&spec, &mut Vec::new(), &mut paths);
-        let launch_only = ["client", "remote-api-bridge", "remote-client-bridge"];
+        let launch_only = ["client", "remote-client-bridge"];
         let mut classified = 0;
 
         for path in paths {
@@ -555,12 +530,9 @@ mod tests {
             let Some((name, command_matches)) = matches.subcommand() else {
                 panic!("{} did not parse as a CLI command", path.join(" "));
             };
-            let command = super::super::CliCommand::from_matches(name, command_matches)
-                .unwrap_or_else(|| panic!("{} has no typed command", path.join(" ")));
-            assert_eq!(command.name(), name, "{}", path.join(" "));
             assert!(
-                command.subcommand_name().is_some(),
-                "{} has no typed subcommand name",
+                super::super::CliCommand::from_matches(name, command_matches).is_some(),
+                "{} has no typed command",
                 path.join(" ")
             );
             classified += 1;
@@ -620,7 +592,6 @@ mod tests {
                 "detect",
                 "integration",
                 "machine",
-                "remote-api-bridge",
                 "remote-client-bridge",
                 "server",
                 "session",

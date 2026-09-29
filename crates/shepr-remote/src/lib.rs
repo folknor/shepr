@@ -45,7 +45,6 @@ enum SshFailure {
     Authentication,
     HostKey,
     Link,
-    StaleMetadata,
     Compatibility,
     Other,
 }
@@ -113,11 +112,7 @@ impl SshFailureDiagnostic {
     }
 
     pub fn from_ssh_output(exit_code: Option<i32>, message: String) -> Self {
-        let failure = if exit_code == Some(STALE_API_METADATA_EXIT_CODE)
-            && message.contains(STALE_API_METADATA)
-        {
-            SshFailure::StaleMetadata
-        } else if exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
+        let failure = if exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
             match classify_ssh_diagnostic(&message) {
                 SshFailure::Other => SshFailure::Link,
                 failure => failure,
@@ -144,10 +139,6 @@ impl SshFailureDiagnostic {
 
     pub fn is_host_key(&self) -> bool {
         self.failure == SshFailure::HostKey
-    }
-
-    pub fn is_stale_metadata(&self) -> bool {
-        self.failure == SshFailure::StaleMetadata
     }
 
     pub fn is_link_failure(&self) -> bool {
@@ -232,30 +223,6 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
             | std::io::ErrorKind::PermissionDenied
             | std::io::ErrorKind::Unsupported
     )
-}
-
-/// Relays this process's stdio to the server's API socket. It runs without the
-/// idle watchdog, so the outcome is always
-/// [`shepr_platform::RemoteBridgeOutcome::Closed`]; it is returned so the
-/// binary handles both bridges alike.
-pub fn run_remote_api_bridge(
-    check: bool,
-    paths: &shepr_config::AppPaths,
-) -> std::io::Result<shepr_platform::RemoteBridgeOutcome> {
-    if check {
-        return Ok(shepr_platform::RemoteBridgeOutcome::Closed);
-    }
-    let path = shepr_api::socket_path(paths);
-    let stream = shepr_platform::ipc::connect_local_stream(&path).map_err(|error| {
-        std::io::Error::new(
-            error.kind(),
-            format!(
-                "failed to connect to remote Shepr API socket {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-    shepr_platform::forward_remote_bridge_stdio(stream, false)
 }
 
 /// Operator hint lines for a failed saved-machine SSH operation, one per

@@ -251,9 +251,9 @@ impl SavedSshConnector {
                         "remembered remote Shepr did not connect; rediscovering"
                     );
                     *remote_shepr = None;
-                    // This hint cache is shared with API bridges. A failed connection or
-                    // handshake only invalidates this connector's in-memory hint; an API
-                    // bridge removes the shared entry only after its explicit stale marker.
+                    // A failed connection or handshake only invalidates this
+                    // connector's in-memory hint; the cached entry is overwritten
+                    // once rediscovery succeeds.
                 }
             }
         }
@@ -338,90 +338,10 @@ impl SavedSshConnector {
     }
 }
 
-pub struct SavedSshApiBridge {
-    path: PathBuf,
-    bridge: SshStdioBridge,
-    metadata_cache: SshMetadataCache,
-    pub used_cached_metadata: bool,
-    metadata_store_failure: Option<io::Error>,
-}
-
-impl SavedSshApiBridge {
-    pub fn start(
-        paths: &shepr_config::AppPaths,
-        profile_id: &ProfileId,
-        target: &SshTarget,
-        session: &str,
-        use_cached_metadata: bool,
-        settings: SavedSshSettings,
-    ) -> io::Result<Self> {
-        let ssh = validated_saved_ssh(paths, target, session, settings)?;
-        let metadata_cache = SshMetadataCache::new(paths, profile_id, target.as_str(), session);
-        let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
-        let used_cached_metadata = cached.is_some();
-        let mut metadata_store_failure = None;
-        let metadata = match cached {
-            Some(metadata) => metadata,
-            None => {
-                let metadata = super::discover_remote_api_executable(&ssh, session)?;
-                // Discovery succeeded, so this command can proceed; a failed store
-                // only costs every later command another discovery. It is kept for
-                // the caller to report: the CLI process that starts this bridge has
-                // no log subscriber, so a log line here would reach nobody.
-                metadata_store_failure = metadata_cache.store(&metadata).err();
-                metadata
-            }
-        };
-        let command = super::cached_remote_api_command(&metadata, session);
-        // The managed SSH config remains necessary on a cache hit: its include and
-        // ControlMaster options are still applied by the bridge's SSH subprocess.
-        let path = saved_api_bridge_path(paths.xdg_runtime_dir(), profile_id)?;
-        let bridge =
-            SshStdioBridge::start_command(target.clone(), command, path.clone(), ssh.options())?;
-        Ok(Self {
-            path,
-            bridge,
-            metadata_cache,
-            used_cached_metadata,
-            metadata_store_failure,
-        })
-    }
-
-    /// Why the discovered executable could not be cached, when this bridge
-    /// discovered it and the store failed.
-    pub fn metadata_store_failure(&self) -> Option<&io::Error> {
-        self.metadata_store_failure.as_ref()
-    }
-
-    pub fn socket_path(&self) -> &std::path::Path {
-        &self.path
-    }
-
-    pub fn reported_failure(&self) -> Option<io::Error> {
-        self.bridge.reported_failure()
-    }
-
-    /// Removes the shared hint this bridge started from. A failure leaves the stale
-    /// hint for the next command, which then pays one failed attempt before it
-    /// rediscovers; the caller decides whether to report it with endpoint context.
-    pub fn invalidate_metadata(&self) -> io::Result<()> {
-        self.metadata_cache.invalidate()
-    }
-
-    /// The metadata cache file, for naming it when invalidating fails.
-    pub fn metadata_path(&self) -> &std::path::Path {
-        self.metadata_cache.path()
-    }
-
-    pub fn stale_metadata_failure(error: &io::Error) -> bool {
-        super::SshFailureDiagnostic::from_error(error).is_stale_metadata()
-    }
-}
-
 // The profile only makes these names readable; it is not what keeps bridges
 // apart. `remote_bridge_endpoint_path` inserts a fresh random token into every
 // name it hands out, so each bridge (every client attached to one saved
-// machine, every connect attempt, every concurrent `--machine` command) binds a
+// machine, every connect attempt) binds a
 // socket of its own and removes it on drop. Two bridges for one profile never
 // contend for a path, so the busy-socket `AddrInUse` cannot arise between them.
 
@@ -431,16 +351,6 @@ impl SavedSshApiBridge {
 fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
     let readable = format!("shepr-bridge-{profile_id}.sock");
     let short = format!("shepr-b-{}.sock", profile_id.short());
-    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
-}
-
-/// A fresh socket path for one `--machine` API bridge.
-fn saved_api_bridge_path(
-    runtime_dir: &std::path::Path,
-    profile_id: &ProfileId,
-) -> io::Result<PathBuf> {
-    let readable = format!("shepr-api-ssh-{profile_id}.sock");
-    let short = format!("shepr-api-{}.sock", profile_id.short());
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
 }
 
@@ -456,17 +366,6 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
         .get_ref()
         .and_then(|source| source.downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>())
         .is_some()
-}
-
-fn validated_saved_ssh(
-    paths: &shepr_config::AppPaths,
-    target: &SshTarget,
-    session: &str,
-    settings: SavedSshSettings,
-) -> io::Result<RemoteSsh> {
-    shepr_api::session::validate_name(session)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)
 }
 
 #[cfg(test)]
@@ -506,9 +405,9 @@ mod tests {
         assert!(!first.to_string_lossy().contains("default"));
     }
 
-    /// Two clients attached to one saved machine, and two concurrent
-    /// `--machine` commands for it, each bind a bridge socket of their own at
-    /// the same time, and dropping them leaves the runtime directory empty.
+    /// Two clients attached to one saved machine each bind a bridge socket of
+    /// their own at the same time, and dropping them leaves the runtime
+    /// directory empty.
     #[test]
     fn concurrent_bridges_for_one_profile_each_bind_their_own_socket() {
         let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-concurrent");
@@ -517,8 +416,6 @@ mod tests {
         let paths = [
             saved_bridge_path(runtime_dir.path(), &profile),
             saved_bridge_path(runtime_dir.path(), &profile),
-            saved_api_bridge_path(runtime_dir.path(), &profile),
-            saved_api_bridge_path(runtime_dir.path(), &profile),
         ]
         .map(|path| path.expect("test precondition"));
         let bridges: Vec<_> = paths

@@ -1,10 +1,10 @@
 use super::*;
 use crate::test_support::*;
 use ratatui::layout::Rect;
-use std::time::Instant;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::Direction;
 use shepr_mux::workspace::Workspace;
+use std::time::Instant;
 
 fn app_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();

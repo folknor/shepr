@@ -7,20 +7,8 @@ use std::process::Output;
 pub(super) fn locate_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutable> {
     DiscoveryProgress::default().advance(&mut SshDiscovery {
         ssh,
-        verification: CandidateVerification::StatusProbe,
         rejected_shell_unsafe_candidate: None,
     })
-}
-
-/// How a discovered candidate is confirmed. Both callers share candidate
-/// enumeration (`DiscoverySteps` up to `known_locations`); only this differs.
-#[derive(Clone, Copy)]
-pub(super) enum CandidateVerification<'a> {
-    /// The saved-SSH connector: the candidate runs and answers `status client`.
-    StatusProbe,
-    /// The API bridge: the candidate supports machine API forwarding for this
-    /// session (`remote-api-bridge --check`), even with the server down.
-    ApiForwarding { session: &'a str },
 }
 
 /// The SSH commands full discovery is made of, one method per remote round trip. Only
@@ -51,7 +39,6 @@ pub(super) struct RejectedShellUnsafeCandidate {
 
 pub(super) struct SshDiscovery<'a> {
     ssh: &'a RemoteSsh,
-    verification: CandidateVerification<'a>,
     rejected_shell_unsafe_candidate: Option<RejectedShellUnsafeCandidate>,
 }
 
@@ -92,21 +79,14 @@ impl DiscoverySteps for SshDiscovery<'_> {
     }
 
     fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool> {
-        match self.verification {
-            CandidateVerification::StatusProbe => {
-                let Some(status) = remote_client_status(self.ssh, candidate)? else {
-                    return Ok(false);
-                };
-                // This command reports the candidate binary's identity. Reject a
-                // different build here instead of accepting it and failing later
-                // during the server bridge's build-identity preamble.
-                ensure_remote_client_build(self.target(), &status)?;
-                Ok(true)
-            }
-            CandidateVerification::ApiForwarding { session } => {
-                remote_api_forwarding_supported(self.ssh, candidate, session)
-            }
-        }
+        let Some(status) = remote_client_status(self.ssh, candidate)? else {
+            return Ok(false);
+        };
+        // This command reports the candidate binary's identity. Reject a
+        // different build here instead of accepting it and failing later
+        // during the server bridge's build-identity preamble.
+        ensure_remote_client_build(self.target(), &status)?;
+        Ok(true)
     }
 
     fn target(&self) -> &str {
@@ -265,46 +245,8 @@ pub(crate) fn resume_installed_remote_shepr_discovery(
 ) -> io::Result<RemoteExecutable> {
     progress.advance(&mut SshDiscovery {
         ssh,
-        verification: CandidateVerification::StatusProbe,
         rejected_shell_unsafe_candidate: None,
     })
-}
-
-/// The executable the API bridge runs: the same candidates as the connector,
-/// confirmed by the forwarding check instead of the status probe. The shared
-/// metadata file stores a path hint only. A saved connector validates a cached
-/// path through connection establishment and rediscovers after a non-link
-/// failure; the API bridge repeats its session-specific `--check` and marks a
-/// failed hint stale for rediscovery.
-pub(crate) fn discover_remote_api_executable(
-    ssh: &RemoteSsh,
-    session: &str,
-) -> io::Result<RemoteExecutable> {
-    DiscoveryProgress::default().advance(&mut SshDiscovery {
-        ssh,
-        verification: CandidateVerification::ApiForwarding { session },
-        rejected_shell_unsafe_candidate: None,
-    })
-}
-
-pub(super) fn remote_api_forwarding_supported(
-    ssh: &RemoteSsh,
-    candidate: &RemoteExecutable,
-    session: &str,
-) -> io::Result<bool> {
-    let output = ssh.sh_output(&candidate.api_bridge_check_command(session))?;
-    let status = parse_client_status_json(&String::from_utf8_lossy(&output.stdout));
-    if let Some(status) = &status {
-        ensure_remote_client_build(ssh.target(), status)?;
-    }
-    if !output.status.success() {
-        let error = command_failed("remote SSH connection failed", &output);
-        if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
-            return Err(error);
-        }
-        return Ok(false);
-    }
-    Ok(status.is_some())
 }
 
 pub(super) fn push_if_new_remote_binary_candidate(

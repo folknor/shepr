@@ -1413,10 +1413,10 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         .filter(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { .. }))
         .collect::<Vec<_>>();
     assert_eq!(pane_rows.len(), 2);
-    for ((rect, _), (name, kind, status)) in pane_rows.iter().zip([
-        ("review", "pi", "working"),
-        ("review", "claude", "blocked"),
-    ]) {
+    for ((rect, _), (name, kind, status)) in pane_rows
+        .iter()
+        .zip([("review", "pi", "working"), ("review", "claude", "blocked")])
+    {
         cell_symbol_position(&frame, *rect, name);
         cell_symbol_position(&frame, *rect, kind);
         cell_symbol_position(&frame, *rect, status);

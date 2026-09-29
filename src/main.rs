@@ -92,9 +92,6 @@ fn launch() -> CliResult<i32> {
         Err(exit_code) => return Ok(exit_code),
     };
 
-    if let Some(machine) = invocation.machine() {
-        return cli::run_on_machine(invocation.cli_command(), &machine);
-    }
     let requested_session = invocation
         .requested_session()
         .map_err(CliError::Usage)?
@@ -120,18 +117,10 @@ fn launch() -> CliResult<i32> {
         return cli::run(command, requested_session.clone());
     }
 
-    match &invocation.launch {
-        cli::Launch::ApiBridge { check } => {
-            let paths = resolve_bridge_paths(requested_session.clone())?;
-            init_client_logging(&paths)?;
-            return finish_bridge(shepr_remote::run_remote_api_bridge(*check, &paths)?);
-        }
-        cli::Launch::ClientBridge => {
-            let paths = resolve_bridge_paths(requested_session.clone())?;
-            init_client_logging(&paths)?;
-            return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
-        }
-        _ => {}
+    if matches!(invocation.launch, cli::Launch::ClientBridge) {
+        let paths = resolve_bridge_paths(requested_session.clone())?;
+        init_client_logging(&paths)?;
+        return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
     }
 
     // The server daemon runs in the home directory; its current directory is
@@ -157,7 +146,7 @@ fn launch() -> CliResult<i32> {
             return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
         }
         cli::Launch::Tui { .. } => {}
-        cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
+        cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
             return Err(io::Error::other("launch was already handled").into());
         }
     }
@@ -207,9 +196,10 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32>
 
 /// Installs the process-wide client logger before client or bridge code logs.
 /// Every path into `shepr_client` (the TUI launch and the `client` command)
-/// and both bridges call it once; the client library installs none of its own. Bridges write to the host's
-/// client log, never stdout, which carries the relayed stream. A log file
-/// that cannot be opened is reported on stderr.
+/// and the remote client bridge call it once; the client library installs none
+/// of its own. The bridge writes to the host's client log, never stdout, which
+/// carries the relayed stream. A log file that cannot be opened is reported on
+/// stderr.
 fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
     let outcome = shepr_platform::logging::init_client_file_logging(
