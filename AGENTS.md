@@ -34,7 +34,7 @@ Kept:
 - Mouse selection, copy mode, keybinding help, window title templating
 - The JSON API over the server socket; every CLI subcommand that acts on a
   running server goes through it. Commands that manage local state (`config
-  check`, `session list/delete`, `integration`, `machine`, `agent explain
+  check`, `session list/delete`, `integration`, `machine`, `detect explain
   --file`) run in the CLI process and cannot be sent with `--machine`
 
 shepr is for overseeing agents across machines, not for driving them.
@@ -177,7 +177,7 @@ its own:
   per-OS layer and no shims standing in for other platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never
   touches the parser or viewport state. When changing a manifest, capture the
-  pane with `shepr agent read <pane> --source detection --format text`, encode
+  pane with `shepr detect capture <pane>`, encode
   invariant controls as explicit AND/OR gates, and never use the user-visible
   viewport (users scroll it).
 - **Hot paths multiply.** Work reachable from view computation, rendering,

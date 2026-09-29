@@ -612,6 +612,14 @@ mod tests {
                 "--agent",
                 "claude",
             ],
+            &[
+                "detect",
+                "explain",
+                "--file",
+                "screen.txt",
+                "--agent",
+                "claude",
+            ],
             &["terminal", "attach", "w4:p1"],
             &["integration", "install", "pi"],
             &["integration", "status"],
@@ -623,6 +631,8 @@ mod tests {
         for command in [
             &["agent", "list"][..],
             &["agent", "explain", "w4:p1"],
+            &["detect", "capture", "w4:p1"],
+            &["detect", "explain", "w4:p1"],
             &["pane", "split", "w4:p1", "--direction", "right"],
             &["workspace", "list"],
             &["tab", "list"],

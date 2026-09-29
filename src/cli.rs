@@ -23,6 +23,7 @@ macro_rules! println {
 }
 
 mod agent;
+mod detect;
 mod error;
 mod integration;
 mod machine;
@@ -80,6 +81,7 @@ pub(crate) enum CliCommand {
     Workspace(workspace::Command),
     Tab(tab::Command),
     Agent(agent::Command),
+    Detect(detect::Command),
     Pane(pane::Command),
     Terminal(TerminalCommand),
     Session(SessionCommand),
@@ -96,6 +98,7 @@ impl CliCommand {
             "workspace" => Self::Workspace(workspace::parse(matches)?),
             "tab" => Self::Tab(tab::parse(matches)?),
             "agent" => Self::Agent(agent::parse(matches)?),
+            "detect" => Self::Detect(detect::parse(matches)?),
             "pane" => Self::Pane(pane::parse(matches)?),
             "terminal" => Self::Terminal(TerminalCommand::parse(matches)?),
             "session" => Self::Session(SessionCommand::parse(matches)?),
@@ -113,6 +116,7 @@ impl CliCommand {
             Self::Workspace(_) => "workspace",
             Self::Tab(_) => "tab",
             Self::Agent(_) => "agent",
+            Self::Detect(_) => "detect",
             Self::Pane(_) => "pane",
             Self::Terminal(_) => "terminal",
             Self::Session(_) => "session",
@@ -131,6 +135,7 @@ impl CliCommand {
             Self::Workspace(command) => Some(command.name()),
             Self::Tab(command) => Some(command.name()),
             Self::Agent(command) => Some(command.name()),
+            Self::Detect(command) => Some(command.name()),
             Self::Pane(command) => Some(command.name()),
             Self::Terminal(command) => Some(command.name()),
             Self::Session(command) => Some(command.name()),
@@ -148,6 +153,7 @@ impl CliCommand {
             Self::Tab(command) => command.can_run_on_machine(),
             Self::Pane(command) => command.can_run_on_machine(),
             Self::Agent(command) => command.can_run_on_machine(),
+            Self::Detect(command) => command.can_run_on_machine(),
             Self::Terminal(command) => command.can_run_on_machine(),
             Self::Session(command) => command.can_run_on_machine(),
             Self::Integration(command) => command.can_run_on_machine(),
@@ -494,6 +500,7 @@ fn dispatch_with_config(
         }
         CliCommand::Tab(command) => tab::run_tab_command(command.clone(), context),
         CliCommand::Agent(command) => agent::run_agent_command(command.clone(), config, context),
+        CliCommand::Detect(command) => detect::run_detect_command(command.clone(), context),
         CliCommand::Pane(command) => pane::run_pane_command(command.clone(), context),
         CliCommand::Terminal(command) => run_terminal_command(command.clone(), config, context),
         CliCommand::Session(command) => run_session_command(command.clone(), context),
@@ -977,7 +984,7 @@ mod tests {
 
     #[test]
     fn every_cli_spec_root_has_typed_parser() {
-        let samples: [(&str, &[&str]); 11] = [
+        let samples: [(&str, &[&str]); 12] = [
             ("status", &["status"]),
             ("config", &["config", "check"]),
             ("machine", &["machine", "list"]),
@@ -985,6 +992,7 @@ mod tests {
             ("workspace", &["workspace", "list"]),
             ("tab", &["tab", "list"]),
             ("agent", &["agent", "list"]),
+            ("detect", &["detect", "capture", "w1:p1"]),
             ("pane", &["pane", "list"]),
             ("terminal", &["terminal", "title", "clear"]),
             ("session", &["session", "list"]),

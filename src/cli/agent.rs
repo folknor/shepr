@@ -1,8 +1,8 @@
 use clap::ArgMatches;
 
 use shepr_api::schema::{
-    AgentReadParams, AgentRenameParams, AgentTarget, EmptyParams, ErrorBody, ErrorResponse, Method,
-    ReadFormat, ReadSource, Request,
+    AgentReadParams, AgentRenameParams, AgentTarget, EmptyParams, Method, ReadFormat, ReadSource,
+    Request,
 };
 
 use super::matches::{flag, required, string, value};
@@ -15,16 +15,7 @@ pub(crate) enum Command {
     Rename(AgentRenameParams),
     Focus { target: String },
     Attach { target: String, takeover: bool },
-    Explain(ExplainArgs),
-}
-
-#[derive(Clone)]
-pub(crate) struct ExplainArgs {
-    target: Option<String>,
-    file: Option<String>,
-    agent: Option<String>,
-    json: bool,
-    verbose: bool,
+    Explain(super::detect::ExplainArgs),
 }
 
 impl Command {
@@ -71,8 +62,8 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
             target: required(command, "target")?,
             takeover: flag(command, "takeover"),
         }),
-        Some(("explain", command)) => Some(Command::Explain(ExplainArgs {
-            target: string(command, "target"),
+        Some(("explain", command)) => Some(Command::Explain(super::detect::ExplainArgs {
+            pane: string(command, "target"),
             file: string(command, "file"),
             agent: string(command, "agent"),
             json: flag(command, "json") || string(command, "format").as_deref() == Some("json"),
@@ -98,146 +89,13 @@ pub(super) fn run_agent_command(
     }
 }
 
-fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super::CliResult<i32> {
-    let explain = if let Some(path) = args.file {
-        let agent_label = args.agent.ok_or_else(|| {
-            super::CliError::Usage("agent explain --file requires --agent".into())
-        })?;
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(err) => {
-                return Err(super::CliError::Response(ErrorResponse {
-                    id: "cli:agent:explain".into(),
-                    error: ErrorBody::new(
-                        &shepr_api::error::ApiErrorCode::AgentExplainFileReadFailed,
-                        format!("failed to read agent explain file {path}: {err}"),
-                    ),
-                }));
-            }
-        };
-        shepr_agent::detect::manifest::explain_to_json_value(
-            &shepr_agent::detect::manifest::explain_for_label(&agent_label, &content),
-        )
-    } else {
-        let target = args.target.ok_or_else(|| {
-            super::CliError::Usage("agent explain requires TARGET unless --file is used".into())
-        })?;
-        let response = super::send_request(
-            paths,
-            &Request {
-                id: "cli:agent:explain".into(),
-                method: Method::AgentExplain(AgentTarget { target }),
-            },
-        )?;
-        if response.get("error").is_some() {
-            eprintln!(
-                "{}",
-                serde_json::to_string(&response).map_err(std::io::Error::other)?
-            );
-            return Ok(1);
-        }
-        response["result"]["explain"].clone()
-    };
-
-    if args.json {
-        println!("{explain}");
-    } else {
-        print_agent_explain_text(&explain, args.verbose);
-    }
-    Ok(0)
-}
-
-fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
-    println!("agent: {}", explain["agent"].as_str().unwrap_or("unknown"));
-    println!("state: {}", explain["state"].as_str().unwrap_or("unknown"));
-    if let Some(rule) = explain["matched_rule"].as_object() {
-        let rule_id = rule
-            .get("id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("-");
-        println!(
-            "rule: {} (region={} priority={})",
-            rule_id,
-            rule.get("region")
-                .and_then(|value| value.as_str())
-                .unwrap_or("-"),
-            rule.get("priority")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0),
-        );
-        if let Some(preview) = matched_rule_region_preview(explain, rule_id) {
-            println!("evidence: {preview:?}");
-        }
-    } else {
-        println!("rule: none");
-    }
-    if let Some(reason) = explain["fallback_reason"].as_str() {
-        println!("fallback_reason: {reason}");
-    }
-    if let Some(reason) = explain["screen_detection_skip_reason"].as_str() {
-        println!("screen_detection_skip_reason: {reason}");
-    }
-    if let Some(reason) = explain["skipped_update_reason"].as_str() {
-        println!("skipped_update_reason: {reason}");
-    }
-
-    if !verbose {
-        return;
-    }
-
-    println!(
-        "visible: idle={} blocker={} working={}",
-        explain["visible_idle"].as_bool().unwrap_or(false),
-        explain["visible_blocker"].as_bool().unwrap_or(false),
-        explain["visible_working"].as_bool().unwrap_or(false)
-    );
-    if let Some(evaluated_rules) = explain["evaluated_rules"]
-        .as_array()
-        .filter(|rules| !rules.is_empty())
-    {
-        println!("evaluated_rules:");
-        for rule in evaluated_rules {
-            println!(
-                "  {} {} priority={} region={} state={}",
-                if rule["matched"].as_bool().unwrap_or(false) {
-                    "\u{2713}"
-                } else {
-                    "\u{2717}"
-                },
-                rule["id"].as_str().unwrap_or("-"),
-                rule["priority"].as_i64().unwrap_or(0),
-                rule["region"].as_str().unwrap_or("-"),
-                rule["state"].as_str().unwrap_or("unknown")
-            );
-            let evidence = &rule["evidence"];
-            println!(
-                "    matchers: contains={:?} regex={:?} line_regex={:?} all={} any={} not={}",
-                evidence["contains"],
-                evidence["regex"],
-                evidence["line_regex"],
-                evidence["all_count"].as_u64().unwrap_or(0),
-                evidence["any_count"].as_u64().unwrap_or(0),
-                evidence["not_count"].as_u64().unwrap_or(0)
-            );
-            println!(
-                "    region: bytes={} preview={:?}",
-                evidence["region_bytes"].as_u64().unwrap_or(0),
-                evidence["region_preview"].as_str().unwrap_or("")
-            );
-        }
-    }
-}
-
-fn matched_rule_region_preview<'a>(
-    explain: &'a serde_json::Value,
-    rule_id: &str,
-) -> Option<&'a str> {
-    explain["evaluated_rules"]
-        .as_array()?
-        .iter()
-        .find(|rule| rule["id"].as_str() == Some(rule_id))?["evidence"]["region_preview"]
-        .as_str()
-        .filter(|preview| !preview.is_empty())
+/// Temporary alias of `detect explain` until the old command groups go;
+/// unlike it, a live target may still be an agent name.
+fn agent_explain(
+    paths: &super::target::CliContext,
+    args: super::detect::ExplainArgs,
+) -> super::CliResult<i32> {
+    super::detect::explain(paths, args)
 }
 
 fn agent_list(paths: &super::target::CliContext) -> super::CliResult<i32> {

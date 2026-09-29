@@ -74,6 +74,7 @@ pub(super) fn command() -> Command {
         .subcommand(workspace_command())
         .subcommand(tab_command())
         .subcommand(agent_command())
+        .subcommand(detect_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
@@ -300,6 +301,65 @@ fn agent_command() -> Command {
                         .action(ArgAction::SetTrue),
                 ),
         )
+}
+
+fn detect_command() -> Command {
+    group("detect")
+        .about("Capture and explain what the agent detector sees")
+        .after_help("PANE is a pane id such as w1:p1; agent names are not accepted.")
+        .subcommand(
+            Command::new("capture")
+                .about("Print the plain text the detector evaluates for a pane")
+                .arg(pane_id_argument().required(true)),
+        )
+        .subcommand(
+            Command::new("explain")
+                .about("Explain which detection rule decided a pane's state")
+                .override_usage(
+                    "shepr detect explain <PANE> [OPTIONS]\n       shepr detect explain --file <PATH> --agent <LABEL> [OPTIONS]",
+                )
+                .after_help(
+                    "While a hook reports the pane's full agent lifecycle, screen detection is \
+                     skipped and the output says so (screen_detection_skip_reason) instead of \
+                     showing rule evidence.",
+                )
+                .arg(pane_id_argument().required_unless_present("file").conflicts_with("file"))
+                .arg(
+                    path_option("file", "PATH")
+                        .requires("agent")
+                        .help("Evaluate a saved capture locally, without a server"),
+                )
+                .arg(
+                    option("agent", "LABEL")
+                        .requires("file")
+                        .help("Agent manifest to evaluate the --file capture against"),
+                )
+                .arg(json_flag())
+                .arg(
+                    Arg::new("verbose")
+                        .short('v')
+                        .long("verbose")
+                        .action(ArgAction::SetTrue)
+                        .help("List every evaluated rule with its evidence"),
+                ),
+        )
+}
+
+/// A live detection target: a pane id, never an agent name. Rejected by the
+/// parser so a typo cannot fall through to name resolution on the server.
+fn pane_id_argument() -> Arg {
+    Arg::new("pane").value_name("PANE").value_parser(pane_id)
+}
+
+fn pane_id(value: &str) -> Result<String, String> {
+    value
+        .parse::<shepr_protocol::PublicPaneId>()
+        .map(|_| value.to_owned())
+        .map_err(|_| {
+            format!(
+                "{value:?} is not a pane id (expected e.g. w1:p1); agent names are not accepted"
+            )
+        })
 }
 
 fn pane_command() -> Command {
@@ -905,6 +965,7 @@ mod tests {
                 || match arg.get_id().as_str() {
                     "token" => "KEY=VALUE".to_string(),
                     "clear-token" => "KEY".to_string(),
+                    "pane" => "w1:p1".to_string(),
                     "ssh-target" => "user@example.test".to_string(),
                     _ => "value".to_string(),
                 },
@@ -980,6 +1041,9 @@ mod tests {
         // one through a conditional argument rule rather than an ArgGroup.
         if path.iter().map(String::as_str).eq(["agent", "explain"]) {
             args.push("target".to_string());
+        }
+        if path.iter().map(String::as_str).eq(["detect", "explain"]) {
+            args.push("w1:p1".to_string());
         }
         args
     }

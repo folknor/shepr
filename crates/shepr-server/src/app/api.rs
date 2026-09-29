@@ -218,6 +218,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detect_capture_reads_the_snapshot_that_explain_evaluates() {
+        // `detect capture` is `agent.read` with the detection source, plain
+        // text and no line limit; `detect explain` is `agent.explain`. Both must
+        // see the same pane's detector input.
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::Config::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+            shepr_api::EventHub::default(),
+        );
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("detect-capture")];
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .detected_agent = Some(Agent::Codex);
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
+            80,
+            24,
+            b"press enter to confirm or esc to cancel",
+        );
+        let detection_text = runtime.detection_text();
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        let target = app
+            .public_pane_id(0, pane_id)
+            .expect("test precondition")
+            .to_string();
+
+        let response = app.handle_api_request(shepr_api::schema::Request {
+            id: "detect_capture".into(),
+            method: shepr_api::schema::Method::AgentRead(shepr_api::schema::AgentReadParams {
+                target: target.clone(),
+                source: shepr_api::schema::ReadSource::Detection,
+                lines: None,
+                format: shepr_api::schema::ReadFormat::Text,
+                strip_ansi: true,
+            }),
+        });
+        let capture: serde_json::Value =
+            serde_json::from_str(&crate::test_support::test_json(&response))
+                .expect("test precondition");
+        assert_eq!(capture["result"]["type"], "pane_read");
+        assert_eq!(capture["result"]["read"]["source"], "detection");
+        assert_eq!(
+            capture["result"]["read"]["text"].as_str(),
+            Some(detection_text.as_str())
+        );
+        assert!(
+            detection_text.contains("press enter to confirm"),
+            "{detection_text:?}"
+        );
+
+        let response = app.handle_api_request(shepr_api::schema::Request {
+            id: "detect_explain".into(),
+            method: shepr_api::schema::Method::AgentExplain(shepr_api::schema::AgentTarget {
+                target,
+            }),
+        });
+        let explain: serde_json::Value =
+            serde_json::from_str(&crate::test_support::test_json(&response))
+                .expect("test precondition");
+        assert_eq!(explain["result"]["explain"]["state"], "blocked");
+    }
+
+    #[tokio::test]
     async fn agent_explain_rejects_hook_only_full_lifecycle_authority() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
