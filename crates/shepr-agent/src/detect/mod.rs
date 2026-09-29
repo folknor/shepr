@@ -135,13 +135,6 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
     best.map(|(_, agent, name)| (agent, name))
 }
 
-/// Detect the state of an agent from the live terminal tail snapshot.
-/// If `agent` is `None`, returns `Unknown`.
-#[cfg(test)]
-pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
-    detect_agent_with_osc(agent, screen_content, "", "").state
-}
-
 /// Detect state using screen content plus OSC title/progress strings.
 pub fn detect_agent_with_osc(
     agent: Option<Agent>,
@@ -630,6 +623,13 @@ fn is_python_runtime(name: &str) -> bool {
                     .split('.')
                     .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
         })
+}
+
+/// Detect the state of an agent from the live terminal tail snapshot.
+/// If `agent` is `None`, returns `Unknown`.
+#[cfg(test)]
+pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
+    detect_agent_with_osc(agent, screen_content, "", "").state
 }
 
 // ---------------------------------------------------------------------------

@@ -241,9 +241,9 @@ impl HeadlessServer {
     /// 2. Binds the private client socket listener
     /// 3. Returns the server ready to run
     ///
-    /// A client socket another server holds comes back as
-    /// [`io::ErrorKind::AddrInUse`]; [`run_server`] turns that into
-    /// [`RunServerError::AlreadyRunning`].
+    /// A client socket another server holds comes back as the
+    /// [`shepr_platform::ipc::SocketBusy`] refusal naming it; [`run_server`]
+    /// turns that into [`RunServerError::AlreadyRunning`].
     pub fn new(
         app: app::App,
         api_server: Option<shepr_api::ServerHandle>,

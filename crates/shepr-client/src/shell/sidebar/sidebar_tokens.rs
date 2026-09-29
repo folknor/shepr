@@ -141,24 +141,6 @@ pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: SectionSplit
     Rect::new(content.x, content.y + workspace_height, content.width, 1)
 }
 
-#[cfg(test)]
-mod split_tests {
-    use super::SectionSplit;
-
-    #[test]
-    fn section_split_validates_saved_values_and_drag_bounds() {
-        assert!(SectionSplit::new(shepr_core::layout::MIN_SPLIT_RATIO - f32::EPSILON).is_none());
-        assert!(SectionSplit::new(f32::INFINITY).is_none());
-        let invalid_value = shepr_core::layout::MAX_SPLIT_RATIO + f32::EPSILON;
-        assert!(serde_json::from_str::<SectionSplit>(&invalid_value.to_string()).is_err());
-        assert_eq!(
-            SectionSplit::from_drag(shepr_core::layout::MAX_SPLIT_RATIO + 1.0).get(),
-            shepr_core::layout::MAX_SPLIT_RATIO
-        );
-        assert_eq!(SectionSplit::from_drag(f32::NAN), SectionSplit::DEFAULT);
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct TokenStyles {
     pub(super) state_text: Style,
@@ -354,4 +336,22 @@ fn apply_token_style(mut style: Style, patch: shepr_config::SidebarTokenStyle) -
         };
     }
     style
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::SectionSplit;
+
+    #[test]
+    fn section_split_validates_saved_values_and_drag_bounds() {
+        assert!(SectionSplit::new(shepr_core::layout::MIN_SPLIT_RATIO - f32::EPSILON).is_none());
+        assert!(SectionSplit::new(f32::INFINITY).is_none());
+        let invalid_value = shepr_core::layout::MAX_SPLIT_RATIO + f32::EPSILON;
+        assert!(serde_json::from_str::<SectionSplit>(&invalid_value.to_string()).is_err());
+        assert_eq!(
+            SectionSplit::from_drag(shepr_core::layout::MAX_SPLIT_RATIO + 1.0).get(),
+            shepr_core::layout::MAX_SPLIT_RATIO
+        );
+        assert_eq!(SectionSplit::from_drag(f32::NAN), SectionSplit::DEFAULT);
+    }
 }

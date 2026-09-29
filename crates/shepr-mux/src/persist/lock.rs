@@ -30,13 +30,7 @@ impl DataDirLease {
                 directory,
                 file: Some(file),
             }),
-            Err(TryLockError::WouldBlock) => Err(io::Error::new(
-                io::ErrorKind::ResourceBusy,
-                format!(
-                    "another shepr server owns the session files in {}",
-                    directory.display()
-                ),
-            )),
+            Err(TryLockError::WouldBlock) => Err(DataDirLeaseHeld::error(directory)),
             Err(TryLockError::Error(err)) => Err(err),
         }
     }
@@ -54,6 +48,45 @@ impl DataDirLease {
     }
 }
 
+/// Another process already holds the lease on a session data directory.
+///
+/// [`DataDirLease::acquire`] reports it as an [`io::ErrorKind::ResourceBusy`]
+/// error carrying this payload, so the directory survives whichever caller
+/// sees it. Callers that word the refusal themselves find it with
+/// [`DataDirLeaseHeld::from_io`].
+#[derive(Debug)]
+pub struct DataDirLeaseHeld {
+    directory: PathBuf,
+}
+
+impl DataDirLeaseHeld {
+    fn error(directory: PathBuf) -> io::Error {
+        io::Error::new(io::ErrorKind::ResourceBusy, Self { directory })
+    }
+
+    /// The held-lease refusal inside `error`, if it is one.
+    pub fn from_io(error: &io::Error) -> Option<&Self> {
+        error.get_ref()?.downcast_ref::<Self>()
+    }
+
+    /// The canonical session data directory another process holds.
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+}
+
+impl std::fmt::Display for DataDirLeaseHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "another shepr server owns the session files in {}",
+            self.directory.display()
+        )
+    }
+}
+
+impl std::error::Error for DataDirLeaseHeld {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,12 +96,12 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("lease");
         let directory = scratch.join("data");
         let lease = DataDirLease::acquire(&directory).expect("first lease");
-        assert_eq!(
-            DataDirLease::acquire(&directory)
-                .err()
-                .map(|err| err.kind()),
-            Some(io::ErrorKind::ResourceBusy)
-        );
+        let refusal = DataDirLease::acquire(&directory)
+            .err()
+            .expect("a held lease refuses a second owner");
+        assert_eq!(refusal.kind(), io::ErrorKind::ResourceBusy);
+        let held = DataDirLeaseHeld::from_io(&refusal).expect("the refusal names the directory");
+        assert_eq!(held.directory(), lease.directory());
         drop(lease);
         DataDirLease::acquire(&directory).expect("lease after release");
     }

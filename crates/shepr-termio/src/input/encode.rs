@@ -1,23 +1,10 @@
-use std::fmt::Write as _;
-
-#[cfg(test)]
-use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use std::fmt::Write as _;
 
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
 use crate::limits::{KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_MOUSE_REPORT_INITIAL_CAPACITY};
 use shepr_core::limits::UTF8_MAX_BYTES_PER_CODEPOINT;
 use shepr_protocol::KittyKeyboardFlags;
-
-/// Encode a key event for a PTY child using the supported subset of the pane's
-/// negotiated keyboard protocol.
-/// Full Kitty report-all fidelity is deliberately omitted because agent and shell
-/// panes do not need a shepr-owned key model.
-/// Test-only: production keys go through `encode_terminal_key_with_modes`.
-#[cfg(test)]
-fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
-    encode_terminal_key(key.into(), protocol)
-}
 
 pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
     // Super has no legacy character encoding. Preserve the chord with CSI-u
@@ -84,79 +71,6 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
         return Vec::new();
     }
     encode_legacy(key)
-}
-
-/// Test-only: production applies DECCKM in `encode_terminal_key_with_modes`.
-#[cfg(test)]
-fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
-    match (code, application_cursor) {
-        (KeyCode::Up, true) => b"\x1bOA".to_vec(),
-        (KeyCode::Down, true) => b"\x1bOB".to_vec(),
-        (KeyCode::Right, true) => b"\x1bOC".to_vec(),
-        (KeyCode::Left, true) => b"\x1bOD".to_vec(),
-        (KeyCode::Up, false) => b"\x1b[A".to_vec(),
-        (KeyCode::Down, false) => b"\x1b[B".to_vec(),
-        (KeyCode::Right, false) => b"\x1b[C".to_vec(),
-        (KeyCode::Left, false) => b"\x1b[D".to_vec(),
-        _ => encode_legacy(KeyEvent::new(code, KeyModifiers::empty()).into()),
-    }
-}
-
-/// Test-only: production mouse reports go through `encode_mouse_event`.
-#[cfg(test)]
-fn encode_mouse_scroll(
-    kind: MouseEventKind,
-    column: u16,
-    row: u16,
-    modifiers: KeyModifiers,
-    encoding: MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    let button = match kind {
-        MouseEventKind::ScrollUp => 64u16,
-        MouseEventKind::ScrollDown => 65u16,
-        MouseEventKind::ScrollLeft => 66u16,
-        MouseEventKind::ScrollRight => 67u16,
-        _ => return None,
-    };
-    encode_mouse_cb(
-        button,
-        false,
-        u32::from(column) + 1,
-        u32::from(row) + 1,
-        modifiers,
-        encoding,
-    )
-}
-
-/// Test-only: production mouse reports go through `encode_mouse_event`.
-#[cfg(test)]
-fn encode_mouse_button(
-    kind: MouseEventKind,
-    column: u16,
-    row: u16,
-    modifiers: KeyModifiers,
-    encoding: MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    let (button, release) = match kind {
-        MouseEventKind::Down(MouseButton::Left) => (0u16, false),
-        MouseEventKind::Down(MouseButton::Middle) => (1u16, false),
-        MouseEventKind::Down(MouseButton::Right) => (2u16, false),
-        MouseEventKind::Up(MouseButton::Left) => (0u16, true),
-        MouseEventKind::Up(MouseButton::Middle) => (1u16, true),
-        MouseEventKind::Up(MouseButton::Right) => (2u16, true),
-        MouseEventKind::Drag(MouseButton::Left) => (32u16, false),
-        MouseEventKind::Drag(MouseButton::Middle) => (33u16, false),
-        MouseEventKind::Drag(MouseButton::Right) => (34u16, false),
-        _ => return None,
-    };
-    encode_mouse_cb(
-        button,
-        release,
-        u32::from(column) + 1,
-        u32::from(row) + 1,
-        modifiers,
-        encoding,
-    )
 }
 
 /// `column` and `row` are the final 1-based coordinates to report.
@@ -819,6 +733,92 @@ fn encode_f_key(n: u8) -> Vec<u8> {
         12 => vec![27, 91, 50, 52, 126],
         _ => vec![],
     }
+}
+
+#[cfg(test)]
+use crossterm::event::KeyEvent;
+
+/// Encode a key event for a PTY child using the supported subset of the pane's
+/// negotiated keyboard protocol.
+/// Full Kitty report-all fidelity is deliberately omitted because agent and shell
+/// panes do not need a shepr-owned key model.
+/// Test-only: production keys go through `encode_terminal_key_with_modes`.
+#[cfg(test)]
+fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
+    encode_terminal_key(key.into(), protocol)
+}
+
+/// Test-only: production applies DECCKM in `encode_terminal_key_with_modes`.
+#[cfg(test)]
+fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
+    match (code, application_cursor) {
+        (KeyCode::Up, true) => b"\x1bOA".to_vec(),
+        (KeyCode::Down, true) => b"\x1bOB".to_vec(),
+        (KeyCode::Right, true) => b"\x1bOC".to_vec(),
+        (KeyCode::Left, true) => b"\x1bOD".to_vec(),
+        (KeyCode::Up, false) => b"\x1b[A".to_vec(),
+        (KeyCode::Down, false) => b"\x1b[B".to_vec(),
+        (KeyCode::Right, false) => b"\x1b[C".to_vec(),
+        (KeyCode::Left, false) => b"\x1b[D".to_vec(),
+        _ => encode_legacy(KeyEvent::new(code, KeyModifiers::empty()).into()),
+    }
+}
+
+/// Test-only: production mouse reports go through `encode_mouse_event`.
+#[cfg(test)]
+fn encode_mouse_scroll(
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+    modifiers: KeyModifiers,
+    encoding: MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    let button = match kind {
+        MouseEventKind::ScrollUp => 64u16,
+        MouseEventKind::ScrollDown => 65u16,
+        MouseEventKind::ScrollLeft => 66u16,
+        MouseEventKind::ScrollRight => 67u16,
+        _ => return None,
+    };
+    encode_mouse_cb(
+        button,
+        false,
+        u32::from(column) + 1,
+        u32::from(row) + 1,
+        modifiers,
+        encoding,
+    )
+}
+
+/// Test-only: production mouse reports go through `encode_mouse_event`.
+#[cfg(test)]
+fn encode_mouse_button(
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+    modifiers: KeyModifiers,
+    encoding: MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    let (button, release) = match kind {
+        MouseEventKind::Down(MouseButton::Left) => (0u16, false),
+        MouseEventKind::Down(MouseButton::Middle) => (1u16, false),
+        MouseEventKind::Down(MouseButton::Right) => (2u16, false),
+        MouseEventKind::Up(MouseButton::Left) => (0u16, true),
+        MouseEventKind::Up(MouseButton::Middle) => (1u16, true),
+        MouseEventKind::Up(MouseButton::Right) => (2u16, true),
+        MouseEventKind::Drag(MouseButton::Left) => (32u16, false),
+        MouseEventKind::Drag(MouseButton::Middle) => (33u16, false),
+        MouseEventKind::Drag(MouseButton::Right) => (34u16, false),
+        _ => return None,
+    };
+    encode_mouse_cb(
+        button,
+        release,
+        u32::from(column) + 1,
+        u32::from(row) + 1,
+        modifiers,
+        encoding,
+    )
 }
 
 #[cfg(test)]

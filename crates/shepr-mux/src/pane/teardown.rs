@@ -32,11 +32,6 @@ impl ChildLiveness {
         self.pid.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
-    pub(super) fn set_pid_for_test(&self, pid: u32) {
-        self.pid.store(pid, Ordering::Release);
-    }
-
     pub(super) fn mark_wait_completed(&self) {
         self.wait_completed.store(true, Ordering::Release);
     }
@@ -224,6 +219,13 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         ?survivors,
         "pane session still alive after forced shutdown"
     );
+}
+
+#[cfg(test)]
+impl ChildLiveness {
+    pub(super) fn set_pid_for_test(&self, pid: u32) {
+        self.pid.store(pid, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

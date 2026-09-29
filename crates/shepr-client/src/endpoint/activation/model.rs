@@ -6,10 +6,22 @@ use super::super::ClientEndpointId;
 pub(super) struct EndpointLease {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) generation: u64,
-    pub(super) boot_id: shepr_protocol::BootId,
+    /// The boot id of the server behind the endpoint. `None` only for a
+    /// disconnected source that never delivered a snapshot: nothing it sends
+    /// can match, and no request goes to it.
+    pub(super) boot_id: Option<shepr_protocol::BootId>,
     /// The endpoint cache may already be newer than the first activation event. Never let an
     /// activation prove coherence with a revision that the monotonic cache has discarded.
     pub(super) minimum_revision: u64,
+}
+
+impl EndpointLease {
+    /// The boot id a request to this endpoint carries, or why there is none.
+    pub(super) fn request_boot_id(&self) -> Result<&shepr_protocol::BootId, String> {
+        self.boot_id
+            .as_ref()
+            .ok_or_else(|| "endpoint has not identified its server yet".to_owned())
+    }
 }
 
 #[derive(Clone, Debug, Default)]

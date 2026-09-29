@@ -19,6 +19,14 @@ indented marker inside a production `impl` keeps its surrounding item context.
 A hit is a rule violation the textlint could not see, reported under the
 rule's name.
 
+The shape itself is refused as well, once per file: any production line with
+an identifier below the first `skip_after` marker fails, whether or not it
+violates a rule today. Re-applying the rules alone catches only the violations
+that exist when this runs; the next edit to a released line, or a new rule,
+would pass silently. The fix is to move the test item below the production
+code (a gated method into a trailing `#[cfg(test)] impl`), or, for a gated
+field or statement, to restructure so the production item carries no test cfg.
+
 The brokkr man page and top-level help describe textlint but expose no
 item-level matcher entry point, so this narrow witness keeps its own glob and
 lexical-scope handling.
@@ -406,6 +414,7 @@ def main() -> int:
     sources = [path.relative_to(ROOT).as_posix() for path in repository_sources({".rs"})]
     failures: list[str] = []
     files_walked = 0
+    shaped: dict[str, str] = {}
     for rule in scoped:
         name = rule.get("name", "<unnamed>")
         pattern = re.compile(rule["pattern"])
@@ -431,9 +440,19 @@ def main() -> int:
             # module does not make the remaining lines look like top-level
             # items. Brokkr exempts by line, so inspect every production item
             # that appears after its first matching marker.
-            for number in ungated_lines(lines, 0, len(lines)):
-                if number <= first:
-                    continue
+            released = [number for number in ungated_lines(lines, 0, len(lines)) if number > first]
+            # The shape itself is refused too, not only a violation it hides
+            # today: a later edit to the released lines would otherwise pass
+            # every skip_after rule unseen until someone runs this witness on
+            # a new rule. Lines with no identifier (closing braces of the
+            # production container the marker sits in) cannot violate a rule.
+            substantive = next((number for number in released if re.search(r"\w", masked[number])), None)
+            if substantive is not None and relative not in shaped:
+                shaped[relative] = (
+                    f"{relative}:{substantive + 1}: production code below the file's first test cfg "
+                    f"(line {first + 1}) is released by every skip_after rule: {lines[substantive].strip()}"
+                )
+            for number in released:
                 if not pattern.search(masked[number]):
                     continue
                 if any(item.search(lines[number]) for item in excepts):
@@ -446,11 +465,12 @@ def main() -> int:
                     f"{relative}:{number + 1}: [{name}] production code below the file's first test cfg "
                     f"(line {first + 1}) escapes skip_after: {lines[number].strip()}"
                 )
+    failures.extend(shaped[relative] for relative in sorted(shaped))
     if failures:
         print("\n".join(failures))
         print(
-            f"{len(failures)} rule violation(s) hidden by skip_after; move the test item to the end of the "
-            "file or fix the line"
+            f"{len(failures)} production line(s) released by skip_after; move the test item to the end of the "
+            "file, or fix the line"
         )
         return 1
     print(f"{len(scoped)} skip_after rules, {files_walked} files with a test cfg walked")

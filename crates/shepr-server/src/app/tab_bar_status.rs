@@ -12,8 +12,6 @@ use shepr_mux::events::{TabBarCommandError, TabBarCommandFailure};
 use tokio::io::AsyncReadExt;
 
 use super::{App, state::TabBarStatusSegment};
-#[cfg(test)]
-use shepr_config::TabBarRightEntryConfig;
 use shepr_config::ValidatedTabBarRightEntry;
 
 impl App {
@@ -224,21 +222,6 @@ impl App {
 
         self.tab_bar_status.next_datetime_refresh =
             (!self.tab_bar_status.datetimes.is_empty()).then_some(now + DATETIME_REFRESH_INTERVAL);
-    }
-
-    /// Test helper: parse raw entries like config validation does. Invalid
-    /// entries are a broken test, so they panic instead of being skipped.
-    #[cfg(test)]
-    pub(super) fn configure_tab_bar_status_config(
-        &mut self,
-        entries: &[TabBarRightEntryConfig],
-        separator: &str,
-    ) {
-        use crate::test_support::ValidatedConfigFixture as _;
-        let mut config = shepr_config::Config::default();
-        config.ui.tab_bar_right = entries.to_vec();
-        let config = shepr_config::ValidatedConfig::test_from_config(config, None);
-        self.configure_tab_bar_status(&config.ui().tab_bar_right, separator);
     }
 
     pub(crate) fn handle_tab_bar_status_tasks(&mut self, now: std::time::Instant) -> bool {
@@ -677,6 +660,92 @@ async fn run_status_command(
     }
 }
 
+// Status commands run in their own process group so completion, timeout, and
+// cancellation can stop any background descendants safely.
+fn configure_status_command(process: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    process.process_group(0);
+}
+
+struct StatusCommandGuard {
+    process_group_id: Option<i32>,
+    /// A handle on the group leader, opened while the child was certainly
+    /// unreaped. `None` only if it could not be opened at all.
+    leader: Option<shepr_platform::ProcessHandle>,
+}
+
+impl StatusCommandGuard {
+    pub(crate) fn new(child: &tokio::process::Child) -> std::io::Result<Self> {
+        // `id()` is `None` once tokio has reaped the child, and reaping needs
+        // `&mut Child`, so the pid cannot be reused before the handle is open.
+        let process_id = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("status command has no process id"))?;
+        let process_group_id = i32::try_from(process_id)
+            .map_err(|_| std::io::Error::other("status command process id exceeds i32"))?;
+        Ok(Self {
+            process_group_id: Some(process_group_id),
+            leader: shepr_platform::ProcessHandle::open(process_id),
+        })
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        let Some(process_group_id) = self.process_group_id.take() else {
+            return;
+        };
+        let leader = self.leader.take();
+        // The command was spawned as this process group's leader. Killing the
+        // group also cleans up background descendants on completion or
+        // cancellation, but only while the id still names that group: tokio
+        // may have reaped the leader already, and a reused number would send
+        // SIGKILL to an unrelated group. The remaining gap (the number is
+        // reused, the new owner leads a group and exits, all between the reap
+        // and this call) needs a full pid wraparound in that window.
+        let ours = status_group_is_ours(
+            leader
+                .as_ref()
+                .map(shepr_platform::ProcessHandle::is_unreaped),
+            // A stat error other than absence cannot prove the number free,
+            // so it counts as held: skipping the kill is the safe side.
+            || {
+                Path::new(&format!("/proc/{process_group_id}"))
+                    .try_exists()
+                    .unwrap_or(true)
+            },
+        );
+        if !ours {
+            return;
+        }
+        // SAFETY: kill(2) touches no memory of this process.
+        unsafe {
+            libc::kill(-process_group_id, libc::SIGKILL);
+        }
+    }
+}
+
+/// Whether process group `process_group_id` can still only be the one the
+/// status command led. The kernel reuses a number only once nothing holds it
+/// as a pid, process-group id or session id. An unreaped leader holds it.
+/// After the leader is reaped, any task that holds that pid again is proof
+/// the number was reused, and the original group had no members left when
+/// that happened. Without a leader handle the second test is all there is.
+fn status_group_is_ours(
+    leader_unreaped: Option<bool>,
+    pid_held_by_a_task: impl FnOnce() -> bool,
+) -> bool {
+    leader_unreaped == Some(true) || !pid_held_by_a_task()
+}
+
+impl Drop for StatusCommandGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+#[cfg(test)]
+use shepr_config::TabBarRightEntryConfig;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,86 +1085,20 @@ mod tests {
     }
 }
 
-// Status commands run in their own process group so completion, timeout, and
-// cancellation can stop any background descendants safely.
-fn configure_status_command(process: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
-    process.process_group(0);
-}
-
-struct StatusCommandGuard {
-    process_group_id: Option<i32>,
-    /// A handle on the group leader, opened while the child was certainly
-    /// unreaped. `None` only if it could not be opened at all.
-    leader: Option<shepr_platform::ProcessHandle>,
-}
-
-impl StatusCommandGuard {
-    pub(crate) fn new(child: &tokio::process::Child) -> std::io::Result<Self> {
-        // `id()` is `None` once tokio has reaped the child, and reaping needs
-        // `&mut Child`, so the pid cannot be reused before the handle is open.
-        let process_id = child
-            .id()
-            .ok_or_else(|| std::io::Error::other("status command has no process id"))?;
-        let process_group_id = i32::try_from(process_id)
-            .map_err(|_| std::io::Error::other("status command process id exceeds i32"))?;
-        Ok(Self {
-            process_group_id: Some(process_group_id),
-            leader: shepr_platform::ProcessHandle::open(process_id),
-        })
-    }
-
-    pub(crate) fn terminate(&mut self) {
-        let Some(process_group_id) = self.process_group_id.take() else {
-            return;
-        };
-        let leader = self.leader.take();
-        // The command was spawned as this process group's leader. Killing the
-        // group also cleans up background descendants on completion or
-        // cancellation, but only while the id still names that group: tokio
-        // may have reaped the leader already, and a reused number would send
-        // SIGKILL to an unrelated group. The remaining gap (the number is
-        // reused, the new owner leads a group and exits, all between the reap
-        // and this call) needs a full pid wraparound in that window.
-        let ours = status_group_is_ours(
-            leader
-                .as_ref()
-                .map(shepr_platform::ProcessHandle::is_unreaped),
-            // A stat error other than absence cannot prove the number free,
-            // so it counts as held: skipping the kill is the safe side.
-            || {
-                Path::new(&format!("/proc/{process_group_id}"))
-                    .try_exists()
-                    .unwrap_or(true)
-            },
-        );
-        if !ours {
-            return;
-        }
-        // SAFETY: kill(2) touches no memory of this process.
-        unsafe {
-            libc::kill(-process_group_id, libc::SIGKILL);
-        }
-    }
-}
-
-/// Whether process group `process_group_id` can still only be the one the
-/// status command led. The kernel reuses a number only once nothing holds it
-/// as a pid, process-group id or session id. An unreaped leader holds it.
-/// After the leader is reaped, any task that holds that pid again is proof
-/// the number was reused, and the original group had no members left when
-/// that happened. Without a leader handle the second test is all there is.
-fn status_group_is_ours(
-    leader_unreaped: Option<bool>,
-    pid_held_by_a_task: impl FnOnce() -> bool,
-) -> bool {
-    leader_unreaped == Some(true) || !pid_held_by_a_task()
-}
-
-impl Drop for StatusCommandGuard {
-    fn drop(&mut self) {
-        self.terminate();
+#[cfg(test)]
+impl App {
+    /// Test helper: parse raw entries like config validation does. Invalid
+    /// entries are a broken test, so they panic instead of being skipped.
+    pub(super) fn configure_tab_bar_status_config(
+        &mut self,
+        entries: &[TabBarRightEntryConfig],
+        separator: &str,
+    ) {
+        use crate::test_support::ValidatedConfigFixture as _;
+        let mut config = shepr_config::Config::default();
+        config.ui.tab_bar_right = entries.to_vec();
+        let config = shepr_config::ValidatedConfig::test_from_config(config, None);
+        self.configure_tab_bar_status(&config.ui().tab_bar_right, separator);
     }
 }
 

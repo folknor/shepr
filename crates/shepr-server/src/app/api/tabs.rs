@@ -1,8 +1,6 @@
 use shepr_api::error::{ApiErrorCode, ApiResult};
 
 use crate::app::App;
-#[cfg(test)]
-use shepr_api::schema::EventKind;
 use shepr_api::schema::{
     EventData, EventEnvelope, ResponseResult, TabCreateParams, TabListParams, TabMoveParams,
     TabRenameParams, TabTarget,
@@ -258,6 +256,9 @@ impl App {
 }
 
 #[cfg(test)]
+use shepr_api::schema::EventKind;
+
+#[cfg(test)]
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
@@ -346,12 +347,14 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs()[0].root_pane();
-        app.state
-            .public_pane_id_aliases
-            .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), root);
-        app.state
-            .public_pane_id_aliases
-            .insert(shepr_protocol::PublicPaneId::new("wOLD", 2), split);
+        app.state.public_pane_id_aliases.insert(
+            shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1),
+            root,
+        );
+        app.state.public_pane_id_aliases.insert(
+            shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 2),
+            split,
+        );
         let closed_panes = [
             app.public_pane_id(0, root).expect("test precondition"),
             app.public_pane_id(0, split).expect("test precondition"),
@@ -365,16 +368,12 @@ mod tests {
         let success: SuccessResponse = crate::test_support::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs().len(), 1);
-        assert!(
-            !app.state
-                .public_pane_id_aliases
-                .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 1))
-        );
-        assert!(
-            !app.state
-                .public_pane_id_aliases
-                .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 2))
-        );
+        assert!(!app.state.public_pane_id_aliases.contains_key(
+            &shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1)
+        ));
+        assert!(!app.state.public_pane_id_aliases.contains_key(
+            &shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 2)
+        ));
         let events = event_hub.events_after(0);
         let mut pane_closed = events
             .iter()

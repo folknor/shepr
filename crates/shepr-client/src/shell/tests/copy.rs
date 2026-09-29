@@ -280,7 +280,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
 
     let (_repaint, actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "w1:p1".into(),
@@ -393,7 +393,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     };
     let (_, actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "w1:p1".into(),
@@ -448,7 +448,11 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
     let tick = state.tick_selection_autoscroll(now);
     assert!(tick.actions.is_empty());
     let (_, next_scroll) = state
-        .handle_endpoint_result("boot-1", &drag_request_id, Ok(pane_scroll_result(3, 20, 3)))
+        .handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &drag_request_id,
+            Ok(pane_scroll_result(3, 20, 3)),
+        )
         .into_parts();
     assert!(matches!(
         &next_scroll[..],
@@ -527,7 +531,11 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         Some(shepr_vt::ScreenRow(0))
     );
     let (_, top_actions) = state
-        .handle_endpoint_result("boot-1", &page_request_id, Ok(pane_scroll_result(1, 20, 2)))
+        .handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &page_request_id,
+            Ok(pane_scroll_result(1, 20, 2)),
+        )
         .into_parts();
     let [ClientShellAction::Endpoint { request, .. }] = &top_actions[..] else {
         panic!("latest queued scroll should follow the completed request");
@@ -538,7 +546,11 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
             if params.pane_id == "w1:p1" && params.offset_from_bottom == 20
     ));
     let top_request_id = request.id.clone();
-    state.handle_endpoint_result("boot-1", &top_request_id, Ok(pane_scroll_result(20, 20, 2)));
+    state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &top_request_id,
+        Ok(pane_scroll_result(20, 20, 2)),
+    );
 
     state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
@@ -675,7 +687,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
             col: point.col,
         };
     state.handle_endpoint_result(
-        "boot-1",
+        &crate::tests::test_boot_id("boot-1"),
         &request.id,
         Ok(copy_search_result(vec![found], Some(0))),
     );
@@ -779,7 +791,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
     ));
     let (repaint, actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
@@ -836,7 +848,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
     assert!(queued.requests.is_empty());
 
     let outcome = state.handle_endpoint_result(
-        "boot-1",
+        &crate::tests::test_boot_id("boot-1"),
         &request_id,
         Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
             pane_id: "w1:p1".into(),
@@ -964,7 +976,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     ];
     let (repaint, actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(copy_search_result(matches.clone(), Some(0))),
         )
@@ -995,7 +1007,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         })
         .expect("initial search scroll");
     state.handle_endpoint_result(
-        "boot-1",
+        &crate::tests::test_boot_id("boot-1"),
         &initial_scroll_id,
         Ok(pane_scroll_result(15, 20, 2)),
     );
@@ -1033,7 +1045,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     ));
     let (_, repeat_actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &repeat_id,
             Ok(copy_search_result(matches.clone(), Some(1))),
         )
@@ -1046,7 +1058,11 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         }
         _ => None,
     }) {
-        state.handle_endpoint_result("boot-1", &scroll_id, Ok(pane_scroll_result(6, 20, 2)));
+        state.handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &scroll_id,
+            Ok(pane_scroll_result(6, 20, 2)),
+        );
     }
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
@@ -1073,7 +1089,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     ));
     let (_, reverse_actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request.id,
             Ok(copy_search_result(matches.clone(), Some(0))),
         )
@@ -1086,7 +1102,11 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         }
         _ => None,
     }) {
-        state.handle_endpoint_result("boot-1", &scroll_id, Ok(pane_scroll_result(15, 20, 2)));
+        state.handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &scroll_id,
+            Ok(pane_scroll_result(15, 20, 2)),
+        );
     }
 
     state.handle_raw_events(vec![RawInputEvent::Key(
@@ -1153,12 +1173,18 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     snapshot.panes.push(shell);
     for label in ["notes", "logs"] {
         let mut tab = snapshot.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("w1", snapshot.tabs.len() + 1);
+        tab.tab_id = shepr_protocol::PublicTabId::new(
+            &crate::tests::test_workspace_id("w1"),
+            snapshot.tabs.len() + 1,
+        );
         tab.label = label.into();
         tab.focused = false;
         tab.number = snapshot.tabs.len() + 1;
         let mut pane = snapshot.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new("w1", snapshot.panes.len() + 1);
+        pane.pane_id = shepr_protocol::PublicPaneId::new(
+            &crate::tests::test_workspace_id("w1"),
+            snapshot.panes.len() + 1,
+        );
         pane.tab_id = tab.tab_id.clone();
         pane.label = Some(label.into());
         pane.focused = false;
@@ -1418,13 +1444,15 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
     let mut projected = snapshot();
     for (number, label) in [(2, "2"), (3, "logs")] {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("w1", number);
+        tab.tab_id =
+            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), number);
         tab.number = number;
         tab.label = label.into();
         tab.custom_label = number == 3;
         tab.focused = false;
         let mut pane = projected.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new("w1", number);
+        pane.pane_id =
+            shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), number);
         pane.tab_id = tab.tab_id.clone();
         pane.focused = false;
         projected.tabs.push(tab);
@@ -1589,7 +1617,8 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     let mut projected = snapshot();
     for index in 2..=60 {
         let mut pane = projected.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new("w1", index);
+        pane.pane_id =
+            shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), index);
         pane.label = Some(format!("agent {index}"));
         pane.focused = false;
         projected.panes.push(pane);
@@ -1642,7 +1671,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .offset_from_bottom,
         0
     );
-    let last_pane = shepr_protocol::PublicPaneId::new("w1", 60);
+    let last_pane = shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), 60);
     assert!(state.hits.navigator_rows.iter().any(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { pane_id, .. } if *pane_id == last_pane)));
     mouse(&mut state, MouseEventKind::Down(MouseButton::Left), track.y);
     state.compose(106, 24).expect("jump back to top");
@@ -2161,7 +2190,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
     };
     let (_, follow_up) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &first_id,
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
@@ -2211,7 +2240,7 @@ fn queued_copy_keys_preserve_prefix_order() {
         _ => unreachable!(),
     };
     state.handle_endpoint_result(
-        "boot-1",
+        &crate::tests::test_boot_id("boot-1"),
         &motion_id,
         Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
             pane_id: "w1:p1".into(),
@@ -2299,7 +2328,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         };
     let (_, actions) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &motion_id,
             Ok(shepr_api::schema::ResponseResult::PaneCopyMotion {
                 pane_id: "w1:p1".into(),
@@ -2390,7 +2419,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     state.set_snapshot(Box::new(lagging));
     let (repaint, _) = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "w1:p1".into(),

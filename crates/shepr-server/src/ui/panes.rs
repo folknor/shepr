@@ -8,14 +8,10 @@ use ratatui::{
 
 use super::PaneResizer;
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
-#[cfg(test)]
-use super::text::display_width;
 use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::RestoreFailure;
-#[cfg(test)]
-use shepr_mux::workspace::apply_pane_chrome;
 use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
@@ -147,25 +143,6 @@ pub(super) fn compute_pane_infos_for_tab(
     }
 
     pane_infos
-}
-
-#[cfg(test)]
-fn compute_pane_infos(
-    app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    area: Rect,
-) -> Vec<PaneInfo> {
-    let Some(workspace_index) = app.active_index() else {
-        return Vec::new();
-    };
-    let Some(tab_index) = app
-        .workspaces
-        .get(workspace_index)
-        .map(shepr_mux::workspace::Workspace::active_tab_index)
-    else {
-        return Vec::new();
-    };
-    compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area)
 }
 
 pub(super) fn render_panes(
@@ -457,6 +434,31 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
         (true, false, true, false) => "┘",
         _ => "",
     }
+}
+
+#[cfg(test)]
+use super::text::display_width;
+
+#[cfg(test)]
+use shepr_mux::workspace::apply_pane_chrome;
+
+#[cfg(test)]
+fn compute_pane_infos(
+    app: &AppState,
+    terminal_runtimes: &PaneRuntimeRegistry,
+    area: Rect,
+) -> Vec<PaneInfo> {
+    let Some(workspace_index) = app.active_index() else {
+        return Vec::new();
+    };
+    let Some(tab_index) = app
+        .workspaces
+        .get(workspace_index)
+        .map(shepr_mux::workspace::Workspace::active_tab_index)
+    else {
+        return Vec::new();
+    };
+    compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area)
 }
 
 #[cfg(test)]

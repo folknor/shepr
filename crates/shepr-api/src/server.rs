@@ -1168,13 +1168,12 @@ mod tests {
             running,
             _startup_lock: startup_lock,
         };
-        assert_eq!(
-            shepr_platform::ipc::acquire_socket_startup_lock(&path)
-                .err()
-                .map(|error| error.kind()),
-            Some(io::ErrorKind::AddrInUse),
-            "a live handle keeps the socket path locked"
-        );
+        let refusal = shepr_platform::ipc::acquire_socket_startup_lock(&path)
+            .err()
+            .expect("a live handle keeps the socket path locked");
+        let busy = shepr_platform::ipc::SocketBusy::from_io(&refusal)
+            .expect("the refusal is a busy socket naming its path");
+        assert_eq!(busy.path(), path);
 
         drop(handle);
         shepr_platform::ipc::acquire_socket_startup_lock(&path)

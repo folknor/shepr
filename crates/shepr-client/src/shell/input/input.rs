@@ -216,33 +216,6 @@ impl ClientShellState {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn handle_input_bytes(&mut self, data: &[u8]) -> ClientShellInput {
-        self.handle_raw_events(shepr_test_fixtures::parse_raw_input_bytes_sync(data))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn handle_pixel_mouse(
-        &mut self,
-        mut mouse: crossterm::event::MouseEvent,
-        pixels: shepr_termio::input::mouse::HostPixels,
-    ) -> ClientShellInput {
-        let Some((column, row)) = pixels.geometry.cell(pixels.x, pixels.y) else {
-            return ClientShellInput::default();
-        };
-        mouse.column = column;
-        mouse.row = row;
-        let mut outcome = ClientShellInput::default();
-        self.begin_input_batch(true, &mut outcome);
-        let previous = self.host_mouse_pixels.replace(pixels);
-        // clock-io-ok: this test-only entry stands in for the client loop.
-        let now = std::time::Instant::now();
-        self.now = now;
-        self.handle_raw_event(RawInputEvent::Mouse(mouse), now, &mut outcome);
-        self.host_mouse_pixels = previous;
-        outcome
-    }
-
     /// `host_reports_all_keys` is the host keyboard mode the input arrived
     /// under; it decides whether text key presses can hold input leases.
     pub(crate) fn handle_host_input(
@@ -273,28 +246,6 @@ impl ClientShellState {
             }
         }
         outcome
-    }
-
-    #[cfg(test)]
-    pub(crate) fn handle_pixel_mouse_bytes(
-        &mut self,
-        data: &[u8],
-        geometry: shepr_termio::input::mouse::HostPixelExtent,
-    ) -> ClientShellInput {
-        let Some((x, y)) = shepr_test_fixtures::parse_sgr_mouse_report(data) else {
-            return ClientShellInput::default();
-        };
-        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(data);
-        if events.len() != 1 {
-            return ClientShellInput::default();
-        }
-        let Some(RawInputEvent::Mouse(mouse)) = events.pop() else {
-            return ClientShellInput::default();
-        };
-        self.handle_pixel_mouse(
-            mouse,
-            shepr_termio::input::mouse::HostPixels { x, y, geometry },
-        )
     }
 
     fn begin_input_batch(&mut self, has_events: bool, outcome: &mut ClientShellInput) {
@@ -386,19 +337,6 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         false
-    }
-
-    #[cfg(test)]
-    pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
-        // clock-io-ok: this test-only entry stands in for the client loop.
-        let now = std::time::Instant::now();
-        self.now = now;
-        let mut outcome = ClientShellInput::default();
-        self.begin_input_batch(!events.is_empty(), &mut outcome);
-        for event in events {
-            self.handle_raw_event(event, now, &mut outcome);
-        }
-        outcome
     }
 
     pub(super) fn handle_key(
@@ -1067,6 +1005,67 @@ impl ClientShellState {
         } else {
             super::push_target_event(pane_id, event, outcome);
         }
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    pub(crate) fn handle_input_bytes(&mut self, data: &[u8]) -> ClientShellInput {
+        self.handle_raw_events(shepr_test_fixtures::parse_raw_input_bytes_sync(data))
+    }
+
+    pub(crate) fn handle_pixel_mouse(
+        &mut self,
+        mut mouse: crossterm::event::MouseEvent,
+        pixels: shepr_termio::input::mouse::HostPixels,
+    ) -> ClientShellInput {
+        let Some((column, row)) = pixels.geometry.cell(pixels.x, pixels.y) else {
+            return ClientShellInput::default();
+        };
+        mouse.column = column;
+        mouse.row = row;
+        let mut outcome = ClientShellInput::default();
+        self.begin_input_batch(true, &mut outcome);
+        let previous = self.host_mouse_pixels.replace(pixels);
+        // clock-io-ok: this test-only entry stands in for the client loop.
+        let now = std::time::Instant::now();
+        self.now = now;
+        self.handle_raw_event(RawInputEvent::Mouse(mouse), now, &mut outcome);
+        self.host_mouse_pixels = previous;
+        outcome
+    }
+
+    pub(crate) fn handle_pixel_mouse_bytes(
+        &mut self,
+        data: &[u8],
+        geometry: shepr_termio::input::mouse::HostPixelExtent,
+    ) -> ClientShellInput {
+        let Some((x, y)) = shepr_test_fixtures::parse_sgr_mouse_report(data) else {
+            return ClientShellInput::default();
+        };
+        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(data);
+        if events.len() != 1 {
+            return ClientShellInput::default();
+        }
+        let Some(RawInputEvent::Mouse(mouse)) = events.pop() else {
+            return ClientShellInput::default();
+        };
+        self.handle_pixel_mouse(
+            mouse,
+            shepr_termio::input::mouse::HostPixels { x, y, geometry },
+        )
+    }
+
+    pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
+        // clock-io-ok: this test-only entry stands in for the client loop.
+        let now = std::time::Instant::now();
+        self.now = now;
+        let mut outcome = ClientShellInput::default();
+        self.begin_input_batch(!events.is_empty(), &mut outcome);
+        for event in events {
+            self.handle_raw_event(event, now, &mut outcome);
+        }
+        outcome
     }
 }
 

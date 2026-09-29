@@ -118,12 +118,6 @@ impl DiscoverySteps for SshDiscovery<'_> {
     }
 }
 
-#[cfg(test)]
-pub(super) fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExecutable>> {
-    let mut rejected_candidate = None;
-    path_lookup_result_with_rejected_candidate(output, &mut rejected_candidate)
-}
-
 /// Reads a `command -v` result. A failed lookup means no remote executable on that PATH,
 /// except when the typed failure says ssh itself exited 255: then nothing was learned
 /// about the remote, and recording "not found" would be wrong. A path rejected for
@@ -264,10 +258,6 @@ impl DiscoveryProgress {
     }
 }
 
-#[cfg(test)]
-#[path = "discovery_tests.rs"]
-mod discovery_tests;
-
 /// Continue status-probe discovery, resuming from and recording into `progress`.
 pub(crate) fn resume_installed_remote_shepr_discovery(
     ssh: &RemoteSsh,
@@ -356,12 +346,6 @@ fi
     )
 }
 
-#[cfg(test)]
-pub(super) fn remote_executables_from_path_discovery(stdout: &str) -> Vec<RemoteExecutable> {
-    let mut rejected_candidate = None;
-    remote_executables_from_path_discovery_with_rejected_candidate(stdout, &mut rejected_candidate)
-}
-
 fn remote_executables_from_path_discovery_with_rejected_candidate(
     stdout: &str,
     rejected_candidate: &mut Option<RejectedShellUnsafeCandidate>,
@@ -372,12 +356,6 @@ fn remote_executables_from_path_discovery_with_rejected_candidate(
             remote_executable_from_path_recording_rejection(path, rejected_candidate)
         })
         .collect()
-}
-
-#[cfg(test)]
-pub(super) fn remote_executable_from_path_discovery(stdout: &str) -> Option<RemoteExecutable> {
-    let mut rejected_candidate = None;
-    remote_executable_from_path_discovery_with_rejected_candidate(stdout, &mut rejected_candidate)
 }
 
 fn remote_executable_from_path_discovery_with_rejected_candidate(
@@ -469,4 +447,26 @@ fn remote_compatibility_error(
             shepr_protocol::BUILD_ID
         ),
     )
+}
+
+#[cfg(test)]
+pub(super) fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExecutable>> {
+    let mut rejected_candidate = None;
+    path_lookup_result_with_rejected_candidate(output, &mut rejected_candidate)
+}
+
+#[cfg(test)]
+#[path = "discovery_tests.rs"]
+mod discovery_tests;
+
+#[cfg(test)]
+pub(super) fn remote_executables_from_path_discovery(stdout: &str) -> Vec<RemoteExecutable> {
+    let mut rejected_candidate = None;
+    remote_executables_from_path_discovery_with_rejected_candidate(stdout, &mut rejected_candidate)
+}
+
+#[cfg(test)]
+pub(super) fn remote_executable_from_path_discovery(stdout: &str) -> Option<RemoteExecutable> {
+    let mut rejected_candidate = None;
+    remote_executable_from_path_discovery_with_rejected_candidate(stdout, &mut rejected_candidate)
 }

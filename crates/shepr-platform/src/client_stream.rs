@@ -109,3 +109,66 @@ pub fn wait_client_stream_readable(
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use interprocess::local_socket::traits::Listener as _;
+    use std::time::Duration;
+
+    #[test]
+    fn stalled_observer_write_times_out_when_the_injected_clock_passes_its_timeout() {
+        let dir = shepr_test_support::ScratchDir::new("client-stream-stall");
+        let path = dir.join("s.sock");
+        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
+        let mut observer = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let writer = listener.accept().expect("test precondition");
+        let interprocess::local_socket::Stream::UdSocket(socket) = &writer;
+        // Like the client writer: nonblocking, with the stall timeout as the
+        // socket's write timeout. The observer never reads.
+        // Twice the elapsed bound below, and inside the per-test budget, so a
+        // writer that waits out any real stall fails the bound, not the budget.
+        let timeout = Duration::from_secs(10);
+        socket
+            .inner()
+            .set_nonblocking(true)
+            .expect("test precondition");
+        socket
+            .inner()
+            .set_write_timeout(Some(timeout))
+            .expect("test precondition");
+
+        // Every read moves the injected clock a full timeout on, so the first
+        // stall is already at its deadline.
+        let started = Instant::now();
+        let reads = std::cell::Cell::new(0_u32);
+        let now = || {
+            let read = reads.get();
+            reads.set(read + 1);
+            started + timeout * read
+        };
+        let payload = vec![b'x'; 16 * 1024 * 1024];
+        let error = write_client_stream_with_clock(&writer, &payload, &now)
+            .expect_err("a stalled observer cannot take the whole payload");
+        let elapsed = started.elapsed();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        // Only a writer that ignored the injected clock waits out the timeout.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the write took {elapsed:?}"
+        );
+        // The stalled stream is shut down, so the observer drains to EOF
+        // instead of blocking on a writer that gave up.
+        let interprocess::local_socket::Stream::UdSocket(observer_socket) = &observer;
+        observer_socket
+            .inner()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("test precondition");
+        let mut drained = Vec::new();
+        observer
+            .read_to_end(&mut drained)
+            .expect("the observer reaches EOF");
+        assert!(drained.len() < payload.len());
+    }
+}

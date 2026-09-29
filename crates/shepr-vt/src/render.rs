@@ -179,11 +179,6 @@ impl RenderState {
         self.colors = terminal.render_colors();
     }
 
-    #[cfg(test)]
-    pub(crate) fn cols(&self) -> u16 {
-        saturating_u16(self.cols)
-    }
-
     pub fn rows(&self) -> u16 {
         saturating_u16(self.rows.len())
     }
@@ -198,14 +193,6 @@ impl RenderState {
 
     pub fn colors(&self) -> RenderColors {
         self.colors
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clean(&mut self) {
-        self.dirty = Dirty::Clean;
-        for row in &self.rows {
-            row.dirty.set(false);
-        }
     }
 
     pub fn set_dirty(&mut self, dirty: Dirty) {
@@ -289,5 +276,19 @@ impl<'a> RowView<'a> {
             .cells
             .iter()
             .map(move |cell| CellView { cell, colors })
+    }
+}
+
+#[cfg(test)]
+impl RenderState {
+    pub(crate) fn cols(&self) -> u16 {
+        saturating_u16(self.cols)
+    }
+
+    pub(crate) fn clean(&mut self) {
+        self.dirty = Dirty::Clean;
+        for row in &self.rows {
+            row.dirty.set(false);
+        }
     }
 }

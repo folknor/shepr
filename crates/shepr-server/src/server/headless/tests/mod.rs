@@ -93,6 +93,9 @@ pub(crate) fn dispatch_lifecycle_messages(
 }
 
 #[cfg(test)]
+#[path = "already_running.rs"]
+mod already_running_tests;
+#[cfg(test)]
 #[path = "pane_move.rs"]
 mod pane_move_tests;
 #[cfg(test)]
@@ -173,7 +176,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         client_socket_path: socket_path,
         client_socket_identity,
         clients: ClientRegistry::default(),
-        client_shell_boot_id: "test-boot".into(),
+        client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
         resolved_config,
         shell_session_cache: None,
         shell_session_generation: 0,
@@ -236,7 +239,10 @@ fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
 fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
         kind: shepr_protocol::NoticeKind::PaneInputDropped {
-            pane_id: shepr_protocol::PublicPaneId::new("w1", 1),
+            pane_id: shepr_protocol::PublicPaneId::new(
+                &crate::test_support::test_workspace_id("w1"),
+                1,
+            ),
             events: 1,
         },
     })
@@ -246,14 +252,8 @@ fn frame_server_message_refuses_payloads_over_the_frame_cap() {
         ServerMessage::ClientShellError { kind: shepr_protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "w1:p1"
     ));
 
-    let oversized = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
-        kind: shepr_protocol::NoticeKind::PaneInputDropped {
-            pane_id: shepr_protocol::PublicPaneId::new(
-                format!("w{}", "x".repeat(MAX_FRAME_SIZE + 1)),
-                1,
-            ),
-            events: 1,
-        },
+    let oversized = HeadlessServer::frame_server_message(&ServerMessage::Clipboard {
+        data: "x".repeat(MAX_FRAME_SIZE + 1),
     });
     assert!(matches!(
         oversized,
@@ -1128,7 +1128,7 @@ fn terminal_client_endpoint_request_error_removes_client() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellEndpointRequestError {
             client_id,
-            boot_id: "boot".into(),
+            boot_id: shepr_test_fixtures::fixed_boot_id(2),
             request_id: "request".into(),
             code: "unsupported_method",
             message: "unsupported".into(),

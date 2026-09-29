@@ -36,14 +36,6 @@ fn ioctl_terminal_geometry() -> Option<(u16, u16, u32, u32)> {
     Some((size.columns, size.rows, cell_width_px, cell_height_px))
 }
 
-#[cfg(test)]
-pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
-    unpack_cell_size(reported)
-        .or(last
-            .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
-        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
-}
-
 /// A coherent cell pitch snapshot shared by the stdin and resize threads.
 #[derive(Debug, Default)]
 pub(super) struct AtomicCellSize(AtomicU64);
@@ -320,4 +312,12 @@ pub(super) fn reported_cell_size_from_events<'a>(
             _ => None,
         })
         .last()
+}
+
+#[cfg(test)]
+pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
+    unpack_cell_size(reported)
+        .or(last
+            .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
+        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
 }

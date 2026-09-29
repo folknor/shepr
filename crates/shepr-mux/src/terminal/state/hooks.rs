@@ -1,48 +1,6 @@
 use super::*;
 
 impl TerminalState {
-    #[cfg(test)]
-    pub fn set_hook_authority(
-        &mut self,
-        source: String,
-        agent_label: String,
-        state: AgentState,
-        message: Option<String>,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange> {
-        self.set_hook_authority_at(
-            source,
-            agent_label,
-            state,
-            message,
-            None,
-            seq,
-            Instant::now(),
-        )
-        .and_then(|mutation| mutation.effective_state_change)
-    }
-
-    #[cfg(test)]
-    pub fn set_hook_authority_with_session_ref(
-        &mut self,
-        source: String,
-        agent_label: String,
-        state: AgentState,
-        message: Option<String>,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
-        self.set_hook_authority_at(
-            source,
-            agent_label,
-            state,
-            message,
-            session_ref,
-            seq,
-            Instant::now(),
-        )
-    }
-
     pub fn set_hook_authority_at(
         &mut self,
         source: String,
@@ -825,5 +783,48 @@ impl TerminalState {
                 Some(AgentSessionStartSource::Select),
                 None,
             )
+    }
+}
+
+#[cfg(test)]
+impl TerminalState {
+    pub fn set_hook_authority(
+        &mut self,
+        source: String,
+        agent_label: String,
+        state: AgentState,
+        message: Option<String>,
+        seq: Option<u64>,
+    ) -> Option<EffectiveStateChange> {
+        self.set_hook_authority_at(
+            source,
+            agent_label,
+            state,
+            message,
+            None,
+            seq,
+            Instant::now(),
+        )
+        .and_then(|mutation| mutation.effective_state_change)
+    }
+
+    pub fn set_hook_authority_with_session_ref(
+        &mut self,
+        source: String,
+        agent_label: String,
+        state: AgentState,
+        message: Option<String>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        self.set_hook_authority_at(
+            source,
+            agent_label,
+            state,
+            message,
+            session_ref,
+            seq,
+            Instant::now(),
+        )
     }
 }

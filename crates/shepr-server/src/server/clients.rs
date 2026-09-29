@@ -20,58 +20,11 @@ pub struct ClientId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ActivityStamp(u64);
 
-#[cfg(test)]
-impl From<u64> for ActivityStamp {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-#[cfg(test)]
-impl From<i32> for ActivityStamp {
-    fn from(value: i32) -> Self {
-        Self(u64::try_from(value).expect("test activity stamp must be nonnegative"))
-    }
-}
-
-impl ClientId {
-    #[cfg(test)]
-    pub fn test_new(value: u64) -> Self {
-        Self(value)
-    }
-}
+impl ClientId {}
 
 impl std::fmt::Display for ClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
-    }
-}
-
-#[cfg(test)]
-impl From<u64> for ClientId {
-    fn from(value: u64) -> Self {
-        Self::test_new(value)
-    }
-}
-
-#[cfg(test)]
-impl From<i32> for ClientId {
-    fn from(value: i32) -> Self {
-        Self::test_new(u64::try_from(value).expect("test client id must be nonnegative"))
-    }
-}
-
-#[cfg(test)]
-impl PartialEq<u64> for ClientId {
-    fn eq(&self, other: &u64) -> bool {
-        self.0 == *other
-    }
-}
-
-#[cfg(test)]
-impl PartialEq<i32> for ClientId {
-    fn eq(&self, other: &i32) -> bool {
-        u64::try_from(*other).is_ok_and(|other| self.0 == other)
     }
 }
 
@@ -294,11 +247,6 @@ impl ClientRegistry {
         self.connections.insert(client_id.into(), client)
     }
 
-    #[cfg(test)]
-    pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
-        self.connections.contains_key(&(*client_id).into())
-    }
-
     pub(crate) fn keys(&self) -> std::collections::hash_map::Keys<'_, ClientId, ClientConnection> {
         self.connections.keys()
     }
@@ -490,11 +438,6 @@ impl ClientRegistry {
     pub(crate) fn has_attach_owner(&self, terminal_id: &TerminalId) -> bool {
         self.attach_owners.contains_key(terminal_id)
     }
-
-    #[cfg(test)]
-    pub(crate) fn attach_owners(&self) -> &HashMap<TerminalId, ClientId> {
-        &self.attach_owners
-    }
 }
 
 /// A held press, keyed by what the client reports: the key code (a Linux
@@ -619,24 +562,6 @@ pub(crate) struct ClientConnection {
 }
 
 impl ClientConnection {
-    #[cfg(test)]
-    pub(crate) fn new(
-        terminal_size: (u16, u16),
-        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
-        last_activity: impl Into<ActivityStamp>,
-        render_encoding: RenderEncoding,
-        writer: Option<ClientWriter>,
-    ) -> Self {
-        Self::new_with_mode(
-            ClientConnectionMode::shell(),
-            shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
-            cell_size,
-            last_activity,
-            render_encoding,
-            writer,
-        )
-    }
-
     pub(crate) fn new_with_mode(
         mode: ClientConnectionMode,
         terminal_size: shepr_core::geometry::GridSize,
@@ -913,6 +838,86 @@ pub(crate) fn render_targets(
 }
 
 #[cfg(test)]
+impl From<u64> for ActivityStamp {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[cfg(test)]
+impl From<i32> for ActivityStamp {
+    fn from(value: i32) -> Self {
+        Self(u64::try_from(value).expect("test activity stamp must be nonnegative"))
+    }
+}
+
+#[cfg(test)]
+impl From<u64> for ClientId {
+    fn from(value: u64) -> Self {
+        Self::test_new(value)
+    }
+}
+
+#[cfg(test)]
+impl From<i32> for ClientId {
+    fn from(value: i32) -> Self {
+        Self::test_new(u64::try_from(value).expect("test client id must be nonnegative"))
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<u64> for ClientId {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<i32> for ClientId {
+    fn eq(&self, other: &i32) -> bool {
+        u64::try_from(*other).is_ok_and(|other| self.0 == other)
+    }
+}
+
+#[cfg(test)]
+impl ClientId {
+    pub fn test_new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[cfg(test)]
+impl ClientRegistry {
+    pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
+        self.connections.contains_key(&(*client_id).into())
+    }
+
+    pub(crate) fn attach_owners(&self) -> &HashMap<TerminalId, ClientId> {
+        &self.attach_owners
+    }
+}
+
+#[cfg(test)]
+impl ClientConnection {
+    pub(crate) fn new(
+        terminal_size: (u16, u16),
+        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+        last_activity: impl Into<ActivityStamp>,
+        render_encoding: RenderEncoding,
+        writer: Option<ClientWriter>,
+    ) -> Self {
+        Self::new_with_mode(
+            ClientConnectionMode::shell(),
+            shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
+            cell_size,
+            last_activity,
+            render_encoding,
+            writer,
+        )
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1015,7 +1020,7 @@ mod tests {
     fn semantic_text_press_does_not_create_a_server_release_lease() {
         let mut client = shell_client();
         client.track_shell_input(
-            &shepr_protocol::PublicPaneId::new("w1", 1),
+            &shepr_protocol::PublicPaneId::new(&crate::test_support::test_workspace_id("w1"), 1),
             &[ClientPaneInputEvent::Key {
                 code: shepr_protocol::ClientKeyCode::Char('x'),
                 modifiers: shepr_protocol::WireModifiers::NONE,
@@ -1041,7 +1046,7 @@ mod tests {
             generated_text: None,
         };
         client.track_shell_input(
-            &shepr_protocol::PublicPaneId::new("w1", 1),
+            &shepr_protocol::PublicPaneId::new(&crate::test_support::test_workspace_id("w1"), 1),
             &[
                 key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
                 key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),

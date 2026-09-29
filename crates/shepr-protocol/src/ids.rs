@@ -104,17 +104,6 @@ impl TryFrom<String> for WorkspaceId {
     }
 }
 
-/// This crate's own tests spell workspace IDs as literals; the text must be
-/// canonical. Other crates build them with `from_number` or parse them.
-#[cfg(test)]
-impl From<&str> for WorkspaceId {
-    fn from(value: &str) -> Self {
-        value
-            .parse()
-            .unwrap_or_else(|error| panic!("{value:?}: {error}"))
-    }
-}
-
 impl serde::Serialize for WorkspaceId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.text)
@@ -183,11 +172,13 @@ impl PartialEq<&str> for WorkspaceId {
 /// Use the [`PublicTabId`] and [`PublicPaneId`] aliases; `KIND` is the
 /// letter that tells the two apart in the canonical text.
 ///
-/// The workspace segment is held as text, not as a [`WorkspaceId`]: this
-/// type accepts any non-empty segment, so it must not vouch for one.
+/// The workspace segment is a [`WorkspaceId`], so a value is built from one
+/// or parsed from text whose workspace segment is canonical, deserialization
+/// included: no child ID names a workspace the server's allocator could not
+/// have issued.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PublicChildId<const KIND: char> {
-    workspace_id: String,
+    workspace_id: WorkspaceId,
     number: usize,
     encoded: String,
 }
@@ -199,22 +190,16 @@ pub type PublicTabId = PublicChildId<'t'>;
 pub type PublicPaneId = PublicChildId<'p'>;
 
 impl<const KIND: char> PublicChildId<KIND> {
-    /// Builds a child ID from a non-empty workspace ID and a one-based number.
+    /// Builds a child ID from its workspace and a one-based number.
     ///
     /// # Panics
     ///
-    /// Panics if `workspace_id` is empty or `number` is zero, because neither
-    /// value can be represented by a canonical public child ID.
-    pub fn new(workspace_id: impl Into<String>, number: usize) -> Self {
-        let workspace_id: String = workspace_id.into();
-        assert!(
-            !workspace_id.is_empty(),
-            "public child IDs require a non-empty workspace ID"
-        );
+    /// Panics if `number` is zero, which no canonical public child ID spells.
+    pub fn new(workspace_id: &WorkspaceId, number: usize) -> Self {
         assert!(number > 0, "public child IDs use one-based numbers");
         Self {
             encoded: format!("{}:{}{}", workspace_id, KIND, encode_public_number(number)),
-            workspace_id,
+            workspace_id: workspace_id.clone(),
             number,
         }
     }
@@ -223,8 +208,8 @@ impl<const KIND: char> PublicChildId<KIND> {
         &self.encoded
     }
 
-    pub fn workspace_id(&self) -> &str {
-        self.workspace_id.as_str()
+    pub fn workspace_id(&self) -> &WorkspaceId {
+        &self.workspace_id
     }
 
     pub fn number(&self) -> usize {
@@ -242,9 +227,12 @@ impl<const KIND: char> FromStr for PublicChildId<KIND> {
     type Err = PublicIdParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (workspace_id, number) =
-            parse_public_child_id(value, KIND).ok_or(PublicIdParseError { kind: KIND })?;
-        Ok(Self::new(workspace_id, number))
+        parse_public_child_id(value, KIND)
+            .map(|(workspace_id, number)| Self::new(&workspace_id, number))
+            // As for `WorkspaceId`: the round trip keeps alternative spellings
+            // out if the alphabet or decoder ever loosens.
+            .filter(|id| id.encoded == value)
+            .ok_or(PublicIdParseError { kind: KIND })
     }
 }
 
@@ -267,25 +255,6 @@ impl<const KIND: char> std::ops::Deref for PublicChildId<KIND> {
 
     fn deref(&self) -> &Self::Target {
         self.as_str()
-    }
-}
-
-/// This crate's own tests spell IDs as literals; the text must be canonical.
-/// Other crates build IDs with the public aliases' `new` methods or parse
-/// them, so no ID exists that a server would not issue.
-#[cfg(test)]
-impl<const KIND: char> From<&str> for PublicChildId<KIND> {
-    fn from(value: &str) -> Self {
-        value
-            .parse()
-            .unwrap_or_else(|error| panic!("{value:?}: {error}"))
-    }
-}
-
-#[cfg(test)]
-impl<const KIND: char> From<String> for PublicChildId<KIND> {
-    fn from(value: String) -> Self {
-        value.as_str().into()
     }
 }
 
@@ -339,54 +308,15 @@ fn parse_public_number(encoded: &str) -> Option<usize> {
     decode_public_number(encoded).filter(|number| *number > 0)
 }
 
-fn parse_public_child_id(value: &str, kind: char) -> Option<(&str, usize)> {
-    let (workspace_id, encoded_id) = value.rsplit_once(':')?;
+/// Splits canonical child text into its workspace and number. Both parts must
+/// be canonical, so re-encoding the result reproduces `value` exactly.
+fn parse_public_child_id(value: &str, kind: char) -> Option<(WorkspaceId, usize)> {
+    let (workspace_id, encoded_id) = value.split_once(':')?;
     let encoded_number = encoded_id.strip_prefix(kind)?;
-    if workspace_id.is_empty() {
-        return None;
-    }
-    Some((workspace_id, parse_public_number(encoded_number)?))
-}
-
-#[cfg(test)]
-mod public_child_id_tests {
-    use super::{PublicPaneId, PublicTabId};
-
-    #[test]
-    fn public_child_id_aliases_keep_their_canonical_text_and_wire_encoding() {
-        let tab_id = PublicTabId::new("wA", 32);
-        let pane_id = PublicPaneId::new("wA", 33);
-
-        assert_eq!(tab_id.as_str(), "wA:t0");
-        assert_eq!(tab_id.workspace_id(), "wA");
-        assert_eq!(tab_id.number(), 32);
-        assert_eq!(pane_id.as_str(), "wA:p11");
-        assert_eq!(pane_id.workspace_id(), "wA");
-        assert_eq!(pane_id.number(), 33);
-        assert_eq!("wA:t0".parse::<PublicTabId>(), Ok(tab_id.clone()));
-        assert_eq!("wA:p11".parse::<PublicPaneId>(), Ok(pane_id.clone()));
-        assert!("wA:p11".parse::<PublicTabId>().is_err());
-        assert!("wA:t0".parse::<PublicPaneId>().is_err());
-
-        let tab_wire = crate::codec::to_vec(&tab_id).expect("tab id encoding");
-        let pane_wire = crate::codec::to_vec(&pane_id).expect("pane id encoding");
-        assert_eq!(
-            tab_wire,
-            crate::codec::to_vec("wA:t0").expect("tab string encoding")
-        );
-        assert_eq!(
-            pane_wire,
-            crate::codec::to_vec("wA:p11").expect("pane string encoding")
-        );
-        assert_eq!(
-            crate::codec::from_slice_exact::<PublicTabId>(&tab_wire).expect("tab id decoding"),
-            tab_id
-        );
-        assert_eq!(
-            crate::codec::from_slice_exact::<PublicPaneId>(&pane_wire).expect("pane id decoding"),
-            pane_id
-        );
-    }
+    Some((
+        workspace_id.parse().ok()?,
+        parse_public_number(encoded_number)?,
+    ))
 }
 
 /// Opaque identity for a server-owned terminal.
@@ -497,6 +427,102 @@ impl TryFrom<String> for TerminalId {
 impl fmt::Display for TerminalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// This crate's own tests spell workspace IDs as literals; the text must be
+/// canonical. Other crates build them with `from_number` or parse them.
+#[cfg(test)]
+impl From<&str> for WorkspaceId {
+    fn from(value: &str) -> Self {
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("{value:?}: {error}"))
+    }
+}
+
+/// This crate's own tests spell IDs as literals; the text must be canonical.
+/// Other crates build IDs with the public aliases' `new` methods or parse
+/// them, so no ID exists that a server would not issue.
+#[cfg(test)]
+impl<const KIND: char> From<&str> for PublicChildId<KIND> {
+    fn from(value: &str) -> Self {
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("{value:?}: {error}"))
+    }
+}
+
+#[cfg(test)]
+impl<const KIND: char> From<String> for PublicChildId<KIND> {
+    fn from(value: String) -> Self {
+        value.as_str().into()
+    }
+}
+
+#[cfg(test)]
+mod public_child_id_tests {
+    use super::{PublicPaneId, PublicTabId, WorkspaceId};
+
+    #[test]
+    fn public_child_id_aliases_keep_their_canonical_text_and_wire_encoding() {
+        let workspace_id = WorkspaceId::from("wA");
+        let tab_id = PublicTabId::new(&workspace_id, 32);
+        let pane_id = PublicPaneId::new(&workspace_id, 33);
+
+        assert_eq!(tab_id.as_str(), "wA:t0");
+        assert_eq!(tab_id.workspace_id(), "wA");
+        assert_eq!(tab_id.number(), 32);
+        assert_eq!(pane_id.as_str(), "wA:p11");
+        assert_eq!(pane_id.workspace_id(), "wA");
+        assert_eq!(pane_id.number(), 33);
+        assert_eq!("wA:t0".parse::<PublicTabId>(), Ok(tab_id.clone()));
+        assert_eq!("wA:p11".parse::<PublicPaneId>(), Ok(pane_id.clone()));
+        assert!("wA:p11".parse::<PublicTabId>().is_err());
+        assert!("wA:t0".parse::<PublicPaneId>().is_err());
+
+        let tab_wire = crate::codec::to_vec(&tab_id).expect("tab id encoding");
+        let pane_wire = crate::codec::to_vec(&pane_id).expect("pane id encoding");
+        assert_eq!(
+            tab_wire,
+            crate::codec::to_vec("wA:t0").expect("tab string encoding")
+        );
+        assert_eq!(
+            pane_wire,
+            crate::codec::to_vec("wA:p11").expect("pane string encoding")
+        );
+        assert_eq!(
+            crate::codec::from_slice_exact::<PublicTabId>(&tab_wire).expect("tab id decoding"),
+            tab_id
+        );
+        assert_eq!(
+            crate::codec::from_slice_exact::<PublicPaneId>(&pane_wire).expect("pane id decoding"),
+            pane_id
+        );
+    }
+
+    #[test]
+    fn public_child_ids_refuse_a_workspace_segment_the_allocator_never_writes() {
+        for invalid in [
+            "",
+            ":p1",
+            "w1:",
+            "w1:p",
+            "w1:p1 ",
+            "w1:p1:p1",
+            "wOLD:p1",
+            "ws_1:p1",
+            "old-workspace:p9",
+            "w_1:p1",
+            "W1:p1",
+            "a:b:p1",
+        ] {
+            assert!(invalid.parse::<PublicPaneId>().is_err(), "{invalid:?}");
+            let tab = invalid.replacen(":p", ":t", 1);
+            assert!(tab.parse::<PublicTabId>().is_err(), "{tab:?}");
+        }
+        let wire = crate::codec::to_vec("wOLD:p1").expect("string encoding");
+        assert!(crate::codec::from_slice_exact::<PublicPaneId>(&wire).is_err());
     }
 }
 

@@ -509,9 +509,10 @@ fn seed_terminal_states(app: &mut App) {
 fn api_pane_close_of_last_pane_closes_workspace() {
     let mut app = app_with_workspace();
     let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-    app.state
-        .public_pane_id_aliases
-        .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), pane_id);
+    app.state.public_pane_id_aliases.insert(
+        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1),
+        pane_id,
+    );
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
 
     let response = app.handle_pane_close(&PaneTarget {
@@ -523,7 +524,10 @@ fn api_pane_close_of_last_pane_closes_workspace() {
     assert!(
         !app.state
             .public_pane_id_aliases
-            .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 1))
+            .contains_key(&shepr_protocol::PublicPaneId::new(
+                &crate::test_support::retired_workspace_id(),
+                1
+            ))
     );
     assert_eq!(
         app.event_hub

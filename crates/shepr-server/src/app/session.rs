@@ -5,8 +5,6 @@ use crate::limits::{
     CHECKPOINT_MAX_FAILURES, HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_CHECK_INTERVAL,
     SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN,
 };
-#[cfg(test)]
-use shepr_mux::events::AppEvent;
 #[derive(Clone, Copy)]
 enum SessionSavePurpose {
     Autosave,
@@ -490,40 +488,6 @@ impl App {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn save_session_now(&mut self) -> bool {
-        if let Some(thread) = self.session_saver.session_save_thread.take() {
-            self.session_saver.session_save_check_deadline = None;
-            let purpose = self
-                .session_saver
-                .session_save_purpose
-                .take()
-                .unwrap_or(SessionSavePurpose::Autosave);
-            let result = match thread.join() {
-                Ok(result) => result,
-                Err(_) => Err(std::io::Error::other("session save thread panicked")),
-            };
-            self.finish_session_save(purpose, result, self.clock.now);
-        }
-
-        if !self.policy.persists_session() {
-            self.session_saver.clear_deadline();
-            return true;
-        }
-
-        let result = run_session_save_job(
-            self.capture_session_save_job(),
-            &self.session_saver.session_writer,
-            self.clock.wall_now,
-        );
-        self.session_saver.pane_exit_checkpoint_pending = false;
-        let saved = self.record_session_save_result(result, self.clock.now);
-        if saved {
-            self.session_saver.clear_deadline();
-        }
-        saved
-    }
-
     /// Whether an exited pane may be removed now: nothing is persisted, the
     /// pre-exit layout is already on disk, or checkpoints have been abandoned
     /// after repeated failures.
@@ -604,51 +568,6 @@ impl App {
         if self.session_saver.pane_exit_checkpoint_pending {
             self.state.session_dirty = false;
             self.session_saver.session_save_deadline = Some(self.clock.now + SESSION_SAVE_DEBOUNCE);
-        }
-    }
-
-    /// Delivers `ev` the way the headless loop does: a pane exit that needs a
-    /// checkpoint waits for the background save before the app removes it.
-    #[cfg(test)]
-    pub(crate) fn handle_internal_event_after_checkpoint(&mut self, ev: AppEvent) {
-        if let AppEvent::PaneDied {
-            pane_id,
-            exit_reason,
-        } = &ev
-            && exit_reason.requires_session_checkpoint()
-            && self.state.prepare_pane_removal_by_id(*pane_id).is_some()
-            && !self.checkpoint_session_before_pane_exit()
-        {
-            for _ in 0..4 {
-                if let Some(thread) = self.session_saver.session_save_thread.take() {
-                    let purpose = self
-                        .session_saver
-                        .session_save_purpose
-                        .take()
-                        .unwrap_or(SessionSavePurpose::Autosave);
-                    let result = thread
-                        .join()
-                        .unwrap_or_else(|_| Err(std::io::Error::other("save thread panicked")));
-                    self.finish_session_save(purpose, result, self.clock.now);
-                }
-                if self.take_pane_exit_checkpoint_ready() {
-                    break;
-                }
-                self.session_saver.critical_save_retry_deadline = None;
-                self.start_background_session_save();
-            }
-        }
-        self.handle_internal_event(ev);
-    }
-
-    /// Save the live pane histories while runtimes still exist, keeping the
-    /// directory claim until their processes have finished tearing down.
-    #[cfg(test)]
-    pub(crate) fn save_session_before_teardown(&mut self) {
-        if self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty {
-            self.session_saver.clear_deadline();
-        } else {
-            self.save_session_now();
         }
     }
 
@@ -735,6 +654,88 @@ fn run_session_save_job(
     match job {
         None => writer.clear(now),
         Some((snapshot, history)) => writer.save(&snapshot, history.as_ref(), now),
+    }
+}
+
+#[cfg(test)]
+use shepr_mux::events::AppEvent;
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn save_session_now(&mut self) -> bool {
+        if let Some(thread) = self.session_saver.session_save_thread.take() {
+            self.session_saver.session_save_check_deadline = None;
+            let purpose = self
+                .session_saver
+                .session_save_purpose
+                .take()
+                .unwrap_or(SessionSavePurpose::Autosave);
+            let result = match thread.join() {
+                Ok(result) => result,
+                Err(_) => Err(std::io::Error::other("session save thread panicked")),
+            };
+            self.finish_session_save(purpose, result, self.clock.now);
+        }
+
+        if !self.policy.persists_session() {
+            self.session_saver.clear_deadline();
+            return true;
+        }
+
+        let result = run_session_save_job(
+            self.capture_session_save_job(),
+            &self.session_saver.session_writer,
+            self.clock.wall_now,
+        );
+        self.session_saver.pane_exit_checkpoint_pending = false;
+        let saved = self.record_session_save_result(result, self.clock.now);
+        if saved {
+            self.session_saver.clear_deadline();
+        }
+        saved
+    }
+
+    /// Delivers `ev` the way the headless loop does: a pane exit that needs a
+    /// checkpoint waits for the background save before the app removes it.
+    pub(crate) fn handle_internal_event_after_checkpoint(&mut self, ev: AppEvent) {
+        if let AppEvent::PaneDied {
+            pane_id,
+            exit_reason,
+        } = &ev
+            && exit_reason.requires_session_checkpoint()
+            && self.state.prepare_pane_removal_by_id(*pane_id).is_some()
+            && !self.checkpoint_session_before_pane_exit()
+        {
+            for _ in 0..4 {
+                if let Some(thread) = self.session_saver.session_save_thread.take() {
+                    let purpose = self
+                        .session_saver
+                        .session_save_purpose
+                        .take()
+                        .unwrap_or(SessionSavePurpose::Autosave);
+                    let result = thread
+                        .join()
+                        .unwrap_or_else(|_| Err(std::io::Error::other("save thread panicked")));
+                    self.finish_session_save(purpose, result, self.clock.now);
+                }
+                if self.take_pane_exit_checkpoint_ready() {
+                    break;
+                }
+                self.session_saver.critical_save_retry_deadline = None;
+                self.start_background_session_save();
+            }
+        }
+        self.handle_internal_event(ev);
+    }
+
+    /// Save the live pane histories while runtimes still exist, keeping the
+    /// directory claim until their processes have finished tearing down.
+    pub(crate) fn save_session_before_teardown(&mut self) {
+        if self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty {
+            self.session_saver.clear_deadline();
+        } else {
+            self.save_session_now();
+        }
     }
 }
 

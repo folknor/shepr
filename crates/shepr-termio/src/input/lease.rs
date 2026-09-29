@@ -198,11 +198,6 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub fn contains(&self, key: &InputLeaseKey<Source>) -> bool {
-        self.leases.contains_key(key)
-    }
-
     pub fn insert_forwarded(
         &mut self,
         key: InputLeaseKey<Source>,
@@ -255,6 +250,18 @@ where
     #[cfg(test)]
     fn len(&self) -> usize {
         self.leases.len()
+    }
+}
+
+#[cfg(test)]
+impl<Source, Context, Target> InputLeaseTable<Source, Context, Target>
+where
+    Source: Copy + Eq + Hash,
+    Context: Clone + Eq,
+    Target: Clone + Eq,
+{
+    pub fn contains(&self, key: &InputLeaseKey<Source>) -> bool {
+        self.leases.contains_key(key)
     }
 }
 

@@ -741,21 +741,6 @@ pub struct ValidatedConfig {
 }
 
 impl ValidatedConfig {
-    #[cfg(test)]
-    pub fn new(
-        config: Config,
-        provenance: ConfigProvenance,
-        paths: AppPaths,
-    ) -> Result<Self, Vec<String>> {
-        Self::from_resolution(
-            config,
-            provenance,
-            paths,
-            CwdCheck::AtLaunch,
-            ShellCheck::AtLaunch,
-        )
-    }
-
     /// Validate `config` exactly as a launch does, with `source` as the config
     /// document the values were read from: it decides which values count as
     /// explicitly configured, and `None` makes every value a default. The
@@ -876,26 +861,12 @@ impl ValidatedConfig {
         self.live_keybinds.clone()
     }
 
-    #[cfg(test)]
-    pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
-        Ok(self.live_keybinds())
-    }
-
     pub fn same_keybinding_resolution(&self, other: &Self) -> bool {
         self.config.keys == other.config.keys
             && self
                 .provenance
                 .keybinding_values()
                 .eq(other.provenance.keybinding_values())
-    }
-
-    #[cfg(test)]
-    pub fn test_from_config_with_paths(
-        config: Config,
-        source: Option<&str>,
-        paths: AppPaths,
-    ) -> Self {
-        Self::from_values(config, source, paths).expect("test config is valid")
     }
 }
 
@@ -967,6 +938,35 @@ impl<'de> Deserialize<'de> for ValidatedConfig {
             ShellCheck::Received,
         )
         .map_err(|diagnostics| de::Error::custom(diagnostics.join("\n")))
+    }
+}
+
+#[cfg(test)]
+impl ValidatedConfig {
+    pub fn new(
+        config: Config,
+        provenance: ConfigProvenance,
+        paths: AppPaths,
+    ) -> Result<Self, Vec<String>> {
+        Self::from_resolution(
+            config,
+            provenance,
+            paths,
+            CwdCheck::AtLaunch,
+            ShellCheck::AtLaunch,
+        )
+    }
+
+    pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
+        Ok(self.live_keybinds())
+    }
+
+    pub fn test_from_config_with_paths(
+        config: Config,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Self {
+        Self::from_values(config, source, paths).expect("test config is valid")
     }
 }
 

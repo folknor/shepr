@@ -2,6 +2,9 @@
 
 use std::time::Duration;
 
+/// The public number of the first workspace a process allocates. Public
+/// numbers are one-based; zero spells no workspace ID.
+pub(crate) const FIRST_WORKSPACE_NUMBER: usize = 1;
 /// Heuristic fraction of comparable viewport rows needed to reuse a read
 /// snapshot. A high overlap tolerates a small changing status area while
 /// rejecting a substantially different screen; it is not a measured rate.

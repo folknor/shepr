@@ -20,15 +20,6 @@ impl App {
         self.window_title_template = template.cloned();
     }
 
-    /// Test helper: parse like config validation does. An invalid template is
-    /// a broken test, not a disabled title, so it panics.
-    #[cfg(test)]
-    pub(crate) fn configure_window_title(&mut self, template: &str) {
-        let template =
-            WindowTitleTemplate::parse(template).expect("test window title template is valid");
-        self.configure_validated_window_title(template.as_ref());
-    }
-
     /// Whether `ui.window_title` asks Shepr to own the outer terminal title at
     /// all. When it does not, Shepr leaves whatever the shell or `ssh` set.
     pub(crate) fn window_title_configured(&self) -> bool {
@@ -118,6 +109,17 @@ impl App {
         }
 
         Some(title)
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Test helper: parse like config validation does. An invalid template is
+    /// a broken test, not a disabled title, so it panics.
+    pub(crate) fn configure_window_title(&mut self, template: &str) {
+        let template =
+            WindowTitleTemplate::parse(template).expect("test window title template is valid");
+        self.configure_validated_window_title(template.as_ref());
     }
 }
 

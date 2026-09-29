@@ -24,12 +24,12 @@ impl TabSurfaceTarget {
         let tab = workspace.tabs().get(tab_index)?;
         Some(Self {
             workspace_id: workspace.id.clone(),
-            tab_id: shepr_protocol::PublicTabId::new(workspace.id.as_str(), tab.number()),
+            tab_id: shepr_protocol::PublicTabId::new(&workspace.id, tab.number()),
         })
     }
 
     pub(crate) fn resolve(&self, app: &AppState) -> Option<(usize, usize)> {
-        if self.tab_id.workspace_id() != self.workspace_id.as_str() {
+        if *self.tab_id.workspace_id() != self.workspace_id {
             return None;
         }
         let workspace_index = app

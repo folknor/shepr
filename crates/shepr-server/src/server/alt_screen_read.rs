@@ -1,6 +1,4 @@
 use std::sync::mpsc;
-#[cfg(test)]
-use std::time::Duration;
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -515,6 +513,8 @@ fn send_wheel(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::test_support::*;
     use shepr_api::schema::{ReadFormat, ReadSource};

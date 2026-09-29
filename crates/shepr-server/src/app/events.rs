@@ -9,11 +9,6 @@ impl App {
         self.handle_internal_event_with_updates_and_render(ev).1
     }
 
-    #[cfg(test)]
-    pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
-        self.handle_internal_event_with_render_demand(ev) != RenderDemand::None
-    }
-
     fn handle_git_status_refreshed(
         &mut self,
         results: Vec<shepr_mux::git::WorkspaceGitStatus>,
@@ -497,5 +492,12 @@ impl App {
             return;
         };
         runtime.try_send_focus_event(event);
+    }
+}
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
+        self.handle_internal_event_with_render_demand(ev) != RenderDemand::None
     }
 }

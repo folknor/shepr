@@ -230,19 +230,22 @@ fn bridge_on_a_held_socket_names_the_path() {
 
     let error = start().err().expect("the first bridge holds the path");
     assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
-    assert!(
-        error
-            .get_ref()
-            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<BridgeSocketBusy>),
-        "{error:?}"
-    );
+    let busy = shepr_platform::ipc::SocketBusy::from_io(&error)
+        .unwrap_or_else(|| panic!("a busy refusal carries its path: {error:?}"));
+    assert_eq!(busy.path(), socket);
     assert!(
         error.to_string().contains(&socket.display().to_string()),
         "{error}"
     );
     assert!(is_ssh_link_failure(&error));
+    // The refused start must leave the holder's socket and lock alone.
+    let lock = shepr_platform::ipc::socket_startup_lock_path(&socket);
+    assert!(socket.try_exists().expect("stat bridge socket"));
+    assert!(lock.try_exists().expect("stat bridge socket lock"));
 
     drop(first);
+    assert!(!socket.try_exists().expect("stat bridge socket"));
+    assert!(!lock.try_exists().expect("stat bridge socket lock"));
 }
 
 #[test]

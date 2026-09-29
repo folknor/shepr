@@ -820,7 +820,7 @@ fn build_manifest_cache(override_dir: Option<&Path>) -> ManifestCache {
                     tracing::warn!(
                         agent = agent_label(agent),
                         path = %error.path().display(),
-                        kind = error.kind(),
+                        error_kind = error.kind(),
                         error = %error,
                         "agent detection manifest override was rejected"
                     );
@@ -860,18 +860,6 @@ fn manifest_summary_from_loaded(agent: Agent, loaded: &LoadedManifest) -> AgentM
         active_source: loaded.source.clone(),
         warning: loaded.warning.clone(),
     }
-}
-
-#[cfg(test)]
-pub fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
-    detect_with_osc(
-        agent,
-        DetectionInput {
-            screen: screen_content,
-            osc_title: "",
-            osc_progress: "",
-        },
-    )
 }
 
 /// Production detection path. Runs per identified pane on every detection
@@ -1756,11 +1744,6 @@ fn compiled_gate_matches(gate: &CompiledGate, texts: &RegionTexts<'_>) -> bool {
     true
 }
 
-#[cfg(test)]
-fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {
-    RegionSpec::parse(spec).map_or("", |spec| spec.extract(input))
-}
-
 fn region_count(spec: &str, name: &str) -> Option<usize> {
     let count = spec
         .strip_prefix(name)?
@@ -1977,6 +1960,23 @@ fn line_end_offset(content: &str, line: &str) -> usize {
     content[start..]
         .find('\n')
         .map_or(content.len(), |offset| start + offset + 1)
+}
+
+#[cfg(test)]
+pub fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
+    detect_with_osc(
+        agent,
+        DetectionInput {
+            screen: screen_content,
+            osc_title: "",
+            osc_progress: "",
+        },
+    )
+}
+
+#[cfg(test)]
+fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {
+    RegionSpec::parse(spec).map_or("", |spec| spec.extract(input))
 }
 
 #[cfg(test)]

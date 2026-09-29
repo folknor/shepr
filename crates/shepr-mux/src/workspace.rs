@@ -2,12 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
 use crate::git::{AheadBehind, GitSpaceMetadata, fallback_label_from_cwd};
+use crate::limits::FIRST_WORKSPACE_NUMBER;
 use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
@@ -68,7 +69,7 @@ pub struct PaneRemoval {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabRemoval {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     pub tab_index: usize,
     pub tab_number: usize,
     pub pane_ids: Vec<PaneId>,
@@ -81,27 +82,58 @@ pub struct TabCreationOutcome {
     pub root_pane: PaneId,
 }
 
-static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(1);
+/// The public number the next allocated workspace ID spells.
+///
+/// This stays a process global rather than an allocator owned by the
+/// server's app state, as the pane id counter in `shepr-core` does. One
+/// process serves one session, so unique per process is unique per session;
+/// an owned allocator would have to be threaded into every workspace
+/// constructor, pane move and restore for no change in behaviour. Restore
+/// moves the counter past every restored ID with `reserve_workspace_ids`, and
+/// the counter never wraps, so a live ID is never handed out twice.
+static NEXT_WORKSPACE_NUMBER: AtomicUsize = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
+
 pub(crate) fn generate_workspace_id() -> WorkspaceId {
-    let counter = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
-    match usize::try_from(counter)
-        .ok()
-        .and_then(WorkspaceId::from_number)
-    {
+    match allocate_workspace_id(&NEXT_WORKSPACE_NUMBER) {
         Some(id) => id,
-        // The counter starts at one and a u64 of workspaces is never reached;
-        // wrapping to zero would have to reuse a live ID.
+        // Continuing would have to reuse a live ID; there is no safe value.
         None => panic!("workspace id space exhausted"),
     }
 }
 
+/// Hands out the counter's number and advances it. `None` once the counter
+/// is exhausted: advancing refuses to pass `usize::MAX` rather than wrap, so
+/// that last number is never handed out and marks the space as used up.
+fn allocate_workspace_id(counter: &AtomicUsize) -> Option<WorkspaceId> {
+    counter
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .ok()
+        .and_then(WorkspaceId::from_number)
+}
+
+/// Moves `counter` past every ID in `workspaces`. An ID at the top of the
+/// number space leaves nothing to allocate, so the counter is exhausted
+/// rather than left where it could reach that ID again.
+fn reserve_workspace_numbers(counter: &AtomicUsize, workspaces: &[Workspace]) {
+    let Some(max) = workspaces
+        .iter()
+        .map(|workspace| workspace.id.number())
+        .max()
+    else {
+        return;
+    };
+    counter.fetch_max(max.saturating_add(1), Ordering::Relaxed);
+}
+
 /// Canonical public pane ID renderer; parsing uses `PublicPaneId::from_str`.
-pub fn public_pane_id_for_number(workspace_id: &str, pane_number: usize) -> String {
+pub fn public_pane_id_for_number(workspace_id: &WorkspaceId, pane_number: usize) -> String {
     PublicPaneId::new(workspace_id, pane_number).to_string()
 }
 
 /// Canonical public tab ID renderer; parsing uses `PublicTabId::from_str`.
-pub fn public_tab_id_for_number(workspace_id: &str, tab_number: usize) -> String {
+pub fn public_tab_id_for_number(workspace_id: &WorkspaceId, tab_number: usize) -> String {
     PublicTabId::new(workspace_id, tab_number).to_string()
 }
 
@@ -166,11 +198,6 @@ impl FocusedTabs {
     // non-empty and `focused < items.len()`.
     fn focused(&self) -> &Tab {
         &self.items[self.focused]
-    }
-
-    #[cfg(test)]
-    fn focused_mut(&mut self) -> &mut Tab {
-        &mut self.items[self.focused]
     }
 
     fn focus(&mut self, index: usize) -> bool {
@@ -275,27 +302,7 @@ fn valid_tabs<'a>(
 }
 
 pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
-    let Some(next) = workspaces
-        .iter()
-        .map(|workspace| workspace.id.number())
-        .max()
-        .and_then(|max| u64::try_from(max.checked_add(1)?).ok())
-    else {
-        return;
-    };
-
-    let mut current = NEXT_WORKSPACE_ID.load(Ordering::Relaxed);
-    while current < next {
-        match NEXT_WORKSPACE_ID.compare_exchange_weak(
-            current,
-            next,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break,
-            Err(observed) => current = observed,
-        }
-    }
+    reserve_workspace_numbers(&NEXT_WORKSPACE_NUMBER, workspaces);
 }
 
 /// A named workspace containing tabs.
@@ -748,7 +755,7 @@ impl Workspace {
         }
         let tab = self.tabs.get(idx)?;
         let removal = TabRemoval {
-            workspace_id: self.id.to_string(),
+            workspace_id: self.id.clone(),
             tab_index: idx,
             tab_number: tab.number,
             pane_ids: tab.layout.pane_ids(),
@@ -1081,19 +1088,8 @@ impl Workspace {
         self.tabs.get(tab_idx).map(|tab| tab.number)
     }
 
-    #[cfg(test)]
-    pub fn public_tab_number_for_pane(&self, pane_id: PaneId) -> Option<usize> {
-        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        self.public_tab_number(tab_idx)
-    }
-
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
-    }
-
-    #[cfg(test)]
-    pub fn resolved_identity_cwd(&self) -> Option<PathBuf> {
-        Some(self.identity_cwd.clone())
     }
 
     pub fn resolved_identity_cwd_from(
@@ -1236,17 +1232,6 @@ impl Workspace {
         })
     }
 
-    #[cfg(test)]
-    pub fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval> {
-        let plan = self.prepare_pane_removal(pane_id)?;
-        self.remove_pane(&plan)
-    }
-
-    #[cfg(test)]
-    fn register_new_pane(&mut self, pane_id: PaneId) {
-        self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
-    }
-
     fn register_new_pane_with_number(&mut self, pane_id: PaneId, number: usize) {
         let Some(pane) = self
             .tabs
@@ -1296,6 +1281,34 @@ pub struct NewTabMove {
     /// The index the pane's old tab had, when the move closed it.
     pub removed_tab_idx: Option<usize>,
     pub tab_idx: usize,
+}
+
+#[cfg(test)]
+impl FocusedTabs {
+    fn focused_mut(&mut self) -> &mut Tab {
+        &mut self.items[self.focused]
+    }
+}
+
+#[cfg(test)]
+impl Workspace {
+    pub fn public_tab_number_for_pane(&self, pane_id: PaneId) -> Option<usize> {
+        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        self.public_tab_number(tab_idx)
+    }
+
+    pub fn resolved_identity_cwd(&self) -> Option<PathBuf> {
+        Some(self.identity_cwd.clone())
+    }
+
+    pub fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval> {
+        let plan = self.prepare_pane_removal(pane_id)?;
+        self.remove_pane(&plan)
+    }
+
+    fn register_new_pane(&mut self, pane_id: PaneId) {
+        self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+    }
 }
 
 #[cfg(test)]
@@ -1527,8 +1540,9 @@ mod tests {
 
     #[test]
     fn public_tab_and_pane_ids_share_one_canonical_format() {
-        let tab_id = PublicTabId::new("wA", 32);
-        let pane_id = PublicPaneId::new("wA", 33);
+        let workspace_id: WorkspaceId = "wA".parse().expect("canonical workspace id");
+        let tab_id = PublicTabId::new(&workspace_id, 32);
+        let pane_id = PublicPaneId::new(&workspace_id, 33);
 
         assert_eq!(tab_id.to_string(), "wA:t0");
         assert_eq!(pane_id.to_string(), "wA:p11");
@@ -1593,6 +1607,38 @@ mod tests {
         let generated = generate_workspace_id();
         assert_ne!(generated, "wZ");
         assert!(generated.number() > 31);
+    }
+
+    #[test]
+    fn workspace_id_allocation_refuses_to_wrap() {
+        let counter = AtomicUsize::new(usize::MAX - 1);
+        let last = allocate_workspace_id(&counter).expect("one number left");
+        assert_eq!(last.number(), usize::MAX - 1);
+        assert_eq!(allocate_workspace_id(&counter), None);
+        assert_eq!(allocate_workspace_id(&counter), None);
+    }
+
+    #[test]
+    fn reserving_an_id_at_the_top_of_the_space_exhausts_allocation() {
+        let mut restored = Workspace::test_new("restored");
+        restored.id = WorkspaceId::from_number(usize::MAX).expect("nonzero number");
+        let counter = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
+
+        reserve_workspace_numbers(&counter, &[restored]);
+
+        assert_eq!(allocate_workspace_id(&counter), None);
+    }
+
+    #[test]
+    fn reserving_never_moves_the_counter_back() {
+        let mut restored = Workspace::test_new("restored");
+        restored.id = WorkspaceId::from_number(3).expect("nonzero number");
+        let counter = AtomicUsize::new(10);
+
+        reserve_workspace_numbers(&counter, &[restored]);
+
+        let next = allocate_workspace_id(&counter).expect("numbers left");
+        assert_eq!(next.number(), 10);
     }
 
     #[test]

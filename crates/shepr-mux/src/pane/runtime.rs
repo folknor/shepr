@@ -25,8 +25,6 @@ use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalReadSnapshot;
 use shepr_agent::detect::Agent;
-#[cfg(test)]
-use shepr_agent::detect::AgentState;
 use shepr_core::layout::PaneId;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
 use shepr_pty::{ChildIo, PtyCommand};
@@ -1369,11 +1367,6 @@ impl PaneRuntime {
         self.detect_reset_notify.notify_one();
     }
 
-    #[cfg(test)]
-    pub fn agent_detection_reset_notify_for_test(&self) -> Arc<Notify> {
-        Arc::clone(&self.detect_reset_notify)
-    }
-
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
         let previous = self
             .full_lifecycle_authority_active
@@ -1385,12 +1378,6 @@ impl PaneRuntime {
 
     pub fn grid_size(&self) -> shepr_core::geometry::GridSize {
         self.current_size.get().grid
-    }
-
-    #[cfg(test)]
-    pub fn current_size(&self) -> (u16, u16) {
-        let grid = self.grid_size();
-        (grid.rows.get(), grid.cols.get())
     }
 
     pub fn content_seq(&self) -> u64 {
@@ -1698,11 +1685,6 @@ impl PaneRuntime {
         None
     }
 
-    #[cfg(test)]
-    pub fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.recent_unwrapped_text_snapshot(lines).text
-    }
-
     pub fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
@@ -1842,6 +1824,25 @@ impl Drop for PaneRuntime {
                 &self.teardown_tracker,
             );
         }
+    }
+}
+
+#[cfg(test)]
+use shepr_agent::detect::AgentState;
+
+#[cfg(test)]
+impl PaneRuntime {
+    pub fn agent_detection_reset_notify_for_test(&self) -> Arc<Notify> {
+        Arc::clone(&self.detect_reset_notify)
+    }
+
+    pub fn current_size(&self) -> (u16, u16) {
+        let grid = self.grid_size();
+        (grid.rows.get(), grid.cols.get())
+    }
+
+    pub fn recent_unwrapped_text(&self, lines: usize) -> String {
+        self.recent_unwrapped_text_snapshot(lines).text
     }
 }
 

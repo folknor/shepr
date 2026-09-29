@@ -168,19 +168,6 @@ impl CellData {
 }
 
 impl FrameData {
-    /// Creates a `FrameData` from a ratatui `Buffer` and optional cursor.
-    ///
-    /// This converts ratatui's internal cell representation into the
-    /// wire-protocol cell format. The conversion is lossless for all
-    /// commonly used cell attributes.
-    #[cfg(test)]
-    pub fn from_ratatui_buffer(
-        buffer: &ratatui::buffer::Buffer,
-        cursor: Option<CursorState>,
-    ) -> Self {
-        Self::from_ratatui_buffer_with_hyperlinks(buffer, cursor, &[])
-    }
-
     pub fn from_ratatui_buffer_with_hyperlinks(
         buffer: &ratatui::buffer::Buffer,
         cursor: Option<CursorState>,
@@ -298,5 +285,20 @@ impl From<ratatui::layout::Rect> for SurfaceRect {
             width: rect.width,
             height: rect.height,
         }
+    }
+}
+
+#[cfg(test)]
+impl FrameData {
+    /// Creates a `FrameData` from a ratatui `Buffer` and optional cursor.
+    ///
+    /// This converts ratatui's internal cell representation into the
+    /// wire-protocol cell format. The conversion is lossless for all
+    /// commonly used cell attributes.
+    pub fn from_ratatui_buffer(
+        buffer: &ratatui::buffer::Buffer,
+        cursor: Option<CursorState>,
+    ) -> Self {
+        Self::from_ratatui_buffer_with_hyperlinks(buffer, cursor, &[])
     }
 }

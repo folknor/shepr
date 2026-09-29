@@ -8,9 +8,6 @@ use crate::limits::MAX_CONFIG_SYMLINK_DEPTH;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 
-#[cfg(test)]
-mod tests;
-
 /// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
     _lock: shepr_platform::ipc::FlockLock,
@@ -157,11 +154,6 @@ struct Replacement {
 }
 
 impl Replacement {
-    #[cfg(test)]
-    fn temporary(&self) -> &Path {
-        self.inner.temporary_path()
-    }
-
     fn prepare(path: &Path, contents: &[u8]) -> io::Result<Self> {
         reject_hard_links(path)?;
         let target = resolve_target(path)?;
@@ -185,5 +177,15 @@ impl Replacement {
 
     fn commit(self) -> io::Result<()> {
         self.inner.commit_after(reject_hard_links)
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+impl Replacement {
+    fn temporary(&self) -> &Path {
+        self.inner.temporary_path()
     }
 }

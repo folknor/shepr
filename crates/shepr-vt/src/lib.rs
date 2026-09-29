@@ -46,8 +46,6 @@ mod rows;
 mod scan;
 pub mod selection;
 pub use cell::RenderColors;
-#[cfg(test)]
-use cell::cell_style;
 pub use cell::{
     CellBasicData, CellColor, CellStyle, CellView, CellWide, UnderlineStyle,
     is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
@@ -171,18 +169,6 @@ pub struct TerminalScrollbar {
 pub enum PtyResponse {
     Bytes(Vec<u8>),
     ColorQuery(ColorQuery),
-}
-
-#[cfg(test)]
-impl PtyResponse {
-    /// The reply the terminal would send on its own (colour queries answered
-    /// with `core_color`, dropped when that is unset).
-    fn into_core_bytes(self) -> Option<Vec<u8>> {
-        match self {
-            Self::Bytes(bytes) => Some(bytes),
-            Self::ColorQuery(query) => query.core_color.map(|color| query.encode(color)),
-        }
-    }
 }
 
 pub fn encode_focus(event: FocusEvent) -> &'static [u8] {
@@ -863,11 +849,6 @@ impl Terminal {
         self.term.total_lines()
     }
 
-    #[cfg(test)]
-    pub fn scrollback_rows(&self) -> usize {
-        self.term.history_size()
-    }
-
     pub fn scrollbar(&self) -> TerminalScrollbar {
         let history = self.term.history_size();
         TerminalScrollbar {
@@ -1020,12 +1001,6 @@ impl Terminal {
         u16::try_from(line).unwrap_or(u16::MAX)
     }
 
-    /// The cursor colour set with OSC 12, if any.
-    #[cfg(test)]
-    fn effective_cursor_color(&self) -> Option<RgbColor> {
-        self.term.colors()[NamedColor::Cursor].map(RgbColor::from_vte)
-    }
-
     pub fn width_px(&self) -> u32 {
         self.current_geometry()
             .text_area_px()
@@ -1041,6 +1016,33 @@ impl Terminal {
 
 fn saturating_u16(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
+}
+
+#[cfg(test)]
+use cell::cell_style;
+
+#[cfg(test)]
+impl PtyResponse {
+    /// The reply the terminal would send on its own (colour queries answered
+    /// with `core_color`, dropped when that is unset).
+    fn into_core_bytes(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes),
+            Self::ColorQuery(query) => query.core_color.map(|color| query.encode(color)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Terminal {
+    pub fn scrollback_rows(&self) -> usize {
+        self.term.history_size()
+    }
+
+    /// The cursor colour set with OSC 12, if any.
+    fn effective_cursor_color(&self) -> Option<RgbColor> {
+        self.term.colors()[NamedColor::Cursor].map(RgbColor::from_vte)
+    }
 }
 
 #[cfg(test)]

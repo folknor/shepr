@@ -109,13 +109,11 @@ impl HeadlessServer {
         let mut tab_workspace_ids = HashMap::new();
         for workspace in &self.app.state.workspaces {
             let workspace_id = workspace.id.clone();
-            let active_tab_id = shepr_protocol::PublicTabId::new(
-                workspace_id.as_str(),
-                workspace.active_tab().number(),
-            );
+            let active_tab_id =
+                shepr_protocol::PublicTabId::new(&workspace_id, workspace.active_tab().number());
             active_tab_ids.insert(workspace_id.clone(), active_tab_id);
             for tab in workspace.tabs() {
-                let tab_id = shepr_protocol::PublicTabId::new(workspace_id.as_str(), tab.number());
+                let tab_id = shepr_protocol::PublicTabId::new(&workspace_id, tab.number());
                 tab_workspace_ids.insert(tab_id, workspace_id.clone());
             }
         }

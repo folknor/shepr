@@ -222,11 +222,6 @@ impl ClientShellInput {
         self.requests.extend(later.requests);
         self.actions.extend(later.actions);
     }
-
-    #[cfg(test)]
-    pub(crate) fn into_parts(self) -> (bool, Vec<ClientShellAction>) {
-        (self.repaint, self.actions)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -466,7 +461,9 @@ pub(super) enum ClientEndpointNoticeKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ClientEndpointNoticeKey {
-    pub(super) boot_id: shepr_protocol::BootId,
+    /// The server boot the notice is about; `None` for a notice no server
+    /// boot raised (no snapshot yet, or a saved machine's diagnostic).
+    pub(super) boot_id: Option<shepr_protocol::BootId>,
     pub(super) kind: ClientEndpointNoticeKind,
     pub(super) code: String,
 }
@@ -684,12 +681,6 @@ pub struct ClientShellState {
 }
 
 impl ClientShellState {
-    #[cfg(test)]
-    pub fn new(config: ClientShellConfig) -> Self {
-        // clock-io-ok: this test-only constructor stands in for the client launch.
-        Self::new_at(config, std::time::Instant::now())
-    }
-
     pub fn new_at(mut config: ClientShellConfig, now: std::time::Instant) -> Self {
         let preferences = config.preferences.clone();
         let overlay = None;
@@ -1392,5 +1383,20 @@ impl ClientShellState {
         self.pending_pane_surface = None;
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
+    }
+}
+
+#[cfg(test)]
+impl ClientShellInput {
+    pub(crate) fn into_parts(self) -> (bool, Vec<ClientShellAction>) {
+        (self.repaint, self.actions)
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    pub fn new(config: ClientShellConfig) -> Self {
+        // clock-io-ok: this test-only constructor stands in for the client launch.
+        Self::new_at(config, std::time::Instant::now())
     }
 }

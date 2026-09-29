@@ -15,10 +15,11 @@ pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};
 pub use runtime_registry::PaneRuntimeRegistry;
 pub use state::PaneState;
 pub use teardown::PaneTeardownTracker;
-#[cfg(test)]
-use terminal::PaneTerminal;
 pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState};
 pub use terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalSearchDirection, TerminalSearchWindow,
     TerminalTextPoint, TerminalWordMotion,
 };
+
+#[cfg(test)]
+use terminal::PaneTerminal;

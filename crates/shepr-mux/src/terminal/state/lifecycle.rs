@@ -1,25 +1,6 @@
 use super::*;
 
 impl TerminalState {
-    #[cfg(test)]
-    pub fn clear_hook_authority(
-        &mut self,
-        source: Option<&str>,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange> {
-        self.clear_hook_authority_with_mutation(source, seq)
-            .and_then(|mutation| mutation.effective_state_change)
-    }
-
-    #[cfg(test)]
-    pub fn clear_hook_authority_with_mutation(
-        &mut self,
-        source: Option<&str>,
-        seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
-        self.clear_hook_authority_with_mutation_at(source, seq, Instant::now())
-    }
-
     pub fn clear_hook_authority_with_mutation_at(
         &mut self,
         source: Option<&str>,
@@ -66,16 +47,6 @@ impl TerminalState {
             session_ref_changed: previous_session.is_some(),
             agent_released: false,
         })
-    }
-
-    #[cfg(test)]
-    pub fn release_agent_with_mutation(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
-        self.release_agent_with_mutation_at(source, agent_label, seq, Instant::now())
     }
 
     pub fn release_agent_with_mutation_at(
@@ -216,5 +187,34 @@ impl TerminalState {
                     &authority.agent_label,
                 )
         })
+    }
+}
+
+#[cfg(test)]
+impl TerminalState {
+    pub fn clear_hook_authority(
+        &mut self,
+        source: Option<&str>,
+        seq: Option<u64>,
+    ) -> Option<EffectiveStateChange> {
+        self.clear_hook_authority_with_mutation(source, seq)
+            .and_then(|mutation| mutation.effective_state_change)
+    }
+
+    pub fn clear_hook_authority_with_mutation(
+        &mut self,
+        source: Option<&str>,
+        seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        self.clear_hook_authority_with_mutation_at(source, seq, Instant::now())
+    }
+
+    pub fn release_agent_with_mutation(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        self.release_agent_with_mutation_at(source, agent_label, seq, Instant::now())
     }
 }

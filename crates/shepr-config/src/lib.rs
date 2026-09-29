@@ -61,11 +61,6 @@ pub use self::{tab_bar::ValidatedTabBarRightEntry, window_title::sanitize_window
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
 impl Config {
-    #[cfg(test)]
-    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
-        self.resolve_palette_with_ui_accent(false)
-    }
-
     pub fn resolve_palette_with_ui_accent(
         &self,
         ui_accent_is_explicit: bool,
@@ -90,6 +85,13 @@ impl Config {
             .into_iter()
             .chain(resolution.path_diagnostics)
             .collect()
+    }
+}
+
+#[cfg(test)]
+impl Config {
+    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
+        self.resolve_palette_with_ui_accent(false)
     }
 }
 

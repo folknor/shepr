@@ -377,11 +377,7 @@ impl SavedSshApiBridge {
         let command = super::cached_remote_api_command(&metadata, session);
         // The managed SSH config remains necessary on a cache hit: its include and
         // ControlMaster options are still applied by the bridge's SSH subprocess.
-        let path = shepr_platform::remote_bridge_endpoint_path(
-            paths.xdg_runtime_dir(),
-            &format!("shepr-api-ssh-{profile_id}.sock"),
-            &format!("shepr-api-{}.sock", profile_id.short()),
-        )?;
+        let path = saved_api_bridge_path(paths.xdg_runtime_dir(), profile_id)?;
         let bridge = SshStdioBridge::start_command(
             target.clone(),
             command,
@@ -441,9 +437,27 @@ pub fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
     super::shell_command_line(super::shell_quote(PROGRAM_NAME), args)
 }
 
+// The profile only makes these names readable; it is not what keeps bridges
+// apart. `remote_bridge_endpoint_path` inserts a fresh random token into every
+// name it hands out, so each bridge (every client attached to one saved
+// machine, every connect attempt, every concurrent `--machine` command) binds a
+// socket of its own and removes it on drop. Two bridges for one profile never
+// contend for a path, so the busy-socket `AddrInUse` cannot arise between them.
+
+/// A fresh socket path for one saved-machine attach bridge.
 fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
     let readable = format!("shepr-ssh-{profile_id}.sock");
     let short = format!("shepr-s-{}.sock", profile_id.short());
+    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
+}
+
+/// A fresh socket path for one `--machine` API bridge.
+fn saved_api_bridge_path(
+    runtime_dir: &std::path::Path,
+    profile_id: &ProfileId,
+) -> io::Result<PathBuf> {
+    let readable = format!("shepr-api-ssh-{profile_id}.sock");
+    let short = format!("shepr-api-{}.sock", profile_id.short());
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
 }
 
@@ -507,6 +521,58 @@ mod tests {
         assert_ne!(first, second);
         assert!(!first.to_string_lossy().contains("example.com"));
         assert!(!first.to_string_lossy().contains("default"));
+    }
+
+    /// Two clients attached to one saved machine, and two concurrent
+    /// `--machine` commands for it, each bind a bridge socket of their own at
+    /// the same time, and dropping them leaves the runtime directory empty.
+    #[test]
+    fn concurrent_bridges_for_one_profile_each_bind_their_own_socket() {
+        let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-concurrent");
+        let profile =
+            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
+        let paths = [
+            saved_bridge_path(runtime_dir.path(), &profile),
+            saved_bridge_path(runtime_dir.path(), &profile),
+            saved_api_bridge_path(runtime_dir.path(), &profile),
+            saved_api_bridge_path(runtime_dir.path(), &profile),
+        ]
+        .map(|path| path.expect("test precondition"));
+        let bridges: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                SshStdioBridge::start_command(
+                    SshTarget::parse("example").expect("test precondition"),
+                    "true".into(),
+                    path.clone(),
+                    None,
+                    true,
+                )
+                .expect("every concurrent bridge binds its own socket")
+            })
+            .collect();
+        for (index, path) in paths.iter().enumerate() {
+            assert!(path.starts_with(runtime_dir.path()), "{}", path.display());
+            assert!(
+                !paths[index + 1..].contains(path),
+                "{} handed out twice",
+                path.display()
+            );
+            // Not connected to: an accepted stream would start a real ssh.
+            let metadata = std::fs::symlink_metadata(path).expect("bridge socket is bound");
+            assert!(
+                std::os::unix::fs::FileTypeExt::is_socket(&metadata.file_type()),
+                "{}",
+                path.display()
+            );
+        }
+
+        drop(bridges);
+        let left: Vec<_> = std::fs::read_dir(runtime_dir.path())
+            .expect("test precondition")
+            .map(|entry| entry.expect("test precondition").file_name())
+            .collect();
+        assert!(left.is_empty(), "bridges left files behind: {left:?}");
     }
 
     #[test]

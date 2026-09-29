@@ -4,7 +4,7 @@ use super::*;
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {
-        tab_id: shepr_protocol::PublicTabId::new("w1", number),
+        tab_id: shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), number),
         workspace_id: test_workspace_id("w1"),
         number,
         label: number.to_string(),
@@ -63,7 +63,10 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .iter()
         .enumerate()
         .map(|(index, label)| ClientShellTab {
-            tab_id: shepr_protocol::PublicTabId::new("w1", index + 1),
+            tab_id: shepr_protocol::PublicTabId::new(
+                &crate::tests::test_workspace_id("w1"),
+                index + 1,
+            ),
             workspace_id: test_workspace_id("w1"),
             number: index + 1,
             label: (*label).into(),
@@ -75,7 +78,8 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .collect();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     for number in [8, 7, 8] {
-        let tab_id = shepr_protocol::PublicTabId::new("w1", number);
+        let tab_id =
+            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), number);
         projected.focused_tab_id = Some(tab_id.clone());
         projected.workspaces[0].active_tab_id = tab_id.clone();
         projected.panes[0].tab_id = tab_id.clone();

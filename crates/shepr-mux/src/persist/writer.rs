@@ -139,22 +139,6 @@ impl SessionWriter {
         self.finish_save_with_snapshot_plan(result, snapshot, history, snapshot_history_plan, now)
     }
 
-    #[cfg(test)]
-    fn finish_save(
-        &mut self,
-        result: io::Result<super::io::Published>,
-        snapshot: &SessionSnapshot,
-        history: Option<&SessionHistorySnapshot>,
-    ) -> io::Result<()> {
-        self.finish_save_with_snapshot_plan(
-            result,
-            snapshot,
-            history,
-            SnapshotHistoryPlan::RetryAfterWrite,
-            UNIX_EPOCH,
-        )
-    }
-
     fn finish_save_with_snapshot_plan(
         &mut self,
         result: io::Result<super::io::Published>,
@@ -593,6 +577,24 @@ fn recovery_timestamp(name: &str) -> Option<u128> {
         fields[0].parse().ok()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+impl SessionWriter {
+    fn finish_save(
+        &mut self,
+        result: io::Result<super::io::Published>,
+        snapshot: &SessionSnapshot,
+        history: Option<&SessionHistorySnapshot>,
+    ) -> io::Result<()> {
+        self.finish_save_with_snapshot_plan(
+            result,
+            snapshot,
+            history,
+            SnapshotHistoryPlan::RetryAfterWrite,
+            UNIX_EPOCH,
+        )
     }
 }
 

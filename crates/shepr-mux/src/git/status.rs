@@ -22,12 +22,6 @@ pub struct GitStatusRefreshDemand {
 }
 
 impl GitStatusRefreshDemand {
-    #[cfg(test)]
-    pub const ALL: Self = Self {
-        branch: true,
-        ahead_behind: true,
-    };
-
     pub fn is_empty(self) -> bool {
         !self.branch && !self.ahead_behind
     }
@@ -107,14 +101,6 @@ pub struct GitUpstreamIdentity {
 
 pub fn git_status_cache_key(cwd: &Path) -> Option<PathBuf> {
     git_worktree_info(cwd).map(|info| canonicalize_best_effort_path(&info.repo_root))
-}
-
-#[cfg(test)]
-pub fn git_status_snapshot_for_cwd(
-    cwd: &Path,
-    cached: Option<&GitStatusCacheEntry>,
-) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
-    git_status_snapshot_for_cwd_with_demand(cwd, cached, GitStatusRefreshDemand::ALL)
 }
 
 pub fn git_status_snapshot_for_cwd_with_demand(
@@ -283,12 +269,6 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     )
 }
 
-#[cfg(test)]
-pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
-    let mut read_errors = Vec::new();
-    fingerprint(repo_context(cwd, &mut read_errors)?, true, &mut read_errors)
-}
-
 fn fingerprint(
     mut repo: RepoContext,
     include_upstream: bool,
@@ -446,6 +426,28 @@ fn parse_git_ahead_behind_output(stdout: &str) -> Option<AheadBehind> {
     let ahead = parts.next()?.parse().ok()?;
     let behind = parts.next()?.parse().ok()?;
     Some(AheadBehind { ahead, behind })
+}
+
+#[cfg(test)]
+pub fn git_status_snapshot_for_cwd(
+    cwd: &Path,
+    cached: Option<&GitStatusCacheEntry>,
+) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+    git_status_snapshot_for_cwd_with_demand(cwd, cached, GitStatusRefreshDemand::ALL)
+}
+
+#[cfg(test)]
+pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
+    let mut read_errors = Vec::new();
+    fingerprint(repo_context(cwd, &mut read_errors)?, true, &mut read_errors)
+}
+
+#[cfg(test)]
+impl GitStatusRefreshDemand {
+    pub const ALL: Self = Self {
+        branch: true,
+        ahead_behind: true,
+    };
 }
 
 #[cfg(test)]

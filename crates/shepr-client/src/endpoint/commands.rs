@@ -275,24 +275,24 @@ impl EndpointCommands {
         &mut self,
         endpoint_id: &ClientEndpointId,
         response_generation: u64,
-        response_boot_id: &str,
-        response_request_id: &str,
+        response_boot_id: &BootId,
+        response_request_id: &RequestId,
         final_chunk: bool,
         data: Vec<u8>,
     ) -> Option<EndpointCommandResult> {
         let lane = self.lanes.get_mut(endpoint_id)?;
         let retired = RequestKey {
             generation: response_generation.into(),
-            boot_id: response_boot_id.into(),
-            request_id: response_request_id.into(),
+            boot_id: response_boot_id.clone(),
+            request_id: response_request_id.clone(),
         };
         if lane.consume_retired(&retired, final_chunk) {
             return None;
         }
         let in_flight = lane.in_flight.as_mut()?;
         if response_generation != in_flight.key.generation
-            || response_boot_id != in_flight.key.boot_id.as_str()
-            || response_request_id != in_flight.key.request_id.as_str()
+            || *response_boot_id != in_flight.key.boot_id
+            || *response_request_id != in_flight.key.request_id
         {
             return None;
         }
@@ -398,6 +398,18 @@ mod tests {
         ClientEndpointId::Local
     }
 
+    fn boot_a() -> BootId {
+        shepr_test_fixtures::fixed_boot_id(1)
+    }
+
+    fn boot_b() -> BootId {
+        shepr_test_fixtures::fixed_boot_id(2)
+    }
+
+    fn request_a() -> RequestId {
+        "request-a".into()
+    }
+
     fn commands_with_in_flight() -> EndpointCommands {
         EndpointCommands {
             lanes: HashMap::from([(
@@ -406,7 +418,7 @@ mod tests {
                     in_flight: Some(InFlightCommand {
                         key: RequestKey {
                             generation: ConnectionGeneration::new(1),
-                            boot_id: "boot-a".into(),
+                            boot_id: boot_a(),
                             request_id: "request-a".into(),
                         },
                         response: Vec::new(),
@@ -429,16 +441,16 @@ mod tests {
     fn response_kind_uses_tracked_identity_instead_of_id_text() {
         let mut commands = commands_with_in_flight();
         assert_eq!(
-            commands.response_kind(&endpoint(), 1, "boot-a", "request-a"),
+            commands.response_kind(&endpoint(), 1, &boot_a(), "request-a"),
             CommandResponseKind::Active
         );
         assert_eq!(
-            commands.response_kind(&endpoint(), 1, "boot-a", "client-shell-surface:1:on"),
+            commands.response_kind(&endpoint(), 1, &boot_a(), "client-shell-surface:1:on"),
             CommandResponseKind::Untracked
         );
         commands.retire_lane(&endpoint());
         assert_eq!(
-            commands.response_kind(&endpoint(), 1, "boot-a", "request-a"),
+            commands.response_kind(&endpoint(), 1, &boot_a(), "request-a"),
             CommandResponseKind::Retired
         );
     }
@@ -458,8 +470,8 @@ mod tests {
                 .receive_chunk(
                     &endpoint(),
                     1,
-                    "boot-a",
-                    "request-a",
+                    &boot_a(),
+                    &request_a(),
                     false,
                     response.as_bytes()[..split].to_vec(),
                 )
@@ -469,8 +481,8 @@ mod tests {
             .receive_chunk(
                 &endpoint(),
                 1,
-                "boot-a",
-                "request-a",
+                &boot_a(),
+                &request_a(),
                 true,
                 response.as_bytes()[split..].to_vec(),
             )
@@ -478,7 +490,7 @@ mod tests {
 
         assert_eq!(completed.endpoint_id, endpoint());
         assert_eq!(completed.generation, 1);
-        assert_eq!(completed.boot_id, "boot-a");
+        assert_eq!(completed.boot_id, boot_a());
         assert_eq!(completed.request_id, "request-a");
         assert!(matches!(completed.result, Ok(ResponseResult::Ok {})));
         assert!(!has_in_flight(&commands));
@@ -502,8 +514,8 @@ mod tests {
             completed = commands.receive_chunk(
                 &endpoint(),
                 1,
-                "boot-a",
-                "request-a",
+                &boot_a(),
+                &request_a(),
                 index + 1 == chunk_count,
                 chunk.to_vec(),
             );
@@ -538,7 +550,7 @@ mod tests {
             .expect("expired endpoint command");
 
         assert_eq!(expired.endpoint_id, endpoint());
-        assert_eq!(expired.boot_id, "boot-a");
+        assert_eq!(expired.boot_id, boot_a());
         assert_eq!(expired.request_id, "request-a");
         assert!(matches!(
             expired.result,
@@ -556,7 +568,7 @@ mod tests {
         .expect("test precondition");
         assert!(
             commands
-                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
+                .receive_chunk(&endpoint(), 1, &boot_a(), &request_a(), true, late_response)
                 .is_none()
         );
         assert!(!has_in_flight(&commands));
@@ -575,7 +587,7 @@ mod tests {
                 in_flight: Some(InFlightCommand {
                     key: RequestKey {
                         generation: ConnectionGeneration::new(2),
-                        boot_id: "boot-b".into(),
+                        boot_id: boot_b(),
                         request_id: "request-b".into(),
                     },
                     response: Vec::new(),
@@ -591,7 +603,7 @@ mod tests {
         .expect("test precondition");
 
         let completed = commands
-            .receive_chunk(&remote, 2, "boot-b", "request-b", true, response)
+            .receive_chunk(&remote, 2, &boot_b(), &"request-b".into(), true, response)
             .expect("remote response");
 
         assert_eq!(completed.endpoint_id, remote);
@@ -618,7 +630,7 @@ mod tests {
             .queued
             .push_back(QueuedCommand {
                 generation: shepr_protocol::ConnectionGeneration::new(1),
-                boot_id: "boot-a".into(),
+                boot_id: boot_a(),
                 request: Box::new(Request {
                     id: "queued-source".into(),
                     method: shepr_api::schema::Method::WorkspaceList(
@@ -631,7 +643,7 @@ mod tests {
             EndpointCommandLane {
                 queued: VecDeque::from([QueuedCommand {
                     generation: shepr_protocol::ConnectionGeneration::new(2),
-                    boot_id: "boot-b".into(),
+                    boot_id: boot_b(),
                     request: Box::new(Request {
                         id: "request-b".into(),
                         method: shepr_api::schema::Method::WorkspaceList(
@@ -668,7 +680,7 @@ mod tests {
         .expect("test precondition");
         assert!(
             commands
-                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
+                .receive_chunk(&endpoint(), 1, &boot_a(), &request_a(), true, late_response)
                 .is_none()
         );
     }
@@ -683,7 +695,7 @@ mod tests {
             .queued
             .push_back(QueuedCommand {
                 generation: shepr_protocol::ConnectionGeneration::new(1),
-                boot_id: "boot-a".into(),
+                boot_id: boot_a(),
                 request: Box::new(Request {
                     id: "queued-a".into(),
                     method: shepr_api::schema::Method::WorkspaceList(
@@ -704,19 +716,19 @@ mod tests {
         for serial in 0..MAX_RETIRED_REQUESTS_PER_ENDPOINT + 10 {
             lane.retire(RequestKey {
                 generation: ConnectionGeneration::new(1),
-                boot_id: "boot".into(),
+                boot_id: boot_a(),
                 request_id: format!("request-{serial}").into(),
             });
         }
         assert_eq!(lane.retired.len(), MAX_RETIRED_REQUESTS_PER_ENDPOINT);
         assert!(!lane.retired.contains(&RequestKey {
             generation: ConnectionGeneration::new(1),
-            boot_id: "boot".into(),
+            boot_id: boot_a(),
             request_id: "request-0".into(),
         }));
         assert!(lane.retired.contains(&RequestKey {
             generation: ConnectionGeneration::new(1),
-            boot_id: "boot".into(),
+            boot_id: boot_a(),
             request_id: format!("request-{}", MAX_RETIRED_REQUESTS_PER_ENDPOINT + 9).into(),
         }));
     }
@@ -731,17 +743,31 @@ mod tests {
 
         assert!(
             commands
-                .receive_chunk(&endpoint(), 2, "boot-a", "request-a", true, b"{}".to_vec())
+                .receive_chunk(
+                    &endpoint(),
+                    2,
+                    &boot_a(),
+                    &request_a(),
+                    true,
+                    b"{}".to_vec()
+                )
                 .is_none()
         );
         assert!(
             commands
-                .receive_chunk(&endpoint(), 1, "boot-b", "request-a", true, b"{}".to_vec())
+                .receive_chunk(
+                    &endpoint(),
+                    1,
+                    &boot_b(),
+                    &request_a(),
+                    true,
+                    b"{}".to_vec()
+                )
                 .is_none()
         );
         assert!(
             commands
-                .receive_chunk(&unknown, 1, "boot-a", "request-a", true, b"{}".to_vec())
+                .receive_chunk(&unknown, 1, &boot_a(), &request_a(), true, b"{}".to_vec())
                 .is_none()
         );
         assert!(has_in_flight(&commands));
@@ -753,16 +779,30 @@ mod tests {
         let chunk = vec![b' '; MAX_ENDPOINT_RESPONSE_BYTES / 2];
         assert!(
             commands
-                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", false, chunk.clone())
+                .receive_chunk(
+                    &endpoint(),
+                    1,
+                    &boot_a(),
+                    &request_a(),
+                    false,
+                    chunk.clone()
+                )
                 .is_none()
         );
         assert!(
             commands
-                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", false, chunk.clone())
+                .receive_chunk(
+                    &endpoint(),
+                    1,
+                    &boot_a(),
+                    &request_a(),
+                    false,
+                    chunk.clone()
+                )
                 .is_none()
         );
         let failed = commands
-            .receive_chunk(&endpoint(), 1, "boot-a", "request-a", false, vec![b' '])
+            .receive_chunk(&endpoint(), 1, &boot_a(), &request_a(), false, vec![b' '])
             .expect("oversized response completes the command");
         assert!(matches!(
             failed.result,
@@ -772,7 +812,7 @@ mod tests {
         assert!(!has_in_flight(&commands));
         assert!(
             commands
-                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, b"}".to_vec())
+                .receive_chunk(&endpoint(), 1, &boot_a(), &request_a(), true, b"}".to_vec())
                 .is_none()
         );
     }

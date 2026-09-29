@@ -5,8 +5,6 @@ use std::time::Instant;
 
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
-#[cfg(test)]
-use shepr_core::layout::{NavDirection, find_in_direction};
 use shepr_mux::events::AppEvent;
 use shepr_mux::git::WorkspaceGitStatus;
 use shepr_mux::terminal::{EffectiveStateChange, TerminalStateMutation};
@@ -182,6 +180,9 @@ mod events;
 mod focus;
 mod pane;
 mod workspace;
+
+#[cfg(test)]
+use shepr_core::layout::{NavDirection, find_in_direction};
 
 #[cfg(test)]
 mod tests;

@@ -24,18 +24,25 @@ phantoms here.
 
 ---
 
-## HYGV-154 - Identities that can still be minted unchecked
+## HYGV-154 - Workspace ids still travel as strings in places
 
-`PaneId`, `TerminalId` and `WorkspaceId` can now only be built through a
-validating path. The same shape remains elsewhere:
+Pane, tab, terminal, workspace and boot ids now validate on construction.
+Remaining string-typed workspace ids:
 
-- `shepr-protocol`'s `PublicChildId::new` and its parser accept any non-empty
-  workspace segment; client and server tests rely on non-canonical segments
-  (`"wOLD"`, `"ws_1:p1"`, `"old-workspace"`), including
-  `shepr-client`'s `activation_tests.rs` and `composition.rs`.
-- `BootId` has a public `From<&str>`, and `RequestId` public `From<String>` and
-  `From<&str>`.
-- `shepr-mux`'s `NEXT_WORKSPACE_ID` global is untouched.
-- `shepr-server/src/client_shell.rs::snapshot_from_session` re-parses id
-  strings the same process produced, because the API snapshot types are
-  `String`-typed.
+- The JSON API schema (`WorkspaceInfo`, `TabInfo`, `PaneInfo`, `AgentInfo`,
+  `SessionSnapshot` in `shepr-api`) carries ids as `String`, so
+  `shepr-server/src/client_shell.rs::snapshot_from_session` parses them back.
+  Typing those fields keeps the JSON text but is an API surface choice;
+  `shepr-api/src/schema/tests.rs` uses non-canonical `"w_1"` there.
+- `shepr-client/src/shell/endpoints.rs`: `ClientEndpointFocusTarget::Workspace`
+  holds a `String` while `Pane` is typed; `activation_tests.rs` builds it with
+  `"old"` and `"new"`.
+- `shepr-mux/src/workspace.rs`: `PaneRemoval.workspace_id` and
+  `TabRemovalPlan.workspace_id` are `String` (the server fills the latter with
+  `workspace.id.to_string()` and compares it back), and `App::public_workspace_id`,
+  `public_tab_id` and `public_pane_id` return `String`.
+- `shepr-mux/src/persist/restore.rs::restored_workspace_id` loops only because
+  saved ids are reserved after restore; reserving them first removes the loop.
+- The mux test `generated_workspace_ids_are_short_base32_handles` asserts
+  `len <= 3`, which depends on how many ids other tests in the binary took from
+  the global counter.

@@ -32,6 +32,47 @@ pub enum Liveness {
     Unreachable(io::Error),
 }
 
+/// Another process already holds a server socket path: its startup lock, a
+/// live listener at the path, or a file that raced the bind into place.
+///
+/// Every busy refusal from this module is an [`io::ErrorKind::AddrInUse`]
+/// error carrying this payload, so the path survives whichever caller sees it
+/// and nobody gets a bare "address in use". Callers that word the refusal
+/// themselves find it with [`SocketBusy::from_io`].
+#[derive(Debug)]
+pub struct SocketBusy {
+    path: PathBuf,
+}
+
+impl SocketBusy {
+    fn error(path: &Path) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::AddrInUse,
+            Self {
+                path: path.to_path_buf(),
+            },
+        )
+    }
+
+    /// The busy refusal inside `error`, if it is one.
+    pub fn from_io(error: &io::Error) -> Option<&Self> {
+        error.get_ref()?.downcast_ref::<Self>()
+    }
+
+    /// The socket path another process holds.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::fmt::Display for SocketBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "socket busy at {}", self.path.display())
+    }
+}
+
+impl std::error::Error for SocketBusy {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SocketFileIdentity {
     dev: u64,
@@ -42,7 +83,8 @@ pub struct SocketFileIdentity {
 ///
 /// [`bind_private_socket`] takes it before preparing the path; keep it until
 /// the listener has stopped. The regular sidecar file stays beside the socket after the
-/// guard drops so later processes always lock the same inode.
+/// guard drops so later processes always lock the same inode. The exception
+/// is [`bind_single_use_private_socket`], whose owner removes the sidecar.
 pub struct SocketStartupLock {
     _lock: FlockLock,
     socket_path: PathBuf,
@@ -117,7 +159,13 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
         ));
     }
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    flock_exclusive(&file, blocking)?;
+    Ok(FlockLock { _file: file })
+}
 
+/// Takes an exclusive `flock` on `file`, waiting for another holder when
+/// `blocking` and returning `WouldBlock` otherwise.
+fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()> {
     let mut operation = libc::LOCK_EX;
     if !blocking {
         operation |= libc::LOCK_NB;
@@ -127,7 +175,7 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
         // does not read or write memory through the call.
         let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
         if result == 0 {
-            return Ok(FlockLock { _file: file });
+            return Ok(());
         }
         let error = io::Error::last_os_error();
         if error.kind() == io::ErrorKind::Interrupted {
@@ -155,7 +203,7 @@ pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStart
                 path = %socket_path.display(),
                 "server socket startup lock is already held"
             );
-            return Err(io::Error::from(io::ErrorKind::AddrInUse));
+            return Err(SocketBusy::error(socket_path));
         }
         Err(error) => return Err(error),
     };
@@ -178,25 +226,224 @@ pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStart
 /// listener has stopped and its socket file has been removed. Keeping these
 /// steps together prevents a caller from reclaiming a stale socket before it
 /// owns the lock, which could unlink a socket another server is about to use.
-/// A busy path is returned as [`io::ErrorKind::AddrInUse`]; the caller chooses
-/// any operator-facing wording.
+/// A busy path is returned as a [`SocketBusy`] error naming it; the caller
+/// chooses any operator-facing wording.
 pub fn bind_private_socket(
     path: &Path,
 ) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
     let startup_lock = acquire_socket_startup_lock(path)?;
     prepare_socket_path(path)?;
-    let listener = bind_private_local_listener(path).map_err(|error| {
-        if error.kind() == io::ErrorKind::AddrInUse {
-            io::Error::from(io::ErrorKind::AddrInUse)
-        } else {
-            error
-        }
-    })?;
+    let listener = bind_private_local_listener(path)?;
     let identity = socket_file_identity(path)?;
     Ok((listener, startup_lock, identity))
 }
 
-fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
+/// [`bind_private_socket`] for a path no other process will ever bind, such
+/// as a randomly named SSH bridge socket.
+///
+/// The lock sidecar is created fresh, so one that already exists means the
+/// path is taken and is refused as [`SocketBusy`] without touching it. Once
+/// locked, the sidecar records this process's identity, which lets
+/// [`sweep_abandoned_single_use_sockets`] reclaim the socket and sidecar of
+/// an owner killed before its teardown ran. A bind that fails after the
+/// sidecar exists removes it, and the socket if one was linked: no later
+/// binder can race a single-use path for that inode, which is what makes the
+/// removal safe here and unsafe for [`bind_private_socket`]. The caller
+/// removes both when it is done, while still holding the returned lock.
+pub fn bind_single_use_private_socket(
+    path: &Path,
+) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
+    let startup_lock = acquire_single_use_socket_lock(path)?;
+    let mut listener_bound = false;
+    let bound = prepare_socket_path(path)
+        .and_then(|()| bind_private_local_listener(path))
+        .and_then(|listener| {
+            listener_bound = true;
+            let identity = socket_file_identity(path)?;
+            Ok((listener, identity))
+        });
+    match bound {
+        Ok((listener, identity)) => Ok((listener, startup_lock, identity)),
+        Err(error) => {
+            if listener_bound {
+                remove_single_use_file(path, "socket");
+            }
+            remove_single_use_file(&socket_startup_lock_path(path), "socket lock");
+            drop(startup_lock);
+            Err(error)
+        }
+    }
+}
+
+/// Creates, locks and owner-marks the sidecar of a single-use socket path.
+/// A sidecar created here and then not locked is removed again.
+fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
+    let parent = socket_parent(socket_path)?;
+    fs::create_dir_all(parent)?;
+    let lock_path = socket_startup_lock_path(socket_path);
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            tracing::info!(
+                event = "ipc.socket_lock",
+                subsystem = "ipc",
+                outcome = "busy",
+                path = %socket_path.display(),
+                "single-use socket lock already exists"
+            );
+            return Err(SocketBusy::error(socket_path));
+        }
+        Err(error) => return Err(error),
+    };
+    if let Err(error) = flock_exclusive(&file, false) {
+        drop(file);
+        remove_single_use_file(&lock_path, "socket lock");
+        return Err(error);
+    }
+    // Written only once locked, so a sweep that reads a complete identity
+    // also finds the lock of a live owner held. Without a readable identity
+    // the sidecar stays unmarked, and the sweep never removes an unmarked one.
+    match super::process_identity::ProcessIdentity::current() {
+        Ok(owner) => {
+            if let Err(error) = (&file).write_all(owner.tag(0).as_bytes()) {
+                drop(file);
+                remove_single_use_file(&lock_path, "socket lock");
+                return Err(error);
+            }
+        }
+        Err(error) => {
+            tracing::debug!(%error, "could not record single-use socket owner identity; a leaked socket will be retained");
+        }
+    }
+    tracing::info!(
+        event = "ipc.socket_lock",
+        subsystem = "ipc",
+        outcome = "acquired",
+        path = %socket_path.display(),
+        "single-use socket lock acquired"
+    );
+    Ok(SocketStartupLock {
+        _lock: FlockLock { _file: file },
+        socket_path: socket_path.to_path_buf(),
+    })
+}
+
+/// Removes a file of a single-use socket that this process owns. Absence is
+/// success; any other failure leaves a file in the runtime directory, which is
+/// worth a line naming it.
+fn remove_single_use_file(path: &Path, what: &str) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "could not remove single-use {what}");
+        }
+    }
+}
+
+/// Removes the sockets and lock sidecars that [`bind_single_use_private_socket`]
+/// owners left in `dir` when they were killed before their teardown ran.
+///
+/// Only a sidecar that is a current-uid regular file recording a process
+/// `/proc` proves has exited, and whose lock nobody holds, is reclaimed,
+/// together with a current-uid socket at its socket path. An unmarked sidecar
+/// (its owner's identity was unreadable, or not yet written) is retained
+/// because its owner cannot be established. Sidecars of shared socket paths
+/// are never written to, so they never qualify.
+pub fn sweep_abandoned_single_use_sockets(dir: &Path) {
+    let uid = super::effective_uid();
+    let Ok(dir_metadata) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !dir_metadata.file_type().is_dir()
+        || dir_metadata.uid() != uid
+        || dir_metadata.permissions().mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
+    {
+        return;
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::debug!(path = %dir.display(), error = %error, "could not scan single-use socket directory");
+            return;
+        }
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(socket_name) = name.to_str().and_then(|name| name.strip_suffix(".lock")) else {
+            continue;
+        };
+        if socket_name.is_empty() {
+            continue;
+        }
+        reclaim_abandoned_single_use_socket(&entry.path(), &dir.join(socket_name), uid);
+    }
+}
+
+fn reclaim_abandoned_single_use_socket(lock_path: &Path, socket_path: &Path, uid: u32) {
+    // O_NONBLOCK keeps a FIFO that happens to end in `.lock` from stalling
+    // the open; anything but a regular file is refused just below.
+    let Ok(mut file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(lock_path)
+    else {
+        return;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return;
+    };
+    if !metadata.is_file()
+        || metadata.uid() != uid
+        || metadata.len() > super::limits::SINGLE_USE_SOCKET_OWNER_MAX_BYTES
+    {
+        return;
+    }
+    let mut marker = String::new();
+    if file.read_to_string(&mut marker).is_err() {
+        return;
+    }
+    let Some((owner, 0)) = super::process_identity::ProcessIdentity::parse_tag(&marker) else {
+        return;
+    };
+    // A held lock means a live owner, whatever `/proc` says. Holding it
+    // through the removals keeps a concurrent sweep off the same files.
+    if !owner.is_provably_gone() || flock_exclusive(&file, false).is_err() {
+        return;
+    }
+    // The name must still be the inode just inspected.
+    let Ok(current) = fs::symlink_metadata(lock_path) else {
+        return;
+    };
+    if current.dev() != metadata.dev() || current.ino() != metadata.ino() {
+        return;
+    }
+    match fs::symlink_metadata(socket_path) {
+        Ok(socket) if socket.file_type().is_socket() && socket.uid() == uid => {
+            remove_single_use_file(socket_path, "socket");
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        // Anything else at the socket path, or a failed stat, leaves both
+        // files alone.
+        Ok(_) | Err(_) => return,
+    }
+    remove_single_use_file(lock_path, "socket lock");
+}
+
+/// The sidecar file [`acquire_socket_startup_lock`] locks for `socket_path`.
+/// It normally outlives the lock (see [`SocketStartupLock`]); only an owner
+/// whose socket path is single-use, such as a randomly named SSH bridge
+/// socket bound with [`bind_single_use_private_socket`], may remove it, since
+/// no later binder can race it for that path.
+pub fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
     let mut name = socket_path.as_os_str().to_os_string();
     name.push(".lock");
     name.into()
@@ -254,9 +501,7 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
 
     match probe(path) {
         Liveness::Absent => return Ok(()),
-        Liveness::Live => {
-            return Err(io::Error::from(io::ErrorKind::AddrInUse));
-        }
+        Liveness::Live => return Err(SocketBusy::error(path)),
         Liveness::Stale => {}
         Liveness::Unreachable(error) => return Err(error),
     }
@@ -321,7 +566,7 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 /// fresh private staging directory next to `path`, given owner-only socket
 /// permissions, and then hard-linked into place. `link` fails if `path` already
 /// exists, so a listener that raced us to the path is never replaced (a `bind` at the path
-/// would have failed the same way); that is reported as `AddrInUse`. The
+/// would have failed the same way); that is reported as [`SocketBusy`]. The
 /// listener is bound to the inode, so connections through the new name reach
 /// it, and a socket identity recorded from `path` afterwards is that inode.
 ///
@@ -344,10 +589,7 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
             );
             Ok(listener)
         }
-        Err(StagedBindError::Busy) => Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!("socket busy at {}", path.display()),
-        )),
+        Err(StagedBindError::Busy) => Err(SocketBusy::error(path)),
         Err(StagedBindError::RandomSource(error)) => Err(error),
         Err(StagedBindError::Unavailable(err)) => {
             tracing::warn!(
@@ -373,7 +615,13 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
 }
 
 fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
-    let listener = bind_local_listener(path)?;
+    let listener = bind_local_listener(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AddrInUse {
+            SocketBusy::error(path)
+        } else {
+            error
+        }
+    })?;
     if let Err(error) = restrict_socket_permissions(path, PRIVATE_SOCKET_MODE) {
         drop(listener);
         // The restrict error is what the caller acts on; a socket left behind
@@ -853,7 +1101,7 @@ mod tests {
         let second = bind_private_socket(&stale)
             .err()
             .expect("the first binder holds the startup lock");
-        assert_eq!(second.kind(), io::ErrorKind::AddrInUse);
+        assert_busy_at(&second, &stale);
         drop(listener);
         drop(lock);
 
@@ -862,7 +1110,134 @@ mod tests {
         let refused = bind_private_socket(&live)
             .err()
             .expect("a live socket is never replaced");
-        assert_eq!(refused.kind(), io::ErrorKind::AddrInUse);
+        assert_busy_at(&refused, &live);
+    }
+
+    /// A failed single-use bind removes the lock sidecar it created, while a
+    /// failed shared bind keeps its sidecar so racing binders keep locking one
+    /// inode. A sidecar that already existed is someone else's: the
+    /// single-use bind refuses it as busy and leaves it untouched.
+    #[test]
+    fn failed_single_use_bind_removes_only_the_lock_it_created() {
+        let exists = |path: &Path| path.try_exists().expect("stat");
+        let dir = shepr_test_support::ScratchDir::new("bind-single-use-failure");
+
+        let live = dir.join("live.sock");
+        let _foreign = std::os::unix::net::UnixListener::bind(&live).expect("bind live");
+        let refused = bind_single_use_private_socket(&live)
+            .err()
+            .expect("a live socket is never replaced");
+        assert_busy_at(&refused, &live);
+        assert!(
+            !exists(&socket_startup_lock_path(&live)),
+            "a failed single-use bind removes its lock"
+        );
+        assert!(exists(&live), "the foreign socket is left alone");
+
+        let shared = bind_private_socket(&live)
+            .err()
+            .expect("a live socket is never replaced");
+        assert_busy_at(&shared, &live);
+        assert!(
+            exists(&socket_startup_lock_path(&live)),
+            "a failed shared bind keeps its lock"
+        );
+
+        let taken = dir.join("taken.sock");
+        let taken_lock = socket_startup_lock_path(&taken);
+        fs::write(&taken_lock, b"another binder").expect("test precondition");
+        let refused = bind_single_use_private_socket(&taken)
+            .err()
+            .expect("an existing lock means the path is taken");
+        assert_busy_at(&refused, &taken);
+        assert_eq!(
+            fs::read(&taken_lock).expect("the existing lock is kept"),
+            b"another binder"
+        );
+        assert!(!exists(&taken));
+    }
+
+    /// The runtime-directory sweep reclaims the socket and lock of a single-use
+    /// bind whose owner is provably gone, and nothing else: not a live owner's,
+    /// not an unmarked sidecar, not a dead-marked one whose lock is still
+    /// held, and not a shared socket's sidecar. Allocating a bridge path runs
+    /// the sweep.
+    #[test]
+    fn abandoned_single_use_sockets_of_dead_owners_are_swept() {
+        let exists = |path: &Path| path.try_exists().expect("stat");
+        let runtime = shepr_test_support::ScratchDir::new("single-use-sweep");
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))
+            .expect("test precondition");
+        let live_tag = super::super::process_identity::ProcessIdentity::current()
+            .expect("current process identity")
+            .tag(0);
+        let (_, rest) = live_tag.split_once('-').expect("serialized identity");
+        let dead_tag = format!("{:08x}-{rest}", u32::MAX);
+
+        let stale_socket = |name: &str, marker: &[u8]| {
+            let socket = runtime.join(name);
+            drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind"));
+            fs::write(socket_startup_lock_path(&socket), marker).expect("test precondition");
+            socket
+        };
+        let dead = stale_socket("shepr-s-a.0000000000000001.sock", dead_tag.as_bytes());
+        let dead_no_socket = runtime.join("shepr-s-b.0000000000000002.sock");
+        fs::write(
+            socket_startup_lock_path(&dead_no_socket),
+            dead_tag.as_bytes(),
+        )
+        .expect("test precondition");
+        let unmarked = stale_socket("shepr-s-c.0000000000000003.sock", b"");
+        let held = stale_socket("shepr-s-d.0000000000000004.sock", dead_tag.as_bytes());
+        let _held_lock =
+            acquire_flock_lock(&socket_startup_lock_path(&held), false).expect("hold lock");
+        let shared = runtime.join("server.sock");
+        let (shared_listener, shared_lock, _) = bind_private_socket(&shared).expect("bind");
+        drop(shared_listener);
+        drop(shared_lock);
+        let live = runtime.join("shepr-s-e.0000000000000005.sock");
+        let (_live_listener, _live_lock, _) =
+            bind_single_use_private_socket(&live).expect("bind single-use");
+        assert_eq!(
+            fs::read_to_string(socket_startup_lock_path(&live)).expect("read marker"),
+            live_tag,
+            "a single-use lock records its owner"
+        );
+
+        crate::remote_bridge_endpoint_path(runtime.path(), "shepr-s-f.sock", "shepr-s-f.sock")
+            .expect("allocate a bridge path");
+
+        for path in [&dead, &dead_no_socket] {
+            assert!(!exists(path), "{} swept", path.display());
+            assert!(
+                !exists(&socket_startup_lock_path(path)),
+                "{} lock swept",
+                path.display()
+            );
+        }
+        for path in [&unmarked, &held, &live] {
+            assert!(exists(path), "{} retained", path.display());
+            assert!(
+                exists(&socket_startup_lock_path(path)),
+                "{} lock retained",
+                path.display()
+            );
+        }
+        assert!(
+            exists(&socket_startup_lock_path(&shared)),
+            "a shared socket's lock is retained"
+        );
+    }
+
+    /// Every busy refusal is `AddrInUse` and names the path it refused.
+    fn assert_busy_at(error: &io::Error, path: &Path) {
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        let busy = SocketBusy::from_io(error).expect("a busy refusal carries its path");
+        assert_eq!(busy.path(), path);
+        assert_eq!(
+            error.to_string(),
+            format!("socket busy at {}", path.display())
+        );
     }
 
     /// A socket path in a fresh scratch directory.
@@ -961,13 +1336,13 @@ mod tests {
 
         // A second bind never replaces what is already there.
         let err = bind_private_local_listener(&path).expect_err("path is taken");
-        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        assert_busy_at(&err, &path);
         drop(listener);
 
         let plain = dir.join("plain");
         fs::write(&plain, b"keep").expect("test precondition");
         let err = bind_private_local_listener(&plain).expect_err("path is taken");
-        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        assert_busy_at(&err, &plain);
         assert_eq!(fs::read(&plain).expect("file kept"), b"keep");
 
         fs::remove_dir_all(&dir).expect("remove the socket directory");

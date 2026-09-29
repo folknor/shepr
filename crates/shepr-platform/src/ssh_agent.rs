@@ -743,4 +743,49 @@ mod tests {
         drop(_lease_b);
         drop(registry);
     }
+
+    /// `refresh` reads the registry's clock: inside the shared probe window it
+    /// leaves the published link alone, and once the clock reaches the end of
+    /// the window it probes again and moves off a vanished agent.
+    #[test]
+    fn refresh_republishes_only_once_the_injected_clock_ends_the_probe_window() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let directory = scratch("agent-probe-window");
+        let stable = directory.join("agent");
+        let a = directory.join("a");
+        let b = directory.join("b");
+        let _a_listener = UnixListener::bind(&a).expect("test precondition");
+        let _b_listener = UnixListener::bind(&b).expect("test precondition");
+        let base = Instant::now();
+        let elapsed_nanos = Arc::new(AtomicU64::new(0));
+        let clock_nanos = Arc::clone(&elapsed_nanos);
+        let registry = SshAgentRegistry::new_with_clock(
+            stable.clone(),
+            Some(a.clone()),
+            Arc::new(move || base + Duration::from_nanos(clock_nanos.load(Ordering::Relaxed))),
+        )
+        .expect("test precondition");
+        // Registering probes at the clock's current reading.
+        let lease_b = registry.register(b.clone()).expect("test precondition");
+        assert_eq!(fs::read_link(&stable).expect("test precondition"), a);
+        fs::remove_file(&a).expect("test precondition");
+
+        let window = u64::try_from(super::super::limits::SSH_AGENT_PROBE_INTERVAL.as_nanos())
+            .expect("test precondition");
+        for inside in [0, window - 1] {
+            elapsed_nanos.store(inside, Ordering::Relaxed);
+            lease_b.refresh().expect("test precondition");
+            assert_eq!(
+                fs::read_link(&stable).expect("test precondition"),
+                a,
+                "a refresh {inside} ns into the probe window must not probe again"
+            );
+        }
+        elapsed_nanos.store(window, Ordering::Relaxed);
+        lease_b.refresh().expect("test precondition");
+        assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
+        drop(lease_b);
+        drop(registry);
+    }
 }

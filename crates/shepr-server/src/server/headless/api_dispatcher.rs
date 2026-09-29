@@ -401,11 +401,6 @@ impl super::HeadlessServer {
         std::mem::take(&mut self.deferred_alt_screen_reads)
     }
 
-    #[cfg(test)]
-    pub(super) fn has_deferred_alt_screen_read_requests(&self) -> bool {
-        !self.deferred_alt_screen_reads.is_empty()
-    }
-
     /// Classifies a request once its public target has been resolved to a
     /// terminal id. Text reads can use the stable initial snapshot; other
     /// formats wait until the active traversal releases the terminal.
@@ -581,6 +576,13 @@ impl super::HeadlessServer {
                 self.push_pending_alt_screen_read(read);
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl super::HeadlessServer {
+    pub(super) fn has_deferred_alt_screen_read_requests(&self) -> bool {
+        !self.deferred_alt_screen_reads.is_empty()
     }
 }
 

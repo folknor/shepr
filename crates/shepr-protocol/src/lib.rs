@@ -20,8 +20,6 @@ mod surface;
 pub mod surface_delta;
 pub mod surface_reuse;
 mod theme_conversion;
-#[cfg(test)]
-mod wire_tests;
 pub use limits::{
     BUILD_ID, MAX_CELL_SIZE_PX, MAX_CLIENT_REQUEST_BYTES, MAX_ENDPOINT_COMMAND_BYTES,
     MAX_ENDPOINT_RESPONSE_CHUNK_BYTES, MAX_FRAME_SIZE, MAX_INITIAL_REQUEST_BYTES,
@@ -79,6 +77,9 @@ pub fn builds_match(ours: &str, peer: &str) -> bool {
 pub fn is_this_build(peer: &str) -> bool {
     builds_match(BUILD_ID, peer)
 }
+
+#[cfg(test)]
+mod wire_tests;
 
 /// The workspace build script, compiled as a module so its identity recipe is
 /// tested against the same code that stamps `BUILD_ID`.

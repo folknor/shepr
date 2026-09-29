@@ -10,8 +10,6 @@ mod workspaces;
 
 use super::{App, Outcome, RenderDemand};
 use shepr_api::error::{ApiErrorCode, ApiResult};
-#[cfg(test)]
-use shepr_mux::events::AppEvent;
 
 impl App {
     pub(crate) fn handle_api_request_with_render(
@@ -40,16 +38,6 @@ impl App {
         };
         let response = self.handle_api_request_after_internal_events_drained(request);
         Outcome { response, render }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::Request) -> String {
-        let id = request.id.clone();
-        self.drain_all_internal_events();
-        shepr_api::error::encode_result(
-            id,
-            self.handle_api_request_after_internal_events_drained(request),
-        )
     }
 
     pub(crate) fn handle_api_request_after_internal_events_drained(
@@ -211,6 +199,21 @@ fn agent_manifest_info(
         source: summary.active_source.label(),
         source_kind: summary.active_source.kind().to_string(),
         warning: summary.warning,
+    }
+}
+
+#[cfg(test)]
+use shepr_mux::events::AppEvent;
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::Request) -> String {
+        let id = request.id.clone();
+        self.drain_all_internal_events();
+        shepr_api::error::encode_result(
+            id,
+            self.handle_api_request_after_internal_events_drained(request),
+        )
     }
 }
 

@@ -39,18 +39,6 @@ pub struct AppPaths {
     provenance: PathProvenance,
 }
 
-/// Absolute, so a config built on them survives the resolved-path check on
-/// the wire, and identical across calls, so two test configs compare equal.
-/// The root cannot be created by an unprivileged user: a test that writes
-/// through these paths fails instead of leaving files in a shared location.
-#[cfg(test)]
-impl Default for AppPaths {
-    fn default() -> Self {
-        let root = Path::new("/nonexistent/shepr-test-config");
-        Self::rooted_at(root, Some(root), None)
-    }
-}
-
 impl<'de> Deserialize<'de> for AppPaths {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -227,11 +215,6 @@ impl AppPaths {
             true,
             CurrentDirOrigin::Process,
         )
-    }
-
-    #[cfg(test)]
-    pub fn test_at(root: &Path) -> Self {
-        Self::rooted_at(root, None, None)
     }
 
     /// Paths laid out under one directory: `config`, `state` and `runtime`
@@ -749,17 +732,6 @@ impl Config {
     }
 }
 
-#[cfg(test)]
-impl Config {
-    fn load_from_path(path: &Path) -> LoadedConfig {
-        Self::load_from_path_with_paths(path, &AppPaths::default())
-    }
-
-    fn load_from_str(content: &str) -> LoadedConfig {
-        Self::load_from_str_with_paths(content, &AppPaths::default())
-    }
-}
-
 /// Parse the config for the launch-time inspection command and retain every
 /// diagnostic without constructing a runtime configuration.
 pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
@@ -913,6 +885,36 @@ where
         ignored.push(config_key_path(&path));
     })?;
     Ok((value, ignored))
+}
+
+/// Absolute, so a config built on them survives the resolved-path check on
+/// the wire, and identical across calls, so two test configs compare equal.
+/// The root cannot be created by an unprivileged user: a test that writes
+/// through these paths fails instead of leaving files in a shared location.
+#[cfg(test)]
+impl Default for AppPaths {
+    fn default() -> Self {
+        let root = Path::new("/nonexistent/shepr-test-config");
+        Self::rooted_at(root, Some(root), None)
+    }
+}
+
+#[cfg(test)]
+impl Config {
+    fn load_from_path(path: &Path) -> LoadedConfig {
+        Self::load_from_path_with_paths(path, &AppPaths::default())
+    }
+
+    fn load_from_str(content: &str) -> LoadedConfig {
+        Self::load_from_str_with_paths(content, &AppPaths::default())
+    }
+}
+
+#[cfg(test)]
+impl AppPaths {
+    pub fn test_at(root: &Path) -> Self {
+        Self::rooted_at(root, None, None)
+    }
 }
 
 #[cfg(test)]

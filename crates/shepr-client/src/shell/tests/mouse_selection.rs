@@ -397,7 +397,7 @@ fn word_read_id(actions: &[ClientShellAction]) -> String {
 fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<ClientShellAction> {
     state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "w1:p1".into(),
@@ -1124,7 +1124,8 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     let mut projected = snapshot();
     for index in 2..=3 {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("w1", index);
+        tab.tab_id =
+            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), index);
         tab.number = index;
         tab.label = index.to_string();
         tab.focused = false;
@@ -1210,7 +1211,8 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
     let mut projected = snapshot();
     for index in 2..=3 {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("w1", index);
+        tab.tab_id =
+            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), index);
         tab.number = index;
         tab.label = index.to_string();
         tab.focused = false;

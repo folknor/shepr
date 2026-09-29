@@ -65,16 +65,12 @@ pub use state::*;
 pub(super) use surface_patch::{ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome};
 
 use crossterm::event::KeyCode;
-#[cfg(test)]
-use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
-#[cfg(test)]
-use shepr_config::Config;
 use shepr_config::theme::Palette;
 use shepr_config::{
     LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig, TabBarPositionConfig,
@@ -83,8 +79,6 @@ use shepr_protocol::{
     ClientMessage, ClientMousePosition, ClientPaneInputEvent, ClientShellSnapshot, ClientShellTab,
     ClientShellWorkspace, ClientSurfaceSize, FrameData, PaneSurfaceFrame,
 };
-#[cfg(test)]
-use shepr_termio::input::raw_input::RawInputEvent;
 
 #[path = "shell/input/events.rs"]
 mod input_events;
@@ -105,6 +99,15 @@ use status_presentation::*;
 #[path = "shell/presentation/compose_pane_surface.rs"]
 mod compose_pane_surface;
 use compose_pane_surface::*;
+
+#[cfg(test)]
+use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+
+#[cfg(test)]
+use shepr_config::Config;
+
+#[cfg(test)]
+use shepr_termio::input::raw_input::RawInputEvent;
 
 #[cfg(test)]
 mod tests;

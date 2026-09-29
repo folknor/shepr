@@ -457,6 +457,20 @@ impl EventHubFixture for shepr_api::EventHub {
     }
 }
 
+/// A canonical workspace ID that no live test workspace holds, for public
+/// pane IDs a pane kept from a workspace it has left. Workspace IDs come from
+/// a process-wide counter that tests never drive to the top of the number
+/// space, so this one is never allocated.
+pub(crate) fn retired_workspace_id() -> shepr_protocol::WorkspaceId {
+    shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero public number")
+}
+
+/// A workspace ID from its canonical spelling (`w<number>`).
+pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
+    id.parse()
+        .unwrap_or_else(|_| panic!("{id:?} is not a canonical workspace id"))
+}
+
 /// Both halves of a history capture in one call; saves split them across the
 /// event loop and the save thread.
 pub(crate) fn capture_history(

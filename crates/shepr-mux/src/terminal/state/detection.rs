@@ -86,49 +86,6 @@ impl TerminalState {
         self.revision = self.revision.saturating_add(1);
     }
 
-    #[cfg(test)]
-    pub fn set_detected_state(
-        &mut self,
-        agent: Option<Agent>,
-        fallback_state: AgentState,
-    ) -> Option<EffectiveStateChange> {
-        self.set_detected_state_with_visible_blocker(agent, fallback_state, false, false, false)
-    }
-
-    #[cfg(test)]
-    pub fn set_detected_state_with_mutation(
-        &mut self,
-        agent: Option<Agent>,
-        fallback_state: AgentState,
-    ) -> TerminalStateMutation {
-        self.set_detected_state_with_screen_signals_at(
-            agent,
-            fallback_state,
-            false,
-            false,
-            Instant::now(),
-        )
-    }
-
-    #[cfg(test)]
-    pub fn set_detected_state_with_visible_blocker(
-        &mut self,
-        agent: Option<Agent>,
-        fallback_state: AgentState,
-        visible_blocker: bool,
-        _ignored_screen_idle: bool,
-        process_exited: bool,
-    ) -> Option<EffectiveStateChange> {
-        self.set_detected_state_with_screen_signals_at(
-            agent,
-            fallback_state,
-            visible_blocker,
-            process_exited,
-            Instant::now(),
-        )
-        .effective_state_change
-    }
-
     pub fn set_detected_state_with_screen_signals_at(
         &mut self,
         agent: Option<Agent>,
@@ -412,5 +369,48 @@ impl TerminalState {
                 != self.current_session_identity_for_persistence(),
             agent_released,
         }
+    }
+}
+
+#[cfg(test)]
+impl TerminalState {
+    pub fn set_detected_state(
+        &mut self,
+        agent: Option<Agent>,
+        fallback_state: AgentState,
+    ) -> Option<EffectiveStateChange> {
+        self.set_detected_state_with_visible_blocker(agent, fallback_state, false, false, false)
+    }
+
+    pub fn set_detected_state_with_mutation(
+        &mut self,
+        agent: Option<Agent>,
+        fallback_state: AgentState,
+    ) -> TerminalStateMutation {
+        self.set_detected_state_with_screen_signals_at(
+            agent,
+            fallback_state,
+            false,
+            false,
+            Instant::now(),
+        )
+    }
+
+    pub fn set_detected_state_with_visible_blocker(
+        &mut self,
+        agent: Option<Agent>,
+        fallback_state: AgentState,
+        visible_blocker: bool,
+        _ignored_screen_idle: bool,
+        process_exited: bool,
+    ) -> Option<EffectiveStateChange> {
+        self.set_detected_state_with_screen_signals_at(
+            agent,
+            fallback_state,
+            visible_blocker,
+            process_exited,
+            Instant::now(),
+        )
+        .effective_state_change
     }
 }

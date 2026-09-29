@@ -189,4 +189,44 @@ mod tests {
             .is_some()
         );
     }
+
+    /// The watchdog judges idleness only by the injected boot clock: it
+    /// expires on the first reading a full timeout past the start, not on the
+    /// one just short of it, and a failed reading expires it unmeasured.
+    #[test]
+    fn watchdog_expires_when_the_injected_clock_reaches_the_idle_timeout() {
+        use std::sync::atomic::AtomicUsize;
+
+        // Short, so each watchdog poll only waits this long in real time.
+        let timeout = Duration::from_millis(20);
+        let timeout_nanos = u64::try_from(timeout.as_nanos()).expect("test precondition");
+        // Reading 0 is the start; readings past the script fail the clock.
+        for (script, expected, expected_reads) in [
+            (vec![0, timeout_nanos - 1, timeout_nanos], Some(timeout), 3),
+            (vec![0], None, 2),
+        ] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let clock_reads = Arc::clone(&reads);
+            let clock: BootClock = Arc::new(move || {
+                let read = clock_reads.fetch_add(1, Ordering::Relaxed);
+                script
+                    .get(read)
+                    .copied()
+                    .ok_or_else(|| io::Error::other("scripted clock failure"))
+            });
+            let (expired_tx, expired_rx) = mpsc::channel();
+            let _activity = Activity::start_with_clock(timeout, clock, move |idle_for| {
+                expired_tx
+                    .send(idle_for)
+                    .expect("the test is still waiting for the expiry");
+            })
+            .expect("test precondition");
+
+            let idle_for = expired_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the watchdog expires");
+            assert_eq!(idle_for, expected);
+            assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
+        }
+    }
 }

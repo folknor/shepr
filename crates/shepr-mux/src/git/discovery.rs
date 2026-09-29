@@ -22,14 +22,6 @@ pub(crate) struct GitWorktreeInfo {
     pub is_linked_worktree: bool,
 }
 
-#[cfg(test)]
-fn derive_label_from_cwd(cwd: &Path) -> String {
-    match git_repo_root(cwd) {
-        Some(repo_root) => automatic_workspace_label(cwd, &repo_root),
-        None => fallback_label_from_cwd(cwd),
-    }
-}
-
 /// The label for a cwd outside any Git checkout: `~` for the home directory,
 /// the directory name otherwise. This runs when a workspace's identity cwd
 /// changes or its Git status is refreshed, never per frame, so `$HOME` is
@@ -310,11 +302,6 @@ pub(super) fn git_symbolic_head_full(
     git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "HEAD"], errors)
 }
 
-#[cfg(test)]
-pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<String> {
-    git_rev_parse_verify_with_errors(repo_root, revision, &mut Vec::new())
-}
-
 pub(super) fn git_rev_parse_verify_with_errors(
     repo_root: &Path,
     revision: &str,
@@ -500,18 +487,8 @@ impl GitCeilings {
     }
 }
 
-#[cfg(test)]
-pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
-    git_repo_root_below(start, &GitCeilings::from_env())
-}
-
 fn git_repo_root_with_errors(start: &Path, errors: &mut Vec<GitReadError>) -> Option<PathBuf> {
     git_repo_root_below_with_errors(start, &GitCeilings::from_env(), errors)
-}
-
-#[cfg(test)]
-fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> {
-    git_repo_root_below_with_errors(start, ceilings, &mut Vec::new())
 }
 
 /// The checkout root for `start`, with the ceilings handed in: the walk
@@ -565,11 +542,6 @@ fn git_repo_root_below_with_errors(
             return None;
         }
     }
-}
-
-#[cfg(test)]
-pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> {
-    read_ref_oid_with_errors(common_dir, full_ref, &mut Vec::new())
 }
 
 pub(super) fn read_ref_oid_with_errors(
@@ -629,6 +601,34 @@ pub(super) fn read_ref_oid_with_errors(
         }
     }
     None
+}
+
+#[cfg(test)]
+fn derive_label_from_cwd(cwd: &Path) -> String {
+    match git_repo_root(cwd) {
+        Some(repo_root) => automatic_workspace_label(cwd, &repo_root),
+        None => fallback_label_from_cwd(cwd),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<String> {
+    git_rev_parse_verify_with_errors(repo_root, revision, &mut Vec::new())
+}
+
+#[cfg(test)]
+pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
+    git_repo_root_below(start, &GitCeilings::from_env())
+}
+
+#[cfg(test)]
+fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> {
+    git_repo_root_below_with_errors(start, ceilings, &mut Vec::new())
+}
+
+#[cfg(test)]
+pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> {
+    read_ref_oid_with_errors(common_dir, full_ref, &mut Vec::new())
 }
 
 #[cfg(test)]

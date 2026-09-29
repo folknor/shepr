@@ -105,7 +105,9 @@ pub(super) struct HostTerminalWriter(Arc<std::fs::File>);
 
 impl HostTerminalWriter {
     fn from_stdout() -> io::Result<Self> {
-        // `try_clone_to_owned` duplicates with close-on-exec set.
+        // stdout-handoff-ok: the client owns the host terminal; this takes fd 1
+        // over for escape sequences and frames, not text. `try_clone_to_owned`
+        // duplicates with close-on-exec set.
         let owned_fd = io::stdout().as_fd().try_clone_to_owned()?;
         Ok(Self(Arc::new(std::fs::File::from(owned_fd))))
     }

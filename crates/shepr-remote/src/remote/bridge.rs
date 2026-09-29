@@ -22,37 +22,6 @@ use crate::limits::{
     BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
 };
 
-/// Another live bridge already holds a local bridge socket path. Carried
-/// inside an [`io::ErrorKind::AddrInUse`] error, so SSH failure classification
-/// keeps treating it as a link failure while the message names the path.
-#[derive(Debug)]
-pub(crate) struct BridgeSocketBusy {
-    path: PathBuf,
-}
-
-impl BridgeSocketBusy {
-    fn error(path: &Path) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::AddrInUse,
-            Self {
-                path: path.to_path_buf(),
-            },
-        )
-    }
-}
-
-impl std::fmt::Display for BridgeSocketBusy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "local bridge socket {} is held by another bridge",
-            self.path.display()
-        )
-    }
-}
-
-impl std::error::Error for BridgeSocketBusy {}
-
 pub(crate) struct SshStdioBridge {
     local_socket: PathBuf,
     socket_identity: shepr_platform::ipc::SocketFileIdentity,
@@ -104,14 +73,11 @@ impl SshStdioBridge {
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
+        // A held path comes back as `AddrInUse` carrying
+        // `shepr_platform::ipc::SocketBusy`, so SSH failure classification
+        // treats it as a link failure and the message names the path.
         let (listener, socket_startup_lock, socket_identity) =
-            shepr_platform::ipc::bind_private_socket(&local_socket).map_err(|error| {
-                if error.kind() == io::ErrorKind::AddrInUse {
-                    BridgeSocketBusy::error(&local_socket)
-                } else {
-                    error
-                }
-            })?;
+            shepr_platform::ipc::bind_single_use_private_socket(&local_socket)?;
         let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
             path: local_socket.clone(),
             identity: socket_identity.clone(),
@@ -300,6 +266,25 @@ impl Drop for SshStdioBridge {
 fn remove_bridge_socket(path: &Path, identity: &shepr_platform::ipc::SocketFileIdentity) {
     if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity) {
         tracing::warn!(%error, socket = %path.display(), "could not remove remote bridge socket");
+    }
+    remove_bridge_socket_lock(path);
+}
+
+/// Removes the startup-lock sidecar of a bridge socket. Bridge socket paths
+/// carry a random token (`shepr_platform::remote_bridge_endpoint_path`), so no
+/// later binder ever locks this path, and the sidecar would otherwise pile up
+/// in the runtime directory, one per bridge ever started. Every caller runs
+/// while the bridge still holds the lock, so no other binder can own it. A
+/// bridge killed before this runs is reclaimed by the owner sweep in
+/// `shepr_platform::ipc::sweep_abandoned_single_use_sockets`.
+pub(crate) fn remove_bridge_socket_lock(path: &Path) {
+    let lock = shepr_platform::ipc::socket_startup_lock_path(path);
+    match std::fs::remove_file(&lock) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(%error, lock = %lock.display(), "could not remove remote bridge socket lock");
+        }
     }
 }
 

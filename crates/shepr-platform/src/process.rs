@@ -379,4 +379,38 @@ mod reap_tests {
         assert_eq!(dumped.into_raw(), libc::SIGSEGV | 0x80);
         assert!(exit_status_from_waitid(libc::CLD_STOPPED, libc::SIGSTOP).is_none());
     }
+
+    #[test]
+    fn process_exit_wait_ends_when_the_injected_clock_reaches_the_deadline() {
+        let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
+            .spawn()
+            .expect("test precondition");
+        let handle = ProcessHandle::open(child.id()).expect("child is alive");
+        // The deadline is as far off as the child's sleep, but the injected
+        // clock starts 20 ms short of it and reaches it on the next read.
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        let step = Duration::from_millis(20);
+        let reads = std::cell::Cell::new(0_u32);
+        let now = || {
+            let read = reads.get();
+            reads.set(read + 1);
+            deadline - step + step * read
+        };
+
+        let exited = wait_for_process_exits_with_clock(&[&handle], deadline, &now);
+        let elapsed = started.elapsed();
+        // Reap the child before asserting, so a failure does not leave it
+        // holding the test's output open for its whole sleep.
+        child.kill().expect("test precondition");
+        child.wait().expect("test precondition");
+
+        assert!(!exited);
+        assert_eq!(reads.get(), 2, "the wait ends on the read at the deadline");
+        // Only a wait that ignored the injected clock sits out the sleep.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the wait took {elapsed:?}"
+        );
+    }
 }

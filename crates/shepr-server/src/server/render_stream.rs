@@ -565,7 +565,7 @@ mod tests {
     fn test_surface(content: &str) -> PaneSurfaceFrame {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
         PaneSurfaceFrame {
-            boot_id: "boot-1".into(),
+            boot_id: shepr_test_fixtures::fixed_boot_id(1),
             projection_revision: shepr_protocol::ProjectionRevision::new(1),
             surface_revision: shepr_protocol::SurfaceRevision::new(1),
             frame: FrameData::from_ratatui_buffer_with_hyperlinks(&pane, None, &[]),

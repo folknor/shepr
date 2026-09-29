@@ -11,7 +11,7 @@ mod text_editing;
 
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
-        boot_id: "boot-1".into(),
+        boot_id: crate::tests::test_boot_id("boot-1"),
         revision: shepr_protocol::ProjectionRevision::new(1),
         resolved_config: shepr_test_fixtures::encode_to_vec(
             &shepr_config::ValidatedConfig::test_default(),
@@ -62,7 +62,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
 fn surface() -> PaneSurfaceFrame {
     let surface_buffer = Buffer::with_lines(["LIVE", "PANE"]);
     PaneSurfaceFrame {
-        boot_id: "boot-1".into(),
+        boot_id: crate::tests::test_boot_id("boot-1"),
         projection_revision: shepr_protocol::ProjectionRevision::new(1),
         surface_revision: shepr_protocol::SurfaceRevision::new(1),
         frame: FrameData::from_ratatui_buffer_with_hyperlinks(

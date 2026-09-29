@@ -154,13 +154,13 @@ mod tests {
     #[test]
     fn client_shell_endpoint_messages_roundtrip() -> TestResult {
         let request = ClientMessage::ClientShellEndpointRequest {
-            boot_id: "boot-a".into(),
+            boot_id: "1-1".into(),
             request: r#"{"id":"request-a","method":"session.snapshot","params":{}}"#.into(),
         };
         assert_eq!(roundtrip(&request)?, request);
 
         let response = ServerMessage::ClientShellEndpointResponseChunk {
-            boot_id: "boot-a".into(),
+            boot_id: "1-1".into(),
             request_id: "request-a".into(),
             final_chunk: true,
             data: br#"{"id":"request-a","result":{"type":"ok"}}"#.to_vec(),
@@ -313,7 +313,7 @@ mod tests {
             hyperlinks: vec!["https://example.com".to_owned()],
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
-            boot_id: "boot-1".into(),
+            boot_id: "1-1".into(),
             projection_revision: crate::ProjectionRevision::new(1),
             surface_revision: crate::SurfaceRevision::new(1),
             frame: frame.clone(),
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn surface_update_roundtrip() -> TestResult {
         let msg = ServerMessage::SurfaceUpdate(SurfaceUpdate {
-            boot_id: "boot-1".into(),
+            boot_id: "1-1".into(),
             base_projection_revision: crate::ProjectionRevision::new(3),
             projection_revision: crate::ProjectionRevision::new(3),
             base_surface_revision: crate::SurfaceRevision::new(7),
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn internal_surface_patch_cannot_be_framed() {
         let patch = ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
-            boot_id: "boot".into(),
+            boot_id: "1-1".into(),
             projection_revision: crate::ProjectionRevision::new(1),
             base_surface_revision: crate::SurfaceRevision::new(1),
             surface_revision: crate::SurfaceRevision::new(2),
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn client_shell_snapshot_roundtrip() -> TestResult {
         let msg = ClientShellSnapshot {
-            boot_id: "boot-1".into(),
+            boot_id: "1-1".into(),
             revision: crate::ProjectionRevision::new(1),
             resolved_config: vec![1, 2, 3, 4],
             focused_workspace_id: Some("w1".into()),
@@ -624,7 +624,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
-            boot_id: "boot-1".into(),
+            boot_id: "1-1".into(),
             projection_revision: crate::ProjectionRevision::new(1),
             surface_revision: crate::SurfaceRevision::new(1),
             frame,

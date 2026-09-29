@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
@@ -84,11 +82,6 @@ pub struct ResolvedBinding {
 }
 
 impl ResolvedBinding {
-    #[cfg(test)]
-    fn matches_key_event(&self, key: &KeyEvent) -> bool {
-        key_event_matches_combo(key, self.trigger.combo())
-    }
-
     fn matches_terminal_key(&self, key: &impl BindingKey) -> bool {
         terminal_key_matches_combo(key, self.trigger.combo())
     }
@@ -100,44 +93,6 @@ pub struct ActionKeybinds {
 }
 
 impl ActionKeybinds {
-    #[cfg(test)]
-    pub fn prefix(label: &str) -> Self {
-        let raw = if label.starts_with("prefix+") {
-            label.to_string()
-        } else {
-            format!("prefix+{label}")
-        };
-        let trigger = parse_binding_string(&raw)
-            .and_then(|parsed| match parsed {
-                ParsedBinding::Single(binding) => Some(binding),
-                ParsedBinding::Range(_) => None,
-            })
-            .expect("prefix binding should parse");
-        Self {
-            bindings: vec![trigger],
-        }
-    }
-
-    #[cfg(test)]
-    pub fn direct(label: &str) -> Self {
-        let trigger = parse_binding_string(label)
-            .and_then(|parsed| match parsed {
-                ParsedBinding::Single(binding) => Some(binding),
-                ParsedBinding::Range(_) => None,
-            })
-            .expect("direct binding should parse");
-        Self {
-            bindings: vec![trigger],
-        }
-    }
-
-    #[cfg(test)]
-    pub fn matches_prefix(&self, key: &KeyEvent) -> bool {
-        self.bindings
-            .iter()
-            .any(|binding| binding.trigger.is_prefix() && binding.matches_key_event(key))
-    }
-
     pub fn matches_prefix_key(&self, key: &impl BindingKey) -> bool {
         self.bindings
             .iter()
@@ -1001,11 +956,6 @@ pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
     (code, modifiers)
 }
 
-#[cfg(test)]
-pub(crate) fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
-    key_parts_match_combo(key.code, key.modifiers, None, combo)
-}
-
 pub fn terminal_key_matches_combo(key: &impl BindingKey, combo: KeyCombo) -> bool {
     key_parts_match_combo(key.code(), key.modifiers(), key.shifted_codepoint(), combo)
 }
@@ -1157,6 +1107,59 @@ fn is_shifted_punctuation(ch: char) -> bool {
 fn is_unmodified_printable(combo: KeyCombo) -> bool {
     matches!(combo.0, KeyCode::Char(ch) if !ch.is_control())
         && combo.1.difference(KeyModifiers::SHIFT).is_empty()
+}
+
+#[cfg(test)]
+use crossterm::event::KeyEvent;
+
+#[cfg(test)]
+pub(crate) fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
+    key_parts_match_combo(key.code, key.modifiers, None, combo)
+}
+
+#[cfg(test)]
+impl ResolvedBinding {
+    fn matches_key_event(&self, key: &KeyEvent) -> bool {
+        key_event_matches_combo(key, self.trigger.combo())
+    }
+}
+
+#[cfg(test)]
+impl ActionKeybinds {
+    pub fn prefix(label: &str) -> Self {
+        let raw = if label.starts_with("prefix+") {
+            label.to_string()
+        } else {
+            format!("prefix+{label}")
+        };
+        let trigger = parse_binding_string(&raw)
+            .and_then(|parsed| match parsed {
+                ParsedBinding::Single(binding) => Some(binding),
+                ParsedBinding::Range(_) => None,
+            })
+            .expect("prefix binding should parse");
+        Self {
+            bindings: vec![trigger],
+        }
+    }
+
+    pub fn direct(label: &str) -> Self {
+        let trigger = parse_binding_string(label)
+            .and_then(|parsed| match parsed {
+                ParsedBinding::Single(binding) => Some(binding),
+                ParsedBinding::Range(_) => None,
+            })
+            .expect("direct binding should parse");
+        Self {
+            bindings: vec![trigger],
+        }
+    }
+
+    pub fn matches_prefix(&self, key: &KeyEvent) -> bool {
+        self.bindings
+            .iter()
+            .any(|binding| binding.trigger.is_prefix() && binding.matches_key_event(key))
+    }
 }
 
 #[cfg(test)]

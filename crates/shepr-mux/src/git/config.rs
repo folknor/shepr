@@ -93,15 +93,6 @@ impl ConfigReader {
     }
 }
 
-#[cfg(test)]
-pub(super) fn read_config(info: &GitWorktreeInfo, branch: &str) -> ConfigCtx {
-    read_config_with_user_paths(
-        info,
-        branch,
-        git_user_config_paths_at(&info.repo_root).expect("test environment config paths"),
-    )
-}
-
 pub(super) fn read_config_for_status(
     info: &GitWorktreeInfo,
     branch: &str,
@@ -117,16 +108,6 @@ pub(super) fn read_config_for_status(
         }
     };
     read_config_with_user_paths_and_errors(info, branch, user_config_paths, errors)
-}
-
-#[cfg(test)]
-pub(super) fn read_config_with_user_paths(
-    info: &GitWorktreeInfo,
-    branch: &str,
-    user_config_paths: Vec<PathBuf>,
-) -> ConfigCtx {
-    let mut errors = Vec::new();
-    read_config_with_user_paths_and_errors(info, branch, user_config_paths, &mut errors)
 }
 
 fn read_config_with_user_paths_and_errors(
@@ -500,83 +481,6 @@ pub(super) fn git_config_bool(value: &str) -> Option<bool> {
         .strip_suffix(['k', 'm', 'g'])
         .unwrap_or(lower.as_str());
     digits.parse::<i64>().ok().map(|number| number != 0)
-}
-
-#[cfg(test)]
-mod xdg_path_tests {
-    use super::*;
-    use shepr_test_support::IsolatedEnv;
-
-    #[test]
-    fn git_user_config_ignores_empty_and_relative_xdg_home() {
-        // The isolated environment turns the system level off.
-        let env = IsolatedEnv::new();
-        let expected = vec![
-            env.home().join(".config/git/config"),
-            env.home().join(".gitconfig"),
-        ];
-        for invalid in ["", "relative/config"] {
-            env.set("XDG_CONFIG_HOME", invalid);
-            assert_eq!(
-                git_user_config_paths_at(Path::new(".")).expect("paths"),
-                expected
-            );
-        }
-
-        let xdg = env.path().join("xdg-config");
-        env.set("XDG_CONFIG_HOME", &xdg);
-        assert_eq!(
-            git_user_config_paths_at(Path::new(".")).expect("paths"),
-            vec![xdg.join("git/config"), env.home().join(".gitconfig")]
-        );
-    }
-
-    #[test]
-    fn git_user_config_skips_home_fallback_without_absolute_home() {
-        let env = IsolatedEnv::new();
-        env.remove("XDG_CONFIG_HOME");
-        env.set("HOME", "relative/home");
-        assert!(
-            git_user_config_paths_at(Path::new("."))
-                .expect("paths")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn git_config_environment_paths_follow_git_scope_order() {
-        let env = IsolatedEnv::new();
-        env.remove(shepr_core::env::EnvVar::GitConfigNoSystem);
-        let system = env.path().join("system.gitconfig");
-        let global = env.path().join("global.gitconfig");
-        assert_eq!(
-            git_user_config_paths_at(Path::new(".")).expect("paths"),
-            vec![
-                PathBuf::from("/etc/gitconfig"),
-                env.home().join(".config/git/config"),
-                env.home().join(".gitconfig"),
-            ]
-        );
-
-        env.set(shepr_core::env::EnvVar::GitConfigSystem, &system);
-        env.set(shepr_core::env::EnvVar::GitConfigGlobal, &global);
-        assert_eq!(
-            git_user_config_paths_at(Path::new(".")).expect("paths"),
-            vec![system.clone(), global.clone()]
-        );
-
-        env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "yes");
-        assert_eq!(
-            git_user_config_paths_at(Path::new(".")).expect("paths"),
-            vec![global.clone()]
-        );
-
-        env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "false");
-        assert_eq!(
-            git_user_config_paths_at(Path::new(".")).expect("paths"),
-            vec![system, global]
-        );
-    }
 }
 
 fn worktree_config_enabled(path: &Path, info: &GitWorktreeInfo, reader: &mut ConfigReader) -> bool {
@@ -1216,5 +1120,101 @@ fn map_fetch_refspec(refspec: &str, merge_ref: &str) -> FetchRefspecMatch {
             FetchRefspecMatch::Ref(format!("{destination_prefix}{matched}{destination_suffix}"))
         }
         _ => FetchRefspecMatch::NoMatch,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn read_config(info: &GitWorktreeInfo, branch: &str) -> ConfigCtx {
+    read_config_with_user_paths(
+        info,
+        branch,
+        git_user_config_paths_at(&info.repo_root).expect("test environment config paths"),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn read_config_with_user_paths(
+    info: &GitWorktreeInfo,
+    branch: &str,
+    user_config_paths: Vec<PathBuf>,
+) -> ConfigCtx {
+    let mut errors = Vec::new();
+    read_config_with_user_paths_and_errors(info, branch, user_config_paths, &mut errors)
+}
+
+#[cfg(test)]
+mod xdg_path_tests {
+    use super::*;
+    use shepr_test_support::IsolatedEnv;
+
+    #[test]
+    fn git_user_config_ignores_empty_and_relative_xdg_home() {
+        // The isolated environment turns the system level off.
+        let env = IsolatedEnv::new();
+        let expected = vec![
+            env.home().join(".config/git/config"),
+            env.home().join(".gitconfig"),
+        ];
+        for invalid in ["", "relative/config"] {
+            env.set("XDG_CONFIG_HOME", invalid);
+            assert_eq!(
+                git_user_config_paths_at(Path::new(".")).expect("paths"),
+                expected
+            );
+        }
+
+        let xdg = env.path().join("xdg-config");
+        env.set("XDG_CONFIG_HOME", &xdg);
+        assert_eq!(
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
+            vec![xdg.join("git/config"), env.home().join(".gitconfig")]
+        );
+    }
+
+    #[test]
+    fn git_user_config_skips_home_fallback_without_absolute_home() {
+        let env = IsolatedEnv::new();
+        env.remove("XDG_CONFIG_HOME");
+        env.set("HOME", "relative/home");
+        assert!(
+            git_user_config_paths_at(Path::new("."))
+                .expect("paths")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn git_config_environment_paths_follow_git_scope_order() {
+        let env = IsolatedEnv::new();
+        env.remove(shepr_core::env::EnvVar::GitConfigNoSystem);
+        let system = env.path().join("system.gitconfig");
+        let global = env.path().join("global.gitconfig");
+        assert_eq!(
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
+            vec![
+                PathBuf::from("/etc/gitconfig"),
+                env.home().join(".config/git/config"),
+                env.home().join(".gitconfig"),
+            ]
+        );
+
+        env.set(shepr_core::env::EnvVar::GitConfigSystem, &system);
+        env.set(shepr_core::env::EnvVar::GitConfigGlobal, &global);
+        assert_eq!(
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
+            vec![system.clone(), global.clone()]
+        );
+
+        env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "yes");
+        assert_eq!(
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
+            vec![global.clone()]
+        );
+
+        env.set(shepr_core::env::EnvVar::GitConfigNoSystem, "false");
+        assert_eq!(
+            git_user_config_paths_at(Path::new(".")).expect("paths"),
+            vec![system, global]
+        );
     }
 }

@@ -7,8 +7,9 @@ pub(crate) mod clients;
 mod input_wire;
 pub(crate) use clients::ClientId;
 pub mod headless;
-#[cfg(test)]
-mod netside_tests;
 pub(crate) mod pane_input;
 pub(crate) mod render_stream;
 pub mod socket_paths;
+
+#[cfg(test)]
+mod netside_tests;

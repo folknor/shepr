@@ -1,16 +1,10 @@
 use std::path::PathBuf;
 
 mod config;
-#[cfg(test)]
-mod config_tests;
 mod discovery;
 mod status;
-#[cfg(test)]
-pub mod test_support;
 
 use self::discovery::automatic_workspace_label;
-#[cfg(test)]
-pub use self::status::git_status_snapshot_for_cwd;
 
 pub use self::{
     discovery::{GitSpaceMetadata, fallback_label_from_cwd},
@@ -160,3 +154,12 @@ impl WorkspaceGitStatusSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+mod config_tests;
+
+#[cfg(test)]
+pub mod test_support;
+
+#[cfg(test)]
+pub use self::status::git_status_snapshot_for_cwd;

@@ -6,7 +6,7 @@ use shepr_protocol::FrameData;
 pub(super) fn snapshot(
     app: &app::App,
     resolved_config: &[u8],
-    boot_id: &str,
+    boot_id: &shepr_protocol::BootId,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> shepr_protocol::ClientShellSnapshot {
@@ -31,7 +31,7 @@ pub(super) fn snapshot_from_session(
     app: &app::App,
     snapshot: shepr_api::schema::SessionSnapshot,
     resolved_config: &[u8],
-    boot_id: &str,
+    boot_id: &shepr_protocol::BootId,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> shepr_protocol::ClientShellSnapshot {
@@ -52,8 +52,8 @@ pub(super) fn snapshot_from_session(
                 .and_then(|id| id.parse().ok())
         });
     let focused_pane_id = focused_tab_id
-        .as_deref()
-        .and_then(|tab_id| app.parse_tab_id(tab_id))
+        .as_ref()
+        .and_then(|tab_id| app.resolve_tab_id(tab_id))
         .and_then(|(workspace_index, tab_index)| {
             let pane_id = app
                 .state
@@ -63,8 +63,7 @@ pub(super) fn snapshot_from_session(
                 .get(tab_index)?
                 .layout()
                 .focused();
-            app.public_pane_id(workspace_index, pane_id)
-                .and_then(|id| id.parse().ok())
+            app.typed_public_pane_id(workspace_index, pane_id)
         })
         .or_else(|| {
             snapshot
@@ -84,7 +83,12 @@ pub(super) fn snapshot_from_session(
         .filter_map(|(position, workspace)| {
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
-            // The snapshot comes from this same app, so its IDs are canonical.
+            // The session snapshot is the JSON API's, whose ids are `String`s,
+            // so every id in it is parsed back to its type here. This same app
+            // spelled them from typed ids, so they are canonical and the parse
+            // cannot fail; an entry with an id that did not parse would be left
+            // out. The parse goes away only by typing the id fields of the JSON
+            // API's info types, which leaves their JSON text unchanged.
             let workspace_id: shepr_protocol::WorkspaceId = workspace.workspace_id.parse().ok()?;
             let workspace_index = app
                 .state
@@ -99,7 +103,7 @@ pub(super) fn snapshot_from_session(
                 .cloned()
                 .or_else(|| workspace.active_tab_id.parse().ok())?;
             let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
-                let active_tab_index = app.parse_tab_id(&active_tab_id).and_then(
+                let active_tab_index = app.resolve_tab_id(&active_tab_id).and_then(
                     |(tab_workspace_index, tab_index)| {
                         (tab_workspace_index == workspace_index).then_some(tab_index)
                     },
@@ -131,7 +135,7 @@ pub(super) fn snapshot_from_session(
         .filter_map(|tab| {
             let tab_id: shepr_protocol::PublicTabId = tab.tab_id.parse().ok()?;
             let state = app
-                .parse_tab_id(&tab_id)
+                .resolve_tab_id(&tab_id)
                 .and_then(|(workspace_index, tab_index)| {
                     app.state
                         .workspaces
@@ -158,7 +162,7 @@ pub(super) fn snapshot_from_session(
             let pane_id: shepr_protocol::PublicPaneId = pane.pane_id.parse().ok()?;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
             let right_click_passthrough = app
-                .parse_pane_id(&pane_id)
+                .resolve_pane_id(&pane_id)
                 .and_then(|(workspace_index, pane_id)| {
                     app.state
                         .workspaces
@@ -205,8 +209,8 @@ pub(super) fn snapshot_from_session(
         .collect();
 
     let zoomed = focused_tab_id
-        .as_deref()
-        .and_then(|tab_id| app.parse_tab_id(tab_id))
+        .as_ref()
+        .and_then(|tab_id| app.resolve_tab_id(tab_id))
         .and_then(|(workspace_index, tab_index)| {
             app.state
                 .workspaces
@@ -238,7 +242,7 @@ pub(super) fn snapshot_from_session(
         .collect();
 
     shepr_protocol::ClientShellSnapshot {
-        boot_id: boot_id.into(),
+        boot_id: boot_id.clone(),
         revision: revision.into(),
         resolved_config: resolved_config.to_vec(),
         focused_workspace_id,
@@ -317,9 +321,8 @@ pub(super) fn render_pane_surface(
                 .pane_infos
                 .iter()
                 .filter_map(|pane| {
-                    app.public_pane_id(workspace_index, pane.id)
-                        .and_then(|pane_id| {
-                            let pane_id = pane_id.parse().ok()?;
+                    app.typed_public_pane_id(workspace_index, pane.id)
+                        .map(|pane_id| {
                             let runtime = app.state.runtime_for_pane_in_workspace(
                                 &app.terminal_runtimes,
                                 workspace_index,
@@ -349,7 +352,7 @@ pub(super) fn render_pane_surface(
                                     after | 1
                                 }
                             });
-                            Some(shepr_protocol::PaneSurfacePane {
+                            shepr_protocol::PaneSurfacePane {
                                 pane_id,
                                 content_revision,
                                 rect: pane.rect.into(),
@@ -372,7 +375,7 @@ pub(super) fn render_pane_surface(
                                 ),
                                 pixel_width,
                                 pixel_height,
-                            })
+                            }
                         })
                 })
                 .collect()
@@ -516,7 +519,13 @@ mod tests {
         let resolved_config =
             shepr_test_fixtures::encode_to_vec(&shepr_config::ValidatedConfig::test_default())
                 .expect("encode test config");
-        let snapshot = snapshot(&app, &resolved_config, "boot", 1, None);
+        let snapshot = snapshot(
+            &app,
+            &resolved_config,
+            &shepr_test_fixtures::fixed_boot_id(1),
+            1,
+            None,
+        );
 
         for workspace in &snapshot.workspaces {
             assert_eq!(

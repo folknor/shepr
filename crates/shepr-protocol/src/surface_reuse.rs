@@ -120,7 +120,6 @@ pub fn message(
     Ok(super::frame_payload_fits(size).then_some(message))
 }
 
-#[derive(Default)]
 struct CellBaseline {
     boot_id: super::BootId,
     projection_revision: ProjectionRevision,
@@ -446,7 +445,17 @@ impl Decoder {
                     return Err(SurfaceDecodeError::InvalidHyperlink
                         .with_subject(SurfaceDecodeSubject::from_surface(surface)));
                 }
-                let base = self.baseline.get_or_insert_with(CellBaseline::default);
+                // An existing baseline is overwritten in place to keep its cell
+                // buffer; only the first surface allocates one.
+                let base = self.baseline.get_or_insert_with(|| CellBaseline {
+                    boot_id: surface.boot_id.clone(),
+                    projection_revision: ProjectionRevision::default(),
+                    surface_revision: SurfaceRevision::default(),
+                    width: 0,
+                    height: 0,
+                    cells: Vec::new(),
+                    meta: None,
+                });
                 base.boot_id.clone_from(&surface.boot_id);
                 base.projection_revision = surface.projection_revision;
                 base.surface_revision = surface.surface_revision;
@@ -508,7 +517,7 @@ mod tests {
 
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
-            boot_id: "boot".into(),
+            boot_id: "1-1".into(),
             projection_revision: crate::ProjectionRevision::new(1),
             surface_revision: crate::SurfaceRevision::new(1),
             frame: FrameData {
@@ -564,7 +573,7 @@ mod tests {
             .decode(ServerMessage::PaneSurface(surface()))
             .expect("baseline");
         let update = SurfaceUpdate {
-            boot_id: "boot".into(),
+            boot_id: "1-1".into(),
             base_surface_revision: crate::SurfaceRevision::new(0),
             surface_revision: crate::SurfaceRevision::new(2),
             base_projection_revision: crate::ProjectionRevision::new(1),
@@ -582,7 +591,7 @@ mod tests {
             source.as_ref(),
             SurfaceDecodeError::BaselineMismatch
         ));
-        assert_eq!(subject.boot_id, "boot");
+        assert_eq!(subject.boot_id, "1-1");
         assert_eq!(subject.projection_revision, 1);
         assert_eq!(subject.surface_revision, 2);
     }
@@ -594,7 +603,7 @@ mod tests {
             .decode(ServerMessage::PaneSurface(surface()))
             .expect("baseline");
         let update = SurfaceUpdate {
-            boot_id: "boot".into(),
+            boot_id: "1-1".into(),
             base_surface_revision: crate::SurfaceRevision::new(1),
             surface_revision: crate::SurfaceRevision::new(2),
             base_projection_revision: crate::ProjectionRevision::new(1),

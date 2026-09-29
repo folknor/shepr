@@ -48,6 +48,13 @@ pub fn fixed_pane_id(raw: u32) -> shepr_core::layout::PaneId {
         .unwrap_or_else(|| panic!("{raw} is the layout placeholder, not a pane id"))
 }
 
+/// A canonical boot id for tests, one per `process_id`: the id a server with
+/// that process id would take at the epoch. Distinct numbers give distinct
+/// boot ids, so tests name servers by number.
+pub fn fixed_boot_id(process_id: u32) -> shepr_protocol::BootId {
+    shepr_protocol::BootId::from_process_clock(process_id, Ok(std::time::Duration::ZERO))
+}
+
 /// Encode `value` with the wire codec into a fresh buffer.
 pub fn encode_to_vec<T: serde::Serialize + ?Sized>(
     value: &T,

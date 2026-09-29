@@ -32,7 +32,7 @@ pub(super) fn endpoint_lease(
     Ok(EndpointLease {
         endpoint_id: endpoint_id.clone(),
         generation: connection.generation.get(),
-        boot_id: boot_id.into(),
+        boot_id: Some(boot_id.clone()),
         minimum_revision,
     })
 }
@@ -44,10 +44,7 @@ pub(super) fn disconnected_endpoint_lease(
     EndpointLease {
         endpoint_id: endpoint_id.clone(),
         generation: 0,
-        boot_id: shell
-            .endpoint_boot_id(endpoint_id)
-            .unwrap_or_default()
-            .into(),
+        boot_id: shell.endpoint_boot_id(endpoint_id).cloned(),
         minimum_revision: 0,
     }
 }
@@ -58,7 +55,12 @@ pub(super) fn endpoint_matches(
     generation: u64,
     boot_id: &str,
 ) -> bool {
-    lease.endpoint_id == *endpoint_id && lease.generation == generation && lease.boot_id == boot_id
+    lease.endpoint_id == *endpoint_id
+        && lease.generation == generation
+        && lease
+            .boot_id
+            .as_ref()
+            .is_some_and(|lease_boot_id| lease_boot_id == boot_id)
 }
 
 pub(super) fn coherent_completion_surface(
@@ -83,7 +85,7 @@ pub(super) fn coherent_completion_surface(
     if !shell.endpoint_snapshot_matches(
         &lease.endpoint_id,
         lease.generation,
-        &lease.boot_id,
+        lease.request_boot_id()?,
         surface.projection_revision.get(),
     ) {
         return Err("endpoint activation lost its coherent snapshot/surface pair".into());
@@ -116,11 +118,11 @@ pub(super) fn send_surface_activation(
     resize: &shepr_protocol::ClientMessage,
     focused: bool,
 ) -> Result<(), String> {
+    let request = surface_interest_request(target.request_boot_id()?, request_id, true)
+        .map_err(|error| error.to_string())?;
     if endpoints.send_to(&target.endpoint_id, resize) != EndpointSendOutcome::Sent {
         return Err("endpoint resize could not be sent".into());
     }
-    let request = surface_interest_request(&target.boot_id, request_id, true)
-        .map_err(|error| error.to_string())?;
     if endpoints.send_to(&target.endpoint_id, &request) != EndpointSendOutcome::Sent {
         return Err("endpoint activation could not be sent".into());
     }
@@ -157,7 +159,7 @@ pub(super) fn surface_set_revision(
 }
 
 pub(super) fn focus_request(
-    boot_id: &str,
+    boot_id: &shepr_protocol::BootId,
     request_id: &shepr_protocol::RequestId,
     focus: &crate::shell::ClientEndpointFocusTarget,
 ) -> std::io::Result<shepr_protocol::ClientMessage> {
@@ -183,7 +185,7 @@ pub(super) fn focus_request(
 }
 
 pub(super) fn surface_interest_request(
-    boot_id: &str,
+    boot_id: &shepr_protocol::BootId,
     request_id: &shepr_protocol::RequestId,
     active: bool,
 ) -> std::io::Result<shepr_protocol::ClientMessage> {
@@ -199,11 +201,11 @@ pub(super) fn surface_interest_request(
 }
 
 fn endpoint_request(
-    boot_id: &str,
+    boot_id: &shepr_protocol::BootId,
     request: &shepr_api::schema::Request,
 ) -> std::io::Result<shepr_protocol::ClientMessage> {
     Ok(shepr_protocol::ClientMessage::ClientShellEndpointRequest {
-        boot_id: boot_id.into(),
+        boot_id: boot_id.clone(),
         request: serde_json::to_string(request)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
     })

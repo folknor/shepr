@@ -8,17 +8,6 @@ impl TerminalState {
         self.persisted_agent_session = Some(session);
     }
 
-    #[cfg(test)]
-    pub fn set_agent_session_ref(
-        &mut self,
-        source: String,
-        agent_label: String,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
-        self.set_agent_session_ref_at(source, agent_label, session_ref, seq, Instant::now())
-    }
-
     pub fn set_agent_session_ref_at(
         &mut self,
         source: String,
@@ -34,25 +23,6 @@ impl TerminalState {
             seq,
             None,
             now,
-        )
-    }
-
-    #[cfg(test)]
-    pub fn set_agent_session_ref_for_session_start(
-        &mut self,
-        source: String,
-        agent_label: String,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        seq: Option<u64>,
-        session_start_source: Option<&str>,
-    ) -> Option<TerminalStateMutation> {
-        self.set_agent_session_ref_for_typed_start_source_at(
-            source,
-            agent_label,
-            session_ref,
-            seq,
-            shepr_agent::agent::resume::normalize_session_start_source(session_start_source),
-            Instant::now(),
         )
     }
 
@@ -425,5 +395,36 @@ impl TerminalState {
     pub(super) fn clear_hook_report_sequence(&mut self, source: &str) {
         self.hook_report_sequences.remove(source);
         self.hook_report_accepted_at.remove(source);
+    }
+}
+
+#[cfg(test)]
+impl TerminalState {
+    pub fn set_agent_session_ref(
+        &mut self,
+        source: String,
+        agent_label: String,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+    ) -> Option<TerminalStateMutation> {
+        self.set_agent_session_ref_at(source, agent_label, session_ref, seq, Instant::now())
+    }
+
+    pub fn set_agent_session_ref_for_session_start(
+        &mut self,
+        source: String,
+        agent_label: String,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+        session_start_source: Option<&str>,
+    ) -> Option<TerminalStateMutation> {
+        self.set_agent_session_ref_for_typed_start_source_at(
+            source,
+            agent_label,
+            session_ref,
+            seq,
+            shepr_agent::agent::resume::normalize_session_start_source(session_start_source),
+            Instant::now(),
+        )
     }
 }

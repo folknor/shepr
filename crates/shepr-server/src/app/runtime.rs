@@ -1,8 +1,5 @@
 use std::time::Instant;
 
-#[cfg(test)]
-use std::time::Duration;
-
 use super::App;
 use crate::limits::MIN_RENDER_INTERVAL;
 
@@ -141,6 +138,9 @@ impl App {
         (had_event, changed)
     }
 }
+
+#[cfg(test)]
+use std::time::Duration;
 
 #[cfg(test)]
 mod tests {

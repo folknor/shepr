@@ -125,13 +125,19 @@ fn ssh_config_dir_contents_owned(path: &Path, uid: u32) -> bool {
 
 /// Choose an endpoint socket path in the private XDG runtime directory. The
 /// token avoids collisions between concurrent bridges; the shorter name is
-/// used when the readable one would exceed Linux's socket path limit.
+/// used when the readable one would exceed Linux's socket path limit. The
+/// path is single-use, so bind it with
+/// [`crate::ipc::bind_single_use_private_socket`]. Each call first sweeps the
+/// sockets and locks such binds left behind in `runtime_dir` when their owner
+/// was killed; the owner is recorded in the lock sidecar rather than the name,
+/// so the name spends none of the socket path limit on it.
 pub fn remote_bridge_endpoint_path(
     runtime_dir: &Path,
     readable_name: &str,
     short_name: &str,
 ) -> std::io::Result<PathBuf> {
     validate_ssh_runtime_dir(runtime_dir)?;
+    super::ipc::sweep_abandoned_single_use_sockets(runtime_dir);
     let token = unpredictable_token()?;
     let readable_name = with_name_token(readable_name, token);
     let short_name = with_name_token(short_name, token);

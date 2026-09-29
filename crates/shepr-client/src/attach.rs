@@ -95,13 +95,6 @@ pub(super) struct AttachKeys {
     prefix: KeyCombo,
     detach_after_prefix: Vec<KeyCombo>,
     detach_direct: Vec<KeyCombo>,
-    /// Byte forms used by tests for coalesced legacy input.
-    #[cfg(test)]
-    legacy_prefix: Option<u8>,
-    #[cfg(test)]
-    legacy_detach_direct: Vec<u8>,
-    #[cfg(test)]
-    legacy_detach_after_prefix: Vec<Vec<u8>>,
 }
 
 impl AttachKeys {
@@ -124,67 +117,10 @@ impl AttachKeys {
         }
         Self {
             prefix: live.prefix,
-            #[cfg(test)]
-            legacy_prefix: legacy_control_byte(live.prefix),
-            #[cfg(test)]
-            legacy_detach_direct: detach_direct
-                .iter()
-                .filter_map(|combo| legacy_control_byte(*combo))
-                .collect(),
-            #[cfg(test)]
-            legacy_detach_after_prefix: detach_after_prefix
-                .iter()
-                .filter_map(|combo| legacy_key_bytes(*combo))
-                .collect(),
             detach_after_prefix,
             detach_direct,
         }
     }
-}
-
-#[cfg(test)]
-impl Default for AttachKeys {
-    fn default() -> Self {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
-        Self::from_config(&shepr_config::ValidatedConfig::test_default())
-    }
-}
-
-/// The single C0 byte a legacy terminal sends for `combo`, if it has one.
-/// Escape (ctrl+[) is left out: it starts every escape sequence.
-#[cfg(test)]
-fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
-    let (KeyCode::Char(ch), modifiers) = shepr_config::normalize_key_combo(combo) else {
-        return None;
-    };
-    if modifiers != KeyModifiers::CONTROL {
-        return None;
-    }
-    match ch {
-        'a'..='z' | '\\' | ']' | '^' | '_' => Some(ch as u8 & 0x1f),
-        ' ' | '@' => Some(0x00),
-        _ => None,
-    }
-}
-
-/// The bytes a legacy terminal sends for `combo`: its control byte, or the
-/// text of an unmodified or shifted character.
-#[cfg(test)]
-fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
-    if let Some(byte) = legacy_control_byte(combo) {
-        return Some(vec![byte]);
-    }
-    let (KeyCode::Char(ch), modifiers) = shepr_config::normalize_key_combo(combo) else {
-        return None;
-    };
-    let ch = if modifiers.is_empty() {
-        ch
-    } else if modifiers == KeyModifiers::SHIFT && ch.is_ascii_lowercase() {
-        ch.to_ascii_uppercase()
-    } else {
-        return None;
-    };
-    Some(ch.to_string().into_bytes())
 }
 
 fn matches_any(key: &shepr_termio::input::TerminalKey, combos: &[KeyCombo]) -> bool {
@@ -249,67 +185,6 @@ impl AttachEscapeState {
         mouse_scroll_lines: u16,
     ) -> AttachInputAction {
         self.filter_parsed_input_inner(data, event, viewport_rows, mouse_scroll_lines)
-    }
-
-    #[cfg(test)]
-    pub(super) fn filter_input(
-        &mut self,
-        data: Vec<u8>,
-        viewport_rows: u16,
-        mouse_scroll_lines: u16,
-    ) -> AttachInputAction {
-        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(&data);
-        if events.len() == 1 {
-            let event = events.remove(0);
-            return self.filter_parsed_input(data, &event, viewport_rows, mouse_scroll_lines);
-        }
-        self.filter_coalesced_test_input(&data)
-    }
-
-    #[cfg(test)]
-    fn filter_coalesced_test_input(&mut self, data: &[u8]) -> AttachInputAction {
-        let detach_with = |output: Vec<u8>| {
-            if output.is_empty() {
-                AttachInputAction::Detach
-            } else {
-                AttachInputAction::ForwardThenDetach(output)
-            }
-        };
-        let mut output = Vec::with_capacity(data.len());
-        let mut rest = data;
-        while let Some(&byte) = rest.first() {
-            if let Some(prefix) = self.pending_prefix.take() {
-                if self
-                    .keys
-                    .legacy_detach_after_prefix
-                    .iter()
-                    .any(|detach| rest.starts_with(detach))
-                {
-                    return detach_with(output);
-                }
-                output.extend(prefix);
-                if self.keys.legacy_prefix == Some(byte) {
-                    rest = &rest[1..];
-                }
-                continue;
-            }
-
-            if self.keys.legacy_detach_direct.contains(&byte) {
-                return detach_with(output);
-            }
-            if self.keys.legacy_prefix == Some(byte) {
-                self.pending_prefix = Some(vec![byte]);
-            } else {
-                output.push(byte);
-            }
-            rest = &rest[1..];
-        }
-
-        if output.is_empty() {
-            AttachInputAction::None
-        } else {
-            AttachInputAction::Forward(output)
-        }
     }
 
     fn filter_parsed_input_inner(
@@ -509,6 +384,125 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
         AttachSemanticAction::Ignore => return None,
     };
     Some(message)
+}
+
+#[cfg(test)]
+impl Default for AttachKeys {
+    fn default() -> Self {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
+        Self::from_config(&shepr_config::ValidatedConfig::test_default())
+    }
+}
+
+/// The single C0 byte a legacy terminal sends for `combo`, if it has one.
+/// Escape (ctrl+[) is left out: it starts every escape sequence.
+#[cfg(test)]
+fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
+    let (KeyCode::Char(ch), modifiers) = shepr_config::normalize_key_combo(combo) else {
+        return None;
+    };
+    if modifiers != KeyModifiers::CONTROL {
+        return None;
+    }
+    match ch {
+        'a'..='z' | '\\' | ']' | '^' | '_' => Some(ch as u8 & 0x1f),
+        ' ' | '@' => Some(0x00),
+        _ => None,
+    }
+}
+
+/// The bytes a legacy terminal sends for `combo`: its control byte, or the
+/// text of an unmodified or shifted character.
+#[cfg(test)]
+fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
+    if let Some(byte) = legacy_control_byte(combo) {
+        return Some(vec![byte]);
+    }
+    let (KeyCode::Char(ch), modifiers) = shepr_config::normalize_key_combo(combo) else {
+        return None;
+    };
+    let ch = if modifiers.is_empty() {
+        ch
+    } else if modifiers == KeyModifiers::SHIFT && ch.is_ascii_lowercase() {
+        ch.to_ascii_uppercase()
+    } else {
+        return None;
+    };
+    Some(ch.to_string().into_bytes())
+}
+
+#[cfg(test)]
+impl AttachEscapeState {
+    pub(super) fn filter_input(
+        &mut self,
+        data: Vec<u8>,
+        viewport_rows: u16,
+        mouse_scroll_lines: u16,
+    ) -> AttachInputAction {
+        let mut events = shepr_test_fixtures::parse_raw_input_bytes_sync(&data);
+        if events.len() == 1 {
+            let event = events.remove(0);
+            return self.filter_parsed_input(data, &event, viewport_rows, mouse_scroll_lines);
+        }
+        self.filter_coalesced_test_input(&data)
+    }
+
+    fn filter_coalesced_test_input(&mut self, data: &[u8]) -> AttachInputAction {
+        let detach_with = |output: Vec<u8>| {
+            if output.is_empty() {
+                AttachInputAction::Detach
+            } else {
+                AttachInputAction::ForwardThenDetach(output)
+            }
+        };
+        // The byte forms a legacy terminal sends for the configured keys.
+        let legacy_prefix = legacy_control_byte(self.keys.prefix);
+        let legacy_detach_direct: Vec<u8> = self
+            .keys
+            .detach_direct
+            .iter()
+            .filter_map(|combo| legacy_control_byte(*combo))
+            .collect();
+        let legacy_detach_after_prefix: Vec<Vec<u8>> = self
+            .keys
+            .detach_after_prefix
+            .iter()
+            .filter_map(|combo| legacy_key_bytes(*combo))
+            .collect();
+        let mut output = Vec::with_capacity(data.len());
+        let mut rest = data;
+        while let Some(&byte) = rest.first() {
+            if let Some(prefix) = self.pending_prefix.take() {
+                if legacy_detach_after_prefix
+                    .iter()
+                    .any(|detach| rest.starts_with(detach))
+                {
+                    return detach_with(output);
+                }
+                output.extend(prefix);
+                if legacy_prefix == Some(byte) {
+                    rest = &rest[1..];
+                }
+                continue;
+            }
+
+            if legacy_detach_direct.contains(&byte) {
+                return detach_with(output);
+            }
+            if legacy_prefix == Some(byte) {
+                self.pending_prefix = Some(vec![byte]);
+            } else {
+                output.push(byte);
+            }
+            rest = &rest[1..];
+        }
+
+        if output.is_empty() {
+            AttachInputAction::None
+        } else {
+            AttachInputAction::Forward(output)
+        }
+    }
 }
 
 #[cfg(test)]

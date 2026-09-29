@@ -277,20 +277,23 @@ impl ClientShellState {
             && self.endpoint_has_snapshot(endpoint_id)
     }
 
-    pub(crate) fn endpoint_boot_id(&self, endpoint_id: &ClientEndpointId) -> Option<&str> {
+    pub(crate) fn endpoint_boot_id(
+        &self,
+        endpoint_id: &ClientEndpointId,
+    ) -> Option<&shepr_protocol::BootId> {
         self.endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)?
             .snapshot
             .as_deref()
-            .map(|snapshot| snapshot.boot_id.as_str())
+            .map(|snapshot| &snapshot.boot_id)
     }
 
     pub(crate) fn endpoint_snapshot_matches(
         &self,
         endpoint_id: &ClientEndpointId,
         generation: u64,
-        boot_id: &str,
+        boot_id: &shepr_protocol::BootId,
         revision: u64,
     ) -> bool {
         self.endpoints
@@ -301,7 +304,7 @@ impl ClientShellState {
                     .snapshot_generation
                     .is_none_or(|snapshot_generation| snapshot_generation == generation)
                     && endpoint.snapshot.as_deref().is_some_and(|snapshot| {
-                        snapshot.boot_id == boot_id && snapshot.revision == revision
+                        snapshot.boot_id == *boot_id && snapshot.revision == revision
                     })
             })
     }
@@ -310,7 +313,7 @@ impl ClientShellState {
         &self,
         endpoint_id: &ClientEndpointId,
         generation: u64,
-    ) -> Option<(&str, u64)> {
+    ) -> Option<(&shepr_protocol::BootId, u64)> {
         let endpoint = self
             .endpoints
             .iter()
@@ -324,7 +327,7 @@ impl ClientShellState {
         endpoint
             .snapshot
             .as_deref()
-            .map(|snapshot| (snapshot.boot_id.as_str(), snapshot.revision.get()))
+            .map(|snapshot| (&snapshot.boot_id, snapshot.revision.get()))
     }
 
     /// A terminal normally starts focused. `None` means this host cannot report focus events,
@@ -354,12 +357,6 @@ impl ClientShellState {
         self.endpoints.len() > 1
     }
 
-    #[cfg(test)]
-    pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
-        let endpoint_id = self.active_endpoint_id.clone();
-        self.set_endpoint_snapshot(&endpoint_id, snapshot);
-    }
-
     pub(super) fn focused_tab_count(&self) -> usize {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return 0;
@@ -371,15 +368,6 @@ impl ClientShellState {
                 Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
             })
             .count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cache_endpoint_snapshot(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        snapshot: Box<ClientShellSnapshot>,
-    ) {
-        self.cache_endpoint_snapshot_at_generation(endpoint_id, None, snapshot);
     }
 
     pub(crate) fn cache_endpoint_snapshot_for_generation(
@@ -463,16 +451,6 @@ impl ClientShellState {
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);
-    }
-
-    #[cfg(test)]
-    pub fn set_endpoint_snapshot(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        snapshot: Box<ClientShellSnapshot>,
-    ) {
-        self.cache_endpoint_snapshot(endpoint_id, snapshot);
-        self.apply_cached_endpoint_snapshot(endpoint_id);
     }
 
     pub fn set_endpoint_snapshot_for_generation(
@@ -653,5 +631,30 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         resolved_config_error: None,
         snapshot_generation: None,
         agent_recency: HashMap::new(),
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
+        let endpoint_id = self.active_endpoint_id.clone();
+        self.set_endpoint_snapshot(&endpoint_id, snapshot);
+    }
+
+    pub(crate) fn cache_endpoint_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: Box<ClientShellSnapshot>,
+    ) {
+        self.cache_endpoint_snapshot_at_generation(endpoint_id, None, snapshot);
+    }
+
+    pub fn set_endpoint_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: Box<ClientShellSnapshot>,
+    ) {
+        self.cache_endpoint_snapshot(endpoint_id, snapshot);
+        self.apply_cached_endpoint_snapshot(endpoint_id);
     }
 }

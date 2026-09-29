@@ -532,31 +532,6 @@ pub(super) fn terminal_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'sta
     }
 }
 
-#[cfg(test)]
-pub(super) fn terminal_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> String {
-    let expected_width = match wide {
-        shepr_vt::CellWide::Wide => 2,
-        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => 1,
-        shepr_vt::CellWide::SpacerTail => 0,
-    };
-    let actual_width = symbol.width();
-    if actual_width == expected_width {
-        return symbol.to_string();
-    }
-
-    if wide == shepr_vt::CellWide::Narrow && actual_width == 2 {
-        return symbol.to_string();
-    }
-    if wide == shepr_vt::CellWide::Narrow && shepr_vt::is_halfwidth_katakana_voiced_mark(symbol) {
-        return symbol.to_string();
-    }
-    if wide == shepr_vt::CellWide::Wide && shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol) {
-        return symbol.to_string();
-    }
-
-    terminal_blank_symbol_for_width(wide).to_string()
-}
-
 pub(super) fn terminal_buffer_symbol_into<'a>(
     cells: &shepr_vt::CellView<'_>,
     wide: shepr_vt::CellWide,
@@ -829,4 +804,29 @@ pub(super) fn should_probe_host_terminal_theme_restore(core: &PaneTerminalCore) 
     }
 
     core.terminal.active_screen() != shepr_vt::ActiveScreen::Alternate
+}
+
+#[cfg(test)]
+pub(super) fn terminal_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> String {
+    let expected_width = match wide {
+        shepr_vt::CellWide::Wide => 2,
+        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => 1,
+        shepr_vt::CellWide::SpacerTail => 0,
+    };
+    let actual_width = symbol.width();
+    if actual_width == expected_width {
+        return symbol.to_string();
+    }
+
+    if wide == shepr_vt::CellWide::Narrow && actual_width == 2 {
+        return symbol.to_string();
+    }
+    if wide == shepr_vt::CellWide::Narrow && shepr_vt::is_halfwidth_katakana_voiced_mark(symbol) {
+        return symbol.to_string();
+    }
+    if wide == shepr_vt::CellWide::Wide && shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol) {
+        return symbol.to_string();
+    }
+
+    terminal_blank_symbol_for_width(wide).to_string()
 }

@@ -160,11 +160,6 @@ impl PaneTerminal {
         core.agent_osc_state.clear_retained();
     }
 
-    #[cfg(test)]
-    pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
-        self.process_pty_bytes_at(pane_id, bytes, Instant::now())
-    }
-
     /// Processes one chunk of child output. `now` is the read's timestamp: it
     /// decides whether a pending synchronized update has expired, and it is
     /// the parser's clock for any synchronized update this chunk begins.
@@ -445,14 +440,6 @@ impl PaneTerminal {
         Some(terminal_scroll_metrics(&core.terminal))
     }
 
-    #[cfg(test)]
-    pub(crate) fn scroll_position(&self) -> Option<ScrollPosition> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        Some(ScrollPosition {
-            metrics: terminal_scroll_metrics(&core.terminal),
-        })
-    }
-
     pub(crate) fn history_origin(&self) -> Option<AbsRow> {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
@@ -583,59 +570,6 @@ impl PaneTerminal {
     pub(crate) fn alternate_screen_active(&self) -> bool {
         shepr_vt::lock_terminal_core(&self.core)
             .is_ok_and(|core| core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate)
-    }
-
-    // This aggregate snapshot performs multiple terminal queries. Pane-scaled
-    // callers should add a narrow accessor instead.
-    #[cfg(test)]
-    pub(crate) fn input_state(&self) -> Option<InputState> {
-        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
-            return None;
-        };
-        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
-        let application_cursor = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys);
-        let bracketed_paste = core.terminal.mode_get(shepr_vt::DecMode::BracketedPaste);
-        let focus_reporting = core.terminal.mode_get(shepr_vt::DecMode::FocusEvents);
-        let mouse_sgr = core.terminal.mode_get(shepr_vt::DecMode::MouseSgr);
-        let mouse_utf8 = core.terminal.mode_get(shepr_vt::DecMode::MouseUtf8);
-        let mouse_sgr_pixels = core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels);
-        let mouse_alternate_scroll = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::MouseAlternateScroll);
-        let mouse_protocol_mode = if core.terminal.mode_get(shepr_vt::DecMode::MouseAnyMotion) {
-            shepr_termio::input::MouseProtocolMode::AnyMotion
-        } else if core.terminal.mode_get(shepr_vt::DecMode::MouseButtonMotion) {
-            shepr_termio::input::MouseProtocolMode::ButtonMotion
-        } else if core.terminal.mode_get(shepr_vt::DecMode::MousePressRelease) {
-            shepr_termio::input::MouseProtocolMode::PressRelease
-        } else if core.terminal.mode_get(shepr_vt::DecMode::X10Mouse) {
-            shepr_termio::input::MouseProtocolMode::Press
-        } else {
-            shepr_termio::input::MouseProtocolMode::None
-        };
-        let mouse_protocol_encoding = if mouse_sgr_pixels {
-            shepr_termio::input::MouseProtocolEncoding::SgrPixels
-        } else if mouse_sgr {
-            shepr_termio::input::MouseProtocolEncoding::Sgr
-        } else if mouse_utf8 {
-            shepr_termio::input::MouseProtocolEncoding::Utf8
-        } else {
-            shepr_termio::input::MouseProtocolEncoding::Default
-        };
-        Some(InputState {
-            alternate_screen,
-            application_cursor,
-            bracketed_paste,
-            focus_reporting,
-            mouse_protocol_mode,
-            mouse_protocol_encoding,
-            mouse_alternate_scroll,
-            modify_other_keys: core.terminal.modify_other_keys_level()
-                == shepr_vt::ModifyOtherKeysLevel::All,
-            color_scheme_reporting: core.terminal.mode_get(shepr_vt::DecMode::ColorSchemeReport),
-        })
     }
 
     pub(crate) fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
@@ -885,11 +819,6 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(crate) fn recent_text(&self, lines: usize) -> String {
-        self.recent_text_snapshot(lines).text
-    }
-
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
@@ -897,21 +826,11 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(crate) fn recent_ansi(&self, lines: usize) -> String {
-        self.recent_ansi_snapshot(lines).text
-    }
-
     pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, false).ok())
             .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.recent_unwrapped_text_snapshot(lines).text
     }
 
     pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
@@ -1072,5 +991,83 @@ impl PaneTerminal {
             self.report_dirty_patch_fallback(reason);
         }
         outcome
+    }
+}
+
+#[cfg(test)]
+impl PaneTerminal {
+    pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
+        self.process_pty_bytes_at(pane_id, bytes, Instant::now())
+    }
+
+    pub(crate) fn scroll_position(&self) -> Option<ScrollPosition> {
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        Some(ScrollPosition {
+            metrics: terminal_scroll_metrics(&core.terminal),
+        })
+    }
+
+    // This aggregate snapshot performs multiple terminal queries. Pane-scaled
+    // callers should add a narrow accessor instead.
+    pub(crate) fn input_state(&self) -> Option<InputState> {
+        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
+            return None;
+        };
+        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
+        let application_cursor = core
+            .terminal
+            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys);
+        let bracketed_paste = core.terminal.mode_get(shepr_vt::DecMode::BracketedPaste);
+        let focus_reporting = core.terminal.mode_get(shepr_vt::DecMode::FocusEvents);
+        let mouse_sgr = core.terminal.mode_get(shepr_vt::DecMode::MouseSgr);
+        let mouse_utf8 = core.terminal.mode_get(shepr_vt::DecMode::MouseUtf8);
+        let mouse_sgr_pixels = core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels);
+        let mouse_alternate_scroll = core
+            .terminal
+            .mode_get(shepr_vt::DecMode::MouseAlternateScroll);
+        let mouse_protocol_mode = if core.terminal.mode_get(shepr_vt::DecMode::MouseAnyMotion) {
+            shepr_termio::input::MouseProtocolMode::AnyMotion
+        } else if core.terminal.mode_get(shepr_vt::DecMode::MouseButtonMotion) {
+            shepr_termio::input::MouseProtocolMode::ButtonMotion
+        } else if core.terminal.mode_get(shepr_vt::DecMode::MousePressRelease) {
+            shepr_termio::input::MouseProtocolMode::PressRelease
+        } else if core.terminal.mode_get(shepr_vt::DecMode::X10Mouse) {
+            shepr_termio::input::MouseProtocolMode::Press
+        } else {
+            shepr_termio::input::MouseProtocolMode::None
+        };
+        let mouse_protocol_encoding = if mouse_sgr_pixels {
+            shepr_termio::input::MouseProtocolEncoding::SgrPixels
+        } else if mouse_sgr {
+            shepr_termio::input::MouseProtocolEncoding::Sgr
+        } else if mouse_utf8 {
+            shepr_termio::input::MouseProtocolEncoding::Utf8
+        } else {
+            shepr_termio::input::MouseProtocolEncoding::Default
+        };
+        Some(InputState {
+            alternate_screen,
+            application_cursor,
+            bracketed_paste,
+            focus_reporting,
+            mouse_protocol_mode,
+            mouse_protocol_encoding,
+            mouse_alternate_scroll,
+            modify_other_keys: core.terminal.modify_other_keys_level()
+                == shepr_vt::ModifyOtherKeysLevel::All,
+            color_scheme_reporting: core.terminal.mode_get(shepr_vt::DecMode::ColorSchemeReport),
+        })
+    }
+
+    pub(crate) fn recent_text(&self, lines: usize) -> String {
+        self.recent_text_snapshot(lines).text
+    }
+
+    pub(crate) fn recent_ansi(&self, lines: usize) -> String {
+        self.recent_ansi_snapshot(lines).text
+    }
+
+    pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
+        self.recent_unwrapped_text_snapshot(lines).text
     }
 }

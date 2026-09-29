@@ -106,8 +106,9 @@ fn remove_managed_config_directory(path: &Path) {
     }
 }
 
-/// Files the SSH machinery leaves in the temp directory while it runs: bridge
-/// sockets and temporary ssh config directories.
+/// Files the SSH machinery leaves in the XDG runtime directory while it runs:
+/// bridge sockets with their lock sidecars, and temporary ssh config
+/// directories.
 pub(super) enum TeardownResource {
     Socket {
         path: PathBuf,
@@ -130,14 +131,15 @@ impl TeardownResource {
                         "could not remove ssh bridge socket at exit"
                     );
                 }
+                remove_bridge_socket_lock(path);
             }
             Self::Directory(path) => remove_managed_config_directory(path),
         }
     }
 }
 
-/// Tracks every live temp-directory resource so the process can remove them before
-/// it exits.
+/// Tracks every live runtime-directory resource so the process can remove them
+/// before it exits.
 ///
 /// Their owners normally remove them on drop, but in a client those owners live on
 /// endpoint writer threads and in connection attempts on blocking tasks. Both are
@@ -345,22 +347,6 @@ impl RemoteSsh {
 
     pub(super) fn session_name(&self) -> &str {
         &self.session_name
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_with_state(
-        target: SshTarget,
-        session_name: String,
-        managed_config: Option<ManagedSshConfig>,
-        noninteractive: bool,
-    ) -> Self {
-        Self {
-            target,
-            session_name,
-            managed_config,
-            noninteractive,
-            attempt_deadline: None,
-        }
     }
 
     pub(crate) fn set_attempt_deadline(&mut self, deadline: Option<Instant>) {
@@ -690,12 +676,6 @@ impl<'a> SshControlDir<'a> {
         shepr_platform::validate_ssh_runtime_dir(path)?;
         Ok(Self { path })
     }
-
-    /// A directory taken as given, for tests that never bind the socket.
-    #[cfg(test)]
-    pub(super) fn unchecked(path: &'a Path) -> Self {
-        Self { path }
-    }
 }
 
 /// Builds a temporary ssh config that includes the user's settings first, so
@@ -761,6 +741,32 @@ pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
         output.status.code(),
         message,
     ))
+}
+
+#[cfg(test)]
+impl RemoteSsh {
+    pub(super) fn test_with_state(
+        target: SshTarget,
+        session_name: String,
+        managed_config: Option<ManagedSshConfig>,
+        noninteractive: bool,
+    ) -> Self {
+        Self {
+            target,
+            session_name,
+            managed_config,
+            noninteractive,
+            attempt_deadline: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<'a> SshControlDir<'a> {
+    /// A directory taken as given, for tests that never bind the socket.
+    pub(super) fn unchecked(path: &'a Path) -> Self {
+        Self { path }
+    }
 }
 
 #[cfg(test)]

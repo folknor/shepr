@@ -366,46 +366,6 @@ fn cells_equal(a: &CellData, b: &CellData) -> bool {
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-// ---------------------------------------------------------------------------
-// Blitting
-// ---------------------------------------------------------------------------
-
-/// Blits a frame to a writer, diffing against the previous frame.
-#[cfg(test)]
-fn blit_frame_to(writer: impl Write, frame: &FrameData, prev: Option<&FrameData>) {
-    let mut last_visible_cursor = None;
-    let mut last_cursor_shape = 0;
-    blit_frame_to_with_cursor_memory(
-        writer,
-        frame,
-        prev,
-        &mut last_visible_cursor,
-        &mut last_cursor_shape,
-        false,
-    );
-}
-
-#[cfg(test)]
-fn blit_frame_to_with_cursor_memory(
-    writer: impl Write,
-    frame: &FrameData,
-    prev: Option<&FrameData>,
-    last_visible_cursor: &mut Option<(u16, u16)>,
-    last_cursor_shape: &mut u8,
-    suppress_visible_cursor: bool,
-) {
-    blit_frame_to_with_cursor_memory_and_clear_policy(
-        writer,
-        frame,
-        prev,
-        last_visible_cursor,
-        last_cursor_shape,
-        true,
-        suppress_visible_cursor,
-    )
-    .expect("tests blit into a Vec, which cannot fail to write");
-}
-
 fn frame_cell_index(frame: &FrameData, x: u16, y: u16) -> Option<usize> {
     (x < frame.width && y < frame.height)
         .then(|| usize::from(y) * usize::from(frame.width) + usize::from(x))
@@ -871,6 +831,46 @@ fn write_changed_cells(
         writer.write_all(b"\x1b[0m")?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Blitting
+// ---------------------------------------------------------------------------
+
+/// Blits a frame to a writer, diffing against the previous frame.
+#[cfg(test)]
+fn blit_frame_to(writer: impl Write, frame: &FrameData, prev: Option<&FrameData>) {
+    let mut last_visible_cursor = None;
+    let mut last_cursor_shape = 0;
+    blit_frame_to_with_cursor_memory(
+        writer,
+        frame,
+        prev,
+        &mut last_visible_cursor,
+        &mut last_cursor_shape,
+        false,
+    );
+}
+
+#[cfg(test)]
+fn blit_frame_to_with_cursor_memory(
+    writer: impl Write,
+    frame: &FrameData,
+    prev: Option<&FrameData>,
+    last_visible_cursor: &mut Option<(u16, u16)>,
+    last_cursor_shape: &mut u8,
+    suppress_visible_cursor: bool,
+) {
+    blit_frame_to_with_cursor_memory_and_clear_policy(
+        writer,
+        frame,
+        prev,
+        last_visible_cursor,
+        last_cursor_shape,
+        true,
+        suppress_visible_cursor,
+    )
+    .expect("tests blit into a Vec, which cannot fail to write");
 }
 
 // ---------------------------------------------------------------------------

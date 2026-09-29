@@ -14,12 +14,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-#[cfg(test)]
-use ratatui::style::Modifier;
 use ratatui::style::{Color, Style};
 use ratatui::{Frame, layout::Rect};
-#[cfg(test)]
-use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 use unicode_width::UnicodeWidthStr;
 
@@ -27,29 +23,11 @@ use shepr_core::layout::PaneId;
 use shepr_protocol::CellData;
 use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
-#[cfg(test)]
-mod invariant_tests;
-
 use super::cursor::decscusr_cursor_shape;
 use super::osc::{
     AgentOscStateTracker, OscDebugTracker, current_transient_default_color_owner,
     parse_reported_cwd, restore_host_terminal_theme_if_needed,
 };
-
-/// Scroll metrics together with the row origin read under one terminal lock.
-/// Only tests read it; production paths take [`ScrollMetrics`] directly.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrollPosition {
-    pub metrics: ScrollMetrics,
-}
-
-#[cfg(test)]
-impl ScrollPosition {
-    pub(crate) fn viewport_top_row(self) -> shepr_vt::AbsRow {
-        self.metrics.viewport_top_row()
-    }
-}
 
 /// A cell position in terminal text. `R` distinguishes the retained-buffer
 /// index from a stable absolute row identity.
@@ -148,37 +126,6 @@ pub enum TerminalDirtyPatchOutcome {
 pub(super) struct TerminalDirtyPatchCollection {
     pub outcome: TerminalDirtyPatchOutcome,
     pub fallback_reason: Option<&'static str>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct InputState {
-    pub alternate_screen: bool,
-    pub application_cursor: bool,
-    pub bracketed_paste: bool,
-    pub focus_reporting: bool,
-    pub mouse_protocol_mode: shepr_termio::input::MouseProtocolMode,
-    pub mouse_protocol_encoding: shepr_termio::input::MouseProtocolEncoding,
-    pub mouse_alternate_scroll: bool,
-    #[serde(default)]
-    pub modify_other_keys: bool,
-    #[serde(default)]
-    pub color_scheme_reporting: bool,
-}
-
-#[cfg(test)]
-impl InputState {
-    pub(crate) fn mouse_reporting_enabled(self) -> bool {
-        self.mouse_protocol_mode != shepr_termio::input::MouseProtocolMode::None
-    }
-
-    pub(crate) fn plain_page_keys_use_host_scrollback(self) -> bool {
-        !self.alternate_screen
-            && !self.mouse_reporting_enabled()
-            // Bracketed paste distinguishes zsh's line editor (where it's on)
-            // from e.g. less -X (where it's off).
-            && (!self.application_cursor || self.bracketed_paste)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -416,9 +363,65 @@ impl PaneTerminal {
 
 mod backend;
 mod helpers;
-#[cfg(test)]
-mod tests;
 mod text;
 
 use helpers::*;
 use text::*;
+
+#[cfg(test)]
+use ratatui::style::Modifier;
+
+#[cfg(test)]
+use serde::{Deserialize, Serialize};
+
+#[cfg(test)]
+mod invariant_tests;
+
+/// Scroll metrics together with the row origin read under one terminal lock.
+/// Only tests read it; production paths take [`ScrollMetrics`] directly.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScrollPosition {
+    pub metrics: ScrollMetrics,
+}
+
+#[cfg(test)]
+impl ScrollPosition {
+    pub(crate) fn viewport_top_row(self) -> shepr_vt::AbsRow {
+        self.metrics.viewport_top_row()
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct InputState {
+    pub alternate_screen: bool,
+    pub application_cursor: bool,
+    pub bracketed_paste: bool,
+    pub focus_reporting: bool,
+    pub mouse_protocol_mode: shepr_termio::input::MouseProtocolMode,
+    pub mouse_protocol_encoding: shepr_termio::input::MouseProtocolEncoding,
+    pub mouse_alternate_scroll: bool,
+    #[serde(default)]
+    pub modify_other_keys: bool,
+    #[serde(default)]
+    pub color_scheme_reporting: bool,
+}
+
+#[cfg(test)]
+impl InputState {
+    pub(crate) fn mouse_reporting_enabled(self) -> bool {
+        self.mouse_protocol_mode != shepr_termio::input::MouseProtocolMode::None
+    }
+
+    pub(crate) fn plain_page_keys_use_host_scrollback(self) -> bool {
+        !self.alternate_screen
+            && !self.mouse_reporting_enabled()
+            // Bracketed paste distinguishes zsh's line editor (where it's on)
+            // from e.g. less -X (where it's off).
+            && (!self.application_cursor || self.bracketed_paste)
+    }
+}
+
+#[cfg(test)]
+mod tests;

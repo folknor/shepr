@@ -37,11 +37,6 @@ impl PaneRuntimeRegistry {
     pub fn values(&self) -> impl Iterator<Item = &PaneRuntime> {
         self.runtimes.values()
     }
-
-    #[cfg(test)]
-    pub fn drain(&mut self) -> impl Iterator<Item = (TerminalId, PaneRuntime)> + '_ {
-        self.runtimes.drain()
-    }
 }
 
 impl From<HashMap<TerminalId, PaneRuntime>> for PaneRuntimeRegistry {
@@ -56,5 +51,12 @@ impl IntoIterator for PaneRuntimeRegistry {
 
     fn into_iter(self) -> Self::IntoIter {
         self.runtimes.into_iter()
+    }
+}
+
+#[cfg(test)]
+impl PaneRuntimeRegistry {
+    pub fn drain(&mut self) -> impl Iterator<Item = (TerminalId, PaneRuntime)> + '_ {
+        self.runtimes.drain()
     }
 }

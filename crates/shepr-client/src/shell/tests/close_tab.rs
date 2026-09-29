@@ -6,7 +6,8 @@ fn close_state(confirm: bool, tab_count: usize) -> ClientShellState {
     let mut projected = snapshot();
     for number in 2..=tab_count {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = shepr_protocol::PublicTabId::new("w1", number);
+        tab.tab_id =
+            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), number);
         tab.number = number;
         tab.focused = false;
         projected.tabs.push(tab);

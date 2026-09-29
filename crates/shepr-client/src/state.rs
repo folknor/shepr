@@ -72,36 +72,6 @@ pub(super) struct ClientState {
 }
 
 impl ClientState {
-    #[cfg(test)]
-    pub(super) fn test_new() -> Self {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
-        let config = shepr_config::ValidatedConfig::test_default();
-        Self {
-            blit_encoder: render_ansi::BlitEncoder::new(),
-            output_writer: Box::new(io::sink()),
-            host_modes: terminal_setup::HostModes::new(false, false, false),
-            host_theme_updates: Vec::new(),
-            settings: ClientSettings::from_config(&config),
-            reported_geometry: shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
-            mode: SessionMode::Shell(Box::new(shell::ClientShellState::new(
-                shell::ClientShellConfig::from_validated_config(&config),
-            ))),
-            repaint_pending: false,
-            presentation_frozen: false,
-            deferred_local_activation: None,
-            draw_host_cursor: false,
-            frame_write_failure: HostWriteFailure::default(),
-            title_write_failure: HostWriteFailure::default(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_new_with_writer(writer: impl io::Write + Send + 'static) -> Self {
-        let mut state = Self::test_new();
-        state.output_writer = Box::new(writer);
-        state
-    }
-
     pub(super) fn request_repaint(&mut self) {
         self.repaint_pending = true;
     }
@@ -330,6 +300,37 @@ impl HostWriteFailure {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl ClientState {
+    pub(super) fn test_new() -> Self {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
+        let config = shepr_config::ValidatedConfig::test_default();
+        Self {
+            blit_encoder: render_ansi::BlitEncoder::new(),
+            output_writer: Box::new(io::sink()),
+            host_modes: terminal_setup::HostModes::new(false, false, false),
+            host_theme_updates: Vec::new(),
+            settings: ClientSettings::from_config(&config),
+            reported_geometry: shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
+            mode: SessionMode::Shell(Box::new(shell::ClientShellState::new(
+                shell::ClientShellConfig::from_validated_config(&config),
+            ))),
+            repaint_pending: false,
+            presentation_frozen: false,
+            deferred_local_activation: None,
+            draw_host_cursor: false,
+            frame_write_failure: HostWriteFailure::default(),
+            title_write_failure: HostWriteFailure::default(),
+        }
+    }
+
+    pub(super) fn test_new_with_writer(writer: impl io::Write + Send + 'static) -> Self {
+        let mut state = Self::test_new();
+        state.output_writer = Box::new(writer);
+        state
     }
 }
 

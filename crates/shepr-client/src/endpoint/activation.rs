@@ -26,7 +26,11 @@ fn release_surface_best_effort(
         &lease.endpoint_id,
         &shepr_protocol::ClientMessage::ClientShellFocus { focused: false },
     );
-    match surface_interest_request(&lease.boot_id, request_id, false) {
+    // A lease without a boot id never had a server to release a surface on.
+    let Some(boot_id) = lease.boot_id.as_ref() else {
+        return;
+    };
+    match surface_interest_request(boot_id, request_id, false) {
         Ok(request) => {
             let _ = endpoints.send_to(&lease.endpoint_id, &request);
         }
@@ -69,21 +73,26 @@ impl PendingEndpointActivation {
         // write. Any error above this line is guaranteed not to have changed either endpoint.
         if source_available && !source_is_target {
             surface_interest_request(
-                &source.boot_id,
+                source
+                    .request_boot_id()
+                    .map_err(ActivationBeginError::Preflight)?,
                 &format!("client-shell-surface:{serial}:off").into(),
                 false,
             )
             .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
         }
+        let target_boot_id = target_lease
+            .request_boot_id()
+            .map_err(ActivationBeginError::Preflight)?;
         surface_interest_request(
-            &target_lease.boot_id,
+            target_boot_id,
             &format!("client-shell-surface:{serial}:on").into(),
             true,
         )
         .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
         if let Some(target) = focus.as_ref() {
             focus_request(
-                &target_lease.boot_id,
+                target_boot_id,
                 &format!("client-shell-focus:{serial}:1").into(),
                 target,
             )
@@ -151,7 +160,7 @@ impl PendingEndpointActivation {
             return Err("source endpoint focus revoke could not be sent".into());
         }
         let request = surface_interest_request(
-            &self.source.boot_id,
+            self.source.request_boot_id()?,
             &format!("client-shell-surface:{}:off", self.epoch).into(),
             false,
         )
@@ -1001,7 +1010,7 @@ impl PendingEndpointActivation {
             "client-shell-surface:{}:presentation-sync",
             self.epoch
         ));
-        let request = surface_interest_request(&lease.boot_id, &request_id, true)
+        let request = surface_interest_request(lease.request_boot_id()?, &request_id, true)
             .map_err(|error| error.to_string())?;
         self.phase = ActivationPhase::SynchronizingPresentation {
             lease: lease.clone(),
@@ -1024,7 +1033,12 @@ impl PendingEndpointActivation {
         completion: ActivationCompletion,
         now: Instant,
     ) -> Result<(), String> {
-        let token = format!("{}:{}:{}", self.epoch, lease.generation, lease.boot_id);
+        let token = format!(
+            "{}:{}:{}",
+            self.epoch,
+            lease.generation,
+            lease.request_boot_id()?
+        );
         self.phase = ActivationPhase::AwaitingPresentationEffects {
             lease: lease.clone(),
             token: token.clone(),
@@ -1048,7 +1062,7 @@ impl PendingEndpointActivation {
             "client-shell-surface:{}:rollback-target-off",
             self.epoch
         ));
-        let request = surface_interest_request(&self.target.boot_id, &request_id, false)
+        let request = surface_interest_request(self.target.request_boot_id()?, &request_id, false)
             .map_err(|error| error.to_string())?;
         // Set the rollback phase before the potentially observed target-off write.
         self.phase = ActivationPhase::ReleasingTargetForRollback { request_id };
@@ -1123,7 +1137,7 @@ impl PendingEndpointActivation {
             *focus_request_id = Some(request_id.clone());
             *focus_request_target = Some(desired.clone());
         }
-        let request = focus_request(&self.target.boot_id, &request_id, &desired)
+        let request = focus_request(self.target.request_boot_id()?, &request_id, &desired)
             .map_err(|error| error.to_string())?;
         if endpoints.send_to(&self.target.endpoint_id, &request) != EndpointSendOutcome::Sent {
             return Err("endpoint focus could not be sent".into());

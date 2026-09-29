@@ -124,7 +124,7 @@ fn text_row(
 }
 
 fn search_primary(
-    buffer: &RetainedTextBuffer,
+    buffer: &OwnedTextBuffer,
     query: &str,
     case_sensitive: bool,
 ) -> Vec<TerminalTextMatch<AbsRow>> {
@@ -159,7 +159,7 @@ fn write_wrapped_contract_lines(terminal: &mut shepr_vt::Terminal, count: usize)
 
 #[test]
 fn retained_text_search_crosses_soft_wraps_but_not_hard_lines() {
-    let buffer = RetainedTextBuffer::new(
+    let buffer = OwnedTextBuffer::new(
         5,
         vec![
             text_row("abcde".chars().map(|ch| text_cell(&ch.to_string())), true),
@@ -193,7 +193,7 @@ fn retained_text_search_maps_wide_and_combining_graphemes_to_cells() {
     cells.extend(wide_text_cells("界"));
     cells.push(text_cell("e\u{301}"));
     cells.push(text_cell("Z"));
-    let buffer = RetainedTextBuffer::new(5, vec![text_row(cells, false)]);
+    let buffer = OwnedTextBuffer::new(5, vec![text_row(cells, false)]);
 
     let matches = search_primary(&buffer, "界e\u{301}", true);
     assert_eq!(matches.len(), 1);
@@ -226,7 +226,7 @@ fn retained_text_search_skips_wide_spacer_heads_at_soft_wraps() {
     });
     let mut second = wide_text_cells("界").to_vec();
     second.extend("xyz".chars().map(|ch| text_cell(&ch.to_string())));
-    let buffer = RetainedTextBuffer::new(5, vec![text_row(first, true), text_row(second, false)]);
+    let buffer = OwnedTextBuffer::new(5, vec![text_row(first, true), text_row(second, false)]);
 
     let matches = search_primary(&buffer, "d界", true);
     assert_eq!(matches.len(), 1);
@@ -258,7 +258,7 @@ fn retained_text_word_motion_does_not_split_at_a_wide_spacer_head() {
     });
     let mut second = wide_text_cells("界").to_vec();
     second.extend("xyz".chars().map(|ch| text_cell(&ch.to_string())));
-    let buffer = RetainedTextBuffer::new(5, vec![text_row(first, true), text_row(second, false)]);
+    let buffer = OwnedTextBuffer::new(5, vec![text_row(first, true), text_row(second, false)]);
 
     assert_eq!(
         buffer.word_motion(AbsRow(0), 0, TerminalWordMotion::NextStart),
@@ -275,7 +275,7 @@ fn retained_text_word_motion_does_not_split_at_a_wide_spacer_head() {
 
 #[test]
 fn retained_text_search_is_literal_and_unicode_case_aware() {
-    let buffer = RetainedTextBuffer::new(
+    let buffer = OwnedTextBuffer::new(
         12,
         vec![text_row(
             "CAFÉ a.b    ".chars().map(|ch| text_cell(&ch.to_string())),
@@ -291,7 +291,7 @@ fn retained_text_search_is_literal_and_unicode_case_aware() {
 
 #[test]
 fn retained_text_word_motions_use_tmux_separators_across_rows() {
-    let buffer = RetainedTextBuffer::new(
+    let buffer = OwnedTextBuffer::new(
         6,
         vec![
             text_row("a_b.c ".chars().map(|ch| text_cell(&ch.to_string())), false),
@@ -334,7 +334,7 @@ fn retained_text_word_motions_use_tmux_separators_across_rows() {
 
 #[test]
 fn retained_text_big_word_motions_treat_only_whitespace_as_separators() {
-    let buffer = RetainedTextBuffer::new(
+    let buffer = OwnedTextBuffer::new(
         20,
         vec![text_row(
             "foo.bar baz qux/quux"
@@ -431,7 +431,7 @@ fn retained_text_big_word_motions_treat_only_whitespace_as_separators() {
 
 #[test]
 fn retained_text_big_word_motions_cross_rows_and_blank_lines() {
-    let buffer = RetainedTextBuffer::new(
+    let buffer = OwnedTextBuffer::new(
         6,
         vec![
             text_row("a.b-c ".chars().map(|ch| text_cell(&ch.to_string())), false),
@@ -3695,7 +3695,7 @@ fn chunked_search_matches_a_whole_buffer_search() {
         AbsRow(0),
         "history must not be full"
     );
-    let whole = RetainedTextBuffer::new(terminal.cols(), terminal.screen_text_rows());
+    let whole = OwnedTextBuffer::new(terminal.cols(), terminal.screen_text_rows());
     let pane = PaneTerminal::new(terminal);
 
     let at = |row: u64| TerminalTextPoint {

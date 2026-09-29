@@ -392,7 +392,7 @@ impl App {
 }
 
 struct LayoutStaging<'a> {
-    workspace_id: &'a str,
+    workspace_id: &'a shepr_protocol::WorkspaceId,
     geometry: shepr_mux::workspace::PaneGeometry,
     default_shell: &'a str,
     login_shell: bool,

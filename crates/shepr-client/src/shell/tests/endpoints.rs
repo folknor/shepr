@@ -45,7 +45,7 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces[0].label = "remote-workspace".into();
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     (state, endpoint_id)
@@ -90,7 +90,7 @@ fn switching_to_an_endpoint_with_an_undecodable_config_keeps_the_previous_one() 
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces[0].label = "remote-workspace".into();
     remote.resolved_config = vec![0xff; 3];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
@@ -280,7 +280,10 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .expect("test precondition");
         projection.agents = (0..8)
             .map(|index| ClientShellAgent {
-                pane_id: shepr_protocol::PublicPaneId::new("w1", index + 1),
+                pane_id: shepr_protocol::PublicPaneId::new(
+                    &crate::tests::test_workspace_id("w1"),
+                    index + 1,
+                ),
                 focused: index == 0,
                 ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
             })
@@ -439,7 +442,7 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
         next_surface.boot_id = state
             .endpoint_boot_id(&endpoint_id)
             .expect("test precondition")
-            .into();
+            .clone();
         state.set_pane_surface(next_surface);
         state.compose(100, 28).expect("test precondition");
         assert_eq!(state.agent_scroll, 6);
@@ -508,7 +511,7 @@ fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
 fn same_machine_reboot_still_resets_agent_scroll() {
     let (mut state, _) = state_with_scrollable_agents();
     let mut projection = state.snapshot.clone().expect("test precondition");
-    projection.boot_id = "restarted-local".into();
+    projection.boot_id = crate::tests::test_boot_id("restarted-local");
     state.cache_endpoint_snapshot(&ClientEndpointId::Local, projection);
     assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
     assert_eq!(state.agent_scroll, 0);
@@ -531,7 +534,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
 
     assert!(state.activate_endpoint_projection(&remote));
     let mut remote_surface = surface();
-    remote_surface.boot_id = "remote-boot".into();
+    remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
     state.set_pane_surface(remote_surface);
     state.compose(100, 28).expect("test precondition");
 
@@ -555,7 +558,10 @@ fn live_catalog_rename_preserves_snapshot_and_remove_readd_clears_it() {
     state.set_endpoint_catalog(&[profile.clone()]);
     assert_eq!(state.endpoint_label(&remote), "Renamed");
     assert!(state.endpoint_is_online(&remote));
-    assert_eq!(state.endpoint_boot_id(&remote), Some("remote-boot"));
+    assert_eq!(
+        state.endpoint_boot_id(&remote),
+        Some(&crate::tests::test_boot_id("remote-boot"))
+    );
     state.set_endpoint_catalog(&[]);
     assert_eq!(state.endpoint_status(&remote), None);
     assert!(!state.endpoint_has_snapshot(&remote));
@@ -767,7 +773,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
         .collect();
     // Reuse workspace IDs across machines so revealing must be endpoint-scoped.
     let mut remote = initial.clone();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces.push(ClientShellWorkspace {
         workspace_id: test_workspace_id("w13"),
         number: 13,
@@ -842,7 +848,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     add_second_workspace(&mut local);
     state.set_snapshot(Box::new(local));
     let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     add_second_workspace(&mut remote);
     let mut third = remote.workspaces[1].clone();
     third.workspace_id = test_workspace_id("w3");
@@ -931,7 +937,7 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
-    remote_surface.boot_id = "remote-boot".into();
+    remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
     state.set_pane_surface(remote_surface);
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
@@ -998,7 +1004,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent("remote agent", AgentStatus::Blocked, 1)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
@@ -1061,7 +1067,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     state.set_snapshot(Box::new(local));
     state.set_pane_surface(surface());
     let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
 
@@ -1122,7 +1128,7 @@ fn unselected_endpoint_snapshot_keeps_server_idle_status() {
 
     let (mut state, endpoint_id) = state_with_remote();
     let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
+    remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent("background agent", AgentStatus::Working, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     remote.revision = shepr_protocol::ProjectionRevision::new(2);
@@ -1167,11 +1173,8 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
     ));
     assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
     assert_eq!(
-        state
-            .snapshot
-            .as_deref()
-            .map(|snapshot| snapshot.boot_id.as_str()),
-        Some("boot-1")
+        state.snapshot.as_deref().map(|snapshot| &snapshot.boot_id),
+        Some(&crate::tests::test_boot_id("boot-1"))
     );
 }
 
@@ -1288,7 +1291,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                 assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
                 assert_eq!(
                     state.snapshot.as_ref().expect("test precondition").boot_id,
-                    "boot-1"
+                    crate::tests::test_boot_id("boot-1")
                 );
                 assert_eq!(
                     state
@@ -1395,12 +1398,12 @@ fn future_surface_waits_for_its_exact_snapshot_revision() {
 fn inactive_endpoint_snapshot_cache_never_regresses_revision() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut newest = snapshot();
-    newest.boot_id = "remote-boot".into();
+    newest.boot_id = crate::tests::test_boot_id("remote-boot");
     newest.revision = shepr_protocol::ProjectionRevision::new(3);
     newest.workspaces[0].label = "newest".into();
     state.set_endpoint_snapshot(&endpoint_id, Box::new(newest));
     let mut delayed = snapshot();
-    delayed.boot_id = "remote-boot".into();
+    delayed.boot_id = crate::tests::test_boot_id("remote-boot");
     delayed.revision = shepr_protocol::ProjectionRevision::new(2);
     delayed.workspaces[0].label = "delayed".into();
 
@@ -1420,12 +1423,12 @@ fn inactive_endpoint_snapshot_cache_never_regresses_revision() {
 fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut previous = snapshot();
-    previous.boot_id = "shared-server-boot".into();
+    previous.boot_id = crate::tests::test_boot_id("shared-server-boot");
     previous.revision = shepr_protocol::ProjectionRevision::new(9);
     previous.workspaces[0].label = "old connection".into();
     state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
     let mut reconnected = snapshot();
-    reconnected.boot_id = "shared-server-boot".into();
+    reconnected.boot_id = crate::tests::test_boot_id("shared-server-boot");
     reconnected.revision = shepr_protocol::ProjectionRevision::new(1);
     reconnected.workspaces[0].label = "new connection".into();
 
@@ -1461,12 +1464,12 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
     for previous_revision in [9, 1] {
         let (mut state, endpoint_id) = state_with_remote();
         let mut previous = snapshot();
-        previous.boot_id = "shared-server-boot".into();
+        previous.boot_id = crate::tests::test_boot_id("shared-server-boot");
         previous.revision = shepr_protocol::ProjectionRevision::new(previous_revision);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
         assert!(state.activate_endpoint_projection(&endpoint_id));
         let mut previous_surface = surface();
-        previous_surface.boot_id = "shared-server-boot".into();
+        previous_surface.boot_id = crate::tests::test_boot_id("shared-server-boot");
         previous_surface.projection_revision =
             shepr_protocol::ProjectionRevision::new(previous_revision);
         previous_surface.surface_revision = shepr_protocol::SurfaceRevision::new(9);
@@ -1481,7 +1484,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
 
         state.mark_endpoint_disconnected(&endpoint_id);
         let mut reconnected = snapshot();
-        reconnected.boot_id = "shared-server-boot".into();
+        reconnected.boot_id = crate::tests::test_boot_id("shared-server-boot");
         reconnected.revision = shepr_protocol::ProjectionRevision::new(1);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
         assert_eq!(
@@ -1501,7 +1504,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         assert!(state.activate_endpoint_projection(&endpoint_id));
         assert!(state.compose(106, 20).is_none());
         let mut reconnected_surface = surface();
-        reconnected_surface.boot_id = "shared-server-boot".into();
+        reconnected_surface.boot_id = crate::tests::test_boot_id("shared-server-boot");
         reconnected_surface.projection_revision = shepr_protocol::ProjectionRevision::new(1);
         reconnected_surface.surface_revision = shepr_protocol::SurfaceRevision::new(1);
         state.set_pane_surface(reconnected_surface);
@@ -1542,12 +1545,12 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
             .as_deref()
             .expect("test precondition")
             .boot_id,
-        "remote-boot"
+        crate::tests::test_boot_id("remote-boot")
     );
 
     state.mark_endpoint_disconnected(&endpoint_id);
     let mut replacement = snapshot();
-    replacement.boot_id = "replacement-boot".into();
+    replacement.boot_id = crate::tests::test_boot_id("replacement-boot");
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(replacement));
     assert_eq!(
         state
@@ -1555,7 +1558,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
             .as_deref()
             .expect("test precondition")
             .boot_id,
-        "remote-boot"
+        crate::tests::test_boot_id("remote-boot")
     );
 
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
@@ -1566,7 +1569,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
             .as_deref()
             .expect("test precondition")
             .boot_id,
-        "replacement-boot"
+        crate::tests::test_boot_id("replacement-boot")
     );
 }
 
@@ -1591,7 +1594,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         vec![agent("remote agent", AgentStatus::Blocked, 1)];
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
-    remote_surface.boot_id = "remote-boot".into();
+    remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
     state.set_pane_surface(remote_surface);
 
     state.mark_endpoint_disconnected(&endpoint_id);

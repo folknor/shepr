@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-#[cfg(test)]
-use shepr_config::derive_client_socket_from_api_socket;
-
 /// Returns the resolved client protocol socket for this process.
 pub fn client_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
     paths.server_address().client_socket().to_path_buf()
 }
+
+#[cfg(test)]
+use shepr_config::derive_client_socket_from_api_socket;
 
 #[cfg(test)]
 mod tests {

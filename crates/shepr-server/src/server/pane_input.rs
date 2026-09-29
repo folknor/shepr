@@ -55,11 +55,6 @@ impl PaneInputFailures {
             .filter(|error| matches!(error, PaneInputError::Backpressure(_)))
             .count()
     }
-
-    #[cfg(test)]
-    pub(super) fn errors(&self) -> &[PaneInputError] {
-        &self.0
-    }
 }
 
 impl std::fmt::Display for PaneInputFailures {
@@ -433,6 +428,13 @@ fn apply_client_pane_input_event(
         | shepr_termio::input::raw_input::RawInputEvent::Unsupported => Err(PaneInputError::Other(
             "non-pane input reached targeted pane input".to_owned(),
         )),
+    }
+}
+
+#[cfg(test)]
+impl PaneInputFailures {
+    pub(super) fn errors(&self) -> &[PaneInputError] {
+        &self.0
     }
 }
 

@@ -104,7 +104,7 @@ mod tests {
 
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
-            boot_id: "boot".into(),
+            boot_id: crate::tests::test_boot_id("boot"),
             projection_revision: shepr_protocol::ProjectionRevision::new(1),
             surface_revision: shepr_protocol::SurfaceRevision::new(1),
             frame: FrameData {
@@ -121,7 +121,7 @@ mod tests {
 
     fn patch() -> PaneSurfacePatch {
         PaneSurfacePatch {
-            boot_id: "boot".into(),
+            boot_id: crate::tests::test_boot_id("boot"),
             projection_revision: shepr_protocol::ProjectionRevision::new(1),
             base_surface_revision: shepr_protocol::SurfaceRevision::new(1),
             surface_revision: shepr_protocol::SurfaceRevision::new(2),
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(
             gate(false, true, false, false).decide(
                 &ServerMessage::ClientShellEndpointResponseChunk {
-                    boot_id: "boot".into(),
+                    boot_id: crate::tests::test_boot_id("boot"),
                     request_id: "surface".into(),
                     final_chunk: true,
                     data: Vec::new(),
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(
             gate(false, false, true, false).decide(
                 &ServerMessage::ClientShellEndpointResponseChunk {
-                    boot_id: "boot".into(),
+                    boot_id: crate::tests::test_boot_id("boot"),
                     request_id: "command".into(),
                     final_chunk: true,
                     data: Vec::new(),

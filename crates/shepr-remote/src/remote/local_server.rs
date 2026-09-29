@@ -457,6 +457,34 @@ mod tests {
     }
 
     #[test]
+    fn wait_for_server_socket_stops_probing_when_the_clock_reaches_the_deadline() {
+        use std::cell::Cell;
+
+        let dir = ScratchDir::new("wait-deadline");
+        let path = dir.join("s.sock");
+        let timeout = SOCKET_POLL_INTERVAL * 4;
+        let clock = Cell::new(std::time::Instant::now());
+        let probes = Cell::new(0_u32);
+        let result = wait_for_server_socket_with(
+            &path,
+            timeout,
+            &shepr_config::AppPaths::test_at(dir.path()),
+            || clock.get(),
+            |_| {
+                probes.set(probes.get() + 1);
+                Ok(false)
+            },
+            |duration| clock.set(clock.get() + duration),
+        );
+        assert_eq!(
+            result.expect_err("the socket never becomes ready").kind(),
+            io::ErrorKind::TimedOut
+        );
+        // One probe per poll interval before the deadline, none at it.
+        assert_eq!(probes.get(), 4);
+    }
+
+    #[test]
     fn read_server_status_at_reads_ping_response() {
         let dir = ScratchDir::new("status");
         let path = dir.join("api.sock");

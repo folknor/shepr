@@ -14,13 +14,14 @@ pub mod snapshot;
 mod writer;
 
 pub use self::io::{load, load_history};
-pub use self::lock::DataDirLease;
+pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::restore::restore;
-#[cfg(test)]
-pub use self::snapshot::capture_history;
 pub use self::snapshot::{
     DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
     TabSnapshot, WorkspaceSnapshot, capture,
 };
 pub use self::snapshot::{PendingHistory, capture_pending_history};
 pub use self::writer::SessionWriter;
+
+#[cfg(test)]
+pub use self::snapshot::capture_history;

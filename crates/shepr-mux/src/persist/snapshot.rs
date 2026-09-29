@@ -613,18 +613,6 @@ impl PendingHistory {
     }
 }
 
-/// Both halves of a history capture in one call. Saves split them across the
-/// event loop and the save thread instead.
-#[cfg(test)]
-pub fn capture_history(
-    snapshot: &SessionSnapshot,
-    workspaces: &[Workspace],
-    terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &HistoryCarry,
-) -> SessionHistorySnapshot {
-    capture_pending_history(workspaces, terminal_runtimes, carry).resolve(snapshot)
-}
-
 /// The event-loop half of a history capture; see `PendingHistory`.
 pub fn capture_pending_history(
     workspaces: &[Workspace],
@@ -738,6 +726,18 @@ pub fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
 
 pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnapshot, String> {
     serde_json::from_str(content).map_err(|e| e.to_string())
+}
+
+/// Both halves of a history capture in one call. Saves split them across the
+/// event loop and the save thread instead.
+#[cfg(test)]
+pub fn capture_history(
+    snapshot: &SessionSnapshot,
+    workspaces: &[Workspace],
+    terminal_runtimes: &PaneRuntimeRegistry,
+    carry: &HistoryCarry,
+) -> SessionHistorySnapshot {
+    capture_pending_history(workspaces, terminal_runtimes, carry).resolve(snapshot)
 }
 
 #[cfg(test)]

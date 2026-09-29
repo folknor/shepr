@@ -5,13 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::limits::TEMP_FILE_ALLOCATION_ATTEMPTS;
 
-#[cfg(test)]
-use std::sync::OnceLock;
-
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(test)]
-static TEST_TEMP_TOKEN: OnceLock<u64> = OnceLock::new();
 
 fn temporary_path(parent: &Path, prefix: &str, sequence: u64) -> io::Result<PathBuf> {
     let token = temporary_token()?;
@@ -19,33 +13,9 @@ fn temporary_path(parent: &Path, prefix: &str, sequence: u64) -> io::Result<Path
     Ok(parent.join(format!("{prefix}-{token:016x}-{sequence}.tmp")))
 }
 
+#[cfg(not(test))]
 fn temporary_token() -> io::Result<u64> {
-    #[cfg(test)]
-    if let Some(token) = TEST_TEMP_TOKEN.get() {
-        return Ok(*token);
-    }
-
     shepr_platform::unpredictable_token()
-}
-
-#[cfg(test)]
-pub(super) fn reset_temp_sequence(sequence: u64) {
-    NEXT_TEMP.store(sequence, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(super) fn set_temp_token_for_test(token: u64) {
-    let stored = *TEST_TEMP_TOKEN.get_or_init(|| token);
-    assert_eq!(stored, token, "the test temp token is set once per process");
-}
-
-#[cfg(test)]
-pub(super) fn temporary_path_for_test(
-    parent: &Path,
-    prefix: &str,
-    sequence: u64,
-) -> io::Result<PathBuf> {
-    temporary_path(parent, prefix, sequence)
 }
 
 /// How the staged file gets its permissions: managed assets are created
@@ -128,11 +98,6 @@ impl AtomicReplace {
         before_publish(&self.target)?;
         fs::rename(&self.temporary, &self.target)
     }
-
-    #[cfg(test)]
-    pub(super) fn temporary_path(&self) -> &Path {
-        &self.temporary
-    }
 }
 
 impl PermissionPolicy<'_> {
@@ -166,5 +131,48 @@ impl Drop for AtomicReplace {
                 "failed to remove atomic replacement temporary file"
             );
         }
+    }
+}
+
+#[cfg(test)]
+use std::sync::OnceLock;
+
+#[cfg(test)]
+static TEST_TEMP_TOKEN: OnceLock<u64> = OnceLock::new();
+
+/// The production token unless a test pinned one with `set_temp_token_for_test`.
+#[cfg(test)]
+fn temporary_token() -> io::Result<u64> {
+    if let Some(token) = TEST_TEMP_TOKEN.get() {
+        return Ok(*token);
+    }
+
+    shepr_platform::unpredictable_token()
+}
+
+#[cfg(test)]
+pub(super) fn reset_temp_sequence(sequence: u64) {
+    NEXT_TEMP.store(sequence, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn set_temp_token_for_test(token: u64) {
+    let stored = *TEST_TEMP_TOKEN.get_or_init(|| token);
+    assert_eq!(stored, token, "the test temp token is set once per process");
+}
+
+#[cfg(test)]
+pub(super) fn temporary_path_for_test(
+    parent: &Path,
+    prefix: &str,
+    sequence: u64,
+) -> io::Result<PathBuf> {
+    temporary_path(parent, prefix, sequence)
+}
+
+#[cfg(test)]
+impl AtomicReplace {
+    pub(super) fn temporary_path(&self) -> &Path {
+        &self.temporary
     }
 }

@@ -1004,7 +1004,7 @@ mod tests {
 
     fn snapshot(boot_id: &str) -> Box<shepr_protocol::ClientShellSnapshot> {
         Box::new(shepr_protocol::ClientShellSnapshot {
-            boot_id: boot_id.into(),
+            boot_id: crate::tests::test_boot_id(boot_id),
             revision: shepr_protocol::ProjectionRevision::new(1),
             resolved_config: shepr_test_fixtures::encode_to_vec(
                 &shepr_config::ValidatedConfig::test_default(),

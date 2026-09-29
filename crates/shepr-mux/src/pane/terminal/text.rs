@@ -177,42 +177,13 @@ impl TextBufferBuilder {
     }
 }
 
-/// Word atoms over a window of rows (and, for tests, the logical lines).
+/// Word atoms over a window of rows.
 #[derive(Debug)]
 pub(super) struct RetainedTextBuffer {
     atoms: Vec<TextAtom>,
-    #[cfg(test)]
-    cols: u16,
-    #[cfg(test)]
-    lines: Vec<LogicalTextLine>,
 }
 
 impl RetainedTextBuffer {
-    /// A buffer over owned rows 0.., for exercising search and word motion
-    /// on hand-built cells; the live terminal streams straight from its grid.
-    #[cfg(test)]
-    pub(super) fn new(cols: u16, rows: Vec<shepr_vt::ScreenTextRow>) -> Self {
-        let mut builder = TextBufferBuilder::new(true, true);
-        let mut lines = Vec::new();
-        for (row, screen_row) in (0u64..).zip(rows) {
-            let row = AbsRow(row);
-            for (col, cell) in (0u16..).zip(&screen_row.cells) {
-                builder.push_cell(row, col, cell.wide, &terminal_cell_text(&cell.graphemes));
-            }
-            if builder.end_row(screen_row.wrap.soft_wrapped) {
-                lines.push(std::mem::take(&mut builder.line));
-            }
-        }
-        if builder.trailing_line().is_some() {
-            lines.push(std::mem::take(&mut builder.line));
-        }
-        Self {
-            atoms: builder.atoms,
-            cols,
-            lines,
-        }
-    }
-
     /// Word atoms for screen rows `start..end` of the live terminal, with
     /// absolute rows, plus how the first and last row wrap.
     fn live_words(
@@ -239,34 +210,8 @@ impl RetainedTextBuffer {
         }
         let buffer = Self {
             atoms: builder.atoms,
-            #[cfg(test)]
-            cols: terminal.cols(),
-            #[cfg(test)]
-            lines: Vec::new(),
         };
         Some((buffer, first.unwrap_or_default(), last))
-    }
-
-    #[cfg(test)]
-    pub(super) fn search_window(
-        &self,
-        query: &str,
-        case_sensitive: bool,
-        active_screen: shepr_vt::ActiveScreen,
-        direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint<AbsRow>,
-        previous: Option<(TerminalTextPoint<AbsRow>, TerminalTextPoint<AbsRow>)>,
-        limit: usize,
-    ) -> TerminalSearchWindow<AbsRow> {
-        let Some(mut search) =
-            TextSearch::new(query, case_sensitive, direction, cursor, previous, limit)
-        else {
-            return TerminalSearchWindow::empty();
-        };
-        for line in &self.lines {
-            search.scan_line(line, self.cols, active_screen);
-        }
-        search.finish()
     }
 
     pub(super) fn word_motion(
@@ -446,17 +391,6 @@ impl RetainedTextBuffer {
             .find(|atom| atom.point.is_some())
             .is_some_and(|atom| atom.point == Some(point))
     }
-}
-
-#[cfg(test)]
-fn terminal_cell_text(graphemes: &[u32]) -> String {
-    if graphemes.is_empty() {
-        return " ".to_string();
-    }
-    graphemes
-        .iter()
-        .map(|codepoint| char::from_u32(*codepoint).unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect()
 }
 
 fn text_class(text: &str) -> TextClass {
@@ -771,4 +705,83 @@ pub(super) fn paragraph_motion_in(
         }
     }
     None
+}
+
+#[cfg(test)]
+fn terminal_cell_text(graphemes: &[u32]) -> String {
+    if graphemes.is_empty() {
+        return " ".to_string();
+    }
+    graphemes
+        .iter()
+        .map(|codepoint| char::from_u32(*codepoint).unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+/// Word atoms plus the logical lines over owned rows 0.., for exercising
+/// search and word motion on hand-built cells; the live terminal streams
+/// straight from its grid.
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct OwnedTextBuffer {
+    words: RetainedTextBuffer,
+    cols: u16,
+    lines: Vec<LogicalTextLine>,
+}
+
+#[cfg(test)]
+impl OwnedTextBuffer {
+    pub(super) fn new(cols: u16, rows: Vec<shepr_vt::ScreenTextRow>) -> Self {
+        let mut builder = TextBufferBuilder::new(true, true);
+        let mut lines = Vec::new();
+        for (row, screen_row) in (0u64..).zip(rows) {
+            let row = AbsRow(row);
+            for (col, cell) in (0u16..).zip(&screen_row.cells) {
+                builder.push_cell(row, col, cell.wide, &terminal_cell_text(&cell.graphemes));
+            }
+            if builder.end_row(screen_row.wrap.soft_wrapped) {
+                lines.push(std::mem::take(&mut builder.line));
+            }
+        }
+        if builder.trailing_line().is_some() {
+            lines.push(std::mem::take(&mut builder.line));
+        }
+        Self {
+            words: RetainedTextBuffer {
+                atoms: builder.atoms,
+            },
+            cols,
+            lines,
+        }
+    }
+
+    pub(super) fn word_motion(
+        &self,
+        row: AbsRow,
+        col: u16,
+        motion: TerminalWordMotion,
+    ) -> Option<TerminalTextPoint<AbsRow>> {
+        self.words.word_motion(row, col, motion)
+    }
+
+    pub(super) fn search_window(
+        &self,
+        query: &str,
+        case_sensitive: bool,
+        active_screen: shepr_vt::ActiveScreen,
+        direction: TerminalSearchDirection,
+        cursor: TerminalTextPoint<AbsRow>,
+        previous: Option<(TerminalTextPoint<AbsRow>, TerminalTextPoint<AbsRow>)>,
+        limit: usize,
+    ) -> TerminalSearchWindow<AbsRow> {
+        let Some(mut search) =
+            TextSearch::new(query, case_sensitive, direction, cursor, previous, limit)
+        else {
+            return TerminalSearchWindow::empty();
+        };
+        for line in &self.lines {
+            search.scan_line(line, self.cols, active_screen);
+        }
+        search.finish()
+    }
 }

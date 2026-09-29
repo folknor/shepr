@@ -293,7 +293,7 @@ mod tests {
                         shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch,
                     ),
                     subject: shepr_protocol::surface_reuse::SurfaceDecodeSubject {
-                        boot_id: "boot".into(),
+                        boot_id: crate::tests::test_boot_id("boot"),
                         projection_revision: shepr_protocol::ProjectionRevision::new(2),
                         surface_revision: shepr_protocol::SurfaceRevision::new(3),
                         pane_ids: Vec::new(),
@@ -312,7 +312,7 @@ mod tests {
                         subject,
                         source,
                     }
-                ) if subject.boot_id == "boot"
+                ) if subject.boot_id == crate::tests::test_boot_id("boot")
                     && subject.projection_revision == 2
                     && subject.surface_revision == 3
                     && matches!(
@@ -321,7 +321,11 @@ mod tests {
                     )
             ) && error.endpoint_id == endpoint::ClientEndpointId::Local
         ));
-        assert!(surface_error.to_string().contains("boot boot"));
+        assert!(
+            surface_error
+                .to_string()
+                .contains(&format!("boot {}", crate::tests::test_boot_id("boot")))
+        );
         assert!(surface_error.to_string().contains("projection revision 2"));
     }
 

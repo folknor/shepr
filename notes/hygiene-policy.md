@@ -25,27 +25,41 @@ the entry says so.
 
 ---
 
-## HYGP-154 - The injected events.wait clock has no test that injects it
+## HYGP-157 - Socket-path hazards and the already-running text
 
-`shepr-api/src/wait.rs::wait_for_event` takes a clock so its deadline is
-testable, but only the real socket path calls it, with `Instant::now`. Add a
-test that drives the deadline with a fake clock, or the seam proves nothing.
+- `shepr-platform/src/ipc.rs::prepare_socket_path`: `probe()` treats a
+  connect failing with `ConnectionRefused` as a stale socket, and Linux
+  `connect()` to a regular file is believed to return ECONNREFUSED, so
+  `bind_private_socket` may delete a regular file sitting at the socket path.
+  Untested. Check `file_type().is_socket()` before calling a path stale, with a
+  test that puts a regular file there.
+- Saved-machine bridge sockets (`saved_bridge_path` in
+  `shepr-remote/src/remote/saved.rs`) are named `shepr-ssh-<profile>.<token>.sock`,
+  sharing the `shepr-ssh-` prefix with the ssh config dirs `shepr-ssh-<tag>`.
+  Harmless today (the config-dir sweep needs a parseable tag and a directory);
+  a distinct bridge prefix would remove the trap.
+- "shepr server is already running" is written three times: the
+  `ALREADY_RUNNING` constant in `src/cli/error.rs`, both arms of
+  `RunServerError`'s `Display` in `shepr-server/src/server/headless/bootstrap.rs`,
+  and the `tracing::error!` in `startup_error`. Leave the operator sentence to
+  the binary and word the library `Display` neutrally.
 
-## HYGP-153 - Two server files still open with an early test-only item
+## HYGP-156 - Dead checked-time fallbacks, and limit refusals that restate the limit
 
-`shepr-server/src/server/alt_screen_read.rs` has `#[cfg(test)]` on a `use` at
-the top and `shepr-server/src/lib.rs` has one on an early line, so every
-`skip_after` textlint (including the new server transport clock rule) skips
-the whole file. Neither has a production violation today; move the test-only
-items into the trailing test module so the rules see the production part.
-
-## HYGP-152 - Concurrent bridges for one saved machine may collide on one socket path
-
-The saved-machine bridge socket is named by profile only
-(`shepr-ssh-<profile>.sock`), and so is the CLI's `--machine` API bridge
-(`shepr-api-ssh-<profile>.sock`), both in the shared runtime directory. Two
-clients, or two concurrent `--machine` commands, for the same machine would
-hit `AddrInUse`, which is classified as a link failure, so the second may retry
-until it gives up. Unconfirmed whether something else keeps them apart; verify
-with two clients attached to one saved machine, and if they collide, add a
-per-client component to the name.
+- `shepr-server/src/app/tab_bar_status.rs`:
+  `now.checked_add(runtime.interval).unwrap_or(now)` cannot fail, since config
+  caps the interval at `MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS`, and its fallback
+  would be harmful if it ran (the command due again next tick). Use
+  `now + runtime.interval` with a comment naming the config bound.
+- `shepr-server/src/app/git_refresh.rs::mark_due`:
+  `now.checked_sub(GIT_REMOTE_STATUS_REFRESH_INTERVAL).unwrap_or(now)` cannot
+  fail on a monotonic `Instant`, and its fallback would mark the refresh not
+  due, the opposite of the function's purpose. Use plain subtraction.
+- `shepr-server/src/app/api_helpers.rs::normalize_metadata_ttl` hard-codes
+  its limits in the refusal text ("must be at least 1", "must be 86400000 or
+  less") instead of formatting `METADATA_TTL_MIN_MS` and `METADATA_TTL_MAX_MS`,
+  so the message goes stale if a limit changes. It returns `&'static str`; the
+  two callers in `app/api/workspaces.rs` and `app/api/panes/reports.rs` would
+  take a `String`.
+- `shepr-api/src/client.rs`: the `request_value_with_timeout` doc reads "an
+  send timeout".

@@ -17,7 +17,7 @@ fn workspaces(count: usize) -> ClientShellSnapshot {
 fn navigation_state(mut projected: ClientShellSnapshot) -> (ClientShellState, ClientEndpointId) {
     let (mut state, remote) = state_with_remote();
     state.set_snapshot(Box::new(projected.clone()));
-    projected.boot_id = "remote-boot".into();
+    projected.boot_id = crate::tests::test_boot_id("remote-boot");
     state.set_endpoint_snapshot(&remote, Box::new(projected));
     (state, remote)
 }
@@ -192,7 +192,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
             }
             assert_eq!(
                 state.snapshot.as_ref().expect("test precondition").boot_id,
-                "boot-1"
+                crate::tests::test_boot_id("boot-1")
             );
             assert_eq!(
                 state
@@ -209,7 +209,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                     .as_ref()
                     .expect("test precondition")
                     .boot_id,
-                "boot-1"
+                crate::tests::test_boot_id("boot-1")
             );
             let enter = state.handle_input_bytes(b"\r");
             assert!(enter.requests.is_empty());
@@ -250,7 +250,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     }
     assert_selected(&state, &remote, "w1");
     let mut remote_snapshot = workspaces(2);
-    remote_snapshot.boot_id = "remote-boot".into();
+    remote_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
     state.set_endpoint_snapshot(&remote, Box::new(remote_snapshot));
     preview_key(&mut state, b"\x1b[B");
     assert_selected(&state, &remote, "w2");
@@ -405,7 +405,7 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
     for invalidation in ["offline", "removed", "deleted", "boot", "generation"] {
         let (mut state, remote_id) = state_with_remote();
         let mut remote = workspaces(2);
-        remote.boot_id = "remote-boot".into();
+        remote.boot_id = crate::tests::test_boot_id("remote-boot");
         state.set_endpoint_snapshot_for_generation(&remote_id, 7, Box::new(remote.clone()));
         state.compose(100, 28).expect("test precondition");
         enter_navigation(&mut state);
@@ -431,7 +431,7 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
                 state.set_endpoint_snapshot_for_generation(&remote_id, 7, Box::new(remote));
             }
             "boot" => {
-                remote.boot_id = "restarted-remote".into();
+                remote.boot_id = crate::tests::test_boot_id("restarted-remote");
                 state.set_endpoint_snapshot_for_generation(&remote_id, 7, Box::new(remote));
             }
             "generation" => {
@@ -480,7 +480,7 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
         assert_selected(&state, &ClientEndpointId::Local, "w2");
         let selected = state.navigate_workspace_id.clone();
         match invalidation {
-            "boot" => local.boot_id = "new-local-boot".into(),
+            "boot" => local.boot_id = crate::tests::test_boot_id("new-local-boot"),
             "deleted" => {
                 local.revision = local.revision.checked_next().expect("test precondition");
                 local.workspaces.pop();
@@ -514,7 +514,7 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
     for compact in [true, false] {
         let (mut state, remote_id) = state_with_remote();
         let mut remote = workspaces(15);
-        remote.boot_id = "remote-boot".into();
+        remote.boot_id = crate::tests::test_boot_id("remote-boot");
         state.set_endpoint_snapshot(&remote_id, Box::new(remote));
         state.sidebar_collapsed = compact;
         state.collapsed_endpoints.insert(remote_id.clone());
@@ -619,7 +619,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
             state.set_pane_surface(surface());
             if response_first {
                 state.handle_endpoint_result(
-                    "boot-1",
+                    &crate::tests::test_boot_id("boot-1"),
                     &request_id,
                     Ok(shepr_api::schema::ResponseResult::Ok {}),
                 );
@@ -631,7 +631,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
             assert_local_highlight(&mut state, "w3");
             if !response_first {
                 state.handle_endpoint_result(
-                    "boot-1",
+                    &crate::tests::test_boot_id("boot-1"),
                     &request_id,
                     Ok(shepr_api::schema::ResponseResult::Ok {}),
                 );
@@ -652,7 +652,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
             assert!(state.cancel_endpoint_request(&request_id));
         } else {
             state.handle_endpoint_result(
-                "boot-1",
+                &crate::tests::test_boot_id("boot-1"),
                 &request_id,
                 Err(ClientShellEndpointError {
                     code: Some(failure.into()),
@@ -662,7 +662,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         }
         assert_local_highlight(&mut state, "w1");
         state.handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(shepr_api::schema::ResponseResult::Ok {}),
         );
@@ -685,7 +685,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         let mut state = local_navigation_state(false);
         let request_id = request_local_navigation(&mut state, 2);
         state.handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(shepr_api::schema::ResponseResult::Ok {}),
         );
@@ -698,7 +698,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
                 state.set_snapshot(Box::new(snapshot));
             }
             "boot" => {
-                snapshot.boot_id = "replacement-boot".into();
+                snapshot.boot_id = crate::tests::test_boot_id("replacement-boot");
                 state.set_snapshot(Box::new(snapshot));
             }
             "generation" => state.set_endpoint_snapshot_for_generation(
@@ -799,7 +799,11 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
             } else {
                 Ok(ResponseResult::Ok {})
             };
-            state.handle_endpoint_result("boot-1", &pending_request, result);
+            state.handle_endpoint_result(
+                &crate::tests::test_boot_id("boot-1"),
+                &pending_request,
+                result,
+            );
             assert_local_highlight(&mut state, "w1");
         }
     }
@@ -871,7 +875,7 @@ fn coalesced_navigation_focus_does_not_leave_a_permanent_highlight() {
     let before_request = std::time::Instant::now();
     let request_id = request_local_navigation(&mut state, 2);
     state.handle_endpoint_result(
-        "boot-1",
+        &crate::tests::test_boot_id("boot-1"),
         &request_id,
         Ok(shepr_api::schema::ResponseResult::Ok {}),
     );

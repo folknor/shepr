@@ -1,7 +1,3 @@
-#[cfg(test)]
-use crate::test_support::{ValidatedConfigFixture as _, WorkspaceFixture as _};
-#[cfg(test)]
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use shepr_config::NewTerminalCwd;
 
@@ -188,7 +184,7 @@ impl AppState {
         self.active_tab_id = self.active_index().and_then(|index| {
             let workspace = self.workspaces.get(index)?;
             Some(shepr_protocol::PublicTabId::new(
-                workspace.id.to_string(),
+                &workspace.id,
                 workspace.active_tab().number(),
             ))
         });
@@ -240,6 +236,12 @@ impl AppState {
         terminal_runtimes.get(terminal_id)
     }
 }
+
+#[cfg(test)]
+use crate::test_support::{ValidatedConfigFixture as _, WorkspaceFixture as _};
+
+#[cfg(test)]
+use crossterm::event::{KeyCode, KeyModifiers};
 
 #[cfg(test)]
 pub fn key_matches(
@@ -357,7 +359,7 @@ impl AppState {
         assert_eq!(
             self.active_tab_id.as_ref(),
             Some(&shepr_protocol::PublicTabId::new(
-                active_workspace.id.to_string(),
+                &active_workspace.id,
                 active_tab.number()
             )),
             "active tab id must follow the active workspace tab"

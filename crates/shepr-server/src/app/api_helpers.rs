@@ -73,18 +73,6 @@ pub(super) fn pane_agent_status(
     }
 }
 
-#[cfg(test)]
-mod agent_status_tests {
-    use super::pane_agent_status;
-    use shepr_agent::detect::AgentState;
-    use shepr_api::schema::AgentStatus;
-
-    #[test]
-    fn unknown_agent_state_presents_as_idle() {
-        assert_eq!(pane_agent_status(AgentState::Unknown), AgentStatus::Idle);
-    }
-}
-
 /// The format a read produces. `strip_ansi: false` asks to keep escape
 /// sequences, which only the ANSI renderer has, so it selects that renderer
 /// whatever `format` says; `strip_ansi: true` (the default) leaves `format` in
@@ -186,87 +174,6 @@ pub(crate) fn limit_snapshot_lines(
     }
 }
 
-#[cfg(test)]
-mod read_snapshot_tests {
-    use super::{
-        MAX_READ_LINES, effective_read_format, limit_snapshot_lines, validate_read_request,
-    };
-    use shepr_api::schema::{ReadFormat, ReadSource};
-
-    #[test]
-    fn keeping_escapes_selects_the_ansi_renderer() {
-        assert_eq!(
-            effective_read_format(ReadFormat::Text, true),
-            ReadFormat::Text
-        );
-        assert_eq!(
-            effective_read_format(ReadFormat::Ansi, true),
-            ReadFormat::Ansi
-        );
-        assert_eq!(
-            effective_read_format(ReadFormat::Text, false),
-            ReadFormat::Ansi
-        );
-        assert_eq!(
-            effective_read_format(ReadFormat::Ansi, false),
-            ReadFormat::Ansi
-        );
-    }
-
-    #[test]
-    fn oversized_line_requests_are_rejected_instead_of_capped() {
-        assert!(
-            validate_read_request(ReadSource::Recent, ReadFormat::Text, Some(MAX_READ_LINES))
-                .is_ok()
-        );
-        let error = validate_read_request(
-            ReadSource::Recent,
-            ReadFormat::Text,
-            Some(MAX_READ_LINES + 1),
-        )
-        .expect_err("test precondition");
-        assert_eq!(error.code, shepr_api::error::ApiErrorCode::InvalidLines);
-    }
-
-    #[test]
-    fn ansi_detection_reads_are_rejected_instead_of_returning_plain_text() {
-        let error = validate_read_request(ReadSource::Detection, ReadFormat::Ansi, None)
-            .expect_err("test precondition");
-        assert_eq!(
-            error.code,
-            shepr_api::error::ApiErrorCode::UnsupportedReadFormat
-        );
-        assert!(validate_read_request(ReadSource::Detection, ReadFormat::Text, None).is_ok());
-        assert!(validate_read_request(ReadSource::Visible, ReadFormat::Ansi, None).is_ok());
-    }
-
-    #[test]
-    fn line_limit_preserves_endings_and_reports_omitted_lines() {
-        let snapshot = limit_snapshot_lines("one\ntwø\n三\n".into(), Some(2));
-        assert_eq!(snapshot.text, "twø\n三\n");
-        assert!(snapshot.truncated);
-
-        let snapshot = limit_snapshot_lines("one\ntwo\nthree".into(), Some(1));
-        assert_eq!(snapshot.text, "three");
-        assert!(snapshot.truncated);
-
-        let snapshot = limit_snapshot_lines("one\ntwo".into(), Some(0));
-        assert_eq!(snapshot.text, "");
-        assert!(snapshot.truncated);
-
-        let snapshot = limit_snapshot_lines(String::new(), Some(2));
-        assert_eq!(snapshot.text, "");
-        assert!(!snapshot.truncated);
-    }
-
-    #[test]
-    fn omitted_line_limit_returns_the_complete_snapshot() {
-        let snapshot = limit_snapshot_lines("one\ntwo\n".into(), None);
-        assert_eq!(snapshot.text, "one\ntwo\n");
-        assert!(!snapshot.truncated);
-    }
-}
-
 pub(super) fn normalize_reported_agent_label(agent: &str) -> Option<String> {
     let trimmed = agent.trim();
     if trimmed.is_empty() {
@@ -356,6 +263,99 @@ pub(super) fn normalize_metadata_tokens(
             Ok((key, value))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod agent_status_tests {
+    use super::pane_agent_status;
+    use shepr_agent::detect::AgentState;
+    use shepr_api::schema::AgentStatus;
+
+    #[test]
+    fn unknown_agent_state_presents_as_idle() {
+        assert_eq!(pane_agent_status(AgentState::Unknown), AgentStatus::Idle);
+    }
+}
+
+#[cfg(test)]
+mod read_snapshot_tests {
+    use super::{
+        MAX_READ_LINES, effective_read_format, limit_snapshot_lines, validate_read_request,
+    };
+    use shepr_api::schema::{ReadFormat, ReadSource};
+
+    #[test]
+    fn keeping_escapes_selects_the_ansi_renderer() {
+        assert_eq!(
+            effective_read_format(ReadFormat::Text, true),
+            ReadFormat::Text
+        );
+        assert_eq!(
+            effective_read_format(ReadFormat::Ansi, true),
+            ReadFormat::Ansi
+        );
+        assert_eq!(
+            effective_read_format(ReadFormat::Text, false),
+            ReadFormat::Ansi
+        );
+        assert_eq!(
+            effective_read_format(ReadFormat::Ansi, false),
+            ReadFormat::Ansi
+        );
+    }
+
+    #[test]
+    fn oversized_line_requests_are_rejected_instead_of_capped() {
+        assert!(
+            validate_read_request(ReadSource::Recent, ReadFormat::Text, Some(MAX_READ_LINES))
+                .is_ok()
+        );
+        let error = validate_read_request(
+            ReadSource::Recent,
+            ReadFormat::Text,
+            Some(MAX_READ_LINES + 1),
+        )
+        .expect_err("test precondition");
+        assert_eq!(error.code, shepr_api::error::ApiErrorCode::InvalidLines);
+    }
+
+    #[test]
+    fn ansi_detection_reads_are_rejected_instead_of_returning_plain_text() {
+        let error = validate_read_request(ReadSource::Detection, ReadFormat::Ansi, None)
+            .expect_err("test precondition");
+        assert_eq!(
+            error.code,
+            shepr_api::error::ApiErrorCode::UnsupportedReadFormat
+        );
+        assert!(validate_read_request(ReadSource::Detection, ReadFormat::Text, None).is_ok());
+        assert!(validate_read_request(ReadSource::Visible, ReadFormat::Ansi, None).is_ok());
+    }
+
+    #[test]
+    fn line_limit_preserves_endings_and_reports_omitted_lines() {
+        let snapshot = limit_snapshot_lines("one\ntwø\n三\n".into(), Some(2));
+        assert_eq!(snapshot.text, "twø\n三\n");
+        assert!(snapshot.truncated);
+
+        let snapshot = limit_snapshot_lines("one\ntwo\nthree".into(), Some(1));
+        assert_eq!(snapshot.text, "three");
+        assert!(snapshot.truncated);
+
+        let snapshot = limit_snapshot_lines("one\ntwo".into(), Some(0));
+        assert_eq!(snapshot.text, "");
+        assert!(snapshot.truncated);
+
+        let snapshot = limit_snapshot_lines(String::new(), Some(2));
+        assert_eq!(snapshot.text, "");
+        assert!(!snapshot.truncated);
+    }
+
+    #[test]
+    fn omitted_line_limit_returns_the_complete_snapshot() {
+        let snapshot = limit_snapshot_lines("one\ntwo\n".into(), None);
+        assert_eq!(snapshot.text, "one\ntwo\n");
+        assert!(!snapshot.truncated);
+    }
 }
 
 #[cfg(test)]

@@ -201,10 +201,10 @@ impl ClientShellState {
         body: impl Into<String>,
     ) -> bool {
         let key = ClientEndpointNoticeKey {
-            boot_id: self.snapshot.as_deref().map_or_else(
-                || "disconnected".into(),
-                |snapshot| snapshot.boot_id.clone(),
-            ),
+            boot_id: self
+                .snapshot
+                .as_deref()
+                .map(|snapshot| snapshot.boot_id.clone()),
             kind,
             code: code.into(),
         };
@@ -350,24 +350,6 @@ impl ClientShellState {
         outcome.repaint
     }
 
-    /// Applies an endpoint response and returns everything it produced.
-    ///
-    /// A copy-mode motion or search response replays the keys queued while it
-    /// was in flight, and those keys can yield pane input, a resize, a detach or
-    /// host queries, not just repaints and actions. The caller must route the
-    /// whole outcome (`finish_client_shell_input`), or the replayed keystrokes
-    /// are lost.
-    #[cfg(test)]
-    pub(crate) fn handle_endpoint_result(
-        &mut self,
-        boot_id: &str,
-        request_id: &str,
-        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
-    ) -> ClientShellInput {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.handle_endpoint_result_at(boot_id, request_id, result, std::time::Instant::now())
-    }
-
     pub(crate) fn handle_endpoint_result_at(
         &mut self,
         boot_id: &str,
@@ -404,7 +386,7 @@ impl ClientShellState {
         }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
-                boot_id: boot_id.into(),
+                boot_id: Some(pending.boot_id.clone()),
                 kind: ClientEndpointNoticeKind::Timeout,
                 code: pending.method_name.clone(),
             };
@@ -853,5 +835,25 @@ impl ClientShellState {
             })),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    /// Applies an endpoint response and returns everything it produced.
+    ///
+    /// A copy-mode motion or search response replays the keys queued while it
+    /// was in flight, and those keys can yield pane input, a resize, a detach or
+    /// host queries, not just repaints and actions. The caller must route the
+    /// whole outcome (`finish_client_shell_input`), or the replayed keystrokes
+    /// are lost.
+    pub(crate) fn handle_endpoint_result(
+        &mut self,
+        boot_id: &str,
+        request_id: &str,
+        result: Result<shepr_api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> ClientShellInput {
+        // clock-io-ok: this test-only wrapper stands in for the client loop.
+        self.handle_endpoint_result_at(boot_id, request_id, result, std::time::Instant::now())
     }
 }

@@ -216,14 +216,6 @@ fn write_all_until(
     Ok(())
 }
 
-#[cfg(test)]
-pub(super) fn read_clipboard_text_with_command(
-    command: &ClipboardCommand,
-    deadline: Instant,
-) -> Option<String> {
-    read_clipboard_text_with_command_with_clock(command, deadline, &system_clock())
-}
-
 pub(super) fn read_clipboard_text_with_command_with_clock(
     command: &ClipboardCommand,
     deadline: Instant,
@@ -262,15 +254,6 @@ pub(super) fn read_clipboard_text_with_command_with_clock(
         return None;
     }
     String::from_utf8(bytes?).ok()
-}
-
-#[cfg(test)]
-pub(super) fn run_clipboard_command(
-    command: &ClipboardCommand,
-    bytes: &[u8],
-    deadline: Instant,
-) -> bool {
-    run_clipboard_command_with_clock(command, bytes, deadline, &system_clock())
 }
 
 pub(super) fn run_clipboard_command_with_clock(
@@ -380,4 +363,56 @@ fn set_nonblocking(fd: std::os::fd::RawFd) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn read_clipboard_text_with_command(
+    command: &ClipboardCommand,
+    deadline: Instant,
+) -> Option<String> {
+    read_clipboard_text_with_command_with_clock(command, deadline, &system_clock())
+}
+
+#[cfg(test)]
+pub(super) fn run_clipboard_command(
+    command: &ClipboardCommand,
+    bytes: &[u8],
+    deadline: Instant,
+) -> bool {
+    run_clipboard_command_with_clock(command, bytes, deadline, &system_clock())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shepr_test_support::fixture::{self, Step};
+    use std::time::Duration;
+
+    /// A helper still running when the injected clock reaches the startup
+    /// wait is detached as the selection owner, on that very reading.
+    #[test]
+    fn selection_owner_is_detached_when_the_injected_clock_ends_the_startup_wait() {
+        let child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
+            .spawn()
+            .expect("test precondition");
+        let pid = libc::pid_t::try_from(child.id()).expect("test precondition");
+        let started = Instant::now();
+        let reads = std::cell::Cell::new(0_u32);
+        let now = || {
+            let read = reads.get();
+            reads.set(read + 1);
+            started + super::super::limits::CLIPBOARD_OWNER_STARTUP_WAIT * read
+        };
+
+        let detached = wait_for_selection_owner_startup(child, &now);
+        // The reaper thread owns the child now; end it so the reaper returns.
+        // SAFETY: kill(2) on the pid of the helper this test spawned, which
+        // the detached reaper has not reaped while it still runs.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+
+        assert!(detached, "a live helper at the deadline owns the selection");
+        assert_eq!(reads.get(), 2, "the wait ends on the read at the deadline");
+    }
 }

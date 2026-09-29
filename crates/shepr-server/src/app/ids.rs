@@ -42,6 +42,18 @@ impl App {
         ))
     }
 
+    /// [`Self::public_pane_id`] as the typed id, for callers that hand it on
+    /// typed rather than spell it and parse it back.
+    pub(crate) fn typed_public_pane_id(
+        &self,
+        ws_idx: usize,
+        pane_id: shepr_core::layout::PaneId,
+    ) -> Option<shepr_protocol::PublicPaneId> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let pane_number = ws.public_pane_number(pane_id)?;
+        Some(shepr_protocol::PublicPaneId::new(&ws.id, pane_number))
+    }
+
     /// The tab holding `pane_id` in workspace `ws_idx`, or `None` when either
     /// is gone. API handlers hold an index parsed from a public id earlier in
     /// the same request; looking it up rather than indexing keeps a stale
@@ -65,7 +77,7 @@ impl App {
     ) -> Option<shepr_mux::pane::PaneLaunchEnv> {
         let workspace = self.state.workspaces.get(ws_idx)?;
         let pane_number = workspace.public_pane_number(pane_id)?;
-        let pane_id = shepr_protocol::PublicPaneId::new(workspace.id.as_str(), pane_number);
+        let pane_id = shepr_protocol::PublicPaneId::new(&workspace.id, pane_number);
         Some(
             shepr_mux::pane::PaneLaunchEnv::from_extra(
                 extra_env,
@@ -119,6 +131,14 @@ impl App {
     /// `<workspace>-N` form is gone too; nothing emits it.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, shepr_core::layout::PaneId)> {
         let public_id = id.parse::<shepr_protocol::PublicPaneId>().ok()?;
+        self.resolve_pane_id(&public_id)
+    }
+
+    /// [`Self::parse_pane_id`] for an id that is already typed.
+    pub(crate) fn resolve_pane_id(
+        &self,
+        public_id: &shepr_protocol::PublicPaneId,
+    ) -> Option<(usize, shepr_core::layout::PaneId)> {
         let current_id = (|| {
             let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
             let pane_number = public_id.number();
@@ -127,7 +147,7 @@ impl App {
             Some((ws_idx, pane_id))
         })();
         current_id.or_else(|| {
-            let alias = self.state.public_pane_id_aliases.get(&public_id).copied()?;
+            let alias = self.state.public_pane_id_aliases.get(public_id).copied()?;
             self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias))
         })
     }
@@ -193,13 +213,13 @@ mod tests {
             .insert(current_id.parse().expect("test precondition"), moved_pane);
 
         assert_eq!(app.parse_pane_id(&current_id), Some((0, current_pane)));
-        assert_eq!(app.parse_pane_id("old-workspace:p9"), None);
+        let retired_id = shepr_protocol::PublicPaneId::new(&retired_workspace_id(), 9);
+        assert_eq!(app.parse_pane_id(&retired_id), None);
 
-        app.state.public_pane_id_aliases.insert(
-            shepr_protocol::PublicPaneId::new("old-workspace", 9),
-            moved_pane,
-        );
-        assert_eq!(app.parse_pane_id("old-workspace:p9"), Some((1, moved_pane)));
+        app.state
+            .public_pane_id_aliases
+            .insert(retired_id.clone(), moved_pane);
+        assert_eq!(app.parse_pane_id(&retired_id), Some((1, moved_pane)));
     }
 
     #[test]

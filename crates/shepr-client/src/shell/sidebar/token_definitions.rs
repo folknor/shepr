@@ -45,11 +45,6 @@ impl ResolvedToken {
     fn new(kind: ResolvedTokenKind, style: SidebarTokenStyle) -> Self {
         Self { kind, style }
     }
-
-    #[cfg(test)]
-    pub(super) fn unstyled(kind: ResolvedTokenKind) -> Self {
-        Self::new(kind, SidebarTokenStyle::default())
-    }
 }
 
 pub(crate) struct AgentTokenContext<'a> {
@@ -204,6 +199,13 @@ pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'
         " "
     } else {
         " · "
+    }
+}
+
+#[cfg(test)]
+impl ResolvedToken {
+    pub(super) fn unstyled(kind: ResolvedTokenKind) -> Self {
+        Self::new(kind, SidebarTokenStyle::default())
     }
 }
 

@@ -69,12 +69,6 @@ impl EndpointRegistry {
         }
     }
 
-    #[cfg(test)]
-    pub fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
-        // clock-io-ok: this test-only constructor stands in for the client launch.
-        Self::new_at(local, generation, Instant::now())
-    }
-
     /// A registry whose Local slot is a server socket on this host, connected at `now`.
     pub fn new_at(local: impl EndpointTransport + 'static, generation: u64, now: Instant) -> Self {
         Self::with_local_link(local, generation, LocalEndpointLink::Socket, now)
@@ -358,6 +352,14 @@ impl Drop for EndpointRegistry {
             connection.transport.flush(deadline.instant()).ok();
             connection.transport.disconnect();
         }
+    }
+}
+
+#[cfg(test)]
+impl EndpointRegistry {
+    pub fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
+        // clock-io-ok: this test-only constructor stands in for the client launch.
+        Self::new_at(local, generation, Instant::now())
     }
 }
 

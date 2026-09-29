@@ -1,17 +1,5 @@
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-/// Parse raw terminal input bytes into a list of `RawInputEvent`s.
-///
-/// This directly extracts events without going through a channel, making it
-/// suitable for synchronous use.
-#[cfg(test)]
-pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
-    let mut framer = RawInputFramer::<NoHostReplies>::default();
-    let mut events = framer.push(data);
-    events.extend(framer.flush_timeout());
-    events
-}
-
 use crate::host_term::theme::{
     DefaultColorKind, HostAppearance, RgbColor, parse_default_color_response,
     parse_palette_color_response,
@@ -298,22 +286,6 @@ pub struct RawInputFramer<P: HostReplyPolicy = NoHostReplies> {
 }
 
 impl<P: HostReplyPolicy> RawInputFramer<P> {
-    #[cfg(test)]
-    pub fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
-        self.push_framed(data)
-            .into_iter()
-            .map(|input| input.event)
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub fn flush_timeout(&mut self) -> Vec<RawInputEvent> {
-        self.flush_timeout_framed()
-            .into_iter()
-            .map(|input| input.event)
-            .collect()
-    }
-
     pub fn push_framed(&mut self, data: &[u8]) -> Vec<FramedRawInputEvent> {
         Self::framed_events_from_chunks(self.byte_framer.push(data))
     }
@@ -1578,6 +1550,35 @@ fn parse_mouse_cb(cb: u8) -> Option<(MouseEventKind, KeyModifiers)> {
     }
 
     Some((kind, modifiers))
+}
+
+/// Parse raw terminal input bytes into a list of `RawInputEvent`s.
+///
+/// This directly extracts events without going through a channel, making it
+/// suitable for synchronous use.
+#[cfg(test)]
+pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
+    let mut framer = RawInputFramer::<NoHostReplies>::default();
+    let mut events = framer.push(data);
+    events.extend(framer.flush_timeout());
+    events
+}
+
+#[cfg(test)]
+impl<P: HostReplyPolicy> RawInputFramer<P> {
+    pub fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
+        self.push_framed(data)
+            .into_iter()
+            .map(|input| input.event)
+            .collect()
+    }
+
+    pub fn flush_timeout(&mut self) -> Vec<RawInputEvent> {
+        self.flush_timeout_framed()
+            .into_iter()
+            .map(|input| input.event)
+            .collect()
+    }
 }
 
 #[cfg(test)]

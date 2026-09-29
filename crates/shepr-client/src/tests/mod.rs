@@ -25,6 +25,27 @@ pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
         .unwrap_or_else(|_| panic!("{id:?} is not a canonical workspace id"))
 }
 
+/// The canonical boot id of the test server named `name`. Tests name the
+/// servers they talk to; each name maps to its own boot id, so two names never
+/// share one and a test cannot build a boot id no server would send.
+pub(crate) fn test_boot_id(name: &str) -> shepr_protocol::BootId {
+    let process_id = match name {
+        "boot" => 1,
+        "boot-1" => 2,
+        "local-boot" => 3,
+        "remote-boot" => 4,
+        "old-boot" => 5,
+        "new-local-boot" => 6,
+        "replacement-boot" => 7,
+        "stale-local-boot" => 8,
+        "shared-server-boot" => 9,
+        "restarted-remote" => 10,
+        "restarted-local" => 11,
+        _ => panic!("{name:?} names no test server"),
+    };
+    fixed_boot_id(process_id)
+}
+
 #[test]
 fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
     let size = AtomicCellSize::new();

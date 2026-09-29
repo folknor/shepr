@@ -29,18 +29,6 @@ impl ClientShellState {
 }
 
 impl ClientShellConfig {
-    #[cfg(test)]
-    pub fn from_config(config: &Config) -> Self {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
-        let validated = shepr_config::ValidatedConfig::test_from_config(config.clone(), None);
-        Self::from_config_with_configured(
-            validated.ui(),
-            preferences::ConfiguredChrome::default(),
-            validated.palette().clone(),
-            validated.live_keybinds(),
-        )
-    }
-
     pub fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self::from_config_with_configured(
             config.ui(),
@@ -192,6 +180,20 @@ impl ClientShellConfig {
             rows: surface.height.max(1),
         }
         .clamped()
+    }
+}
+
+#[cfg(test)]
+impl ClientShellConfig {
+    pub fn from_config(config: &Config) -> Self {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
+        let validated = shepr_config::ValidatedConfig::test_from_config(config.clone(), None);
+        Self::from_config_with_configured(
+            validated.ui(),
+            preferences::ConfiguredChrome::default(),
+            validated.palette().clone(),
+            validated.live_keybinds(),
+        )
     }
 }
 

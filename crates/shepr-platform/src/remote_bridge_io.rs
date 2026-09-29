@@ -64,8 +64,10 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
         }
         None => None,
     };
+    // The bridge's stdout is the SSH channel to the client, relayed as bytes.
     // A duplicate of fd 1 rather than the std handle: a download blocked on a
     // full stdout pipe must not hold std's stdout lock after an expiry returns.
+    // stdout-handoff-ok: fd 1 is taken over whole, not written as text.
     let stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned()?);
     let mut stdout = TrackedIo::new(stdout, activity.clone());
     let mut socket_to_stdout = TrackedIo::new(stream.try_clone()?, activity.clone());
@@ -83,7 +85,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             &mut TrackedIo::new(&mut stdin_to_socket, activity),
         ) && !is_closed_socket(&err)
         {
-            tracing::warn!(kind = ?err.kind(), error = %err, "SSH bridge upload failed");
+            tracing::warn!(error_kind = ?err.kind(), error = %err, "SSH bridge upload failed");
         }
         let interprocess::local_socket::Stream::UdSocket(stream) = stdin_to_socket;
         if let Err(err) = stream.inner().shutdown(std::net::Shutdown::Write)

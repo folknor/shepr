@@ -50,11 +50,6 @@ impl ClientSettings {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
-        Self::resolve_with_host_preferences(config, &super::ClientLaunchMode::Shell, None, false)
-    }
-
     pub(super) fn mouse_scroll_lines(&self) -> u16 {
         self.mouse_scroll_lines
     }
@@ -96,6 +91,13 @@ pub(super) struct ClientLoopConfig {
     pub(super) paths: shepr_config::AppPaths,
     pub(super) local_socket_path: std::path::PathBuf,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
+}
+
+#[cfg(test)]
+impl ClientSettings {
+    pub(super) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
+        Self::resolve_with_host_preferences(config, &super::ClientLaunchMode::Shell, None, false)
+    }
 }
 
 #[cfg(test)]

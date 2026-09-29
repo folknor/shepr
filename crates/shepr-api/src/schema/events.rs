@@ -70,6 +70,8 @@ pub enum Subscription {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventsWaitParams {
     pub match_event: EventMatch,
+    /// How long to wait, in milliseconds; omit it to wait until the match.
+    /// Anything above one day is refused with `invalid_request`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }

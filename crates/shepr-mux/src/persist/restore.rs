@@ -318,8 +318,7 @@ fn restore_workspace(
         .map(|(old_raw, public_number)| {
             (
                 *old_raw,
-                shepr_protocol::PublicPaneId::new(workspace_id.as_str(), *public_number)
-                    .to_string(),
+                shepr_protocol::PublicPaneId::new(&workspace_id, *public_number).to_string(),
             )
         })
         .collect();
@@ -801,16 +800,6 @@ fn restored_terminal_agent_session(
     session.and_then(persisted_agent_session_from_snapshot)
 }
 
-#[cfg(test)]
-fn take_restore_plan_for_snapshot(
-    session: &PaneAgentSessionSnapshot,
-    resume_agents_on_restore: bool,
-    resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
-) -> Option<shepr_agent::agent::resume::AgentResumePlan> {
-    restore_plan_for_snapshot(session, resume_agents_on_restore)
-        .filter(|plan| resumed_agent_sessions.insert(plan.dedupe_key.clone()))
-}
-
 pub(super) fn prune_restored_node(node: Node, surviving: &HashSet<PaneId>) -> Option<Node> {
     match node {
         Node::Pane(id) => surviving.contains(&id).then_some(Node::Pane(id)),
@@ -959,6 +948,16 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
             collect_ids_inner(second, ids);
         }
     }
+}
+
+#[cfg(test)]
+fn take_restore_plan_for_snapshot(
+    session: &PaneAgentSessionSnapshot,
+    resume_agents_on_restore: bool,
+    resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
+) -> Option<shepr_agent::agent::resume::AgentResumePlan> {
+    restore_plan_for_snapshot(session, resume_agents_on_restore)
+        .filter(|plan| resumed_agent_sessions.insert(plan.dedupe_key.clone()))
 }
 
 #[cfg(test)]

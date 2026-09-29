@@ -32,16 +32,7 @@ pub struct PtyReadResult {
     pub core_broken: bool,
 }
 
-impl PtyReadResult {
-    #[cfg(test)]
-    fn empty() -> Self {
-        Self {
-            terminal_responses: Vec::new(),
-            after_response_order: None,
-            core_broken: false,
-        }
-    }
-}
+impl PtyReadResult {}
 
 type ReadCallback = Box<dyn FnMut(&[u8]) -> PtyReadResult + Send + 'static>;
 type ReaderExitCallback = Box<dyn FnOnce(ReaderExit) + Send + 'static>;
@@ -488,14 +479,6 @@ impl PtyIoActor {
 
         Ok(handle)
     }
-
-    #[cfg(test)]
-    fn spawn_with_poll_observer(
-        config: PtyIoActorConfig,
-        poll_observer: std_mpsc::Sender<()>,
-    ) -> std::io::Result<PtyIoActorHandle> {
-        Self::spawn_inner(config, Some(poll_observer))
-    }
 }
 
 struct PtyIoActorRunner {
@@ -930,6 +913,27 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
         message.as_str()
     } else {
         "non-string panic payload"
+    }
+}
+
+#[cfg(test)]
+impl PtyReadResult {
+    fn empty() -> Self {
+        Self {
+            terminal_responses: Vec::new(),
+            after_response_order: None,
+            core_broken: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PtyIoActor {
+    fn spawn_with_poll_observer(
+        config: PtyIoActorConfig,
+        poll_observer: std_mpsc::Sender<()>,
+    ) -> std::io::Result<PtyIoActorHandle> {
+        Self::spawn_inner(config, Some(poll_observer))
     }
 }
 

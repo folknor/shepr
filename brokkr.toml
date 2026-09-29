@@ -201,6 +201,7 @@ exclude = [
     "crates/shepr-pty/src/actor.rs",
     "crates/shepr-pty/src/command.rs",
     "crates/shepr-server/src/app/git_refresh.rs",
+    "crates/shepr-server/src/server/headless/tests/already_running.rs",
     "crates/shepr-test-support/src/fixture.rs",
     "crates/shepr-test-support/src/lib.rs",
     "crates/shepr-vt/src/locks.rs",
@@ -238,6 +239,34 @@ region = "code"
 allow_marker = "stderr-relay-ok"
 allow_marker_above = 3
 message = "library code does not write to stderr; log through tracing or return the text to the CLI to print, and mark only a live stream relay with stderr-relay-ok"
+
+# The same rule for the stdout handle: command output belongs to the CLI in
+# `src/`, which resets SIGPIPE before printing, and the daemon's stdout reaches
+# nobody. The library's legitimate uses take fd 1 over as a whole rather than
+# write text to it: the client's host terminal writer and the SSH bridge's
+# stdio relay each duplicate the descriptor and own the copy. Those carry the
+# marker; the pattern matches as the stderr rule's does.
+[[textlint]]
+name = "library-crates-do-not-write-stdout"
+pattern = '(?:^|[^.\w])(?:(?:std::)?io::)?stdout\s*\(\s*\)'
+paths = ["crates/*/src/**/*.rs"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "stdout-handoff-ok"
+allow_marker_above = 3
+message = "library code does not write to stdout; return the text to the CLI to print, and mark only a site that takes fd 1 over as a whole (a terminal writer or a stream relay) with stdout-handoff-ok"
+
+# A logged error's kind is the `error_kind` field, beside `error`. A bare
+# `kind` field is left for what is not an error, such as an input event's.
+# The field must open a line or follow `(` or `,`, so a `let kind = ..`
+# binding does not match.
+[[textlint]]
+name = "logged-error-kind-is-error-kind"
+pattern = '(?:^|[(,])[ \t]*kind\s*=\s*[?%]?\s*[\w.]*\.kind\s*\(\s*\)'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+region = "code"
+message = "spell a logged error's kind as the error_kind field"
 
 # An exit skips destructors (the host terminal restore, SSH teardown, log
 # flushing), so the process ends only by returning from `src/main.rs`. The

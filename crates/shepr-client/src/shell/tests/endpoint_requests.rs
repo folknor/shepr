@@ -142,8 +142,18 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
     );
     assert_eq!(cancelled, vec![stale_id.clone()]);
     state.cancel_endpoint_request(&stale_id);
-    assert!(!commands.accepts_response(&ClientEndpointId::Local, 1, "boot-1", &stale_id));
-    assert!(commands.accepts_response(&ClientEndpointId::Local, 2, "boot-1", &current_id));
+    assert!(!commands.accepts_response(
+        &ClientEndpointId::Local,
+        1,
+        &crate::tests::test_boot_id("boot-1"),
+        &stale_id
+    ));
+    assert!(commands.accepts_response(
+        &ClientEndpointId::Local,
+        2,
+        &crate::tests::test_boot_id("boot-1"),
+        &current_id
+    ));
     assert!(state.pending_requests.contains_key(current_id.as_str()));
 }
 
@@ -174,7 +184,11 @@ fn failed_selection_copy_does_not_send_terminal_input() {
         let mut outcome = ClientShellInput::default();
         state.request_selection_copy(&mut outcome, false);
         let actions = state
-            .handle_endpoint_result("boot-1", request_id(&outcome.actions), result)
+            .handle_endpoint_result(
+                &crate::tests::test_boot_id("boot-1"),
+                request_id(&outcome.actions),
+                result,
+            )
             .actions;
         assert!(actions.is_empty());
         assert!(state.pending_requests.is_empty());

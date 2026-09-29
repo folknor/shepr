@@ -215,13 +215,6 @@ impl ShutdownLifecycle {
             None
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn set_frozen_session_policy_for_test(&mut self, persist_session: bool) {
-        if let Some(freeze) = self.freeze.as_mut() {
-            freeze.persist_session = persist_session;
-        }
-    }
 }
 
 impl HeadlessServer {
@@ -445,6 +438,15 @@ impl HeadlessServer {
                 error = %err,
                 "failed to remove client socket on shutdown"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+impl ShutdownLifecycle {
+    pub(super) fn set_frozen_session_policy_for_test(&mut self, persist_session: bool) {
+        if let Some(freeze) = self.freeze.as_mut() {
+            freeze.persist_session = persist_session;
         }
     }
 }

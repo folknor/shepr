@@ -156,7 +156,7 @@ mod tests {
         let (event_tx, mut event_rx) = tokio_mpsc::channel(8);
         spawn_response_waiter(
             ClientId::test_new(7),
-            "boot-a".into(),
+            shepr_test_fixtures::fixed_boot_id(1),
             "request-a".into(),
             response_rx,
             event_tx,
@@ -183,7 +183,7 @@ mod tests {
                 panic!("expected response chunk");
             };
             assert_eq!(client_id, 7);
-            assert_eq!(boot_id, "boot-a");
+            assert_eq!(boot_id, shepr_test_fixtures::fixed_boot_id(1));
             assert_eq!(request_id, "request-a");
             received.extend(data);
             if final_chunk {

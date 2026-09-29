@@ -214,7 +214,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         panic!("initial search request");
     };
     state.handle_endpoint_result(
-        "boot-1",
+        &crate::tests::test_boot_id("boot-1"),
         &request.id,
         Ok(copy_search_result(matches.clone(), Some(0))),
     );
@@ -234,7 +234,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
 
     let actions = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &repeat_id,
             Ok(copy_search_result(matches, Some(1))),
         )
@@ -256,7 +256,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         .expect("deferred selection read");
     let clipboard = state
         .handle_endpoint_result(
-            "boot-1",
+            &crate::tests::test_boot_id("boot-1"),
             &selection_request_id,
             Ok(shepr_api::schema::ResponseResult::PaneSelection {
                 pane_id: "w1:p1".into(),

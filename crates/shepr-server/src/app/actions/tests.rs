@@ -559,9 +559,10 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
     let terminal_id = state
         .terminal_id_for_pane(1, pane_id)
         .expect("test precondition");
-    state
-        .public_pane_id_aliases
-        .insert(shepr_protocol::PublicPaneId::new("wOLD", 9), pane_id);
+    state.public_pane_id_aliases.insert(
+        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 9),
+        pane_id,
+    );
     state.direct_attach_resize_locks.insert(terminal_id.clone());
     state.session_dirty = false;
 
@@ -1303,12 +1304,14 @@ fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
     let kept_terminal = state
         .terminal_id_for_pane(1, kept_pane)
         .expect("test precondition");
-    state
-        .public_pane_id_aliases
-        .insert(shepr_protocol::PublicPaneId::new("wOLD", 1), closing_pane);
-    state
-        .public_pane_id_aliases
-        .insert(shepr_protocol::PublicPaneId::new("wOLD", 2), kept_pane);
+    state.public_pane_id_aliases.insert(
+        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 1),
+        closing_pane,
+    );
+    state.public_pane_id_aliases.insert(
+        shepr_protocol::PublicPaneId::new(&crate::test_support::retired_workspace_id(), 2),
+        kept_pane,
+    );
     state
         .direct_attach_resize_locks
         .insert(closing_terminal.clone());
@@ -1321,12 +1324,18 @@ fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
     assert!(
         !state
             .public_pane_id_aliases
-            .contains_key(&shepr_protocol::PublicPaneId::new("wOLD", 1))
+            .contains_key(&shepr_protocol::PublicPaneId::new(
+                &crate::test_support::retired_workspace_id(),
+                1
+            ))
     );
     assert_eq!(
         state
             .public_pane_id_aliases
-            .get(&shepr_protocol::PublicPaneId::new("wOLD", 2)),
+            .get(&shepr_protocol::PublicPaneId::new(
+                &crate::test_support::retired_workspace_id(),
+                2
+            )),
         Some(&kept_pane)
     );
     assert!(!state.direct_attach_resize_locks.contains(&closing_terminal));

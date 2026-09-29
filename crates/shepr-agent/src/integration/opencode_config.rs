@@ -80,11 +80,6 @@ pub(crate) fn prepare_tui_plugin(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<PathBuf> {
-    prepare_tui_plugin(config_dir, plugin_spec)?.write()
-}
-
 pub(crate) fn prepare_cli_plugin(
     config_dir: &Path,
     state_dir: &Path,
@@ -101,17 +96,6 @@ pub(crate) fn prepare_cli_plugin(
         return Ok(None);
     }
     prepare_plugin(path, "plugins", plugin_spec).map(Some)
-}
-
-#[cfg(test)]
-pub(crate) fn add_cli_plugin(
-    config_dir: &Path,
-    state_dir: &Path,
-    plugin_spec: &str,
-) -> io::Result<Option<PathBuf>> {
-    prepare_cli_plugin(config_dir, state_dir, plugin_spec)?
-        .map(PluginConfigEdit::write)
-        .transpose()
 }
 
 fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> io::Result<bool> {
@@ -306,6 +290,22 @@ fn invalid_plugin_list(path: &Path) -> io::Error {
         "OpenCode TUI config plugin list at {} must be an array",
         path.display()
     ))
+}
+
+#[cfg(test)]
+pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<PathBuf> {
+    prepare_tui_plugin(config_dir, plugin_spec)?.write()
+}
+
+#[cfg(test)]
+pub(crate) fn add_cli_plugin(
+    config_dir: &Path,
+    state_dir: &Path,
+    plugin_spec: &str,
+) -> io::Result<Option<PathBuf>> {
+    prepare_cli_plugin(config_dir, state_dir, plugin_spec)?
+        .map(PluginConfigEdit::write)
+        .transpose()
 }
 
 #[cfg(test)]

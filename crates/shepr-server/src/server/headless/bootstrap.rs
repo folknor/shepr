@@ -24,6 +24,10 @@ impl std::fmt::Display for ServerSocket {
 pub enum RunServerError {
     /// Another server for this session already listens on `path`.
     AlreadyRunning { socket: ServerSocket, path: PathBuf },
+    /// Another server for this session already holds the lease on its data
+    /// directory, the canonical `directory`. The lease is taken before either
+    /// socket is bound.
+    SessionDataHeld { directory: PathBuf },
     /// A local agent detection manifest override is invalid. Like any other
     /// config problem it refuses the launch.
     ManifestOverride(shepr_agent::detect::manifest::ManifestOverrideError),
@@ -39,6 +43,11 @@ impl std::fmt::Display for RunServerError {
                 "shepr server is already running ({socket}: {})",
                 path.display()
             ),
+            Self::SessionDataHeld { directory } => write!(
+                f,
+                "shepr server is already running (session data: {})",
+                directory.display()
+            ),
             Self::ManifestOverride(error) => error.fmt(f),
             Self::Io(error) => error.fmt(f),
         }
@@ -48,7 +57,7 @@ impl std::fmt::Display for RunServerError {
 impl std::error::Error for RunServerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::AlreadyRunning { .. } => None,
+            Self::AlreadyRunning { .. } | Self::SessionDataHeld { .. } => None,
             Self::ManifestOverride(error) => Some(error),
             Self::Io(error) => Some(error),
         }
@@ -58,20 +67,6 @@ impl std::error::Error for RunServerError {
 impl From<io::Error> for RunServerError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
-    }
-}
-
-impl From<RunServerError> for io::Error {
-    fn from(error: RunServerError) -> Self {
-        match error {
-            RunServerError::Io(error) => error,
-            RunServerError::ManifestOverride(error) => {
-                io::Error::new(io::ErrorKind::InvalidData, error)
-            }
-            already_running @ RunServerError::AlreadyRunning { .. } => {
-                io::Error::new(io::ErrorKind::AddrInUse, already_running.to_string())
-            }
-        }
     }
 }
 
@@ -131,7 +126,8 @@ pub fn run_server(
     let startup_cwd = read_startup_cwd();
 
     let session_data_dir = shepr_api::session::data_dir(paths);
-    let lease = shepr_mux::persist::DataDirLease::acquire(&session_data_dir)?;
+    let lease =
+        shepr_mux::persist::DataDirLease::acquire(&session_data_dir).map_err(lease_error)?;
 
     // A log file that cannot be opened does not stop the server; the ready
     // notice says so instead of naming a log that is not being written.
@@ -160,10 +156,7 @@ pub fn run_server(
         paths,
     ) {
         Ok(server) => server,
-        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-            return Err(already_running(ServerSocket::Api, api_socket.clone()));
-        }
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err(startup_error(ServerSocket::Api, err)),
     };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -189,10 +182,7 @@ pub fn run_server(
         let mut server =
             match HeadlessServer::new(app, Some(_api_server), resolved_config, stop_requested) {
                 Ok(server) => server,
-                Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                    return Err(already_running(ServerSocket::Client, client_socket.clone()));
-                }
-                Err(err) => return Err(err.into()),
+                Err(err) => return Err(startup_error(ServerSocket::Client, err)),
             };
 
         let ready = ServerReady {
@@ -270,11 +260,32 @@ fn startup_cwd_from_env_value(
     })
 }
 
-/// The refusal for a socket another server holds, recorded in the server log
+/// Classifies a failure binding `socket`. Only the busy refusal from
+/// `shepr_platform::ipc`, which names the path another server holds, means a
+/// server is already running; any other error, including an unrelated
+/// `AddrInUse`, stays an IO failure. The refusal is recorded in the server log
 /// as well: a daemonized server's stderr goes nowhere.
-fn already_running(socket: ServerSocket, path: PathBuf) -> RunServerError {
+fn startup_error(socket: ServerSocket, error: io::Error) -> RunServerError {
+    let Some(busy) = shepr_platform::ipc::SocketBusy::from_io(&error) else {
+        return RunServerError::Io(error);
+    };
+    let path = busy.path().to_path_buf();
     tracing::error!(%socket, path = %path.display(), "shepr server is already running");
     RunServerError::AlreadyRunning { socket, path }
+}
+
+/// Classifies a failure taking the session data-directory lease. Only the
+/// held-lease refusal from `shepr_mux::persist` means a server is already
+/// running; any other error stays an IO failure. Unlike [`startup_error`] this
+/// is not logged: file logging starts only once the lease is held, and the log
+/// file lives in the directory the other server owns.
+fn lease_error(error: io::Error) -> RunServerError {
+    let Some(held) = shepr_mux::persist::DataDirLeaseHeld::from_io(&error) else {
+        return RunServerError::Io(error);
+    };
+    RunServerError::SessionDataHeld {
+        directory: held.directory().to_path_buf(),
+    }
 }
 
 #[cfg(test)]

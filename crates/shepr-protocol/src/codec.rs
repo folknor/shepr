@@ -151,18 +151,6 @@ impl de::Error for CodecError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Encodes `value` into a new buffer.
-#[cfg(test)]
-pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CodecError> {
-    let mut encoder = Encoder { sink: Vec::new() };
-    value.serialize(&mut encoder)?;
-    Ok(encoder.sink)
-}
-
 /// Encodes `value` into `writer` and returns the number of bytes written.
 pub fn encode_into<W, T>(writer: &mut W, value: &T) -> Result<usize, CodecError>
 where
@@ -793,14 +781,6 @@ impl<'de> Decoder<'de> {
         }
     }
 
-    #[cfg(test)]
-    pub fn with_max_depth(input: &'de [u8], max_depth: usize) -> Self {
-        Self {
-            max_depth,
-            ..Self::new(input)
-        }
-    }
-
     /// Number of input bytes consumed so far.
     pub fn position(&self) -> usize {
         self.pos
@@ -1257,6 +1237,28 @@ impl<'de> de::VariantAccess<'de> for &mut Decoder<'de> {
         visitor: V,
     ) -> Result<V::Value, CodecError> {
         de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Encodes `value` into a new buffer.
+#[cfg(test)]
+pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CodecError> {
+    let mut encoder = Encoder { sink: Vec::new() };
+    value.serialize(&mut encoder)?;
+    Ok(encoder.sink)
+}
+
+#[cfg(test)]
+impl<'de> Decoder<'de> {
+    pub fn with_max_depth(input: &'de [u8], max_depth: usize) -> Self {
+        Self {
+            max_depth,
+            ..Self::new(input)
+        }
     }
 }
 

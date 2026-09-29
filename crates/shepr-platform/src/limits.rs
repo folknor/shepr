@@ -12,6 +12,11 @@ pub(super) const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 /// The retry cap makes collision handling finite while keeping exhaustion unlikely.
 pub(super) const RANDOM_NAME_ATTEMPTS: u32 = 16;
 
+/// Largest single-use socket lock sidecar the abandoned-socket sweep reads.
+/// An owner identity tag is well under this, so anything larger is not a
+/// marker and is left alone unread.
+pub(super) const SINGLE_USE_SOCKET_OWNER_MAX_BYTES: u64 = 128;
+
 /// Polling interval while waiting for Git and clipboard helper children.
 /// The interval keeps exit detection responsive without a busy loop.
 pub(super) const HELPER_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
