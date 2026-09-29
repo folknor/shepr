@@ -203,8 +203,9 @@ its own:
 - Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState`
   or `Workspace` behaviour should be testable with `AppState::test_new()` /
   `Workspace::test_new()`.
-- Tests that touch the process environment hold a
-  `shepr_test_support::IsolatedEnv`, and tests that write files use a
+- Tests that read or write the process environment hold a
+  `shepr_test_support::IsolatedEnv`; tests that only build and inspect an
+  explicit command environment map do not need it. Tests that write files use a
   `shepr_test_support::ScratchDir`, never fixed or shared temp paths.
 
 ## Terminal core

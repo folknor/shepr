@@ -472,7 +472,7 @@ impl ClientShellState {
                         (false, Vec::new())
                     }
                     Ok(_) => {
-                        self.set_endpoint_error_at(
+                        self.set_endpoint_error(
                             "endpoint returned an unexpected selection result",
                             now,
                         );
@@ -516,7 +516,7 @@ impl ClientShellState {
                     ),
                     Ok(shepr_api::schema::ResponseResult::PaneCopyMotion { .. }) => (false, false),
                     Ok(_) => {
-                        self.set_endpoint_error_at(
+                        self.set_endpoint_error(
                             "endpoint returned an unexpected copy-motion result",
                             now,
                         );
@@ -572,7 +572,7 @@ impl ClientShellState {
                     }
                     Ok(_) => {
                         self.cancel_deferred_copy_after_search(generation);
-                        self.set_endpoint_error_at(
+                        self.set_endpoint_error(
                             "endpoint returned an unexpected copy-search result",
                             now,
                         );

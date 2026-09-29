@@ -155,10 +155,7 @@ pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStart
                 path = %socket_path.display(),
                 "server socket startup lock is already held"
             );
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("server startup lock is held for {}", socket_path.display()),
-            ));
+            return Err(io::Error::from(io::ErrorKind::AddrInUse));
         }
         Err(error) => return Err(error),
     };
@@ -181,15 +178,16 @@ pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStart
 /// listener has stopped and its socket file has been removed. Keeping these
 /// steps together prevents a caller from reclaiming a stale socket before it
 /// owns the lock, which could unlink a socket another server is about to use.
+/// A busy path is returned as [`io::ErrorKind::AddrInUse`]; the caller chooses
+/// any operator-facing wording.
 pub fn bind_private_socket(
     path: &Path,
-    busy_message: impl Fn(&Path) -> String,
 ) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
     let startup_lock = acquire_socket_startup_lock(path)?;
-    prepare_socket_path(path, &busy_message)?;
+    prepare_socket_path(path)?;
     let listener = bind_private_local_listener(path).map_err(|error| {
         if error.kind() == io::ErrorKind::AddrInUse {
-            io::Error::new(io::ErrorKind::AddrInUse, busy_message(path))
+            io::Error::from(io::ErrorKind::AddrInUse)
         } else {
             error
         }
@@ -249,7 +247,7 @@ pub fn probe(path: &Path) -> Liveness {
 /// where nothing listens, and refuses a live one. Only [`bind_private_socket`]
 /// calls it, under the startup lock, so a stale socket is never reclaimed by a
 /// caller that does not own the path.
-fn prepare_socket_path(path: &Path, busy_message: impl FnOnce(&Path) -> String) -> io::Result<()> {
+fn prepare_socket_path(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -257,7 +255,7 @@ fn prepare_socket_path(path: &Path, busy_message: impl FnOnce(&Path) -> String) 
     match probe(path) {
         Liveness::Absent => return Ok(()),
         Liveness::Live => {
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, busy_message(path)));
+            return Err(io::Error::from(io::ErrorKind::AddrInUse));
         }
         Liveness::Stale => {}
         Liveness::Unreachable(error) => return Err(error),
@@ -841,19 +839,18 @@ mod tests {
     }
 
     /// Binding takes the startup lock before touching the path: a stale socket
-    /// is reclaimed, a live one it does not own is refused with the caller's
-    /// message, and a second binder is refused while the first holds the lock.
+    /// is reclaimed, a live one it does not own is refused with `AddrInUse`,
+    /// and a second binder is refused while the first holds the lock.
     #[test]
     fn bind_private_socket_reclaims_stale_refuses_live_and_holds_its_lock() {
-        let busy = |path: &Path| format!("busy at {}", path.display());
         let dir = shepr_test_support::ScratchDir::new("bind-private-socket");
 
         let stale = dir.join("stale.sock");
         {
             let _listener = std::os::unix::net::UnixListener::bind(&stale).expect("bind stale");
         }
-        let (listener, lock, _identity) = bind_private_socket(&stale, busy).expect("reclaim");
-        let second = bind_private_socket(&stale, busy)
+        let (listener, lock, _identity) = bind_private_socket(&stale).expect("reclaim");
+        let second = bind_private_socket(&stale)
             .err()
             .expect("the first binder holds the startup lock");
         assert_eq!(second.kind(), io::ErrorKind::AddrInUse);
@@ -862,11 +859,10 @@ mod tests {
 
         let live = dir.join("live.sock");
         let _foreign = std::os::unix::net::UnixListener::bind(&live).expect("bind live");
-        let refused = bind_private_socket(&live, busy)
+        let refused = bind_private_socket(&live)
             .err()
             .expect("a live socket is never replaced");
         assert_eq!(refused.kind(), io::ErrorKind::AddrInUse);
-        assert_eq!(refused.to_string(), busy(&live));
     }
 
     /// A socket path in a fresh scratch directory.
@@ -931,7 +927,7 @@ mod tests {
             };
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 
-            let error = match bind_private_socket(path, |_| String::new()) {
+            let error = match bind_private_socket(path) {
                 Ok(_) => panic!("relative socket path unexpectedly bound"),
                 Err(error) => error,
             };

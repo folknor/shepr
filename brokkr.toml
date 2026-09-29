@@ -187,6 +187,23 @@ skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 message = "a print macro panics on a closed pipe and reaches no log file; log through tracing, or return the text to the CLI to print"
 
+# The same rule for the stderr handle, which `writeln!` or `write!` reach
+# without a print macro: operator text belongs to the CLI in `src/`, and the
+# daemon's stderr reaches nobody. `io::stderr()`, `std::io::stderr()` and an
+# imported bare `stderr()` all match; a `.stderr(..)` builder method does not.
+# A live stream relay (SSH prompts copied to the terminal while ssh runs, as
+# in `remote/process.rs`) is not operator text and carries the marker.
+[[textlint]]
+name = "library-crates-do-not-write-stderr"
+pattern = '(?:^|[^.\w])(?:(?:std::)?io::)?stderr\s*\(\s*\)'
+paths = ["crates/*/src/**/*.rs"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "stderr-relay-ok"
+allow_marker_above = 3
+message = "library code does not write to stderr; log through tracing or return the text to the CLI to print, and mark only a live stream relay with stderr-relay-ok"
+
 # An exit skips destructors (the host terminal restore, SSH teardown, log
 # flushing), so the process ends only by returning from `src/main.rs`. The
 # bridge test's re-exec child stands in for that main and exits the same way.

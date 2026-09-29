@@ -7,8 +7,6 @@ pub(crate) mod actions;
 mod agent_resume;
 mod agents;
 mod api;
-#[cfg(test)]
-pub(crate) use api::test_support::exiting_test_command;
 pub(crate) mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
@@ -18,8 +16,6 @@ mod host_theme;
 mod ids;
 mod runtime;
 mod session;
-#[cfg(test)]
-mod snapshot_tests;
 pub mod state;
 mod tab_bar_status;
 mod terminal_targets;
@@ -65,8 +61,6 @@ use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::{info, warn};
 
-#[cfg(test)]
-use shepr_config::Config;
 use shepr_mux::events::AppEvent;
 
 pub use state::{AppState, Mode, ViewState};
@@ -76,8 +70,6 @@ pub use state::{AppState, Mode, ViewState};
 pub(crate) enum AppPolicy {
     Production,
     Suspended,
-    #[cfg(test)]
-    Test,
 }
 
 impl AppPolicy {
@@ -132,37 +124,6 @@ pub struct App {
 pub(crate) use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT};
 
 impl App {
-    /// Test constructor: the app's files live in a fresh scratch directory.
-    #[cfg(test)]
-    pub(crate) fn new(
-        config: &Config,
-        policy: AppPolicy,
-        api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
-        event_hub: shepr_api::EventHub,
-    ) -> Self {
-        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
-        let scratch = crate::test_support::ScratchDir::new("app");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-            config.clone(),
-            None,
-            paths.clone(),
-        );
-        let lease =
-            shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
-                .expect("test session lease");
-        Self::with_paths(
-            &config,
-            &paths,
-            lease,
-            policy,
-            api_rx,
-            event_hub,
-            Vec::new(),
-            tests::test_clock(),
-        )
-    }
-
     pub(crate) fn with_paths(
         config: &shepr_config::ValidatedConfig,
         paths: &shepr_config::AppPaths,
@@ -393,40 +354,6 @@ impl App {
         self.pane_teardowns.wait(timeout)
     }
 
-    /// Installs `runtime` as the live runtime of `pane_id` in the same
-    /// registry production uses, keyed by the pane's terminal id. Panics when
-    /// the pane is not in any workspace, so a test cannot silently install a
-    /// runtime nothing will ever look up.
-    #[cfg(test)]
-    pub(crate) fn insert_test_runtime(
-        &mut self,
-        pane_id: shepr_core::layout::PaneId,
-        runtime: shepr_mux::pane::PaneRuntime,
-    ) {
-        let terminal_id = self
-            .state
-            .workspaces
-            .iter()
-            .find_map(|ws| ws.terminal_id(pane_id))
-            .cloned()
-            .expect("test runtime pane must be in a workspace");
-        self.terminal_runtimes.insert(terminal_id, runtime);
-    }
-
-    /// The live runtime of `pane_id`, looked up the way production does.
-    #[cfg(test)]
-    pub(crate) fn test_runtime(
-        &self,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> &shepr_mux::pane::PaneRuntime {
-        self.state
-            .workspaces
-            .iter()
-            .find_map(|ws| ws.terminal_id(pane_id))
-            .and_then(|terminal_id| self.terminal_runtimes.get(terminal_id))
-            .expect("pane must have a live runtime")
-    }
-
     pub(crate) fn ensure_default_workspace(&mut self) -> bool {
         if !self.state.workspaces.is_empty() {
             return false;
@@ -457,6 +384,11 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;
+#[cfg(test)]
+pub(crate) use api::test_support::exiting_test_command;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +398,78 @@ mod tests {
     use shepr_agent::detect::{Agent, AgentState};
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
+
+    // Tests build apps that never persist their session; `AppPolicy::Test`
+    // names that intent and behaves exactly as `Suspended`.
+    impl AppPolicy {
+        #[expect(
+            non_upper_case_globals,
+            reason = "spelled like a variant so call sites read as one"
+        )]
+        pub(crate) const Test: Self = Self::Suspended;
+    }
+
+    impl App {
+        /// Test constructor: the app's files live in a fresh scratch directory.
+        pub(crate) fn new(
+            config: &Config,
+            policy: AppPolicy,
+            api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
+            event_hub: shepr_api::EventHub,
+        ) -> Self {
+            use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+            let scratch = crate::test_support::ScratchDir::new("app");
+            let paths = shepr_config::AppPaths::test_at(&scratch);
+            let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
+                config.clone(),
+                None,
+                paths.clone(),
+            );
+            let lease =
+                shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
+                    .expect("test session lease");
+            Self::with_paths(
+                &config,
+                &paths,
+                lease,
+                policy,
+                api_rx,
+                event_hub,
+                Vec::new(),
+                test_clock(),
+            )
+        }
+
+        /// Installs `runtime` for a pane in the same registry production uses.
+        /// Panics if the pane is not in a workspace.
+        pub(crate) fn insert_test_runtime(
+            &mut self,
+            pane_id: shepr_core::layout::PaneId,
+            runtime: shepr_mux::pane::PaneRuntime,
+        ) {
+            let terminal_id = self
+                .state
+                .workspaces
+                .iter()
+                .find_map(|ws| ws.terminal_id(pane_id))
+                .cloned()
+                .expect("test runtime pane must be in a workspace");
+            self.terminal_runtimes.insert(terminal_id, runtime);
+        }
+
+        /// Looks up a pane runtime through its workspace terminal link.
+        pub(crate) fn test_runtime(
+            &self,
+            pane_id: shepr_core::layout::PaneId,
+        ) -> &shepr_mux::pane::PaneRuntime {
+            self.state
+                .workspaces
+                .iter()
+                .find_map(|ws| ws.terminal_id(pane_id))
+                .and_then(|terminal_id| self.terminal_runtimes.get(terminal_id))
+                .expect("pane must have a live runtime")
+        }
+    }
 
     #[test]
     fn render_demand_join_keeps_strongest_request() {
@@ -904,9 +908,9 @@ mod tests {
     fn workspace_creation_in_navigate_mode_uses_selected_workspace_seed_cwd() {
         let mut app = test_app();
         let mut first = Workspace::test_new("shepr");
-        first.identity_cwd = std::path::PathBuf::from("/tmp/shepr");
+        first.identity_cwd = std::path::PathBuf::from("/shepr-test/shepr");
         let mut second = Workspace::test_new("pion");
-        second.identity_cwd = std::path::PathBuf::from("/tmp/pion");
+        second.identity_cwd = std::path::PathBuf::from("/shepr-test/pion");
 
         app.state.workspaces = vec![first, second];
         app.state.set_active_index(Some(0));
@@ -923,7 +927,7 @@ mod tests {
 
         assert_eq!(context.workspace_index, 1);
         assert_eq!(context.tab_index, 0);
-        assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
+        assert_eq!(seed_cwd, std::path::PathBuf::from("/shepr-test/pion"));
     }
 
     #[test]
@@ -932,10 +936,10 @@ mod tests {
             &shepr_config::NewTerminalCwd::Follow,
             None,
             None,
-            Some(std::path::PathBuf::from("/tmp/shepr-source")),
+            Some(std::path::PathBuf::from("/shepr-test/shepr-source")),
         );
 
-        assert_eq!(cwd, std::path::PathBuf::from("/tmp/shepr-source"));
+        assert_eq!(cwd, std::path::PathBuf::from("/shepr-test/shepr-source"));
     }
 
     #[test]
@@ -956,13 +960,13 @@ mod tests {
     #[test]
     fn new_terminal_cwd_path_uses_configured_path() {
         let cwd = creation::resolve_new_terminal_cwd(
-            &shepr_config::NewTerminalCwd::Path("/tmp/shepr-fixed".into()),
+            &shepr_config::NewTerminalCwd::Path("/shepr-test/shepr-fixed".into()),
             None,
             None,
-            Some(std::path::PathBuf::from("/tmp/shepr-source")),
+            Some(std::path::PathBuf::from("/shepr-test/shepr-source")),
         );
 
-        assert_eq!(cwd, std::path::PathBuf::from("/tmp/shepr-fixed"));
+        assert_eq!(cwd, std::path::PathBuf::from("/shepr-test/shepr-fixed"));
     }
 
     #[test]

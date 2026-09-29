@@ -22,6 +22,37 @@ use crate::limits::{
     BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
 };
 
+/// Another live bridge already holds a local bridge socket path. Carried
+/// inside an [`io::ErrorKind::AddrInUse`] error, so SSH failure classification
+/// keeps treating it as a link failure while the message names the path.
+#[derive(Debug)]
+pub(crate) struct BridgeSocketBusy {
+    path: PathBuf,
+}
+
+impl BridgeSocketBusy {
+    fn error(path: &Path) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::AddrInUse,
+            Self {
+                path: path.to_path_buf(),
+            },
+        )
+    }
+}
+
+impl std::fmt::Display for BridgeSocketBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "local bridge socket {} is held by another bridge",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for BridgeSocketBusy {}
+
 pub(crate) struct SshStdioBridge {
     local_socket: PathBuf,
     socket_identity: shepr_platform::ipc::SocketFileIdentity,
@@ -74,8 +105,12 @@ impl SshStdioBridge {
         noninteractive: bool,
     ) -> io::Result<Self> {
         let (listener, socket_startup_lock, socket_identity) =
-            shepr_platform::ipc::bind_private_socket(&local_socket, |path| {
-                format!("remote bridge is already listening at {}", path.display())
+            shepr_platform::ipc::bind_private_socket(&local_socket).map_err(|error| {
+                if error.kind() == io::ErrorKind::AddrInUse {
+                    BridgeSocketBusy::error(&local_socket)
+                } else {
+                    error
+                }
             })?;
         let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
             path: local_socket.clone(),

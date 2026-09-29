@@ -4,8 +4,35 @@ use super::*;
 use crate::test_support::*;
 use std::time::Duration;
 
-use crate::server::client_transport::RenderLaneReceiver;
+use crate::server::client_transport::{ClientWriter, RenderLaneReceiver};
 use bytes::Bytes;
+use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
+use shepr_protocol::{MAX_FRAME_SIZE, RenderEncoding};
+
+impl HeadlessServer {
+    /// Resolves a direct-attach terminal id string to the live `TerminalId`.
+    ///
+    /// Still a scan over the session's terminals (tens, not thousands): the
+    /// terminal map is keyed by `TerminalId`, which does not implement
+    /// `Borrow<str>`, so a hashed lookup by `&str` is not available here. The
+    /// scan compares borrowed strings and avoids allocating a `to_string()`
+    /// per terminal on attach input and render paths.
+    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
+        self.app
+            .state
+            .terminals
+            .keys()
+            .find(|id| id.as_str() == terminal_id)
+    }
+
+    fn runtime_for_terminal_id_string(
+        &self,
+        terminal_id: &str,
+    ) -> Option<&shepr_mux::pane::PaneRuntime> {
+        let terminal_id = self.terminal_id_by_string(terminal_id)?;
+        self.app.terminal_runtimes.get(terminal_id)
+    }
+}
 
 pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
@@ -4675,14 +4702,8 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     let dir = crate::test_support::ScratchDir::new("hb");
     let path = dir.join("client.sock");
 
-    let (listener, startup_lock, _) = shepr_platform::ipc::bind_private_socket(&path, |path| {
-        RunServerError::AlreadyRunning {
-            socket: ServerSocket::Client,
-            path: path.to_path_buf(),
-        }
-        .to_string()
-    })
-    .expect("bind");
+    let (listener, startup_lock, _) =
+        shepr_platform::ipc::bind_private_socket(&path).expect("bind");
     let mode = fs::metadata(&path)
         .expect("socket exists")
         .permissions()
@@ -4704,15 +4725,9 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     assert!(shepr_platform::ipc::connect_local_stream(&path).is_ok());
     assert!(listener.accept().is_ok());
     // A second server never replaces a socket that is already there.
-    let err = shepr_platform::ipc::bind_private_socket(&path, |path| {
-        RunServerError::AlreadyRunning {
-            socket: ServerSocket::Client,
-            path: path.to_path_buf(),
-        }
-        .to_string()
-    })
-    .err()
-    .expect("startup lock is held");
+    let err = shepr_platform::ipc::bind_private_socket(&path)
+        .err()
+        .expect("startup lock is held");
     assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
 
     drop(listener);

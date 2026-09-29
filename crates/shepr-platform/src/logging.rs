@@ -19,6 +19,21 @@ pub struct FileLoggingConfig {
     filter: EnvFilter,
 }
 
+/// File logging could not be enabled. The caller supplies any operator-facing
+/// explanation; `reason` is the underlying filesystem error detail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileLoggingUnavailable {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+/// Outcome of installing file logging. `unavailable` is present when setup
+/// failed without preventing the process from starting.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileLoggingOutcome {
+    pub unavailable: Option<FileLoggingUnavailable>,
+}
+
 impl FileLoggingConfig {
     /// Reads and validates `SHEPR_LOG` once for this process launch.
     pub fn from_environment() -> io::Result<Self> {
@@ -35,11 +50,12 @@ impl FileLoggingConfig {
 ///
 /// A `SHEPR_LOG` the environment policy refuses, or one that is not valid
 /// `tracing` filter syntax, fails the launch rather than silently logging at
-/// the default level. A log file that cannot be opened is reported on stderr
-/// and the process runs without file logging. An already-installed global
-/// logger also fails initialization because this call cannot install its file
-/// writer.
-pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<()> {
+/// the default level. A log file that cannot be opened is returned as a
+/// [`FileLoggingOutcome`] containing a [`FileLoggingUnavailable`] value, and
+/// the process runs without file logging.
+/// An already-installed global logger also fails initialization because this
+/// call cannot install its file writer.
+pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<FileLoggingOutcome> {
     init_file_logging_with_config(dir, file_name, FileLoggingConfig::from_environment()?)
 }
 
@@ -48,7 +64,7 @@ pub fn init_file_logging_with_config(
     dir: &Path,
     file_name: &str,
     config: FileLoggingConfig,
-) -> io::Result<()> {
+) -> io::Result<FileLoggingOutcome> {
     let filter = config.filter;
 
     let make_writer = match RotatingFileMakeWriter::new(
@@ -59,14 +75,12 @@ pub fn init_file_logging_with_config(
     ) {
         Ok(make_writer) => make_writer,
         Err(error) => {
-            // With stderr unwritable too there is nowhere left to report
-            // to, and running without file logging is the documented outcome.
-            writeln!(
-                io::stderr().lock(),
-                "shepr: could not initialize file logging: {error}"
-            )
-            .ok();
-            return Ok(());
+            return Ok(FileLoggingOutcome {
+                unavailable: Some(FileLoggingUnavailable {
+                    path: dir.join(file_name),
+                    reason: error.to_string(),
+                }),
+            });
         }
     };
 
@@ -89,7 +103,7 @@ pub fn init_file_logging_with_config(
             "file logging could not be initialized because a logger is already set: {error}"
         )));
     }
-    Ok(())
+    Ok(FileLoggingOutcome::default())
 }
 
 /// The file-log filter from `SHEPR_LOG`'s value (already read under the
@@ -116,7 +130,10 @@ pub const CLIENT_LOG_FILE: &str = "shepr-client.log";
 
 /// Installs the process-wide client file logger from the binary launch path.
 /// The client library reuses this subscriber and does not install one itself.
-pub fn init_client_file_logging(dir: &Path, config: FileLoggingConfig) -> io::Result<()> {
+pub fn init_client_file_logging(
+    dir: &Path,
+    config: FileLoggingConfig,
+) -> io::Result<FileLoggingOutcome> {
     init_file_logging_with_config(dir, CLIENT_LOG_FILE, config)
 }
 

@@ -214,7 +214,7 @@ impl ClientShellState {
                 let error =
                     EndpointConfigurationError::decode(&endpoint.endpoint_id, error.error.clone());
                 let message = self.endpoint_configuration_message(&error);
-                self.set_endpoint_error(message);
+                self.set_endpoint_error(message, self.now);
             }
             return false;
         }
@@ -229,7 +229,7 @@ impl ClientShellState {
             Ok(config) => config,
             Err(error) => {
                 let message = self.endpoint_configuration_message(&error);
-                self.set_endpoint_error(message);
+                self.set_endpoint_error(message, self.now);
                 return false;
             }
         };
@@ -504,7 +504,7 @@ impl ClientShellState {
                 Ok(config) => self.apply_active_snapshot(snapshot, generation, &config),
                 Err(error) => {
                     let message = self.endpoint_configuration_message(&error);
-                    self.set_endpoint_error(message);
+                    self.set_endpoint_error(message, self.now);
                 }
             }
         }

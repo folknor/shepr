@@ -25,6 +25,17 @@ the entry says so.
 
 ---
 
+## HYGP-152 - Concurrent bridges for one saved machine may collide on one socket path
+
+The saved-machine bridge socket is named by profile only
+(`shepr-ssh-<profile>.sock`), and so is the CLI's `--machine` API bridge
+(`shepr-api-ssh-<profile>.sock`), both in the shared runtime directory. Two
+clients, or two concurrent `--machine` commands, for the same machine would
+hit `AddrInUse`, which is classified as a link failure, so the second may retry
+until it gives up. Unconfirmed whether something else keeps them apart; verify
+with two clients attached to one saved machine, and if they collide, add a
+per-client component to the name.
+
 ## HYGP-066 - Clock seam residue
 
 The clock seam (time passed in, each converted subsystem held by a scoped
@@ -33,11 +44,6 @@ textlint) now covers `shepr-server/src/app/`, the headless loop, mux
 deadline helpers, the client endpoint and activation paths, the agent version
 probe and the vt synchronized-update timeout. Open:
 
-- `shepr-client/src/shell/state.rs`: in test builds only,
-  `ClientShellState::set_endpoint_error` and `compose()` refresh `self.now`
-  from the wall clock, so tests behave unlike production and a pinned
-  `self.now` is silently overwritten. Thread an explicit `now` through the
-  remaining `set_endpoint_error` callers and drop the hook.
 - Other remaining reads: `shepr-config`'s `TerminalId::alloc` (HYGV-087),
   `shepr-server/src/server/client_transport.rs` and the `shepr-api` transport
   deadlines.
@@ -45,26 +51,6 @@ probe and the vt synchronized-update timeout. Open:
   platform process, clipboard helper, bridge and D-Bus tests; mux runtime (50 ms
   and 20 ms); client `handshake.rs` and `terminal_geometry.rs`; server
   `app/mod.rs`, `tab_bar_status.rs` and `client_transport.rs`.
-
-## HYGP-005 - The working directory is a silent dependency on two paths
-
-**Decision (partial):** the owner adopted broadarrow's rule that every child
-process gets a stated working directory (a `clippy.toml` seal on
-`std::process::Command::new`, with tests spawning through one helper that sets a
-scratch working directory; B6 in `notes/broadarrow-ports.md`). That settles the
-direction here - a test's directory comes from a `ScratchDir`, never from where
-the runner was invoked - but the seal covers spawned children only and catches
-none of these sites: `std::env::current_dir()` read as an input and the
-`Path::new(".")` fallback are other spellings (A5's dot-directory textlint needs
-a name after the dot). The platform IPC path and the mux fixtures are fixed.
-Open, all in tests:
-
-- `shepr-server/src/app/actions/tests.rs` reads `current_dir()` twice, and
-  `shepr-server/src/test_support.rs` derives a fixture cwd from `current_dir()`
-  with a `/` fallback.
-- Fixed `/tmp` path literals in server fixtures (`app/mod.rs`,
-  `app/actions/tests.rs`, `ui/panes.rs`).
-- `src/cli.rs` binds a used `IsolatedEnv` as `_env`.
 
 ## HYGP-031 - Test-only code is compiled into production libraries through Cargo feature unification (`test-api`, `test-support`)
 

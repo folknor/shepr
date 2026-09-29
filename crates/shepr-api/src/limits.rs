@@ -83,10 +83,10 @@ pub(crate) const MAX_EVENT_HISTORY: usize = 512;
 /// Client-side slack past a wait's own `timeout_ms`. A wait checks its
 /// deadline only after each poll, and a poll can block on an app probe for up
 /// to [`APP_RESPONSE_TIMEOUT`], so the server's answer can trail the deadline
-/// by one such probe. The grace only has to exceed that overrun, so the
-/// server's own timeout response reaches the client first; it is not what
-/// normally ends a wait.
-pub(crate) const WAIT_RESPONSE_GRACE: Duration = Duration::from_secs(30);
+/// by one such probe. One extra second leaves a margin for scheduling and
+/// delivery after the probe; the grace is not what normally ends a wait.
+pub(crate) const WAIT_RESPONSE_GRACE: Duration =
+    APP_RESPONSE_TIMEOUT.saturating_add(Duration::from_secs(1));
 
 /// Maximum time a session stop waits for both session sockets to disappear,
 /// leaving time for orderly shutdown before reporting a stall.

@@ -1140,11 +1140,11 @@ mod tests {
 
     #[test]
     fn terminal_and_agent_attach_reject_invalid_config_before_connecting() {
-        let _env = crate::test_support::IsolatedEnv::new();
+        let env = crate::test_support::IsolatedEnv::new();
         let scratch = crate::test_support::ScratchDir::new("cli-invalid-config");
         let config_path = scratch.join("config.toml");
         std::fs::write(&config_path, "[").expect("write invalid config");
-        _env.set(shepr_core::env::EnvVar::SheprConfigPath, &config_path);
+        env.set(shepr_core::env::EnvVar::SheprConfigPath, &config_path);
 
         for args in [
             &["terminal", "attach", "terminal-1"][..],
@@ -1185,12 +1185,12 @@ mod tests {
             "pane",
             "split",
             "--direction=right",
-            "--cwd=/var/tmp",
+            "--cwd=/shepr-test/cwd",
             "--ratio=0.5",
         ]);
         assert_eq!(
             super::matches::string(&split, "cwd").as_deref(),
-            Some("/var/tmp")
+            Some("/shepr-test/cwd")
         );
         assert_eq!(super::matches::value::<f32>(&split, "ratio"), Some(0.5));
 
@@ -1303,13 +1303,13 @@ mod tests {
             name: "work".into(),
             default: false,
             running: true,
-            socket_path: "/tmp/work/shepr.sock".into(),
-            session_dir: "/tmp/work".into(),
+            socket_path: "/shepr-test/work/shepr.sock".into(),
+            session_dir: "/shepr-test/work".into(),
         };
         let value = serde_json::to_value(super::SessionInfoJson::from(&info))
             .expect("session CLI JSON serializes");
-        assert_eq!(value["socket_path"], "/tmp/work/shepr.sock");
-        assert_eq!(value["session_dir"], "/tmp/work");
+        assert_eq!(value["socket_path"], "/shepr-test/work/shepr.sock");
+        assert_eq!(value["session_dir"], "/shepr-test/work");
     }
 
     #[test]

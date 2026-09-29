@@ -95,6 +95,8 @@ fn read_into(
     retention: CaptureRetention,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; SSH_PIPE_READ_BUFFER_BYTES];
+    // stderr-relay-ok: ssh's own stderr is copied through live so the operator
+    // sees and can answer password, passphrase and host-key prompts.
     let mut destination = io::stderr();
     loop {
         let read = match reader.read(&mut buffer) {

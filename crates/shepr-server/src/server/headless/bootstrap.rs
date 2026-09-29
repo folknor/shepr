@@ -83,6 +83,9 @@ pub struct ServerReady {
     pub api_socket: PathBuf,
     pub client_socket: PathBuf,
     pub log_file: PathBuf,
+    /// Why the server runs without file logging, when `log_file` could not be
+    /// opened at startup.
+    pub log_file_unavailable: Option<shepr_platform::logging::FileLoggingUnavailable>,
 }
 
 impl std::fmt::Display for ServerReady {
@@ -93,7 +96,15 @@ impl std::fmt::Display for ServerReady {
         )?;
         writeln!(f, "api socket: {}", self.api_socket.display())?;
         writeln!(f, "client socket: {}", self.client_socket.display())?;
-        writeln!(f, "logs: {}", self.log_file.display())?;
+        match &self.log_file_unavailable {
+            None => writeln!(f, "logs: {}", self.log_file.display())?,
+            Some(unavailable) => writeln!(
+                f,
+                "logs: unavailable, could not open {}: {}",
+                unavailable.path.display(),
+                unavailable.reason
+            )?,
+        }
         write!(
             f,
             "did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`."
@@ -122,8 +133,10 @@ pub fn run_server(
     let session_data_dir = shepr_api::session::data_dir(paths);
     let lease = shepr_mux::persist::DataDirLease::acquire(&session_data_dir)?;
 
-    shepr_platform::logging::init_file_logging(
-        &shepr_api::session::data_dir(paths),
+    // A log file that cannot be opened does not stop the server; the ready
+    // notice says so instead of naming a log that is not being written.
+    let file_logging = shepr_platform::logging::init_file_logging(
+        &session_data_dir,
         shepr_platform::logging::SERVER_LOG_FILE,
     )?;
     // Compile the full registry off the tokio loop, and before App restores PTYs
@@ -186,6 +199,7 @@ pub fn run_server(
             api_socket,
             client_socket,
             log_file: session_data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
+            log_file_unavailable: file_logging.unavailable,
         };
         info!(
             api_socket = %ready.api_socket.display(),

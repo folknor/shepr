@@ -190,6 +190,12 @@ impl RestoreFailure {
 impl std::fmt::Display for RestoreFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.guidance())?;
+        match self {
+            Self::DirectoryUnavailable { path } | Self::DirectoryUnreadable { path, .. } => {
+                write!(formatter, " Directory: {}.", path.display())?;
+            }
+            Self::ShellStartFailed { .. } => {}
+        }
         if let Some(cause) = self.cause() {
             write!(formatter, " Error: {cause}")?;
         }

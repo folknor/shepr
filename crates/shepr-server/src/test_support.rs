@@ -172,7 +172,9 @@ impl PaneRuntimeRegistryFixture for PaneRuntimeRegistry {
 /// Workspaces built without spawning a pane, through the same calls restore
 /// and pane moves use.
 pub(crate) trait WorkspaceFixture: Sized {
-    /// One tab with one pane, named `name`, rooted in the current directory.
+    /// One tab with one pane, named `name`, rooted at `/`: a directory that
+    /// exists on every host, so tests that launch the pane can, and that is
+    /// neither the runner's cwd nor a git repository.
     fn test_new(name: &str) -> Self;
     /// Split the active tab's focused pane; returns the new pane.
     fn test_split(&mut self, direction: Direction) -> PaneId;
@@ -188,7 +190,7 @@ pub(crate) trait WorkspaceFixture: Sized {
 
 impl WorkspaceFixture for Workspace {
     fn test_new(name: &str) -> Self {
-        let identity_cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
+        let identity_cwd = PathBuf::from("/");
         let moved = MovedPane {
             pane_id: PaneId::alloc(),
             pane: TabPane::new(PaneState::new(TerminalId::alloc())),

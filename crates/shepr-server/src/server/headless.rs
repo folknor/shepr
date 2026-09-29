@@ -52,8 +52,6 @@ use shepr_platform::ipc::{
     LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket,
     remove_socket_file_if_owned,
 };
-#[cfg(test)]
-use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
 use shepr_protocol::{AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 
 mod api_dispatcher;
@@ -69,13 +67,6 @@ mod surface_interest;
 use api_dispatcher::AltScreenReadConflict;
 pub use bootstrap::{RunServerError, ServerReady, ServerSocket, run_server};
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
-
-#[cfg(test)]
-use crate::server::client_transport::ClientWriter;
-#[cfg(test)]
-use shepr_protocol::MAX_FRAME_SIZE;
-#[cfg(test)]
-use shepr_protocol::RenderEncoding;
 
 /// Samples the clock app state reads. App code never reads the clock itself
 /// (the `app-state-reads-the-clock-seam` textlint); the server samples it
@@ -249,6 +240,10 @@ impl HeadlessServer {
     /// 1. Locks and prepares the client socket path (cleaning up stale sockets)
     /// 2. Binds the private client socket listener
     /// 3. Returns the server ready to run
+    ///
+    /// A client socket another server holds comes back as
+    /// [`io::ErrorKind::AddrInUse`]; [`run_server`] turns that into
+    /// [`RunServerError::AlreadyRunning`].
     pub fn new(
         app: app::App,
         api_server: Option<shepr_api::ServerHandle>,
@@ -257,13 +252,7 @@ impl HeadlessServer {
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
         let (listener, client_socket_startup_lock, client_socket_identity) =
-            bind_private_socket(&client_path, |path| {
-                RunServerError::AlreadyRunning {
-                    socket: ServerSocket::Client,
-                    path: path.to_path_buf(),
-                }
-                .to_string()
-            })?;
+            bind_private_socket(&client_path)?;
         info!(path = %client_path.display(), "client protocol socket listening");
 
         // Accept all queued connections when the listener becomes readable.
@@ -954,31 +943,6 @@ impl HeadlessServer {
                 }
             }
         }
-    }
-
-    /// Resolves a direct-attach terminal id string to the live `TerminalId`.
-    ///
-    /// Still a scan over the session's terminals (tens, not thousands): the
-    /// terminal map is keyed by `TerminalId`, which does not implement
-    /// `Borrow<str>`, so a hashed lookup by `&str` is not available from here.
-    /// The scan compares borrowed strings and avoids allocating a `to_string()`
-    /// per terminal on every attach keystroke, mouse event and render.
-    #[cfg(test)]
-    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&shepr_protocol::TerminalId> {
-        self.app
-            .state
-            .terminals
-            .keys()
-            .find(|id| id.as_str() == terminal_id)
-    }
-
-    #[cfg(test)]
-    fn runtime_for_terminal_id_string(
-        &self,
-        terminal_id: &str,
-    ) -> Option<&shepr_mux::pane::PaneRuntime> {
-        let terminal_id = self.terminal_id_by_string(terminal_id)?;
-        self.app.terminal_runtimes.get(terminal_id)
     }
 
     fn handle_terminal_attach_scroll(

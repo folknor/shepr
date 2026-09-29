@@ -253,10 +253,18 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32>
 /// that cannot be opened is reported on stderr.
 fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
-    shepr_platform::logging::init_client_file_logging(
+    let outcome = shepr_platform::logging::init_client_file_logging(
         &shepr_api::session::data_dir(paths),
         logging_config,
-    )
+    )?;
+    if let Some(unavailable) = outcome.unavailable {
+        cli::print_notice(&format!(
+            "shepr: could not initialize file logging at {}: {}",
+            unavailable.path.display(),
+            unavailable.reason
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_bridge_paths(

@@ -209,6 +209,42 @@ fn bridge_socket_is_user_only() {
     );
 }
 
+/// A second bridge on a path a live bridge holds is refused as `AddrInUse`
+/// (still a link failure to the retry policy) with the path in its message.
+#[test]
+fn bridge_on_a_held_socket_names_the_path() {
+    let scratch = shepr_test_support::ScratchDir::new("bridge-busy");
+    let socket = scratch.join("bridge.sock");
+    let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
+    let start = || {
+        SshStdioBridge::start(
+            SshTarget::parse("example").expect("test precondition"),
+            &remote_shepr,
+            socket.clone(),
+            "default",
+            None,
+            false,
+        )
+    };
+    let first = start().expect("start first bridge listener");
+
+    let error = start().err().expect("the first bridge holds the path");
+    assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    assert!(
+        error
+            .get_ref()
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<BridgeSocketBusy>),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains(&socket.display().to_string()),
+        "{error}"
+    );
+    assert!(is_ssh_link_failure(&error));
+
+    drop(first);
+}
+
 #[test]
 fn accepted_bridge_stream_is_reset_to_blocking() {
     use std::os::fd::AsRawFd as _;

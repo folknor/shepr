@@ -150,12 +150,7 @@ fn start_server_inner(
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     let path = socket_path(paths);
-    let (listener, startup_lock, identity) = bind_private_socket(&path, |path| {
-        format!(
-            "shepr is already running (socket busy at {})",
-            path.display()
-        )
-    })?;
+    let (listener, startup_lock, identity) = bind_private_socket(&path)?;
     info!(path = %path.display(), "api server listening");
 
     let ssh_agents = match shepr_platform::ssh_agent::SshAgentRegistry::new(

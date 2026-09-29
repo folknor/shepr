@@ -114,7 +114,7 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
     let terminal_id = shepr_protocol::TerminalId::alloc();
     let terminal = shepr_mux::terminal::TerminalState::new(
         terminal_id.clone(),
-        std::path::PathBuf::from("/tmp"),
+        std::path::PathBuf::from("/shepr-test/cwd"),
     );
     let previous_focus = state.current_pane_focus_target();
 
@@ -156,7 +156,7 @@ fn workspace_creation_state_command_commits_spawned_values() {
         .clone();
     let terminal = shepr_mux::terminal::TerminalState::new(
         terminal_id.clone(),
-        std::path::PathBuf::from("/tmp"),
+        std::path::PathBuf::from("/shepr-test/cwd"),
     );
 
     let outcome = state.commit_workspace_creation(workspace, terminal, true);
@@ -181,7 +181,7 @@ fn tab_creation_state_command_commits_spawned_values_and_focus() {
     let root_pane = tab.root_pane();
     let terminal = shepr_mux::terminal::TerminalState::new(
         terminal_id.clone(),
-        std::path::PathBuf::from("/tmp"),
+        std::path::PathBuf::from("/shepr-test/cwd"),
     );
 
     let outcome = state
@@ -814,12 +814,13 @@ fn official_release_preserves_process_owned_agent_identity() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition");
+    let test_dir = ScratchDir::new("release-session");
     terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
         source: "shepr:pi".into(),
         agent: shepr_agent::agent::Agent::Pi,
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(
-            std::env::current_dir()
-                .expect("test precondition")
+            test_dir
+                .path()
                 .join("release-session.jsonl")
                 .display()
                 .to_string(),
@@ -903,9 +904,9 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         .keys()
         .next()
         .expect("test precondition");
-    let test_dir = std::env::current_dir().expect("test precondition");
-    let first_session = test_dir.join("one.jsonl").display().to_string();
-    let second_session = test_dir.join("two.jsonl").display().to_string();
+    let test_dir = ScratchDir::new("custom-session-refs");
+    let first_session = test_dir.path().join("one.jsonl").display().to_string();
+    let second_session = test_dir.path().join("two.jsonl").display().to_string();
 
     let first_updates = state.handle_app_event(AppEvent::HookStateReported {
         pane_id,

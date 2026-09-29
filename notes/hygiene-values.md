@@ -24,14 +24,6 @@ phantoms here.
 
 ---
 
-## HYGV-153 - Leftovers sized or kept for removed agent-driving features
-
-- `shepr-api` `WAIT_RESPONSE_GRACE` was sized for the removed chained
-  `agent.prompt --wait` path; only one app-probe overrun needs covering now, so
-  its value looks oversized. Resize it against `APP_RESPONSE_TIMEOUT`.
-- `RestoreFailure`'s `path` fields in `shepr-mux/src/terminal/state/mod.rs`
-  are never read except by `Debug`; drop them or show them.
-
 ## HYGV-087 - Identifier allocation reaches process-global counters and clocks directly, with no injection point and no owner of the format
 
 Reported by the core/platform, protocol/config, remote and server hunters.

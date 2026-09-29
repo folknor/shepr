@@ -24,37 +24,20 @@ expected to find phantoms among them.
 
 ---
 
-## HYGC-001 - No owner for "how shepr addresses an operator"
+## HYGC-055 - Busy-socket errors lost their subject, and the already-running path has no test
 
-**Decision (partial):** the text rule named below is adopted: a `brokkr.toml`
-textlint forbidding `print!` / `println!` / `eprint!` / `eprintln!` in the
-library crates outside test code, leaving `src/` alone (B1 in
-`notes/broadarrow-ports.md`). Every library-crate site this entry originally
-named is gone: `shepr-platform/src/logging.rs`'s two stderr writes,
-`shepr-client/src/lib.rs`'s stderr writes, `shepr-agent`'s
-`print_outdated_update_notice`, `shepr-remote`'s thirteen `eprintln!`/`eprint!`
-sites (the interactive prompt moved behind an `Operator` trait, see the former
-HYGC-002), and `shepr-server/src/server/headless/bootstrap.rs`'s six lines
-(`run_server` now returns a typed `RunServerError` and the caller decides how
-to report it). The workspace clippy seal on the print macros is still not
-adopted, so a CLI print site is not held by this rule, but the CLI's own
-divergent channels are resolved (the former HYGC-004). Open: no function yet
-owns operator output as a concept (the destination, the `shepr: ` prefix and
-the capitalisation are still decided per remaining site), `writeln!(io::stderr(),
-..)` is not a print macro so the rule does not catch it, and
-`shepr-platform/src/ipc.rs::prepare_socket_path`'s `busy_message` closure still
-has the platform layer's caller format operator text rather than the platform
-layer staying silent on it. (The server's "already running" text now has one
-owner, `RunServerError`'s `Display`.)
-
-Recorded absence, so it is not re-hunted: the protocol/config hunter verified by
-grep that neither `crates/shepr-protocol/src` nor `crates/shepr-config/src`
-contains `println!`, `eprintln!` or `print!`.
-
-Enforcement named: one `operator_message(...)` (or a returned `Hint`/typed
-value the binary renders) plus a `clippy.toml disallowed_methods` entry for
-`eprintln!`/`io::stderr` outside that one module and `src/main.rs`. The wording
-and phrasing of the messages themselves cannot be held mechanically.
+- `shepr-platform/src/ipc.rs`: `acquire_socket_startup_lock` now returns a
+  bare `AddrInUse` with no path, and `bind_private_socket` replaces the
+  listener's "socket busy at <path>" message with a bare kind. Every caller
+  wraps them today, but a new caller gets only "address in use"; carry the
+  path in the error.
+- Nothing tests that a busy client or API socket comes out of
+  `shepr-server`'s `run_server` as `RunServerError::AlreadyRunning`; only the
+  raw `AddrInUse` from `bind_private_socket` is tested.
+- The `library-crates-do-not-write-stderr` textlint does not cover
+  `io::stdout()`. Current library uses are fd handoffs in the client terminal
+  setup and the bridge relay; decide whether stdout needs the same rule with a
+  marker for those.
 
 ## HYGC-013 - Structured field names for the same thing differ across sites
 

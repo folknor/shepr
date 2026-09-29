@@ -22,7 +22,7 @@ impl ClientShellState {
         // bring it back if the key were later removed from the config.
         .without_configured(self.config.preferences.configured);
         if let Err(error) = preferences::store(path, &preferences) {
-            self.set_endpoint_error(error);
+            self.set_endpoint_error(error, self.now);
             outcome.repaint = true;
         }
     }

@@ -594,9 +594,7 @@ pub(super) struct ClientCopyModeState {
 
 pub struct ClientShellState {
     /// The client loop's time for the event being handled, set on each event,
-    /// so production shell code that stamps deadlines never reads the clock itself.
-    /// Tests that drive the shell without the client loop get a fresh reading at
-    /// the deadline-stamping boundaries instead (`refresh_now_for_test`).
+    /// so shell code that stamps deadlines never reads the clock itself.
     pub(crate) now: std::time::Instant,
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
@@ -686,12 +684,6 @@ pub struct ClientShellState {
 }
 
 impl ClientShellState {
-    #[cfg(test)]
-    pub(super) fn refresh_now_for_test(&mut self) {
-        // clock-io-ok: direct shell tests can bypass the client loop's event clock.
-        self.now = std::time::Instant::now();
-    }
-
     #[cfg(test)]
     pub fn new(config: ClientShellConfig) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
@@ -985,7 +977,7 @@ impl ClientShellState {
         }
         if snapshot_keybindings_changed {
             if let Err(err) = self.config.apply_snapshot_config(snapshot_config) {
-                self.set_endpoint_error(err);
+                self.set_endpoint_error(err, self.now);
             } else if matches!(
                 self.mode,
                 ClientShellMode::Prefix | ClientShellMode::Navigate | ClientShellMode::Resize
@@ -1315,13 +1307,7 @@ impl ClientShellState {
     ///
     /// Every assignment must go through this setter so a repeated identical
     /// message gets a fresh deadline instead of inheriting the previous one.
-    pub(super) fn set_endpoint_error(&mut self, message: impl Into<String>) {
-        #[cfg(test)]
-        self.refresh_now_for_test();
-        self.set_endpoint_error_at(message, self.now);
-    }
-
-    pub(super) fn set_endpoint_error_at(
+    pub(super) fn set_endpoint_error(
         &mut self,
         message: impl Into<String>,
         now: std::time::Instant,

@@ -169,10 +169,7 @@ impl ClientShellState {
             Ok(_) => {
                 self.pane_scroll_queued.remove(pane_id);
                 self.pane_scroll_targets.remove(pane_id);
-                self.set_endpoint_error_at(
-                    "endpoint returned an unexpected pane-scroll result",
-                    now,
-                );
+                self.set_endpoint_error("endpoint returned an unexpected pane-scroll result", now);
                 true
             }
             Err(_) => {
