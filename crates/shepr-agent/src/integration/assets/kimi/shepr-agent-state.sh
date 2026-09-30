@@ -62,6 +62,9 @@ if action == "session":
         start_source = "startup"
     params["session_start_source"] = start_source
 else:
+    # A state event without its session identity cannot safely claim pane state.
+    if session_id is None:
+        raise SystemExit(0)
     method = "pane.report_agent"
     params["state"] = action
 if session_id is not None:

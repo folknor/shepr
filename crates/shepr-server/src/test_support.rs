@@ -288,7 +288,6 @@ pub(crate) trait TerminalStateFixture {
         source: String,
         agent_label: String,
         state: AgentState,
-        message: Option<String>,
         seq: Option<u64>,
     ) -> Option<EffectiveStateChange>;
 }
@@ -314,14 +313,12 @@ impl TerminalStateFixture for TerminalState {
         source: String,
         agent_label: String,
         state: AgentState,
-        message: Option<String>,
         seq: Option<u64>,
     ) -> Option<EffectiveStateChange> {
         self.set_hook_authority_at(
             source,
             agent_label,
             state,
-            message,
             None,
             seq,
             shepr_mux::terminal::state::HookClockSample {

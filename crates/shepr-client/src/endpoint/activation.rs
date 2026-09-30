@@ -307,6 +307,10 @@ impl PendingEndpointActivation {
         crate::limits::Deadline::at(self.deadline).is_expired(now)
     }
 
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
     pub fn receive_response_for_boot_at(
         &mut self,
         endpoint_id: &ClientEndpointId,

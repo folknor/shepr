@@ -63,13 +63,7 @@ fn hook_authority_overrides_fallback_for_same_agent() {
         shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority(
-        "shepr:pi".into(),
-        "pi".into(),
-        AgentState::Working,
-        None,
-        None,
-    );
+    terminal.set_hook_authority("shepr:pi".into(), "pi".into(), AgentState::Working, None);
 
     assert_eq!(terminal.detected_agent, Some(Agent::Pi));
     assert_eq!(terminal.fallback_state, AgentState::Idle);
@@ -91,13 +85,8 @@ fn custom_state_reports_apply_beside_an_official_session_identity() {
     terminal.set_persisted_agent_session(session.clone());
 
     for (source, label) in [("custom:status", "status-agent"), ("myagent", "myagent")] {
-        let mutation = terminal.set_hook_authority(
-            source.into(),
-            label.into(),
-            AgentState::Working,
-            None,
-            None,
-        );
+        let mutation =
+            terminal.set_hook_authority(source.into(), label.into(), AgentState::Working, None);
 
         assert!(mutation.is_some(), "{source}");
         assert_eq!(terminal.effective_agent_label(), Some(label));
@@ -153,7 +142,6 @@ fn hook_authority_can_override_with_unknown_agent_label() {
         "custom-agent".into(),
         AgentState::Working,
         None,
-        None,
     );
 
     assert_eq!(terminal.detected_agent, Some(Agent::Pi));
@@ -173,13 +161,7 @@ fn omp_hook_authority_overrides_detected_fallback() {
         "omp",
         shepr_agent::agent::resume::AgentSessionRef::id("omp-root").expect("test precondition"),
     );
-    terminal.set_hook_authority(
-        "shepr:omp".into(),
-        "omp".into(),
-        AgentState::Working,
-        None,
-        None,
-    );
+    terminal.set_hook_authority("shepr:omp".into(), "omp".into(), AgentState::Working, None);
 
     assert_eq!(terminal.detected_agent, Some(Agent::Omp));
     assert_eq!(terminal.effective_agent_label(), Some("omp"));
@@ -253,7 +235,6 @@ fn startup_session_claim_activates_full_lifecycle_integrations() {
             source.into(),
             label.into(),
             AgentState::Working,
-            None,
             session_ref,
             Some(11),
         );
@@ -329,7 +310,6 @@ fn session_identity_claims_leave_state_to_detection() {
         source.into(),
         label.into(),
         AgentState::Blocked,
-        None,
         Some(replacement_ref.clone()),
         Some(12),
     );
@@ -392,7 +372,6 @@ fn pi_session_replacement_reports_reanchor_full_lifecycle_authority() {
             "shepr:pi".into(),
             "pi".into(),
             AgentState::Idle,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::path(old_session),
             Some(10),
         );
@@ -415,7 +394,6 @@ fn pi_session_replacement_reports_reanchor_full_lifecycle_authority() {
             "shepr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::path(new_session.clone()),
             Some(12),
         );
@@ -446,7 +424,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_a.clone()),
         Some(10),
     );
@@ -462,7 +439,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_b.clone()),
         Some(12),
     );
@@ -478,7 +454,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_a.clone()),
         Some(14),
     );
@@ -499,7 +474,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_b),
         Some(15),
     );
@@ -562,7 +536,6 @@ fn pi_non_replacement_reports_preserve_full_lifecycle_authority() {
             "shepr:pi".into(),
             "pi".into(),
             AgentState::Idle,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::path(old_session.clone()),
             Some(10),
         );
@@ -578,7 +551,6 @@ fn pi_non_replacement_reports_preserve_full_lifecycle_authority() {
             "shepr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::path(new_session),
             Some(12),
         );
@@ -608,7 +580,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
         "shepr:omp".into(),
         "omp".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session.clone()),
         Some(10),
     );
@@ -637,7 +608,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
         "shepr:omp".into(),
         "omp".into(),
         AgentState::Blocked,
-        Some("waiting".to_string()),
         shepr_agent::agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(12),
     );
@@ -657,7 +627,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
         "shepr:omp".into(),
         "omp".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session),
         Some(13),
     );
@@ -676,7 +645,6 @@ fn late_full_lifecycle_hook_with_same_session_after_process_exit_does_not_reacqu
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
     );
@@ -692,7 +660,6 @@ fn late_full_lifecycle_hook_with_same_session_after_process_exit_does_not_reacqu
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path),
         Some(21),
     );
@@ -720,7 +687,6 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("one.jsonl")),
         Some(20),
     );
@@ -729,7 +695,6 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("two.jsonl")),
         Some(21),
     );
@@ -751,7 +716,6 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("one.jsonl")),
         Some(22),
     );
@@ -771,7 +735,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session.clone()),
         Some(1000),
     );
@@ -804,7 +767,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session),
         Some(500),
     );
@@ -812,7 +774,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(501),
     );
@@ -845,7 +806,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(1000),
         now,
@@ -862,7 +822,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(1001),
         now + Duration::from_millis(2),
@@ -871,7 +830,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Idle,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         None,
         now + Duration::from_millis(3),
@@ -880,7 +838,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(2001),
         now + Duration::from_millis(4),
@@ -928,7 +885,6 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session),
         Some(1000),
         now,
@@ -951,7 +907,6 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(shared_session.clone()),
         Some(500),
         now + Duration::from_millis(3),
@@ -995,7 +950,6 @@ fn queued_fresh_process_evidence_uses_process_exit_observation_time() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(1000),
         process_exit_at - Duration::from_millis(1),
@@ -1044,7 +998,6 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session),
         Some(1000),
         now,
@@ -1061,7 +1014,6 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(500),
         now + Duration::from_millis(2),
@@ -1107,7 +1059,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(old_session),
         Some(1000),
         now,
@@ -1124,7 +1075,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         None,
         Some(500),
         now + Duration::from_millis(2),
@@ -1152,7 +1102,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         "pi".into(),
         AgentState::Working,
         None,
-        None,
         Some(500),
         now + Duration::from_millis(5),
     );
@@ -1174,7 +1123,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         None,
         Some(601),
         now + Duration::from_millis(6),
@@ -1225,7 +1173,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
         "shepr:omp".into(),
         "omp".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("omp-old"),
         Some(1000),
         now,
@@ -1242,7 +1189,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
         "shepr:omp".into(),
         "omp".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("omp-old"),
         Some(500),
     );
@@ -1278,7 +1224,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
         "shepr:omp".into(),
         "omp".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("omp-new"),
         Some(500),
     );
@@ -1296,7 +1241,6 @@ fn visible_blocker_overrides_non_blocked_hook_for_same_agent() {
         "shepr:codex".into(),
         "codex".into(),
         AgentState::Working,
-        None,
         None,
     );
 
@@ -1328,13 +1272,7 @@ fn visible_blocker_does_not_override_full_lifecycle_hook_authority() {
         shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority(
-        "shepr:pi".into(),
-        "pi".into(),
-        AgentState::Working,
-        None,
-        None,
-    );
+    terminal.set_hook_authority("shepr:pi".into(), "pi".into(), AgentState::Working, None);
 
     let change = terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Pi),
@@ -1357,7 +1295,6 @@ fn weak_blocked_fallback_does_not_override_hook_authority() {
         "shepr:codex".into(),
         "codex".into(),
         AgentState::Working,
-        None,
         None,
     );
 
@@ -1383,7 +1320,6 @@ fn hook_blocked_wins_over_visible_blocker() {
         "codex".into(),
         AgentState::Blocked,
         None,
-        None,
     );
 
     terminal.set_detected_state_with_visible_blocker(
@@ -1406,7 +1342,6 @@ fn visible_blocker_does_not_override_different_agent_hook() {
         "custom:agent".into(),
         "custom-agent".into(),
         AgentState::Working,
-        None,
         None,
     );
 
@@ -1431,7 +1366,6 @@ fn fallback_idle_does_not_override_hook_working() {
         "shepr:claude".into(),
         "claude".into(),
         AgentState::Working,
-        None,
         None,
         None,
         now,
@@ -1468,7 +1402,6 @@ fn fallback_idle_does_not_override_full_lifecycle_hook_working() {
         AgentState::Working,
         None,
         None,
-        None,
         now,
     );
     terminal.set_detected_state_with_screen_signals_at(
@@ -1492,7 +1425,6 @@ fn visible_working_does_not_override_hook_idle_for_same_agent() {
         "shepr:claude".into(),
         "claude".into(),
         AgentState::Idle,
-        None,
         None,
         None,
         now,
@@ -1529,7 +1461,6 @@ fn visible_working_does_not_override_full_lifecycle_hook_idle() {
         AgentState::Idle,
         None,
         None,
-        None,
         now,
     );
 
@@ -1562,7 +1493,6 @@ fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
         "shepr:kilo".into(),
         "kilo".into(),
         AgentState::Idle,
-        None,
         None,
         None,
         now,
@@ -1599,7 +1529,6 @@ fn visible_working_does_not_hold_against_newer_claude_hook_idle() {
         AgentState::Idle,
         None,
         None,
-        None,
         now + Duration::from_millis(100),
     );
 
@@ -1631,7 +1560,6 @@ fn refreshed_visible_working_does_not_override_newer_hook_blocked() {
         AgentState::Blocked,
         None,
         None,
-        None,
         now + Duration::from_millis(1201),
     );
 
@@ -1659,7 +1587,6 @@ fn fallback_idle_does_not_override_other_agent_hook_working() {
         "codex".into(),
         AgentState::Working,
         None,
-        None,
     );
 
     let change = terminal.set_detected_state_with_visible_blocker(
@@ -1684,7 +1611,6 @@ fn known_hook_authority_does_not_override_different_detected_agent() {
         "claude".into(),
         AgentState::Blocked,
         None,
-        None,
     );
 
     assert!(change.is_none());
@@ -1701,7 +1627,6 @@ fn detected_agent_clears_conflicting_known_hook_authority() {
         "shepr:claude".into(),
         "claude".into(),
         AgentState::Blocked,
-        None,
         None,
     );
 
@@ -1742,7 +1667,6 @@ fn hook_authority_survives_unrelated_detected_agent_clear() {
         "custom-agent".into(),
         AgentState::Working,
         None,
-        None,
     );
 
     terminal.set_detected_state(None, AgentState::Unknown);
@@ -1772,7 +1696,6 @@ fn full_lifecycle_hook_authority_ignores_detected_agent_clear_without_process_ex
         AgentState::Working,
         None,
         None,
-        None,
         now,
     );
 
@@ -1800,7 +1723,6 @@ fn detected_agent_clear_clears_matching_hook_authority() {
         "cursor".into(),
         AgentState::Idle,
         None,
-        None,
     );
 
     terminal.set_detected_state(None, AgentState::Unknown);
@@ -1821,7 +1743,6 @@ fn detected_agent_clear_clears_matching_working_hook_authority() {
         "codex".into(),
         AgentState::Working,
         None,
-        None,
     );
 
     terminal.set_detected_state(None, AgentState::Unknown);
@@ -1840,7 +1761,6 @@ fn process_exit_clears_matching_hook_authority_before_reporting_idle() {
         "shepr:codex".into(),
         "codex".into(),
         AgentState::Working,
-        None,
         None,
     );
 
@@ -1874,7 +1794,6 @@ fn stale_visible_screen_signal_does_not_override_newer_hook_authority() {
         "claude".into(),
         AgentState::Working,
         None,
-        None,
         Some(1),
         observed + Duration::from_secs(1),
     );
@@ -1905,7 +1824,6 @@ fn stale_process_exit_preserves_newer_custom_authority() {
         "custom:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         None,
         Some(100),
         observed + Duration::from_secs(1),
@@ -1940,7 +1858,6 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
         "pi".into(),
         AgentState::Working,
         None,
-        None,
         Some(100),
         observed,
     );
@@ -1965,7 +1882,6 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
                 "custom:pi".into(),
                 "pi".into(),
                 AgentState::Working,
-                None,
                 Some(1),
             )
             .is_none()
@@ -1983,7 +1899,6 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
                 "custom:pi".into(),
                 "pi".into(),
                 AgentState::Working,
-                None,
                 Some(1),
             )
             .is_some()
@@ -2006,7 +1921,6 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
         "codex".into(),
         AgentState::Working,
         None,
-        None,
         Some(1),
         observed,
     );
@@ -2014,7 +1928,6 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
         "shepr:codex".into(),
         "codex".into(),
         AgentState::Working,
-        None,
         None,
         Some(2),
         observed + Duration::from_secs(1),
@@ -2037,13 +1950,7 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
 fn detected_agent_change_clears_previous_matching_hook_authority() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-    terminal.set_hook_authority(
-        "shepr:codex".into(),
-        "codex".into(),
-        AgentState::Idle,
-        None,
-        None,
-    );
+    terminal.set_hook_authority("shepr:codex".into(), "codex".into(), AgentState::Idle, None);
 
     terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
 
@@ -2069,17 +1976,11 @@ fn stale_hook_report_sequence_is_ignored_for_same_source() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         Some(20),
     );
 
-    let change = terminal.set_hook_authority(
-        "shepr:pi".into(),
-        "pi".into(),
-        AgentState::Idle,
-        None,
-        Some(19),
-    );
+    let change =
+        terminal.set_hook_authority("shepr:pi".into(), "pi".into(), AgentState::Idle, Some(19));
 
     assert!(change.is_none());
     assert_eq!(terminal.state, AgentState::Working);
@@ -2110,7 +2011,6 @@ fn accepted_hook_report_stores_session_ref() {
             "shepr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
             Some(20),
         )
@@ -2147,7 +2047,6 @@ fn stale_hook_report_cannot_overwrite_session_ref() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
     );
@@ -2156,7 +2055,6 @@ fn stale_hook_report_cannot_overwrite_session_ref() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(new_session_path),
         Some(19),
     );
@@ -2188,7 +2086,6 @@ fn accepted_hook_report_without_session_ref_preserves_current_generation() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path),
         Some(20),
     );
@@ -2198,7 +2095,6 @@ fn accepted_hook_report_without_session_ref_preserves_current_generation() {
             "shepr:pi".into(),
             "pi".into(),
             AgentState::Working,
-            None,
             None,
             Some(21),
         )
@@ -2223,7 +2119,6 @@ fn accepted_hook_report_without_session_ref_preserves_current_generation() {
                 "shepr:pi".into(),
                 "pi".into(),
                 AgentState::Idle,
-                None,
                 Some(identity.session_ref),
                 Some(22)
             )
@@ -2389,7 +2284,6 @@ fn codex_hook_turn_lifecycle_preserves_session_and_beats_stale_working_screen() 
             "shepr:codex".into(),
             "codex".into(),
             state,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::id(session),
             Some(seq),
         )
@@ -2632,7 +2526,6 @@ fn opencode_child_prompt_reports_with_root_id_preserve_lifecycle_authority() {
                 "shepr:opencode".into(),
                 "opencode".into(),
                 state,
-                None,
                 Some(root.clone()),
                 Some(seq),
             )
@@ -2654,7 +2547,6 @@ fn opencode_child_prompt_reports_with_root_id_preserve_lifecycle_authority() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Blocked,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("opencode-other-root"),
         Some(24),
     );
@@ -2682,7 +2574,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
             "shepr:opencode".into(),
             "opencode".into(),
             AgentState::Idle,
-            None,
             Some(old_session.clone()),
             Some(20),
         )
@@ -2694,7 +2585,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Working,
-        None,
         Some(attached_session.clone()),
         Some(21),
     );
@@ -2734,7 +2624,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
             "shepr:opencode".into(),
             "opencode".into(),
             AgentState::Working,
-            None,
             Some(selected_session.clone()),
             Some(21),
         )
@@ -2767,7 +2656,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
                 "shepr:opencode".into(),
                 "opencode".into(),
                 AgentState::Idle,
-                None,
                 Some(selected_session.clone()),
                 Some(20)
             )
@@ -2779,7 +2667,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Idle,
-        None,
         Some(old_session),
         Some(22),
     );
@@ -2797,7 +2684,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Blocked,
-        None,
         Some(attached_session),
         Some(23),
     );
@@ -3076,7 +2962,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
             "shepr:opencode".into(),
             "opencode".into(),
             AgentState::Working,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::id("opencode-session"),
             Some(20),
             now + Duration::from_millis(1),
@@ -3118,7 +3003,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("opencode-session"),
         Some(22),
     );
@@ -3138,7 +3022,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("opencode-new-session"),
         Some(24),
     );
@@ -3161,7 +3044,6 @@ fn different_owner_full_lifecycle_hook_does_not_replace_existing_session_ref() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path("/tmp/pi-session.jsonl"),
         Some(21),
     );
@@ -3219,7 +3101,6 @@ fn hook_authority_rejects_state_from_a_different_session() {
             "shepr:opencode".into(),
             "opencode".into(),
             AgentState::Working,
-            None,
             shepr_agent::agent::resume::AgentSessionRef::id("opencode-session"),
             Some(20),
         )
@@ -3229,7 +3110,6 @@ fn hook_authority_rejects_state_from_a_different_session() {
         "shepr:opencode".into(),
         "opencode".into(),
         AgentState::Blocked,
-        Some("needs approval".into()),
         shepr_agent::agent::resume::AgentSessionRef::id("nested-session"),
         Some(21),
     );
@@ -3345,7 +3225,6 @@ fn detected_conflict_clears_live_hook_but_preserves_session_ref() {
         "shepr:claude".into(),
         "claude".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
         Some(20),
     );
@@ -3379,7 +3258,6 @@ fn detected_agent_disappearance_does_not_clear_full_lifecycle_hook_session_ref()
         "shepr:kimi".into(),
         "kimi".into(),
         AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::id("kimi-session"),
         Some(20),
     );
@@ -3442,12 +3320,11 @@ fn unsequenced_hook_report_is_ignored_after_source_uses_sequence() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         Some(20),
     );
 
     let change =
-        terminal.set_hook_authority("shepr:pi".into(), "pi".into(), AgentState::Idle, None, None);
+        terminal.set_hook_authority("shepr:pi".into(), "pi".into(), AgentState::Idle, None);
 
     assert!(change.is_none());
     assert_eq!(terminal.state, AgentState::Working);
@@ -3461,17 +3338,10 @@ fn same_sequence_from_different_sources_is_independent() {
         "shepr:pi".into(),
         "pi".into(),
         AgentState::Working,
-        None,
         Some(20),
     );
 
-    terminal.set_hook_authority(
-        "custom:pi".into(),
-        "pi".into(),
-        AgentState::Idle,
-        None,
-        Some(19),
-    );
+    terminal.set_hook_authority("custom:pi".into(), "pi".into(), AgentState::Idle, Some(19));
 
     assert_eq!(terminal.state, AgentState::Idle);
     assert_eq!(
@@ -3492,13 +3362,7 @@ fn hook_report_sources_are_capped_and_ordering_is_one_record() {
     let mut terminal = test_terminal();
     let now = Instant::now();
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority(
-        "custom:kept".into(),
-        "pi".into(),
-        AgentState::Idle,
-        None,
-        Some(1),
-    );
+    terminal.set_hook_authority("custom:kept".into(), "pi".into(), AgentState::Idle, Some(1));
     assert_eq!(
         terminal
             .hook_authority
@@ -3612,7 +3476,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
                     source.into(),
                     agent.label().into(),
                     AgentState::Blocked,
-                    None,
                     Some(old.clone()),
                     Some(10)
                 )
@@ -3642,7 +3505,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
                     source.into(),
                     agent.label().into(),
                     AgentState::Working,
-                    None,
                     Some(new.clone()),
                     Some(12)
                 )
@@ -3654,7 +3516,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
                     source.into(),
                     agent.label().into(),
                     AgentState::Idle,
-                    None,
                     Some(new),
                     Some(11)
                 )
@@ -3666,7 +3527,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
                     source.into(),
                     agent.label().into(),
                     AgentState::Blocked,
-                    None,
                     Some(old),
                     Some(13)
                 )
@@ -3691,7 +3551,6 @@ fn refused_session_replacement_preserves_authority_and_source_ordering() {
         "shepr:kilo".into(),
         "kilo".into(),
         AgentState::Working,
-        None,
         Some(old.clone()),
         Some(10),
     );
@@ -3716,7 +3575,6 @@ fn refused_session_replacement_preserves_authority_and_source_ordering() {
                 "shepr:kilo".into(),
                 "kilo".into(),
                 AgentState::Idle,
-                None,
                 Some(old),
                 Some(11)
             )
@@ -3739,7 +3597,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
         "shepr:kimi".into(),
         "kimi".into(),
         AgentState::Working,
-        None,
         Some(old),
         Some(10),
     );
@@ -3764,7 +3621,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
                 "shepr:kimi".into(),
                 "kimi".into(),
                 AgentState::Blocked,
-                None,
                 invalid,
                 Some(100)
             )
@@ -3788,7 +3644,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
                 "kilo".into(),
                 AgentState::Blocked,
                 None,
-                None,
                 Some(100)
             )
             .is_none()
@@ -3807,7 +3662,6 @@ fn older_pending_report_returns_none_without_changing_the_generation() {
             "shepr:kimi".into(),
             "kimi".into(),
             AgentState::Working,
-            None,
             Some(session.clone()),
             Some(100),
         )
@@ -3822,7 +3676,6 @@ fn older_pending_report_returns_none_without_changing_the_generation() {
                 "shepr:kimi".into(),
                 "kimi".into(),
                 AgentState::Idle,
-                None,
                 Some(session),
                 Some(99)
             )
@@ -3842,7 +3695,6 @@ fn claude_clear_replaces_session_before_and_after_next_state_report() {
             "shepr:claude".into(),
             "claude".into(),
             AgentState::Working,
-            None,
             Some(old),
             Some(10),
         )
@@ -3868,7 +3720,6 @@ fn claude_clear_replaces_session_before_and_after_next_state_report() {
             "shepr:claude".into(),
             "claude".into(),
             AgentState::Idle,
-            None,
             Some(new.clone()),
             Some(12),
         )

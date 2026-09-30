@@ -210,6 +210,14 @@ impl EndpointCommands {
         cancelled
     }
 
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.lanes
+            .values()
+            .filter_map(|lane| lane.in_flight.as_ref())
+            .filter_map(|command| command.sent_at.checked_add(ENDPOINT_COMMAND_TIMEOUT))
+            .min()
+    }
+
     pub(crate) fn expire(&mut self, now: Instant) -> Vec<EndpointCommandResult> {
         self.lanes
             .iter_mut()
@@ -429,6 +437,8 @@ mod tests {
             .as_mut()
             .expect("test in-flight command")
             .sent_at = start;
+        let deadline = start + ENDPOINT_COMMAND_TIMEOUT;
+        assert_eq!(commands.next_deadline(), Some(deadline));
         assert!(
             commands
                 .expire(start + ENDPOINT_COMMAND_TIMEOUT - Duration::from_nanos(1))
@@ -447,6 +457,7 @@ mod tests {
             Err(ClientShellEndpointError::Timeout)
         ));
         assert!(!has_in_flight(&commands));
+        assert_eq!(commands.next_deadline(), None);
         assert!(commands.expire(start + ENDPOINT_COMMAND_TIMEOUT).is_empty());
         assert!(
             commands

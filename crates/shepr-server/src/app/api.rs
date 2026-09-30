@@ -409,7 +409,6 @@ mod tests {
                 "codex".into(),
                 AgentState::Working,
                 None,
-                None,
                 Some(1),
                 shepr_mux::terminal::state::HookClockSample {
                     monotonic: observed_at + std::time::Duration::from_secs(1),

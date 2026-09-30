@@ -709,7 +709,6 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         "shepr:pi".into(),
         "pi".into(),
         shepr_agent::detect::AgentState::Working,
-        None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
         shepr_mux::terminal::state::HookClockSample {

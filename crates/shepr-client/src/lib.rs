@@ -511,6 +511,19 @@ async fn wait_for_client_timer(deadline: Option<std::time::Instant>) {
 }
 
 impl ClientLoop {
+    fn next_timer_deadline(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
+        earliest_client_timer_deadline([
+            self.state.shell.next_timer_deadline(),
+            self.state
+                .presentation
+                .handoff()
+                .map(endpoint::PendingEndpointActivation::deadline),
+            self.endpoint_commands.next_deadline(),
+            self.write_stream.next_service_deadline(now),
+            self.supervisors.next_retry_deadline(),
+        ])
+    }
+
     async fn run(&mut self) -> Result<(), ClientError> {
         while !self.should_quit.load(Ordering::Acquire) {
             // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
@@ -554,24 +567,7 @@ impl ClientLoop {
                 },
                 &self.supervisor_tx,
             );
-            let shell_deadline = self
-                .state
-                .shell
-                .timer_delay(loop_now)
-                .and_then(|delay| loop_now.checked_add(delay));
-            let activation_poll_deadline = self
-                .state
-                .presentation
-                .handoff()
-                .is_some()
-                .then_some(loop_now + limits::CLIENT_PENDING_TIMER_POLL_INTERVAL);
-            let timer_deadline = earliest_client_timer_deadline([
-                shell_deadline,
-                activation_poll_deadline,
-                self.write_stream.next_service_deadline(loop_now),
-                self.supervisors.next_retry_deadline(),
-            ])
-            .map(|deadline| {
+            let timer_deadline = self.next_timer_deadline(loop_now).map(|deadline| {
                 self.client_timer
                     .deadline(loop_now, deadline.saturating_duration_since(loop_now))
             });
@@ -1481,12 +1477,22 @@ mod client_timer_tests {
         }
     }
 
-    #[tokio::test]
-    async fn no_deadline_leaves_the_loop_asleep_past_one_hundred_milliseconds() {
-        let deadline = earliest_client_timer_deadline([None, None]);
-        let result =
-            tokio::time::timeout(Duration::from_millis(120), wait_for_client_timer(deadline)).await;
-        assert!(result.is_err());
+    #[test]
+    fn client_timer_uses_the_earliest_reported_deadline() {
+        let now = Instant::now();
+        let shell_deadline = now + Duration::from_secs(3);
+        let health_deadline = now + Duration::from_secs(1);
+        let retry_deadline = now + Duration::from_secs(2);
+
+        assert_eq!(earliest_client_timer_deadline([None, None, None]), None);
+        assert_eq!(
+            earliest_client_timer_deadline([
+                Some(shell_deadline),
+                Some(health_deadline),
+                Some(retry_deadline),
+            ]),
+            Some(health_deadline)
+        );
     }
 
     #[tokio::test]

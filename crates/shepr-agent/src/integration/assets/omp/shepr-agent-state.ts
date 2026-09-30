@@ -70,7 +70,6 @@ type AgentState = "working" | "blocked" | "idle";
 
 type QueuedState = {
   state: AgentState;
-  message?: string;
   seq: number;
 };
 
@@ -172,7 +171,11 @@ function reportSession(sessionStartSource = "startup"): Promise<void> {
   });
 }
 
-function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<void> {
+function sendState(state: AgentState, seq = nextReportSeq()): Promise<void> {
+  if (!currentSessionRef()) {
+    return Promise.resolve();
+  }
+
   return sendRequest({
     id: `${source}:${seq}`,
     method: "pane.report_agent",
@@ -181,7 +184,6 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
       source,
       agent: "omp",
       state,
-      message,
       seq,
     }),
   });
@@ -190,8 +192,8 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
 let sendInFlight = false;
 let queuedState: QueuedState | undefined;
 
-function queueState(state: AgentState, message?: string): void {
-  queuedState = { state, message, seq: nextReportSeq() };
+function queueState(state: AgentState): void {
+  queuedState = { state, seq: nextReportSeq() };
   if (!sendInFlight) {
     void drainStateQueue();
   }
@@ -207,7 +209,7 @@ async function drainStateQueue(): Promise<void> {
     while (queuedState) {
       const next = queuedState;
       queuedState = undefined;
-      await sendState(next.state, next.message, next.seq);
+      await sendState(next.state, next.seq);
     }
   } finally {
     sendInFlight = false;
@@ -306,7 +308,7 @@ export default function (pi) {
     }
     lastState = next.state;
     lastMessage = next.message;
-    queueState(next.state, next.message);
+    queueState(next.state);
   }
 
   function scheduleIdle() {

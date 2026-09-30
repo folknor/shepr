@@ -39,10 +39,7 @@ fn transient_shell_deadlines_schedule_their_expiry() {
     state.set_endpoint_error("failure", state.now);
     state.compose(106, 20).expect("frame");
     let error_deadline = state.endpoint_error_deadline.expect("error deadline");
-    assert_eq!(
-        state.timer_delay(error_deadline - std::time::Duration::from_secs(1)),
-        Some(std::time::Duration::from_secs(1))
-    );
+    assert_eq!(state.next_timer_deadline(), Some(error_deadline));
     state.endpoint_error = None;
     state.endpoint_error_deadline = None;
 
@@ -58,8 +55,5 @@ fn transient_shell_deadlines_schedule_their_expiry() {
         .as_ref()
         .map(|(_, _, deadline)| *deadline)
         .expect("notice deadline");
-    assert_eq!(
-        state.timer_delay(notice_deadline - std::time::Duration::from_secs(1)),
-        Some(std::time::Duration::from_secs(1))
-    );
+    assert_eq!(state.next_timer_deadline(), Some(notice_deadline));
 }

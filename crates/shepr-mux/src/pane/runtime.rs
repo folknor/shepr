@@ -11,10 +11,7 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{error, info, warn};
 
 use super::PaneClearError;
-use super::agent_detection::{
-    DetectionPublishDecision, detection_update_for_publish_with_osc,
-    mark_detection_content_changed, observe_detection_content_change,
-};
+use super::agent_detection::{mark_detection_content_changed, observe_detection_content_change};
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
@@ -822,6 +819,8 @@ impl PaneRuntime {
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
         if let Some(ansi) = initial_history_ansi {
+            // Seeding records row provenance before the child can write. The
+            // detector excludes unchanged saved rows from its live snapshot.
             pane_terminal.seed_history_ansi(ansi);
         }
         let terminal = Arc::new(pane_terminal);
@@ -1052,6 +1051,7 @@ impl PaneRuntime {
 
             let handle = tokio::spawn(async move {
                 let mut detector = DetectorState::new(Instant::now(), launch_purpose);
+                let mut next_wake = crate::limits::PROCESS_RECHECK_NO_AGENT;
 
                 tokio::time::sleep(crate::limits::INITIAL_DETECTION_DELAY).await;
 
@@ -1059,9 +1059,7 @@ impl PaneRuntime {
                     if child_liveness.wait_completed() {
                         break;
                     }
-                    let tick_now = Instant::now();
-                    let tick =
-                        detector.tick_interval(tick_now, terminal.has_theme_restore_candidate());
+                    let tick = next_wake;
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
                         _ = detect_reset.notified() => {
@@ -1092,22 +1090,21 @@ impl PaneRuntime {
                     if child_liveness.live_pid() != Some(pid) {
                         break;
                     }
-                    let probe_schedule = detector.schedule_process_probe(&ProcessProbeRequest {
+                    let theme_restore_candidate = terminal.has_theme_restore_candidate();
+                    // One sequence per tick, read before any screen snapshot:
+                    // the cache may key a snapshot to an older sequence (one
+                    // extra read later), never to one newer than its text.
+                    let content_seq = detection_content_seq.load(Ordering::Acquire);
+                    let observations = |observation| DetectorObservations {
                         now,
-                        observed_foreground_group: foreground_pgid,
+                        foreground_group: foreground_pgid,
+                        content_seq,
                         lifecycle_authority_active,
-                    });
-                    let process_group_changed = probe_schedule.foreground_group_changed();
-                    if process_group_changed {
-                        detector.note_foreground_group_change(
-                            now,
-                            terminal.has_theme_restore_candidate(),
-                        );
-                    }
-
-                    let mut agent_changed = false;
-                    if probe_schedule.should_probe() {
-                        detector.probe_started(now);
+                        theme_restore_candidate,
+                        observation,
+                    };
+                    let mut output = detector.tick(&observations(TickObservation::Begin));
+                    if output.probe {
                         let probe = match tokio::task::spawn_blocking(move || {
                             probe_foreground_process(pid, foreground_pgid)
                         })
@@ -1116,18 +1113,16 @@ impl PaneRuntime {
                             Ok(probe) => probe,
                             Err(error) => {
                                 tracing::warn!(?error, "foreground process probe failed");
+                                next_wake = output.next_wake;
                                 continue;
                             }
                         };
                         if child_liveness.live_pid() != Some(pid) {
                             break;
                         }
-                        let process_change = detector.observe_process_probe(
-                            &probe,
-                            now,
-                            foreground_pgid,
-                            probe_schedule,
-                        );
+                        output = detector.tick(&observations(TickObservation::Probe(probe)));
+                    }
+                    if let Some(process_change) = output.process_change.take() {
                         if process_change.should_clear_osc_evidence {
                             clear_osc_evidence_for_agent_transition(
                                 &terminal,
@@ -1163,7 +1158,6 @@ impl PaneRuntime {
                                     "agent changed"
                                 );
                             }
-                            agent_changed = true;
                         }
                     }
 
@@ -1196,108 +1190,16 @@ impl PaneRuntime {
                         break;
                     }
 
-                    let agent = detector.current_agent();
-                    let process_exited = detector.process_exited(agent);
-                    if !detector.may_scan_screen(ScreenScanGate {
-                        now,
-                        lifecycle_authority_active,
-                        process_exited,
-                    }) {
-                        continue;
+                    if output.screen {
+                        // A plain shell never requests a core snapshot. Identified
+                        // agents read screen and OSC together only on a cache miss.
+                        output = detector.tick(&observations(TickObservation::Screen(
+                            terminal.agent_detection_inputs(),
+                        )));
                     }
-
-                    let current_detection_content_seq =
-                        Some(detection_content_seq.load(Ordering::Relaxed));
-                    if !detector.should_read_screen(ScreenReadRequest {
-                        agent,
-                        agent_changed,
-                        process_exited,
-                        detection_content_seq: current_detection_content_seq,
-                    }) {
-                        continue;
-                    }
-
-                    // The PTY read counter gives plain shell panes their
-                    // acquisition signal without copying screen text. For an
-                    // agent, the sequence also keys the cached detection so
-                    // unchanged screens do not need another core read.
-                    let (screen_detection, content_changed) = match detector
-                        .cached_screen_detection(
-                            agent,
-                            process_exited,
-                            current_detection_content_seq,
-                        ) {
-                        ScreenDetectionCacheLookup::Hit(screen_detection) => {
-                            (screen_detection, false)
-                        }
-                        ScreenDetectionCacheLookup::Miss => {
-                            let inputs = if agent.is_some() {
-                                terminal.agent_detection_inputs()
-                            } else {
-                                Default::default()
-                            };
-                            let (content, content_changed) = detector.detection_content(
-                                agent,
-                                current_detection_content_seq,
-                                agent.is_some().then_some(inputs.screen_text),
-                            );
-                            let screen_detection = detection_update_for_publish_with_osc(
-                                agent,
-                                &content,
-                                &inputs.osc_title,
-                                &inputs.osc_progress,
-                                process_exited,
-                            );
-                            detector.remember_screen_detection(
-                                agent,
-                                process_exited,
-                                current_detection_content_seq,
-                                screen_detection,
-                            );
-                            (screen_detection, content_changed)
-                        }
-                    };
-                    let Some(screen_detection) = screen_detection else {
-                        detector.clear_pending_idle();
-                        continue;
-                    };
-                    detector.note_content_change(now, process_group_changed, content_changed);
-                    if detector.withhold_agent_absence(agent, now) {
-                        detector.clear_pending_idle();
-                        continue;
-                    }
-                    match detector.screen_publish_decision(
-                        screen_detection,
-                        ScreenPublishContext {
-                            now,
-                            process_exited,
-                            agent_changed,
-                        },
-                    ) {
-                        DetectionPublishDecision::NoPublish => {}
-                        DetectionPublishDecision::Publish {
-                            state: new_state,
-                            visible_idle,
-                            visible_blocker,
-                            visible_working,
-                            process_exited: publish_process_exited,
-                        } => {
-                            detector
-                                .apply_publish_update(
-                                    state_events.clone(),
-                                    pane_id,
-                                    agent,
-                                    AgentDetectionPublishUpdate {
-                                        state: new_state,
-                                        visible_idle,
-                                        visible_blocker,
-                                        visible_working,
-                                        process_exited: publish_process_exited,
-                                    },
-                                    now,
-                                )
-                                .await;
-                        }
+                    next_wake = output.next_wake;
+                    if let Some(update) = output.state_changed {
+                        publish_state_changed_event(state_events.clone(), pane_id, update).await;
                     }
                 }
             });
@@ -1553,6 +1455,7 @@ impl PaneRuntime {
 
     /// The screen text, OSC title and OSC progress the detector evaluates,
     /// read together under one terminal lock like the live detection tick.
+    /// Unchanged seeded history rows are excluded from the screen text.
     pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
         self.terminal.agent_detection_inputs()
     }

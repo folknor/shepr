@@ -876,6 +876,10 @@ fn coalesced_navigation_focus_does_not_leave_a_permanent_highlight() {
     // Another client can focus the original workspace before the server projects
     // either change, so a successful request need not produce a new snapshot.
     assert!(!state.tick_workspace_highlight(before_request));
+    let highlight_deadline = state
+        .workspace_highlight_deadline()
+        .expect("pending highlight has an expiry");
+    assert_eq!(state.next_timer_deadline(), Some(highlight_deadline));
     assert_local_highlight(&mut state, "w3");
     let now = std::time::Instant::now();
     assert!(state.tick_workspace_highlight(now + std::time::Duration::from_secs(2)));

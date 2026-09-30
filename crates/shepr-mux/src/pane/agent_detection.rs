@@ -384,14 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn restored_claude_dialog_can_outvote_a_new_working_frame() {
+    fn restored_claude_dialog_is_excluded_from_a_new_working_frame() {
         let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
         pane.seed_history_ansi("Run a dynamic workflow?\r\nChoose a workflow\r\nEsc to cancel");
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         pane.process_pty_bytes(pane_id, b"* Waiting for 1 background agent to finish\r\n");
 
         let inputs = pane.agent_detection_inputs();
-        assert!(inputs.screen_text.contains("Run a dynamic workflow?"));
+        assert!(!inputs.screen_text.contains("Run a dynamic workflow?"));
         assert!(
             inputs
                 .screen_text
@@ -406,10 +406,40 @@ mod tests {
         )
         .expect("screen detector reports a state");
 
-        // The display carries no row provenance: saved dialog text remains
-        // indistinguishable from a live dialog after new working output arrives.
-        assert_eq!(detection.state, AgentState::Blocked);
-        assert!(detection.visible_blocker);
+        assert_eq!(detection.state, AgentState::Working);
+        assert!(!detection.visible_blocker);
+    }
+
+    #[test]
+    fn rewriting_a_seeded_row_makes_it_live_detection_evidence() {
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
+        pane.seed_history_ansi("saved first row\r\nsaved second row");
+        assert!(pane.agent_detection_inputs().screen_text.trim().is_empty());
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        pane.process_pty_bytes(pane_id, b"\x1b[H\x1b[2Klive first row");
+        let inputs = pane.agent_detection_inputs();
+        assert!(inputs.screen_text.contains("live first row"));
+        assert!(!inputs.screen_text.contains("saved second row"));
+        // Once rewritten, this absolute row belongs to live output even if
+        // the child later prints the original text again.
+        pane.process_pty_bytes(pane_id, b"\x1b[H\x1b[2Ksaved first row");
+        assert!(
+            pane.agent_detection_inputs()
+                .screen_text
+                .contains("saved first row")
+        );
+    }
+
+    #[test]
+    fn scrolling_seeded_rows_does_not_make_them_live() {
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 4096));
+        pane.seed_history_ansi("saved first row\r\nsaved second row");
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        pane.process_pty_bytes(pane_id, b"live one\r\nlive two\r\n");
+        let inputs = pane.agent_detection_inputs();
+        assert!(inputs.screen_text.contains("live two"));
+        assert!(!inputs.screen_text.contains("saved second row"));
+        assert!(pane.recent_unwrapped_text(10).contains("saved second row"));
     }
 
     #[test]

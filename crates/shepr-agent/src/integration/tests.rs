@@ -1897,7 +1897,7 @@ fn python3_available() -> bool {
 }
 
 #[test]
-fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
+fn kimi_hook_reports_state_only_from_an_object_payload_naming_its_session() {
     let env = IsolatedEnv::new();
     if !python3_available() {
         eprintln!("skipping: python3 is not installed");
@@ -1905,26 +1905,24 @@ fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
     }
     let base = unique_base(&env);
 
-    let payloads: [&[u8]; 5] = [
-        b"[1, 2]",
-        b"\"text\"",
-        b"null",
-        b"not json",
-        br#"{"session_id":"abc"}"#,
-    ];
+    // A payload that is not a JSON object names no session, and a state report
+    // without its session cannot claim the pane: the hook sends nothing.
+    let payloads: [&[u8]; 4] = [b"[1, 2]", b"\"text\"", b"null", b"not json"];
     for (index, payload) in payloads.into_iter().enumerate() {
-        let request = run_kimi_hook(&base.join(index.to_string()), "working", payload)
-            .unwrap_or_else(|| {
-                panic!(
-                    "payload {:?} sent no report",
-                    String::from_utf8_lossy(payload)
-                )
-            });
-        let request: Value = serde_json::from_str(request.trim()).expect("test precondition");
-        assert_eq!(request["method"], "pane.report_agent");
-        assert_eq!(request["params"]["state"], "working");
-        assert_eq!(request["params"]["pane_id"], "w1:p2");
+        assert!(
+            run_kimi_hook(&base.join(index.to_string()), "working", payload).is_none(),
+            "payload {:?} sent a sessionless state report",
+            String::from_utf8_lossy(payload)
+        );
     }
+
+    let request = run_kimi_hook(&base.join("object"), "working", br#"{"session_id":"abc"}"#)
+        .expect("an object payload naming its session sends a report");
+    let request: Value = serde_json::from_str(request.trim()).expect("test precondition");
+    assert_eq!(request["method"], "pane.report_agent");
+    assert_eq!(request["params"]["state"], "working");
+    assert_eq!(request["params"]["pane_id"], "w1:p2");
+    assert_eq!(request["params"]["agent_session_id"], "abc");
 }
 
 /// Runs a session-only python hook asset with `payload` on stdin. Returns the

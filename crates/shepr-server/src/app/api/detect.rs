@@ -392,7 +392,6 @@ mod tests {
             "shepr:omp".to_string(),
             "omp".to_string(),
             AgentState::Working,
-            None,
             Some(1),
         );
         app.terminal_runtimes.insert(

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { expectContractTrace } from "../../contract_traces.ts";
 
 const originalArgv = process.argv;
 afterEach(() => { process.argv = originalArgv; });
@@ -172,6 +173,17 @@ test("anchors the local root from the chat hook across both session event shapes
   expect(requests.map(requestSessionID)).toEqual(["local-session", "local-session"]);
   expect(requestParam(requests[0], "session_start_source")).toBe("startup");
   expect(requestSeq(requests[1])).toBe((requestSeq(requests[0]) as number) + 1);
+  expectContractTrace("opencode", requests);
+});
+
+test("OpenCode does not report state without a session reference", async () => {
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: { type: "session.status", properties: { status: { type: "busy" } } },
+  });
+
+  expect(requests).toEqual([]);
 });
 
 test("Kilo anchors a session named only by its info payload", async () => {
@@ -186,6 +198,45 @@ test("Kilo anchors a session named only by its info payload", async () => {
   expect(requests.map(requestMethod)).toEqual(["pane.report_agent_session"]);
   expect(requests.map(requestSessionID)).toEqual(["kilo-session"]);
   expect(requestParam(requests[0], "session_start_source")).toBe("startup");
+});
+
+test("Kilo reports state under the root session identity", async () => {
+  importCounter += 1;
+  const { SheprAgentStatePlugin } = await import(`../kilo/shepr-agent-state.js?test=${importCounter}`);
+  const plugin = await SheprAgentStatePlugin();
+
+  await plugin.event({
+    event: { type: "session.created", properties: { info: { id: "kilo-contract-session" } } },
+  });
+  await plugin.event({
+    event: {
+      type: "session.created",
+      properties: { info: { id: "kilo-contract-child", parentID: "kilo-contract-session" } },
+    },
+  });
+  await plugin.event({
+    event: { type: "permission.asked", properties: { sessionID: "kilo-contract-child" } },
+  });
+
+  expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent_session",
+    "pane.report_agent",
+  ]);
+  expect(requests.map(requestSessionID)).toEqual([
+    "kilo-contract-session",
+    "kilo-contract-session",
+  ]);
+  expectContractTrace("kilo", requests);
+});
+
+test("Kilo does not report state without a session reference", async () => {
+  importCounter += 1;
+  const { SheprAgentStatePlugin } = await import(`../kilo/shepr-agent-state.js?test=${importCounter}`);
+  const plugin = await SheprAgentStatePlugin();
+
+  await plugin.event({ event: { type: "permission.asked", properties: {} } });
+
+  expect(requests).toEqual([]);
 });
 
 test("reports retry status as working", async () => {

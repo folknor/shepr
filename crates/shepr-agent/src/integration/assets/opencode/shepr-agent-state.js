@@ -127,11 +127,13 @@ function reportSession(sessionID, sessionStartSource) {
 }
 
 function reportState(state, sessionID) {
-  const params = { state };
-  if (sessionID) {
-    reportedRootSessionID = sessionID;
-    params.agent_session_id = sessionID;
+  if (!sessionID) {
+    return Promise.resolve();
   }
+
+  const params = { state };
+  reportedRootSessionID = sessionID;
+  params.agent_session_id = sessionID;
   return request("pane.report_agent", params);
 }
 

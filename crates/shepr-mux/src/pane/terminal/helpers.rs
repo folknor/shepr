@@ -264,24 +264,25 @@ pub(super) fn terminal_detection_text(
         return Ok(String::new());
     };
     let screen_start = terminal.total_rows().saturating_sub(screen_rows);
-    terminal_text_rows(terminal, start.max(screen_start), end, screen_rows)
-}
-
-pub(super) fn terminal_text_rows(
-    terminal: &shepr_vt::Terminal,
-    start: usize,
-    end: usize,
-    lines: usize,
-) -> Result<String, shepr_vt::Error> {
-    let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
+    let mut rows = Vec::with_capacity(screen_rows);
     let mut scratch = String::new();
-    for y in start..=end {
-        let mut row = String::new();
-        terminal_screen_row_into(terminal, ScreenRow(y), &mut scratch, &mut row);
-        rows.push(row);
+    for row in start.max(screen_start)..=end {
+        let mut text = String::new();
+        terminal_screen_row_into(terminal, ScreenRow(row), &mut scratch, &mut text);
+        if terminal.active_screen() == shepr_vt::ActiveScreen::Primary {
+            let absolute = terminal.absolute_row_for_screen(ScreenRow(row));
+            if let Some(seeded) = core.seeded_detection_rows.get(&absolute) {
+                if *seeded == text {
+                    text.clear();
+                } else {
+                    core.seeded_detection_rows.remove(&absolute);
+                }
+            }
+        }
+        rows.push(text);
     }
     trim_trailing_blank_rows(&mut rows);
-    Ok(recent_text_from_rows(&rows, lines))
+    Ok(recent_text_from_rows(&rows, screen_rows))
 }
 
 /// The screen rows a recent read covers, on the active screen: while the
@@ -703,6 +704,24 @@ fn terminal_read_ansi_screen(
     )?;
     text.truncate(content_end.unwrap_or(0));
     Ok(text)
+}
+
+#[cfg(test)]
+fn terminal_text_rows(
+    terminal: &shepr_vt::Terminal,
+    start: usize,
+    end: usize,
+    lines: usize,
+) -> Result<String, shepr_vt::Error> {
+    let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
+    let mut scratch = String::new();
+    for y in start..=end {
+        let mut row = String::new();
+        terminal_screen_row_into(terminal, ScreenRow(y), &mut scratch, &mut row);
+        rows.push(row);
+    }
+    trim_trailing_blank_rows(&mut rows);
+    Ok(recent_text_from_rows(&rows, lines))
 }
 
 #[cfg(test)]

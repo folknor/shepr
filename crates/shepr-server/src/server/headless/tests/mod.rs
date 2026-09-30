@@ -82,6 +82,9 @@ mod already_running_tests;
 #[cfg(test)]
 #[path = "locations.rs"]
 mod locations_tests;
+#[cfg(test)]
+#[path = "pane_exit.rs"]
+mod pane_exit_tests;
 #[path = "server_stop.rs"]
 mod server_stop_tests;
 #[cfg(test)]

@@ -661,14 +661,12 @@ impl TerminalState {
 
 impl TerminalState {
     /// Convenience seam for fixtures, taking the source as a string. The event
-    /// reducer uses the typed report entry point. The message argument is
-    /// ignored: reports no longer carry one, and fixtures still pass it.
+    /// reducer uses the typed report entry point.
     pub fn set_hook_authority_at(
         &mut self,
         source: String,
         agent_label: String,
         state: AgentState,
-        _message: Option<String>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
@@ -691,19 +689,10 @@ impl TerminalState {
         source: String,
         agent_label: String,
         state: AgentState,
-        message: Option<String>,
         seq: Option<u64>,
     ) -> Option<EffectiveStateChange> {
-        self.set_hook_authority_at(
-            source,
-            agent_label,
-            state,
-            message,
-            None,
-            seq,
-            Instant::now(),
-        )
-        .and_then(|mutation| mutation.effective_state_change)
+        self.set_hook_authority_at(source, agent_label, state, None, seq, Instant::now())
+            .and_then(|mutation| mutation.effective_state_change)
     }
 
     pub fn set_hook_authority_with_session_ref(
@@ -711,18 +700,9 @@ impl TerminalState {
         source: String,
         agent_label: String,
         state: AgentState,
-        message: Option<String>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
-        self.set_hook_authority_at(
-            source,
-            agent_label,
-            state,
-            message,
-            session_ref,
-            seq,
-            Instant::now(),
-        )
+        self.set_hook_authority_at(source, agent_label, state, session_ref, seq, Instant::now())
     }
 }

@@ -53,6 +53,12 @@ impl ClientShellState {
         false
     }
 
+    pub(super) fn workspace_highlight_deadline(&self) -> Option<std::time::Instant> {
+        self.pending_workspace_highlight
+            .as_ref()
+            .map(|pending| pending.expires_at)
+    }
+
     pub(super) fn reconcile_pending_workspace_highlight(&mut self) {
         if self
             .pending_workspace_highlight

@@ -332,6 +332,13 @@ impl App {
             return AttemptOutcome::Abandoned;
         }
 
+        // Launch requires a successful worker metadata check for this exact
+        // saved path, so a persistently hung mount lookup leaves the loop free
+        // while the resume waits. A later child chdir can still block here;
+        // moving spawn off-loop would need a reserved runtime generation so
+        // events arriving before construction finishes are admitted. Keep that
+        // extra registration state out until a mount passes the check and
+        // then hangs during chdir.
         let runtime = match shepr_mux::pane::PaneRuntime::spawn(
             pane_id,
             geometry,

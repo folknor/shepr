@@ -13,18 +13,14 @@ series.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CLIENT-027 - The idle-sleep test proves little, and some pending work still polls
+## CLIENT-028 - No test drives the client loop's use of its next deadline
 
-Scope: client-endpoint (lateral from review).
+Scope: client-endpoint (from the review of the deadline query).
 
-- `no_deadline_leaves_the_loop_asleep_past_one_hundred_milliseconds`
-  (`crates/shepr-client/src/lib.rs`) only exercises `std::future::pending` and
-  costs 120 ms of wall time; it does not drive the client loop's timer selection.
-  Replace it with a test on the deadline computation itself (no deadline yields
-  no timer; the earliest of shell, health and retry deadlines wins).
-- The loop keeps a 100 ms recheck while a workspace highlight, a client command
-  or an activation is pending, because those deadlines are private to
-  `shell/navigation/workspace_navigation.rs`, `endpoint/commands.rs` and
-  `endpoint/activation/model.rs`. `EndpointCommands` could expose its exact
-  expiry (the in-flight `sent_at` plus the command timeout), and the other two
-  their deadlines, so the loop sleeps exactly until the earliest.
+The client loop now wakes from one next-deadline query across shell, command,
+activation, highlight, health and retry deadlines. The tests check each exposed
+deadline and the earliest-of helper, but nothing drives the loop itself: a
+regression that stopped arming the timer from the query, or armed it from a
+stale value, would pass. Add a loop-level test with a paused tokio clock that
+sets one pending deadline, advances past it, and asserts the expiry was handled
+exactly once, and one with no deadline that asserts no timer fires.

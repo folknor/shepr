@@ -144,10 +144,12 @@ function reportSession(sessionID) {
 }
 
 function reportState(state, sessionID) {
-  const params = { state };
-  if (sessionID) {
-    params.agent_session_id = sessionID;
+  if (!sessionID) {
+    return Promise.resolve();
   }
+
+  const params = { state };
+  params.agent_session_id = sessionID;
   return request("pane.report_agent", params);
 }
 

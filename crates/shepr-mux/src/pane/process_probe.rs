@@ -12,7 +12,7 @@ use super::agent_detection::{
     AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
     DetectionPublishDecision, DetectionScreenReadDecision, DetectionScreenReadInput,
     PendingIdleConfirmation, ScreenDetectionPublishInput, decide_detection_screen_read,
-    decide_screen_detection_publish, withhold_agent_absence,
+    decide_screen_detection_publish, detection_update_for_publish_with_osc, withhold_agent_absence,
 };
 use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
@@ -483,9 +483,40 @@ pub(super) struct AgentProcessChange {
     pub(super) process_detected: Option<Agent>,
 }
 
+/// A tick may ask for I/O and be resumed with its result. Only Begin observes
+/// scheduling and only Probe observes identity. Every step then runs the same
+/// screen path, whose gates are idempotent for one tick's observations, so a
+/// Screen resume reaches the cache miss that asked for it. The runtime passes
+/// one set of observations (time, group, content sequence) through a tick.
+pub(super) enum TickObservation {
+    Begin,
+    Probe(ProcessProbeResult),
+    Screen(super::terminal::AgentDetectionInputs),
+}
+
+pub(super) struct DetectorObservations {
+    pub(super) now: std::time::Instant,
+    pub(super) foreground_group: Option<u32>,
+    pub(super) content_seq: u64,
+    pub(super) lifecycle_authority_active: bool,
+    pub(super) theme_restore_candidate: bool,
+    pub(super) observation: TickObservation,
+}
+
+pub(super) struct TickOutput {
+    pub(super) probe: bool,
+    pub(super) screen: bool,
+    pub(super) process_change: Option<AgentProcessChange>,
+    pub(super) state_changed: Option<StateChangedUpdate>,
+    pub(super) next_wake: std::time::Duration,
+}
+
 /// The detector's mutable state, independent of the PTY runtime and terminal.
 /// Its transitions can be exercised with fake times and process observations.
 pub(super) struct DetectorState {
+    tick_schedule: Option<ProbeScheduleDecision>,
+    tick_agent_changed: bool,
+    tick_group_changed: bool,
     agent_presence: AgentDetectionPresence,
     state: AgentState,
     last_visible_idle: bool,
@@ -528,6 +559,9 @@ impl DetectorState {
             LaunchPurpose::AgentResume => now.checked_add(AGENT_ABSENCE_STARTUP_HOLD),
         };
         Self {
+            tick_schedule: None,
+            tick_agent_changed: false,
+            tick_group_changed: false,
             agent_presence: AgentDetectionPresence::from_agent(None),
             // Keep the pre-detection state distinct from Unknown so the first
             // absent-agent report can withdraw a restored pane's seeded agent.
@@ -550,14 +584,152 @@ impl DetectorState {
         }
     }
 
-    pub(super) fn current_agent(&self) -> Option<Agent> {
+    /// All scheduling, identity, screen-cache and publication transitions run
+    /// here. The runtime supplies completed observations and executes requests;
+    /// it does not decide which transition wins or mutate publication state.
+    pub(super) fn tick(&mut self, input: &DetectorObservations) -> TickOutput {
+        let mut output = TickOutput {
+            probe: false,
+            screen: false,
+            process_change: None,
+            state_changed: None,
+            next_wake: std::time::Duration::ZERO,
+        };
+        match &input.observation {
+            TickObservation::Begin => {
+                self.tick_agent_changed = false;
+                let schedule = self.schedule_process_probe(&ProcessProbeRequest {
+                    now: input.now,
+                    observed_foreground_group: input.foreground_group,
+                    lifecycle_authority_active: input.lifecycle_authority_active,
+                });
+                self.tick_group_changed = schedule.foreground_group_changed();
+                if self.tick_group_changed {
+                    self.note_foreground_group_change(input.now, input.theme_restore_candidate);
+                }
+                self.tick_schedule = Some(schedule);
+                if schedule.should_probe() {
+                    self.probe_started(input.now);
+                    output.probe = true;
+                } else {
+                    self.finish_screen_tick(input, None, &mut output);
+                }
+            }
+            TickObservation::Probe(probe) => {
+                if let Some(schedule) = self.tick_schedule.take() {
+                    let change = self.observe_process_probe(
+                        probe,
+                        input.now,
+                        input.foreground_group,
+                        schedule,
+                    );
+                    self.tick_agent_changed = change.agent_changed;
+                    output.process_change = Some(change);
+                }
+                self.finish_screen_tick(input, None, &mut output);
+            }
+            TickObservation::Screen(screen) => {
+                self.finish_screen_tick(input, Some(screen), &mut output);
+            }
+        }
+        output.next_wake = self.tick_interval(input.now, input.theme_restore_candidate);
+        output
+    }
+
+    fn finish_screen_tick(
+        &mut self,
+        input: &DetectorObservations,
+        screen: Option<&super::terminal::AgentDetectionInputs>,
+        output: &mut TickOutput,
+    ) {
+        let agent = self.current_agent();
+        let process_exited = self.process_exited(agent);
+        if !self.may_scan_screen(ScreenScanGate {
+            now: input.now,
+            lifecycle_authority_active: input.lifecycle_authority_active,
+            process_exited,
+        }) || !self.should_read_screen(ScreenReadRequest {
+            agent,
+            agent_changed: self.tick_agent_changed,
+            process_exited,
+            detection_content_seq: Some(input.content_seq),
+        }) {
+            return;
+        }
+        let (detection, changed) =
+            match self.cached_screen_detection(agent, process_exited, Some(input.content_seq)) {
+                ScreenDetectionCacheLookup::Hit(result) => (result, false),
+                ScreenDetectionCacheLookup::Miss => {
+                    if agent.is_some() && screen.is_none() {
+                        output.screen = true;
+                        return;
+                    }
+                    let changed =
+                        self.observe_screen_sequence(Some(input.content_seq)) && agent.is_none();
+                    let content = screen.map_or("", |screen| screen.screen_text.as_str());
+                    let title = screen.map_or("", |screen| screen.osc_title.as_str());
+                    let progress = screen.map_or("", |screen| screen.osc_progress.as_str());
+                    let detection = detection_update_for_publish_with_osc(
+                        agent,
+                        content,
+                        title,
+                        progress,
+                        process_exited,
+                    );
+                    self.remember_screen_detection(
+                        agent,
+                        process_exited,
+                        Some(input.content_seq),
+                        detection,
+                    );
+                    (detection, changed)
+                }
+            };
+        let Some(detection) = detection else {
+            self.clear_pending_idle();
+            return;
+        };
+        self.note_content_change(input.now, self.tick_group_changed, changed);
+        if self.withhold_agent_absence(agent, input.now) {
+            self.clear_pending_idle();
+            return;
+        }
+        if let DetectionPublishDecision::Publish {
+            state,
+            visible_idle,
+            visible_blocker,
+            visible_working,
+            process_exited,
+        } = self.screen_publish_decision(
+            detection,
+            ScreenPublishContext {
+                now: input.now,
+                process_exited,
+                agent_changed: self.tick_agent_changed,
+            },
+        ) {
+            output.state_changed = Some(self.apply_publish_update(
+                agent,
+                AgentDetectionPublishUpdate {
+                    state,
+                    visible_idle,
+                    visible_blocker,
+                    visible_working,
+                    process_exited,
+                },
+                input.now,
+            ));
+        }
+    }
+
+    fn current_agent(&self) -> Option<Agent> {
         // The server must receive the exit against the identity that just
         // passed miss confirmation, before the detector withdraws it.
         self.pending_confirmed_process_exit
             .or_else(|| self.agent_presence.current_agent())
     }
 
-    pub(super) fn tick_interval(
+    fn tick_interval(
         &mut self,
         now: std::time::Instant,
         theme_restore_candidate: bool,
@@ -580,7 +752,7 @@ impl DetectorState {
         }
     }
 
-    pub(super) fn note_foreground_group_change(
+    fn note_foreground_group_change(
         &mut self,
         now: std::time::Instant,
         theme_restore_candidate: bool,
@@ -614,10 +786,7 @@ impl DetectorState {
         self.pending_idle.clear();
     }
 
-    pub(super) fn schedule_process_probe(
-        &self,
-        request: &ProcessProbeRequest,
-    ) -> ProbeScheduleDecision {
+    fn schedule_process_probe(&self, request: &ProcessProbeRequest) -> ProbeScheduleDecision {
         self.scheduler.schedule(ProcessProbeScheduleInput {
             now: request.now,
             agent: self.current_agent(),
@@ -627,11 +796,11 @@ impl DetectorState {
         })
     }
 
-    pub(super) fn probe_started(&mut self, now: std::time::Instant) {
+    fn probe_started(&mut self, now: std::time::Instant) {
         self.scheduler.probe_started(now);
     }
 
-    pub(super) fn observe_process_probe(
+    fn observe_process_probe(
         &mut self,
         probe: &ProcessProbeResult,
         now: std::time::Instant,
@@ -746,17 +915,17 @@ impl DetectorState {
         }
     }
 
-    pub(super) fn clear_pending_idle(&mut self) {
+    fn clear_pending_idle(&mut self) {
         self.pending_idle.clear();
     }
 
-    pub(super) fn process_exited(&self, agent: Option<Agent>) -> bool {
+    fn process_exited(&self, agent: Option<Agent>) -> bool {
         self.pending_foreground_shell_clear
             && agent.is_some()
             && !self.foreground_shell_exit_reported
     }
 
-    pub(super) fn may_scan_screen(&mut self, gate: ScreenScanGate) -> bool {
+    fn may_scan_screen(&mut self, gate: ScreenScanGate) -> bool {
         if gate.lifecycle_authority_active && !gate.process_exited {
             self.pending_idle.clear();
             return false;
@@ -777,7 +946,7 @@ impl DetectorState {
         true
     }
 
-    pub(super) fn should_read_screen(&self, request: ScreenReadRequest) -> bool {
+    fn should_read_screen(&self, request: ScreenReadRequest) -> bool {
         // The initial Idle value is only a transition sentinel. Do not let it
         // suppress the first screen report, especially while a restore hold is
         // waiting to expire.
@@ -798,26 +967,13 @@ impl DetectorState {
         )
     }
 
-    pub(super) fn detection_content(
-        &mut self,
-        agent: Option<Agent>,
-        detection_content_seq: Option<u64>,
-        identified_agent_text: Option<String>,
-    ) -> (String, bool) {
-        let (content, changed) = if agent.is_some() {
-            let content = identified_agent_text.unwrap_or_default();
-            // Process acquisition is the only consumer of content changes,
-            // and it does not run once an agent has been identified.
-            (content, false)
-        } else {
-            let changed = self.last_screen_scan_detection_content_seq != detection_content_seq;
-            (String::new(), changed)
-        };
-        self.last_screen_scan_detection_content_seq = detection_content_seq;
-        (content, changed)
+    fn observe_screen_sequence(&mut self, sequence: Option<u64>) -> bool {
+        let changed = self.last_screen_scan_detection_content_seq != sequence;
+        self.last_screen_scan_detection_content_seq = sequence;
+        changed
     }
 
-    pub(super) fn cached_screen_detection(
+    fn cached_screen_detection(
         &self,
         agent: Option<Agent>,
         process_exited: bool,
@@ -838,7 +994,7 @@ impl DetectorState {
         }
     }
 
-    pub(super) fn remember_screen_detection(
+    fn remember_screen_detection(
         &mut self,
         agent: Option<Agent>,
         process_exited: bool,
@@ -854,25 +1010,16 @@ impl DetectorState {
             });
     }
 
-    pub(super) fn note_content_change(
-        &mut self,
-        now: std::time::Instant,
-        group_changed: bool,
-        changed: bool,
-    ) {
+    fn note_content_change(&mut self, now: std::time::Instant, group_changed: bool, changed: bool) {
         self.scheduler
             .content_changed(now, self.current_agent(), group_changed, changed);
     }
 
-    pub(super) fn withhold_agent_absence(
-        &mut self,
-        agent: Option<Agent>,
-        now: std::time::Instant,
-    ) -> bool {
+    fn withhold_agent_absence(&mut self, agent: Option<Agent>, now: std::time::Instant) -> bool {
         withhold_agent_absence(agent, &mut self.agent_absence_hold_until, now)
     }
 
-    pub(super) fn screen_publish_decision(
+    fn screen_publish_decision(
         &mut self,
         screen_detection: shepr_agent::detect::AgentDetection,
         context: ScreenPublishContext,
@@ -893,14 +1040,12 @@ impl DetectorState {
         )
     }
 
-    pub(super) async fn apply_publish_update(
+    fn apply_publish_update(
         &mut self,
-        state_events: impl Into<crate::events::EventSender>,
-        pane_id: PaneId,
         agent: Option<Agent>,
         update: AgentDetectionPublishUpdate,
         observed_at: std::time::Instant,
-    ) {
+    ) -> StateChangedUpdate {
         self.state = update.state;
         self.has_detection_baseline = true;
         self.last_visible_idle = update.visible_idle;
@@ -914,18 +1059,13 @@ impl DetectorState {
         if update.process_exited {
             self.foreground_shell_exit_reported = true;
         }
-        publish_state_changed_event(
-            state_events,
-            pane_id,
-            StateChangedUpdate {
-                agent,
-                state: update.state,
-                visible_blocker: update.visible_blocker,
-                process_exited: update.process_exited,
-                observed_at,
-            },
-        )
-        .await;
+        StateChangedUpdate {
+            agent,
+            state: update.state,
+            visible_blocker: update.visible_blocker,
+            process_exited: update.process_exited,
+            observed_at,
+        }
     }
 }
 
@@ -1062,6 +1202,143 @@ pub(super) fn foreground_shell_agent_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tick_input(now: std::time::Instant, observation: TickObservation) -> DetectorObservations {
+        DetectorObservations {
+            now,
+            foreground_group: Some(25),
+            content_seq: 1,
+            lifecycle_authority_active: false,
+            theme_restore_candidate: false,
+            observation,
+        }
+    }
+
+    fn tick_probe(agent: Option<Agent>) -> TickObservation {
+        TickObservation::Probe(ProcessProbeResult {
+            process_group_id: Some(25),
+            foreground_is_pane_shell: false,
+            suspended_agents: Vec::new(),
+            identity: agent.map_or(ProcessProbeIdentity::Unidentified, |agent| {
+                ProcessProbeIdentity::Agent {
+                    agent,
+                    process_name: "agent".into(),
+                }
+            }),
+        })
+    }
+
+    #[test]
+    fn tick_retries_the_initial_absence_report_until_restore_hold_expires() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::AgentResume);
+        assert!(
+            detector
+                .tick(&tick_input(now, TickObservation::Begin))
+                .probe
+        );
+        let held = detector.tick(&tick_input(now, tick_probe(None)));
+        assert!(!held.screen);
+        assert!(held.state_changed.is_none());
+        let deadline = now + AGENT_ABSENCE_STARTUP_HOLD;
+        let released = detector.tick(&tick_input(deadline, TickObservation::Begin));
+        assert!(!released.probe);
+        assert!(!released.screen);
+        let update = released
+            .state_changed
+            .expect("absence publishes without a core read");
+        assert_eq!(update.agent, None);
+        assert_eq!(update.state, AgentState::Unknown);
+    }
+
+    #[test]
+    fn tick_acquisition_grace_cache_and_authority_share_one_transition_path() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        assert!(
+            detector
+                .tick(&tick_input(now, TickObservation::Begin))
+                .probe
+        );
+        let acquired = detector.tick(&tick_input(now, tick_probe(Some(Agent::Claude))));
+        assert_eq!(
+            acquired.process_change.expect("identity").process_detected,
+            Some(Agent::Claude)
+        );
+        assert!(!acquired.screen);
+        assert!(acquired.state_changed.is_none());
+
+        let ready = now + AGENT_STARTUP_GRACE_WINDOW;
+        let begin = detector.tick(&tick_input(ready, TickObservation::Begin));
+        let ready_output = if begin.probe {
+            detector.tick(&tick_input(ready, tick_probe(Some(Agent::Claude))))
+        } else {
+            begin
+        };
+        assert!(ready_output.screen);
+        let result = detector.tick(&tick_input(
+            ready,
+            TickObservation::Screen(super::super::terminal::AgentDetectionInputs {
+                screen_text: "* Waiting for 1 background agent to finish".into(),
+                ..Default::default()
+            }),
+        ));
+        assert_eq!(
+            result.state_changed.expect("working report").state,
+            AgentState::Working
+        );
+        let cached = detector.tick(&tick_input(
+            ready + std::time::Duration::from_millis(1),
+            TickObservation::Begin,
+        ));
+        assert!(!cached.screen);
+        let mut authority = tick_input(
+            ready + std::time::Duration::from_millis(2),
+            TickObservation::Begin,
+        );
+        authority.lifecycle_authority_active = true;
+        authority.content_seq = 2;
+        let authoritative = detector.tick(&authority);
+        assert!(!authoritative.screen);
+        assert!(authoritative.state_changed.is_none());
+    }
+
+    #[test]
+    fn tick_confirmed_misses_publish_exit_before_identity_withdrawal() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
+        for attempt in 1..=AGENT_MISS_CONFIRMATION_ATTEMPTS {
+            let at = now + PROCESS_RECHECK_IDENTIFIED * u32::from(attempt);
+            assert!(detector.tick(&tick_input(at, TickObservation::Begin)).probe);
+            let mut result = detector.tick(&tick_input(at, tick_probe(None)));
+            if result.screen {
+                result =
+                    detector.tick(&tick_input(at, TickObservation::Screen(Default::default())));
+            }
+            if attempt == AGENT_MISS_CONFIRMATION_ATTEMPTS {
+                let update = result.state_changed.expect("confirmed exit");
+                assert_eq!(update.agent, Some(Agent::Pi));
+                assert!(update.process_exited);
+                assert_eq!(update.state, AgentState::Idle);
+            } else {
+                assert!(
+                    result
+                        .state_changed
+                        .is_none_or(|update| !update.process_exited)
+                );
+            }
+        }
+        let at =
+            now + PROCESS_RECHECK_IDENTIFIED * (u32::from(AGENT_MISS_CONFIRMATION_ATTEMPTS) + 1);
+        assert!(detector.tick(&tick_input(at, TickObservation::Begin)).probe);
+        let cleared = detector.tick(&tick_input(at, tick_probe(None)));
+        assert_eq!(detector.current_agent(), None);
+        assert_eq!(
+            cleared.state_changed.expect("withdraw identity").agent,
+            None
+        );
+    }
 
     fn schedule_input(
         now: std::time::Instant,
@@ -1324,9 +1601,7 @@ mod tests {
             process_exited: false,
             detection_content_seq: Some(1),
         }));
-        let (content, changed) = detector.detection_content(None, Some(1), None);
-        assert!(content.is_empty());
-        assert!(changed);
+        assert!(detector.observe_screen_sequence(Some(1)));
         assert!(detector.should_read_screen(ScreenReadRequest {
             agent: None,
             agent_changed: false,

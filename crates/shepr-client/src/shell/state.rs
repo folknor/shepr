@@ -1330,7 +1330,7 @@ impl ClientShellState {
         repaint
     }
 
-    pub(crate) fn timer_delay(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+    pub(crate) fn next_timer_deadline(&self) -> Option<std::time::Instant> {
         let notice_deadline = self.visible_endpoint_notice.as_ref().and_then(|notice| {
             self.endpoint_notice_deadline
                 .as_ref()
@@ -1338,10 +1338,6 @@ impl ClientShellState {
                     (key == &notice.key && body == &notice.body).then_some(*deadline)
                 })
         });
-        // These state machines expose pending work but keep its exact expiry private.
-        let pending_work_deadline = (self.pending_workspace_highlight.is_some()
-            || !self.pending_requests.is_empty())
-        .then_some(now + crate::limits::CLIENT_PENDING_TIMER_POLL_INTERVAL);
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
@@ -1351,9 +1347,8 @@ impl ClientShellState {
                     .filter(|_| self.endpoint_error.is_some()),
             )
             .chain(notice_deadline)
-            .chain(pending_work_deadline)
+            .chain(self.workspace_highlight_deadline())
             .min()
-            .map(|deadline| deadline.saturating_duration_since(now))
     }
 
     /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize

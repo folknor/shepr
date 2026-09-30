@@ -770,6 +770,7 @@ fn source_release_rejection_restores_the_source_coherently() {
         Instant::now(),
     )
     .expect("test precondition");
+    assert!(!activation.expired(activation.deadline() - Duration::from_nanos(1)));
     assert_eq!(
         activation.receive_response(
             &ClientEndpointId::Local,

@@ -2401,6 +2401,13 @@ mod tests {
             .next()
             .expect("restored runtime should exist");
 
+        assert!(
+            !runtime
+                .agent_detection_inputs()
+                .screen_text
+                .contains("RESTORED_HISTORY"),
+            "saved display history must not become live detection evidence"
+        );
         let restored_text = runtime.recent_unwrapped_text(10);
         assert!(
             restored_text

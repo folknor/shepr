@@ -29,6 +29,7 @@ impl PaneTerminal {
                 terminal,
                 synchronized_output_epoch: 0,
                 history_epoch: 0,
+                seeded_detection_rows: Default::default(),
                 render_state,
                 initial_default_foreground,
                 initial_default_background,
@@ -355,6 +356,19 @@ impl PaneTerminal {
         if !ansi.ends_with('\n') {
             core.terminal.write(b"\r\n");
         }
+        // Remember stable row identities, including history that a later resize
+        // can pull onto the screen. Detection masks unchanged saved rows while
+        // rendering and persistence continue to show them normally.
+        let mut seeded = std::collections::BTreeMap::new();
+        let mut scratch = String::new();
+        for row in 0..core.terminal.total_rows() {
+            let mut text = String::new();
+            terminal_screen_row_into(&core.terminal, ScreenRow(row), &mut scratch, &mut text);
+            if !text.trim().is_empty() {
+                seeded.insert(core.terminal.absolute_row_for_screen(ScreenRow(row)), text);
+            }
+        }
+        core.seeded_detection_rows = seeded;
         // Restored history must never answer the live child, nor surface as
         // live clipboard writes, directory reports or title and colour
         // changes.

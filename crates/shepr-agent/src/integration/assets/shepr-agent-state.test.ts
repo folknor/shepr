@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expectContractTrace } from "../contract_traces.ts";
 
 const originalArgv = process.argv;
 const originalEnvironment = {
@@ -140,7 +141,7 @@ for (const integration of integrations) {
         isIdle: () => false,
         sessionManager: {
           getSessionFile: () => undefined,
-          getSessionId: () => undefined,
+          getSessionId: () => "integration-session",
         },
       },
     );
@@ -222,6 +223,26 @@ test("Pi reports idle only after the agent settles", async () => {
   handlers.get("agent_settled")?.({}, context);
   await waitFor(() => requestStates(requests).length === 3);
   expect(requestStates(requests)).toEqual(["idle", "working", "idle"]);
+});
+
+test("Pi does not report state without a session reference", async () => {
+  const requests = await startRecordingServer("pi-sessionless-state");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/shepr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    ...piContext(() => false),
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  handlers.get("agent_start")?.({}, context);
+  await Bun.sleep(25);
+
+  expect(requests).toEqual([]);
 });
 
 test("Pi ignores RPC sessions even when UI APIs are available", async () => {
@@ -346,7 +367,7 @@ test("Pi serializes its agent-start session report before its working state", as
     mode: "tui",
     isIdle: () => idle,
     sessionManager: {
-      getSessionFile: () => "/tmp/pi-new.jsonl",
+      getSessionFile: () => undefined,
       getSessionId: () => "pi-new",
     },
   };
@@ -412,10 +433,12 @@ test("Pi serializes its agent-start session report before its working state", as
     "pane.report_agent",
   ]);
   expect(requestStates(requests)).toEqual(["idle", "working"]);
+  expect(requests.some(requestHasMessage)).toBe(false);
   const sequences = requests.map(requestSeq);
   for (let index = 1; index < sequences.length; index += 1) {
     expect(sequences[index]).toBe((sequences[index - 1] as number) + 1);
   }
+  expectContractTrace("pi", requests);
 });
 
 async function startDroppedFirstResponseServer(name: string) {
@@ -424,11 +447,11 @@ async function startDroppedFirstResponseServer(name: string) {
   await rm(recordingSocketPath, { force: true });
 
   let connectionCount = 0;
+  let droppedStateResponse = false;
   const attemptedRequests: unknown[] = [];
   const deliveredRequests: unknown[] = [];
   const recordingServer = createServer((socket) => {
     connectionCount += 1;
-    const connectionNumber = connectionCount;
     let input = "";
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => {
@@ -439,7 +462,12 @@ async function startDroppedFirstResponseServer(name: string) {
       }
       const request = JSON.parse(input.slice(0, newline));
       attemptedRequests.push(request);
-      if (connectionNumber === 1) {
+      if (
+        !droppedStateResponse &&
+        isRecord(request) &&
+        request.method === "pane.report_agent"
+      ) {
+        droppedStateResponse = true;
         return;
       }
       deliveredRequests.push(request);
@@ -473,21 +501,22 @@ test("Oh My Pi retries working before a queued idle state", async () => {
     isIdle: () => false,
     sessionManager: {
       getSessionFile: () => undefined,
-      getSessionId: () => undefined,
+      getSessionId: () => "omp-retry-session",
     },
   };
   handlers.get("session_start")?.({ reason: "startup" }, context);
   handlers.get("agent_end")?.({ messages: [] }, context);
 
   const deadline = Date.now() + 2_500;
-  while (Date.now() < deadline && attemptedRequests.length < 3) {
+  const stateAttempts = () => attemptedRequests.filter(
+    (request) => isRecord(request) && request.method === "pane.report_agent",
+  );
+  while (Date.now() < deadline && stateAttempts().length < 3) {
     await Bun.sleep(5);
   }
 
-  expect(attemptedRequests).toHaveLength(3);
-  expect(attemptedRequests[1]).toEqual(attemptedRequests[0]);
-  expect(requestState(attemptedRequests[0])).toBe("working");
-  expect(requestState(attemptedRequests[2])).toBe("idle");
+  expect(requestStates(stateAttempts())).toEqual(["working", "working", "idle"]);
+  expect(stateAttempts()[1]).toEqual(stateAttempts()[0]);
 });
 
 test("Oh My Pi keeps working when a turn ends with a scheduled continuation", async () => {
@@ -504,7 +533,7 @@ test("Oh My Pi keeps working when a turn ends with a scheduled continuation", as
     isIdle: () => idle,
     sessionManager: {
       getSessionFile: () => undefined,
-      getSessionId: () => undefined,
+      getSessionId: () => "omp-continuation-session",
     },
   };
 
@@ -529,6 +558,51 @@ test("Oh My Pi keeps working when a turn ends with a scheduled continuation", as
   expect(requestStates(requests)).toEqual(["idle", "working", "idle"]);
 });
 
+test("Oh My Pi does not report state without a session reference", async () => {
+  const requests = await startRecordingServer("omp-sessionless-state");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => false,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  handlers.get("agent_start")?.({}, context);
+  await Bun.sleep(25);
+
+  expect(requests).toEqual([]);
+});
+
+test("Oh My Pi reports session-bound state", async () => {
+  const requests = await startRecordingServer("omp-contract");
+  process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
+  install(pi);
+
+  handlers.get("session_start")?.(
+    { reason: "startup" },
+    {
+      hasUI: true,
+      isIdle: () => false,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getSessionId: () => "omp-contract-session",
+      },
+    },
+  );
+  await waitFor(() => requests.length >= 2);
+  expect(requestStates(requests)).toEqual(["working"]);
+  expect(requests.some(requestHasMessage)).toBe(false);
+  expectContractTrace("omp", requests);
+});
+
 test("Pi retries working state after an unanswered socket attempt", async () => {
   const { attemptedRequests, deliveredRequests, connectionCount } =
     await startDroppedFirstResponseServer("pi-retry");
@@ -547,7 +621,7 @@ test("Pi retries working state after an unanswered socket attempt", async () => 
       isIdle: () => false,
       sessionManager: {
         getSessionFile: () => undefined,
-        getSessionId: () => undefined,
+        getSessionId: () => "pi-retry-session",
       },
     },
   );
@@ -567,8 +641,11 @@ test("Pi retries working state after an unanswered socket attempt", async () => 
   }
 
   expect(connectionCount()).toBeGreaterThanOrEqual(2);
-  expect(attemptedRequests.length).toBeGreaterThanOrEqual(2);
-  expect(attemptedRequests[1]).toEqual(attemptedRequests[0]);
+  const stateAttempts = attemptedRequests.filter(
+    (request) => isRecord(request) && request.method === "pane.report_agent",
+  );
+  expect(stateAttempts.length).toBeGreaterThanOrEqual(2);
+  expect(stateAttempts[1]).toEqual(stateAttempts[0]);
   expect(reportedWorking()).toBe(true);
 });
 
@@ -583,7 +660,7 @@ function piContext(isIdle: () => boolean) {
     isIdle,
     sessionManager: {
       getSessionFile: () => undefined,
-      getSessionId: () => undefined,
+      getSessionId: () => "pi-test-session",
     },
   };
 }
@@ -607,6 +684,10 @@ function requestState(request: unknown): unknown {
     return undefined;
   }
   return request.params.state;
+}
+
+function requestHasMessage(request: unknown): boolean {
+  return isRecord(request) && isRecord(request.params) && "message" in request.params;
 }
 
 function requestSeq(request: unknown): unknown {

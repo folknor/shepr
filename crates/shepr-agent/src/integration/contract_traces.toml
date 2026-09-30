@@ -1,0 +1,143 @@
+# What each agent plugin sends over a scripted session, as its bun test
+# captures it (`contract_traces.ts` checks the match) and as the server crate's
+# `agent_integration_contract` test replays it into terminal state. Seqs are
+# stored as their rank in the run, and ids as `<source>:<rank>`.
+
+# Pi: a new session, its settled idle state, then an agent start that
+# re-reports the session before its working state.
+[[pi]]
+id = "shepr:pi:1"
+method = "pane.report_agent_session"
+[pi.params]
+pane_id = "test:p1"
+source = "shepr:pi"
+agent = "pi"
+seq = 1
+session_start_source = "new"
+agent_session_id = "pi-new"
+
+[[pi]]
+id = "shepr:pi:2"
+method = "pane.report_agent"
+[pi.params]
+pane_id = "test:p1"
+source = "shepr:pi"
+agent = "pi"
+state = "idle"
+seq = 2
+agent_session_id = "pi-new"
+
+[[pi]]
+id = "shepr:pi:3"
+method = "pane.report_agent_session"
+[pi.params]
+pane_id = "test:p1"
+source = "shepr:pi"
+agent = "pi"
+seq = 3
+agent_session_id = "pi-new"
+
+[[pi]]
+id = "shepr:pi:4"
+method = "pane.report_agent"
+[pi.params]
+pane_id = "test:p1"
+source = "shepr:pi"
+agent = "pi"
+state = "working"
+seq = 4
+agent_session_id = "pi-new"
+
+# Oh My Pi: a startup session that is already working.
+[[omp]]
+id = "shepr:omp:1"
+method = "pane.report_agent_session"
+[omp.params]
+pane_id = "test:p1"
+source = "shepr:omp"
+agent = "omp"
+seq = 1
+session_start_source = "startup"
+agent_session_id = "omp-contract-session"
+
+[[omp]]
+id = "shepr:omp:2"
+method = "pane.report_agent"
+[omp.params]
+pane_id = "test:p1"
+source = "shepr:omp"
+agent = "omp"
+state = "working"
+seq = 2
+agent_session_id = "omp-contract-session"
+
+# OpenCode: the chat hook anchors the local root session and reports it
+# working.
+[[opencode]]
+id = "shepr:opencode:1"
+method = "pane.report_agent_session"
+[opencode.params]
+pane_id = "test:p1"
+source = "shepr:opencode"
+agent = "opencode"
+seq = 1
+session_start_source = "startup"
+agent_session_id = "local-session"
+
+[[opencode]]
+id = "shepr:opencode:2"
+method = "pane.report_agent"
+[opencode.params]
+pane_id = "test:p1"
+source = "shepr:opencode"
+agent = "opencode"
+state = "working"
+seq = 2
+agent_session_id = "local-session"
+
+# The OpenCode TUI plugin, legacy entry: a selected root session, which
+# carries no seq.
+[[opencode_tui_v1]]
+id = "shepr:opencode:0"
+method = "pane.report_agent_session"
+[opencode_tui_v1.params]
+pane_id = "test:p1"
+source = "shepr:opencode"
+agent = "opencode"
+session_start_source = "select"
+agent_session_id = "session-a"
+
+# The OpenCode TUI plugin, V2 entry.
+[[opencode_tui_v2]]
+id = "shepr:opencode:0"
+method = "pane.report_agent_session"
+[opencode_tui_v2.params]
+pane_id = "test:p1"
+source = "shepr:opencode"
+agent = "opencode"
+session_start_source = "select"
+agent_session_id = "v2-session"
+
+# Kilo: a root session, then a child's permission prompt reported as blocked
+# under the root identity.
+[[kilo]]
+id = "shepr:kilo:1"
+method = "pane.report_agent_session"
+[kilo.params]
+pane_id = "test:p1"
+source = "shepr:kilo"
+agent = "kilo"
+seq = 1
+session_start_source = "startup"
+agent_session_id = "kilo-contract-session"
+
+[[kilo]]
+id = "shepr:kilo:2"
+method = "pane.report_agent"
+[kilo.params]
+pane_id = "test:p1"
+source = "shepr:kilo"
+agent = "kilo"
+state = "blocked"
+seq = 2
+agent_session_id = "kilo-contract-session"

@@ -91,6 +91,9 @@ if action == "session":
         },
     }
 else:
+    # A state event without its session identity cannot safely claim pane state.
+    if not agent_session_id:
+        raise SystemExit(0)
     request = {
         "id": request_id,
         "method": "pane.report_agent",

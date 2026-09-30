@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { expectContractTrace } from "../../contract_traces.ts";
 
 const requests: unknown[] = [];
 const activeDisposers: Array<() => void> = [];
+const activeTempDirs: string[] = [];
 const requestWaiters: Array<() => void> = [];
 const stateWaiters: Array<() => void> = [];
 let importCounter = 0;
@@ -56,15 +62,20 @@ beforeEach(() => {
   process.env.SHEPR_PANE_ID = "test:p1";
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const dispose of activeDisposers.splice(0)) {
     dispose();
   }
+  await Promise.all(
+    activeTempDirs
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
-async function loadPlugin() {
+async function loadPlugin(entry = "./shepr-tui-session.js") {
   importCounter += 1;
-  const module = await import(`./shepr-tui-session.js?test=${importCounter}`);
+  const module = await import(`${entry}?test=${importCounter}`);
   return module.default;
 }
 
@@ -166,6 +177,36 @@ test("reports a root session when only the local route changes", async () => {
   expect(requestParam(requests[0], "agent_session_id")).toBe("session-a");
   expect(requestParam(requests[0], "session_start_source")).toBe("select");
   expect(requestParam(requests[0], "seq")).toBeUndefined();
+  expectContractTrace("opencode_tui_v1", requests);
+});
+
+test("V2 TUI entry reports its selected root session", async () => {
+  const installedRoot = await mkdtemp(join(tmpdir(), "shepr-opencode-v2-"));
+  activeTempDirs.push(installedRoot);
+  const pluginDirectory = join(installedRoot, "shepr-opencode");
+  await mkdir(pluginDirectory);
+  await writeFile(
+    join(installedRoot, "shepr-tui-session.js"),
+    await readFile(new URL("./shepr-tui-session.js", import.meta.url)),
+  );
+  await writeFile(
+    join(pluginDirectory, "tui.js"),
+    await readFile(new URL("./tui.js", import.meta.url)),
+  );
+  const plugin = await loadPlugin(pathToFileURL(join(pluginDirectory, "tui.js")).href);
+  const tui = fakeApi();
+  tui.addSession({ id: "v2-session" });
+  await plugin.tui(tui.api);
+
+  const dispatched = waitForNextRequest();
+  tui.select("v2-session");
+  await dispatched;
+
+  expect(requests).toHaveLength(1);
+  expect(requestParam(requests[0], "agent_session_id")).toBe("v2-session");
+  expect(requestParam(requests[0], "session_start_source")).toBe("select");
+  expectContractTrace("opencode_tui_v2", requests);
+  tui.dispose();
 });
 
 test("retries an initial selection while Shepr detects the process", async () => {
