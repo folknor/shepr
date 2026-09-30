@@ -22,6 +22,8 @@ impl std::fmt::Display for ServerSocket {
 /// prints nothing itself: the binary renders this and picks the exit status.
 #[derive(Debug)]
 pub enum RunServerError {
+    /// The validated configuration cannot be carried by the client protocol.
+    ConfigRefused(io::Error),
     /// Another server already listens on `path`.
     AlreadyRunning { socket: ServerSocket, path: PathBuf },
     /// Another server already holds the lease on this profile's data
@@ -35,6 +37,7 @@ pub enum RunServerError {
 impl std::fmt::Display for RunServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ConfigRefused(error) => write!(f, "configuration refused: {error}"),
             Self::AlreadyRunning { socket, path } => write!(
                 f,
                 "another server listens on the {socket} ({})",
@@ -53,8 +56,8 @@ impl std::fmt::Display for RunServerError {
 impl std::error::Error for RunServerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ConfigRefused(error) | Self::Io(error) => Some(error),
             Self::AlreadyRunning { .. } | Self::DataDirHeld { .. } => None,
-            Self::Io(error) => Some(error),
         }
     }
 }
@@ -112,10 +115,12 @@ pub fn run_server(
     paths: &shepr_config::AppPaths,
     on_ready: impl FnOnce(&ServerReady),
 ) -> Result<(), RunServerError> {
-    // The immutable config every connection's welcome carries. A config the
-    // welcome cannot carry fails the launch here, like any other config
-    // problem, rather than every handshake later.
-    ensure_config_fits_welcome(config)?;
+    // The immutable config every connection's welcome carries. `encoded_len`
+    // serializes every field into a counting sink, so it catches encoding
+    // failures (including non-UTF-8 paths) as well as size limits. Keep this
+    // before taking the data-directory lease: either failure is a config
+    // refusal at launch, not a failed handshake on every connection.
+    ensure_config_fits_welcome(config).map_err(RunServerError::ConfigRefused)?;
     let served_config = Arc::new(config.clone());
     let api_socket = shepr_api::socket_path(paths);
     let client_socket = client_socket_path(paths);

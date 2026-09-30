@@ -365,10 +365,6 @@ impl PaneTerminal {
             .saturating_mul(8)
             .max(DEFAULT_DETECTION_ROWS);
 
-        // Replies already queued by an earlier core operation stay at the
-        // front for the next read; the resize's own replies go to a slot
-        // the next resize overwrites.
-        let pending_responses = core.terminal.take_pty_responses();
         // Alacritty resizes and reflows the grid directly. Replaying history
         // through the parser here could split a sequence the child is still
         // writing and move its cursor behind its back.
@@ -384,7 +380,6 @@ impl PaneTerminal {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
         let terminal_responses = drain_terminal_responses(&mut core);
-        core.terminal.restore_pty_responses(pending_responses);
 
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
         if offset_from_bottom > 0 {
@@ -1070,5 +1065,28 @@ impl PaneTerminal {
 
     pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
         self.recent_unwrapped_text_snapshot(lines).text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_returns_queued_replies_before_its_own() {
+        let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+        {
+            let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("terminal core");
+            core.terminal
+                .mode_set(shepr_vt::DecMode::InBandResize, true)
+                .expect("mode set");
+            core.terminal.write(b"\x1b[5n");
+        }
+
+        let replies = pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0].as_ref(), b"\x1b[0n");
+        assert_eq!(replies[1].as_ref(), b"\x1b[48;24;80;432;720t");
     }
 }

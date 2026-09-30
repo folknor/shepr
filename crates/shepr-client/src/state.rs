@@ -141,23 +141,6 @@ impl ClientState {
         self.host_theme_updates.push(update.clone());
     }
 
-    /// Replay the retained physical-host baseline only after an endpoint owns the committed
-    /// presentation. The endpoint transport preserves this order ahead of the resync control.
-    pub(super) fn replay_host_theme(
-        &self,
-        endpoints: &mut endpoint::EndpointRegistry,
-        endpoint_id: &endpoint::ClientEndpointId,
-    ) {
-        for update in &self.host_theme_updates {
-            let _ = endpoints.send_to(
-                endpoint_id,
-                &shepr_protocol::ClientMessage::ClientShellHostTheme {
-                    update: update.clone(),
-                },
-            );
-        }
-    }
-
     /// Ends a handoff: `Owned` on a commit, `Unavailable` when neither side can be made safe.
     /// A resize or metadata event may have happened while the frame was frozen, so the next
     /// frame is written in full rather than patched over the old source frame.

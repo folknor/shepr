@@ -21,7 +21,7 @@ pub(crate) use types::{IntegrationStatus, IntegrationStatusKind};
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const PI_INTEGRATION_VERSION: u32 = 1;
+const PI_INTEGRATION_VERSION: u32 = 2;
 const OMP_EXTENSION_INSTALL_NAME: &str = "shepr-omp-agent-state.ts";
 const OMP_EXTENSION_ASSET: &str = include_str!("assets/omp/shepr-agent-state.ts");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
@@ -62,11 +62,11 @@ const OPENCODE_V2_TUI_PLUGIN_DIR: &str = "shepr-opencode";
 const OPENCODE_V2_TUI_PLUGIN_SPEC: &str = "./shepr-opencode";
 const OPENCODE_V2_TUI_PLUGIN_ASSET: &str = include_str!("assets/opencode/tui.js");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const OPENCODE_INTEGRATION_VERSION: u32 = 1;
+const OPENCODE_INTEGRATION_VERSION: u32 = 2;
 const KILO_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const KILO_PLUGIN_ASSET: &str = include_str!("assets/kilo/shepr-agent-state.js");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const KILO_INTEGRATION_VERSION: u32 = 2;
+const KILO_INTEGRATION_VERSION: u32 = 3;
 const CURSOR_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CURSOR_HOOK_ASSET: &str = include_str!("assets/cursor/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.

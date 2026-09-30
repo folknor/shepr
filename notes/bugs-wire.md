@@ -88,55 +88,6 @@ expanded-event count) for every event it appends, starting a new message when
 the next event would cross either limit. The server can then treat crossing
 either as a protocol violation.
 
-## WIRE-003 - After a conditional stop succeeds, a new occupant is reported as a failed stop
-
-Scope: protocol-api.
-
-**Claim broken.** AGENTS.md: "The stop names the boot identity that was observed,
-so a server that replaced it in the meantime is not stopped, and is offered again
-as a new occupant." Also the `stop_active_server` doc.
-
-`stop_socket_with_timeout` (`shepr-api/src/server_stop.rs`) sends the stop, then
-waits until both socket paths are dead and then until the data-directory lease is
-free. Those waits look at paths, not at the boot that was stopped:
-
-- If any server starts at the same address after boot A exits and before the
-  wait finishes (another `shepr` launching, a client's launcher), the sockets stay
-  live and the call returns `ServerStopError::TimedOut` after
-  `STOP_WAIT_TIMEOUT`. If the sockets vanish and the new server takes the lease
-  first, it returns `LeaseHeld`.
-- `restart_local` in `src/preflight.rs` maps both to `LocalRestart::Failed(...)`,
-  and the operator reads "could not stop the local server: ... did not stop within
-  15000ms" or "... may still be saving its layout" when the observed server
-  stopped and a new one is running. The new occupant is neither identified nor
-  offered again. The remote path (`remote server stop --expect-boot` over SSH)
-  has the same wait, so a remote restart ends with exit status 1 instead of a
-  specific status.
-
-**Fix.** After a successful conditional stop, wait for that boot to go, not the
-paths: poll `ping`, treat "no answer" or "answers with another boot id" as
-stopped, and report the other boot as a new occupant (a distinct error or exit
-status). The lease wait should be skipped or reinterpreted once another boot
-answers.
-
-## WIRE-004 - The lease-wait doc and the `LeaseHeld` message describe a release order the server no longer uses
-
-Scope: protocol-api.
-
-**Claim broken.** Doc on `STOP_LEASE_WAIT_TIMEOUT` (`shepr-api/src/limits.rs`):
-"The server closes its sockets first and releases the lease after the shutdown
-drain has saved its layout, so a stop that returned at the sockets would let a new
-server start into a held lease". `ServerStopError::LeaseHeld` renders "closed its
-sockets but still held <lease> ... it may still be saving its layout".
-
-`release_sockets_after_save` in `shepr-server/src/server/headless/lifecycle.rs`
-now releases the lease first, then the sockets, and
-`the_lease_is_free_by_the_time_the_client_socket_goes` enforces that order (from
-the most recent commit). A gracefully stopping server never has "sockets gone,
-lease held"; `LeaseHeld` now means another process took the lease (WIRE-003), and
-the message sends the operator the wrong way. Reword both texts, or drop the
-lease wait for the boot-based wait from WIRE-003.
-
 ## WIRE-005 - Immediate endpoint refusals and the surface-set acknowledgement can overtake held replies
 
 Scopes: protocol-api and server-serving-ui (both found it independently; the
@@ -206,68 +157,6 @@ unreachable.
 crosses the wire, and a client-side `DecodedServerMessage` (or a decoder-owned
 enum) adding `PaneSurfacePatch`. That removes the skip, the unreachable arm, and
 the `write_message` failure test that guards the skip.
-
-## WIRE-008 - The frame reader accepts frames the documented format never produces
-
-Scope: protocol-api.
-
-**Claim broken.** Framing module doc (`shepr-protocol/src/framing.rs`): "A larger
-one is cut into full `MAX_FRAME_SIZE` frames with the top bit set, then one final
-frame without it". `MAX_CLIENT_MESSAGE_SIZE` doc: "Largest message a server
-accepts from a client: one frame."
-
-- `read_frames` accepts a continued frame of any length up to the cap, including
-  zero. A peer can send an endless run of `0x80000000` prefixes and the reader
-  loops forever reading 4-byte headers with no progress and no error: no memory
-  growth, but the reader thread spins on input the encoder can never emit.
-- The server reads client messages with `read_message_limited(...,
-  MAX_CLIENT_MESSAGE_SIZE)`, which sets `max_frame = min(MAX_FRAME_SIZE,
-  max_message)` but still follows continuation bits, so a client message split
-  over several frames totalling at most 2 MiB is accepted, contrary to "one
-  frame". Same for `read_handshake_message`.
-
-**Fix.** Reject `continued && claimed_len != MAX_FRAME_SIZE` in `read_frames`,
-and give the client-message and handshake readers a single-frame reader that
-treats the continuation bit as a protocol error.
-
-## WIRE-009 - A server whose paths are not UTF-8 launches fine, then fails every handshake with a bare EOF
-
-Scope: protocol-api.
-
-**Claims broken.** "Any config problem fails the launch; no fallbacks", and the
-welcome contract ("each connection's handshake welcome carries the server's
-config").
-
-The welcome carries `ValidatedConfig`, whose wire form includes `AppPaths`
-(`shepr-config/src/io.rs`, `#[derive(Serialize)]` over `PathBuf` fields,
-`current_dir` and `home_dir` included). serde serializes a `PathBuf` with
-`to_str()` and errors on non-UTF-8. `handle_client_handshake` maps the encode
-error to `io::Error` and returns it; the client gets EOF, reports a transient
-connection failure, and retries forever. Same for anything else in the config
-that validates but does not encode.
-
-**Fix.** Encode the welcome config once at server startup (it is immutable for
-the server's life) and fail the launch if that fails, which also saves
-re-serializing the whole config on every accept. (WIRE-011 may remove the need.)
-
-The server-serving hunter describes an existing launch-time
-`ensure_config_fits_welcome` in `run_server` ("A config the welcome cannot carry
-fails the launch here"), filed as SRV-016 for its exit class. The two reports do
-not settle between them whether that check already catches the encode failure
-described here.
-
-## WIRE-010 - The handshake bounds reads but not the welcome write
-
-Scope: protocol-api. The hunter marks the claim as weak. Related: PLAT-001 (no
-send timeout on the client stream at all).
-
-`handle_client_handshake` bounds the preamble and hello by one deadline
-(`HANDSHAKE_TIMEOUT`). The welcome is then written with a blocking
-`write_message` on a stream with no send timeout. The welcome is the whole
-serialized config, bigger than a socket buffer holds for a large config, so a
-local peer that sends a valid preamble and hello and never reads pins that
-handshake thread indefinitely. The API socket sets `STREAM_WRITE_TIMEOUT` for the
-same reason; the client socket's handshake does not.
 
 ## WIRE-011 - The client applies only the keymap from the endpoint config it receives
 

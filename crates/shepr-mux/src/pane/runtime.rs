@@ -361,6 +361,20 @@ impl ReportedCwd {
     }
 }
 
+fn follow_cwd_from_processes(
+    shell_pid: Option<u32>,
+    foreground_pgid: Option<u32>,
+    pane_cwd: impl FnOnce() -> Option<std::path::PathBuf>,
+    foreground_group_cwd: impl FnOnce(u32) -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    match (shell_pid, foreground_pgid) {
+        (Some(shell_pid), Some(foreground_pgid)) if shell_pid != foreground_pgid => {
+            foreground_group_cwd(foreground_pgid).or_else(pane_cwd)
+        }
+        _ => pane_cwd(),
+    }
+}
+
 fn publish_reported_cwd(
     pane_id: PaneId,
     shell_pid: u32,
@@ -1677,12 +1691,19 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
+    /// The cwd to inherit when a split or new workspace follows this pane.
+    /// The shell's OSC 7 arbitration applies while its own process group is in
+    /// the foreground; a foreground job's group leader takes precedence while
+    /// a different group owns the terminal.
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
-        let leader_cwd = self
-            .child_pid()
-            .and_then(shepr_agent::detect::foreground_process_group_id)
-            .and_then(usable_process_cwd);
-        leader_cwd.or_else(|| self.cwd())
+        let shell_pid = self.child_pid();
+        let foreground_pgid = shell_pid.and_then(shepr_agent::detect::foreground_process_group_id);
+        follow_cwd_from_processes(
+            shell_pid,
+            foreground_pgid,
+            || self.cwd(),
+            usable_process_cwd,
+        )
     }
 
     /// Get the current working directory of the process group controlling the pane PTY.
@@ -2139,6 +2160,30 @@ mod tests {
         });
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
+    }
+
+    #[test]
+    fn follow_cwd_uses_osc_report_when_the_shell_owns_the_foreground_group() {
+        let shell_cwd = std::path::PathBuf::from("/home/user/project");
+        let reported_path = std::path::PathBuf::from("/work/project");
+        let reported = ReportedCwd {
+            path: reported_path.clone(),
+            shell_cwd_at_report: Some(shell_cwd.clone()),
+        };
+        let read_foreground_group = Cell::new(false);
+
+        let cwd = follow_cwd_from_processes(
+            Some(42),
+            Some(42),
+            || ReportedCwd::resolve(Some(&reported), Some(shell_cwd)),
+            |_| {
+                read_foreground_group.set(true);
+                None
+            },
+        );
+
+        assert_eq!(cwd, Some(reported_path));
+        assert!(!read_foreground_group.get());
     }
 
     #[tokio::test]

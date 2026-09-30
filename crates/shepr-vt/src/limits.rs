@@ -52,6 +52,13 @@ pub(crate) const MAX_SCROLLBACK_LINES: usize = 1_000_000;
 /// the parser hands to its caller.
 pub(crate) const MAX_CLIPBOARD_BYTES: usize = 192 * KIBIBYTE_BYTES;
 
+/// Maximum OSC body bytes handed to the parser, whose own OSC buffer has no
+/// cap, before the adapter ends the sequence early. Twice the base64 length of
+/// the largest accepted clipboard store: every store shepr accepts reaches the
+/// parser whole, and an OSC 52 cut at this bound still decodes to more than
+/// `MAX_CLIPBOARD_BYTES`, so it is dropped by size instead of stored truncated.
+pub(crate) const MAX_PARSER_OSC_BYTES: usize = 2 * 4 * MAX_CLIPBOARD_BYTES.div_ceil(3);
+
 /// Maximum active keyboard-mode stack depth accepted by the adapter. The
 /// pinned alacritty parser has a fixed cap with a broken overflow branch;
 /// matching that depth lets shepr reject the next push before it reaches that

@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=opencode
-// SHEPR_INTEGRATION_VERSION=1
+// SHEPR_INTEGRATION_VERSION=2
 
 import net from "node:net";
 
@@ -20,6 +20,7 @@ const AGENT = "opencode";
 let reportSeq = Date.now() * 1000;
 let requestChain = Promise.resolve();
 let reportedRootSessionID;
+let reportedLocalSessionID;
 
 // Track child sessions so their events cannot replace the pane's root session.
 // User prompts carry the root id to preserve its identity and cross-talk guard.
@@ -38,8 +39,11 @@ function nextReportSeq() {
 }
 
 function sessionIDFromProperties(properties) {
-  return typeof properties?.sessionID === "string" && properties.sessionID
-    ? properties.sessionID
+  if (typeof properties?.sessionID === "string" && properties.sessionID) {
+    return properties.sessionID;
+  }
+  return typeof properties?.info?.id === "string" && properties.info.id
+    ? properties.info.id
     : undefined;
 }
 
@@ -111,11 +115,15 @@ function requestOnce(method, params) {
   });
 }
 
-function reportSession(sessionID) {
+function reportSession(sessionID, sessionStartSource) {
   if (!sessionID) {
     return Promise.resolve();
   }
-  return request("pane.report_agent_session", { agent_session_id: sessionID });
+  const params = { agent_session_id: sessionID };
+  if (sessionStartSource) {
+    params.session_start_source = sessionStartSource;
+  }
+  return request("pane.report_agent_session", params);
 }
 
 function reportState(state, sessionID) {
@@ -155,6 +163,12 @@ export const SheprAgentStatePlugin = async () => {
     "chat.message": async ({ sessionID }) => {
       if (sessionID && childSessions.has(sessionID)) {
         return;
+      }
+      // Event-bus session events are server-global. The local chat hook is the
+      // first point that identifies this run's root session for the pane.
+      if (sessionID && !reportedLocalSessionID) {
+        reportedLocalSessionID = sessionID;
+        await reportSession(sessionID, "startup");
       }
       await reportState("working", sessionID);
     },

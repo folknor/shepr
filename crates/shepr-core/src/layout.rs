@@ -44,14 +44,12 @@ pub struct PaneId(u32);
 
 /// Global atomic counter for unique PaneId generation across all workspaces.
 ///
-/// This stays a process global rather than an allocator value threaded
-/// through `Workspace`. Pane ids must be unique across every workspace, not
-/// within one: panes move between workspaces keeping their id, and server
-/// maps keyed by pane id span workspaces. An owned allocator would therefore
-/// live in the server's app state and be passed into every layout split,
-/// workspace constructor, restore and pane move, for no change in
-/// behaviour. Tests that want fixed ids build them with `from_raw`, and the
-/// exhaustion rule is tested through `alloc_from`.
+/// Pane ids flow through server-wide events and render-source sets without a
+/// workspace id, so allocations in separate workspaces must not collide. An
+/// owned allocator would sit above this crate and need to be passed through
+/// each layout creation and split path without changing that invariant. Tests
+/// that want fixed ids build them with `from_raw`, and the exhaustion rule is
+/// tested through `alloc_from`.
 static NEXT_PANE_ID: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(FIRST_PANE_ID);
 

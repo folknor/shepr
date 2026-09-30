@@ -348,24 +348,25 @@ pub(super) fn complete_endpoint_activation(
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     now: std::time::Instant,
 ) -> Result<Option<ClientLoopEvent>, ClientError> {
-    let sync_endpoint = state
-        .presentation
-        .handoff()
-        .and_then(endpoint::PendingEndpointActivation::presentation_sync_endpoint)
-        .cloned();
-    if let Some(endpoint_id) = sync_endpoint.as_ref() {
-        state.replay_host_theme(endpoints, endpoint_id);
-    }
-    let completion = {
+    let host_theme_updates = state.host_theme_updates.clone();
+    let completion_result = {
         let Some(activation) = state.presentation.handoff_mut() else {
             return Ok(None);
         };
-        match activation.complete_at(&mut state.shell, endpoints, now) {
-            Ok(completion) => completion,
-            Err(error) => {
+        activation.complete_with_host_theme_at(
+            &mut state.shell,
+            endpoints,
+            &host_theme_updates,
+            now,
+        )
+    };
+    let completion = match completion_result {
+        Ok(completion) => completion,
+        Err(error) => {
+            if !rollback_endpoint_activation(state, endpoints, &error, false, now) {
                 state.shell.receive_endpoint_unavailable(error);
-                return Ok(None);
             }
+            return Ok(None);
         }
     };
 
@@ -459,15 +460,16 @@ fn handoff_interrupted_notice(label: &str, notice: &str) -> String {
     format!("machine switch interrupted: {label} {notice}")
 }
 
+/// Returns whether rollback had to mark the presentation unavailable.
 pub(super) fn rollback_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     error: &str,
     source_release_rejected: bool,
     now: std::time::Instant,
-) {
+) -> bool {
     let Some(activation) = state.presentation.handoff_mut() else {
-        return;
+        return false;
     };
     // A pending rollback has moved the handoff into a phase that freezes frames again.
     if let endpoint::ActivationRollback::Unavailable(message) =
@@ -477,7 +479,9 @@ pub(super) fn rollback_endpoint_activation(
         // the client-owned unavailable chrome rather than silently swallowing the error.
         state.end_handoff(Presentation::Unavailable);
         present_handoff_unavailable(state, message);
+        return true;
     }
+    false
 }
 
 pub(super) fn handle_endpoint_disconnect(

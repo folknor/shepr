@@ -15,36 +15,6 @@ detection and hook reports).
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## AGENT-001 - A failed agent resume on a quiet pane never withdraws its seeded agent
-
-Scope: agent-detection. The initial-state mismatch at its root was also noted by
-the mux-pane hunter.
-
-**Claim broken.** `restored_terminal` (`persist/restore.rs`): "The seed does not
-outlive a failed resume: at expiry the detector publishes a no-agent `Unknown`
-update, which withdraws it." Same promise in the doc of `withhold_agent_absence`
-("once it expires, after which a pane whose resume never produced the agent
-reports the absence as usual and the seed goes").
-
-**What happens.** `DetectorState::new` starts with `state: AgentState::Idle`,
-while `reset()` and every agent change use `Unknown`. During the hold every read
-tick goes read -> `detection_content` (records
-`last_screen_scan_detection_content_seq`) -> `withhold_agent_absence` ->
-`continue`, so `state` stays `Idle` and the agent stays `None`.
-`should_skip_idle_screen_scan` treats `Idle` as stable for any agent, `None`
-included. Once the resume command has failed and the shell has printed its
-prompt (well inside the 30 s hold), the screen stops changing, every later tick
-is skipped at `should_read_screen`, and `withhold_agent_absence` is never reached
-again. Expiry runs only after the next PTY byte, resize or clear. Until the user
-touches the pane, the sidebar shows an idle agent on a plain shell, and the
-seed's persisted session stays too. No test covers expiry; the hold tests call
-`withhold_agent_absence` directly.
-
-**Fix direction.** Start the detector in `Unknown`, as `reset` does, so a
-no-agent pane is never "stable Idle"; or check hold expiry before the read-skip
-decision. Better: make the skip decision a function of the last published
-detection, not of an initial placeholder.
-
 ## AGENT-002 - Under full-lifecycle hook authority, agent loss is only seen if the foreground group changes
 
 Scope: agent-detection.
@@ -92,32 +62,6 @@ process exit.
 (one probe per 5 s, the only safety net). Do not let the app ignore an
 agent-absent report that has passed miss confirmation. Do not clear the
 detector's agent on an authority reset, or re-probe until it is reacquired.
-
-## AGENT-003 - The Working -> Idle debounce ignores presentation: `Unknown` flips publish at once
-
-Scope: agent-detection. Related: AGENT-027 (the same presentation rule on the
-sort seq).
-
-**Claims broken.** `AgentDetection::visible_idle`: "The pane's detection loop uses
-it to publish a Working -> Idle change at once instead of waiting for the idle to
-be confirmed over several ticks." `AGENT_PENDING_IDLE_CONFIRMATIONS`: "filtering
-a single transient frame". AGENTS.md: "Unknown presents as Idle."
-
-**What happens.** `PendingIdleConfirmation::should_hold_working_to_idle` holds
-only when `next.state == AgentState::Idle`, so a `Working -> Unknown` flip is not
-held and publishes immediately. Two manifests produce `Unknown` routinely:
-
-- Codex: no match falls back to `Unknown` (`fallback_state`).
-- Letta: `composer_input`, `profile_selector` and the priority-0 catch-all
-  `no_live_state_evidence` all yield `Unknown`.
-
-For these, a single transient frame during a turn (a status line redrawn in
-place, a partial frame) shows as Working -> Idle -> Working in the sidebar. For
-Codex this matters when no hook authority exists: before the first
-`UserPromptSubmit`, when python3 is missing, or after authority is cleared.
-
-**Fix direction.** Key the hold on `presentation_state()`: hold any Working ->
-presented-Idle transition that lacks `visible_idle`.
 
 ## AGENT-004 - `detect capture` does not capture what the detector evaluates, so an offline explain disagrees with the live one
 
@@ -185,24 +129,6 @@ Scope: agent-detection.
   `AgentDetection` instead of re-reading. The "only stable states may skip" rule
   in `should_skip_idle_screen_scan` is broader than necessary.
 
-## AGENT-007 - Stale or inaccurate documentation in detection
-
-Scope: agent-detection.
-
-- `AgentDetection::visible_working`: "forwards it only together with
-  `state == Working`". It is not forwarded at all: `AppEvent::StateChanged` and
-  `StateChangedUpdate` have no working flag; only `visible_blocker` crosses.
-- `AGENT_PENDING_IDLE_CONFIRMATIONS = 3` is documented as "Matching idle
-  observations needed before publishing idle". The hold publishes on the fourth
-  matching observation: the first starts the hold and three confirmations follow
-  (`pending_idle_holds_working_to_plain_idle_until_confirmed` asserts four
-  calls).
-- `may_scan_screen`: when the startup grace has just expired, the branch clears
-  it but still returns `false`, so the first scan waits one extra tick after
-  `AGENT_STARTUP_GRACE_WINDOW`. Harmless, but not what "grace window" says.
-- `RegionSpec::AfterCurrentPromptBlockMarker` returns a slice starting at the
-  marker line, which is not "after" it. No manifest uses it (AGENT-008).
-
 ## AGENT-008 - Dead code in detection
 
 Scope: agent-detection.
@@ -262,79 +188,6 @@ skip rule in another, an early `continue` in the third. A single pure
 probe result, content seq, screen and OSC, authority flag, `now`; output: events
 to publish and the next wake) would put every transition in one testable
 function and leave the runtime as I/O only.
-
-## AGENT-012 - The OpenCode server plugin (run and --mini) can never anchor, so all its reports are ignored
-
-Scope: agent-integration.
-
-**Claim broken.** The asset says "V1 local run/Mini retain their server hooks"
-(`assets/opencode/shepr-agent-state.js`, default export comment). The descriptor
-gives OpenCode `full_lifecycle_hook_authority: true`, and AGENTS.md says the
-integrations "report state and session IDs back to shepr".
-
-Background (the hunter's main structural observation): the server grants hook
-authority to a full-lifecycle source (pi, omp, mastracode, opencode, kimi, kilo)
-only once it is anchored, and a fresh pane can only be anchored by a
-`pane.report_agent_session` carrying a seq and a recognized
-`session_start_source` (the OpenCode TUI's unsequenced `select` report is the one
-exception). Until then every state report is parked as a pending replacement and
-ignored.
-
-- `reportSession(sessionID)` sends `pane.report_agent_session` with a seq and no
-  `session_start_source`. In
-  `TerminalState::set_agent_session_ref_for_typed_start_source_at`, a
-  full-lifecycle source not yet anchored (`!session_anchored`) reaches
-  `if !Self::session_start_source_is_recognized(..) { return None; }`, dropping
-  the report. It is not the unsequenced `select` path either, since it carries a
-  seq and no `Select` source.
-- Every `reportState(...)` goes to `route_full_lifecycle_hook_report`. Nothing is
-  anchored, so it is parked in `pending_replacement_report` and returns `Ignore`.
-  A parked report is only promoted in
-  `clear_full_lifecycle_hook_suppression_for_detected_agent` when
-  `replacement_session_ref` is set, and only a session report sets that.
-- The `session.created` / `session.updated` branches read
-  `properties.sessionID`, but these events carry the session under
-  `properties.info` (shepr's own V1 TUI plugin reads
-  `data.sessionID ?? data.info?.id` for them). If so, `session.created` sets
-  `reportedRootSessionID = undefined` and `session.updated` never reports.
-
-Net effect: in `opencode run` or `--mini` panes the hook integration is inert and
-resume never gets an OpenCode session id from this path; it only looks as if it
-works because screen detection carries the state. The hunter could not verify the
-exact OpenCode event payloads from the repo; this assumes `{ info }` for
-created/updated, as OpenCode defines them.
-
-**Fix direction.** Send `session_start_source` (for example `startup`) on the
-first root session, read `info.id` for created/updated, and cover it with the
-harness in AGENT-024.
-
-## AGENT-013 - The Kilo plugin reads a field its own comment says does not exist, so it never reports a session
-
-Scope: agent-integration.
-
-**Claim broken.** `reportSession` in `assets/kilo/shepr-agent-state.js` says
-"`session.created`/`session.updated` carry only the session info". The handler
-calls `reportSession(sessionID)` for exactly those events with
-`sessionID = sessionIDFromProperties(properties)`, which reads
-`properties.sessionID`, while reading `properties.info` a few lines earlier to
-track child sessions.
-
-- If the comment is right (it matches OpenCode's `Session.Event.Created` /
-  `Updated`, which are `{ info }`), `reportSession(undefined)` is a no-op. Kilo's
-  only other session report is `session.status` with a status not in
-  `SESSION_STATE_BY_STATUS`; OpenCode's status types (`idle`, `busy`, `retry`) are
-  all mapped, so that path never fires.
-- Kilo is full-lifecycle, so with no session report none of its state reports is
-  accepted (the parking in AGENT-012). Kilo has `resume_support`, but
-  `persisted_agent_session` is never set for a Kilo pane, so Kilo panes never
-  resume on restore.
-- The TS fixture in `assets/opencode/shepr-agent-state.test.ts` builds
-  `session.updated` as `{ properties: { sessionID } }` while its
-  `session.created` child fixture uses `{ properties: { info } }`. The tests
-  encode the unverified shape.
-
-Verify the Kilo event schema once; if it is `{ info }`, use `info.id` (skipping
-children, as the code already does).
 
 ## AGENT-014 - A state report without a session ref erases the resume identity, then freezes hook authority
 
@@ -439,21 +292,6 @@ that follows should target this pane's conversation.
 
 Register SessionStart (and maybe UserPromptSubmit) only, and drop the
 cwd-matching fallback or restrict it to a unique match.
-
-## AGENT-019 - The Pi reporter does not serialize session and state reports
-
-Scope: agent-integration.
-
-- OMP routes every request through `requestQueue`. Pi's `reportSession` calls
-  `sendRequest` directly, while states go through `drainStateQueue`. On
-  `agent_start`, `void reportSession()` (seq N) and the `working` state (seq N+1)
-  go out on two concurrent connections; if N+1 lands first, N is dropped as a
-  straggler (`hook_seq_superseded`).
-- `sendRequest` retries with the same seq. If the first attempt timed out but was
-  delivered, the retry is dropped (harmless); if a newer report landed in
-  between, the retried report is lost.
-- Small impact today, since the state report carries the session ref too. Pi is
-  the one JS reporter without an ordered queue; share OMP's.
 
 ## AGENT-020 - Hook seq ordering and the arbitration's clocks rest on assumptions that do not hold
 

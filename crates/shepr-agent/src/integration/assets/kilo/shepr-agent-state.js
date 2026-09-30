@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=kilo
-// SHEPR_INTEGRATION_VERSION=2
+// SHEPR_INTEGRATION_VERSION=3
 
 import net from "node:net";
 
@@ -39,8 +39,11 @@ function nextReportSeq() {
 }
 
 function sessionIDFromProperties(properties) {
-  return typeof properties?.sessionID === "string" && properties.sessionID
-    ? properties.sessionID
+  if (typeof properties?.sessionID === "string" && properties.sessionID) {
+    return properties.sessionID;
+  }
+  return typeof properties?.info?.id === "string" && properties.info.id
+    ? properties.info.id
     : undefined;
 }
 
@@ -130,11 +133,10 @@ function reportSession(sessionID) {
     return Promise.resolve();
   }
   // Kilo's session events carry no start source, so a resumed session cannot
-  // be told apart from a new one here; "startup" is reported for both. The
-  // plugin API offers nothing better: `session.created`/`session.updated`
-  // carry only the session info, and `updated` also fires for new sessions.
-  // shepr treats Kilo's "startup" and "resume" alike anyway: both are
-  // recognized start sources, and neither lets Kilo replace a session.
+  // be told apart from a new one here; "startup" is reported for both. Its
+  // event payloads expose the ID either directly or through `info.id`, and
+  // `updated` also fires for new sessions. shepr treats Kilo's "startup" and
+  // "resume" alike: both can anchor a session, and neither lets Kilo replace it.
   return request("pane.report_agent_session", {
     agent_session_id: sessionID,
     session_start_source: "startup",

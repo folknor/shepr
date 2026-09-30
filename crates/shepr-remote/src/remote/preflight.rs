@@ -118,9 +118,8 @@ pub enum RestartResult {
     Declined,
     /// The server was stopped; the bridge starts one of this build on attach.
     Stopped,
-    /// The server that answered the stop was not the one observed (it was
-    /// restarted in between), so nothing was stopped. The outcome's check is
-    /// the fresh one.
+    /// A different boot answered the stop or appeared while the observed
+    /// instance was shutting down. The outcome's check is the fresh one.
     OccupantChanged,
     /// The stop failed; the server may still be running.
     Failed(String),
@@ -237,10 +236,11 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
 /// (`can_prompt`); without one the server is left alone, whatever the default
 /// answer would be. Nothing is stopped without a [`RestartDecision::Restart`].
 ///
-/// The stop names the boot identity that was observed, and the remote refuses it
-/// for any other instance. When it does, the occupant changed: the machine is
-/// checked again (back to discovery) and a still-different server is offered
-/// again, up to [`MAX_RESTART_OFFERS`] times. A stopped machine's check becomes
+/// The stop names the boot identity that was observed, and the remote refuses
+/// to stop any other instance. If another boot answers during that refusal or
+/// while the named instance shuts down, the machine is checked again (back to
+/// discovery) and a still-different server is offered again, up to
+/// [`MAX_RESTART_OFFERS`] times. A stopped machine's check becomes
 /// [`MachineCheck::Ready`], since the bridge starts a server of this build on
 /// attach.
 pub fn restart_different_builds(

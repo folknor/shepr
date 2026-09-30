@@ -495,6 +495,7 @@ pub(super) struct DetectorState {
     foreground_shell_exit_reported: bool,
     last_detection_text: String,
     last_screen_scan_detection_content_seq: Option<u64>,
+    has_detection_baseline: bool,
     agent_startup_grace_until: Option<std::time::Instant>,
     pending_idle: PendingIdleConfirmation,
     agent_absence_hold_until: Option<std::time::Instant>,
@@ -508,6 +509,8 @@ impl DetectorState {
         };
         Self {
             agent_presence: AgentDetectionPresence::from_agent(None),
+            // Keep the pre-detection state distinct from Unknown so the first
+            // absent-agent report can withdraw a restored pane's seeded agent.
             state: AgentState::Idle,
             last_visible_idle: false,
             last_visible_blocker: false,
@@ -518,6 +521,7 @@ impl DetectorState {
             foreground_shell_exit_reported: false,
             last_detection_text: String::new(),
             last_screen_scan_detection_content_seq: None,
+            has_detection_baseline: false,
             agent_startup_grace_until: None,
             pending_idle: PendingIdleConfirmation::default(),
             agent_absence_hold_until,
@@ -552,6 +556,9 @@ impl DetectorState {
         self.last_visible_signal_refresh = None;
         self.last_detection_text.clear();
         self.last_screen_scan_detection_content_seq = None;
+        // Reset establishes Unknown as a real baseline; new() starts from a
+        // placeholder and must keep reading until its first report publishes.
+        self.has_detection_baseline = true;
         self.agent_startup_grace_until = None;
         self.pending_idle.clear();
     }
@@ -686,13 +693,18 @@ impl DetectorState {
             } else {
                 self.agent_startup_grace_until = None;
                 self.pending_idle.clear();
-                return false;
             }
         }
         true
     }
 
     pub(super) fn should_read_screen(&self, request: ScreenReadRequest) -> bool {
+        // The initial Idle value is only a transition sentinel. Do not let it
+        // suppress the first screen report, especially while a restore hold is
+        // waiting to expire.
+        if !self.has_detection_baseline {
+            return true;
+        }
         matches!(
             decide_detection_screen_read(DetectionScreenReadInput {
                 state: self.state,
@@ -775,6 +787,7 @@ impl DetectorState {
         observed_at: std::time::Instant,
     ) {
         self.state = update.state;
+        self.has_detection_baseline = true;
         self.last_visible_idle = update.visible_idle;
         self.last_visible_blocker = update.visible_blocker;
         self.last_visible_working = update.visible_working;
@@ -1108,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn detector_state_needs_no_runtime_to_apply_launch_and_screen_rules() {
+    fn agent_detection_does_not_skip_before_first_published_report() {
         let now = std::time::Instant::now();
         let mut detector = DetectorState::new(now, LaunchPurpose::AgentResume);
         assert_eq!(detector.current_agent(), None);
@@ -1126,7 +1139,7 @@ mod tests {
         let (content, changed) = detector.detection_content(None, Some(1), None);
         assert!(content.is_empty());
         assert!(changed);
-        assert!(!detector.should_read_screen(ScreenReadRequest {
+        assert!(detector.should_read_screen(ScreenReadRequest {
             agent: None,
             agent_changed: false,
             process_exited: false,
@@ -1167,6 +1180,26 @@ mod tests {
         assert_eq!(change.agent, Some(Agent::Claude));
         assert_eq!(change.process_detected, Some(Agent::Claude));
         assert!(!change.should_clear_osc_evidence);
+    }
+
+    #[test]
+    fn agent_detection_allows_scan_at_startup_grace_deadline() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let deadline = now + AGENT_STARTUP_GRACE_WINDOW;
+        detector.agent_startup_grace_until = Some(deadline);
+
+        assert!(!detector.may_scan_screen(ScreenScanGate {
+            now: deadline - std::time::Duration::from_millis(1),
+            lifecycle_authority_active: false,
+            process_exited: false,
+        }));
+        assert!(detector.may_scan_screen(ScreenScanGate {
+            now: deadline,
+            lifecycle_authority_active: false,
+            process_exited: false,
+        }));
+        assert_eq!(detector.agent_startup_grace_until, None);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // installed by shepr
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // SHEPR_INTEGRATION_ID=opencode-tui
-// SHEPR_INTEGRATION_VERSION=1
+// SHEPR_INTEGRATION_VERSION=2
 
 import net from "node:net";
 

@@ -268,6 +268,8 @@ impl AppState {
     /// terminal id looked up in `terminal_runtimes`. `None` when the pane is
     /// not in that workspace or its terminal has no runtime (a restored pane
     /// whose shell failed to start, or one still waiting on agent resume).
+    /// This lookup only returns a borrowed runtime; it does not itself probe
+    /// the process or perform I/O. App-level code should own any such probes.
     pub(crate) fn runtime_for_pane_in_workspace<'a>(
         &'a self,
         terminal_runtimes: &'a shepr_mux::pane::PaneRuntimeRegistry,

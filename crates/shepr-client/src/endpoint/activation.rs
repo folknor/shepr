@@ -173,14 +173,6 @@ impl PendingEndpointActivation {
         self.geometry.surface_size()
     }
 
-    pub(crate) fn presentation_sync_endpoint(&self) -> Option<&ClientEndpointId> {
-        match self.phase {
-            ActivationPhase::ActivatingTarget { .. } => Some(&self.target.endpoint_id),
-            ActivationPhase::RestoringSource { .. } => Some(&self.source.endpoint_id),
-            _ => None,
-        }
-    }
-
     /// Whether the frame on screen stays frozen. It does until this handoff has installed a
     /// coherent snapshot and surface pair for the endpoint it commits (the target, or the source
     /// it restores). From presentation synchronization on that pair is on screen, and only pane
@@ -845,6 +837,16 @@ impl PendingEndpointActivation {
         endpoints: &mut EndpointRegistry,
         now: Instant,
     ) -> Result<ActivationCompletion, String> {
+        self.complete_with_host_theme_at(shell, endpoints, &[], now)
+    }
+
+    pub(crate) fn complete_with_host_theme_at(
+        &mut self,
+        shell: &mut crate::shell::ClientShellState,
+        endpoints: &mut EndpointRegistry,
+        host_theme_updates: &[shepr_protocol::ClientHostThemeUpdate],
+        now: Instant,
+    ) -> Result<ActivationCompletion, String> {
         if let ActivationPhase::SynchronizingPresentation {
             lease,
             acknowledged_revision,
@@ -940,6 +942,17 @@ impl PendingEndpointActivation {
         }
         if !shell.endpoint_is_active(endpoints.active_id()) {
             return Err("activated endpoint projection is not the active endpoint".into());
+        }
+        // Replay the host baseline only after this endpoint passed its coherent-surface and
+        // projection checks. Queue it before presentation synchronization so the server uses
+        // the current host theme for the synchronized presentation.
+        for update in host_theme_updates {
+            let _ = endpoints.send_to(
+                &lease.endpoint_id,
+                &shepr_protocol::ClientMessage::ClientShellHostTheme {
+                    update: update.clone(),
+                },
+            );
         }
         shell.set_pane_surface(surface);
         self.start_presentation_sync(endpoints, &lease, completion, now)?;

@@ -552,10 +552,11 @@ pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result
 
 /// Connects to a server socket and checks its owner before returning the
 /// stream, so no request or attach byte is ever written to a socket served by
-/// another user.
+/// another effective uid.
 ///
-/// This is the client-side counterpart of the accept-side [`peer_is_same_user`]
-/// check. The peer of a stream that connected is a listener, so its
+/// It checks an exact effective-uid match with
+/// [`peer_is_same_effective_user`]. The server's accept-side check separately
+/// allows root. The peer of a stream that connected is a listener, so its
 /// credentials are the ones the listening process had when it bound the
 /// socket. A foreign or unverifiable owner is a `PermissionDenied` error that
 /// names the socket; every connect error of [`connect_local_stream`] is passed
@@ -571,7 +572,7 @@ pub fn connect_trusted_local_stream_within(
     timeout: Duration,
 ) -> io::Result<LocalStream> {
     let stream = connect_local_stream_within(path, timeout)?;
-    match peer_is_same_user(&stream) {
+    match peer_is_same_effective_user(&stream) {
         Ok(true) => Ok(stream),
         Ok(false) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -989,18 +990,43 @@ fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<LocalListener, Sta
     }
 }
 
-/// Reports whether the peer of an accepted local connection runs as the same
-/// user as this process (its effective uid), or as root.
+/// Reports whether a local peer runs as the same user as this process (its
+/// effective uid), or as root. This is for accept-side admission: root can
+/// connect through the owner-only socket mode anyway, so this preserves
+/// `sudo` clients. Clients trusting a server must use
+/// [`peer_is_same_effective_user`] instead, because root must not be treated as
+/// the owner of the server-side socket.
 ///
 /// Every shepr socket is owner-only, so in normal operation this always
 /// holds; it is a second check that does not depend on the socket file's
 /// mode, which can be loosened after the fact or, on the in-place bind
-/// fallback, briefly be umask-derived. Root is admitted because root can
-/// connect through the 0600 mode anyway, and refusing it would only break
-/// `sudo` use without protecting anything. The credentials are the ones the
-/// peer had when it connected (`SO_PEERCRED`), so a later privilege drop by
-/// the peer does not change the answer.
+/// fallback, briefly be umask-derived. The credentials are the ones the peer
+/// had when it connected (`SO_PEERCRED`), so a later privilege drop by the
+/// peer does not change the answer.
 pub fn peer_is_same_user(stream: &LocalStream) -> io::Result<bool> {
+    let peer_uid = peer_uid(stream)?;
+    let own_uid = super::effective_uid();
+    Ok(peer_uid_is_allowed_client(peer_uid, own_uid))
+}
+
+/// Reports whether a local peer has exactly this process's effective uid.
+/// Clients use this when deciding whether to trust a server at a socket path.
+pub fn peer_is_same_effective_user(stream: &LocalStream) -> io::Result<bool> {
+    Ok(peer_uid_is_same_effective_user(
+        peer_uid(stream)?,
+        super::effective_uid(),
+    ))
+}
+
+fn peer_uid_is_allowed_client(peer_uid: libc::uid_t, own_uid: libc::uid_t) -> bool {
+    peer_uid == own_uid || peer_uid == 0
+}
+
+fn peer_uid_is_same_effective_user(peer_uid: libc::uid_t, own_uid: libc::uid_t) -> bool {
+    peer_uid == own_uid
+}
+
+fn peer_uid(stream: &LocalStream) -> io::Result<libc::uid_t> {
     use std::os::fd::{AsFd as _, AsRawFd as _};
 
     let fd = match stream {
@@ -1037,9 +1063,7 @@ pub fn peer_is_same_user(stream: &LocalStream) -> io::Result<bool> {
             "SO_PEERCRED returned a short credential record",
         ));
     }
-    // SAFETY: `geteuid` has no preconditions and cannot fail.
-    let own_uid = unsafe { libc::geteuid() };
-    Ok(cred.uid == own_uid || cred.uid == 0)
+    Ok(cred.uid)
 }
 
 /// A local-socket adapter for the shared fd readiness deadline reader.
@@ -1471,6 +1495,13 @@ mod tests {
         let (client, server) = connected_pair("peercred");
         assert!(peer_is_same_user(&server).expect("SO_PEERCRED"));
         assert!(peer_is_same_user(&client).expect("SO_PEERCRED"));
+    }
+
+    #[test]
+    fn trusted_server_requires_an_exact_uid_while_accept_side_keeps_root() {
+        assert!(peer_uid_is_same_effective_user(1000, 1000));
+        assert!(!peer_uid_is_same_effective_user(0, 1000));
+        assert!(peer_uid_is_allowed_client(0, 1000));
     }
 
     #[test]

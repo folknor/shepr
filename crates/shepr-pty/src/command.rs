@@ -157,6 +157,16 @@ impl PtyCommand {
         };
         cmd.env_clear();
         cmd.envs(&self.envs);
+        // `PWD` belongs to the pane's working directory, which can differ from
+        // the server's; retain its logical path when absolute and let the
+        // shell reconstruct it for relative paths. `OLDPWD` has no pane-local
+        // history yet, so never inherit the server's previous directory.
+        if Path::new(&dir).is_absolute() {
+            cmd.env("PWD", &dir);
+        } else {
+            cmd.env_remove("PWD");
+        }
+        cmd.env_remove("OLDPWD");
         // The child sees the same resolved `$SHELL` that was selected above.
         cmd.env(ChildEnv::Shell, shell);
         Ok(cmd)
@@ -423,6 +433,28 @@ mod tests {
             Some(&Some(OsString::from("1")))
         );
         assert!(!envs.contains_key(OsStr::new("SHEPR_PTY_TEST_REMOVED")));
+    }
+
+    #[test]
+    fn std_command_sets_pwd_to_pane_cwd_and_drops_server_oldpwd() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("pty-command-cwd-env");
+        let mut cmd = PtyCommand::new(fixture::path());
+        cmd.cwd(scratch.path());
+        cmd.env("PWD", "/server/working-directory");
+        cmd.env("OLDPWD", "/server/previous-directory");
+
+        let std_cmd = cmd.to_std_command().expect("build std command");
+        let envs: BTreeMap<OsString, Option<OsString>> = std_cmd
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+            .collect();
+
+        assert_eq!(
+            envs.get(OsStr::new("PWD")),
+            Some(&Some(scratch.path().as_os_str().to_owned()))
+        );
+        assert!(!envs.contains_key(OsStr::new("OLDPWD")));
     }
 
     #[test]

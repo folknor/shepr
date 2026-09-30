@@ -5,7 +5,7 @@ pub(super) use crate::limits::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use shepr_agent::detect::{Agent, AgentDetection, AgentState};
+use shepr_agent::detect::{Agent, AgentDetection, AgentState, PresentedAgentState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DetectionPublishState {
@@ -18,7 +18,7 @@ pub(super) struct DetectionPublishState {
 #[derive(Debug, Default)]
 pub(super) struct PendingIdleConfirmation {
     started_at: Option<std::time::Instant>,
-    confirmations: u8,
+    matching_observations: u8,
 }
 
 impl PendingIdleConfirmation {
@@ -28,7 +28,7 @@ impl PendingIdleConfirmation {
 
     pub(super) fn clear(&mut self) {
         self.started_at = None;
-        self.confirmations = 0;
+        self.matching_observations = 0;
     }
 
     pub(super) fn should_hold_working_to_idle(
@@ -39,21 +39,25 @@ impl PendingIdleConfirmation {
         process_exited: bool,
         now: std::time::Instant,
     ) -> bool {
-        let is_working_to_plain_idle = previous.state == AgentState::Working
-            && next.state == AgentState::Idle
+        let is_working_to_presented_idle = previous.state == AgentState::Working
+            && next.state.presentation_state() == PresentedAgentState::Idle
             && !next.visible_idle
             && !next.visible_blocker
             && !agent_changed
             && !process_exited;
 
-        if !is_working_to_plain_idle {
+        if !is_working_to_presented_idle {
             self.clear();
             return false;
         }
 
         let Some(started_at) = self.started_at else {
             self.started_at = Some(now);
-            self.confirmations = 0;
+            self.matching_observations = 1;
+            if self.matching_observations >= AGENT_PENDING_IDLE_CONFIRMATIONS {
+                self.clear();
+                return false;
+            }
             return true;
         };
 
@@ -62,8 +66,8 @@ impl PendingIdleConfirmation {
             return false;
         }
 
-        self.confirmations = self.confirmations.saturating_add(1);
-        if self.confirmations >= AGENT_PENDING_IDLE_CONFIRMATIONS {
+        self.matching_observations = self.matching_observations.saturating_add(1);
+        if self.matching_observations >= AGENT_PENDING_IDLE_CONFIRMATIONS {
             self.clear();
             return false;
         }
@@ -537,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_idle_holds_working_to_plain_idle_until_confirmed() {
+    fn agent_detection_holds_working_to_plain_idle_until_confirmed() {
         let now = std::time::Instant::now();
         let previous = publish_state(AgentState::Working);
         let next = publish_state(AgentState::Idle);
@@ -551,19 +555,36 @@ mod tests {
             false,
             now + AGENT_PENDING_IDLE_RECHECK
         ));
-        assert!(pending.should_hold_working_to_idle(
+        assert!(!pending.should_hold_working_to_idle(
             previous,
             next,
             false,
             false,
             now + AGENT_PENDING_IDLE_RECHECK * 2
         ));
+    }
+
+    #[test]
+    fn agent_detection_holds_working_to_unknown_until_confirmed() {
+        let now = std::time::Instant::now();
+        let previous = publish_state(AgentState::Working);
+        let next = publish_state(AgentState::Unknown);
+        let mut pending = PendingIdleConfirmation::default();
+
+        assert!(pending.should_hold_working_to_idle(previous, next, false, false, now));
+        assert!(pending.should_hold_working_to_idle(
+            previous,
+            next,
+            false,
+            false,
+            now + AGENT_PENDING_IDLE_RECHECK
+        ));
         assert!(!pending.should_hold_working_to_idle(
             previous,
             next,
             false,
             false,
-            now + AGENT_PENDING_IDLE_RECHECK * 3
+            now + AGENT_PENDING_IDLE_RECHECK * 2
         ));
     }
 

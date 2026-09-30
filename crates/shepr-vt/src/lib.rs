@@ -468,17 +468,33 @@ impl Terminal {
         if bytes.is_empty() {
             return;
         }
+        let mut skipping_oversized_osc = self.scanner.has_oversized_osc();
         let events = self.scanner.scan(bytes);
         let mut written = 0usize;
+        // An input without scanner events takes one parser batch. Keep event
+        // boundaries so injected spellings and scanner replies stay at their
+        // original byte positions, including inside synchronized updates.
         for scanned in events {
             let end = scanned.end.min(bytes.len());
             if end > written {
-                self.advance(&bytes[written..end], now);
+                if !skipping_oversized_osc {
+                    self.advance(&bytes[written..end], now);
+                }
                 written = end;
             }
-            self.apply_scan_event(scanned.event, now);
+            match scanned.event {
+                ScanEvent::AbortOversizedOsc => {
+                    // vte's std parser retains OSC bodies without a size cap.
+                    // End it at our bound, then omit the remainder until the
+                    // scanner sees the original terminator.
+                    self.advance(b"\x18", now);
+                    skipping_oversized_osc = true;
+                }
+                ScanEvent::ResumeAfterOversizedOsc => skipping_oversized_osc = false,
+                event => self.apply_scan_event(event, now),
+            }
         }
-        if written < bytes.len() {
+        if written < bytes.len() && !skipping_oversized_osc {
             self.advance(&bytes[written..], now);
         }
     }
@@ -544,7 +560,8 @@ impl Terminal {
     /// Ends a synchronized update (mode 2026) whose timeout has passed so its
     /// buffered output becomes visible. The runtime calls this from its tick
     /// path, before rendering or before parsing later child output. Returns
-    /// whether anything was flushed.
+    /// whether an expired update was ended, even if it contained no visible
+    /// changes.
     ///
     /// VTE's shepr-owned timeout stores the frame deadline; supplying `now`
     /// here keeps expiry checks runtime-driven and lets tests exercise either
@@ -554,6 +571,8 @@ impl Terminal {
     /// changes) stay queued like any other write's, for whoever collects
     /// them next; nothing here discards them.
     pub fn tick(&mut self, now: Instant) -> bool {
+        // vte arms this deadline on BSU; ending the frame also applies its mode
+        // transition when the buffered content made no visible changes.
         let expired = self
             .parser
             .sync_timeout()
@@ -575,23 +594,14 @@ impl Terminal {
         mem::take(&mut self.responses)
     }
 
-    /// Puts replies taken with [`Terminal::take_pty_responses`] back at the
-    /// front of the queue, ahead of anything queued since, for a caller that
-    /// only wanted the replies of one operation.
-    pub fn restore_pty_responses(&mut self, mut responses: Vec<PtyResponse>) {
-        if responses.is_empty() {
-            return;
-        }
-        responses.append(&mut self.responses);
-        self.responses = responses;
-    }
-
     fn push_bytes(&mut self, bytes: Vec<u8>) {
         self.responses.push(PtyResponse::Bytes(bytes));
     }
 
     fn apply_scan_event(&mut self, event: ScanEvent, now: Instant) {
         match event {
+            // `write_at` consumes these boundaries while slicing parser input.
+            ScanEvent::AbortOversizedOsc | ScanEvent::ResumeAfterOversizedOsc => {}
             ScanEvent::ColorSchemeQuery => {
                 if let Some(scheme) = self.color_scheme {
                     self.push_bytes(scheme.report().to_vec());

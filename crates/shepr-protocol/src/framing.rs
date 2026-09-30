@@ -27,13 +27,18 @@ const CONTINUED: u32 = 1 << 31;
 // The split is below the codec: every message kind (pane surfaces, surface
 // updates, clipboard data, endpoint replies) crosses the same way, and no wire
 // type knows how large a frame is. A reader bounds each frame by
-// `MAX_FRAME_SIZE` and the whole message by the cap it is given.
+// `MAX_FRAME_SIZE` and the whole message by the cap it is given. Continued
+// frames must be full-sized, and single-frame readers reject continuation.
 
 /// Errors that can occur during framing operations.
 #[derive(Debug)]
 pub enum FramingError {
     /// A frame or a whole message exceeds the applicable fixed limit.
     Oversized { claimed: usize, max: usize },
+    /// A continued frame is not a full `MAX_FRAME_SIZE` payload.
+    InvalidContinuation { claimed: usize, expected: usize },
+    /// A message was continued where the reader permits only one frame.
+    UnexpectedContinuation,
     /// An I/O error occurred while reading or writing.
     Io(io::Error),
     /// Encoding or decoding the payload with the wire codec failed.
@@ -49,6 +54,13 @@ impl std::fmt::Display for FramingError {
         match self {
             FramingError::Oversized { claimed, max } => {
                 write!(f, "frame size {claimed} exceeds maximum {max}")
+            }
+            FramingError::InvalidContinuation { claimed, expected } => write!(
+                f,
+                "continued frame size {claimed} does not match required size {expected}"
+            ),
+            FramingError::UnexpectedContinuation => {
+                write!(f, "continued message is not allowed here")
             }
             FramingError::Io(e) => write!(f, "I/O error: {e}"),
             FramingError::Codec(e) => write!(f, "codec error: {e}"),
@@ -211,26 +223,37 @@ pub fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     read_message_limited(reader, MAX_MESSAGE_SIZE)
 }
 
-/// Like [`read_message`] with a smaller cap on the whole message. The server
-/// reads client messages with `MAX_CLIENT_MESSAGE_SIZE`.
+/// Like [`read_message`] with a smaller cap on the whole message.
 pub fn read_message_limited<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
     max_message: usize,
 ) -> Result<M, FramingError> {
-    read_frames(reader, MAX_FRAME_SIZE.min(max_message), max_message)
+    read_frames(reader, MAX_FRAME_SIZE.min(max_message), max_message, true)
 }
 
-/// Reads a client hello with the smaller fixed handshake frame limit.
+/// Like [`read_message_limited`], but requires the message to fit in one frame.
+///
+/// The server uses this for client messages, whose encoder always emits one
+/// frame and whose protocol limit is a single frame.
+pub fn read_message_single_frame_limited<R: Read, M: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+    max_message: usize,
+) -> Result<M, FramingError> {
+    read_frames(reader, MAX_FRAME_SIZE.min(max_message), max_message, false)
+}
+
+/// Reads a client hello in one frame with the smaller fixed handshake limit.
 pub fn read_handshake_message<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<M, FramingError> {
-    read_frames(reader, HANDSHAKE_FRAME_SIZE, HANDSHAKE_FRAME_SIZE)
+    read_frames(reader, HANDSHAKE_FRAME_SIZE, HANDSHAKE_FRAME_SIZE, false)
 }
 
 fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
     max_frame: usize,
     max_message: usize,
+    allow_continuation: bool,
 ) -> Result<M, FramingError> {
     let mut payload = Vec::new();
     loop {
@@ -241,10 +264,19 @@ fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
         let continued = prefix & CONTINUED != 0;
         let claimed_len = usize::try_from(prefix & !CONTINUED).unwrap_or(usize::MAX);
 
+        if continued && !allow_continuation {
+            return Err(FramingError::UnexpectedContinuation);
+        }
         if claimed_len > max_frame {
             return Err(FramingError::Oversized {
                 claimed: claimed_len,
                 max: max_frame,
+            });
+        }
+        if continued && claimed_len != MAX_FRAME_SIZE {
+            return Err(FramingError::InvalidContinuation {
+                claimed: claimed_len,
+                expected: MAX_FRAME_SIZE,
             });
         }
         let start = payload.len();

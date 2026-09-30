@@ -125,10 +125,12 @@ test("does not classify server activity in another root session as a selection",
   await plugin["chat.message"]({ sessionID: "attached-client-session" });
 
   expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent_session",
     "pane.report_agent",
     "pane.report_agent",
   ]);
   expect(requests.map(requestSessionID)).toEqual([
+    "visible-session",
     "visible-session",
     "attached-client-session",
   ]);
@@ -138,15 +140,52 @@ test("does not classify server-global root creation as a local selection", async
   const plugin = await loadPlugin();
 
   await plugin.event({
-    event: { type: "session.created", properties: { sessionID: "attached-session" } },
+    event: { type: "session.created", properties: { info: { id: "attached-session" } } },
   });
   await plugin.event({
     event: { type: "session.updated", properties: { sessionID: "attached-session" } },
   });
-  await plugin["chat.message"]({ sessionID: "attached-session" });
 
-  expect(requests.map(requestMethod)).toEqual(["pane.report_agent"]);
-  expect(requests.map(requestSessionID)).toEqual(["attached-session"]);
+  expect(requests).toEqual([]);
+});
+
+test("anchors the local root from the chat hook across both session event shapes", async () => {
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: { type: "session.created", properties: { info: { id: "local-session" } } },
+  });
+  await plugin.event({
+    event: {
+      type: "session.updated",
+      properties: { sessionID: "local-session" },
+    },
+  });
+  expect(requests).toEqual([]);
+
+  await plugin["chat.message"]({ sessionID: "local-session" });
+
+  expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent_session",
+    "pane.report_agent",
+  ]);
+  expect(requests.map(requestSessionID)).toEqual(["local-session", "local-session"]);
+  expect(requestParam(requests[0], "session_start_source")).toBe("startup");
+  expect(requestSeq(requests[1])).toBe((requestSeq(requests[0]) as number) + 1);
+});
+
+test("Kilo anchors a session named only by its info payload", async () => {
+  importCounter += 1;
+  const { SheprAgentStatePlugin } = await import(`../kilo/shepr-agent-state.js?test=${importCounter}`);
+  const plugin = await SheprAgentStatePlugin();
+
+  await plugin.event({
+    event: { type: "session.created", properties: { info: { id: "kilo-session" } } },
+  });
+
+  expect(requests.map(requestMethod)).toEqual(["pane.report_agent_session"]);
+  expect(requests.map(requestSessionID)).toEqual(["kilo-session"]);
+  expect(requestParam(requests[0], "session_start_source")).toBe("startup");
 });
 
 test("reports retry status as working", async () => {
@@ -219,8 +258,9 @@ test("routes nested child prompts to their own root, not the last active root", 
   });
   await plugin["chat.message"]({ sessionID: "nested-session" });
 
-  expect(requests.map(requestState)).toEqual(["working", "blocked", "working"]);
-  expect(requests.map(requestSessionID)).toEqual([
+  const stateReports = requests.filter((request) => requestMethod(request) === "pane.report_agent");
+  expect(stateReports.map(requestState)).toEqual(["working", "blocked", "working"]);
+  expect(stateReports.map(requestSessionID)).toEqual([
     "other-root",
     "root-session",
     "root-session",
@@ -259,7 +299,12 @@ test("dual server entrypoint keeps V1 hooks and never reports from the V2 shared
   expect(requests).toHaveLength(0);
   const hooks = await module.default.server();
   await hooks["chat.message"]({ sessionID: "v1-root" });
-  expect(requests.map(requestState)).toEqual(["working"]);
+  expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent_session",
+    "pane.report_agent",
+  ]);
+  expect(requestParam(requests[0], "session_start_source")).toBe("startup");
+  expect(requestState(requests[1])).toBe("working");
 });
 
 function requestState(request: unknown): unknown {

@@ -1082,10 +1082,42 @@ mod tests {
         buf.extend_from_slice(&(64u32 * 1024).to_le_bytes());
         let result: Result<ClientMessage, FramingError> =
             read_handshake_message(&mut buf.as_slice());
+        assert!(matches!(result, Err(FramingError::UnexpectedContinuation)));
+    }
+
+    #[test]
+    fn continued_frame_must_be_full_sized() {
+        let prefix = (1u32 | (1 << 31)).to_le_bytes();
+        let result: Result<ClientMessage, FramingError> = read_message(&mut prefix.as_slice());
         assert!(matches!(
             result,
-            Err(FramingError::Oversized { max, .. }) if max == 64 * 1024
+            Err(FramingError::InvalidContinuation {
+                claimed: 1,
+                expected: MAX_FRAME_SIZE,
+            })
         ));
+    }
+
+    #[test]
+    fn zero_length_continuation_is_rejected_without_reading_another_prefix() {
+        let prefix = (1u32 << 31).to_le_bytes();
+        let result: Result<ClientMessage, FramingError> = read_message(&mut prefix.as_slice());
+        assert!(matches!(
+            result,
+            Err(FramingError::InvalidContinuation {
+                claimed: 0,
+                expected: MAX_FRAME_SIZE,
+            })
+        ));
+    }
+
+    #[test]
+    fn single_frame_reader_rejects_a_continued_client_message() {
+        let message = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE));
+        let frames = encode_message(&message).expect("encode test message");
+        let result: Result<ClientMessage, FramingError> =
+            read_message_single_frame_limited(&mut frames.as_slice(), MAX_CLIENT_MESSAGE_SIZE);
+        assert!(matches!(result, Err(FramingError::UnexpectedContinuation)));
     }
 
     #[test]

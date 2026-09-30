@@ -20,6 +20,10 @@ impl AppState {
                 continue;
             };
 
+            // Resolve the live cwd again so a Git result is rejected if the
+            // process changed directories while the worker ran. This follows
+            // PaneRuntime::follow_cwd into /proc from AppState; App should make
+            // this comparison and pass the resolved cwd into this data reducer.
             if self.workspaces[ws_idx]
                 .resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
                 .as_ref()

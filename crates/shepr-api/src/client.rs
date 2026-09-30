@@ -114,18 +114,20 @@ impl ApiClient {
             method: Method::Ping(PingParams::default()),
         };
         let response = self.request(&request)?;
-        match response.result {
-            ResponseResult::Pong {
-                version,
-                build_id,
-                boot_id,
-            } => Ok(crate::RuntimeStatus {
-                version: Some(version),
-                build_id,
-                boot_id,
-            }),
-            result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
-        }
+        runtime_status(response)
+    }
+
+    pub(crate) fn status_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<crate::RuntimeStatus, ApiClientDeadlineError> {
+        let request = Request {
+            id: "api-client:status".into(),
+            method: Method::Ping(PingParams::default()),
+        };
+        let value = self.request_value_until(&request, deadline)?;
+        let response = parse_response_value(value).map_err(ApiClientDeadlineError::Request)?;
+        runtime_status(response).map_err(ApiClientDeadlineError::Request)
     }
 
     /// Every request (status, stop, detect) checks who serves the socket
@@ -133,6 +135,23 @@ impl ApiClient {
     /// a listener whose backlog is full (`ErrorKind::TimedOut`).
     fn connect(&self, timeout: Duration) -> io::Result<LocalStream> {
         shepr_platform::ipc::connect_trusted_local_stream_within(&self.socket_path, timeout)
+    }
+}
+
+fn runtime_status(
+    response: crate::schema::SuccessResponse,
+) -> Result<crate::RuntimeStatus, ApiClientError> {
+    match response.result {
+        ResponseResult::Pong {
+            version,
+            build_id,
+            boot_id,
+        } => Ok(crate::RuntimeStatus {
+            version: Some(version),
+            build_id,
+            boot_id,
+        }),
+        result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
     }
 }
 

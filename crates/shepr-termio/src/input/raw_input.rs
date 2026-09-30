@@ -617,7 +617,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
 
         if starts_with_incomplete_sgr_mouse_sequence(&self.buffer) {
             tracing::debug!(
-                bytes = ?self.buffer,
+                len = self.buffer.len(),
                 "discarding incomplete SGR mouse sequence after input timeout"
             );
             let prefix = std::mem::take(&mut self.buffer);
@@ -718,7 +718,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             self.host_replies.clear_all();
             self.held_pending_host_reply_esc = false;
             tracing::warn!(
-                bytes = ?self.buffer,
+                len = self.buffer.len(),
                 "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
             );
             self.lone_escape_recently_flushed = true;
@@ -985,7 +985,11 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
             return Some((RawInputEvent::Key(key), seq_len));
         }
 
-        tracing::debug!(sequence = ?seq, "dropping unsupported escape sequence");
+        tracing::debug!(
+            len = seq.len(),
+            kind = "unsupported_escape_sequence",
+            "dropping unsupported escape sequence"
+        );
         return Some((RawInputEvent::Unsupported, seq_len));
     }
 

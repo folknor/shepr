@@ -12,63 +12,6 @@ Filed from the defect hunt over `crates/shepr-vt`, `crates/shepr-pty` and
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## TERM-004 - vte buffers an unterminated OSC without limit, so one pane can exhaust the shared server's memory
-
-Scope: vt-pty. Filed by the hunter as robustness.
-
-No contract covers this directly, but it defeats the ones next to it.
-`crates/shepr-vt/src/limits.rs` bounds every scanner buffer, "keeping attacker
-supplied terminal input bounded per pane" (`MAX_OSC_BYTES`,
-`MAX_XTGETTCAP_BYTES`), and `MAX_CLIPBOARD_BYTES` bounds "the payload that the
-parser hands to its caller". alacritty depends on vte with `std`
-(`alacritty_terminal-0.26.0/Cargo.toml`), and under `std` `Parser::osc_raw` is a
-plain `Vec<u8>` that `action_osc_put` grows on every byte until a terminator. A
-child that prints `ESC ] 52 ; c ;` and streams base64 (or forgets the
-terminator) grows the server's heap without bound. When it does terminate,
-alacritty base64-decodes the whole thing before shepr's 192 KiB check drops it.
-The server is shared by every pane on the host, so one runaway pane takes all of
-them down.
-
-**Fix direction.** The scanner already tracks OSC framing exactly as vte does.
-Have `Terminal::write_at` stop feeding OSC body bytes to vte once the scanner's
-OSC buffer has overflowed: hand vte a CAN to end the OSC (vte dispatches, then
-treats CAN as a harmless control) and skip bytes until the scanner leaves OSC
-state. This is the one unbounded buffer: vte's DCS passthrough and SOS/PM/APC do
-not retain bytes, and its sync buffer is capped at 2 MiB.
-
-## TERM-005 - Panes do not export `SHEPR_CLIENT_SOCKET_PATH`, and an inherited one is overridden
-
-Scope: vt-pty (lateral).
-
-**Claim broken.** AGENTS.md: "Every pane exports `SHEPR_SOCKET_PATH` and
-`SHEPR_CLIENT_SOCKET_PATH`".
-
-**What the code does.** `apply_pane_launch_env`
-(`crates/shepr-mux/src/pane/launch.rs`) sets only `SHEPR_SOCKET_PATH` (from
-`PaneLaunchEnv::api_socket_path`). `SHEPR_CLIENT_SOCKET_PATH` is `Allowed`, so it
-reaches the pane only if the server's own environment had it. Path resolution
-gives an API-socket override priority over a client-socket override, deriving
-the client socket from the API one (test
-`client_socket_path_api_override_takes_precedence_over_client_override` in
-`crates/shepr-server/src/server/socket_paths.rs`). For a server started with only
-`SHEPR_CLIENT_SOCKET_PATH=<custom>`, every pane gets
-`SHEPR_SOCKET_PATH=<runtime>/shepr.sock` plus the inherited custom client path,
-and a `shepr` run inside it derives `<runtime>/shepr-client.sock` and misses its
-own server. With no overrides the derivation lands right, which is why nobody
-noticed.
-
-**Fix.** Export the resolved client socket explicitly next to the API socket
-(pass it in `PaneLaunchEnv`), or fix the doc and scrub the variable.
-
-A fixer confirmed the mismatch and found the fix spans three places: the
-resolved socket pair has to travel through `PaneSpawnHandles`
-(`crates/shepr-mux/src/workspace.rs`) into `PaneLaunchEnv`, and a pane that
-exports both variables only works if `shepr-config`'s precedence (the API
-override wins and derives the client socket, now pinned by tests in
-`address.rs`) yields the same pair the server resolved. A constraint note sits
-beside the API path field in `launch.rs`. Give one fixer `launch.rs`,
-`workspace.rs` and the `PaneLaunchEnv` construction sites together.
-
 ## TERM-006 - Test-only read, mode and launch surface kept in production crates
 
 Scope: vt-pty (filed as simplification against AGENTS.md's smallest-surface
@@ -107,35 +50,17 @@ The test doubles could build what they need from `interactive_shell` or a
 test-support constructor, and the vt tests can assert through the production
 readers.
 
-## TERM-007 - Smaller vt and pty notes
+## TERM-007 - The scanner's ground-state ESC search is not memchr
 
 Scope: vt-pty.
 
-- **Scanner ground-state search is not memchr.** `Scanner::scan`
-  (`crates/shepr-vt/src/scan.rs`) finds the next ESC with
-  `iter().position(|&b| b == 0x1b)`, while vte uses `memchr` on the same bytes.
-  It runs on every byte of every pane's output, just before vte scans the same
-  slice again; `memchr` is already in the tree through vte.
-- **`write_at` re-enters `with_handler` per scan segment.** Each segment opens
-  and closes a row batch, locks the event mutex and folds damage. Correct, and
-  segments are rare. With TERM-001's adapter-owned reply queue, scanner replies
-  could go into the same queue from inside one advance; the segmenting exists
-  only to feed the injected spellings (`CSI 3 J`, `CSI > 4 ; Pv m`).
-- **`PaneTerminal::resize` puts earlier replies behind the resize's own.**
-  `backend.rs` takes pending core replies, resizes, drains the resize's replies
-  into the actor's resize slot, then `restore_pty_responses` the earlier ones for
-  "the next read", so anything pending goes out after the later resize reply.
-  Every writer collects its replies straight away, so the queue should be empty
-  (only the test-only `mode_set` leaves some). If that holds,
-  `restore_pty_responses` can be deleted; if not, pending replies should go ahead
-  of the resize replies.
-- **`PtyCommand` hands the server's `PWD`/`OLDPWD` to every pane.** `base_env`
-  copies the server environment whole and nothing resets `PWD` to the pane's
-  cwd. Shells fix `PWD` at startup, so harmless for the only production launch,
-  but `base_env`'s doc lists what must not reach a pane, and a stale `PWD` fits.
-- **`Terminal::tick` returns `true` for an empty expired frame.** The doc says
-  it "Returns whether anything was flushed". Callers only bump an epoch and
-  request a render; harmless.
+`Scanner::scan` (`crates/shepr-vt/src/scan.rs`) finds the next ESC with
+`iter().position(|&b| b == 0x1b)`, while vte uses `memchr` on the same bytes. It
+runs on every byte of every pane's output, just before vte scans the same slice
+again. `memchr` is only a transitive dependency through vte, so using it needs a
+direct dependency edge in `shepr-vt/Cargo.toml` and a `Cargo.lock` update; a note
+beside the search says so. Take the edge (it adds no new crate to the build) and
+switch the search.
 
 ## TERM-010 - A transient default-colour override can pin a pane's detection loop at 20 Hz indefinitely
 
@@ -168,28 +93,6 @@ expected immediately", which neither case is; AGENTS.md "Hot paths multiply".
 group changes (the only event that can make a restore possible), keyed off the
 foreground-group-change signal the detector already computes; do not arm it at
 all while the host theme is empty.
-
-## TERM-011 - `follow_cwd` bypasses the OSC 7 arbitration in the common case
-
-Hunter's severity: Medium-low. Scope: mux-pane.
-
-`ReportedCwd` and `PaneRuntime::cwd()` document a rule: OSC 7 "carries what
-/proc cannot: a logical path through symlinks, or the directory of a program the
-pane shell's /proc entry does not describe", and wins while the shell's /proc
-cwd is unchanged since the report.
-
-`PaneRuntime::cwd()` has no production caller. Production uses `follow_cwd()`
-(from `shepr-server/src/app/creation.rs::launch_cwd_for_terminal`, for splits and
-new workspaces), which reads the foreground group leader's `/proc` cwd first and
-falls back to `cwd()` only when that read fails. With the shell in the
-foreground (an idle prompt, the usual moment for a split), the leader is the
-shell, so the split gets the physical `/proc` cwd and the OSC 7 logical path is
-ignored. The documented arbitration runs only when the leader's cwd is
-unreadable.
-
-**Fix.** When the foreground group is the pane shell's own, use `cwd()`; read the
-group leader only for a different foreground group. Or document that splits
-follow the physical path.
 
 ## TERM-012 - Pid use after reap is guarded in one accessor and not the others
 
@@ -284,3 +187,18 @@ Scope: mux-pane.
   failing. It is an environment flag, not config, so outside the "config problem
   fails the launch" rule, but it is the one launch-time setting in this scope
   that falls back silently.
+
+## TERM-018 - A nested client in a pane of a client-socket-only server derives the wrong client socket
+
+Scope: mux-pane, config (residue of the pane socket export fix).
+
+Every pane now exports `SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` as the
+server resolved them. `shepr-config` gives the API variable precedence and
+derives the client socket from it, so in a pane of a server started with only a
+`SHEPR_CLIENT_SOCKET_PATH` override, a nested `shepr` client derives
+`<runtime>/shepr-client.sock` and misses its own server. The API variable cannot
+simply be dropped there: every agent integration reports through it. AGENTS.md
+names the limitation. Closing it needs the precedence rule to honour both
+variables when both are set and consistent (for example, derive only when the
+client variable is absent), which is a `shepr-config` change with its pinned
+tests.

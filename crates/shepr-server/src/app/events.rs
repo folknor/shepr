@@ -27,6 +27,37 @@ impl App {
         &mut self,
         ev: AppEvent,
     ) -> RenderDemand {
+        self.handle_internal_event_inner(ev, false)
+    }
+
+    /// Publishes the process exit once, then asks the App's session policy
+    /// whether the event must wait for a checkpoint before removal.
+    pub(crate) fn prepare_pane_exit(
+        &mut self,
+        pane_id: shepr_core::layout::PaneId,
+        exit_reason: shepr_platform::ChildExitReason,
+    ) -> Option<u64> {
+        self.publish_pane_process_exit(pane_id);
+        if exit_reason.requires_session_checkpoint()
+            && self.state.prepare_pane_removal_by_id(pane_id).is_some()
+        {
+            self.request_pane_exit_checkpoint()
+        } else {
+            None
+        }
+    }
+
+    /// Applies an event whose pane-exit publication and checkpoint decision
+    /// have already been made by the App.
+    pub(crate) fn handle_prepared_pane_exit(&mut self, ev: AppEvent) -> RenderDemand {
+        self.handle_internal_event_inner(ev, true)
+    }
+
+    fn handle_internal_event_inner(
+        &mut self,
+        ev: AppEvent,
+        pane_exit_prepared: bool,
+    ) -> RenderDemand {
         if matches!(&ev, AppEvent::ClipboardWrite { .. }) {
             return RenderDemand::None;
         }
@@ -41,11 +72,12 @@ impl App {
         }
 
         if let AppEvent::PaneDied { pane_id, .. } = &ev
-            && self.state.publish_pane_process_exit_if_agent(*pane_id)
+            && !pane_exit_prepared
         {
-            self.sync_full_lifecycle_authority_detection_pauses();
+            self.publish_pane_process_exit(*pane_id);
         }
 
+        let session_was_dirty = self.state.session_dirty;
         let pane_removal_plan = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.state.prepare_pane_removal_by_id(*pane_id)
         } else {
@@ -57,10 +89,10 @@ impl App {
                 exit_reason, ..
             } if exit_reason.requires_session_checkpoint() && pane_removal_plan.is_some()
         );
-        // The headless loop holds a checkpointed exit until its save settles
-        // (`checkpoint_session_before_pane_exit`), so this only reports a
-        // caller that skipped that step; the pane is still removed.
-        if checkpointed_pane_exit && !self.pane_exit_checkpoint_settled() {
+        // The headless loop prepares and holds checkpointed exits before
+        // applying them, so this only reports a direct caller that skipped
+        // that step; the pane is still removed.
+        if checkpointed_pane_exit && !pane_exit_prepared && !self.pane_exit_checkpoint_settled() {
             tracing::warn!("pane exit reached removal before its session checkpoint settled");
         }
 
@@ -88,7 +120,7 @@ impl App {
             self.state.handle_app_event(ev);
         }
         if checkpointed_pane_exit {
-            self.finish_checkpointed_pane_exit();
+            self.finish_checkpointed_pane_exit_after_event(session_was_dirty);
         }
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
@@ -100,6 +132,13 @@ impl App {
         self.shutdown_detached_terminal_runtimes(&detached_terminal_ids);
         self.state.mark_shell_projection_dirty();
         RenderDemand::Full
+    }
+
+    fn publish_pane_process_exit(&mut self, pane_id: shepr_core::layout::PaneId) {
+        if self.state.publish_pane_process_exit_if_agent(pane_id) {
+            self.sync_full_lifecycle_authority_detection_pauses();
+            self.state.mark_shell_projection_dirty();
+        }
     }
 
     fn render_demand_if(changed: bool) -> RenderDemand {

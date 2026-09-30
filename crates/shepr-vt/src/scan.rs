@@ -20,13 +20,16 @@
 //! CAN or SUB; inspected DCS passthrough ends on ESC, CAN, SUB or raw 0x9C.
 //! For other DCS forms, the scanner merges vte's ignore and passthrough states
 //! because their raw-0x9C distinction cannot change our events. SOS/PM/APC
-//! strings end on ESC, CAN or SUB. Events carry the offset just past the byte
-//! that completed them, relative to the slice handed to [`Scanner::scan`], so
-//! callers can interleave the core's own replies with ours in byte order.
+//! strings end on ESC, CAN or SUB. Events carry a consumed-byte boundary
+//! relative to the slice handed to [`Scanner::scan`]. Completed reports use
+//! the boundary after their terminator. An OSC cut short for the parser marks
+//! the boundary before the first byte to skip, and its resume marks the end of
+//! the skipped input: past a BEL, CAN or SUB terminator, before an ESC one. So
+//! callers can keep parser input and scanner effects in byte order.
 
 use crate::limits::{
-    MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_U16_DECIMAL_DIGITS, MAX_XTGETTCAP_BYTES,
-    XTGETTCAP_REPLY_OVERHEAD_BYTES,
+    MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_PARSER_OSC_BYTES,
+    MAX_U16_DECIMAL_DIGITS, MAX_XTGETTCAP_BYTES, XTGETTCAP_REPLY_OVERHEAD_BYTES,
 };
 
 /// Raw OSC working-directory report. It may be a URI or a path, so parsing
@@ -40,6 +43,11 @@ pub struct ProgressReport(pub Vec<u8>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ScanEvent {
+    /// An OSC exceeded the adapter's payload bound. The parser must be ended
+    /// here, and its input skipped until the scanner reaches the real end.
+    AbortOversizedOsc,
+    /// The real terminator of an OSC that the parser was forced to end early.
+    ResumeAfterOversizedOsc,
     /// CSI ? 996 n (color scheme DSR).
     ColorSchemeQuery,
     /// CSI 16 t (cell size in pixels).
@@ -83,15 +91,26 @@ pub(super) struct Scanner {
     state: State,
     buffer: Vec<u8>,
     overflow: bool,
+    /// Body bytes of the current OSC the parser has been handed.
+    osc_parser_bytes: usize,
+    /// The current OSC passed `MAX_PARSER_OSC_BYTES` and the parser was ended.
+    osc_cut: bool,
 }
 
 impl Scanner {
+    pub(super) fn has_oversized_osc(&self) -> bool {
+        self.state == State::Osc && self.osc_cut
+    }
+
     pub(super) fn scan(&mut self, bytes: &[u8]) -> Vec<ScannedEvent> {
         let mut events = Vec::new();
         let mut index = 0;
         while index < bytes.len() {
             if self.state == State::Ground {
                 // Fast path: only ESC leaves ground state.
+                // Keep this as a standard-library search: `memchr` is only a
+                // transitive vte dependency here, and calling it would add a
+                // direct, lockfile-tracked edge for one search per span.
                 match bytes[index..].iter().position(|&byte| byte == 0x1b) {
                     Some(offset) => index += offset,
                     None => break,
@@ -139,15 +158,47 @@ impl Scanner {
             },
             State::Osc => match byte {
                 0x07 | 0x18 | 0x1a => {
-                    self.dispatch_osc(index, events);
+                    if self.osc_cut {
+                        // The parser already left the OSC at the cut; this
+                        // terminator is skipped with the body, so a BEL does
+                        // not reach the parser as a bell.
+                        events.push(ScannedEvent {
+                            end: index + 1,
+                            event: ScanEvent::ResumeAfterOversizedOsc,
+                        });
+                    } else {
+                        self.dispatch_osc(index, events);
+                    }
                     self.enter(State::Ground);
                 }
                 0x1b => {
-                    self.dispatch_osc(index, events);
+                    if self.osc_cut {
+                        // The ESC starts what follows, so the parser gets it.
+                        events.push(ScannedEvent {
+                            end: index,
+                            event: ScanEvent::ResumeAfterOversizedOsc,
+                        });
+                    } else {
+                        self.dispatch_osc(index, events);
+                    }
                     self.enter(State::Escape);
                 }
                 0x00..=0x06 | 0x08..=0x17 | 0x19 | 0x1c..=0x1f => {}
                 _ => {
+                    if self.osc_cut {
+                        return;
+                    }
+                    if self.osc_parser_bytes >= MAX_PARSER_OSC_BYTES {
+                        events.push(ScannedEvent {
+                            // Stop before the first byte past the parser's
+                            // bound.
+                            end: index,
+                            event: ScanEvent::AbortOversizedOsc,
+                        });
+                        self.osc_cut = true;
+                        return;
+                    }
+                    self.osc_parser_bytes += 1;
                     if self.buffer.len() >= MAX_OSC_BYTES {
                         self.overflow = true;
                     } else {
@@ -231,6 +282,8 @@ impl Scanner {
         self.state = state;
         self.buffer.clear();
         self.overflow = false;
+        self.osc_parser_bytes = 0;
+        self.osc_cut = false;
     }
 
     fn dispatch_csi(&mut self, final_byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
@@ -520,6 +573,72 @@ mod tests {
         let events = scan_chunks(&[bytes]);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].end, bytes.len() - 1);
+    }
+
+    #[test]
+    fn oversized_osc_marks_abort_and_resume_boundaries() {
+        let mut scanner = Scanner::default();
+        let mut events = scanner.scan(b"\x1b]7;");
+        // Past the retention bound only: the report is dropped, but the parser
+        // still gets the body.
+        let body = vec![b'x'; MAX_PARSER_OSC_BYTES - 2];
+        events.extend(scanner.scan(&body));
+        assert!(events.is_empty());
+        assert!(!scanner.has_oversized_osc());
+
+        events = scanner.scan(b"x");
+        assert_eq!(
+            events,
+            vec![ScannedEvent {
+                end: 0,
+                event: ScanEvent::AbortOversizedOsc,
+            }]
+        );
+
+        events = scanner.scan(b"more body");
+        assert!(events.is_empty());
+        events = scanner.scan(b"\x1b\\\x1b[?996n");
+        assert_eq!(
+            events,
+            vec![
+                ScannedEvent {
+                    end: 0,
+                    event: ScanEvent::ResumeAfterOversizedOsc,
+                },
+                ScannedEvent {
+                    end: 9,
+                    event: ScanEvent::ColorSchemeQuery,
+                },
+            ]
+        );
+
+        // A BEL terminator is skipped with the body.
+        let mut scanner = Scanner::default();
+        let mut events = scanner.scan(b"\x1b]");
+        events.extend(scanner.scan(&vec![b'x'; MAX_PARSER_OSC_BYTES + 1]));
+        events.extend(scanner.scan(b"\x07"));
+        assert_eq!(
+            events,
+            vec![
+                ScannedEvent {
+                    end: MAX_PARSER_OSC_BYTES,
+                    event: ScanEvent::AbortOversizedOsc,
+                },
+                ScannedEvent {
+                    end: 1,
+                    event: ScanEvent::ResumeAfterOversizedOsc,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_osc_past_the_retention_bound_is_not_dispatched_but_not_cut() {
+        let mut scanner = Scanner::default();
+        let mut bytes = b"\x1b]7;".to_vec();
+        bytes.resize(bytes.len() + MAX_OSC_BYTES, b'x');
+        bytes.push(0x07);
+        assert!(scanner.scan(&bytes).is_empty());
     }
 
     #[test]

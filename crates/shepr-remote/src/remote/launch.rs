@@ -7,10 +7,11 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 /// Stops the remote server instance that reported `server.boot_id`, and no
 /// other, by running the discovered remote `shepr server stop --expect-boot` over
 /// a BatchMode connection. The remote command waits for the server's
-/// sockets to close and exits with
-/// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answered
-/// (nothing was stopped), or `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when
-/// no server was left to stop.
+/// named boot to stop answering. It exits with
+/// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answers
+/// the stop request or appears while the named boot shuts down, or
+/// `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when no server was left to
+/// stop.
 pub fn stop_remote_server(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
@@ -43,10 +44,10 @@ pub fn stop_remote_server(
 /// How a conditional remote stop ended when it did not fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RemoteStop {
-    /// The observed instance was stopped and its sockets are gone.
+    /// The observed instance stopped answering and no replacement was found.
     Stopped,
-    /// The server that answered is not the instance that was observed, or none
-    /// answered any more, so nothing was left to stop.
+    /// A different boot answered, or none answered any more, while stopping the
+    /// instance that had been observed.
     BootChanged,
 }
 

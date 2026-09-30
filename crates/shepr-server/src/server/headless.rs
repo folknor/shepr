@@ -87,6 +87,11 @@ enum LoopEvent<'a> {
     ClientListenerError(io::Error),
 }
 
+struct PendingCheckpointedPaneExit {
+    event: shepr_mux::events::AppEvent,
+    checkpoint_generation: u64,
+}
+
 struct ListenerFd(RawFd);
 
 impl AsRawFd for ListenerFd {
@@ -160,7 +165,10 @@ pub struct HeadlessServer {
     /// Acknowledgements for shutdown frames queued to client writer threads.
     shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// Pane exits held until their pre-removal session checkpoint reaches disk.
-    pending_checkpointed_pane_exits: VecDeque<shepr_mux::events::AppEvent>,
+    pending_checkpointed_pane_exits: VecDeque<PendingCheckpointedPaneExit>,
+    /// Set only while a ready held exit is routed back through the forwarding
+    /// handler, which then skips its initial App preparation step.
+    replaying_checkpointed_pane_exit: Option<u64>,
     /// Answers to client-shell endpoint commands, in the order the commands
     /// ran, waiting for the render that shows their effect. The loop queues
     /// them to the clients after that render (or at once when no render is
@@ -235,6 +243,7 @@ impl HeadlessServer {
             server_event_tx,
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
+            replaying_checkpointed_pane_exit: None,
             endpoint_replies: Vec::new(),
             _client_socket_startup_lock: client_socket_startup_lock,
         })
@@ -1377,8 +1386,16 @@ impl HeadlessServer {
         {
             let queued = self.pending_checkpointed_pane_exits.len();
             for _ in 0..queued {
-                if let Some(ev) = self.pending_checkpointed_pane_exits.pop_front() {
-                    changed |= self.handle_internal_event_with_forwarding(ev);
+                if let Some(pending) = self.pending_checkpointed_pane_exits.pop_front() {
+                    if self
+                        .app
+                        .pane_exit_checkpoint_generation_settled(pending.checkpoint_generation)
+                    {
+                        self.replaying_checkpointed_pane_exit = Some(pending.checkpoint_generation);
+                        changed |= self.handle_internal_event_with_forwarding(pending.event);
+                    } else {
+                        self.pending_checkpointed_pane_exits.push_back(pending);
+                    }
                 }
             }
         }

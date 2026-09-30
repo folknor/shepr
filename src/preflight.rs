@@ -113,22 +113,24 @@ fn is_yes(answer: &str) -> bool {
 
 fn local_offer(status: &RuntimeStatus) -> String {
     format!(
-        "shepr: the local shepr server is a different build (server build {}, this shepr build {}).\n\
+        "shepr: the local shepr server is a different build (server build {}, boot {}, this shepr build {}).\n\
          Restarting it stops that server, which ends every pane process it hosts. The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
         status.build_id,
+        status.boot_id,
         shepr_protocol::BUILD_ID
     )
 }
 
 fn remote_offer(machine: &MachineConfig, server: &DifferentBuildServer) -> String {
     format!(
-        "shepr: the shepr server on machine {} ({}) is a different build (server build {}, this shepr build {}).\n\
+        "shepr: the shepr server on machine {} ({}) is a different build (server build {}, boot {}, this shepr build {}).\n\
          Restarting it stops that server, which ends every pane process it hosts on that machine. The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
         machine.label,
         machine.ssh.as_str(),
         server.build_id,
+        server.boot_id,
         shepr_protocol::BUILD_ID
     )
 }
@@ -144,8 +146,8 @@ enum LocalRestart {
     Declined,
     /// The server was stopped; the launch that follows starts one of this build.
     Stopped,
-    /// The server that answered the stop was not the one observed, or none was
-    /// left; nothing was stopped by it.
+    /// The named server stopped answering or a different boot answered; no
+    /// stop was sent to any replacement server.
     OccupantChanged,
     /// The stop failed; the server may still be running.
     Failed(String),
@@ -199,7 +201,7 @@ fn local_notice(local: &LocalRestart) -> Option<String> {
                 .to_owned(),
         ),
         LocalRestart::OccupantChanged => Some(
-            "shepr: the local server changed while it was being stopped, so nothing was stopped."
+            "shepr: the local server changed while it was being stopped; no stop was sent to a new occupant."
                 .to_owned(),
         ),
         LocalRestart::Failed(error) => {
@@ -323,11 +325,12 @@ fn restart_notice(machine: &MachineConfig, outcome: &PreflightOutcome) -> Option
             "stopped the shepr server of a different build on machine {label}; one of this build starts when the client attaches."
         ),
         RestartResult::OccupantChanged => match &outcome.check {
-            MachineCheck::DifferentBuild(_) => format!(
-                "the shepr server on machine {label} was replaced while it was being stopped, and the one running now is another different build, so nothing was stopped. Run shepr again to be offered a restart."
+            MachineCheck::DifferentBuild(server) => format!(
+                "the shepr server on machine {label} was replaced while it was being stopped; boot {} now answers as another different build, and no stop was sent to it. Run shepr again to be offered a restart.",
+                server.boot_id
             ),
             _ => format!(
-                "the shepr server on machine {label} changed while it was being stopped, so nothing was stopped."
+                "the shepr server on machine {label} changed while it was being stopped; no stop was sent to a replacement."
             ),
         },
     };
@@ -528,7 +531,7 @@ mod tests {
 
         let changed = restart_notices(RestartResult::OccupantChanged, MachineCheck::Ready);
         assert_eq!(changed.len(), 1, "{changed:?}");
-        assert!(changed[0].contains("nothing was stopped"), "{changed:?}");
+        assert!(changed[0].contains("no stop was sent"), "{changed:?}");
 
         let replaced = restart_notices(
             RestartResult::OccupantChanged,

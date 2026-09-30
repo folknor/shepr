@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use interprocess::TryClone as _;
 use interprocess::local_socket::traits::Stream as _;
@@ -20,7 +21,8 @@ use shepr_protocol::endpoint::EndpointServerWelcome;
 use shepr_protocol::{self, ClientMessage, ClientPaneInputEvent, MAX_INPUT_PAYLOAD, ServerMessage};
 
 use crate::limits::{
-    HANDSHAKE_TIMEOUT, MAX_INPUT_EVENT_BATCH, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, MAX_INPUT_EVENT_BATCH,
+    UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
 };
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
@@ -56,8 +58,15 @@ fn write_endpoint_rejection(
 ) {
     let welcome = EndpointServerWelcome::refused(reason);
     let response = ServerMessage::EndpointWelcome(welcome);
-    if let Err(err) = shepr_protocol::write_message(stream, &response) {
-        debug!(?client_id, error = %err, "client left before its handshake refusal was written");
+    match shepr_protocol::encode_message(&response) {
+        Ok(framed) => {
+            if let Err(error) = write_framed_bytes(stream, &framed, CLIENT_WRITE_STALL_TIMEOUT) {
+                debug!(?client_id, %error, "client left before its handshake refusal was written");
+            }
+        }
+        Err(error) => {
+            debug!(?client_id, %error, "failed to encode client handshake refusal");
+        }
     }
 }
 
@@ -427,8 +436,8 @@ pub(crate) fn handle_client_handshake(
         return Ok(());
     }
 
-    // Reset to blocking mode - the accept loop sets nonblocking but
-    // the handshake thread needs blocking I/O for read_message/write_message.
+    // Reset to blocking mode for the preamble and the deadline reader below.
+    // Bounded frame writes switch to nonblocking mode in `write_framed_bytes`.
     stream.set_nonblocking(false)?;
 
     // The build-identity preamble goes out first, before anything is read, so
@@ -528,8 +537,11 @@ pub(crate) fn handle_client_handshake(
     // The config belongs to this connection: the client installs it before it
     // processes any snapshot the server sends after this welcome.
     let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted(config.clone()));
-    shepr_protocol::write_message(&mut stream, &welcome)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    // Keep framing separate from transport so the welcome can also be supplied
+    // as pre-encoded bytes without changing the bounded socket write path.
+    let welcome = shepr_protocol::encode_message(&welcome)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    write_framed_bytes(&mut stream, &welcome, CLIENT_WRITE_STALL_TIMEOUT)?;
 
     stream.set_recv_timeout(None)?;
 
@@ -617,8 +629,10 @@ fn client_writer_loop(
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) {
     while let Some(item) = writer_queue.recv() {
-        let written = match item {
-            ClientWriteItem::Control(data) => write_framed_bytes(&mut stream, &data),
+        let result = match item {
+            ClientWriteItem::Control(data) => {
+                write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT)
+            }
             ClientWriteItem::Render(data) => {
                 // Runs once per rendered frame, so no per-frame logging. The
                 // send fails only after the server loop dropped its receiver,
@@ -626,7 +640,7 @@ fn client_writer_loop(
                 server_event_tx
                     .blocking_send(ServerEvent::ClientWriterDrained { client_id })
                     .ok();
-                write_framed_bytes(&mut stream, &data)
+                write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT)
             }
             ClientWriteItem::Flush(ack) => match stream.flush() {
                 Ok(()) => {
@@ -634,15 +648,13 @@ fn client_writer_loop(
                     // (shutdown flush deadline passed); the flush happened
                     // either way and nobody is left to tell.
                     ack.send(()).ok();
-                    true
+                    Ok(())
                 }
-                Err(err) => {
-                    debug!(error = %err, "client flush failed, closing writer");
-                    false
-                }
+                Err(err) => Err(err),
             },
         };
-        if !written {
+        if let Err(err) = result {
+            debug!(error = %err, "client write failed, closing writer");
             send_client_disconnected(server_event_tx, client_id);
             break;
         }
@@ -651,17 +663,13 @@ fn client_writer_loop(
     debug!("client writer thread exiting");
 }
 
-fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
-    let result = shepr_platform::write_client_stream(stream, data);
-    if let Err(err) = result {
-        debug!(error = %err, "client write failed, closing writer");
-        return false;
-    }
-    if let Err(err) = stream.flush() {
-        debug!(error = %err, "client flush failed, closing writer");
-        return false;
-    }
-    true
+fn write_framed_bytes(
+    stream: &mut LocalStream,
+    data: &[u8],
+    stall_timeout: Duration,
+) -> io::Result<()> {
+    shepr_platform::write_client_stream(stream, data, stall_timeout)?;
+    stream.flush()
 }
 
 fn client_read_loop_with_endpoint_controls(
@@ -672,7 +680,7 @@ fn client_read_loop_with_endpoint_controls(
     endpoint_control_writer: Option<&ClientControlWriter>,
 ) -> io::Result<()> {
     while !should_quit.is_requested() {
-        let message = shepr_protocol::read_message_limited(
+        let message = shepr_protocol::read_message_single_frame_limited(
             &mut shepr_platform::ClientStreamReader(&mut stream),
             shepr_protocol::MAX_CLIENT_MESSAGE_SIZE,
         );
@@ -865,7 +873,6 @@ mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
     use std::path::PathBuf;
-    use std::time::Duration;
 
     /// How often a test reader re-checks the queue. The queue's condvar wakes one
     /// waiter, and a test can have two (the control drain and a render read), so
@@ -1246,9 +1253,6 @@ mod tests {
     fn client_writer_closes_queue_after_socket_write_failure() {
         let (client_stream, server_stream, _path) =
             local_stream_pair("client-writer-socket-failure");
-        server_stream
-            .set_send_timeout(Some(Duration::from_millis(100)))
-            .expect("set test send timeout");
         let (writer, queue) = test_queue_writer();
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -1285,12 +1289,15 @@ mod tests {
         use std::io::Read as _;
 
         let (mut client, mut server, _path) = local_stream_pair("slow-observer");
-        server
-            .set_send_timeout(Some(Duration::from_millis(100)))
-            .expect("test precondition");
-        server.set_nonblocking(true).expect("test precondition");
         let worker = std::thread::spawn(move || {
-            assert!(write_framed_bytes(&mut server, &vec![b'x'; 1024 * 1024]));
+            assert!(
+                write_framed_bytes(
+                    &mut server,
+                    &vec![b'x'; 1024 * 1024],
+                    Duration::from_millis(100),
+                )
+                .is_ok()
+            );
         });
         client
             .set_recv_timeout(Some(Duration::from_secs(3)))

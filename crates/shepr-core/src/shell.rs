@@ -2,7 +2,8 @@
 
 use std::ffi::OsStr;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 /// How one candidate path looks to the platform-specific executable check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +33,7 @@ pub fn resolve_executable(
 ) -> io::Result<PathBuf> {
     let program_path = Path::new(program);
     if program_path.is_relative() {
-        if is_cwd_relative_path(program_path) {
+        if program.as_bytes().contains(&b'/') {
             let candidate = cwd.join(program_path);
             return match classify(&candidate) {
                 ExecutableStatus::Executable => Ok(candidate),
@@ -137,9 +138,49 @@ fn spawn_error(kind: io::ErrorKind, mut detail: String) -> io::Error {
     io::Error::new(kind, detail)
 }
 
-fn is_cwd_relative_path(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::CurDir | Component::ParentDir)
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_program_with_slash_resolves_from_the_working_directory() {
+        let cwd = Path::new("/work");
+        let expected = cwd.join("bin/zsh");
+        let resolved = resolve_executable(
+            OsStr::new("bin/zsh"),
+            Some(OsStr::new("/tools")),
+            cwd,
+            |candidate| {
+                if candidate == expected {
+                    ExecutableStatus::Executable
+                } else {
+                    ExecutableStatus::Missing
+                }
+            },
+        )
+        .expect("a slash-containing relative path is resolved from cwd");
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn bare_program_name_is_searched_on_path() {
+        let cwd = Path::new("/work");
+        let expected = cwd.join("tools/zsh");
+        let resolved = resolve_executable(
+            OsStr::new("zsh"),
+            Some(OsStr::new("tools:/other")),
+            cwd,
+            |candidate| {
+                if candidate == expected {
+                    ExecutableStatus::Executable
+                } else {
+                    ExecutableStatus::Missing
+                }
+            },
+        )
+        .expect("a bare program name is searched on PATH");
+
+        assert_eq!(resolved, expected);
+    }
 }

@@ -5,6 +5,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -153,11 +154,12 @@ impl RotatingFileMakeWriter {
     fn new(dir: &Path, file_name: &str, max_bytes: u64, retained_files: usize) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
         let path = dir.join(file_name);
-        let state = RotatingFileState {
+        let mut state = RotatingFileState {
             path,
             max_bytes,
             retained_files,
             lost_reason: None,
+            current_file: None,
         };
         state.open_current_file()?;
         Ok(Self {
@@ -182,22 +184,12 @@ struct RotatingFileGuard {
 
 impl Write for RotatingFileGuard {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let (operation, pending_reason) = {
-            let mut state = self.lock_state();
-            let pending_reason = state.lost_reason.take();
-            (state.clone(), pending_reason)
-        };
-
-        // The state mutex protects only this snapshot and recovery marker.
-        // File opens, flock, rotation and writes use the owned snapshot after
-        // the guard has been dropped.
-        let result = operation
-            .write_once(buf, pending_reason.as_deref())
-            .or_else(|_| operation.write_once(buf, pending_reason.as_deref()));
+        let mut state = self.lock_state();
+        let pending_reason = state.lost_reason.take();
+        let result = state.write_once(buf, pending_reason.as_deref());
         match result {
             Ok(written) => Ok(written),
             Err(error) => {
-                let mut state = self.lock_state();
                 if state.lost_reason.is_none() || pending_reason.is_some() {
                     state.lost_reason = Some(pending_reason.unwrap_or_else(|| error.to_string()));
                 }
@@ -230,9 +222,8 @@ impl RotatingFileGuard {
 }
 
 /// Configuration and recovery state for one log file shared by processes.
-/// Every write opens the current path and checks its inode, so another process
-/// can rotate without leaving this writer appending to an unlinked generation.
-#[derive(Clone)]
+/// The open descriptor is reused; every write checks the path inode so another
+/// process can rotate without leaving this writer appending to an old generation.
 struct RotatingFileState {
     path: PathBuf,
     max_bytes: u64,
@@ -240,6 +231,13 @@ struct RotatingFileState {
     /// The reason for an ongoing logging gap, reported once writing works
     /// again.
     lost_reason: Option<String>,
+    current_file: Option<OpenLogFile>,
+}
+
+struct OpenLogFile {
+    file: File,
+    dev: u64,
+    ino: u64,
 }
 
 /// Log files hold pane activity and error details; keep them private to the
@@ -248,10 +246,9 @@ struct RotatingFileState {
 const LOG_FILE_MODE: u32 = 0o600;
 
 impl RotatingFileState {
-    /// Write one chunk without holding the shared recovery-state mutex through
-    /// filesystem calls. File-level shared/exclusive flocks coordinate writes
-    /// and rotation across processes.
-    fn write_once(&self, buf: &[u8], pending_reason: Option<&str>) -> io::Result<usize> {
+    /// Write one chunk. The local state mutex protects the cached descriptor;
+    /// file-level flocks coordinate writes and rotation across processes.
+    fn write_once(&mut self, buf: &[u8], pending_reason: Option<&str>) -> io::Result<usize> {
         let resumed = if let Some(reason) = pending_reason {
             let mut message =
                 format!("shepr: file logging resumed; log lines may have been lost: {reason}\n")
@@ -265,36 +262,78 @@ impl RotatingFileState {
         let incoming_len = u64::try_from(write_buf.len()).unwrap_or(u64::MAX);
 
         loop {
-            let file = self.open_current_file()?;
-            let lock = FileLock::shared(&file)?;
-            if !self.is_current_file(&file)? {
+            if self.current_file.is_none() {
+                self.open_current_file()?;
+            }
+            let current = self
+                .current_file
+                .as_ref()
+                .ok_or_else(|| io::Error::other("rotating log writer has no open current file"))?;
+            let lock = FileLock::shared(&current.file)?;
+            // Check every record so a second process's rotation cannot leave
+            // this cached descriptor appending to the previous generation.
+            let path_metadata = match fs::metadata(&self.path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    drop(lock);
+                    self.current_file = None;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if !current.matches(&path_metadata) {
                 drop(lock);
+                self.current_file = None;
                 continue;
             }
-            let size = file.metadata()?.len();
+            let size = path_metadata.len();
             if self.exceeds_limit(size, incoming_len) {
                 drop(lock);
                 self.rotate_if_needed(incoming_len)?;
                 continue;
             }
-            let mut append = &file;
+            // Do not retry this operation: write_all can append a prefix before
+            // returning an error, and replaying the whole buffer would duplicate it.
+            let mut append = &current.file;
             append.write_all(write_buf)?;
             drop(lock);
             return Ok(buf.len());
         }
     }
 
-    fn rotate_if_needed(&self, incoming_len: u64) -> io::Result<()> {
-        let file = self.open_current_file()?;
-        let lock = FileLock::exclusive(&file)?;
-        if !self.is_current_file(&file)? {
+    fn rotate_if_needed(&mut self, incoming_len: u64) -> io::Result<()> {
+        loop {
+            if self.current_file.is_none() {
+                self.open_current_file()?;
+            }
+            let current = self
+                .current_file
+                .as_ref()
+                .ok_or_else(|| io::Error::other("rotating log writer has no open current file"))?;
+            let lock = FileLock::exclusive(&current.file)?;
+            let path_metadata = match fs::metadata(&self.path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    drop(lock);
+                    self.current_file = None;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if !current.matches(&path_metadata) {
+                drop(lock);
+                self.current_file = None;
+                continue;
+            }
+            if self.exceeds_limit(path_metadata.len(), incoming_len) {
+                self.rotate_files()?;
+                drop(lock);
+                self.current_file = None;
+                return Ok(());
+            }
+            drop(lock);
             return Ok(());
         }
-        if self.exceeds_limit(file.metadata()?.len(), incoming_len) {
-            self.rotate_files()?;
-        }
-        drop(lock);
-        Ok(())
     }
 
     fn exceeds_limit(&self, size: u64, incoming_len: u64) -> bool {
@@ -303,29 +342,21 @@ impl RotatingFileState {
         self.max_bytes != 0 && size > 0 && size.saturating_add(incoming_len) > self.max_bytes
     }
 
-    fn is_current_file(&self, file: &File) -> io::Result<bool> {
-        use std::os::unix::fs::MetadataExt;
-
-        let path_metadata = match fs::metadata(&self.path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error),
-        };
-        let file_metadata = file.metadata()?;
-        Ok(
-            file_metadata.dev() == path_metadata.dev()
-                && file_metadata.ino() == path_metadata.ino(),
-        )
-    }
-
-    fn open_current_file(&self) -> io::Result<File> {
+    fn open_current_file(&mut self) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
 
-        OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .append(true)
             .mode(LOG_FILE_MODE)
-            .open(&self.path)
+            .open(&self.path)?;
+        let metadata = file.metadata()?;
+        self.current_file = Some(OpenLogFile {
+            file,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        });
+        Ok(())
     }
 
     /// Move the current file out of the way (or delete it when no generations
@@ -364,6 +395,12 @@ impl RotatingFileState {
         }
 
         Ok(())
+    }
+}
+
+impl OpenLogFile {
+    fn matches(&self, metadata: &fs::Metadata) -> bool {
+        self.dev == metadata.dev() && self.ino == metadata.ino()
     }
 }
 
@@ -470,6 +507,7 @@ mod tests {
             max_bytes: 128,
             retained_files: 2,
             lost_reason: None,
+            current_file: None,
         };
         state.rotate_files().expect("test precondition");
 

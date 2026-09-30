@@ -24,6 +24,7 @@ impl HeadlessServer {
         // Leave the layout as it is for the final save; the process is about
         // to exit anyway.
         if matches!(ev, AppEvent::PaneDied { .. }) && self.lifecycle.signal_quit_requested() {
+            self.replaying_checkpointed_pane_exit = None;
             return false;
         }
         match &ev {
@@ -48,32 +49,30 @@ impl HeadlessServer {
                 pane_id,
                 exit_reason,
             } => {
-                let pane_id_val = *pane_id;
-                if self
-                    .app
-                    .state
-                    .publish_pane_process_exit_if_agent(pane_id_val)
-                {
-                    self.app.sync_full_lifecycle_authority_detection_pauses();
-                    // The agent row changes even when removal waits for its
-                    // checkpoint below.
-                    self.app.state.mark_shell_projection_dirty();
-                }
-
-                if exit_reason.requires_session_checkpoint()
-                    && self
-                        .app
-                        .state
-                        .prepare_pane_removal_by_id(pane_id_val)
-                        .is_some()
-                    && !self.app.checkpoint_session_before_pane_exit()
+                let replay_generation = self.replaying_checkpointed_pane_exit.take();
+                if let Some(generation) = replay_generation {
+                    if !self.app.pane_exit_checkpoint_generation_settled(generation) {
+                        self.pending_checkpointed_pane_exits.push_back(
+                            PendingCheckpointedPaneExit {
+                                event: ev,
+                                checkpoint_generation: generation,
+                            },
+                        );
+                        return false;
+                    }
+                } else if let Some(checkpoint_generation) =
+                    self.app.prepare_pane_exit(*pane_id, *exit_reason)
                 {
                     // Keep the pre-exit layout live until its checkpoint is durable.
-                    self.pending_checkpointed_pane_exits.push_back(ev);
+                    self.pending_checkpointed_pane_exits
+                        .push_back(PendingCheckpointedPaneExit {
+                            event: ev,
+                            checkpoint_generation,
+                        });
                     return false;
                 }
 
-                self.app.handle_internal_event(ev);
+                self.app.handle_prepared_pane_exit(ev);
                 self.reconcile_client_shell_locations();
                 self.sync_pane_focus();
                 self.reapply_controlled_shell_workspace_geometry(false);

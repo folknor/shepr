@@ -9,7 +9,9 @@ use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 // `ipc::bind_private_local_listener` in the server and API, and the peer check
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
-use crate::limits::{STOP_LEASE_WAIT_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT};
+use crate::limits::{
+    STOP_LEASE_WAIT_TIMEOUT, STOP_STATUS_PROBE_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT,
+};
 
 /// The exit status `shepr server stop` ends with when no server is running at
 /// the address, so a caller that ran it over SSH can tell "the server already
@@ -17,9 +19,9 @@ use crate::limits::{STOP_LEASE_WAIT_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT};
 // limits-exempt: process exit status shared by the server stop command and its SSH caller.
 pub const NO_SERVER_EXIT_CODE: i32 = 4;
 
-/// The exit status `shepr server stop --expect-boot` ends with when the server
-/// that answered is not the boot it named, so a caller that ran it over SSH can
-/// tell "the occupant changed" from any other failure without parsing stderr.
+/// The exit status `shepr server stop --expect-boot` ends with when a different
+/// boot is found, either at the stop request or while the named boot shuts
+/// down, so an SSH caller can identify a changed occupant without parsing stderr.
 // limits-exempt: process exit status shared by the server stop command and its SSH caller.
 pub const BOOT_MISMATCH_EXIT_CODE: i32 = 3;
 
@@ -40,8 +42,8 @@ pub enum ServerStopError {
         timeout: Duration,
         reachable: Vec<PathBuf>,
     },
-    /// The sockets are gone but the server still holds its data directory lease:
-    /// it is still saving its layout, or is stuck.
+    /// The server no longer answers, or its sockets disappeared, but a process
+    /// still holds the data directory lease.
     LeaseHeld {
         label: String,
         timeout: Duration,
@@ -61,21 +63,33 @@ pub enum ServerStopError {
         /// The server's own words, naming the boot it is.
         detail: String,
     },
+    /// A conditional stop was accepted for one boot, but a different boot
+    /// answered while the requested boot was shutting down.
+    OccupantChanged {
+        label: String,
+        expected_boot_id: String,
+        actual_boot_id: String,
+    },
 }
 
 impl ServerStopError {
     /// The API error code the CLI reports this failure under.
     pub fn error_code(&self) -> crate::error::ApiErrorCode {
         match self {
-            Self::BootMismatch { .. } => crate::error::ApiErrorCode::ServerBootMismatch,
+            Self::BootMismatch { .. } | Self::OccupantChanged { .. } => {
+                crate::error::ApiErrorCode::ServerBootMismatch
+            }
             _ => crate::error::ApiErrorCode::ServerStopFailed,
         }
     }
 
-    /// Whether the stop was refused because the server is not the expected
-    /// boot; nothing was stopped.
+    /// Whether a conditional stop found a different boot, either when the
+    /// request arrived or while the requested boot was shutting down.
     pub fn is_boot_mismatch(&self) -> bool {
-        matches!(self, Self::BootMismatch { .. })
+        matches!(
+            self,
+            Self::BootMismatch { .. } | Self::OccupantChanged { .. }
+        )
     }
 
     /// Whether the stop found no server at the address; nothing was stopped.
@@ -126,7 +140,7 @@ impl std::fmt::Display for ServerStopError {
                 path,
             } => write!(
                 f,
-                "{label} closed its sockets but still held {} {}ms later; it may still be saving its layout",
+                "the data directory lease at {} was still held {}ms after {label} stopped answering or its sockets disappeared; another process may still be using it",
                 path.display(),
                 timeout.as_millis()
             ),
@@ -138,6 +152,14 @@ impl std::fmt::Display for ServerStopError {
             } => write!(
                 f,
                 "{label} was not stopped: it is not the server instance that was expected (boot {expected_boot_id}); it may have been restarted since. {detail}"
+            ),
+            Self::OccupantChanged {
+                label,
+                expected_boot_id,
+                actual_boot_id,
+            } => write!(
+                f,
+                "{label} stopped answering as boot {expected_boot_id}, but boot {actual_boot_id} now answers; no stop was sent to the new occupant"
             ),
         }
     }
@@ -180,16 +202,17 @@ pub fn active_api_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
 /// With `expected_boot_id` (a boot identity read from that server's status) the
 /// stop is conditional: the server checks the identity itself, in the same
 /// request that stops it, and refuses with [`ServerStopError::BootMismatch`]
-/// when it is a different boot, so a server that replaced the observed one is
-/// never stopped. Nothing here reads the status first, because a separate read
-/// could not close that race. The stop is the same for a remote server: the
-/// remote `shepr server stop --expect-boot <id>` runs this function on its own
-/// host.
+/// when it is a different boot. After accepting the request, this function
+/// waits for that boot to stop answering and reports another boot that answers
+/// during shutdown as [`ServerStopError::OccupantChanged`]. Nothing here reads
+/// the status before sending the stop, because a separate read could not close
+/// that race. The stop is the same for a remote server: the remote `shepr
+/// server stop --expect-boot <id>` runs this function on its own host.
 ///
 /// # Errors
 ///
-/// When there is no server to stop, the stop request fails, the server does not
-/// stop in time, or `expected_boot_id` names another boot.
+/// When there is no server to stop, the stop request fails, the named server
+/// does not stop answering in time, or a different boot answers.
 pub fn stop_active_server(
     paths: &shepr_config::AppPaths,
     expected_boot_id: Option<&str>,
@@ -215,9 +238,10 @@ fn stop_active_server_with_timeout(
     )
 }
 
-/// Stops the server at `socket_path` and waits until `stopped_socket_paths`
-/// are gone and, with `lease` (the lease file and how long to wait for it), the
-/// server has released its data directory lease as well.
+/// Stops the server at `socket_path` and waits for the named boot to stop
+/// answering when the request is conditional, or for `stopped_socket_paths`
+/// to disappear otherwise. With `lease` (the lease file and how long to wait
+/// for it), it also waits for the data-directory lease to become available.
 fn stop_socket_with_timeout(
     socket_path: &Path,
     stopped_socket_paths: &[PathBuf],
@@ -231,12 +255,26 @@ fn stop_socket_with_timeout(
     let deadline = Instant::now() + timeout;
     let request = server_stop_request("cli:server:stop", expected_boot_id);
     send_stop_request(socket_path, &request, deadline, label, expected_boot_id)?;
-    let stopped = wait_until_stopped_until(stopped_socket_paths, deadline).map_err(|source| {
-        ServerStopError::Io {
-            context: format!("could not check whether {label} stopped"),
-            source,
+    let stopped = if let Some(expected_boot_id) = expected_boot_id {
+        match wait_until_boot_stops(socket_path, expected_boot_id, deadline, label)? {
+            BootStopWait::Gone => true,
+            BootStopWait::Changed(actual_boot_id) => {
+                return Err(ServerStopError::OccupantChanged {
+                    label: label.into(),
+                    expected_boot_id: expected_boot_id.into(),
+                    actual_boot_id,
+                });
+            }
+            BootStopWait::TimedOut => false,
         }
-    })?;
+    } else {
+        wait_until_stopped_until(stopped_socket_paths, deadline).map_err(|source| {
+            ServerStopError::Io {
+                context: format!("could not check whether {label} stopped"),
+                source,
+            }
+        })?
+    };
     if !stopped {
         let reachable =
             reachable_socket_paths(stopped_socket_paths).map_err(|source| ServerStopError::Io {
@@ -252,21 +290,81 @@ fn stop_socket_with_timeout(
     if let Some((lease_path, lease_timeout)) = lease {
         // clock-io-ok: the lease wait polls another process's lock.
         let lease_deadline = Instant::now() + lease_timeout;
-        let released = wait_for_lease_release(lease_path, lease_deadline).map_err(|source| {
-            ServerStopError::Io {
-                context: format!(
-                    "could not check whether {label} released {}",
-                    lease_path.display()
-                ),
-                source,
+        let released = if let Some(expected_boot_id) = expected_boot_id {
+            match wait_for_lease_release_or_new_boot(
+                lease_path,
+                lease_deadline,
+                socket_path,
+                expected_boot_id,
+                label,
+            )? {
+                LeaseWait::Released => true,
+                LeaseWait::Held => false,
+                LeaseWait::NewBoot(actual_boot_id) => {
+                    return Err(ServerStopError::OccupantChanged {
+                        label: label.into(),
+                        expected_boot_id: expected_boot_id.into(),
+                        actual_boot_id,
+                    });
+                }
             }
-        })?;
+        } else {
+            wait_for_lease_release(lease_path, lease_deadline).map_err(|source| {
+                ServerStopError::Io {
+                    context: format!(
+                        "could not check whether {label} released {}",
+                        lease_path.display()
+                    ),
+                    source,
+                }
+            })?
+        };
         if !released {
             return Err(ServerStopError::LeaseHeld {
                 label: label.into(),
                 timeout: lease_timeout,
                 path: lease_path.into(),
             });
+        }
+    }
+    if let Some(expected_boot_id) = expected_boot_id {
+        // clock-io-ok: the final probe is one real socket request.
+        let final_probe_deadline = Instant::now() + STOP_STATUS_PROBE_TIMEOUT;
+        match probe_boot(socket_path, expected_boot_id, label, final_probe_deadline)? {
+            BootProbe::Gone => {}
+            BootProbe::Changed(actual_boot_id) => {
+                return Err(ServerStopError::OccupantChanged {
+                    label: label.into(),
+                    expected_boot_id: expected_boot_id.into(),
+                    actual_boot_id,
+                });
+            }
+            BootProbe::Expected => {
+                match wait_until_boot_stops(socket_path, expected_boot_id, deadline, label)? {
+                    BootStopWait::Gone => {}
+                    BootStopWait::Changed(actual_boot_id) => {
+                        return Err(ServerStopError::OccupantChanged {
+                            label: label.into(),
+                            expected_boot_id: expected_boot_id.into(),
+                            actual_boot_id,
+                        });
+                    }
+                    BootStopWait::TimedOut => {
+                        let reachable =
+                            reachable_socket_paths(stopped_socket_paths).map_err(|source| {
+                                ServerStopError::Io {
+                                    context: format!("could not check whether {label} stopped"),
+                                    source,
+                                }
+                            })?;
+                        return Err(ServerStopError::TimedOut {
+                            label: label.into(),
+                            timeout,
+                            reachable,
+                        });
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -291,6 +389,158 @@ fn wait_for_lease_release(lease_path: &Path, deadline: Instant) -> io::Result<bo
             return Ok(false);
         }
         std::thread::sleep(STOP_WAIT_POLL.min(remaining));
+    }
+}
+
+enum BootProbe {
+    Gone,
+    Expected,
+    Changed(String),
+}
+
+enum BootStopWait {
+    Gone,
+    Changed(String),
+    TimedOut,
+}
+
+enum LeaseWait {
+    Released,
+    Held,
+    NewBoot(String),
+}
+
+fn probe_boot(
+    socket_path: &Path,
+    expected_boot_id: &str,
+    label: &str,
+    deadline: Instant,
+) -> Result<BootProbe, ServerStopError> {
+    // clock-io-ok: bounds one real status request on the socket.
+    let probe_deadline = (Instant::now() + STOP_STATUS_PROBE_TIMEOUT).min(deadline);
+    let client = ApiClient::for_socket(socket_path);
+    match client.status_until(probe_deadline) {
+        Ok(status) if status.boot_id == expected_boot_id => Ok(BootProbe::Expected),
+        Ok(status) => Ok(BootProbe::Changed(status.boot_id)),
+        Err(error) if status_probe_has_no_answer(&error) => Ok(BootProbe::Gone),
+        Err(error) => Err(status_probe_error(error, label)),
+    }
+}
+
+fn wait_until_boot_stops(
+    socket_path: &Path,
+    expected_boot_id: &str,
+    deadline: Instant,
+    label: &str,
+) -> Result<BootStopWait, ServerStopError> {
+    loop {
+        // clock-io-ok: the wait bounds real status probes of a shutting-down server.
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Ok(BootStopWait::TimedOut);
+        }
+        match probe_boot(socket_path, expected_boot_id, label, deadline)? {
+            BootProbe::Gone => return Ok(BootStopWait::Gone),
+            BootProbe::Changed(actual_boot_id) => {
+                return Ok(BootStopWait::Changed(actual_boot_id));
+            }
+            BootProbe::Expected => {}
+        }
+        // clock-io-ok: polls the server status while its real shutdown proceeds.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(BootStopWait::TimedOut);
+        }
+        std::thread::sleep(STOP_WAIT_POLL.min(remaining));
+    }
+}
+
+fn wait_for_lease_release_or_new_boot(
+    lease_path: &Path,
+    deadline: Instant,
+    socket_path: &Path,
+    expected_boot_id: &str,
+    label: &str,
+) -> Result<LeaseWait, ServerStopError> {
+    if !lease_path
+        .try_exists()
+        .map_err(|source| ServerStopError::Io {
+            context: format!(
+                "could not check whether {label} released {}",
+                lease_path.display()
+            ),
+            source,
+        })?
+    {
+        return Ok(LeaseWait::Released);
+    }
+    loop {
+        match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
+            Ok(_free) => return Ok(LeaseWait::Released),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(source) => {
+                return Err(ServerStopError::Io {
+                    context: format!(
+                        "could not check whether {label} released {}",
+                        lease_path.display()
+                    ),
+                    source,
+                });
+            }
+        }
+        // clock-io-ok: polls another process's lock while it shuts down.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(LeaseWait::Held);
+        }
+        match probe_boot(socket_path, expected_boot_id, label, deadline)? {
+            BootProbe::Changed(actual_boot_id) => {
+                return Ok(LeaseWait::NewBoot(actual_boot_id));
+            }
+            BootProbe::Gone | BootProbe::Expected => {}
+        }
+        std::thread::sleep(STOP_WAIT_POLL.min(remaining));
+    }
+}
+
+/// After the stop request was accepted, a transport close, refusal, or timeout
+/// means this socket did not answer the boot probe. Decoded API failures remain
+/// errors because they are not evidence that the named boot went away.
+fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool {
+    let no_answer_kind = |kind| {
+        matches!(
+            kind,
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::NotFound
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::NotConnected
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+        )
+    };
+    match error {
+        ApiClientDeadlineError::Connect(error)
+        | ApiClientDeadlineError::Request(ApiClientError::Io(error)) => {
+            no_answer_kind(error.kind())
+        }
+        ApiClientDeadlineError::Request(ApiClientError::EmptyResponse) => true,
+        ApiClientDeadlineError::Request(
+            ApiClientError::Json(_)
+            | ApiClientError::ErrorResponse(_)
+            | ApiClientError::UnexpectedResult(_),
+        ) => false,
+    }
+}
+
+fn status_probe_error(error: ApiClientDeadlineError, label: &str) -> ServerStopError {
+    match error {
+        ApiClientDeadlineError::Connect(source)
+        | ApiClientDeadlineError::Request(ApiClientError::Io(source)) => ServerStopError::Io {
+            context: format!("could not check whether {label} stopped"),
+            source,
+        },
+        ApiClientDeadlineError::Request(error) => ServerStopError::Protocol(error.to_string()),
     }
 }
 
@@ -640,6 +890,76 @@ mod tests {
             requests[0].contains("\"expected_boot_id\":\"1-1\""),
             "{requests:?}"
         );
+    }
+
+    #[test]
+    fn a_conditional_stop_reports_a_new_boot_after_acceptance() {
+        let scratch = ScratchDir::new("stop-replaced");
+        let socket_path = scratch.join("api.sock");
+        let listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("test precondition");
+        listener.set_nonblocking(true).expect("test precondition");
+        let keep_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let keep_running_for_thread = std::sync::Arc::clone(&keep_running);
+        let handle = std::thread::spawn(move || {
+            let mut status_requests = 0;
+            while keep_running_for_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = String::new();
+                        if BufReader::new(stream.try_clone().expect("test precondition"))
+                            .read_line(&mut request)
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let response = if request.contains("server.stop") {
+                            "{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n".to_owned()
+                        } else {
+                            status_requests += 1;
+                            let boot_id = if status_requests == 1 {
+                                "old-boot"
+                            } else {
+                                "new-boot"
+                            };
+                            format!(
+                                "{{\"id\":\"api-client:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.1.0\",\"build_id\":\"build\",\"boot_id\":\"{boot_id}\"}}}}\n"
+                            )
+                        };
+                        drop(stream.write_all(response.as_bytes()));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let error = stop_socket_with_timeout(
+            &socket_path,
+            std::slice::from_ref(&socket_path),
+            None,
+            Duration::from_secs(2),
+            "test server",
+            Some("old-boot"),
+        )
+        .expect_err("a new boot must be reported instead of waiting for its sockets");
+
+        keep_running.store(false, Ordering::Relaxed);
+        handle.join().expect("test precondition");
+        assert!(
+            matches!(
+                &error,
+                ServerStopError::OccupantChanged {
+                    expected_boot_id,
+                    actual_boot_id,
+                    ..
+                } if expected_boot_id == "old-boot" && actual_boot_id == "new-boot"
+            ),
+            "{error}"
+        );
+        assert!(error.is_boot_mismatch());
     }
 
     #[test]

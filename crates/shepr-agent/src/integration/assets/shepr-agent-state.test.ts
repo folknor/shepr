@@ -304,7 +304,7 @@ test("Pi reports the session replacement source", async () => {
     .toBe("new");
 });
 
-test("Pi waits for a replacement session report before publishing state", async () => {
+test("Pi serializes its agent-start session report before its working state", async () => {
   const recordingSocketPath = join(tmpdir(), `shepr-pi-session-order-${process.pid}.sock`);
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
@@ -340,19 +340,21 @@ test("Pi waits for a replacement session report before publishing state", async 
   const { default: install } = await importFresh("./pi/shepr-agent-state.ts");
   install(pi);
 
+  let idle = true;
+  const context = {
+    hasUI: true,
+    mode: "tui",
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => "/tmp/pi-new.jsonl",
+      getSessionId: () => "pi-new",
+    },
+  };
   const sessionStart = handlers.get("session_start");
   expect(sessionStart).toBeDefined();
   const sessionStartResult = sessionStart?.(
     { reason: "new" },
-    {
-      hasUI: true,
-      mode: "tui",
-      isIdle: () => false,
-      sessionManager: {
-        getSessionFile: () => "/tmp/pi-new.jsonl",
-        getSessionId: () => "pi-new",
-      },
-    },
+    context,
   );
 
   const deadline = Date.now() + 1_000;
@@ -364,7 +366,9 @@ test("Pi waits for a replacement session report before publishing state", async 
     requests.some((request) => isRecord(request) && request.method === "pane.report_agent"),
   ).toBe(false);
 
-  acknowledgeSessionReport?.();
+  const acknowledgeStartup = acknowledgeSessionReport;
+  acknowledgeSessionReport = undefined;
+  acknowledgeStartup?.();
   await sessionStartResult;
 
   const stateDeadline = Date.now() + 1_000;
@@ -378,6 +382,40 @@ test("Pi waits for a replacement session report before publishing state", async 
     "pane.report_agent_session",
     "pane.report_agent",
   ]);
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  const agentStartDeadline = Date.now() + 1_000;
+  while (Date.now() < agentStartDeadline && acknowledgeSessionReport === undefined) {
+    await Bun.sleep(5);
+  }
+  expect(acknowledgeSessionReport).toBeDefined();
+  await Bun.sleep(25);
+  expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
+    "pane.report_agent_session",
+    "pane.report_agent",
+    "pane.report_agent_session",
+  ]);
+  expect(requestStates(requests)).toEqual(["idle"]);
+
+  const acknowledgeAgentStart = acknowledgeSessionReport;
+  acknowledgeSessionReport = undefined;
+  acknowledgeAgentStart?.();
+  const workingDeadline = Date.now() + 1_000;
+  while (Date.now() < workingDeadline && requestStates(requests).length < 2) {
+    await Bun.sleep(5);
+  }
+  expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
+    "pane.report_agent_session",
+    "pane.report_agent",
+    "pane.report_agent_session",
+    "pane.report_agent",
+  ]);
+  expect(requestStates(requests)).toEqual(["idle", "working"]);
+  const sequences = requests.map(requestSeq);
+  for (let index = 1; index < sequences.length; index += 1) {
+    expect(sequences[index]).toBe((sequences[index - 1] as number) + 1);
+  }
 });
 
 async function startDroppedFirstResponseServer(name: string) {
@@ -569,6 +607,13 @@ function requestState(request: unknown): unknown {
     return undefined;
   }
   return request.params.state;
+}
+
+function requestSeq(request: unknown): unknown {
+  if (!isRecord(request) || !isRecord(request.params)) {
+    return undefined;
+  }
+  return request.params.seq;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

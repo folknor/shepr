@@ -150,20 +150,30 @@ pub struct PaneLaunchEnv {
     /// unset rather than inheriting an enclosing pane's id.
     pane_id: Option<PublicPaneId>,
     purpose: LaunchPurpose,
-    /// Resolved API socket path supplied by the server, which need not be
-    /// present in the environment. The client config gives this selector
-    /// precedence over `SHEPR_CLIENT_SOCKET_PATH`, so this alone cannot
-    /// preserve a server address selected by a client-socket-only override.
+    /// Resolved socket pair supplied by the server, which need not be present
+    /// in the environment; the pane exports both.
     api_socket_path: std::path::PathBuf,
+    client_socket_path: std::path::PathBuf,
 }
 
 impl PaneLaunchEnv {
     pub fn from_extra(extra: Vec<(String, String)>, api_socket_path: std::path::PathBuf) -> Self {
+        let client_socket_path =
+            shepr_config::derive_client_socket_from_api_socket(&api_socket_path);
+        Self::from_extra_with_socket_paths(extra, api_socket_path, client_socket_path)
+    }
+
+    pub fn from_extra_with_socket_paths(
+        extra: Vec<(String, String)>,
+        api_socket_path: std::path::PathBuf,
+        client_socket_path: std::path::PathBuf,
+    ) -> Self {
         Self {
             extra,
             pane_id: None,
             purpose: LaunchPurpose::Fresh,
             api_socket_path,
+            client_socket_path,
         }
     }
 
@@ -199,7 +209,18 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
         cmd.env_remove(name);
     }
     cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
+    // Both sockets are exported as the server resolved them, replacing any
+    // inherited value. Every agent integration reports through the API
+    // socket variable, so it is always set. Under a client-socket-only
+    // override that costs a nested shepr client its client socket: the API
+    // variable takes precedence and derives the runtime client socket, which
+    // this server does not listen on. Dropping the API variable instead would
+    // switch off every integration in such a pane.
     cmd.env(EnvVar::SheprSocketPath, &launch_env.api_socket_path);
+    cmd.env(
+        EnvVar::SheprClientSocketPath,
+        &launch_env.client_socket_path,
+    );
     // Names the profile whose server owns this pane, so a process of another
     // profile started inside it does not follow the socket variables above.
     cmd.env(
@@ -380,6 +401,62 @@ mod tests {
         assert_eq!(
             command.get_env(EnvVar::SheprPaneId),
             Some(std::ffi::OsStr::new(assigned.as_str()))
+        );
+    }
+
+    #[test]
+    fn pane_launch_exports_a_resolved_socket_pair() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let api_socket = std::path::PathBuf::from("/run/shepr.sock");
+        let client_socket = std::path::PathBuf::from("/run/shepr-client.sock");
+        let mut command = PtyCommand::new("shell");
+
+        apply_pane_launch_env(
+            &mut command,
+            &PaneLaunchEnv::from_extra_with_socket_paths(
+                Vec::new(),
+                api_socket.clone(),
+                client_socket.clone(),
+            ),
+        );
+
+        assert_eq!(
+            command.get_env(EnvVar::SheprSocketPath),
+            Some(api_socket.as_os_str())
+        );
+        assert_eq!(
+            command.get_env(EnvVar::SheprClientSocketPath),
+            Some(client_socket.as_os_str())
+        );
+    }
+
+    #[test]
+    fn inherited_socket_variables_give_way_to_the_resolved_pair() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let api_socket = std::path::PathBuf::from("/run/shepr/shepr.sock");
+        let client_socket = std::path::PathBuf::from("/custom/shepr-client.sock");
+        let mut command = PtyCommand::new("shell");
+        command.env(EnvVar::SheprSocketPath, "/inherited/shepr.sock");
+        command.env(EnvVar::SheprClientSocketPath, "/inherited/client.sock");
+
+        apply_pane_launch_env(
+            &mut command,
+            &PaneLaunchEnv::from_extra_with_socket_paths(
+                Vec::new(),
+                api_socket.clone(),
+                client_socket.clone(),
+            ),
+        );
+
+        // Integrations report through the API socket, so it stays exported
+        // even when the client socket came from a client-only override.
+        assert_eq!(
+            command.get_env(EnvVar::SheprSocketPath),
+            Some(api_socket.as_os_str())
+        );
+        assert_eq!(
+            command.get_env(EnvVar::SheprClientSocketPath),
+            Some(client_socket.as_os_str())
         );
     }
 }

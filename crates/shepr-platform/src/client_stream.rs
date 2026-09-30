@@ -2,7 +2,7 @@ use super::*;
 use std::{
     io::{Read, Write},
     os::fd::AsRawFd,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 fn shutdown_client_stream(stream: &interprocess::local_socket::Stream) -> std::io::Result<()> {
@@ -31,26 +31,33 @@ impl Read for ClientStreamReader<'_> {
     }
 }
 
+/// Writes bytes to a client stream, disconnecting a peer after `stall_timeout`
+/// without successful write progress.
+///
+/// The function switches the socket to nonblocking mode and waits for
+/// writability between partial writes, so the bound does not depend on socket
+/// timeout options configured by the caller. The socket remains nonblocking
+/// after the call; readers must handle `WouldBlock`.
 pub fn write_client_stream(
     stream: &interprocess::local_socket::Stream,
     data: &[u8],
+    stall_timeout: Duration,
 ) -> std::io::Result<()> {
     // clock-io-ok: the public entry point supplies the real clock.
-    write_client_stream_with_clock(stream, data, &Instant::now)
+    write_client_stream_with_clock(stream, data, stall_timeout, &Instant::now)
 }
 
 fn write_client_stream_with_clock(
     stream: &interprocess::local_socket::Stream,
     mut data: &[u8],
+    stall_timeout: Duration,
     now: &dyn Fn() -> Instant,
 ) -> std::io::Result<()> {
     use std::io;
 
     let interprocess::local_socket::Stream::UdSocket(socket) = stream;
     let mut socket = socket.inner();
-    let Some(timeout) = socket.write_timeout()? else {
-        return socket.write_all(data);
-    };
+    socket.set_nonblocking(true)?;
     let timed_out = || {
         // Dropping the writer clone alone would leave the reader blocked.
         // NotConnected means the peer already hung up, which wakes the reader
@@ -84,7 +91,7 @@ fn write_client_stream_with_clock(
                 ) => {}
             Err(error) => return Err(error),
         }
-        let wait_ms = poll_timeout_until(progress + timeout, now()).ok_or_else(timed_out)?;
+        let wait_ms = poll_timeout_until(progress + stall_timeout, now()).ok_or_else(timed_out)?;
         match poll_fd(socket.as_raw_fd(), libc::POLLOUT, wait_ms) {
             Ok(false) => return Err(timed_out()),
             Ok(true) => {}
@@ -114,7 +121,6 @@ pub fn wait_client_stream_readable(
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
-    use std::time::Duration;
 
     #[test]
     fn stalled_observer_write_times_out_when_the_injected_clock_passes_its_timeout() {
@@ -123,21 +129,11 @@ mod tests {
         let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
         let mut observer = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let writer = listener.accept().expect("test precondition");
-        let interprocess::local_socket::Stream::UdSocket(socket) = &writer;
-        // Like the client writer: nonblocking, with the stall timeout as the
-        // socket's write timeout. The observer never reads.
+        // The observer never reads. Production uses the same nonblocking
+        // writer path with an explicit stall timeout.
         // Twice the elapsed bound below, and inside the per-test budget, so a
         // writer that waits out any real stall fails the bound, not the budget.
         let timeout = Duration::from_secs(10);
-        socket
-            .inner()
-            .set_nonblocking(true)
-            .expect("test precondition");
-        socket
-            .inner()
-            .set_write_timeout(Some(timeout))
-            .expect("test precondition");
-
         // Every read moves the injected clock a full timeout on, so the first
         // stall is already at its deadline.
         let started = Instant::now();
@@ -148,7 +144,7 @@ mod tests {
             started + timeout * read
         };
         let payload = vec![b'x'; 16 * 1024 * 1024];
-        let error = write_client_stream_with_clock(&writer, &payload, &now)
+        let error = write_client_stream_with_clock(&writer, &payload, timeout, &now)
             .expect_err("a stalled observer cannot take the whole payload");
         let elapsed = started.elapsed();
 

@@ -245,22 +245,18 @@ impl EndpointRegistry {
     }
 
     fn record_failure(&mut self, endpoint_id: &ClientEndpointId, error: &io::Error) {
-        let Some(generation) = self
-            .connections
-            .get(endpoint_id)
-            .map(|connection| connection.generation)
-        else {
+        let Some(mut connection) = self.connections.remove(endpoint_id) else {
             return;
         };
+        let writer_error = connection.transport.take_error();
+        connection.transport.disconnect();
+        let error = writer_error.as_ref().unwrap_or(error);
         let failure = EndpointTransportFailure {
             endpoint_id: endpoint_id.clone(),
-            generation: generation.get(),
+            generation: connection.generation.get(),
             kind: error.kind(),
             message: error.to_string(),
         };
-        if let Some(mut connection) = self.connections.remove(endpoint_id) {
-            connection.transport.disconnect();
-        }
         if let Some(existing) = self
             .failures
             .iter_mut()

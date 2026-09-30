@@ -255,6 +255,11 @@ impl App {
         };
         let launch_env = launch_env.for_agent_resume();
 
+        // This stat can block the loop on a dead mount. It cannot simply be
+        // dropped: PTY command construction falls back to HOME for an unusable
+        // cwd, and sending the saved resume command there would resume in the
+        // wrong directory. Moving the check off-loop needs the resume attempt to
+        // receive its result before it starts the PTY.
         // Any stat failure makes the directory unavailable for the resume; one
         // other than absence (permissions, a dead mount) is logged, since the
         // pane's message cannot tell the user which it was.

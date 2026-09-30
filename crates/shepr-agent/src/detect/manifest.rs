@@ -1390,7 +1390,10 @@ fn current_prompt_block_marker(content: &str) -> Option<&str> {
 fn after_current_prompt_block_marker(content: &str) -> Option<&str> {
     let (_, marker) = current_codex_prompt_parts(content)?;
     let (_, marker_start) = marker?;
-    Some(&content[marker_start..])
+    let after_marker_line = content[marker_start..]
+        .find('\n')
+        .map_or(content.len(), |newline| marker_start + newline + 1);
+    Some(&content[after_marker_line..])
 }
 
 /// The current prompt line's start offset and the block marker line (text and

@@ -7,6 +7,9 @@
 //! there (see `lock`). Within the server, the [`SessionPersister`] (see
 //! `actor`) is the one owner of those files once restore has read them: it
 //! holds the lease, the writer and the pane history carried between saves.
+//! If a worker job panics, it stops writing but keeps the lease until the
+//! server retires that persister, preventing another server from restoring
+//! stale files while this one still owns live panes.
 
 mod actor;
 mod io;

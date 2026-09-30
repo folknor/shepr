@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=pi
-// SHEPR_INTEGRATION_VERSION=1
+// SHEPR_INTEGRATION_VERSION=2
 // @ts-nocheck
 
 import net from "node:net";
@@ -12,6 +12,7 @@ const SHEPR_ENV = process.env.SHEPR_ENV;
 const socketPath = process.env.SHEPR_SOCKET_PATH;
 const paneId = process.env.SHEPR_PANE_ID;
 const source = "shepr:pi";
+let requestQueue = Promise.resolve();
 
 function enabled() {
   return SHEPR_ENV === "1" && !!socketPath && !!paneId;
@@ -47,11 +48,21 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
 
 // This retry is for socket delivery. Pi's agent_settled event supplies the
 // state boundary, so it does not need OMP's state debounce or retry grace.
-async function sendRequest(request: unknown): Promise<void> {
+async function sendRequestNow(request: unknown): Promise<void> {
   if (await sendRequestAttempt(request, 500)) {
     return;
   }
   await sendRequestAttempt(request, 500);
+}
+
+function sendRequest(request: unknown): Promise<void> {
+  // Keep both attempts in one slot so a retry cannot arrive after a newer seq.
+  const pending = requestQueue.then(
+    () => sendRequestNow(request),
+    () => sendRequestNow(request),
+  );
+  requestQueue = pending.catch(() => {});
+  return pending;
 }
 
 type AgentState = "working" | "blocked" | "idle";

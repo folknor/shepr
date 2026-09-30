@@ -109,7 +109,7 @@ mod path_bytes {
 }
 
 /// Serializable snapshot of the entire shepr session.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     /// Format version - used to detect incompatible changes.
     pub version: SnapshotVersion,
@@ -122,7 +122,7 @@ pub struct SessionSnapshot {
 }
 
 /// Last observed physical terminal colours, retained for headless resumes.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SavedHostTheme {
     pub foreground: Option<shepr_termio::host_term::theme::RgbColor>,
     pub background: Option<shepr_termio::host_term::theme::RgbColor>,
@@ -189,7 +189,7 @@ where
     map.end()
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub id: Option<String>,
@@ -211,7 +211,7 @@ pub struct WorkspaceSnapshot {
     pub root_pane: Option<u32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PaneSnapshot {
     #[serde(
         serialize_with = "path_bytes::serialize",
@@ -243,7 +243,7 @@ pub struct PaneHistorySnapshot {
 }
 
 /// Serializable BSP tree.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[expect(
     variant_size_differences,
     reason = "a split is 23 bytes; boxing it would allocate per split to save that much per leaf"
@@ -258,7 +258,7 @@ pub enum LayoutSnapshot {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum DirectionSnapshot {
     Horizontal,
     Vertical,
@@ -866,6 +866,54 @@ pub fn capture_pending_history(
             })
             .collect(),
     }
+}
+
+/// Captures fresh history handles for a previously captured session layout.
+/// Panes removed since that layout was saved use the persister's carried
+/// history, while panes that still have runtimes contribute their current
+/// history. The terminal map must have been captured with `snapshot`.
+pub fn capture_pending_history_for_snapshot(
+    snapshot: &SessionSnapshot,
+    terminal_ids: &HashMap<(usize, u32), TerminalId>,
+    terminal_runtimes: &PaneRuntimeRegistry,
+) -> Option<PendingHistory> {
+    let mut workspaces = Vec::with_capacity(snapshot.workspaces.len());
+    for (workspace_index, workspace) in snapshot.workspaces.iter().enumerate() {
+        let mut pane_ids: Vec<_> = workspace.panes.keys().copied().collect();
+        pane_ids.sort_unstable();
+        let mut panes = Vec::with_capacity(pane_ids.len());
+        for pane_id in pane_ids {
+            let terminal = terminal_ids.get(&(workspace_index, pane_id))?.clone();
+            let pending = match terminal_runtimes.get(&terminal) {
+                Some(runtime) => PendingPaneHistory::Live(terminal, runtime.history_source()),
+                None => PendingPaneHistory::Runtimeless(terminal),
+            };
+            panes.push((pane_id, pending));
+        }
+        workspaces.push(panes);
+    }
+    Some(PendingHistory { workspaces })
+}
+
+/// Captures current cwd probes for a previously captured session layout.
+/// Exited panes have no probe, and live panes keep their checkpoint workspace
+/// and pane keys even if removals changed the current workspace indexes.
+pub fn capture_pending_cwds_for_snapshot(
+    snapshot: &SessionSnapshot,
+    terminal_ids: &HashMap<(usize, u32), TerminalId>,
+    terminal_runtimes: &PaneRuntimeRegistry,
+) -> Option<PendingCwds> {
+    let mut cwds = PendingCwds::default();
+    for (workspace_index, workspace) in snapshot.workspaces.iter().enumerate() {
+        for pane_id in workspace.panes.keys() {
+            let terminal = terminal_ids.get(&(workspace_index, *pane_id))?;
+            if let Some(runtime) = terminal_runtimes.get(terminal) {
+                cwds.probes
+                    .push(((workspace_index, *pane_id), runtime.cwd_probe()));
+            }
+        }
+    }
+    Some(cwds)
 }
 
 pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {

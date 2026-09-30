@@ -159,6 +159,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         server_event_tx,
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
+        replaying_checkpointed_pane_exit: None,
         endpoint_replies: Vec::new(),
         _client_socket_startup_lock: client_socket_startup_lock,
     }

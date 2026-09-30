@@ -29,8 +29,8 @@ impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) => 2,
-            // A caller that ran a conditional stop over SSH tells "the server
-            // was replaced, nothing stopped" from every other failure by this.
+            // A caller that ran a conditional stop over SSH can identify a
+            // different boot at the stop request or during shutdown with this.
             Self::ServerStop(error) if error.is_boot_mismatch() => {
                 shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
             }

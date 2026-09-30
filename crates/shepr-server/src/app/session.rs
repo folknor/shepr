@@ -15,6 +15,7 @@
 //! save deadline is reported, since nothing can start before the save ends,
 //! and its end wakes the loop to reconsider them.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,10 +33,21 @@ enum SessionSavePurpose {
     },
 }
 
+/// The layout and pane identities from a successful pane-exit checkpoint.
+/// Shutdown can keep this layout while refreshing live panes' history and
+/// cwd, even after exited panes have left the in-memory workspace.
+struct PaneExitCheckpointSnapshot {
+    generation: u64,
+    session_revision: u64,
+    snapshot: shepr_mux::persist::SessionSnapshot,
+    terminal_ids: HashMap<(usize, u32), shepr_protocol::TerminalId>,
+}
+
 /// A save the persister is running, and why it was taken.
 struct InFlightSave {
     pending: shepr_mux::persist::PendingSave,
     purpose: SessionSavePurpose,
+    pane_exit_snapshot: Option<PaneExitCheckpointSnapshot>,
 }
 
 pub(crate) struct SessionSaver {
@@ -51,6 +63,9 @@ pub(crate) struct SessionSaver {
     pub(crate) pane_exit_checkpoint_pending: bool,
     pane_exit_checkpoint_requested: bool,
     pane_exit_checkpoint_generation: u64,
+    pane_exit_checkpoint_saved_generation: u64,
+    pane_exit_checkpoint_snapshot: Option<PaneExitCheckpointSnapshot>,
+    session_revision: u64,
     /// Consecutive failed pane-exit checkpoints. At the bound, exited panes are
     /// removed without a checkpoint until any save succeeds again.
     pane_exit_checkpoint_failures: u8,
@@ -77,6 +92,9 @@ impl SessionSaver {
             pane_exit_checkpoint_pending: false,
             pane_exit_checkpoint_requested: false,
             pane_exit_checkpoint_generation: 0,
+            pane_exit_checkpoint_saved_generation: 0,
+            pane_exit_checkpoint_snapshot: None,
+            session_revision: 0,
             pane_exit_checkpoint_failures: 0,
             pane_exit_checkpoint_ready: false,
             critical_save_retry_deadline: None,
@@ -131,7 +149,9 @@ impl SessionSaver {
     }
 
     fn schedule(&mut self, now: Instant) {
+        self.session_revision = self.session_revision.saturating_add(1);
         self.pane_exit_checkpoint_pending = false;
+        self.pane_exit_checkpoint_snapshot = None;
         self.session_save_deadline = Some(now + SESSION_SAVE_DEBOUNCE);
     }
 
@@ -196,7 +216,12 @@ impl App {
             return false;
         };
         if let Some(save) = self.session_saver.in_flight.take() {
-            self.finish_session_save(save.purpose, result, self.clock.now);
+            self.finish_session_save_with_checkpoint(
+                save.purpose,
+                result,
+                self.clock.now,
+                save.pane_exit_snapshot,
+            );
         }
         true
     }
@@ -249,11 +274,12 @@ impl App {
         }
     }
 
-    fn finish_session_save(
+    fn finish_session_save_with_checkpoint(
         &mut self,
         purpose: SessionSavePurpose,
         result: std::io::Result<()>,
         now: Instant,
+        pane_exit_snapshot: Option<PaneExitCheckpointSnapshot>,
     ) {
         let retry_delay_override = match purpose {
             SessionSavePurpose::Checkpoint {
@@ -278,6 +304,13 @@ impl App {
             self.record_session_save_result_with_retry_delay(result, now, retry_delay_override);
         match purpose {
             SessionSavePurpose::Autosave => {
+                if saved
+                    && !self.session_saver.pane_exit_checkpoint_requested
+                    && !self.session_saver.host_shutdown_checkpoint_requested
+                {
+                    self.session_saver.pane_exit_checkpoint_pending = false;
+                    self.session_saver.pane_exit_checkpoint_snapshot = None;
+                }
                 if self.session_saver.host_shutdown_checkpoint_requested {
                     self.session_saver.critical_save_retry_deadline = None;
                 } else if self.session_saver.pane_exit_checkpoint_requested {
@@ -294,13 +327,24 @@ impl App {
             } => {
                 if saved {
                     self.session_saver.critical_save_retry_deadline = None;
-                    if pane_exit_generation
-                        == Some(self.session_saver.pane_exit_checkpoint_generation)
-                        && self.session_saver.pane_exit_checkpoint_requested
-                    {
-                        self.complete_pane_exit_checkpoint();
-                    } else if self.session_saver.pane_exit_checkpoint_requested {
+                    if let Some(generation) = pane_exit_generation {
+                        self.record_pane_exit_checkpoint_saved(generation, pane_exit_snapshot);
+                        if generation == self.session_saver.pane_exit_checkpoint_generation
+                            && self.session_saver.pane_exit_checkpoint_requested
+                        {
+                            self.session_saver.pane_exit_checkpoint_requested = false;
+                            self.session_saver.pane_exit_checkpoint_failures = 0;
+                        }
+                    }
+                    if self.session_saver.pane_exit_checkpoint_requested {
                         self.session_saver.session_save_deadline = None;
+                    }
+                    if host_shutdown_generation.is_some()
+                        && pane_exit_generation.is_none()
+                        && !self.session_saver.pane_exit_checkpoint_requested
+                    {
+                        self.session_saver.pane_exit_checkpoint_pending = false;
+                        self.session_saver.pane_exit_checkpoint_snapshot = None;
                     }
                     if let Some(generation) = host_shutdown_generation
                         && generation == self.session_saver.host_shutdown_checkpoint_generation
@@ -364,9 +408,26 @@ impl App {
         true
     }
 
-    fn complete_pane_exit_checkpoint(&mut self) {
-        self.session_saver.pane_exit_checkpoint_requested = false;
-        self.session_saver.pane_exit_checkpoint_pending = true;
+    fn record_pane_exit_checkpoint_saved(
+        &mut self,
+        generation: u64,
+        snapshot: Option<PaneExitCheckpointSnapshot>,
+    ) {
+        self.session_saver.pane_exit_checkpoint_saved_generation = self
+            .session_saver
+            .pane_exit_checkpoint_saved_generation
+            .max(generation);
+        if let Some(snapshot) = snapshot {
+            let current_snapshot = &self.session_saver.pane_exit_checkpoint_snapshot;
+            if snapshot.session_revision == self.session_saver.session_revision
+                && current_snapshot
+                    .as_ref()
+                    .is_none_or(|current| snapshot.generation >= current.generation)
+            {
+                self.session_saver.pane_exit_checkpoint_snapshot = Some(snapshot);
+                self.session_saver.pane_exit_checkpoint_pending = true;
+            }
+        }
         self.session_saver.pane_exit_checkpoint_ready = true;
     }
 
@@ -401,6 +462,68 @@ impl App {
                 history,
             })
         }
+    }
+
+    fn capture_pane_exit_checkpoint_snapshot(
+        &self,
+        generation: u64,
+        job: &shepr_mux::persist::PersistJob,
+    ) -> Option<PaneExitCheckpointSnapshot> {
+        let shepr_mux::persist::PersistJob::Save(bundle) = job else {
+            return None;
+        };
+        let mut terminal_ids = HashMap::new();
+        for (workspace_index, workspace) in self.state.workspaces.iter().enumerate() {
+            for pane_id in workspace.panes().keys() {
+                let terminal_id = workspace.terminal_id(*pane_id)?.clone();
+                terminal_ids.insert((workspace_index, pane_id.raw()), terminal_id);
+            }
+        }
+        if terminal_ids.len()
+            != bundle
+                .snapshot
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.panes.len())
+                .sum::<usize>()
+        {
+            return None;
+        }
+        Some(PaneExitCheckpointSnapshot {
+            generation,
+            session_revision: self.session_saver.session_revision,
+            snapshot: bundle.snapshot.clone(),
+            terminal_ids,
+        })
+    }
+
+    fn capture_save_job_from_pane_exit_checkpoint(
+        &self,
+        checkpoint: &PaneExitCheckpointSnapshot,
+    ) -> Option<shepr_mux::persist::PersistJob> {
+        let cwds = shepr_mux::persist::snapshot::capture_pending_cwds_for_snapshot(
+            &checkpoint.snapshot,
+            &checkpoint.terminal_ids,
+            &self.terminal_runtimes,
+        )?;
+        let history = if self.persist_pane_history {
+            Some(
+                shepr_mux::persist::snapshot::capture_pending_history_for_snapshot(
+                    &checkpoint.snapshot,
+                    &checkpoint.terminal_ids,
+                    &self.terminal_runtimes,
+                )?,
+            )
+        } else {
+            None
+        };
+        Some(shepr_mux::persist::PersistJob::Save(
+            shepr_mux::persist::SessionBundle {
+                snapshot: checkpoint.snapshot.clone(),
+                cwds,
+                history,
+            },
+        ))
     }
 
     pub(crate) fn start_background_session_save(&mut self) {
@@ -443,18 +566,24 @@ impl App {
             self.session_saver.session_save_deadline = None;
             self.session_saver.critical_save_retry_deadline = None;
             self.state.session_dirty = false;
+            let job = self.capture_session_save_job();
+            let pane_exit_snapshot = pane_exit_generation.and_then(|generation| {
+                self.capture_pane_exit_checkpoint_snapshot(generation, &job)
+            });
             self.spawn_session_save(
-                self.capture_session_save_job(),
+                job,
                 SessionSavePurpose::Checkpoint {
                     host_shutdown_generation,
                     pane_exit_generation,
                 },
+                pane_exit_snapshot,
             );
         } else if self.session_saver.save_is_due(now) {
             self.session_saver.session_save_deadline = None;
             self.spawn_session_save(
                 self.capture_session_save_job(),
                 SessionSavePurpose::Autosave,
+                None,
             );
         }
     }
@@ -463,17 +592,24 @@ impl App {
         &mut self,
         job: shepr_mux::persist::PersistJob,
         purpose: SessionSavePurpose,
+        pane_exit_snapshot: Option<PaneExitCheckpointSnapshot>,
     ) {
         let pending = self
             .session_saver
             .persister
             .submit(job, self.clock.wall_now);
-        self.session_saver.in_flight = Some(InFlightSave { pending, purpose });
+        self.session_saver.in_flight = Some(InFlightSave {
+            pending,
+            purpose,
+            pane_exit_snapshot,
+        });
     }
 
-    /// Whether an exited pane may be removed now: nothing is persisted, the
-    /// pre-exit layout is already on disk, or checkpoints have been abandoned
-    /// after repeated failures.
+    /// Whether an exited pane may be removed now, without a checkpoint of its
+    /// own: nothing is persisted, the latest durable save is a pane-exit
+    /// checkpoint and nothing has changed since (so the pane is in it, and a
+    /// burst of exits keeps the layout from before the first one), or
+    /// checkpoints have been abandoned after repeated failures.
     pub(crate) fn pane_exit_checkpoint_settled(&self) -> bool {
         let saver = &self.session_saver;
         (!self.policy.persists_session() && !saver.pane_exit_checkpoint_requested)
@@ -481,20 +617,31 @@ impl App {
             || saver.pane_exit_checkpoint_failures >= CHECKPOINT_MAX_FAILURES
     }
 
-    /// Returns true when the exited pane may be removed now. Otherwise starts a
-    /// background checkpoint of the pre-exit layout; the headless caller holds
-    /// the exit until the save worker reports success or retries run out.
-    pub(crate) fn checkpoint_session_before_pane_exit(&mut self) -> bool {
+    /// Starts a new checkpoint for a pane exit and returns its generation, or
+    /// `None` when the exit is already settled. Each held exit gets a
+    /// generation so a save captured before that exit cannot release it when
+    /// the save later finishes, and a later change to the session cannot hold
+    /// it again.
+    pub(crate) fn request_pane_exit_checkpoint(&mut self) -> Option<u64> {
         if self.pane_exit_checkpoint_settled() {
-            return true;
+            return None;
         }
         self.session_saver.pane_exit_checkpoint_requested = true;
         self.session_saver.pane_exit_checkpoint_generation = self
             .session_saver
             .pane_exit_checkpoint_generation
             .saturating_add(1);
+        let generation = self.session_saver.pane_exit_checkpoint_generation;
         self.start_background_session_save();
-        false
+        Some(generation)
+    }
+
+    /// Whether a particular held exit has its own durable checkpoint.
+    pub(crate) fn pane_exit_checkpoint_generation_settled(&self, generation: u64) -> bool {
+        self.session_saver.pane_exit_checkpoint_saved_generation >= generation
+            || self.session_saver.pane_exit_checkpoint_failures >= CHECKPOINT_MAX_FAILURES
+            || (!self.policy.persists_session()
+                && !self.session_saver.pane_exit_checkpoint_requested)
     }
 
     pub(crate) fn take_pane_exit_checkpoint_ready(&mut self) -> bool {
@@ -548,24 +695,35 @@ impl App {
     }
 
     pub(crate) fn finish_checkpointed_pane_exit(&mut self) {
+        self.finish_checkpointed_pane_exit_after_event(false);
+    }
+
+    pub(crate) fn finish_checkpointed_pane_exit_after_event(&mut self, session_was_dirty: bool) {
         if self.session_saver.pane_exit_checkpoint_pending {
-            self.state.session_dirty = false;
+            if session_was_dirty {
+                // Preserve mutations that arrived after the checkpoint capture.
+                // They need a current-state save even though the exit itself
+                // was safe to replay from its generation's checkpoint.
+                self.session_saver.pane_exit_checkpoint_pending = false;
+                self.session_saver.pane_exit_checkpoint_snapshot = None;
+            } else {
+                // Removing the already-checkpointed pane is not a new durable
+                // mutation; the later save can update the layout after debounce.
+                self.state.session_dirty = false;
+            }
             self.session_saver.session_save_deadline = Some(self.clock.now + SESSION_SAVE_DEBOUNCE);
         }
     }
 
     pub(crate) async fn save_session_before_teardown_async(&mut self) {
-        let preserve_checkpoint =
-            self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
-
         if let Some(save) = self.session_saver.in_flight.take() {
             let result = wait_off_the_runtime(save.pending).await;
-            self.finish_session_save(save.purpose, result, self.clock.now);
-        }
-
-        if preserve_checkpoint {
-            self.session_saver.clear_deadline();
-            return;
+            self.finish_session_save_with_checkpoint(
+                save.purpose,
+                result,
+                self.clock.now,
+                save.pane_exit_snapshot,
+            );
         }
 
         if !self.policy.persists_session() {
@@ -573,17 +731,37 @@ impl App {
             return;
         }
 
-        // Captured while every pane runtime still exists, so the final save
-        // holds each live pane's history.
-        let job = self.capture_session_save_job();
+        let preserve_checkpoint =
+            self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
+        let checkpoint_job = preserve_checkpoint.then(|| {
+            self.session_saver
+                .pane_exit_checkpoint_snapshot
+                .as_ref()
+                .filter(|checkpoint| {
+                    checkpoint.generation
+                        == self.session_saver.pane_exit_checkpoint_saved_generation
+                })
+                .and_then(|checkpoint| self.capture_save_job_from_pane_exit_checkpoint(checkpoint))
+        });
+        let job = match checkpoint_job {
+            Some(Some(job)) => job,
+            Some(None) => {
+                tracing::warn!(
+                    "could not pair fresh pane history with the saved pane-exit layout; capturing the live session instead"
+                );
+                self.capture_session_save_job()
+            }
+            None => self.capture_session_save_job(),
+        };
         let pending = self
             .session_saver
             .persister
             .submit(job, self.clock.wall_now);
         let result = wait_off_the_runtime(pending).await;
-        self.session_saver.pane_exit_checkpoint_pending = false;
         let saved = self.record_session_save_result(result, self.clock.now);
         if saved {
+            self.session_saver.pane_exit_checkpoint_pending = false;
+            self.session_saver.pane_exit_checkpoint_snapshot = None;
             self.session_saver.clear_deadline();
         }
     }
@@ -630,6 +808,7 @@ impl SessionSaver {
         self.in_flight = Some(InFlightSave {
             pending,
             purpose: SessionSavePurpose::Autosave,
+            pane_exit_snapshot: None,
         });
         completion
     }
@@ -648,7 +827,12 @@ impl App {
     fn wait_for_session_save(&mut self) {
         if let Some(save) = self.session_saver.in_flight.take() {
             let result = save.pending.wait();
-            self.finish_session_save(save.purpose, result, self.clock.now);
+            self.finish_session_save_with_checkpoint(
+                save.purpose,
+                result,
+                self.clock.now,
+                save.pane_exit_snapshot,
+            );
         }
     }
 
@@ -677,24 +861,31 @@ impl App {
     /// Delivers `ev` the way the headless loop does: a pane exit that needs a
     /// checkpoint waits for the background save before the app removes it.
     pub(crate) fn handle_internal_event_after_checkpoint(&mut self, ev: AppEvent) {
-        if let AppEvent::PaneDied {
+        let pane_exit_prepared = if let AppEvent::PaneDied {
             pane_id,
             exit_reason,
         } = &ev
-            && exit_reason.requires_session_checkpoint()
-            && self.state.prepare_pane_removal_by_id(*pane_id).is_some()
-            && !self.checkpoint_session_before_pane_exit()
         {
-            for _ in 0..4 {
-                self.wait_for_session_save();
-                if self.take_pane_exit_checkpoint_ready() {
-                    break;
+            if let Some(generation) = self.prepare_pane_exit(*pane_id, *exit_reason) {
+                for _ in 0..4 {
+                    self.wait_for_session_save();
+                    if self.pane_exit_checkpoint_generation_settled(generation) {
+                        self.take_pane_exit_checkpoint_ready();
+                        break;
+                    }
+                    self.session_saver.critical_save_retry_deadline = None;
+                    self.start_background_session_save();
                 }
-                self.session_saver.critical_save_retry_deadline = None;
-                self.start_background_session_save();
             }
+            true
+        } else {
+            false
+        };
+        if pane_exit_prepared {
+            self.handle_prepared_pane_exit(ev);
+        } else {
+            self.handle_internal_event(ev);
         }
-        self.handle_internal_event(ev);
     }
 
     /// Save the live pane histories while runtimes still exist, keeping the
@@ -735,7 +926,7 @@ mod tests {
         let disk_full = || Err(std::io::Error::other("disk full"));
 
         for attempt in 1..CHECKPOINT_MAX_FAILURES {
-            app.finish_session_save(purpose, disk_full(), now);
+            app.finish_session_save_with_checkpoint(purpose, disk_full(), now, None);
             assert!(
                 !app.take_pane_exit_checkpoint_ready(),
                 "failure {attempt} keeps holding the exit"
@@ -748,7 +939,7 @@ mod tests {
             );
         }
 
-        app.finish_session_save(purpose, disk_full(), now);
+        app.finish_session_save_with_checkpoint(purpose, disk_full(), now, None);
         assert!(
             app.take_pane_exit_checkpoint_ready(),
             "the last failure releases the held exit for removal"
@@ -756,15 +947,133 @@ mod tests {
         assert!(!app.pane_exit_checkpoint_requested());
         assert!(app.session_saver.critical_save_retry_deadline.is_none());
         assert!(
-            app.checkpoint_session_before_pane_exit(),
+            app.request_pane_exit_checkpoint().is_none(),
             "later exits are removed without waiting on a failing disk"
         );
 
-        app.finish_session_save(SessionSavePurpose::Autosave, Ok(()), now);
+        app.finish_session_save_with_checkpoint(SessionSavePurpose::Autosave, Ok(()), now, None);
         assert!(
             !app.pane_exit_checkpoint_settled(),
             "a save that succeeds again restores pre-exit checkpoints"
         );
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    /// A production-policy app with one workspace of two panes, returning the
+    /// pane that will exit.
+    fn two_pane_app(name: &str) -> (App, shepr_core::layout::PaneId, shepr_core::layout::PaneId) {
+        use crate::test_support::WorkspaceFixture as _;
+        let mut app = test_app();
+        app.policy = super::super::AppPolicy::Production;
+        let mut workspace = shepr_mux::workspace::Workspace::test_new(name);
+        let exiting = workspace.root_pane();
+        let staying = workspace.test_split(shepr_core::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.set_bookmark_index(Some(0));
+        app.state.ensure_test_terminals();
+        (app, exiting, staying)
+    }
+
+    fn saved_pane_counts(app: &App) -> Vec<usize> {
+        let saved = std::fs::read_to_string(
+            app.paths
+                .data_dir()
+                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
+        )
+        .expect("read the session file");
+        shepr_mux::persist::snapshot::parse_snapshot(&saved)
+            .expect("parse the session file")
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.panes.len())
+            .collect()
+    }
+
+    #[test]
+    fn a_held_pane_exit_settles_on_its_checkpoint_although_the_session_changed_meanwhile() {
+        let (mut app, exiting, _) = two_pane_app("held");
+
+        let generation = app
+            .prepare_pane_exit(exiting, shepr_platform::ChildExitReason::Interrupted)
+            .expect("a signalled exit is held for a checkpoint");
+        assert!(app.session_saver.save_in_flight());
+        // A change lands while the checkpoint is being written, and the loop
+        // turns it into a scheduled save.
+        app.state.mark_session_dirty();
+        app.sync_session_save_schedule();
+        app.wait_for_session_save();
+
+        assert!(app.pane_exit_checkpoint_generation_settled(generation));
+        assert!(
+            !app.pane_exit_checkpoint_requested(),
+            "the exit asks for no second checkpoint"
+        );
+        assert_eq!(saved_pane_counts(&app), vec![2]);
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    #[test]
+    fn a_save_captured_before_a_pane_exit_does_not_settle_it() {
+        let (mut app, exiting, _) = two_pane_app("earlier-save");
+        let earlier = app.session_saver.hold_test_save_in_flight();
+
+        let generation = app
+            .prepare_pane_exit(exiting, shepr_platform::ChildExitReason::Interrupted)
+            .expect("a signalled exit is held for a checkpoint");
+        earlier.complete(Ok(()));
+        assert!(app.reap_finished_session_save());
+        assert!(
+            !app.pane_exit_checkpoint_generation_settled(generation),
+            "the autosave in flight was captured before the exit"
+        );
+
+        app.start_background_session_save();
+        app.wait_for_session_save();
+        assert!(app.pane_exit_checkpoint_generation_settled(generation));
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    #[test]
+    fn exits_after_a_pane_exit_checkpoint_keep_its_layout() {
+        let (mut app, exiting, staying) = two_pane_app("burst");
+
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+            pane_id: exiting,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
+        });
+        assert_eq!(saved_pane_counts(&app), vec![2]);
+        assert_eq!(
+            app.prepare_pane_exit(staying, shepr_platform::ChildExitReason::Interrupted),
+            None,
+            "the checkpoint on disk already holds the second pane"
+        );
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    #[tokio::test]
+    async fn the_final_save_rewrites_the_checkpoint_layout_instead_of_skipping_it() {
+        let (mut app, exiting, _) = two_pane_app("final");
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+            pane_id: exiting,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
+        });
+        assert_eq!(app.state.workspaces[0].panes().len(), 1);
+        // A final save that skipped would leave no session file behind.
+        std::fs::remove_file(
+            app.paths
+                .data_dir()
+                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
+        )
+        .expect("remove the checkpoint");
+
+        app.save_session_before_teardown_async().await;
+
+        assert_eq!(
+            saved_pane_counts(&app),
+            vec![2],
+            "the final save keeps the layout the checkpoint saved"
+        );
+        app.retire_session_writer();
         app.policy = super::super::AppPolicy::Test;
     }
 

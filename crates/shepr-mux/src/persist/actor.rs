@@ -10,8 +10,11 @@
 //! job at a time and in the order they were submitted, so a history is always
 //! resolved against the carry state its predecessor left.
 //!
-//! The lease is released only when the persister is retired, after every job
-//! submitted before has finished.
+//! The lease is released only when the persister is retired, after every
+//! submitted job has finished or been abandoned.
+//! If a worker job panics, it fails closed: it reports that job and later
+//! submissions as abandoned, keeps the writer (and lease) alive, and releases
+//! the lease only after the persister is retired.
 //!
 //! Every job that ends, whether it finished, failed or was abandoned, fires
 //! the completion signal the persister was built with, after its result is
@@ -108,9 +111,8 @@ impl SaveCompletion {
 }
 
 impl Drop for SaveCompletion {
-    /// Fires on every way a job ends: reported, or dropped unreported (a
-    /// panic on the persister's thread unwinds through the job's
-    /// completion), which the pending side reads as abandoned. `notify_one`
+    /// Fires on every way a job ends: reported, or dropped unreported after a
+    /// job panic, which the pending side reads as abandoned. `notify_one`
     /// keeps a permit when nobody is waiting yet, so a job that ends between
     /// the loop's check and its wait still wakes it.
     fn drop(&mut self) {
@@ -252,11 +254,39 @@ impl SessionPersister {
                 let Ok(mut state) = state_receiver.recv() else {
                     return;
                 };
+                let mut accepting_jobs = true;
                 while let Ok(Command { job, now, done }) = command_receiver.recv() {
-                    done.complete(state.run(job, now));
+                    if !accepting_jobs {
+                        drop(done);
+                        continue;
+                    }
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "the persister owns its job panics: a caught panic abandons that job and every later one, while the lease stays held until retirement"
+                    )]
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        state.run(job, now)
+                    }));
+                    match outcome {
+                        Ok(result) => done.complete(result),
+                        Err(_) => {
+                            // Keep `state` outside the unwind boundary. Its
+                            // writer owns the lease, so a failed persister
+                            // cannot let another server restore stale files
+                            // while this server still owns live panes.
+                            drop(done);
+                            accepting_jobs = false;
+                            tracing::error!(
+                                event = "persist.actor",
+                                subsystem = "persist",
+                                outcome = "panicked",
+                                "session persister stopped after a job panicked; holding the data directory lease until retirement"
+                            );
+                        }
+                    }
                 }
                 // Every sender is gone: the persister was retired or dropped,
-                // after the jobs queued before it.
+                // after the jobs queued before it were completed or abandoned.
                 state.retire();
             });
         let worker = match spawned {
@@ -282,8 +312,10 @@ impl SessionPersister {
 
     /// Queues `job`, stamped `now` (the time used for recovery-copy naming
     /// and cadence). Jobs run in submission order. After retirement a job is
-    /// accepted and does nothing, like a retired writer's. Every job fires
-    /// the completion signal when it ends, including one that was refused.
+    /// accepted and does nothing, like a retired writer's. After a worker job
+    /// panics, this and later jobs are reported as abandoned while the worker
+    /// keeps the lease until retirement. Every job fires the completion
+    /// signal when it ends, including one that was refused.
     pub fn submit(&mut self, job: PersistJob, now: SystemTime) -> PendingSave {
         let (done, pending) = PendingSave::signalled_channel(Some(Arc::clone(&self.finished)));
         match &mut self.worker {
@@ -298,14 +330,15 @@ impl SessionPersister {
         pending
     }
 
-    /// Finishes every queued job, then releases the data directory lease.
-    /// Later jobs are ignored.
+    /// Finishes or abandons every queued job, then releases the data directory
+    /// lease. Later jobs are ignored.
     pub fn retire(&mut self) {
         match std::mem::replace(&mut self.worker, Worker::Retired) {
             Worker::Thread { commands, thread } => {
                 drop(commands);
                 if thread.join().is_err() {
-                    // A panic on the thread dropped its state, lease included.
+                    // A job's panic is caught on the thread; one outside a job
+                    // (retiring the writer) dropped its state, lease included.
                     tracing::error!(
                         event = "persist.actor",
                         subsystem = "persist",

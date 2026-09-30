@@ -13,49 +13,26 @@ Filed from the defect hunt over `crates/shepr-core`, `crates/shepr-platform`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## PLAT-001 - The server's client writer has no stall bound in production
+## PLAT-001 - The server's client control queue has no depth bound
 
-Hunter's severity: High. Scope: core-platform.
+Hunter's severity: High (original); the residue is Medium. Scope: core-platform,
+server serving.
 
-**Claim broken.** `shepr_platform::write_client_stream` has a stall path: it
-reports `TimedOut` "terminal observer stopped receiving output" and shuts the
-stream down so the reader wakes. Its unit test
-(`stalled_observer_write_times_out_when_the_injected_clock_passes_its_timeout`)
-and the server test `observer_write_timeout_resets_when_sending_makes_progress`
-both check it.
+The writer now takes an explicit stall limit and owns its nonblocking mode, so a
+client that makes no progress times out and is disconnected. What remains:
+`ClientWriterQueueState.control` (`shepr-server/src/server/client_transport.rs`)
+is an unbounded `VecDeque`. Render frames coalesce, but control messages do not,
+so a peer that drains slowly while never stalling long enough to trip the limit
+(a throttled SSH bridge) lets the backlog grow in server memory without bound.
 
-**What the code does.** `write_client_stream_with_clock` takes its stall budget
-from `SO_SNDTIMEO` (`socket.write_timeout()`); with the option unset it falls
-back to a plain blocking `write_all`. The one production caller is
-`client_writer_loop`, through `write_framed_bytes` in
-`shepr-server/src/server/client_transport.rs`, writing to a `try_clone` of the
-handshake stream:
+**Direction.** Bound the control queue by count or bytes, and disconnect the
+client when it is exceeded, so the memory bound does not depend on the stall
+timer.
 
-- `handle_client_handshake` puts that stream back into blocking mode with
-  `set_nonblocking(false)`.
-- Nothing in `shepr-server` sets a send timeout on it; the only
-  `set_send_timeout` calls in `client_transport.rs` are in its tests.
-- The accept loop in `client_accept.rs` does not set one either.
-
-So the timeout branch never runs in production. The tests set the socket up in
-a way production never does (nonblocking, with a send timeout).
-
-**Consequence.** A client that stops reading (a TUI suspended with Ctrl-Z, a
-wedged SSH bridge) keeps the writer thread blocked in `write_all` until the
-kernel reports an error; the client is never reported disconnected. Render
-frames coalesce in `ClientWriterQueueState.render`, but
-`ClientWriterQueueState.control` is an unbounded `VecDeque`, so control messages
-pile up in server memory for as long as the peer stays stalled. The comments in
-`send_shutdown_to_unregistered_client` and `headless/lifecycle.rs` ("a writer
-stuck on a client that stopped reading") treat the stuck writer as expected;
-only the shutdown flush is bounded.
-
-**Direction.** Make the stall timeout an explicit argument of
-`write_client_stream` instead of a socket option it silently depends on, and let
-the function own the nonblocking mode it needs, so the writer loop passes a named
-limit and the tests exercise production's setup. Bounding the control queue, or
-disconnecting past a depth, would stop the memory growth even if the socket
-bound is lost again.
+Related, same file: the stall limit is 5 s of no progress. Over SSH a network
+blip longer than that now forces a reconnect, while the ssh keepalive budget the
+connection already tolerates is 15 s times 4. Decide whether the writer limit
+should sit near that budget.
 
 ## PLAT-002 - The logind monitor requests its delay lock before checking for a pending shutdown, which logind refuses
 
@@ -85,47 +62,6 @@ it, and should be checked against the installed systemd version.
 pending, announce it without a lock and treat `OperationInProgress` as "no lock
 available", not a connection failure. Make the fake manager refuse `Inhibit`
 while `preparing` is true so the ordering is tested.
-
-## PLAT-003 - `shell::resolve_executable` searches `PATH` for relative names that contain a slash
-
-Hunter's severity: Low-Medium. Scope: core-platform.
-
-**Claim broken.** The name and doc ("Resolve a program path using the pane's
-`PATH` and working directory") imply exec-style lookup, and config validation
-relies on it: `resolve_recognized_shell` in `shepr-config/src/validated.rs`
-resolves `terminal.default_shell` and `SHELL` with it, as does PTY launch
-(`shepr-pty/src/command.rs`, `search_path`).
-
-**What the code does.** Any relative program whose first component is not `.` or
-`..` goes to the `PATH` search, so `bin/zsh` resolves to `<PATH entry>/bin/zsh`.
-`execvp` and every shell treat a name containing a slash as relative to the
-working directory and never search `PATH` for it. For `SHELL=bin/zsh` or
-`terminal.default_shell = "bin/zsh"`, validation either accepts a different
-binary from the one the name means, or refuses a shell that exists at
-`cwd/bin/zsh`.
-
-The resolver is `resolve_executable` in `crates/shepr-core/src/shell.rs`.
-`shepr-pty`'s duplicate cwd-relative check is already gone; the PTY now relies
-on the shared resolver alone, so the one fix there covers config validation and
-launch.
-
-**Direction.** Search `PATH` only when the program has no `/`; otherwise join it
-to `cwd`.
-
-## PLAT-004 - `connect_trusted_local_stream` trusts a listener owned by root
-
-Hunter's severity: Low. Scope: core-platform.
-
-**Claim broken.** "Connects to a server socket and checks its owner before
-returning the stream, so no request or attach byte is ever written to a socket
-served by another user."
-
-**What the code does.** It uses `peer_is_same_user`, which also returns `true`
-for uid 0. The stated reason for admitting root ("root can connect through the
-0600 mode anyway, and refusing it would only break `sudo`") applies to the
-accept side, not to a client trusting a root-owned server. Either split the
-check (accept side admits root, connect side requires the same euid) or reword
-the doc.
 
 ## PLAT-005 - Cleanup sweeps scan the whole `$XDG_RUNTIME_DIR`, which shepr does not own
 
@@ -178,18 +114,6 @@ Hunter's severity: not given (lateral). Scope: core-platform.
 fixed 5-second budget. `MachineSshConnector::attempt` does the same for the
 bridge socket. `connect_trusted_local_stream_within(path, remaining)` exists and
 would honour the deadline.
-
-## PLAT-012 - Rotating log writer does a syscall storm per event and can duplicate partial lines
-
-Hunter's severity: not given (lateral). Scope: core-platform.
-
-Every write through `RotatingFileGuard` opens the log, takes `flock`, runs
-`stat` on both the path and the descriptor, writes and closes. Fine at
-`shepr=info`; with `SHEPR_LOG=debug` on the PTY or render paths the cost
-multiplies with events, panes and clients. A cached descriptor, checked against
-the path's inode only every N writes or on rotation, would keep
-rotation-following without the storm. A failed `write_all` is retried whole, so a
-partial first write duplicates part of a line.
 
 ## PLAT-013 - Data and metadata directories are created with the umask mode
 
@@ -445,16 +369,6 @@ broken config must not block `server stop`), but AGENTS.md says "Config is read
 and validated once at launch ... Any config problem fails the launch" without
 carving out the CLI. The doc or the behaviour should say which.
 
-## PLAT-034 - The pane ID allocator comment justifies itself by a pane move that does not exist
-
-Scope: core (lateral).
-
-The comment on the process-wide pane ID allocator in
-`crates/shepr-core/src/layout.rs` still names "pane move" among the paths an
-owned allocator would have to be threaded through. No pane move exists; the same
-wording was already removed from `NEXT_WORKSPACE_NUMBER` in `shepr-mux`. Reword
-it.
-
 ## PLAT-035 - A test leaves an orphaned `shepr-fixture` process behind
 
 Scope: test support (lateral, source not pinned down).
@@ -482,3 +396,24 @@ Scope: remote (lateral).
 - **Test prints to stdout.** `client_status_does_not_require_runtime_paths` in
   `src/cli.rs` prints the status JSON during the test run. Capture it through a
   writer instead.
+
+## PLAT-037 - The Git runner's deadline starts after spawn returns
+
+Scope: core-platform (lateral).
+
+`run_git` in `crates/shepr-platform/src/git.rs` promises a short probe with a
+deadline, and the deadline now also covers draining the pipes. It is created
+after `command.spawn()` returns, so time spent in the spawn phase (exec of a
+wrapper on a slow or hung filesystem) is not bounded. Take the deadline before
+spawning, or say in the doc that it bounds the run, not the launch.
+
+## PLAT-038 - The preflight restart answer is read through std's buffered stdin
+
+Scope: root binary (lateral).
+
+`src/preflight.rs` reads the restart consent answer with
+`stdin().lock().read_line`. The client's input thread now reads the raw stdin fd
+so that its poll and its reads see the same bytes, which means anything typed
+ahead after the answer stays in std's buffer and never reaches the TUI; before,
+the input loop consumed it through the same buffered handle. Minor, but reading
+the answer from the raw fd would keep one reader of stdin.

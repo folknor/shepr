@@ -3,8 +3,8 @@
 //! Reads and classifies stdin on a dedicated blocking thread, then sends parsed
 //! events to the main loop. The client shell consumes typed events.
 
-use std::io::{self, Read};
-use std::os::fd::AsRawFd;
+use std::io;
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -37,7 +37,8 @@ pub(crate) fn stdin_reader_loop(
     initial_host_input: &[u8],
 ) {
     let stdin = io::stdin();
-    let mut reader = stdin.lock();
+    // Bypass StdinLock's shared buffer so polling and reading observe the same bytes.
+    let stdin_fd = stdin.as_raw_fd();
     let mut scratch = [0u8; HOST_INPUT_READ_CHUNK_BYTES];
     let mut framer = super::host_replies::HostInputFramer::for_host_input();
     framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
@@ -66,7 +67,7 @@ pub(crate) fn stdin_reader_loop(
             return;
         }
         if !flush_idle_input(
-            &reader,
+            stdin_fd,
             &mut framer,
             event_tx,
             &mut pending_palette,
@@ -80,7 +81,7 @@ pub(crate) fn stdin_reader_loop(
     }
 
     while !should_quit.load(Ordering::Acquire) {
-        match reader.read(&mut scratch) {
+        match shepr_platform::read_fd(stdin_fd, &mut scratch) {
             Ok(0) => break,
             Ok(n) => {
                 if !consume_input_bytes(
@@ -96,7 +97,7 @@ pub(crate) fn stdin_reader_loop(
                 }
 
                 if !flush_idle_input(
-                    &reader,
+                    stdin_fd,
                     &mut framer,
                     event_tx,
                     &mut pending_palette,
@@ -148,8 +149,8 @@ fn consume_input_bytes(
     )
 }
 
-fn flush_idle_input<R: AsRawFd>(
-    reader: &R,
+fn flush_idle_input(
+    stdin_fd: RawFd,
     framer: &mut super::host_replies::HostInputFramer,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
@@ -163,7 +164,7 @@ fn flush_idle_input<R: AsRawFd>(
     }
     let timeout_ms =
         idle_flush_timeout_ms(framer, host_mouse_capture_active.load(Ordering::Acquire));
-    if stdin_read_ready(reader, timeout_ms) != Some(false) {
+    if stdin_read_ready(stdin_fd, timeout_ms) != Some(false) {
         return true;
     }
     let had_pending = framer.has_pending_input();
@@ -178,7 +179,8 @@ fn flush_idle_input<R: AsRawFd>(
     {
         return false;
     }
-    if held_escape && stdin_read_ready(reader, framer.held_input_flush_timeout_ms()) == Some(false)
+    if held_escape
+        && stdin_read_ready(stdin_fd, framer.held_input_flush_timeout_ms()) == Some(false)
     {
         let chunks = framer.flush_timeout_framed();
         if !framer.has_pending_input() {
@@ -292,8 +294,8 @@ fn idle_flush_timeout_ms<P: shepr_termio::input::raw_input::HostReplyPolicy>(
     }
 }
 
-fn stdin_read_ready<R: AsRawFd>(reader: &R, timeout_ms: i32) -> Option<bool> {
-    poll_read_ready(reader.as_raw_fd(), timeout_ms)
+fn stdin_read_ready(stdin_fd: RawFd, timeout_ms: i32) -> Option<bool> {
+    poll_read_ready(stdin_fd, timeout_ms)
 }
 
 fn poll_read_ready(fd: i32, timeout_ms: i32) -> Option<bool> {

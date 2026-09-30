@@ -581,7 +581,7 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
         (
             "• old\n■ latest\n› input\n",
             "after_current_prompt_block_marker",
-            "■ latest\n› input\n",
+            "› input\n",
         ),
         ("› old\n• new\n", "current_prompt_block_marker", ""),
         (

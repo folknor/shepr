@@ -187,12 +187,16 @@ server: one that is reached anyway is refused with guidance.
 Run it with plain `brokkr run -- [<command>]`, including from inside a pane
 of the installed server. The dev client launches the `shepr-server` beside it
 in `target/debug`, which `brokkr run` does not build: build it first with
-`brokkr run shepr-server -- --version`, or through `brokkr check`. Every pane exports `SHEPR_SOCKET_PATH` and
-`SHEPR_CLIENT_SOCKET_PATH`, which normally win over the per-profile runtime
-directory, and also `SHEPR_BUILD_PROFILE`, the profile (`release` or `dev`) of
-the server that owns the pane. A process whose own profile differs from that
-marker ignores both socket variables and resolves its own profile's runtime
-directory.
+`brokkr run shepr-server -- --version`, or through `brokkr check`. Every pane exports
+`SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` as its server resolved them,
+which normally win over the per-profile runtime directory, and also
+`SHEPR_BUILD_PROFILE`, the profile (`release` or `dev`) of the server that owns
+the pane. A process whose own profile differs from that marker ignores both
+socket variables and resolves its own profile's runtime directory. The API
+variable takes precedence and derives the client socket, so in a pane of a
+server started with only a client socket override, a nested `shepr` client
+derives the wrong client socket; the API variable stays exported anyway, since
+every agent integration reports through it.
 
 - Socket variables with no marker (set by a user or a script) and ones with a
   matching marker still win over the runtime directory.

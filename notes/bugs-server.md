@@ -109,24 +109,15 @@ runs on the loop in `start_pending_agent_resume`.
 **Fix.** Answer from a worker (the endpoint protocol has request ids) or from the
 Git refresh cache.
 
-Smaller: the reply's `home` comes from `shepr_core::pathutil::home_dir()` (the
-process environment), while every other app path uses `self.paths.home_dir()`,
-the launch-resolved `AppPaths`; the two can disagree.
-
-## SRV-004 - PaneDied publishes the agent exit twice, and again on replay
-
-Scope: server-app.
-
-`server/headless/internal_events.rs` calls
-`state.publish_pane_process_exit_if_agent` and then
-`app.handle_internal_event(ev)`, which calls it again (`app/events.rs`). A held
-checkpointed exit goes through both again when replayed from
-`pending_checkpointed_pane_exits`. Nothing claims idempotence. Today the second
-call finds the agent already released and returns `Unchanged`, but it runs the
-whole `update_terminal_state` path again with a later `clock_now`, and
-correctness depends on a terminal-state detail far away in `shepr-mux`. One owner
-(the App handler) should publish it, and the server should ask the App whether
-the exit is held.
+A fixer found why an in-place fix stalls: the worker's completion has to return
+through the headless loop's ordered reply outbox, which means touching
+`server/headless.rs`, the internal event handling and `endpoint_requests.rs`
+together with `checkout_root.rs`. The resume `metadata` call is likewise tied to
+PTY construction, which stats the requested cwd again and falls back to HOME, so
+moving only the resume check off the loop would send the resume command into the
+wrong directory. Comments at both blocking sites record this. Give one fixer the
+loop, the internal events, the endpoint request handling and both call sites.
+(The `home` in the reply now comes from the launch-resolved `AppPaths`.)
 
 ## SRV-006 - `AppState` does /proc I/O despite "pure data"
 
@@ -143,6 +134,13 @@ runtime only through the registry it is handed"); handing it the registry is how
 the rule is sidestepped. `App` should compute the resolved cwd and pass it in, so
 `AppState` only compares.
 
+A fixer confirmed the `/proc` path and found the change needs
+`App::handle_git_status_refreshed` in `app/events.rs` to resolve the current
+cwds and pass them in, together with `app/actions/events.rs` and `app/state.rs`.
+`runtime_for_pane_in_workspace` only borrows a runtime and does no I/O itself;
+removing its registry parameter touches callers in `app/creation.rs` and
+`app/api/panes/copy.rs`. Comments now mark both. Give one fixer all of these.
+
 ## SRV-009 - Render and projection invalidation happen even for failed requests
 
 Scope: server-app. Related: SRV-002.
@@ -153,42 +151,6 @@ shell projection from the method's static `mutates_ui` trait before dispatch, so
 a rejected command (unknown pane, bad ratio, out-of-bounds move) or a hook report
 for a pane that does not exist still forces a full render and a snapshot rebuild
 on every client. The handlers know whether they changed anything.
-
-## SRV-010 - A held pane exit can be checkpointed again and again under steady dirtying
-
-Scope: server-app.
-
-Where: `app/session.rs` `pane_exit_checkpoint_settled`
-(`pane_exit_checkpoint_pending && !session_dirty`), `SessionSaver::schedule`
-(clears `pane_exit_checkpoint_pending`), and the loop order in
-`server/headless.rs` (`sync_session_save_schedule` in step 3,
-`drain_server_events` in step 4, replay in step 5).
-
-Nothing bounds this: `CHECKPOINT_MAX_FAILURES` counts only failed saves. If
-anything dirties the session between the checkpoint's capture and the replay (a
-bookmark move from an active client in step 4, a session-ref hook report, a cwd
-change), the replay finds it unsettled, requests another full checkpoint (whole
-session plus history) and holds the exit again. Under continuous dirtying the
-dead pane stays in the layout and the session is rewritten back to back. The
-checkpoint only has to prove the pre-exit layout is on disk; settle on "a
-checkpoint captured after this exit was held succeeded", tracked by generation,
-not on the global dirty flag.
-
-## SRV-011 - The final save is skipped whenever a pane-exit checkpoint is the latest save
-
-Scope: server-app.
-
-**Claim broken.** `app/session.rs` `save_session_before_teardown_async`: the
-final save is "Captured while every pane runtime still exists, so the final save
-holds each live pane's history".
-
-`preserve_checkpoint` returns before the final capture, so when the latest save
-was a pane-exit checkpoint and nothing has dirtied the session since, the final
-save is skipped entirely. With `experimental.pane_history` on, the other panes
-lose the output written between the checkpoint and shutdown, as does any cwd
-known only from `/proc` (not dirtying). Keeping the checkpointed layout and
-taking fresh history are separate decisions: the final save could reuse the
-checkpoint's structure with current history.
 
 ## SRV-012 - Smaller server-app items
 
@@ -306,22 +268,6 @@ future server-side drop inherits it.
 writer handles by shutting the socket), so removing from the registry closes the
 connection. Separately, the pong should not bypass the loop if it is meant to show
 that the server, not only its reader thread, is alive.
-
-## SRV-016 - A config too large for the welcome exits as "failed", not "config refused"
-
-Scope: server-serving-ui. Related: WIRE-009.
-
-**Claims broken.** `run_server`'s comment ("A config the welcome cannot carry
-fails the launch here, like any other config problem") and the `daemon_exit`
-classes (`CONFIG_REFUSED_EXIT_CODE`, "configuration or paths were refused").
-
-`ensure_config_fits_welcome` returns `io::Error`, which becomes
-`RunServerError::Io`; `shepr-daemon`'s `report_server_error` then exits with
-`FAILED_EXIT_CODE`, and a launching client reads `DaemonExit::Failed` ("failed to
-start") instead of `ConfigRefused` ("refused its configuration"). It also runs
-after the data-directory lease is taken, so it is not a config check in the
-`serve()` sense. It belongs next to `load_validated` in `shepr-daemon`, or needs a
-`RunServerError::ConfigRefused` variant.
 
 ## SRV-019 - The retained render path resolves string pane ids per source, recipient and pane
 
@@ -469,26 +415,6 @@ numbers come from `assign_public_pane_numbers`; the rest is structural). Run it
 right after pruning and reserve resume keys only once the workspace is known to
 survive. Best: a two-phase restore that validates the whole snapshot into plain
 restore plans with no side effects, then spawns.
-
-## SRV-027 - A panic on the persister thread releases the data-directory lease while the server keeps running
-
-Scope: mux-persist-git-workspace.
-
-**Claim broken.** `persist/actor.rs` module docs: "The lease is released only when
-the persister is retired, after every job submitted before has finished";
-`persist.rs` says one server at a time owns a data directory.
-
-The lease sits in `PersistState` on the `shepr-persist` thread. If a job panics
-(history formatting or serialization run there), the thread unwinds and drops the
-state and the lease; `retire` only logs it later. Meanwhile the server keeps
-running with every later job answered `abandoned` and the save loop retrying with
-backoff forever (no live persistence, no loud signal), and `session.lock` is free,
-so a second server on the same profile can acquire it and restore the stale file
-while the first still owns live panes.
-
-**Fix.** Hold the `DataDirLease` in `SessionPersister` itself and release it only
-in `retire` (the direct fix), or treat a dead persister as fatal: on `abandoned`,
-log an error and shut down cleanly.
 
 ## SRV-028 - Git status passes unvalidated ref-file contents to `git rev-list` as argv
 

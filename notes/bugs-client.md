@@ -55,24 +55,6 @@ normalizes one to the other, or `encode_legacy`/`encode_legacy_inner` emits
 same. One canonical form, not two spellings every encoder must remember. See also
 WIRE-016 on canonical key combos.
 
-## CLIENT-002 - Raw-input logging writes typed bytes it promises not to log
-
-Hunter's severity: Low. Scope: termio-root.
-
-**Claim broken.** `raw_input.rs` comments: "Length and kind only: the bytes and
-the parsed key are what the user typed, passwords included, and the log file
-outlives the session" and "Buffer contents are user keystrokes; log lengths,
-never bytes."
-
-`extract_one_event` logs
-`tracing::debug!(sequence = ?seq, "dropping unsupported escape sequence")` with
-the full sequence. Unsupported sequences include key reports the parser rejects:
-a kitty report-all CSI u carrying associated text with a codepoint the parser
-refuses (`reject_malformed_kitty_associated_text` cases), or IME text in a form
-the parser does not accept. The codepoints of typed text then land in the client
-log. `flush_timeout` also logs `bytes = ?self.buffer` for timed-out SGR mouse
-prefixes: harmless, same pattern. Log length and a classification only.
-
 ## CLIENT-003 - Termio structural notes
 
 Scope: termio-root (filed by the hunter as structural notes, not defects in
@@ -92,44 +74,6 @@ themselves).
 - **Misleading module doc.** `crates/shepr-termio/src/host_term/title.rs` opens
   with a module doc about clipboard bytes; the module is named for titles and
   holds both.
-
-## CLIENT-004 - The stdin reader polls the fd while reading through `StdinLock`'s buffer, splitting escape sequences it already holds
-
-Hunter's severity: highest in its report. Scope: client-endpoint.
-
-Where: `src/input.rs`, `stdin_reader_loop` and `flush_idle_input` (a path that
-tracks upstream herdr).
-
-**Claim broken.** The reader promises "Reads host input, frames and parses it
-once". The crate knows the hazard: `terminal_setup.rs`'s
-`query_host_escape_disambiguation` says "Bypass StdinLock's shared buffer so poll
-and read observe the same bytes."
-
-`stdin_reader_loop` does `let mut reader = stdin.lock();` and
-`reader.read(&mut scratch)` with a 4096-byte scratch
-(`HOST_INPUT_READ_CHUNK_BYTES`). `StdinLock` is a `BufReader` with an 8 KiB
-buffer, which only skips its buffer for reads at least as large as the buffer, so
-it fills up to 8 KiB from the fd and hands back 4096; the rest sits in user
-space. `flush_idle_input` then asks `poll_fd_readable(reader.as_raw_fd(), ...)`
-whether more input is coming; the fd is empty, poll times out, and
-`flush_timeout_framed` releases the pending prefix as a lone ESC, Alt+`[` or a
-broken mouse report. Only then does the next `read` return the buffered tail,
-framed as plain text.
-
-**When.** Any time 4097 to 8192 bytes wait on the tty and the 4096-byte cut falls
-inside an escape sequence. The stdin thread feeds the bounded `event_tx` channel
-(capacity 256) with `blocking_send`, shared with every endpoint reader, so a busy
-client loop blocks the stdin thread and input piles up in the kernel. A mouse
-drag or wheel burst during heavy pane output is exactly this case: the tail of an
-SGR report (`4;37M`, `<35;64;37M`) goes to the focused pane as keystrokes, into an
-agent's prompt. Every split also adds the idle-flush waits
-(`MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS`, then
-`held_input_flush_timeout_ms`). Bracketed pastes are safe: the framer holds an
-unterminated paste with no deadline.
-
-**Fix direction.** Read the raw fd in the loop, as the startup probe does
-(`shepr_platform::read_fd` on `io::stdin().as_raw_fd()`), so readiness and data
-come from the same place. Check whether upstream herdr has the same bug.
 
 ## CLIENT-005 - A pane surface patch the shell rejects is dropped silently, and nothing recovers
 
@@ -233,53 +177,6 @@ nothing and breaks the invariant.
 **Fix direction.** Give the gate the `Presentation` (or `owned()`), and treat
 `is_presentation_effect` plus `Clipboard` as `Drop` unless owned.
 
-## CLIENT-008 - A writer failure is reported as "server closed connection", and the real error is lost
-
-Scope: client-endpoint.
-
-Where: `src/endpoint/writer.rs` and `src/transport.rs`.
-
-The writer keeps its error so `EndpointRegistry::take_failures` can report it; it
-never gets there. `start_endpoint_transport` / `Connected` give the reader thread
-the writer's `stop_handle()`. On a write error the worker stores the error and
-sets `worker_stop`, the same `Arc` the reader's `EndpointReader` checks, so the
-reader returns `Ok(0)`, `read_message` becomes `UnexpectedEof`, and the reader
-sends `ServerDisconnected` ("server closed connection"). If that is handled before
-the next timer, `handle_server_disconnected` calls `fail`, and `record_failure`
-removes the connection; `take_failures` only calls `take_error()` on connections
-still in the map, so the stored `endpoint write timed out` or `EPIPE` is dropped.
-The diagnostic and log say the peer closed when the client's write side failed,
-which matters for SSH triage.
-
-**Fix direction.** Give the reader its own stop flag, or have `record_failure`
-drain `take_error()` from the connection it removes and prefer that error.
-
-## CLIENT-009 - `complete_at` failures are not rolled back as the code says
-
-Scope: client-endpoint.
-
-Where: `src/endpoint/activation.rs` `complete_at` and
-`shell_runtime::complete_endpoint_activation`.
-
-**Claim broken.** The comment in `complete_at`: "if either does not, the handoff
-is rolled back like any other activation failure rather than presenting a surface
-under the wrong projection."
-
-Before its checks, `complete_at` already calls `set_surface_active(lease, true)`
-and possibly `set_active(lease)`. If `activate_endpoint_projection` or
-`endpoint_is_active` then fails, it returns `Err`, and
-`complete_endpoint_activation` only calls `receive_endpoint_unavailable(error)`
-and returns `Ok(None)`; no rollback starts. The handoff stays in
-`ActivatingTarget`/`RestoringSource`, with the registry's active id possibly
-already moved to the target, frames frozen and input closed, until `handle_timer`
-notices `expired()` (up to `ACTIVATION_TIMEOUT`, 5 s per the hunter) and rolls
-back. A `RestoringSource` failure then ends `Unavailable` although the source was
-fine.
-
-**Fix direction.** On `Err` from `complete_at`, call
-`rollback_endpoint_activation` at once; better, validate before mutating the
-registry.
-
 ## CLIENT-010 - A failed first Local handshake with machines configured throws away its diagnostic
 
 Scope: client-endpoint.
@@ -302,20 +199,6 @@ first failure. It also costs a redundant connection.
 `handshake_error(.., Some(mismatch_guidance))` and seed the Local status and
 diagnostic with it (Attention when `needs_attention()`), as a supervisor `Status`
 event would.
-
-## CLIENT-011 - `replay_host_theme` runs before the commit it says it follows
-
-Scope: client-endpoint.
-
-**Claim broken.** `src/state.rs` `replay_host_theme`: "Replay the retained
-physical-host baseline only after an endpoint owns the committed presentation."
-
-It runs at the top of `shell_runtime::complete_endpoint_activation` whenever the
-phase is `ActivatingTarget`/`RestoringSource`, before `complete_at` has validated
-anything, also when `complete_at` then fails, and again on every later `Ready` in
-that phase. The ordering actually relied on (the theme goes ahead of the
-presentation-sync request on the same transport) still holds; the doc should say
-that, or the call should move after a successful `complete_at`.
 
 ## CLIENT-012 - Smaller client endpoint defects, smells and stale docs
 

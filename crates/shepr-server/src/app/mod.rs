@@ -162,6 +162,7 @@ impl App {
             // it. The saved host theme supplies colours until a live client
             // reports its own.
             let api_socket_path = shepr_api::socket_path(&paths);
+            let client_socket_path = crate::server::socket_paths::client_socket_path(&paths);
             let restored = shepr_mux::persist::restore(
                 &snap,
                 history.as_ref(),
@@ -172,6 +173,7 @@ impl App {
                     settings.login_shell,
                 ),
                 &api_socket_path,
+                &client_socket_path,
                 config.session().resume_agents_on_restore,
                 &event_tx,
                 &render_notify,
@@ -310,6 +312,7 @@ impl App {
             render_dirty: Arc::clone(&self.render_dirty),
             pane_teardowns: Arc::clone(&self.pane_teardowns),
             api_socket_path: shepr_api::socket_path(&self.paths),
+            client_socket_path: crate::server::socket_paths::client_socket_path(&self.paths),
         }
     }
 

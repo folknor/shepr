@@ -1,5 +1,8 @@
 use super::*;
-use crate::limits::{KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
+use crate::limits::{
+    KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_OSC_BYTES, MAX_PARSER_OSC_BYTES, MAX_SCROLLBACK_LINES,
+    MIN_SCROLLBACK_LINES,
+};
 
 fn vp(col: u16, row: u16) -> Point<ViewportRow> {
     Point::new(ViewportRow(row), col)
@@ -674,6 +677,36 @@ fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
         vec![decoded_bytes]
     );
     assert!(terminal.take_dropped_clipboard_store_bytes().is_empty());
+}
+
+#[test]
+fn oversized_osc_body_is_skipped_and_parser_recovers_at_its_terminator() {
+    let mut terminal = Terminal::new(10, 3, 0);
+    let mut sequence = b"\x1b]7;".to_vec();
+    sequence.resize(2 + MAX_PARSER_OSC_BYTES, b'x');
+    terminal.write(&sequence);
+
+    // The scanner and vte have both consumed the bounded prefix. Crossing the
+    // parser bound ends vte's OSC and causes following body bytes to be held
+    // back until the real terminator.
+    terminal.write(b"x");
+    terminal.write(&vec![b'y'; MAX_PARSER_OSC_BYTES * 2]);
+    terminal.write(b"\x07after\x1b[5n");
+
+    assert!(terminal.take_pwd_changes().is_empty());
+    assert_eq!(core_replies(&mut terminal), vec![b"\x1b[0n".to_vec()]);
+    assert_eq!(first_rendered_row_text(&terminal), "after");
+}
+
+#[test]
+fn osc52_store_longer_than_the_scanner_retains_is_stored_whole() {
+    let mut terminal = Terminal::new(10, 3, 0);
+    // "aaa" encodes to "YWFh", so the store is well past the scanner's bound.
+    let text = b"aaa".repeat(MAX_OSC_BYTES);
+    let encoded = "YWFh".repeat(MAX_OSC_BYTES);
+    terminal.write(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+
+    assert_eq!(terminal.take_clipboard_writes(), vec![text]);
 }
 
 #[test]

@@ -12,6 +12,11 @@ impl App {
     /// from. A directory outside any repository, or one that is not a directory
     /// here, is an ordinary `None`; a failure that kept Git from answering is an
     /// error, and the client falls back to a path-based label.
+    ///
+    /// The headless loop runs endpoint commands inline and holds replies in an
+    /// ordered outbox. A worker result must return through that loop to preserve
+    /// reply order; sending from a detached worker can overtake later commands,
+    /// while waiting for it here still blocks client and PTY work.
     pub(super) fn handle_workspace_checkout_root(
         &mut self,
         params: &WorkspaceCheckoutRootParams,
@@ -21,8 +26,9 @@ impl App {
             Ok(root) => Handled::reply(EndpointReply::WorkspaceCheckoutRoot {
                 root,
                 // An unusable `HOME` just means the `~` label is not offered.
-                home: shepr_core::pathutil::home_dir()
-                    .ok()
+                home: self
+                    .paths
+                    .home_dir()
                     .and_then(|home| home.to_str().map(str::to_owned)),
             }),
             Err(message) => rejected(message),
