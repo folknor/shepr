@@ -307,7 +307,11 @@ pub(super) fn git_rev_parse_verify_with_errors(
     revision: &str,
     errors: &mut Vec<GitReadError>,
 ) -> Option<String> {
-    git_trimmed_stdout(repo_root, &["rev-parse", "--verify", revision], errors)
+    git_trimmed_stdout(
+        repo_root,
+        &["rev-parse", "--verify", "--end-of-options", revision],
+        errors,
+    )
 }
 
 /// Whether the repository keeps its refs in a reftable store. Git takes
@@ -327,38 +331,11 @@ pub(super) fn git_ref_storage_is_reftable(
     ))
 }
 
-/// Whether `core.bare` resolves to true for this Git directory. Unlike the
-/// repository format keys, Git's effective `core.bare` (what `git rev-parse
-/// --is-bare-repository` reports from inside a Git directory) comes from the
-/// whole config chain: the system config, the global config files, then the
-/// repository's config, each with its includes, the last value winning.
-/// `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM` and `GIT_CONFIG_GLOBAL` select
-/// the same system and global sources Git uses. So a bare repository whose
-/// `core.bare = true` sits in an included file or in a global config is still
-/// bare here. The value takes Git's boolean grammar; a malformed one, which
-/// Git refuses to run on, reads as not bare. One deliberate difference: Git
-/// treats a Git directory it discovers as bare when `core.bare` is unset,
-/// while this requires an explicit true, so a directory that merely looks
-/// like a Git directory is walked past rather than taken as a repository
-/// root.
+/// Git resolves effective core.bare, including its own config grammar and
+/// conditional includes. Require explicit true rather than treating an
+/// unconfigured directory with a Git-like layout as a bare repository.
 fn git_dir_is_bare(info: &GitWorktreeInfo) -> io::Result<bool> {
-    let branch = git_head_branch(&info.git_dir);
-    let mut config_paths = super::config::git_user_config_paths_at(&info.repo_root)?;
-    config_paths.push(info.git_dir.join("config"));
-    let (value, _) =
-        super::config::read_config_value(info, &branch, &config_paths, "core", "bare")?;
-    Ok(value.as_deref().and_then(super::config::git_config_bool) == Some(true))
-}
-
-fn git_head_branch(git_dir: &Path) -> String {
-    std::fs::read_to_string(git_dir.join("HEAD"))
-        .ok()
-        .and_then(|head| {
-            head.trim()
-                .strip_prefix("ref: refs/heads/")
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
+    super::config::read_bare(info)
 }
 
 pub(super) fn git_trimmed_stdout(
@@ -544,31 +521,60 @@ fn git_repo_root_below_with_errors(
     }
 }
 
+/// Only complete object IDs may enter revision arguments. Ref text is not a
+/// revision expression, and symbolic refs are unavailable to this file reader.
+pub(super) fn valid_oid(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64)
+        && oid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Keep repository-controlled names inside the refs namespace. Git's other
+/// refname restrictions also prevent malformed names being cached as branches.
+pub(super) fn valid_full_ref(name: &str) -> bool {
+    name.starts_with("refs/")
+        && !name.ends_with('.')
+        && !name.contains("..")
+        && !name.contains("@{")
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+        && !name
+            .bytes()
+            .any(|byte| byte <= b' ' || byte == 0x7f || b"~^:?*[\\".contains(&byte))
+}
+
 pub(super) fn read_ref_oid_with_errors(
     common_dir: &Path,
     full_ref: &str,
     errors: &mut Vec<GitReadError>,
 ) -> Option<String> {
+    if !valid_full_ref(full_ref) {
+        errors.push(GitReadError::FileRead {
+            path: common_dir.to_path_buf(),
+            message: "invalid ref name".into(),
+        });
+        return None;
+    }
     let loose_ref = common_dir.join(full_ref);
     match read_git_ref_file_state(&loose_ref) {
         RefFileRead::Content(contents) => {
             let oid = contents.trim();
-            if oid.is_empty() {
+            if !valid_oid(oid) {
                 errors.push(GitReadError::FileRead {
-                    path: loose_ref.clone(),
-                    message: "loose ref is empty".into(),
+                    path: loose_ref,
+                    message: "loose ref is not a complete object ID".into(),
                 });
                 return None;
             }
             return Some(oid.to_string());
         }
-        // A loose ref that exists - or whose existence cannot be ruled out
-        // because of a metadata or I/O error - must not fall back to
-        // packed-refs: that could resurrect a stale same-name OID into the
-        // status fingerprint. Report the ref as unavailable instead.
+        // An existing but unavailable loose ref must not resurrect a stale
+        // packed OID. Symbolic loose refs are reported unavailable too.
         RefFileRead::Unavailable(message) => {
             errors.push(GitReadError::FileRead {
-                path: loose_ref.clone(),
+                path: loose_ref,
                 message,
             });
             return None;
@@ -576,31 +582,64 @@ pub(super) fn read_ref_oid_with_errors(
         RefFileRead::Absent => {}
     }
 
-    let packed_refs_path = common_dir.join("packed-refs");
-    let packed_refs = match std::fs::read_to_string(&packed_refs_path) {
-        Ok(contents) => contents,
+    // Packed refs can exceed the small loose-ref cap. Stream bounded lines
+    // instead of allocating the entire file or an unbounded malformed line.
+    use std::io::BufRead;
+    let packed_path = common_dir.join("packed-refs");
+    let file = match std::fs::File::open(&packed_path) {
+        Ok(file) => file,
         Err(error) if is_absence(&error) => return None,
         Err(error) => {
             errors.push(GitReadError::FileRead {
-                path: packed_refs_path,
+                path: packed_path,
                 message: error.to_string(),
             });
             return None;
         }
     };
-    for line in packed_refs.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
-            continue;
+    let mut reader = std::io::BufReader::new(file);
+    loop {
+        let mut bytes = Vec::new();
+        let read = reader
+            .by_ref()
+            .take((MAX_GIT_REF_FILE_BYTES + 1) as u64)
+            .read_until(b'\n', &mut bytes);
+        match read {
+            Ok(0) => return None,
+            Ok(_) if bytes.len() <= MAX_GIT_REF_FILE_BYTES => {}
+            Ok(_) => {
+                errors.push(GitReadError::FileRead {
+                    path: packed_path,
+                    message: "packed ref line is too large".into(),
+                });
+                return None;
+            }
+            Err(error) => {
+                errors.push(GitReadError::FileRead {
+                    path: packed_path,
+                    message: error.to_string(),
+                });
+                return None;
+            }
         }
+        let Ok(line) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
         let mut parts = line.split_whitespace();
-        let oid = parts.next()?;
-        let name = parts.next()?;
+        let (Some(oid), Some(name)) = (parts.next(), parts.next()) else {
+            continue;
+        };
         if name == full_ref {
-            return Some(oid.to_string());
+            if valid_oid(oid) && parts.next().is_none() {
+                return Some(oid.to_owned());
+            }
+            errors.push(GitReadError::FileRead {
+                path: packed_path,
+                message: "packed ref is not a complete object ID".into(),
+            });
+            return None;
         }
     }
-    None
 }
 
 #[cfg(test)]
@@ -639,6 +678,49 @@ mod tests {
     use crate::git::test_support::{
         add_linked_worktree, git_written_fixture, live_git_space, temp_test_dir, write_git_dir,
     };
+
+    #[test]
+    fn ref_reader_rejects_paths_and_revision_expressions() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = temp_test_dir("invalid-ref-inputs");
+        std::fs::create_dir_all(root.join("refs/heads")).expect("refs");
+        for name in [
+            "/etc/passwd",
+            "refs/heads/../../config",
+            "refs/heads//main",
+            "HEAD",
+        ] {
+            let mut errors = Vec::new();
+            assert!(read_ref_oid_with_errors(&root, name, &mut errors).is_none());
+            assert!(!errors.is_empty());
+        }
+        for value in ["--output=owned", "HEAD", "aabbcc", "ref: refs/heads/other"] {
+            std::fs::write(root.join("refs/heads/main"), value).expect("loose ref");
+            let mut errors = Vec::new();
+            assert!(read_ref_oid_with_errors(&root, "refs/heads/main", &mut errors).is_none());
+            assert!(!errors.is_empty());
+        }
+        assert!(valid_oid(&"a".repeat(40)));
+        assert!(valid_oid(&"0".repeat(64)));
+        assert!(!valid_oid(&"A".repeat(40)));
+    }
+
+    #[test]
+    fn packed_reader_skips_incomplete_lines_and_rejects_invalid_oids() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = temp_test_dir("packed-ref-validation");
+        let packed = root.join("packed-refs");
+        std::fs::write(
+            &packed,
+            format!("incomplete\n{} refs/heads/main\n", "a".repeat(40)),
+        )
+        .expect("packed refs");
+        assert_eq!(read_ref_oid(&root, "refs/heads/main"), Some("a".repeat(40)));
+        std::fs::write(&packed, "--output=owned refs/heads/main\n").expect("packed refs");
+        assert!(read_ref_oid(&root, "refs/heads/main").is_none());
+        std::fs::write(&packed, "a".repeat(MAX_GIT_REF_FILE_BYTES + 1)).expect("oversized line");
+        assert!(read_ref_oid(&root, "refs/heads/main").is_none());
+    }
 
     #[test]
     fn oversized_loose_ref_is_unavailable_not_absent() {

@@ -41,17 +41,44 @@ pub const MAX_CLIENT_REQUEST_BYTES: usize = 1024 * 1024;
 /// `ClientShellPaneInput` batch.
 ///
 /// Kept well below `MAX_CLIENT_MESSAGE_SIZE` so an input message at the limit
-/// still fits in one frame with its envelope. The server answers an oversized paste with a
-/// rejection notice rather than a disconnect; clients check the same limit
-/// before sending so an oversized paste never has to cross the wire.
+/// still fits in one frame with its envelope. The client batcher stays within
+/// this total, rejects a single oversized paste locally, and the server sends
+/// a rejection notice for an oversized paste received from a peer.
 pub const MAX_INPUT_PAYLOAD: usize = MAX_CLIENT_REQUEST_BYTES;
+
 /// Maximum JSON API request line accepted before parsing.
 ///
 /// Reuses the shared client-request budget so the API line reader and pane
 /// input enforce one limit.
 pub const MAX_INITIAL_REQUEST_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
 
+/// Maximum expanded pane input events (see
+/// [`ClientPaneInputEvent::expanded_event_count`](crate::ClientPaneInputEvent::expanded_event_count))
+/// in one `ClientShellPaneInput` message. The client batcher splits messages
+/// before they cross it and the server refuses a message past it. The config
+/// crate owns the value because it also caps one configured mouse scroll step.
+pub const MAX_INPUT_EVENT_BATCH: usize = shepr_config::MAX_INPUT_EVENT_BATCH;
+
 impl crate::ClientPaneInputEvent {
+    /// Expanded input work represented by this event, as charged against
+    /// `MAX_INPUT_EVENT_BATCH`.
+    ///
+    /// Key repeats and mouse scroll lines are charged individually; other
+    /// events each count once.
+    pub fn expanded_event_count(&self) -> usize {
+        match self {
+            Self::Key { repeat_count, .. } => {
+                usize::from((*repeat_count).max(MIN_KEY_REPEAT_COUNT))
+            }
+            Self::Mouse {
+                kind: crate::ClientMouseKind::ScrollUp | crate::ClientMouseKind::ScrollDown,
+                lines,
+                ..
+            } => usize::from((*lines).max(1)),
+            Self::TextCommit(_) | Self::Mouse { .. } | Self::Paste(_) => 1,
+        }
+    }
+
     /// Text bytes this event delivers to the pane, as charged against
     /// `MAX_INPUT_PAYLOAD`: paste or committed text, or a key's generated text
     /// times its repeat count. Mouse events carry no text.

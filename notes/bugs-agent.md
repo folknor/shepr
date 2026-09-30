@@ -63,88 +63,6 @@ process exit.
 agent-absent report that has passed miss confirmation. Do not clear the
 detector's agent on an authority reset, or re-probe until it is reacquired.
 
-## AGENT-004 - `detect capture` does not capture what the detector evaluates, so an offline explain disagrees with the live one
-
-Scope: agent-detection.
-
-**Claims broken.** AGENTS.md: "`shepr detect capture <pane>` prints the text the
-detector evaluates for a pane", and the manifest workflow ("capture the pane ...
-encode invariant controls"). The `src/cli/detect.rs` module doc says the same.
-
-**What happens.** The detector evaluates `(screen, osc_title, osc_progress)`.
-`handle_detect_capture` returns only `detection_text()`. `detect explain <pane>`
-reads all three (`handle_detect_explain`), but `detect explain --file` goes
-through `explain_for_label` -> `explain()`, which hard-codes empty OSC strings.
-Codex, Claude, Amp, Grok, Kiro, Qwen and Letta all have top-priority OSC rules,
-so explaining a capture offline can select a different rule and state than the
-live explain (Codex `Action Required` in the title, a Grok title spinner,
-Claude's title spinner with its dialog-aware `not` gate), and the maintainer
-cannot reproduce the live decision from a capture.
-
-**Fix direction.** Have capture emit the OSC title and progress alongside the
-screen in a format `--file` reads back, and have `explain --file` feed them to
-`explain_with_input`.
-
-## AGENT-005 - Agent-specific detection policy is hard-coded outside the manifests
-
-Scope: agent-detection.
-
-`fallback_state` hard-codes `Agent::Codex` as the only agent whose no-match
-result is `Unknown`. `should_skip_idle_screen_scan` hard-codes `Codex` (plus "no
-screen manifest") as the only agents whose `Unknown` is stable. Letta's manifest
-ends in a catch-all `Unknown` rule, so a Letta pane on its composer or the
-catch-all never qualifies for the idle skip and copies and evaluates the full
-screen every 300 ms while nothing changes: the hot path AGENTS.md says
-multiplies per pane.
-
-`should_skip_idle_screen_scan` also asks `agent.screen_manifest()` (the
-descriptor flag), while detection uses the compiled manifest. If a bundled
-manifest failed to compile (logged, then `None`), detection returns `Unknown`
-forever and the skip logic treats that as transient, reading every tick.
-`has_screen_manifest`, which answers the right question, has no production
-caller, and its doc names consumers ("consumers that wait for a screen-derived
-`Idle`") that do not exist.
-
-**Fix direction.** Make the no-match fallback a manifest field
-(`fallback = "unknown"`) and derive "Unknown is stable" from the compiled
-manifest, removing both `Codex` special cases.
-
-## AGENT-006 - Hot-path waste in the detection tick
-
-Scope: agent-detection.
-
-- `DetectorState::detection_content`, for an identified agent, compares the new
-  screen text with `last_detection_text` and then `clone_from`s it every scan.
-  The `changed` flag is only consumed by `ProcessProbeScheduler::content_changed`,
-  which returns immediately when `agent.is_some()`, so every agent pane pays a
-  full-screen string compare and copy per tick for nothing.
-- The tick locks the terminal core three times (`detection_text`,
-  `agent_osc_title`, `agent_osc_progress`) and allocates three Strings; one
-  locked read returning all three would do.
-- Detection is a pure function of `(screen, osc_title, osc_progress)`, and
-  `detection_content_seq` covers all three (OSC values arrive as bytes; flushes
-  and resizes bump the sequence). Re-evaluating an unchanged input in `Working`
-  or `Blocked` can only return the same result. The only tick-driven needs (the
-  pending-idle confirmations and the stable-blocker refresh) could reuse the last
-  `AgentDetection` instead of re-reading. The "only stable states may skip" rule
-  in `should_skip_idle_screen_scan` is broader than necessary.
-
-## AGENT-008 - Dead code in detection
-
-Scope: agent-detection.
-
-- `ForegroundProcess::argv0` is never populated (`foreground_job_from_members`
-  and `foreground_group_leader_job` both set `None`), yet
-  `normalized_process_name` reads it first.
-- Region kinds with no bundled user: `current_prompt_block_marker`,
-  `after_current_prompt_block_marker`, `above_prompt_box` and `bottom_lines(N)`.
-  With no local overrides (a detection change ships as a new build), these are
-  unreachable.
-- `IdleScreenScanSkipInput` and `DetectionScreenReadInput` are field-for-field
-  identical; `decide_detection_screen_read` only rewraps one into the other.
-  `DetectionTransitionDecision` and `DetectionPublishDecision` repeat the split.
-- `has_screen_manifest` is test-only (AGENT-005).
-
 ## AGENT-009 - Restored history is read as live agent chrome
 
 Scope: agent-detection. The hunter flags this as a risk, not reproduced.
@@ -375,52 +293,6 @@ event spelling (`SessionStart` here, camelCase in Copilot's own hooks format) an
 settings file name; whether Codex has an `Interrupt` hook event; OpenCode's
 global plugin directory name (`plugins/` for OpenCode vs `plugin/` for Kilo).
 
-## AGENT-025 - One stray different-session report freezes a live full-lifecycle agent
-
-Scope: mux-terminal. Hunter's confidence: high (traced by hand; no test covers
-the follow-up report).
-
-**Claim broken.** `terminal/state/mod.rs` header: "Full lifecycle Shepr hook
-integrations are hook-authoritative while live". A live pi, omp, kimi, kilo or
-mastracode pane stops following its own hooks.
-
-In `route_full_lifecycle_hook_report` (`hooks.rs`):
-
-- Live authority for `shepr:pi` with session S1, pi process present.
-- A `pane.report_agent` for `shepr:pi` arrives with a different session S2 and a
-  seq (a child or sibling pi that inherited `SHEPR_PANE_ID`, or the "unexpected
-  session" case `pi_non_replacement_reports_preserve_full_lifecycle_authority`
-  already builds). `session_anchored` is false, so it falls to the "pending
-  replacement" tail, which runs
-  `suppressed_full_lifecycle_hook_reports.entry(source).or_insert_with(..)` with
-  reason `ProcessExit`, stores S2 as pending, and returns `Ignore`.
-- The next report for the live S1 fails the accept gate
-  `process_present && session_anchored && !suppressed.contains_key(source)`
-  because the entry exists; it falls to the same tail, replaces the pending
-  report and is ignored, as is every later S1 report.
-- The entry is only removed by
-  `clear_full_lifecycle_hook_suppression_for_detected_agent` (when the detected
-  agent changes) or the sequenced session-start branch in `sessions.rs`; neither
-  happens while the same pi keeps running. Detection cannot reach that function
-  either: `should_ignore_detected_state_under_full_lifecycle_hook` returns early
-  while authority is live, and the pane runtime has stopped scanning the screen
-  (`may_scan_screen` is false while `full_lifecycle_authority_active` is set).
-
-The sidebar shows the last accepted state (often Working) until the agent exits
-or starts a new session. Only opencode is protected, by the `opencode_cross_talk`
-early `Ignore`, which returns before the suppression entry is inserted.
-
-**Test sketch.** Take
-`live_full_lifecycle_hook_rejects_different_session_ref_for_same_source`, then
-send one more `shepr:pi` report for `one.jsonl` with seq 22 and state Idle.
-Expect `Some(..)` and `state == Idle`; per the trace it returns `None` and the
-state stays Working.
-
-**Fix direction.** While a process is present and the source's authority is
-anchored to a different session, a mismatching report is cross-talk: ignore it
-(as opencode's is) and do not open a replacement generation. Open one only on
-process-exit evidence or a sequenced session-start report.
-
 ## AGENT-026 - A suspended agent (Ctrl-Z) is treated as exited and loses its resume session for good
 
 Scope: mux-terminal. Hunter's confidence: high on the TerminalState side; the
@@ -496,24 +368,6 @@ terminal but under hook authority now gets `pane_terminal_unavailable`, although
 the hook-authority answer could still be given. Order the branch before the
 runtime lookup when fixing the above.
 
-## AGENT-029 - Custom hook reports are silently refused whenever the pane has a session identity
-
-Scope: mux-terminal. Hunter's confidence: high (traced).
-
-**Claim broken.** `warn_unrecognized_hook_identity`: "Custom reports remain
-usable".
-
-In `set_hook_authority_at`, `current_session_owner_conflicts` returns true for
-any custom source once `current_session_identity_for_persistence()` is `Some`:
-`AgentSource::parse(custom)` is `Custom`, which never equals the stored official
-source. Takeover then needs `session_ref`, and `session_ref_from_report` always
-returns `None` for a custom source, so the report is dropped. Any Claude, Codex
-or other official session recorded on the pane disables every custom state report
-for it. An unparseable custom label (for example `"myagent"`) hits the same wall
-through the `parse_canonical_label` failure branch, which returns `true`. Either
-apply the owner check only to reports that carry a session identity, or drop the
-warning's promise.
-
 ## AGENT-030 - Mutating TerminalState paths that return `None` leave the caller unaware
 
 Scope: mux-terminal. Hunter's confidence: medium; the paths are real, the
@@ -538,24 +392,6 @@ state-change seq). Several paths mutate and then return `None`:
 
 **Structural fix.** Each entry point validates first and mutates second, so a
 `None` means untouched.
-
-## AGENT-031 - The "full-lifecycle only" invariant on the suppression maps is not held
-
-Scope: mux-terminal. Hunter's confidence: high; low impact today.
-
-The field docs on `suppressed_full_lifecycle_hook_reports` and
-`stale_full_lifecycle_hook_sessions` say only full-lifecycle source and label
-pairs can enter them. The process-exit branch of
-`set_detected_state_with_screen_signals_at` builds `official_session` with
-`is_official_agent_source` (any official pair) and inserts a `ProcessExit`
-suppression for Claude, Codex, Cursor and so on. `set_hook_authority_at` (the
-`session_ref.is_some()` removal) then moves those entries into the stale-session
-map. The `ProcessExit` entry is never cleared for those agents
-(`clear_full_lifecycle_hook_suppression_for_detected_agent` keeps it, having no
-replacement), and meanwhile it gates
-`detected_state_observed_before_release_suppression` and occupies a protected
-sequence slot. Either filter with `full_lifecycle_hook_authority` (matches
-intent) or fix the docs.
 
 ## AGENT-032 - Dead or misleading data on the hook path
 

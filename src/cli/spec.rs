@@ -108,7 +108,10 @@ fn detect_command() -> Command {
         .after_help("PANE is a pane id such as w1:p1.")
         .subcommand(
             Command::new("capture")
-                .about("Print the plain text the detector evaluates for a pane")
+                .about(
+                    "Print the screen text, OSC title and OSC progress the detector evaluates \
+                     for a pane, as JSON that `explain --file` reads back",
+                )
                 .arg(pane_id_argument().required(true)),
         )
         .subcommand(

@@ -22,10 +22,9 @@
 //! [`RegionSpec`] and the `MAX_*` constants for schema details and limits.
 //!
 //! A rule matches only when its conditions hold. The highest-priority match
-//! wins, with manifest order breaking ties. No match uses the agent fallback
-//! (`Unknown` for Codex, `Idle` for other agents). Evidence flags describe
-//! visible state; `skip_state_update` preserves prior state for agent-owned
-//! viewers.
+//! wins, with manifest order breaking ties. No match uses the manifest's
+//! fallback (`Idle` when omitted). Evidence flags describe visible state;
+//! `skip_state_update` preserves prior state for agent-owned viewers.
 
 use std::sync::OnceLock;
 
@@ -42,6 +41,7 @@ use crate::limits::{
 
 pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";
 pub const NO_SCREEN_MANIFEST_FALLBACK: &str = "no_screen_manifest";
+pub const UNKNOWN_MANIFEST_FALLBACK: &str = "manifest_unknown_fallback";
 
 /// Input to the detection engine, carrying the screen snapshot plus any
 /// OSC-derived strings captured from the terminal title / progress sequences.
@@ -114,6 +114,8 @@ struct LoadedManifest {
     /// The first match in this order is the rule `explain` would select, so the
     /// detection path can stop there.
     priority_order: Vec<usize>,
+    /// Whether an unchanged input can produce `Unknown` from a rule or fallback.
+    unknown_is_stable: bool,
 }
 
 #[derive(Debug)]
@@ -126,6 +128,8 @@ struct CompiledManifest {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgentManifest {
     id: String,
+    #[serde(default = "default_fallback")]
+    fallback: ManifestFallback,
     #[serde(default)]
     rules: Vec<ManifestRule>,
     #[serde(skip)]
@@ -370,19 +374,11 @@ enum RegionSpec {
     /// `whole_recent_without_current_prompt_marker`: empty while a current
     /// prompt exists.
     WholeRecentWithoutCurrentPromptMarker,
-    /// `current_prompt_block_marker`: the last block marker line above the
-    /// current prompt.
-    CurrentPromptBlockMarker,
-    /// `after_current_prompt_block_marker`.
-    AfterCurrentPromptBlockMarker,
     /// `prompt_box_body`: lines between the top border of the bottom-most
     /// `─`-bordered box and the next rule.
     PromptBoxBody,
-    /// `above_prompt_box`: everything above that box, or the whole snapshot
-    /// when there is no box.
-    AbovePromptBox,
-    /// `last_non_empty_above_prompt_box`: the last non-empty line of
-    /// `above_prompt_box`.
+    /// `last_non_empty_above_prompt_box`: the last non-empty line before the
+    /// bottom-most prompt box, or the last non-empty screen line without one.
     LastNonEmptyAbovePromptBox,
     /// `after_last_horizontal_rule`: text after the last `─` rule line.
     AfterLastHorizontalRule,
@@ -390,12 +386,9 @@ enum RegionSpec {
     OscTitle,
     /// `osc_progress`: the last OSC 9;4 progress string, not the screen.
     OscProgress,
-    /// `bottom_lines(N)`: the last N lines. For the three counted regions N is
+    /// `bottom_non_empty_lines(N)` and `top_non_empty_lines(N)`: bounded by
     /// `MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT`, written without a leading zero.
-    BottomLines(usize),
-    /// `bottom_non_empty_lines(N)`: from the Nth-last non-empty line to the end.
     BottomNonEmptyLines(usize),
-    /// `top_non_empty_lines(N)`: from the start through the Nth non-empty line.
     TopNonEmptyLines(usize),
 }
 
@@ -409,18 +402,13 @@ impl RegionSpec {
             "whole_recent_without_current_prompt_marker" => {
                 Self::WholeRecentWithoutCurrentPromptMarker
             }
-            "current_prompt_block_marker" => Self::CurrentPromptBlockMarker,
-            "after_current_prompt_block_marker" => Self::AfterCurrentPromptBlockMarker,
             "prompt_box_body" => Self::PromptBoxBody,
-            "above_prompt_box" => Self::AbovePromptBox,
             "last_non_empty_above_prompt_box" => Self::LastNonEmptyAbovePromptBox,
             "after_last_horizontal_rule" => Self::AfterLastHorizontalRule,
             "osc_title" => Self::OscTitle,
             "osc_progress" => Self::OscProgress,
             _ => {
-                if let Some(count) = region_count(trimmed, "bottom_lines") {
-                    Self::BottomLines(count)
-                } else if let Some(count) = region_count(trimmed, "bottom_non_empty_lines") {
+                if let Some(count) = region_count(trimmed, "bottom_non_empty_lines") {
                     Self::BottomNonEmptyLines(count)
                 } else {
                     Self::TopNonEmptyLines(region_count(trimmed, "top_non_empty_lines")?)
@@ -446,14 +434,13 @@ impl RegionSpec {
             Self::WholeRecentWithoutCurrentPromptMarker => {
                 whole_recent_without_current_prompt_marker(content)
             }
-            Self::CurrentPromptBlockMarker => current_prompt_block_marker(content).unwrap_or(""),
-            Self::AfterCurrentPromptBlockMarker => {
-                after_current_prompt_block_marker(content).unwrap_or("")
-            }
             Self::PromptBoxBody => prompt_box_body(content).unwrap_or(""),
-            Self::AbovePromptBox => above_prompt_box(content),
-            Self::LastNonEmptyAbovePromptBox => last_non_empty_line(above_prompt_box(content)),
-            Self::BottomLines(count) => bottom_lines(content, count),
+            Self::LastNonEmptyAbovePromptBox => {
+                let Some((top_start, _, _)) = prompt_box_bounds(content) else {
+                    return last_non_empty_line(content);
+                };
+                last_non_empty_line(&content[..top_start.min(content.len())])
+            }
             Self::BottomNonEmptyLines(count) => bottom_non_empty_lines(content, count),
             Self::TopNonEmptyLines(count) => top_non_empty_lines(content, count),
             Self::OscTitle
@@ -473,6 +460,22 @@ enum ManifestState {
     Unknown,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ManifestFallback {
+    Idle,
+    Unknown,
+}
+
+impl From<ManifestFallback> for AgentState {
+    fn from(value: ManifestFallback) -> Self {
+        match value {
+            ManifestFallback::Idle => AgentState::Idle,
+            ManifestFallback::Unknown => AgentState::Unknown,
+        }
+    }
+}
+
 impl From<ManifestState> for AgentState {
     fn from(value: ManifestState) -> Self {
         match value {
@@ -486,6 +489,10 @@ impl From<ManifestState> for AgentState {
 
 fn default_region() -> String {
     "whole_recent".to_string()
+}
+
+fn default_fallback() -> ManifestFallback {
+    ManifestFallback::Idle
 }
 
 const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
@@ -547,16 +554,15 @@ fn loaded(agent: Agent) -> Option<&'static LoadedManifest> {
 /// tick, so it evaluates rules in priority order, stops at the first match,
 /// and builds none of the evidence `explain` reports.
 pub fn detect_with_osc(agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
-    detect_with_manifest(agent, input, loaded(agent))
+    detect_with_manifest(input, loaded(agent))
 }
 
 fn detect_with_manifest(
-    agent: Agent,
     input: DetectionInput<'_>,
     loaded: Option<&LoadedManifest>,
 ) -> AgentDetection {
     let Some(loaded) = loaded else {
-        return fallback_detection(agent, false);
+        return fallback_detection(None);
     };
     let mut texts = RegionTexts::new(input);
     for &index in &loaded.priority_order {
@@ -570,14 +576,14 @@ fn detect_with_manifest(
             return rule_detection(rule);
         }
     }
-    fallback_detection(agent, true)
+    fallback_detection(Some(loaded))
 }
 
-/// Whether screen detection has a manifest for `agent`. Agents without one
-/// (Omp, Mastracode) are only ever reported `Unknown` by the screen, so
-/// consumers that wait for a screen-derived `Idle` must not wait on them.
-pub fn has_screen_manifest(agent: Agent) -> bool {
-    loaded(agent).is_some()
+/// Whether this screen detector can report a stable `Unknown` for `agent`.
+/// Missing or failed manifests always report `Unknown`; a compiled manifest
+/// can report it through its fallback or one of its rules.
+pub fn screen_unknown_is_stable(agent: Agent) -> bool {
+    loaded(agent).is_none_or(|manifest| manifest.unknown_is_stable)
 }
 
 pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
@@ -606,8 +612,8 @@ fn explain_with_manifest(
     explain_loaded_manifest(agent, input, loaded)
 }
 
-/// Explain a captured screen against the bundled manifest for `agent_label`.
-pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionExplain {
+/// Explain a captured detector input against the bundled manifest for `agent_label`.
+pub fn explain_for_label(agent_label: &str, input: DetectionInput<'_>) -> DetectionExplain {
     let Some(agent) = parse_agent_label(agent_label) else {
         return DetectionExplain {
             agent: Some(agent_label.to_string()),
@@ -623,7 +629,7 @@ pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionEx
             evaluated_rules: Vec::new(),
         };
     };
-    explain(agent, screen_content)
+    explain_with_input(agent, input)
 }
 
 fn rule_state(rule: &ManifestRule) -> AgentState {
@@ -641,27 +647,16 @@ fn rule_detection(rule: &ManifestRule) -> AgentDetection {
     }
 }
 
-/// State reported when no rule matched, or the agent has no manifest at all.
-///
-/// With a manifest, no match means the agent's live chrome shows none of the
-/// working/blocked evidence the manifest encodes, which for every agent but
-/// Codex is its idle prompt; Codex's no-match screen is ambiguous.
-///
-/// Without a manifest (Omp, Mastracode) the screen says nothing about the
-/// agent's state, so the honest value is `Unknown`; those agents rely on
-/// their full-lifecycle hook for state. `should_skip_idle_screen_scan` in
-/// `pane/agent_detection.rs` skips re-reading an unchanged screen for them.
-fn fallback_state(agent: Agent, has_manifest: bool) -> AgentState {
-    if !has_manifest || agent == Agent::Codex {
-        AgentState::Unknown
-    } else {
-        AgentState::Idle
-    }
+/// State reported when no rule matched, or when no compiled manifest exists.
+fn fallback_state(manifest: Option<&LoadedManifest>) -> AgentState {
+    manifest.map_or(AgentState::Unknown, |manifest| {
+        manifest.manifest.fallback.into()
+    })
 }
 
-fn fallback_detection(agent: Agent, has_manifest: bool) -> AgentDetection {
+fn fallback_detection(manifest: Option<&LoadedManifest>) -> AgentDetection {
     AgentDetection {
-        state: fallback_state(agent, has_manifest),
+        state: fallback_state(manifest),
         skip_state_update: false,
         visible_idle: false,
         visible_blocker: false,
@@ -738,13 +733,15 @@ fn fallback_explain(
     agent: Option<Agent>,
     context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
-    let has_manifest = context.is_some();
+    let manifest_fallback = context
+        .as_ref()
+        .map(|(manifest, _)| manifest.manifest.fallback);
     let evaluated_rules = context.map_or_else(Vec::new, |(_, evaluated)| evaluated);
 
     DetectionExplain {
         agent: agent.map(|agent| agent_label(agent).to_string()),
-        state: agent.map_or(AgentState::Unknown, |agent| {
-            fallback_state(agent, has_manifest)
+        state: agent.map_or(AgentState::Unknown, |_| {
+            manifest_fallback.map_or(AgentState::Unknown, AgentState::from)
         }),
         matched_rule: None,
         screen_detection_skipped: false,
@@ -754,8 +751,10 @@ fn fallback_explain(
         skip_state_update: false,
         skipped_update_reason: None,
         fallback_reason: match agent {
-            Some(_) if !has_manifest => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
-            Some(Agent::Codex) => Some("codex_state_ambiguous".to_string()),
+            Some(_) if manifest_fallback.is_none() => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
+            Some(_) if manifest_fallback == Some(ManifestFallback::Unknown) => {
+                Some(UNKNOWN_MANIFEST_FALLBACK.to_string())
+            }
             Some(_) => Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK.to_string()),
             None => None,
         },
@@ -764,6 +763,11 @@ fn fallback_explain(
 }
 
 fn loaded_manifest(mut manifest: AgentManifest) -> Result<LoadedManifest, String> {
+    let unknown_is_stable = manifest.fallback == ManifestFallback::Unknown
+        || manifest.rules.iter().any(|rule| {
+            rule.state
+                .is_none_or(|state| state == ManifestState::Unknown)
+        });
     let CompiledManifest {
         compiled_rules,
         regions,
@@ -780,6 +784,7 @@ fn loaded_manifest(mut manifest: AgentManifest) -> Result<LoadedManifest, String
         compiled_rules,
         regions,
         priority_order,
+        unknown_is_stable,
     })
 }
 
@@ -1324,15 +1329,6 @@ fn region_count(spec: &str, name: &str) -> Option<usize> {
         .filter(|count| (MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT).contains(count))
 }
 
-fn bottom_lines(content: &str, count: usize) -> &str {
-    content
-        .lines()
-        .rev()
-        .take(count)
-        .last()
-        .map_or("", |line| &content[line_start_offset(content, line)..])
-}
-
 fn bottom_non_empty_lines(content: &str, count: usize) -> &str {
     let Some(line) = content
         .lines()
@@ -1369,60 +1365,39 @@ fn after_last_prompt_marker(content: &str) -> &str {
 }
 
 fn before_current_prompt_marker(content: &str) -> &str {
-    let Some((prompt_start, _)) = current_codex_prompt_parts(content) else {
+    let Some(prompt_start) = current_codex_prompt_start(content) else {
         return content;
     };
     &content[..prompt_start.min(content.len())]
 }
 
 fn whole_recent_without_current_prompt_marker(content: &str) -> &str {
-    if current_codex_prompt_parts(content).is_some() {
+    if current_codex_prompt_start(content).is_some() {
         ""
     } else {
         content
     }
 }
 
-fn current_prompt_block_marker(content: &str) -> Option<&str> {
-    current_codex_prompt_parts(content)?.1.map(|(line, _)| line)
-}
-
-fn after_current_prompt_block_marker(content: &str) -> Option<&str> {
-    let (_, marker) = current_codex_prompt_parts(content)?;
-    let (_, marker_start) = marker?;
-    let after_marker_line = content[marker_start..]
-        .find('\n')
-        .map_or(content.len(), |newline| marker_start + newline + 1);
-    Some(&content[after_marker_line..])
-}
-
-/// The current prompt line's start offset and the block marker line (text and
-/// start offset) closest above it, in one pass. `None` when there is no
-/// prompt line or a block marker follows the last one.
-fn current_codex_prompt_parts(content: &str) -> Option<(usize, Option<(&str, usize)>)> {
+/// The current prompt line's start offset, or `None` when no prompt exists or
+/// a block marker follows the last prompt.
+fn current_codex_prompt_start(content: &str) -> Option<usize> {
     let mut prompt_start = None;
-    let mut latest_marker = None;
-    let mut marker_before_prompt = None;
     let mut marker_after_prompt = false;
 
     for line in content.lines() {
-        let start = line_start_offset(content, line);
         if codex_prompt_line(line) {
-            prompt_start = Some(start);
-            marker_before_prompt = latest_marker;
+            prompt_start = Some(line_start_offset(content, line));
             marker_after_prompt = false;
-        } else if codex_block_marker_line(line) {
-            latest_marker = Some((line, start));
-            if prompt_start.is_some() {
-                marker_after_prompt = true;
-            }
+        } else if prompt_start.is_some() && codex_block_marker_line(line) {
+            marker_after_prompt = true;
         }
     }
 
     if marker_after_prompt {
         return None;
     }
-    prompt_start.map(|start| (start, marker_before_prompt))
+    prompt_start
 }
 
 fn codex_prompt_line(line: &str) -> bool {
@@ -1439,13 +1414,6 @@ fn codex_block_marker_line(line: &str) -> bool {
 fn prompt_box_body(content: &str) -> Option<&str> {
     let (_, top_end, bottom_start) = prompt_box_bounds(content)?;
     Some(&content[top_end.min(content.len())..bottom_start.min(content.len())])
-}
-
-fn above_prompt_box(content: &str) -> &str {
-    let Some((top_start, _, _)) = prompt_box_bounds(content) else {
-        return content;
-    };
-    &content[..top_start.min(content.len())]
 }
 
 fn prompt_box_bounds(content: &str) -> Option<(usize, usize, usize)> {

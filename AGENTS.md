@@ -55,8 +55,9 @@ change ships as a new build.
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
 the subcommands are `status`, `server` and `detect`. Workspaces and panes are managed from the TUI only; there
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
-detect capture <pane>` prints the text the detector evaluates for a pane, and
-`shepr detect explain <pane>` says which rule decided its state.
+detect capture <pane>` prints the screen text and OSC title and progress the
+detector evaluates for a pane, as JSON that `detect explain --file` reads back,
+and `shepr detect explain <pane>` says which rule decided its state.
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.

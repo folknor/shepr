@@ -26,18 +26,6 @@ pub(super) mod ssh_options {
     }
 
     impl crate::limits::SshKeepalive {
-        pub(crate) fn command_options(&self) -> [String; 2] {
-            [
-                format!("ServerAliveInterval={}", self.interval_secs),
-                format!("ServerAliveCountMax={}", self.count_max),
-            ]
-        }
-
-        pub(crate) fn append_command_options(&self, command: &mut Command) {
-            let options = self.command_options();
-            append(command, &[options[0].as_str(), options[1].as_str()]);
-        }
-
         pub(crate) fn append_config(&self, contents: &mut String) {
             contents.push_str(&self.config_lines());
         }
@@ -410,7 +398,6 @@ pub(super) fn apply_batch_ssh_options(command: &mut Command) {
             crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
         ],
     );
-    crate::limits::SSH_KEEPALIVE.append_command_options(command);
 }
 
 pub(super) fn apply_managed_ssh_options(

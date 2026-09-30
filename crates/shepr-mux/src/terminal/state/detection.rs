@@ -219,6 +219,11 @@ impl TerminalState {
                                 )
                             })
                     })
+                })
+                // Only full-lifecycle integrations need a process-exit
+                // suppression for their later state reports.
+                .filter(|(source, agent_label, _)| {
+                    shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label)
                 });
             if let Some((source, agent_label, session_ref)) = official_session {
                 self.clear_hook_report_sequence(&source);

@@ -29,6 +29,14 @@ impl ErrorBody {
     }
 }
 
+/// The screen and OSC values the agent detector evaluates for one pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectionCapture {
+    pub screen: String,
+    pub osc_title: String,
+    pub osc_progress: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseResult {
@@ -39,10 +47,10 @@ pub enum ResponseResult {
         /// conditional `server.stop` names the boot it expects.
         boot_id: String,
     },
-    /// The detector's input for one pane: the detection-source screen text.
+    /// The detector's input for one pane, including its OSC title and progress.
     DetectCapture {
         pane_id: PublicPaneId,
-        text: String,
+        capture: DetectionCapture,
     },
     DetectExplain {
         explain: serde_json::Value,

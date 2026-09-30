@@ -27,6 +27,20 @@ impl WorkspaceNavigationTarget {
 }
 
 impl ClientShellState {
+    pub(super) fn keep_workspace_highlight_until_snapshot(
+        &mut self,
+        target: WorkspaceNavigationTarget,
+        request_id: &str,
+        now: std::time::Instant,
+    ) {
+        self.pending_workspace_highlight = Some(PendingWorkspaceHighlight {
+            target,
+            request_id: request_id.to_owned().into(),
+            expires_at: now + crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT,
+        });
+        self.reconcile_pending_workspace_highlight();
+    }
+
     pub(crate) fn tick_workspace_highlight(&mut self, now: std::time::Instant) -> bool {
         if self
             .pending_workspace_highlight
@@ -147,11 +161,7 @@ impl ClientShellState {
             self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface.is_none();
     }
 
-    pub(super) fn accept_navigate_workspace(
-        &mut self,
-        outcome: &mut ClientShellInput,
-        now: std::time::Instant,
-    ) {
+    pub(super) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {
         let Some(target) = self.navigate_workspace_id.clone() else {
             self.mode = self.copy_or_terminal_mode();
             outcome.repaint = true;
@@ -164,25 +174,13 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        let action_index = outcome.actions.len();
+        // The runtime resolves explicit picks against presentation ownership. If it can use a
+        // direct focus request, `focus_endpoint_target` records the pending highlight there.
         if self.focus_or_activate(
             target.endpoint_id.clone(),
             ClientEndpointFocusTarget::Workspace(target.workspace_id.clone()),
             outcome,
         ) {
-            // Endpoint handoffs already retain their coherent source frame in the runtime.
-            // Only retain a highlight if a focus request was actually enqueued.
-            if let Some(ClientShellAction::Endpoint { request, .. }) =
-                outcome.actions.get(action_index)
-            {
-                self.pending_workspace_highlight = Some(PendingWorkspaceHighlight {
-                    target,
-                    request_id: request.id.clone().into(),
-                    // A later focus can be coalesced with this one before a snapshot is sent.
-                    expires_at: now + crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT,
-                });
-                self.reconcile_pending_workspace_highlight();
-            }
             self.mode = ClientShellMode::Terminal;
             self.navigate_workspace_id = None;
         }

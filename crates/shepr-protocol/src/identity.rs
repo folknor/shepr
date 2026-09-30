@@ -38,6 +38,11 @@ impl BootId {
         &self.0
     }
 
+    /// The pid of the server process this boot identity names.
+    pub fn process_id(&self) -> Option<u32> {
+        self.0.split_once('-')?.0.parse().ok()
+    }
+
     /// The boot identity of process `process_id` whose clock read
     /// `since_epoch` (`Err` for a clock before the epoch, holding how far
     /// before). Tests use it to build distinct canonical boot ids.

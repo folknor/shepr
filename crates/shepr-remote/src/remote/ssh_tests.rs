@@ -347,7 +347,6 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    let keepalive_options = crate::limits::SSH_KEEPALIVE.command_options();
     for required in [
         "-C",
         ssh_options::BATCH_MODE_YES,
@@ -355,11 +354,13 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
         ssh_options::STRICT_HOST_KEY_CHECKING,
         crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
         crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
-        keepalive_options[0].as_str(),
-        keepalive_options[1].as_str(),
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
+    assert!(
+        args.iter().all(|arg| !arg.starts_with("ServerAlive")),
+        "keepalive settings must come from the managed config, not command-line overrides"
+    );
     assert!(
         args.iter().any(|arg| arg == "-F"),
         "missing the managed config"

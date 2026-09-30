@@ -11,7 +11,9 @@ pub(crate) enum PresentationDecision {
 /// pending activation, or must be ignored.
 pub(crate) struct PresentationGate {
     endpoint_active: bool,
+    presentation_owned: bool,
     activation_pending: bool,
+    buffer_surface_evidence: bool,
     command_response: bool,
     frozen: bool,
 }
@@ -19,13 +21,17 @@ pub(crate) struct PresentationGate {
 impl PresentationGate {
     pub(crate) fn new(
         endpoint_active: bool,
+        presentation_owned: bool,
         activation_pending: bool,
+        buffer_surface_evidence: bool,
         command_response: bool,
         frozen: bool,
     ) -> Self {
         Self {
             endpoint_active,
+            presentation_owned,
             activation_pending,
+            buffer_surface_evidence,
             command_response,
             frozen,
         }
@@ -43,14 +49,21 @@ impl PresentationGate {
             return PresentationDecision::Apply;
         }
 
-        if self.frozen && self.activation_pending && is_presentation_effect(message) {
+        let validated_sync = self.endpoint_active && self.activation_pending && !self.frozen;
+        let owns_presentation = self.endpoint_active && self.presentation_owned;
+        if is_presentation_effect(message) && !(owns_presentation || validated_sync) {
             return PresentationDecision::Drop;
         }
 
         match message {
-            ServerMessage::PaneSurface(_) | ServerMessage::ClientShellEndpointResponse { .. }
-                if self.activation_pending =>
+            // Surfaces and patches for the endpoint a handoff is proving go into its evidence,
+            // which stays in lockstep with the connection's decoder baseline.
+            ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_)
+                if self.buffer_surface_evidence =>
             {
+                PresentationDecision::Buffer
+            }
+            ServerMessage::ClientShellEndpointResponse { .. } if self.activation_pending => {
                 PresentationDecision::Buffer
             }
             ServerMessage::ClientShellEndpointResponse { .. } if self.command_response => {
@@ -70,14 +83,16 @@ impl PresentationGate {
     }
 }
 
-/// Host modes and titles belong to the endpoint holding the host presentation lease. During a
-/// frozen endpoint switch they are replayed after commit instead of being applied to the source.
+/// Host terminal state and clipboard writes belong to the displayed endpoint. The validated
+/// synchronization phase is the one exception to committed ownership: it replays effects after
+/// the target pair has been checked and before the server's ready fence.
 fn is_presentation_effect(message: &ServerMessage) -> bool {
     matches!(
         message,
         ServerMessage::MouseCapture { .. }
             | ServerMessage::ClientShellKeyboardReportAll { .. }
             | ServerMessage::WindowTitle { .. }
+            | ServerMessage::Clipboard { .. }
     )
 }
 
@@ -86,6 +101,8 @@ mod tests {
     use super::*;
     use shepr_protocol::{FrameData, PaneSurfaceFrame, PaneSurfacePatch};
 
+    /// A gate as the client loop builds it: an active endpoint owns the presentation unless a
+    /// handoff is in flight.
     fn gate(
         endpoint_active: bool,
         activation_pending: bool,
@@ -94,10 +111,45 @@ mod tests {
     ) -> PresentationGate {
         PresentationGate::new(
             endpoint_active,
+            endpoint_active && !activation_pending,
+            activation_pending,
             activation_pending,
             command_response,
             frozen,
         )
+    }
+
+    fn effects() -> [ServerMessage; 4] {
+        [
+            ServerMessage::MouseCapture {
+                enabled: true,
+                sgr_pixels: false,
+            },
+            ServerMessage::ClientShellKeyboardReportAll { enabled: true },
+            ServerMessage::WindowTitle {
+                title: Some("remote".into()),
+            },
+            ServerMessage::Clipboard {
+                data: "text".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn host_effects_need_an_owned_presentation_or_a_validated_sync() {
+        let owned = gate(true, false, false, false);
+        // Active in the registry, but nothing owns the presentation and no handoff runs.
+        let unowned = PresentationGate::new(true, false, false, false, false, false);
+        let validated_sync = PresentationGate::new(true, false, true, true, false, false);
+        for effect in effects() {
+            assert_eq!(owned.decide(&effect), PresentationDecision::Apply);
+            assert_eq!(unowned.decide(&effect), PresentationDecision::Drop);
+            assert_eq!(validated_sync.decide(&effect), PresentationDecision::Apply);
+        }
+        assert_eq!(
+            unowned.decide(&ServerMessage::PaneSurface(surface())),
+            PresentationDecision::Apply
+        );
     }
 
     fn surface() -> PaneSurfaceFrame {
@@ -178,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_activation_drops_effects_and_patches() {
+    fn frozen_activation_drops_effects_and_buffers_surface_patches() {
         let frozen = gate(true, true, false, true);
         assert_eq!(
             frozen.decide(&ServerMessage::MouseCapture {
@@ -189,7 +241,7 @@ mod tests {
         );
         assert_eq!(
             frozen.decide(&ServerMessage::PaneSurfacePatch(patch())),
-            PresentationDecision::Drop
+            PresentationDecision::Buffer
         );
         assert_eq!(
             gate(true, false, false, true).decide(&ServerMessage::PaneSurface(surface())),

@@ -9,9 +9,11 @@
 //! warning it sets the server's `requested` flag and wakes the server, which
 //! writes a checkpoint and then calls [`HostShutdownMonitor::release_delay_lock`];
 //! only then is the inhibitor dropped, so the shutdown is held up exactly as
-//! long as the checkpoint takes. The monitor keeps watching: on a
-//! cancellation it clears the flag, wakes the server again and takes a fresh
-//! inhibitor for the next warning.
+//! long as the checkpoint takes. A connection made after shutdown preparation
+//! began cannot acquire a delay inhibitor; it still reports the warning and
+//! asks the server to checkpoint, but cannot delay that shutdown. The monitor
+//! keeps watching: on a cancellation it clears the flag, wakes the server
+//! again and takes a fresh inhibitor for the next warning.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -218,6 +220,35 @@ async fn take_inhibitor(manager: &zbus::Proxy<'_>) -> zbus::Result<zbus::zvarian
         .await
 }
 
+/// Acquire a delay inhibitor unless logind is already preparing for shutdown.
+/// The state property is checked first; if shutdown begins between that read
+/// and `Inhibit`, logind reports `OperationInProgress` and the warning still
+/// needs to reach the server even though the operation can no longer be held.
+async fn take_inhibitor_if_idle(
+    manager: &zbus::Proxy<'_>,
+    preparing: &mut bool,
+) -> zbus::Result<Option<zbus::zvariant::OwnedFd>> {
+    if *preparing {
+        return Ok(None);
+    }
+    match take_inhibitor(manager).await {
+        Ok(inhibitor) => Ok(Some(inhibitor)),
+        Err(error) if shutdown_already_in_progress(&error) => {
+            *preparing = true;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn shutdown_already_in_progress(error: &zbus::Error) -> bool {
+    matches!(
+        error,
+        zbus::Error::MethodError(name, _, _)
+            if name.as_str() == "org.freedesktop.login1.OperationInProgress"
+    )
+}
+
 /// Follow one logind connection until it drops. Returns `Ok` when logind
 /// goes away (the caller reconnects) and `Err` when a call fails.
 async fn watch_connection(
@@ -235,13 +266,10 @@ async fn watch_connection(
     .await?;
     let mut owners = manager.receive_owner_changed().await?;
     let mut signals = manager.receive_signal("PrepareForShutdown").await?;
-    // Taken before the state is read: logind honours a delay lock taken
-    // while it is already waiting on others, so a warning that is pending at
-    // (re)connect is still held up until the server has checkpointed.
-    let mut inhibitor = Some(take_inhibitor(&manager).await?);
+    let mut preparing: bool = manager.get_property("PreparingForShutdown").await?;
+    let mut inhibitor = take_inhibitor_if_idle(&manager, &mut preparing).await?;
     tracing::debug!("host shutdown notification ready");
 
-    let mut preparing: bool = manager.get_property("PreparingForShutdown").await?;
     if preparing {
         if refresh_pending_warning && shared.requested.load(Ordering::Acquire) {
             shared.refresh_warning();
@@ -259,7 +287,10 @@ async fn watch_connection(
         } else {
             shared.cancel();
             if inhibitor.is_none() {
-                inhibitor = Some(take_inhibitor(&manager).await?);
+                inhibitor = take_inhibitor_if_idle(&manager, &mut preparing).await?;
+                if preparing {
+                    shared.announce();
+                }
             }
         }
         tokio::select! {
@@ -372,9 +403,18 @@ mod tests {
     }
 
     struct LoginManager {
-        preparing: bool,
+        preparing: Arc<AtomicBool>,
+        start_preparing_on_first_inhibit: AtomicBool,
         /// The peer end of every inhibitor handed out, newest last.
         peers: Arc<Mutex<Vec<UnixStream>>>,
+    }
+
+    #[derive(Debug, zbus::DBusError)]
+    #[zbus(prefix = "org.freedesktop.login1")]
+    enum LoginManagerError {
+        #[zbus(name = "OperationInProgress")]
+        OperationInProgress,
+        Failed(String),
     }
 
     #[zbus::interface(name = "org.freedesktop.login1.Manager")]
@@ -385,22 +425,30 @@ mod tests {
             _who: &str,
             _why: &str,
             mode: &str,
-        ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
+        ) -> Result<zbus::zvariant::OwnedFd, LoginManagerError> {
             assert_eq!((what, mode), ("shutdown", "delay"));
+            if self.preparing.load(Ordering::Acquire)
+                || self
+                    .start_preparing_on_first_inhibit
+                    .swap(false, Ordering::AcqRel)
+            {
+                self.preparing.store(true, Ordering::Release);
+                return Err(LoginManagerError::OperationInProgress);
+            }
             let (lock, peer) =
-                UnixStream::pair().map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
+                UnixStream::pair().map_err(|err| LoginManagerError::Failed(err.to_string()))?;
             peer.set_nonblocking(true)
-                .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
+                .map_err(|err| LoginManagerError::Failed(err.to_string()))?;
             self.peers
                 .lock()
-                .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?
+                .map_err(|err| LoginManagerError::Failed(err.to_string()))?
                 .push(peer);
             Ok(std::os::fd::OwnedFd::from(lock).into())
         }
 
         #[zbus(property)]
         fn preparing_for_shutdown(&self) -> bool {
-            self.preparing
+            self.preparing.load(Ordering::Acquire)
         }
     }
 
@@ -446,7 +494,9 @@ mod tests {
     // argument also leaves the reconnect-only warning refresh untested.
     #[ignore = "requires dbus-daemon; uses a private bus, never requests host shutdown"]
     async fn delay_lock_is_held_until_checkpoint_and_retaken_after_cancellation() {
-        for already_preparing in [false, true] {
+        for (already_preparing, shutdown_races_inhibit) in
+            [(false, false), (true, false), (false, true)]
+        {
             let mut bus = PrivateBus(
                 shepr_test_support::command_in_scratch("dbus-daemon", "private-dbus")
                     .args(["--session", "--nofork", "--print-address=1"])
@@ -459,6 +509,7 @@ mod tests {
                 .read_line(&mut address)
                 .expect("test precondition");
             let peers = Arc::new(Mutex::new(Vec::new()));
+            let preparing = Arc::new(AtomicBool::new(already_preparing));
             let service = zbus::connection::Builder::address(address.trim())
                 .expect("test precondition")
                 .name("org.freedesktop.login1")
@@ -466,7 +517,8 @@ mod tests {
                 .serve_at(
                     "/org/freedesktop/login1",
                     LoginManager {
-                        preparing: already_preparing,
+                        preparing: Arc::clone(&preparing),
+                        start_preparing_on_first_inhibit: AtomicBool::new(shutdown_races_inhibit),
                         peers: Arc::clone(&peers),
                     },
                 )
@@ -499,8 +551,9 @@ mod tests {
                 }
             });
 
-            inhibitor_count(&peers, 1).await;
-            if !already_preparing {
+            let starts_without_lock = already_preparing || shutdown_races_inhibit;
+            if !starts_without_lock {
+                inhibitor_count(&peers, 1).await;
                 assert!(!requested.load(Ordering::Acquire));
                 emit(&service, true).await;
             }
@@ -508,34 +561,49 @@ mod tests {
                 .await
                 .expect("warning reported");
             assert!(requested.load(Ordering::Acquire));
-            assert!(
-                held(&mut peers.lock().expect("test precondition")[0]),
-                "shutdown must remain inhibited while the server saves"
-            );
+            if starts_without_lock {
+                assert!(peers.lock().expect("test precondition").is_empty());
+                if shutdown_races_inhibit {
+                    emit(&service, true).await;
+                }
+            } else {
+                assert!(
+                    held(&mut peers.lock().expect("test precondition")[0]),
+                    "shutdown must remain inhibited while the server saves"
+                );
+            }
 
             // The server has checkpointed: the lock goes, the watch stays.
             checkpointed.send_replace(shared.generation.load(Ordering::Acquire));
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while held(&mut peers.lock().expect("test precondition")[0]) {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .expect("delay lock released after the checkpoint");
+            if !starts_without_lock {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while held(&mut peers.lock().expect("test precondition")[0]) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .expect("delay lock released after the checkpoint");
+            }
             assert!(!task.is_finished());
 
             // The shutdown is called off: reported, and a new lock is taken.
+            preparing.store(false, Ordering::Release);
             emit(&service, false).await;
             tokio::time::timeout(Duration::from_secs(5), wake.notified())
                 .await
                 .expect("cancellation reported");
             assert!(!requested.load(Ordering::Acquire));
-            inhibitor_count(&peers, 2).await;
-            assert!(held(&mut peers.lock().expect("test precondition")[1]));
+            let expected_inhibitors = if starts_without_lock { 1 } else { 2 };
+            inhibitor_count(&peers, expected_inhibitors).await;
+            assert!(held(
+                &mut peers.lock().expect("test precondition")[expected_inhibitors - 1]
+            ));
 
             task.abort();
             assert!(task.await.expect_err("test precondition").is_cancelled());
-            assert!(!held(&mut peers.lock().expect("test precondition")[1]));
+            assert!(!held(
+                &mut peers.lock().expect("test precondition")[expected_inhibitors - 1]
+            ));
         }
     }
 }

@@ -177,26 +177,52 @@ impl ClientShellState {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> bool {
-        let key = ClientEndpointNoticeKey {
-            boot_id: self
-                .snapshot
+        let boot_id = if kind == ClientEndpointNoticeKind::Unavailable {
+            None
+        } else {
+            self.snapshot
                 .as_deref()
-                .map(|snapshot| snapshot.boot_id.clone()),
+                .map(|snapshot| snapshot.boot_id.clone())
+        };
+        self.push_endpoint_notice_at_boot(boot_id, kind, code, title, body)
+    }
+
+    fn push_endpoint_notice_at_boot(
+        &mut self,
+        boot_id: Option<shepr_protocol::BootId>,
+        kind: ClientEndpointNoticeKind,
+        code: impl Into<String>,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> bool {
+        let key = ClientEndpointNoticeKey {
+            boot_id,
             kind,
             code: code.into(),
         };
         let body = body.into();
-        if kind == ClientEndpointNoticeKind::Rejected {
-            if self
-                .visible_endpoint_notice
-                .as_ref()
-                .is_some_and(|notice| notice.key == key && notice.body == body)
-            {
-                return false;
+        // Only timeouts are suppressed until a later success. Availability and rejection notices
+        // can recur after dismissal or expiry, while identical visible cards do not keep resetting
+        // their lifetime.
+        match kind {
+            ClientEndpointNoticeKind::Rejected | ClientEndpointNoticeKind::Unavailable => {
+                if self
+                    .visible_endpoint_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.key == key && notice.body == body)
+                {
+                    return false;
+                }
             }
-        } else if !self.endpoint_notice_seen.insert(key.clone()) {
-            return false;
+            ClientEndpointNoticeKind::Timeout => {
+                if !self.endpoint_notice_seen.insert(key.clone()) {
+                    return false;
+                }
+            }
         }
+        // A matching notice can return after the previous card was dismissed. Its next draw
+        // starts a fresh lifetime instead of inheriting the hidden card's deadline.
+        self.endpoint_notice_deadline = None;
         self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
             key,
             title: title.into(),
@@ -283,7 +309,8 @@ impl ClientShellState {
     }
 
     pub(crate) fn receive_endpoint_unavailable(&mut self, message: String) -> bool {
-        self.push_endpoint_notice(
+        self.push_endpoint_notice_at_boot(
+            None,
             ClientEndpointNoticeKind::Unavailable,
             message.clone(),
             "Endpoint unavailable",
@@ -295,6 +322,10 @@ impl ClientShellState {
         &mut self,
         target: ClientEndpointFocusTarget,
     ) -> Vec<ClientShellAction> {
+        let workspace_id = match &target {
+            ClientEndpointFocusTarget::Workspace(workspace_id) => Some(workspace_id.clone()),
+            ClientEndpointFocusTarget::Pane(_) => None,
+        };
         let command = match target {
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
                 EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
@@ -307,10 +338,20 @@ impl ClientShellState {
         };
         let mut outcome = ClientShellInput::default();
         self.push_endpoint_command(command, &mut outcome);
+        if let (Some(workspace_id), Some(ClientShellAction::Endpoint { request, .. })) =
+            (workspace_id, outcome.actions.first())
+            && let Some(target) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
+        {
+            self.keep_workspace_highlight_until_snapshot(target, &request.id, self.now);
+        }
         outcome.actions
     }
 
-    pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+    fn cancel_endpoint_request_with_notice(
+        &mut self,
+        request_id: &str,
+        show_cancelled_notice: bool,
+    ) -> bool {
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };
@@ -318,11 +359,12 @@ impl ClientShellState {
         // A cancellation is always an error result, and no error path schedules
         // a deadline, so the instant is never compared; it only satisfies the
         // shared result path.
-        let outcome = self.handle_endpoint_result_at(
+        let outcome = self.handle_endpoint_result_at_with_cancel_notice(
             &boot_id,
             request_id,
             Err(ClientShellEndpointError::Cancelled),
             self.now,
+            show_cancelled_notice,
         );
         // A cancelled copy-mode request does not continue its key queue
         // (`continue_queue` is false on every error), so nothing but a repaint
@@ -339,6 +381,16 @@ impl ClientShellState {
         outcome.repaint
     }
 
+    pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+        self.cancel_endpoint_request_with_notice(request_id, true)
+    }
+
+    /// Completes a request rejected by the client before it entered the send queue. Its result
+    /// is known, so an interruption warning about an unknown server outcome would be misleading.
+    pub(crate) fn cancel_unsent_endpoint_request(&mut self, request_id: &str) -> bool {
+        self.cancel_endpoint_request_with_notice(request_id, false)
+    }
+
     pub(crate) fn handle_endpoint_result_at(
         &mut self,
         boot_id: &str,
@@ -346,9 +398,26 @@ impl ClientShellState {
         result: Result<EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
     ) -> ClientShellInput {
+        self.handle_endpoint_result_at_with_cancel_notice(boot_id, request_id, result, now, true)
+    }
+
+    fn handle_endpoint_result_at_with_cancel_notice(
+        &mut self,
+        boot_id: &str,
+        request_id: &str,
+        result: Result<EndpointReply, ClientShellEndpointError>,
+        now: std::time::Instant,
+        show_cancelled_notice: bool,
+    ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
-        let (repaint, actions) =
-            self.apply_endpoint_result(boot_id, request_id, result, &mut outcome, now);
+        let (repaint, actions) = self.apply_endpoint_result(
+            boot_id,
+            request_id,
+            result,
+            &mut outcome,
+            now,
+            show_cancelled_notice,
+        );
         outcome.repaint |= repaint;
         outcome.actions.extend(actions);
         outcome
@@ -361,6 +430,7 @@ impl ClientShellState {
         result: Result<EndpointReply, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
         now: std::time::Instant,
+        show_cancelled_notice: bool,
     ) -> (bool, Vec<ClientShellAction>) {
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
@@ -389,34 +459,42 @@ impl ClientShellState {
             {
                 self.pending_workspace_highlight = None;
             }
-            let message = error.to_string();
-            let (kind, notice_code, title, body) = match error {
-                ClientShellEndpointError::Timeout => (
-                    ClientEndpointNoticeKind::Timeout,
-                    pending.method_name.clone(),
-                    "Server timed out",
-                    format!("This server did not respond to {}.", pending.method_name),
-                ),
-                ClientShellEndpointError::Cancelled => (
-                    ClientEndpointNoticeKind::Unavailable,
-                    "cancelled".to_owned(),
-                    "Action interrupted",
-                    message,
-                ),
-                ClientShellEndpointError::Server(EndpointError::ShuttingDown) => (
-                    ClientEndpointNoticeKind::Unavailable,
-                    "server".to_owned(),
-                    "Server unavailable",
-                    message,
-                ),
-                ClientShellEndpointError::Server(_) => (
-                    ClientEndpointNoticeKind::Rejected,
-                    format!("{}:{message}", pending.method_name),
-                    "Action rejected",
-                    message,
-                ),
-            };
-            self.push_endpoint_notice(kind, notice_code, title, body);
+            if show_cancelled_notice || !matches!(error, ClientShellEndpointError::Cancelled) {
+                let message = error.to_string();
+                let (kind, notice_code, title, body) = match error {
+                    ClientShellEndpointError::Timeout => (
+                        ClientEndpointNoticeKind::Timeout,
+                        pending.method_name.clone(),
+                        "Server timed out",
+                        format!("This server did not respond to {}.", pending.method_name),
+                    ),
+                    ClientShellEndpointError::Cancelled => (
+                        ClientEndpointNoticeKind::Unavailable,
+                        "cancelled".to_owned(),
+                        "Action interrupted",
+                        message,
+                    ),
+                    ClientShellEndpointError::Server(EndpointError::ShuttingDown) => (
+                        ClientEndpointNoticeKind::Unavailable,
+                        "server".to_owned(),
+                        "Server unavailable",
+                        message,
+                    ),
+                    ClientShellEndpointError::Server(_) => (
+                        ClientEndpointNoticeKind::Rejected,
+                        format!("{}:{message}", pending.method_name),
+                        "Action rejected",
+                        message,
+                    ),
+                };
+                self.push_endpoint_notice_at_boot(
+                    Some(pending.boot_id.clone()),
+                    kind,
+                    notice_code,
+                    title,
+                    body,
+                );
+            }
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
@@ -491,7 +569,7 @@ impl ClientShellState {
                     }
                     Err(_) => (true, false),
                 };
-                self.complete_copy_operation(session_generation, continue_queue, now, outcome);
+                self.complete_copy_operation(session_generation, continue_queue, outcome);
                 return (repaint, Vec::new());
             }
             PendingEndpointKind::CopySearch {
@@ -548,7 +626,7 @@ impl ClientShellState {
                         (true, false)
                     }
                 };
-                self.complete_copy_operation(session_generation, continue_queue, now, outcome);
+                self.complete_copy_operation(session_generation, continue_queue, outcome);
                 return (repaint, Vec::new());
             }
         }

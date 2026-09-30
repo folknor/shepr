@@ -5,6 +5,7 @@ pub(super) use crate::limits::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use shepr_agent::detect::manifest::screen_unknown_is_stable;
 use shepr_agent::detect::{Agent, AgentDetection, AgentState, PresentedAgentState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,27 +77,13 @@ impl PendingIdleConfirmation {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct IdleScreenScanSkipInput {
-    pub(super) state: AgentState,
-    pub(super) agent: Option<Agent>,
-    pub(super) pending_idle_active: bool,
-    pub(super) agent_changed: bool,
-    pub(super) process_exited: bool,
-    pub(super) current_detection_content_seq: Option<u64>,
-    pub(super) last_screen_scan_detection_content_seq: Option<u64>,
-}
-
-/// Whether an unchanged screen may be left unread this tick. Only states the
-/// screen can hold indefinitely qualify: `Idle`; Codex's ambiguous `Unknown`;
-/// and `Unknown` for an agent with no screen manifest, which the screen can
-/// never move off `Unknown` (its state comes from its hook).
-pub(super) fn should_skip_idle_screen_scan(input: IdleScreenScanSkipInput) -> bool {
+/// Whether an unchanged screen may be left unread this tick. Idle is stable
+/// for every agent; Unknown is stable when the compiled screen detector can
+/// report it (or has no usable manifest).
+pub(super) fn should_skip_idle_screen_scan(input: DetectionScreenReadInput) -> bool {
     let stable_state = input.state == AgentState::Idle
         || (input.state == AgentState::Unknown
-            && input
-                .agent
-                .is_some_and(|agent| agent == Agent::Codex || !agent.screen_manifest()));
+            && input.agent.is_some_and(screen_unknown_is_stable));
     if !stable_state || input.pending_idle_active || input.agent_changed || input.process_exited {
         return false;
     }
@@ -125,15 +112,7 @@ pub(super) struct DetectionScreenReadInput {
 pub(super) fn decide_detection_screen_read(
     input: DetectionScreenReadInput,
 ) -> DetectionScreenReadDecision {
-    if should_skip_idle_screen_scan(IdleScreenScanSkipInput {
-        state: input.state,
-        agent: input.agent,
-        pending_idle_active: input.pending_idle_active,
-        agent_changed: input.agent_changed,
-        process_exited: input.process_exited,
-        current_detection_content_seq: input.current_detection_content_seq,
-        last_screen_scan_detection_content_seq: input.last_screen_scan_detection_content_seq,
-    }) {
+    if should_skip_idle_screen_scan(input) {
         DetectionScreenReadDecision::Skip
     } else {
         DetectionScreenReadDecision::Read
@@ -168,49 +147,6 @@ pub(super) fn stable_visible_signal_refresh_due(
         && last_refresh.is_none_or(|last_refresh| {
             now.duration_since(last_refresh) >= STABLE_VISIBLE_SIGNAL_REFRESH
         })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum DetectionTransitionDecision {
-    NoPublish,
-    PublishNext,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct DetectionTransitionInput {
-    pub(super) previous_publish: DetectionPublishState,
-    pub(super) next_publish: DetectionPublishState,
-    pub(super) agent_changed: bool,
-    pub(super) process_exited: bool,
-    pub(super) stable_refresh_due: bool,
-    pub(super) now: std::time::Instant,
-}
-
-pub(super) fn decide_detection_transition(
-    input: DetectionTransitionInput,
-    pending_idle: &mut PendingIdleConfirmation,
-) -> DetectionTransitionDecision {
-    if pending_idle.should_hold_working_to_idle(
-        input.previous_publish,
-        input.next_publish,
-        input.agent_changed,
-        input.process_exited,
-        input.now,
-    ) {
-        return DetectionTransitionDecision::NoPublish;
-    }
-
-    if should_publish_detection_update(
-        input.previous_publish,
-        input.next_publish,
-        input.agent_changed,
-        input.process_exited,
-        input.stable_refresh_due,
-    ) {
-        return DetectionTransitionDecision::PublishNext;
-    }
-
-    DetectionTransitionDecision::NoPublish
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,32 +198,38 @@ pub(super) fn decide_screen_detection_publish(
         visible_blocker,
         visible_working,
     };
+    if pending_idle.should_hold_working_to_idle(
+        previous_publish,
+        next_publish,
+        input.agent_changed,
+        input.process_exited,
+        input.now,
+    ) {
+        return DetectionPublishDecision::NoPublish;
+    }
+
     let stable_refresh_due = stable_visible_signal_refresh_due(
         previous_publish,
         next_publish,
         input.last_visible_signal_refresh,
         input.now,
     );
-
-    match decide_detection_transition(
-        DetectionTransitionInput {
-            previous_publish,
-            next_publish,
-            agent_changed: input.agent_changed,
-            process_exited: input.process_exited,
-            stable_refresh_due,
-            now: input.now,
-        },
-        pending_idle,
+    if should_publish_detection_update(
+        previous_publish,
+        next_publish,
+        input.agent_changed,
+        input.process_exited,
+        stable_refresh_due,
     ) {
-        DetectionTransitionDecision::NoPublish => DetectionPublishDecision::NoPublish,
-        DetectionTransitionDecision::PublishNext => DetectionPublishDecision::Publish {
+        DetectionPublishDecision::Publish {
             state: new_state,
             visible_idle,
             visible_blocker,
             visible_working,
             process_exited: input.process_exited,
-        },
+        }
+    } else {
+        DetectionPublishDecision::NoPublish
     }
 }
 
@@ -473,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_read_skips_unchanged_unknown_for_agents_without_a_screen_manifest() {
+    fn screen_read_skips_unchanged_unknown_when_manifest_can_return_it() {
         for agent in [Agent::Omp, Agent::Mastracode] {
             let mut input = screen_read_input(AgentState::Unknown, 10);
             input.agent = Some(agent);
@@ -487,12 +429,18 @@ mod tests {
                 DetectionScreenReadDecision::Read
             );
         }
-        // A manifest agent's Unknown is transient: keep reading.
+        // Gemini cannot report a stable Unknown from its compiled manifest.
         let mut input = screen_read_input(AgentState::Unknown, 10);
-        input.agent = Some(Agent::Claude);
+        input.agent = Some(Agent::Gemini);
         assert_eq!(
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Read
+        );
+
+        input.agent = Some(Agent::Letta);
+        assert_eq!(
+            decide_detection_screen_read(input),
+            DetectionScreenReadDecision::Skip
         );
     }
 
@@ -600,25 +548,24 @@ mod tests {
     }
 
     #[test]
-    fn transition_decision_publishes_next_for_visible_blocker() {
+    fn screen_publish_publishes_visible_blocker() {
         let now = std::time::Instant::now();
         let mut pending_idle = PendingIdleConfirmation::default();
-        let mut blocked = publish_state(AgentState::Blocked);
-        blocked.visible_blocker = true;
+        let mut detection = screen_detection(AgentState::Blocked);
+        detection.visible_blocker = true;
 
         assert_eq!(
-            decide_detection_transition(
-                DetectionTransitionInput {
-                    previous_publish: publish_state(AgentState::Idle),
-                    next_publish: blocked,
-                    agent_changed: false,
-                    process_exited: false,
-                    stable_refresh_due: false,
-                    now,
-                },
+            decide_screen_detection_publish(
+                screen_publish_input(AgentState::Idle, detection, now),
                 &mut pending_idle,
             ),
-            DetectionTransitionDecision::PublishNext
+            DetectionPublishDecision::Publish {
+                state: AgentState::Blocked,
+                visible_idle: false,
+                visible_blocker: true,
+                visible_working: false,
+                process_exited: false,
+            }
         );
     }
 

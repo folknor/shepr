@@ -642,11 +642,12 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn handle_mouse(
+    pub(super) fn handle_mouse_with_accounting(
         &mut self,
         mouse: MouseEvent,
         now: Instant,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
@@ -679,7 +680,7 @@ impl ClientShellState {
                     gesture.last_event = mouse;
                     gesture.last_position = position;
                 }
-                self.push_pane_mouse_event(&hit, mouse, modifiers, outcome);
+                self.push_pane_mouse_event(&hit, mouse, modifiers, outcome, accounting);
                 if mouse.kind == MouseEventKind::Up(button) {
                     self.pane_mouse_gesture = None;
                 }
@@ -1295,6 +1296,7 @@ impl ClientShellState {
                             mouse,
                             mouse.modifiers.difference(stripped_modifiers),
                             outcome,
+                            accounting,
                         );
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::PaneFocus(
@@ -1617,7 +1619,13 @@ impl ClientShellState {
                     .cloned();
                 if let Some(hit) = pane_hit {
                     if hit.mouse_reporting && super::contains(hit.inner_rect, point) {
-                        self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
+                        self.push_pane_mouse_event(
+                            &hit,
+                            mouse,
+                            mouse.modifiers,
+                            outcome,
+                            accounting,
+                        );
                         self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
                             last_position: self.pane_mouse_position(&hit, mouse),
                             hit: hit.clone(),
@@ -1685,7 +1693,7 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.inner_rect, point) && hit.mouse_reporting)
                     .cloned()
                 {
-                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
+                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome, accounting);
                     self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
                         last_position: self.pane_mouse_position(&hit, mouse),
                         hit,
@@ -1703,7 +1711,7 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.inner_rect, point) && hit.mouse_reporting)
                     .cloned()
                 {
-                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
+                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome, accounting);
                 }
             }
             MouseEventKind::ScrollUp
@@ -1727,7 +1735,7 @@ impl ClientShellState {
                             outcome,
                         );
                     }
-                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
+                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome, accounting);
                 }
             }
             // Left and middle releases and drags outside a gesture, and the
@@ -1770,6 +1778,7 @@ impl ClientShellState {
         mouse: MouseEvent,
         modifiers: crossterm::event::KeyModifiers,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         let kind = shepr_protocol::ClientMouseKind::from_host(mouse.kind);
         let position = self.pane_mouse_position(hit, mouse);
@@ -1791,6 +1800,22 @@ impl ClientShellState {
                 lines: self.config.mouse_scroll_lines,
             },
             outcome,
+            accounting,
         );
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    /// One mouse event as its own input batch, for tests that drive the
+    /// handler directly.
+    pub(super) fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        now: Instant,
+        outcome: &mut ClientShellInput,
+    ) {
+        let mut accounting = PaneInputBatchAccounting::default();
+        self.handle_mouse_with_accounting(mouse, now, outcome, &mut accounting);
     }
 }

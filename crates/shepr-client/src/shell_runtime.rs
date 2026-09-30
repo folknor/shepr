@@ -30,7 +30,9 @@ pub(super) fn dispatch_client_shell_actions(
                         request,
                     );
                 } else {
-                    repaint |= shell.cancel_endpoint_request(&request.id);
+                    // This action has not entered the endpoint send queue, so its outcome is
+                    // known locally and must not be presented as an interrupted server action.
+                    repaint |= shell.cancel_unsent_endpoint_request(&request.id);
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
@@ -280,7 +282,7 @@ pub(super) fn begin_endpoint_activation(
     if already_active {
         if let Some(target) = target {
             let actions = state.shell.focus_endpoint_target(target);
-            let repaint = dispatch_client_shell_actions(
+            dispatch_client_shell_actions(
                 actions,
                 endpoint_commands,
                 endpoints,
@@ -291,12 +293,10 @@ pub(super) fn begin_endpoint_activation(
                 scheduled_activation,
                 now,
             );
-            if repaint
-                && let Some(frame) = state.shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                )
-            {
+            if let Some(frame) = state.shell.compose(
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            ) {
                 state.present_frame(frame);
             }
         }
@@ -530,7 +530,10 @@ pub(super) fn handle_endpoint_disconnect(
 /// a live surface counts, so a handoff that ends `Unavailable` is judged failed even when its
 /// endpoint's connection kept its surface. This is also the pane input gate: input, endpoint
 /// commands and host effects flow only while it holds, so input and presentation cannot
-/// disagree.
+/// disagree. The one exception is inbound host effects during a handoff's validated
+/// synchronization phase: `PresentationGate` applies the target's mouse mode, report-all, title
+/// and clipboard writes after the target pair has been checked and before the ready fence
+/// commits ownership.
 pub(super) fn active_endpoint_owns_presentation(
     presentation: &Presentation,
     endpoints: &endpoint::EndpointRegistry,
@@ -601,10 +604,6 @@ pub(super) fn install_client_shell_snapshot(
         || (endpoints.active_id() == endpoint_id
             && !project_snapshot
             && shell.has_presented_surface());
-    let previous_size = shell.surface_size(
-        state.reported_geometry.cols(),
-        state.reported_geometry.rows(),
-    );
     if !waits_for_selected_surface {
         shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
     }
@@ -613,27 +612,12 @@ pub(super) fn install_client_shell_snapshot(
     } else {
         shell.cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
     }
-    let next_size = shell.surface_size(
-        state.reported_geometry.cols(),
-        state.reported_geometry.rows(),
-    );
+    // Snapshot installation updates endpoint data and keybindings, not the shell layout. Layout
+    // changes and host resizes each send geometry through their own explicit paths.
     let composed = shell.compose(
         state.reported_geometry.cols(),
         state.reported_geometry.rows(),
     );
-    let resize = (previous_size != next_size).then(|| {
-        client_shell_resize_message(
-            shell,
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-            state.reported_geometry.cell_width(),
-            state.reported_geometry.cell_height(),
-            state.reported_geometry.exact,
-        )
-    });
-    if let Some(resize) = resize {
-        endpoints.send_to(endpoint_id, &resize);
-    }
     if let Some(frame) = composed {
         // Not inverted, though it reads that way. A snapshot that belongs to an in-flight
         // handoff (`projection_pending`) is the target's (or the restoring source's) metadata:

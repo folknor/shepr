@@ -268,6 +268,11 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
     {
         return SshFailure::Link;
     }
+    if message.contains("kex_exchange_identification:")
+        && message.contains("connection closed by remote host")
+    {
+        return SshFailure::Link;
+    }
     if message.contains("connection closed by ") || message.contains("received disconnect from ") {
         return SshFailure::RemoteRejected;
     }
@@ -426,6 +431,12 @@ mod tests {
         let cases = [
             (
                 "ssh: connect to host h port 22: Connection refused",
+                "offline",
+                true,
+                false,
+            ),
+            (
+                "kex_exchange_identification: Connection closed by remote host",
                 "offline",
                 true,
                 false,

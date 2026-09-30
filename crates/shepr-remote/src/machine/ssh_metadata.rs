@@ -118,7 +118,7 @@ fn store_private_json_with_directory_sync(
             format!("invalid SSH metadata path: {}", path.display()),
         )
     })?;
-    std::fs::create_dir_all(parent)?;
+    shepr_platform::create_private_directory_all(parent)?;
     if let Ok(metadata) = std::fs::symlink_metadata(path)
         && (metadata.file_type().is_symlink() || !metadata.is_file())
     {
@@ -251,6 +251,14 @@ mod tests {
                     .mode()
                     & 0o777,
                 0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&root)
+                    .expect("metadata directory")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
             );
         }
         let mut stored: serde_json::Value =

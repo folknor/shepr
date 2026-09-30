@@ -181,7 +181,7 @@ pub fn session_identity_only_integration(source: &str, agent_label: &str) -> boo
 // section rather than calling them on a runtime worker.
 
 fn normalized_process_name(process: &ForegroundProcess) -> String {
-    let effective = process.argv0.as_deref().unwrap_or(&process.name);
+    let effective = process.name.as_str();
     let lower_effective = effective.to_lowercase();
     let cwd_pid = Some(process.pid);
 
@@ -659,7 +659,6 @@ mod tests {
         ForegroundProcess {
             pid,
             name: name.to_string(),
-            argv0: None,
             argv: Some(argv.iter().map(|arg| (*arg).to_string()).collect()),
             cmdline: Some(argv.join(" ")),
         }

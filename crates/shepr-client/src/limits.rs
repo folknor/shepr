@@ -243,6 +243,9 @@ pub(super) const MIN_NAVIGATOR_OVERLAY_HEIGHT: u16 = 9;
 /// Maximum sanitized machine diagnostic text shown in the sidebar, in
 /// characters.
 pub(super) const MAX_MACHINE_DIAGNOSTIC_CHARS: usize = 4096;
+/// Body rows an automatic notice card shows. A multi-line ssh error must not
+/// cover the UI unasked; the machine badge opens the full diagnostic.
+pub(super) const MAX_AUTOMATIC_NOTICE_BODY_ROWS: usize = 3;
 /// Maximum lines scrolled for each pointer row beyond a selection edge.
 ///
 /// Scaling lines with pointer distance makes edge scrolling accelerate smoothly.

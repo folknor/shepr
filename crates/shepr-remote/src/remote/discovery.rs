@@ -388,7 +388,7 @@ pub(super) fn remote_client_status(
         if output.status.code() == Some(CANDIDATE_NOT_EXECUTABLE) {
             return Ok(None);
         }
-        let error = command_failed("remote client status probe failed", &output);
+        let error = remote_client_status_failure(&output);
         return Err(error);
     }
     parse_client_status_json(&String::from_utf8_lossy(&output.stdout))
@@ -399,6 +399,15 @@ pub(super) fn remote_client_status(
                 "remote status client command returned no valid client status JSON",
             )
         })
+}
+
+fn remote_client_status_failure(output: &Output) -> io::Error {
+    let context = if output.status.code() == Some(crate::SSH_OWN_FAILURE_EXIT_CODE) {
+        "remote SSH connection failed"
+    } else {
+        "remote client status probe failed"
+    };
+    command_failed(context, output)
 }
 
 pub(super) fn parse_client_status_json(

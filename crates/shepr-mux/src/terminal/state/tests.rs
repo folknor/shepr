@@ -95,6 +95,75 @@ fn hook_authority_overrides_fallback_for_same_agent() {
 }
 
 #[test]
+fn custom_state_reports_apply_beside_an_official_session_identity() {
+    let mut terminal = test_terminal();
+    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    let session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
+        "shepr:claude",
+        "claude",
+        shepr_agent::agent::resume::AgentSessionRef::id("claude-session")
+            .expect("test precondition"),
+    )
+    .expect("test precondition");
+    terminal.set_persisted_agent_session(session.clone());
+
+    for (source, label) in [("custom:status", "status-agent"), ("myagent", "myagent")] {
+        let mutation = terminal.set_hook_authority(
+            source.into(),
+            label.into(),
+            AgentState::Working,
+            None,
+            None,
+        );
+
+        assert!(mutation.is_some(), "{source}");
+        assert_eq!(terminal.effective_agent_label(), Some(label));
+        assert_eq!(terminal.state, AgentState::Working);
+        // The report updates state only; the resume identity stays Claude's.
+        assert_eq!(
+            terminal.current_session_identity_for_persistence(),
+            Some(session.clone()),
+            "{source}"
+        );
+        terminal.hook_authority = None;
+    }
+}
+
+#[test]
+fn process_exit_suppresses_only_full_lifecycle_sources() {
+    for (agent, source, label, full_lifecycle) in [
+        (Agent::Claude, "shepr:claude", "claude", false),
+        (Agent::Codex, "shepr:codex", "codex", false),
+        (Agent::Pi, "shepr:pi", "pi", true),
+    ] {
+        let mut terminal = test_terminal();
+        let session_ref = if full_lifecycle {
+            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("exit.jsonl"))
+        } else {
+            shepr_agent::agent::resume::AgentSessionRef::id(format!("{label}-exit"))
+        }
+        .expect("test precondition");
+        anchor_full_lifecycle_session(&mut terminal, agent, source, label, session_ref);
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(agent),
+            AgentState::Idle,
+            false,
+            true,
+            Instant::now() + Duration::from_millis(1),
+        );
+
+        assert_eq!(
+            terminal
+                .suppressed_full_lifecycle_hook_reports
+                .contains_key(source),
+            full_lifecycle,
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn hook_authority_can_override_with_unknown_agent_label() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
@@ -691,6 +760,25 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
             .and_then(|authority| authority.session_ref.as_ref())
             .map(shepr_agent::agent::resume::AgentSessionRef::value_str),
         Some(test_session_path("one.jsonl").as_str())
+    );
+
+    // The stray report is cross-talk, not a replacement generation: the live
+    // session's own next report is still accepted.
+    let follow_up = terminal.set_hook_authority_with_session_ref(
+        "shepr:pi".into(),
+        "pi".into(),
+        AgentState::Idle,
+        None,
+        shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("one.jsonl")),
+        Some(22),
+    );
+
+    assert!(follow_up.is_some());
+    assert_eq!(terminal.state, AgentState::Idle);
+    assert!(
+        !terminal
+            .suppressed_full_lifecycle_hook_reports
+            .contains_key("shepr:pi")
     );
 }
 

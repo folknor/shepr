@@ -250,7 +250,9 @@ impl Workspace {
     ) -> bool {
         let current_ids = self.layout.pane_ids();
         let prepared_ids = prepared_layout.pane_ids();
-        if !self.has_consistent_panes()
+        if public_number == 0
+            || public_number.checked_add(1).is_none()
+            || !self.has_consistent_panes()
             || self.panes.contains_key(&pane_id)
             || !prepared_ids.contains(&pane_id)
             || prepared_ids.len() != current_ids.len().saturating_add(1)

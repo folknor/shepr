@@ -157,7 +157,7 @@
 # redraw_on_focus_gained = true
 
 # Pane scrollback lines to scroll per mouse wheel notch.
-# Values must be between 1 and 65535 lines.
+# Values must be between 1 and 4096 lines.
 # mouse_scroll_lines = 3
 
 # Ask for confirmation before closing a workspace

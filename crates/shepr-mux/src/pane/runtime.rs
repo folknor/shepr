@@ -188,11 +188,11 @@ impl PaneCwdProbe {
     /// saves. Persistence observations must not change OSC authority or
     /// follow-cwd behavior, so nothing else is touched.
     pub fn read(&self) -> Option<std::path::PathBuf> {
-        if self.child_liveness.wait_completed() {
+        let pid = self.child_liveness.live_pid()?;
+        let cwd = shepr_agent::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())?;
+        if self.child_liveness.live_pid() != Some(pid) {
             return None;
         }
-        let cwd = shepr_agent::detect::process_cwd(self.child_liveness.pid())
-            .filter(|cwd| cwd.is_absolute())?;
         *shepr_vt::lock_auxiliary(&self.remembered) = Some(cwd.clone());
         Some(cwd)
     }
@@ -377,7 +377,7 @@ fn follow_cwd_from_processes(
 
 fn publish_reported_cwd(
     pane_id: PaneId,
-    shell_pid: u32,
+    child_liveness: &ChildLiveness,
     cwd: std::path::PathBuf,
     reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
     events: &mpsc::Sender<AppEvent>,
@@ -386,7 +386,12 @@ fn publish_reported_cwd(
         return;
     };
     // One readlink per OSC 7, sampled before taking the lock.
-    let shell_cwd_at_report = shepr_agent::detect::process_cwd(shell_pid);
+    let shell_cwd_at_report = child_liveness.live_pid().and_then(|pid| {
+        let shell_cwd = shepr_agent::detect::process_cwd(pid);
+        (child_liveness.live_pid() == Some(pid))
+            .then_some(shell_cwd)
+            .flatten()
+    });
     let mut last_reported = shepr_vt::lock_auxiliary(reported_cwd);
     if let Some(last) = last_reported.as_mut()
         && last.path == cwd.as_path()
@@ -449,7 +454,6 @@ struct PaneReadEffects {
 /// with no terminal, content or reply-order lock held.
 struct DeferredEffects {
     ticket: DeferredEffectTicket,
-    shell_pid: u32,
     default_color_generation: Option<u64>,
     reported_cwd: Option<std::path::PathBuf>,
 }
@@ -556,7 +560,6 @@ impl PaneReadEffects {
     /// under the reply-order lock exactly when `has_deferred_effects` held.
     fn apply_immediate(
         &self,
-        shell_pid: u32,
         result: ProcessBytesResult,
         ticket: Option<DeferredEffectTicket>,
     ) -> Option<DeferredEffects> {
@@ -581,7 +584,6 @@ impl PaneReadEffects {
         }
         ticket.map(|ticket| DeferredEffects {
             ticket,
-            shell_pid,
             default_color_generation: result
                 .default_color_owner_pending
                 .then_some(result.default_color_generation),
@@ -600,14 +602,14 @@ impl PaneReadEffects {
             if let Some(generation) = deferred.default_color_generation {
                 self.terminal.resolve_default_color_owner(
                     self.pane_id,
-                    deferred.shell_pid,
+                    &self.child_liveness,
                     generation,
                 );
             }
             if let Some(cwd) = deferred.reported_cwd {
                 publish_reported_cwd(
                     self.pane_id,
-                    deferred.shell_pid,
+                    &self.child_liveness,
                     cwd,
                     &self.reported_cwd,
                     &self.events,
@@ -692,8 +694,7 @@ impl PaneReadEffects {
             // advances detection's screen-content revision here.
             self.detection_content_seq.fetch_add(1, Ordering::AcqRel);
         }
-        let shell_pid = self.child_liveness.pid();
-        if let Some(deferred) = self.apply_immediate(shell_pid, result, deferred_ticket) {
+        if let Some(deferred) = self.apply_immediate(result, deferred_ticket) {
             self.apply_deferred(deferred);
         }
     }
@@ -850,7 +851,6 @@ impl PaneRuntime {
             };
             let on_read = Box::new(move |bytes: &[u8]| {
                 let write = output.begin();
-                let shell_pid = read_effects.child_liveness.pid();
                 // Ticks an expired synchronized update first, then parses; the
                 // content write lock is released when this returns.
                 let mut result = write.process(bytes, std::time::Instant::now());
@@ -869,7 +869,7 @@ impl PaneRuntime {
                     read_effects.arm_sync_timeout(delay);
                 }
                 let after_response_order: Option<Box<dyn FnOnce() + Send>> = read_effects
-                    .apply_immediate(shell_pid, result, deferred_ticket)
+                    .apply_immediate(result, deferred_ticket)
                     .map(|deferred| {
                         let effects = Arc::clone(&read_effects);
                         let run: Box<dyn FnOnce() + Send> =
@@ -1023,8 +1023,12 @@ impl PaneRuntime {
                 tokio::time::sleep(crate::limits::INITIAL_DETECTION_DELAY).await;
 
                 loop {
+                    if child_liveness.wait_completed() {
+                        break;
+                    }
+                    let tick_now = Instant::now();
                     let tick =
-                        detector.tick_interval(terminal.has_transient_default_color_override());
+                        detector.tick_interval(tick_now, terminal.has_theme_restore_candidate());
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
                         _ = detect_reset.notified() => {
@@ -1032,34 +1036,44 @@ impl PaneRuntime {
                         }
                     }
 
+                    if child_liveness.wait_completed() {
+                        break;
+                    }
                     let now = Instant::now();
-                    let pid = child_liveness.pid();
+                    let Some(pid) = child_liveness.live_pid() else {
+                        break;
+                    };
                     let lifecycle_authority_active =
                         full_lifecycle_authority_active_for_task.load(Ordering::Acquire);
-                    let foreground_pgid = if pid > 0 {
-                        match tokio::task::spawn_blocking(move || {
-                            shepr_agent::detect::foreground_process_group_id(pid)
-                        })
-                        .await
-                        {
-                            Ok(pgid) => pgid,
-                            Err(error) => {
-                                tracing::warn!(?error, "foreground process group probe failed");
-                                continue;
-                            }
+                    let foreground_pgid = match tokio::task::spawn_blocking(move || {
+                        shepr_agent::detect::foreground_process_group_id(pid)
+                    })
+                    .await
+                    {
+                        Ok(pgid) => pgid,
+                        Err(error) => {
+                            tracing::warn!(?error, "foreground process group probe failed");
+                            continue;
                         }
-                    } else {
-                        None
                     };
+                    if child_liveness.live_pid() != Some(pid) {
+                        break;
+                    }
                     let probe_schedule = detector.schedule_process_probe(&ProcessProbeRequest {
                         now,
                         observed_foreground_group: foreground_pgid,
                         lifecycle_authority_active,
                     });
                     let process_group_changed = probe_schedule.foreground_group_changed();
+                    if process_group_changed {
+                        detector.note_foreground_group_change(
+                            now,
+                            terminal.has_theme_restore_candidate(),
+                        );
+                    }
 
                     let mut agent_changed = false;
-                    if pid > 0 && probe_schedule.should_probe() {
+                    if probe_schedule.should_probe() {
                         detector.probe_started(now);
                         let probe = match tokio::task::spawn_blocking(move || {
                             probe_foreground_process(pid, foreground_pgid)
@@ -1072,6 +1086,9 @@ impl PaneRuntime {
                                 continue;
                             }
                         };
+                        if child_liveness.live_pid() != Some(pid) {
+                            break;
+                        }
                         let process_change = detector.observe_process_probe(
                             &probe,
                             now,
@@ -1117,13 +1134,17 @@ impl PaneRuntime {
                         }
                     }
 
-                    let pid = child_liveness.pid();
-                    // The restore check reads /proc only while an override is
-                    // active; keep that rare probe off the runtime worker too.
-                    if pid > 0 && terminal.has_transient_default_color_override() {
+                    // The restore check reads /proc only when a known host
+                    // theme can be restored; keep that probe off this worker.
+                    if child_liveness.live_pid() != Some(pid) {
+                        break;
+                    }
+                    if terminal.has_theme_restore_candidate() {
                         let theme_terminal = Arc::clone(&terminal);
+                        let theme_child_liveness = Arc::clone(&child_liveness);
                         match tokio::task::spawn_blocking(move || {
-                            theme_terminal.maybe_restore_host_terminal_theme(pane_id, pid)
+                            theme_terminal
+                                .maybe_restore_host_terminal_theme(pane_id, &theme_child_liveness)
                         })
                         .await
                         {
@@ -1137,6 +1158,9 @@ impl PaneRuntime {
                                 tracing::warn!(?error, "host terminal theme probe failed");
                             }
                         }
+                    }
+                    if child_liveness.live_pid() != Some(pid) {
+                        break;
                     }
 
                     let agent = detector.current_agent();
@@ -1160,30 +1184,46 @@ impl PaneRuntime {
                         continue;
                     }
 
-                    // Without an identified agent, detection reports `Unknown`
-                    // whatever the screen shows, and the screen would only feed
-                    // the content-change signal for process acquisition. The PTY
-                    // read counter gives that signal without copying the screen
-                    // out of the terminal core, which plain shell panes would
-                    // otherwise do on every tick.
-                    let identified_agent_text = agent.is_some().then(|| terminal.detection_text());
-                    let (content, content_changed) = detector.detection_content(
-                        agent,
-                        current_detection_content_seq,
-                        identified_agent_text,
-                    );
-                    let (osc_title, osc_progress) = if agent.is_some() {
-                        (terminal.agent_osc_title(), terminal.agent_osc_progress())
-                    } else {
-                        (String::new(), String::new())
+                    // The PTY read counter gives plain shell panes their
+                    // acquisition signal without copying screen text. For an
+                    // agent, the sequence also keys the cached detection so
+                    // unchanged screens do not need another core read.
+                    let (screen_detection, content_changed) = match detector
+                        .cached_screen_detection(
+                            agent,
+                            process_exited,
+                            current_detection_content_seq,
+                        ) {
+                        ScreenDetectionCacheLookup::Hit(screen_detection) => {
+                            (screen_detection, false)
+                        }
+                        ScreenDetectionCacheLookup::Miss => {
+                            let inputs = if agent.is_some() {
+                                terminal.agent_detection_inputs()
+                            } else {
+                                Default::default()
+                            };
+                            let (content, content_changed) = detector.detection_content(
+                                agent,
+                                current_detection_content_seq,
+                                agent.is_some().then_some(inputs.screen_text),
+                            );
+                            let screen_detection = detection_update_for_publish_with_osc(
+                                agent,
+                                &content,
+                                &inputs.osc_title,
+                                &inputs.osc_progress,
+                                process_exited,
+                            );
+                            detector.remember_screen_detection(
+                                agent,
+                                process_exited,
+                                current_detection_content_seq,
+                                screen_detection,
+                            );
+                            (screen_detection, content_changed)
+                        }
                     };
-                    let screen_detection = detection_update_for_publish_with_osc(
-                        agent,
-                        &content,
-                        &osc_title,
-                        &osc_progress,
-                        process_exited,
-                    );
                     let Some(screen_detection) = screen_detection else {
                         detector.clear_pending_idle();
                         continue;
@@ -1474,12 +1514,10 @@ impl PaneRuntime {
         self.terminal.terminal_title()
     }
 
-    pub fn agent_osc_title(&self) -> String {
-        self.terminal.agent_osc_title()
-    }
-
-    pub fn agent_osc_progress(&self) -> String {
-        self.terminal.agent_osc_progress()
+    /// The screen text, OSC title and OSC progress the detector evaluates,
+    /// read together under one terminal lock like the live detection tick.
+    pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
+        self.terminal.agent_detection_inputs()
     }
 
     /// The pane's primary-screen history, read now with nothing cached.
@@ -1656,7 +1694,12 @@ impl PaneRuntime {
     /// since that report arrived; once the shell has moved without reporting,
     /// its /proc cwd wins. One /proc read per call.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        let shell_cwd = shepr_agent::detect::process_cwd(self.child_liveness.pid());
+        let shell_cwd = self.child_liveness.live_pid().and_then(|pid| {
+            let cwd = shepr_agent::detect::process_cwd(pid);
+            (self.child_liveness.live_pid() == Some(pid))
+                .then_some(cwd)
+                .flatten()
+        });
         ReportedCwd::resolve(
             shepr_vt::lock_auxiliary(&self.reported_cwd).as_ref(),
             shell_cwd,
@@ -1687,8 +1730,7 @@ impl PaneRuntime {
     }
 
     pub fn child_pid(&self) -> Option<u32> {
-        let pid = self.child_liveness.pid();
-        (pid > 0).then_some(pid)
+        self.child_liveness.live_pid()
     }
 
     /// The cwd to inherit when a split or new workspace follows this pane.
@@ -1696,30 +1738,46 @@ impl PaneRuntime {
     /// the foreground; a foreground job's group leader takes precedence while
     /// a different group owns the terminal.
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
-        let shell_pid = self.child_pid();
-        let foreground_pgid = shell_pid.and_then(shepr_agent::detect::foreground_process_group_id);
-        follow_cwd_from_processes(
+        let shell_pid = self.child_liveness.live_pid();
+        let foreground_pgid = shell_pid.and_then(|pid| {
+            let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
+            (self.child_liveness.live_pid() == Some(pid))
+                .then_some(foreground_pgid)
+                .flatten()
+        });
+        let cwd = follow_cwd_from_processes(
             shell_pid,
             foreground_pgid,
             || self.cwd(),
             usable_process_cwd,
-        )
+        );
+        if shell_pid.is_some_and(|pid| self.child_liveness.live_pid() != Some(pid)) {
+            None
+        } else {
+            cwd
+        }
     }
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_liveness.pid();
+        let pid = self.child_liveness.live_pid()?;
         let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
+        if self.child_liveness.live_pid() != Some(pid) {
+            return None;
+        }
         let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
 
         // The group leader's cwd is authoritative: a helper
         // process that chdirs elsewhere inside the same foreground group
         // must not override it. Scan other members only when the leader's
         // cwd cannot be read at all.
-        leader_cwd.or_else(|| {
+        let cwd = leader_cwd.or_else(|| {
             let shell_cwd = absolute_process_cwd(pid);
             foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref())
-        })
+        });
+        (self.child_liveness.live_pid() == Some(pid))
+            .then_some(cwd)
+            .flatten()
     }
 }
 
@@ -1971,7 +2029,7 @@ mod tests {
         let (events, _event_rx) = mpsc::channel(1);
         publish_reported_cwd(
             runtime.pane_id,
-            runtime.child_liveness.pid(),
+            &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
             &events,
@@ -2002,10 +2060,9 @@ mod tests {
             })
             .expect("test precondition");
 
-        let shell_pid = runtime.child_liveness.pid();
         publish_reported_cwd(
             runtime.pane_id,
-            shell_pid,
+            &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
             &events,
@@ -2018,7 +2075,7 @@ mod tests {
         let _ = event_rx.recv().await.expect("drain filler event");
         publish_reported_cwd(
             runtime.pane_id,
-            shell_pid,
+            &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
             &events,
@@ -2088,7 +2145,7 @@ mod tests {
         // The test runtime has no shell, so the fresh sample is unreadable.
         publish_reported_cwd(
             runtime.pane_id,
-            0,
+            &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
             &events,
@@ -2734,12 +2791,14 @@ mod tests {
         runtime.test_process_pty_bytes(b"\x1b]2;startup title\x1b\\\x1b]9;4;1;\x1b\\");
 
         clear_osc_evidence_for_agent_transition(&runtime.terminal, None);
-        assert_eq!(runtime.agent_osc_title(), "startup title");
-        assert_eq!(runtime.agent_osc_progress(), "4;1;");
+        let inputs = runtime.agent_detection_inputs();
+        assert_eq!(inputs.osc_title, "startup title");
+        assert_eq!(inputs.osc_progress, "4;1;");
 
         clear_osc_evidence_for_agent_transition(&runtime.terminal, Some(Agent::Claude));
-        assert_eq!(runtime.agent_osc_title(), "");
-        assert_eq!(runtime.agent_osc_progress(), "");
+        let inputs = runtime.agent_detection_inputs();
+        assert_eq!(inputs.osc_title, "");
+        assert_eq!(inputs.osc_progress, "");
     }
 
     #[test]
@@ -2767,7 +2826,6 @@ mod tests {
         shepr_agent::detect::ForegroundProcess {
             pid,
             name: name.to_string(),
-            argv0: None,
             argv: None,
             cmdline: None,
         }

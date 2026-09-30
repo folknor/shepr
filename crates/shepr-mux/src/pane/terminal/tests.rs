@@ -1064,6 +1064,17 @@ fn terminal_plain_text_chars_still_encode_as_text() {
 
 #[test]
 fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
+    let host_shift_tab =
+        shepr_termio::input::parse_terminal_key_sequence("\x1b[9;2u").expect("test precondition");
+    let legacy_pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+    assert_eq!(
+        legacy_pane.encode_terminal_key(
+            host_shift_tab,
+            shepr_termio::input::KeyboardProtocol::Legacy,
+        ),
+        b"\x1b[Z"
+    );
+
     for (kitty_flags, expected) in [
         (None, b"\x1b[Z".as_slice()),
         (Some(1), b"\x1b[9;2u".as_slice()),
@@ -1076,6 +1087,14 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
         let protocol = pane
             .negotiated_keyboard_protocol()
             .expect("test precondition");
+
+        let host_shift_tab = shepr_termio::input::parse_terminal_key_sequence("\x1b[9;2u")
+            .expect("test precondition");
+        assert_eq!(
+            pane.encode_terminal_key(host_shift_tab, protocol),
+            expected,
+            "host kitty Shift+Tab with pane flags {kitty_flags:?}"
+        );
 
         for modifiers in [
             crossterm::event::KeyModifiers::empty(),

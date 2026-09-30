@@ -4,6 +4,7 @@ use crate::limits::{
     PROCESS_ACQUISITION_IDLE_RESET, PROCESS_ACQUISITION_SLOW_RECHECK, PROCESS_ACQUISITION_WINDOW,
     PROCESS_RECHECK_ACTIVE_AGENT, PROCESS_RECHECK_IDENTIFIED,
     PROCESS_RECHECK_MISSING_FOREGROUND_GROUP, PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT,
+    TRANSIENT_COLOR_RECHECK_WINDOW,
 };
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -18,7 +19,7 @@ use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
 use crate::UsableCwd;
 use crate::events::AppEvent;
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::detect::{Agent, AgentDetection, AgentState};
 use shepr_core::layout::PaneId;
 
 #[derive(Debug, Clone, Copy)]
@@ -491,14 +492,29 @@ pub(super) struct DetectorState {
     last_visible_working: bool,
     last_visible_signal_refresh: Option<std::time::Instant>,
     scheduler: ProcessProbeScheduler,
+    transient_color_recheck_until: Option<std::time::Instant>,
     pending_foreground_shell_clear: bool,
     foreground_shell_exit_reported: bool,
-    last_detection_text: String,
     last_screen_scan_detection_content_seq: Option<u64>,
+    last_screen_detection: Option<ScreenDetectionCacheEntry>,
     has_detection_baseline: bool,
     agent_startup_grace_until: Option<std::time::Instant>,
     pending_idle: PendingIdleConfirmation,
     agent_absence_hold_until: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenDetectionCacheEntry {
+    agent: Option<Agent>,
+    process_exited: bool,
+    detection_content_seq: u64,
+    result: Option<AgentDetection>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScreenDetectionCacheLookup {
+    Miss,
+    Hit(Option<AgentDetection>),
 }
 
 impl DetectorState {
@@ -517,10 +533,11 @@ impl DetectorState {
             last_visible_working: false,
             last_visible_signal_refresh: None,
             scheduler: ProcessProbeScheduler::new(now),
+            transient_color_recheck_until: None,
             pending_foreground_shell_clear: false,
             foreground_shell_exit_reported: false,
-            last_detection_text: String::new(),
             last_screen_scan_detection_content_seq: None,
+            last_screen_detection: None,
             has_detection_baseline: false,
             agent_startup_grace_until: None,
             pending_idle: PendingIdleConfirmation::default(),
@@ -532,8 +549,19 @@ impl DetectorState {
         self.agent_presence.current_agent()
     }
 
-    pub(super) fn tick_interval(&self, transient_color_override: bool) -> std::time::Duration {
-        if transient_color_override {
+    pub(super) fn tick_interval(
+        &mut self,
+        now: std::time::Instant,
+        theme_restore_candidate: bool,
+    ) -> std::time::Duration {
+        if !theme_restore_candidate {
+            self.transient_color_recheck_until = None;
+        }
+        if theme_restore_candidate
+            && self
+                .transient_color_recheck_until
+                .is_some_and(|until| now < until)
+        {
             PROCESS_RECHECK_TRANSIENT
         } else if self.pending_idle.active() {
             AGENT_PENDING_IDLE_RECHECK
@@ -544,18 +572,29 @@ impl DetectorState {
         }
     }
 
+    pub(super) fn note_foreground_group_change(
+        &mut self,
+        now: std::time::Instant,
+        theme_restore_candidate: bool,
+    ) {
+        self.transient_color_recheck_until = theme_restore_candidate
+            .then(|| now.checked_add(TRANSIENT_COLOR_RECHECK_WINDOW))
+            .flatten();
+    }
+
     pub(super) fn reset(&mut self) {
         self.agent_presence = AgentDetectionPresence::from_agent(None);
         self.state = AgentState::Unknown;
         self.last_visible_idle = false;
         self.scheduler.reset();
+        self.transient_color_recheck_until = None;
         self.pending_foreground_shell_clear = false;
         self.foreground_shell_exit_reported = false;
         self.last_visible_blocker = false;
         self.last_visible_working = false;
         self.last_visible_signal_refresh = None;
-        self.last_detection_text.clear();
         self.last_screen_scan_detection_content_seq = None;
+        self.last_screen_detection = None;
         // Reset establishes Unknown as a real baseline; new() starts from a
         // placeholder and must keep reading until its first report publishes.
         self.has_detection_baseline = true;
@@ -643,6 +682,7 @@ impl DetectorState {
         if should_reset_detection {
             self.pending_idle.clear();
             self.last_screen_scan_detection_content_seq = None;
+            self.last_screen_detection = None;
             if agent.is_some() {
                 self.agent_absence_hold_until = None;
                 self.agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
@@ -727,16 +767,52 @@ impl DetectorState {
     ) -> (String, bool) {
         let (content, changed) = if agent.is_some() {
             let content = identified_agent_text.unwrap_or_default();
-            let changed = content != self.last_detection_text;
-            self.last_detection_text.clone_from(&content);
-            (content, changed)
+            // Process acquisition is the only consumer of content changes,
+            // and it does not run once an agent has been identified.
+            (content, false)
         } else {
             let changed = self.last_screen_scan_detection_content_seq != detection_content_seq;
-            self.last_detection_text.clear();
             (String::new(), changed)
         };
         self.last_screen_scan_detection_content_seq = detection_content_seq;
         (content, changed)
+    }
+
+    pub(super) fn cached_screen_detection(
+        &self,
+        agent: Option<Agent>,
+        process_exited: bool,
+        detection_content_seq: Option<u64>,
+    ) -> ScreenDetectionCacheLookup {
+        let Some(detection_content_seq) = detection_content_seq else {
+            return ScreenDetectionCacheLookup::Miss;
+        };
+        match self.last_screen_detection {
+            Some(entry)
+                if entry.agent == agent
+                    && entry.process_exited == process_exited
+                    && entry.detection_content_seq == detection_content_seq =>
+            {
+                ScreenDetectionCacheLookup::Hit(entry.result)
+            }
+            _ => ScreenDetectionCacheLookup::Miss,
+        }
+    }
+
+    pub(super) fn remember_screen_detection(
+        &mut self,
+        agent: Option<Agent>,
+        process_exited: bool,
+        detection_content_seq: Option<u64>,
+        result: Option<AgentDetection>,
+    ) {
+        self.last_screen_detection =
+            detection_content_seq.map(|detection_content_seq| ScreenDetectionCacheEntry {
+                agent,
+                process_exited,
+                detection_content_seq,
+                result,
+            });
     }
 
     pub(super) fn note_content_change(
@@ -1126,7 +1202,7 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchPurpose::AgentResume);
         assert_eq!(detector.current_agent(), None);
         assert_eq!(
-            detector.tick_interval(false),
+            detector.tick_interval(now, false),
             std::time::Duration::from_millis(500)
         );
         assert!(detector.withhold_agent_absence(None, now));

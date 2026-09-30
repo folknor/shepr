@@ -18,19 +18,33 @@ pub fn create_config_temporary(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
+/// Writes `contents` into a freshly created temporary through `output`, the
+/// handle its exclusive create returned, never a reopen by path: the path
+/// could have been swapped for a symlink since. With `source`, the file it
+/// will replace, the owner, access controls and mode are copied first, while
+/// the temporary is still empty.
 pub fn write_config_temporary(
     source: Option<&Path>,
-    temporary: &Path,
+    mut output: std::fs::File,
     contents: &[u8],
 ) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(temporary)?;
     if let Some(source) = source {
-        let input = std::fs::File::open(source)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        // The integration layer resolves config symlinks before calling us.
+        // Do not let a directory writer replace that source with a final
+        // symlink (or FIFO) while its metadata and access controls are copied.
+        let input = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(source)?;
         let metadata = input.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "config source is not a regular file",
+            ));
+        }
         let current = output.metadata()?;
         preserve_config_owner_with(
             (metadata.uid(), metadata.gid()),
@@ -186,7 +200,7 @@ fn is_posix_acl_xattr(name: &std::ffi::CStr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::preserve_config_owner_with;
+    use super::*;
 
     #[test]
     fn permission_denied_preserving_config_owner_is_tolerated() {
@@ -201,5 +215,47 @@ mod tests {
             result.is_ok(),
             "EPERM must not prevent replacing the config"
         );
+    }
+
+    #[test]
+    fn temporary_write_uses_the_file_created_before_a_path_swap() {
+        let directory = shepr_test_support::ScratchDir::new("config-temporary-swap");
+        let temporary = directory.join("staged-config");
+        let outside = directory.join("outside");
+        std::fs::write(&outside, b"leave this file alone").expect("test precondition");
+        let output = create_config_temporary(&temporary).expect("create staged file");
+
+        std::fs::remove_file(&temporary).expect("remove staged path");
+        std::os::unix::fs::symlink(&outside, &temporary).expect("replace staged path with link");
+
+        write_config_temporary(None, output, b"secret config").expect("write open file");
+
+        assert_eq!(
+            std::fs::read(&outside).expect("outside file"),
+            b"leave this file alone"
+        );
+        assert!(
+            std::fs::symlink_metadata(&temporary)
+                .expect("staged link")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn config_metadata_copy_does_not_follow_a_replaced_source_symlink() {
+        let directory = shepr_test_support::ScratchDir::new("config-source-symlink");
+        let source = directory.join("source");
+        let link = directory.join("source-link");
+        let temporary = directory.join("staged-config");
+        std::fs::write(&source, b"existing config").expect("test precondition");
+        std::os::unix::fs::symlink(&source, &link).expect("create source link");
+        let output = create_config_temporary(&temporary).expect("create staged file");
+
+        let error = write_config_temporary(Some(&link), output, b"secret config")
+            .expect_err("a replaced source symlink must be refused");
+
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+        assert_eq!(std::fs::read(&source).expect("source"), b"existing config");
     }
 }

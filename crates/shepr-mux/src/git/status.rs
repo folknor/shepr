@@ -11,7 +11,7 @@ use super::{
         fallback_label_from_cwd, git_ref_storage_is_reftable, git_rev_parse_verify_with_errors,
         git_space_metadata_from_info, git_symbolic_head_full, git_trimmed_stdout,
         git_worktree_info, git_worktree_info_with_errors, read_git_ref_file,
-        read_ref_oid_with_errors,
+        read_ref_oid_with_errors, valid_full_ref, valid_oid,
     },
 };
 
@@ -63,19 +63,7 @@ fn repo_context(cwd: &Path, read_errors: &mut Vec<GitReadError>) -> Option<RepoC
     let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
     deps.extend(config_deps);
     let current_info = git_worktree_info_with_errors(cwd, read_errors);
-    let current_reftable = match git_ref_storage_is_reftable(&info) {
-        Ok((current_reftable, _)) => Some(current_reftable),
-        Err(error) => {
-            read_errors.push(GitReadError::FileRead {
-                path: info.git_common_dir.join("config"),
-                message: error.to_string(),
-            });
-            None
-        }
-    };
-    deps[0].2 &= current_info.as_ref() == Some(&info)
-        && current_reftable == Some(reftable)
-        && deps_current(&deps);
+    deps[0].2 &= current_info.as_ref() == Some(&info) && deps_current(&deps);
     Some((info, reftable, deps, None))
 }
 
@@ -335,6 +323,9 @@ fn read_head_identity_from_git(
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitHeadIdentity> {
     if let Some(full_ref) = git_symbolic_head_full(&info.repo_root, read_errors) {
+        if !valid_full_ref(&full_ref) {
+            return None;
+        }
         let short_name = full_ref.strip_prefix("refs/heads/")?.to_string();
         let oid = git_rev_parse_verify_with_errors(&info.repo_root, &full_ref, read_errors);
         return Some(GitHeadIdentity::Branch {
@@ -355,6 +346,13 @@ fn read_head_identity_from_files(
     let head = read_git_ref_file(&info.git_dir.join("HEAD"), read_errors)?;
     let head = head.trim();
     if let Some(full_ref) = head.strip_prefix("ref: ") {
+        if !valid_full_ref(full_ref) {
+            read_errors.push(GitReadError::FileRead {
+                path: info.git_dir.join("HEAD"),
+                message: "HEAD contains an invalid ref name".into(),
+            });
+            return None;
+        }
         let short_name = full_ref.strip_prefix("refs/heads/")?.to_string();
         let oid = read_ref_oid_with_errors(&info.git_common_dir, full_ref, read_errors);
         return Some(GitHeadIdentity::Branch {
@@ -364,7 +362,14 @@ fn read_head_identity_from_files(
         });
     }
 
-    (!head.is_empty()).then(|| GitHeadIdentity::Detached {
+    if !valid_oid(head) {
+        read_errors.push(GitReadError::FileRead {
+            path: info.git_dir.join("HEAD"),
+            message: "detached HEAD is not a complete object ID".into(),
+        });
+        return None;
+    }
+    Some(GitHeadIdentity::Detached {
         oid: head.to_string(),
     })
 }
@@ -402,10 +407,19 @@ fn git_ahead_behind_between(
     upstream_oid: &str,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<AheadBehind> {
+    if !valid_oid(head_oid) || !valid_oid(upstream_oid) {
+        return None;
+    }
     let range = format!("{head_oid}...{upstream_oid}");
     let stdout = git_trimmed_stdout(
         repo_root,
-        &["rev-list", "--left-right", "--count", &range],
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            "--end-of-options",
+            &range,
+        ],
         read_errors,
     )?;
     match parse_git_ahead_behind_output(&stdout) {
@@ -564,7 +578,11 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("detached-head");
         std::fs::create_dir_all(root.join(".git")).expect("test precondition");
-        std::fs::write(root.join(".git/HEAD"), "3e1b9a8d\n").expect("test precondition");
+        std::fs::write(
+            root.join(".git/HEAD"),
+            "3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d\n",
+        )
+        .expect("test precondition");
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, None);
 
@@ -575,7 +593,7 @@ mod tests {
                 .and_then(|entry| entry.fingerprint)
                 .is_some_and(|fingerprint| fingerprint.head
                     == GitHeadIdentity::Detached {
-                        oid: "3e1b9a8d".into()
+                        oid: "3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d".into()
                     })
         );
     }
@@ -792,7 +810,7 @@ mod tests {
         write_fake_tracked_repo(&root);
         std::fs::write(
             root.join(".git/config"),
-            "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n[include]\n\tpath = branch.cfg\n",
+            "[remote \"origin\"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[remote \"fork\"]\n\tfetch = +refs/heads/*:refs/remotes/fork/*\n[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n[include]\n\tpath = branch.cfg\n",
         )
         .expect("test precondition");
         let (_, cached) = git_status_snapshot_for_cwd(&root, None);

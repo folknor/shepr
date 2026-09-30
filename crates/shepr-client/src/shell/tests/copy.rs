@@ -1408,10 +1408,15 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         row: rect.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(
-        matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.command, EndpointCommand::PaneFocus(target) if target.pane_id == "w1:p2"))
-    );
+    // An explicit pick goes through the runtime, which knows whether the
+    // endpoint owns the presentation.
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
+        }] if pane_id == "w1:p2"
+    ));
 }
 
 #[test]
@@ -1905,7 +1910,19 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
             row: pane_rect.y,
             modifiers: KeyModifiers::empty(),
         })]);
-    let [ClientShellAction::Endpoint { request, .. }] = &accept.actions[..] else {
+    // The pick goes through the runtime, which focuses an endpoint that owns
+    // the presentation through the endpoint API.
+    let [
+        ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            target: Some(target),
+        },
+    ] = &accept.actions[..]
+    else {
+        panic!("navigator pane click should be an explicit local pick");
+    };
+    let focus = state.focus_endpoint_target(target.clone());
+    let [ClientShellAction::Endpoint { request, .. }] = &focus[..] else {
         panic!("navigator pane click should use endpoint API");
     };
     assert!(matches!(

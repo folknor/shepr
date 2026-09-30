@@ -19,8 +19,8 @@ pub use self::address::derive_client_socket_from_api_socket;
 pub use self::agent::ConfigAgent;
 pub use self::limits::{
     DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,
-    DEFAULT_SCROLLBACK_LIMIT_BYTES, MAX_TERMINAL_GRID_CELLS, MAX_TERMINAL_GRID_DIMENSION,
-    terminal_grid_cells,
+    DEFAULT_SCROLLBACK_LIMIT_BYTES, MAX_INPUT_EVENT_BATCH, MAX_TERMINAL_GRID_CELLS,
+    MAX_TERMINAL_GRID_DIMENSION, terminal_grid_cells,
 };
 pub use self::machine::{
     IntoSshTarget, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,

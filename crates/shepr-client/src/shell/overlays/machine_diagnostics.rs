@@ -5,6 +5,10 @@ use super::*;
 use crossterm::event::{MouseButton, MouseEventKind};
 use shepr_termio::input::raw_input::RawInputEvent;
 
+/// Code prefix of a notice opened from a machine badge. Only these explicitly
+/// opened cards grow to their full body; automatic notices are capped.
+pub(super) const MACHINE_DIAGNOSTIC_NOTICE_PREFIX: &str = "machine-diagnostic:";
+
 #[derive(Default)]
 pub(super) struct MachineDiagnostics {
     errors: HashMap<ClientEndpointId, MachineDiagnostic>,
@@ -125,7 +129,7 @@ impl ClientShellState {
         let ClientEndpointId::Ssh(label) = &id else {
             return true;
         };
-        let code = format!("machine-diagnostic:{label}");
+        let code = format!("{MACHINE_DIAGNOSTIC_NOTICE_PREFIX}{label}");
         // An explicit click can reopen its diagnostic, but must not replace another notice.
         if self
             .visible_endpoint_notice
@@ -134,6 +138,7 @@ impl ClientShellState {
         {
             return true;
         }
+        self.endpoint_notice_deadline = None;
         self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
             key: ClientEndpointNoticeKey {
                 boot_id: None,

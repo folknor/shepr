@@ -93,19 +93,6 @@ mod path_bytes {
 
         deserializer.deserialize_any(PathVisitor)
     }
-
-    pub(crate) fn deserialize_saved_cwd<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let path = deserialize(deserializer)?;
-        // A saved directory may have disappeared while shepr was stopped.
-        // Restore retains it so a later restart can retry the original path.
-        if !path.is_absolute() {
-            return Err(serde::de::Error::custom("saved cwd must be absolute"));
-        }
-        Ok(path)
-    }
 }
 
 /// Serializable snapshot of the entire shepr session.
@@ -197,7 +184,7 @@ pub struct WorkspaceSnapshot {
     pub custom_name: Option<String>,
     #[serde(
         serialize_with = "path_bytes::serialize",
-        deserialize_with = "path_bytes::deserialize_saved_cwd"
+        deserialize_with = "path_bytes::deserialize"
     )]
     pub identity_cwd: PathBuf,
     #[serde(default)]
@@ -215,7 +202,7 @@ pub struct WorkspaceSnapshot {
 pub struct PaneSnapshot {
     #[serde(
         serialize_with = "path_bytes::serialize",
-        deserialize_with = "path_bytes::deserialize_saved_cwd"
+        deserialize_with = "path_bytes::deserialize"
     )]
     pub cwd: PathBuf,
     /// The pane's public number within its workspace. Restore gives a pane
@@ -225,7 +212,11 @@ pub struct PaneSnapshot {
     pub public_number: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_session"
+    )]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
 }
 
@@ -234,6 +225,24 @@ pub struct PaneAgentSessionSnapshot {
     pub source: shepr_agent::agent::AgentSource,
     pub agent: shepr_agent::agent::Agent,
     pub session_ref: shepr_agent::agent::resume::AgentSessionRef,
+}
+
+// Agent labels and session formats can disappear between builds. A bad saved
+// session must not discard the pane or unrelated workspaces.
+fn deserialize_agent_session<'de, D>(
+    deserializer: D,
+) -> Result<Option<PaneAgentSessionSnapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match serde_json::from_value(value) {
+        Ok(session) => Some(session),
+        Err(error) => {
+            tracing::warn!(%error, "ignoring invalid saved agent session");
+            None
+        }
+    }))
 }
 
 /// Saved screen history of one pane.
@@ -988,14 +997,29 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_cwds_reject_relative_paths_but_retain_missing_absolute_paths() {
+    fn snapshot_cwds_parse_relative_paths_for_restore_validation() {
         let relative = r#"{"cwd":"relative"}"#;
-        assert!(serde_json::from_str::<super::PaneSnapshot>(relative).is_err());
+        assert!(serde_json::from_str::<super::PaneSnapshot>(relative).is_ok());
         let missing = r#"{"cwd":"/shepr-missing-saved-directory"}"#;
         // The rest of the pane fields default, so this also checks that a
         // missing saved path remains available for a later restore attempt.
         let pane: super::PaneSnapshot = serde_json::from_str(missing).expect("absolute saved cwd");
         assert_eq!(pane.cwd, PathBuf::from("/shepr-missing-saved-directory"));
+    }
+
+    #[test]
+    fn invalid_saved_agent_sessions_do_not_reject_the_pane() {
+        for session in [
+            serde_json::json!({"source": "shepr:codex", "agent": "removed-agent", "session_ref": {"id": "session"}}),
+            serde_json::json!({"source": "invalid source", "agent": "codex", "session_ref": {"id": "session"}}),
+            serde_json::json!(42),
+        ] {
+            let pane: super::PaneSnapshot = serde_json::from_value(serde_json::json!({
+                "cwd": "/", "agent_session": session,
+            }))
+            .expect("bad session stays local to this pane");
+            assert!(pane.agent_session.is_none());
+        }
     }
 
     #[test]

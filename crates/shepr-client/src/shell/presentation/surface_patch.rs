@@ -17,41 +17,11 @@ fn row_fits_frame(row: &shepr_protocol::PaneSurfacePatchRow, frame: &FrameData) 
         && row.y < frame.height
 }
 
-fn apply_row(row: &shepr_protocol::PaneSurfacePatchRow, frame: &mut FrameData) -> bool {
-    if !row_fits_frame(row, frame) {
-        return false;
-    }
-    let start = usize::from(row.y) * usize::from(frame.width) + usize::from(row.x);
-    let end = start + row.cells.len();
-    if end > frame.cells.len() {
-        return false;
-    }
-    frame.cells[start..end].clone_from_slice(&row.cells);
-    true
-}
-
 fn apply_patch_to_surface(
     surface: &mut shepr_protocol::PaneSurfaceFrame,
     patch: &shepr_protocol::PaneSurfacePatch,
 ) -> bool {
-    for row in &patch.rows {
-        if !apply_row(row, &mut surface.frame) {
-            return false;
-        }
-    }
-    for updated in &patch.panes {
-        let Some(existing) = surface
-            .panes
-            .iter_mut()
-            .find(|pane| pane.pane_id == updated.pane_id)
-        else {
-            return false;
-        };
-        *existing = updated.clone();
-    }
-    surface.frame.cursor = patch.cursor.clone();
-    surface.surface_revision = patch.surface_revision;
-    true
+    shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch).is_ok()
 }
 
 fn fast_path_blocker(

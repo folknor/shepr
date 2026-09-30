@@ -12,7 +12,7 @@ use super::{
     window_title::WindowTitleTemplate,
     wire::WireConfig,
 };
-use crate::limits::{MAX_MOUSE_SCROLL_LINES, MIN_MOUSE_SCROLL_LINES};
+use crate::limits::{MAX_INPUT_EVENT_BATCH, MIN_MOUSE_SCROLL_LINES};
 
 /// The source that selected a resolved configuration value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -647,9 +647,13 @@ impl ConfigResolution {
         let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
         let terminal =
             ValidatedTerminalConfig::parse(&config.terminal, paths, cwd_check, shell_check);
-        let mouse_scroll_lines = u16::try_from(config.ui.mouse_scroll_lines())
+        let mouse_scroll_lines = config.ui.mouse_scroll_lines();
+        let mouse_scroll_lines = u16::try_from(mouse_scroll_lines)
             .ok()
-            .filter(|lines| *lines >= MIN_MOUSE_SCROLL_LINES)
+            .filter(|lines| {
+                (usize::from(MIN_MOUSE_SCROLL_LINES)..=MAX_INPUT_EVENT_BATCH)
+                    .contains(&usize::from(*lines))
+            })
             .and_then(std::num::NonZeroU16::new);
 
         let mut diagnostics = keybind_validation.diagnostics.clone();
@@ -682,7 +686,7 @@ impl ConfigResolution {
         }
         if mouse_scroll_lines.is_none() {
             diagnostics.push(format!(
-                "ui.mouse_scroll_lines must be between {MIN_MOUSE_SCROLL_LINES} and {MAX_MOUSE_SCROLL_LINES} (got {})",
+                "ui.mouse_scroll_lines must be between {MIN_MOUSE_SCROLL_LINES} and {MAX_INPUT_EVENT_BATCH} (got {})",
                 config.ui.mouse_scroll_lines()
             ));
         }

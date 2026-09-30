@@ -518,7 +518,7 @@ fn preserve_existing_in(
         Err(err) => return Err(err),
     };
     drop(source);
-    std::fs::create_dir_all(directory)?;
+    shepr_platform::create_private_directory_all(directory)?;
     let older = recovery_files(directory)?;
     let timestamp_now = now
         .duration_since(UNIX_EPOCH)
@@ -809,11 +809,22 @@ mod tests {
 
     #[test]
     fn snapshot_survives_exit_bursts_clears_and_writer_restarts() {
+        use std::os::unix::fs::PermissionsExt;
+
         let mut writer = writer(false);
         let original = snapshot();
         writer.save_for_test(&original, None).expect("save");
         let files = snapshots(&writer);
         assert_eq!(files.len(), 1);
+        let snapshot_directory = super::super::io::snapshot_directory(&writer.path);
+        assert_eq!(
+            std::fs::metadata(snapshot_directory)
+                .expect("snapshot directory")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
         let saved = std::fs::read(&files[0].1).expect("test precondition");
         for i in 0..100 {
             let mut shrinking = snapshot();

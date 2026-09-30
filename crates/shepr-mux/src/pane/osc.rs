@@ -479,7 +479,6 @@ mod tests {
             processes: vec![shepr_agent::detect::ForegroundProcess {
                 pid: shell_pid,
                 name: "zsh".to_string(),
-                argv0: Some("zsh".to_string()),
                 argv: Some(vec!["zsh".to_string()]),
                 cmdline: Some("zsh".to_string()),
             }],
@@ -898,7 +897,6 @@ mod tests {
                 processes: vec![shepr_agent::detect::ForegroundProcess {
                     pid: 42,
                     name: "droid".to_string(),
-                    argv0: Some("droid".to_string()),
                     argv: Some(vec!["droid".to_string()]),
                     cmdline: Some("droid".to_string()),
                 }],

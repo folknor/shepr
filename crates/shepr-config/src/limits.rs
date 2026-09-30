@@ -11,6 +11,14 @@ pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 /// visible history.
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 
+/// Maximum expanded input events accepted in one client pane-input message.
+///
+/// `shepr-protocol` re-exports this bound for the client batcher and the
+/// server's input validation; it lives here, below the protocol, because
+/// config also caps one mouse scroll step to it, since the server charges
+/// scroll lines as expanded input work.
+pub const MAX_INPUT_EVENT_BATCH: usize = 4096;
+
 /// Initial virtual terminal width when the server has no attached client.
 ///
 /// This gives headless shells a conventional wide terminal before an
@@ -77,12 +85,6 @@ pub(crate) const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 /// The title limit preserves long workspace and pane names while
 /// bounding the control string sent to the terminal.
 pub(crate) const MAX_WINDOW_TITLE_CHARS: usize = 200;
-
-/// Maximum supported mouse-wheel scroll step.
-///
-/// The validated runtime setting is stored as `NonZeroU16`, so this limit is
-/// the largest value its representation can preserve.
-pub(crate) const MAX_MOUSE_SCROLL_LINES: u16 = u16::MAX;
 
 /// Minimum accepted mouse-wheel scroll step.
 ///

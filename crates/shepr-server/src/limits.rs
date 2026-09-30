@@ -69,8 +69,6 @@ pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration:
 pub(crate) const CLIENT_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// Bound expanded input events per batch to limit dispatch work.
-pub(crate) const MAX_INPUT_EVENT_BATCH: usize = 4096;
 /// Bound endpoint boot identifiers above the size of generated IDs.
 pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
 /// Bound endpoint request identifiers above the size of generated IDs.

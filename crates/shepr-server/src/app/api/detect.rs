@@ -1,16 +1,27 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
-use shepr_api::schema::{PaneTarget, ResponseResult};
+use shepr_api::schema::{DetectionCapture, PaneTarget, ResponseResult};
 
 use crate::app::App;
 
 use super::super::api_helpers::pane_not_found;
 use super::responses::{failure, success};
 
+/// One locked read of the detector's input, the same read the live detection
+/// tick takes, so the screen and OSC values describe one terminal state.
+fn detection_capture(pane: &shepr_mux::pane::PaneRuntime) -> DetectionCapture {
+    let inputs = pane.agent_detection_inputs();
+    DetectionCapture {
+        screen: inputs.screen_text,
+        osc_title: inputs.osc_title,
+        osc_progress: inputs.osc_progress,
+    }
+}
+
 impl App {
-    /// The text the detector reads for one pane. It works on any pane, agent
-    /// detected or not: capturing an agent the manifests do not recognise yet
-    /// is exactly when manifest work needs it. It is the detection snapshot,
-    /// never the scrolled viewport, plain text and whole.
+    /// The detector input for one pane. It works on any pane, agent detected
+    /// or not: capturing an agent the manifests do not recognise yet is exactly
+    /// when manifest work needs it. The screen is the whole detection snapshot,
+    /// never the scrolled viewport.
     pub(super) fn handle_detect_capture(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(&target.pane_id));
@@ -24,7 +35,7 @@ impl App {
 
         success(ResponseResult::DetectCapture {
             pane_id: public_pane_id,
-            text: pane.detection_text(),
+            capture: detection_capture(pane),
         })
     }
 
@@ -75,15 +86,13 @@ impl App {
             );
         };
 
-        let screen = pane.detection_text();
-        let osc_title = pane.agent_osc_title();
-        let osc_progress = pane.agent_osc_progress();
+        let capture = detection_capture(pane);
         let explain = shepr_agent::detect::manifest::explain_with_input(
             agent,
             shepr_agent::detect::manifest::DetectionInput {
-                screen: &screen,
-                osc_title: &osc_title,
-                osc_progress: &osc_progress,
+                screen: &capture.screen,
+                osc_title: &capture.osc_title,
+                osc_progress: &capture.osc_progress,
             },
         );
         let value = shepr_agent::detect::manifest::explain_to_json_value(&explain);
@@ -187,11 +196,9 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .detected_agent = Some(Agent::Codex);
-        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
-            80,
-            24,
-            b"press enter to confirm or esc to cancel",
-        );
+        let runtime =
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"captured screen");
+        runtime.test_process_pty_bytes(b"\x1b]2;Action Required\x1b\\\x1b]9;4;3;\x1b\\");
         let detection_text = runtime.detection_text();
         app.terminal_runtimes.insert(terminal_id, runtime);
         let pane = app
@@ -209,11 +216,13 @@ mod tests {
         assert_eq!(capture["result"]["type"], "detect_capture");
         assert_eq!(capture["result"]["pane_id"], pane);
         assert_eq!(
-            capture["result"]["text"].as_str(),
+            capture["result"]["capture"]["screen"].as_str(),
             Some(detection_text.as_str())
         );
+        assert_eq!(capture["result"]["capture"]["osc_title"], "Action Required");
+        assert_eq!(capture["result"]["capture"]["osc_progress"], "4;3;");
         assert!(
-            detection_text.contains("press enter to confirm"),
+            detection_text.contains("captured screen"),
             "{detection_text:?}"
         );
 
@@ -223,6 +232,10 @@ mod tests {
             AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
         );
         assert_eq!(explain["result"]["explain"]["state"], "blocked");
+        assert_eq!(
+            explain["result"]["explain"]["matched_rule"]["id"],
+            "osc_title_blocked"
+        );
     }
 
     #[tokio::test]
@@ -247,7 +260,7 @@ mod tests {
             }),
         );
         assert!(
-            capture["result"]["text"]
+            capture["result"]["capture"]["screen"]
                 .as_str()
                 .is_some_and(|text| text.contains("an unknown agent")),
             "{capture}"

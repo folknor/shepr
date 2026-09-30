@@ -12,15 +12,16 @@ fn render_notification_card(
     title: &str,
     body: &str,
     top_offset: u16,
+    body_row_limit: Option<usize>,
     dot_color: Color,
     palette: &Palette,
 ) -> Rect {
     if area.is_empty() {
         return Rect::default();
     }
-    // The body keeps its line breaks (a machine diagnostic is several lines), so the card is
-    // as wide as its widest line and as tall as the body wraps to, up to the rows below
-    // `top_offset`. A click anywhere on the card dismisses it.
+    // Explicit machine diagnostic cards can grow for their full body. Automatic notices show a
+    // preview capped below, while the machine badge can reopen the complete diagnostic. A click
+    // anywhere on the card dismisses it.
     let content_width = body
         .lines()
         .map(unicode_width::UnicodeWidthStr::width)
@@ -41,6 +42,7 @@ fn render_notification_card(
         3
     } else {
         let body_rows = body_paragraph.line_count(width.saturating_sub(4));
+        let body_rows = body_row_limit.map_or(body_rows, |limit| body_rows.min(limit));
         u16::try_from(body_rows.saturating_add(3)).unwrap_or(u16::MAX)
     };
     let available_height = area.height.saturating_sub(top_offset.min(area.height));
@@ -124,6 +126,11 @@ pub(super) fn render_notice(
         &notice.title,
         &notice.body,
         top_offset,
+        (!notice
+            .key
+            .code
+            .starts_with(super::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_PREFIX))
+        .then_some(crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS),
         match notice.key.kind {
             ClientEndpointNoticeKind::Rejected => palette.red,
             ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {

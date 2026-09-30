@@ -538,7 +538,6 @@ impl ClientShellState {
         &mut self,
         session_generation: u64,
         continue_queue: bool,
-        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
         if self.copy_session_generation != session_generation {
@@ -547,7 +546,8 @@ impl ClientShellState {
         self.copy_operation_in_flight = false;
         if continue_queue && self.copy_mode.is_some() {
             self.dispatch_next_copy_operation(outcome);
-            self.dispatch_queued_copy_input(now, outcome);
+            let mut accounting = PaneInputBatchAccounting::default();
+            self.dispatch_queued_copy_input(outcome, &mut accounting);
         } else {
             self.copy_operation_queue.clear();
             self.copy_input_queue.clear();
@@ -556,8 +556,8 @@ impl ClientShellState {
 
     fn dispatch_queued_copy_input(
         &mut self,
-        now: std::time::Instant,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         while !self.copy_operation_in_flight {
             let Some(key) = self.copy_input_queue.pop_front() else {
@@ -568,7 +568,7 @@ impl ClientShellState {
             // after that exit and belong to the pane, so hold them aside and
             // put them back: they then route in whatever mode the key left.
             let mut later = std::mem::take(&mut self.copy_input_queue);
-            self.handle_key(key, now, outcome);
+            self.handle_key(key, outcome, accounting);
             later.extend(self.copy_input_queue.drain(..));
             self.copy_input_queue = later;
         }

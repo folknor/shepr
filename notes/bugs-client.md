@@ -12,49 +12,6 @@ handshake, loop, input, and the `shell/` presentation) and `crates/shepr-termio`
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CLIENT-001 - Shift+Tab reaches legacy panes as a plain Tab when the host speaks kitty
-
-Hunter's severity: High. Scope: termio-root.
-
-**Claim broken.** AGENTS.md: "Key encoding to pane children covers ... legacy
-encoding, kitty disambiguate and the keys crossterm's `KeyCode` models, and
-modifyOtherKeys for Enter, Esc, Tab and Backspace". Shift+Tab (BackTab) is a key
-crossterm models, and legacy encoding has a form for it (`CSI Z`).
-
-**Path.**
-
-- The client always pushes kitty flags 7 (disambiguate, event types, alternate
-  keys) to the host at startup (`crates/shepr-client/src/terminal_setup.rs`,
-  `set_keyboard_enhancement_flags` with
-  `ime_compatible_keyboard_enhancement_flags()`).
-- A kitty-capable host (kitty, Ghostty, foot, Alacritty, ...) then reports
-  Shift+Tab as `CSI 9;2u`.
-- `parse_kitty_key_sequence` (`crates/shepr-termio/src/input/parse.rs`) turns that
-  into `KeyCode::Tab` with `SHIFT`; only the legacy `CSI Z` is parsed as
-  `KeyCode::BackTab`.
-- Server side, `PaneTerminal::encode_terminal_key_once`
-  (`crates/shepr-mux/src/pane/terminal/backend.rs`) sends non-Char keys through
-  `encode_terminal_key_with_modes`. For a pane with no kitty flags and
-  modifyOtherKeys off or at level 1: `encode_modify_other_keys` returns `None`
-  (Tab is level 2 only), `encode_legacy` finds no `encode_modified_special` form
-  for Tab, and `encode_legacy_inner` returns `\t`. The Shift is lost.
-- The kitty-pane direction works (`BackTab` is rewritten to `Tab+SHIFT`, giving
-  `CSI 9;2u`); the reverse normalization (`Tab+SHIFT` to `CSI Z` for a legacy
-  pane) is missing.
-
-**Impact.** Any legacy-mode child (bash/readline completion cycling, most TUI
-agents that bind Shift+Tab, including mode toggles) gets Tab instead of Shift+Tab
-whenever the outer terminal supports kitty. No test feeds a host `CSI 9;2u` to a
-legacy pane; `terminal_backtab_preserves_shift_across_keyboard_protocols` in
-`crates/shepr-mux/src/pane/terminal/tests.rs` starts from `KeyCode::BackTab`,
-which a kitty host never produces.
-
-**Fix direction.** Treat BackTab and Tab+Shift as one key: either the parser
-normalizes one to the other, or `encode_legacy`/`encode_legacy_inner` emits
-`CSI Z` for Tab with exactly Shift, and the modifyOtherKeys level-1 path does the
-same. One canonical form, not two spellings every encoder must remember. See also
-WIRE-016 on canonical key combos.
-
 ## CLIENT-003 - Termio structural notes
 
 Scope: termio-root (filed by the hunter as structural notes, not defects in
@@ -74,50 +31,6 @@ themselves).
 - **Misleading module doc.** `crates/shepr-termio/src/host_term/title.rs` opens
   with a module doc about clipboard bytes; the module is named for titles and
   holds both.
-
-## CLIENT-005 - A pane surface patch the shell rejects is dropped silently, and nothing recovers
-
-Scope: client-endpoint.
-
-Where: `src/lib.rs`, `handle_server_message`, the `PaneSurfacePatch` arm
-(`ClientPaneSurfacePatchOutcome::Rejected => false`), with
-`shepr_protocol::surface_reuse::Decoder` running on the reader thread.
-
-**Claim broken.** The connection's decoder "happens before activation and
-presentation filtering, so switching endpoints cannot discard a baseline needed
-by the next wire message" (`surface_reuse.rs`). The decoder keeps its baseline,
-but the shell's displayed surface is a second baseline that nothing keeps in step
-with it. When the reader sees a baseline mismatch it fails the connection; when
-the shell sees one it does nothing (no compose, no repaint request since the
-protocol has none, no connection failure).
-
-How the baselines drift:
-
-- `PresentationGate::decide` drops `PaneSurfacePatch` whenever frames are frozen;
-  the decoder has already applied those patches.
-- During `ActivatingTarget` (frozen), a full `PaneSurface` goes into the
-  handoff's evidence and later patches are dropped; `complete_at` then installs
-  the older evidence surface.
-- During `SynchronizingPresentation` (not frozen), patches for the new target are
-  `Apply`'d against whatever the shell holds, while the full sync surface is
-  `Buffer`ed into evidence, which needs the snapshot too (`coherent_surface` wants
-  `snapshot_revision == projection_revision`). Patches between the sync surface
-  and its snapshot are rejected against the old surface; at commit the shell
-  installs the sync surface, now several patches behind the decoder, and every
-  later patch fails `patch.base_surface_revision != current.surface_revision`.
-
-**Effect.** The pane stops updating until the server happens to send a full
-surface, which only follows a projection change (snapshot change, resize, focus
-change). In an idle shell pane where the user types, that can mean typing blind
-indefinitely. Whether the sync window happens depends on the order the server
-emits reply, snapshot and surface after `ClientShellSurfaceSet { active: true }`,
-which nothing the client can see guarantees.
-
-**Fix direction (structural).** One surface baseline per connection: the
-decoder's `current_surface()` already holds the authoritative grid; present from
-it, or take the shell's surface from it at commit. At least, a shell-side
-rejection should fail the connection like a decoder mismatch, or trigger a server
-repaint.
 
 ## CLIENT-006 - Endpoint health measures client-loop latency, not transport liveness
 
@@ -149,33 +62,11 @@ machine at once, each with "endpoint health check timed out".
 updated as each frame arrives) and have `tick_health` read it; or drain
 `event_rx` before judging health on a timer wake.
 
-## CLIENT-007 - Host effects from the active endpoint are applied while nothing owns the presentation
-
-Scope: client-endpoint.
-
-Where: `src/endpoint/message_policy.rs` `PresentationGate::decide`, and the
-`lib.rs` arms for `MouseCapture`, `ClientShellKeyboardReportAll`, `WindowTitle`
-and `Clipboard`.
-
-**Claim broken.** `shell_runtime::active_endpoint_owns_presentation`: "This is
-also the pane input gate: input, endpoint commands and host effects flow only
-while it holds". `finish_client_shell_input` says the same for the outgoing
-direction.
-
-The gate drops presentation effects only when `frozen && activation_pending`.
-`Presentation::Unavailable` with no handoff has `activation_pending == false`, so
-the gate falls through to `_ if self.endpoint_active => Apply`, and
-`endpoint_active` looks only at the registry (active id plus `surface_active`),
-never at `Presentation`. The documented `Unavailable` states in which the
-connection keeps its surface (a rollback ending `Unavailable` out of
-`RestoringSource` or `SynchronizingPresentation`, and an Attention status for the
-active endpoint) let the endpoint's mouse mode, report-all, title and clipboard
-writes reach the host. The later automatic re-proof replays the effects anyway,
-since the server resets its dedupe on activation, so the early application buys
-nothing and breaks the invariant.
-
-**Fix direction.** Give the gate the `Presentation` (or `owned()`), and treat
-`is_presentation_effect` plus `Clipboard` as `Drop` unless owned.
+A fixer confirmed the defect and found both routes cross files: the reader stamp
+needs a shared control added through `endpoint/writer.rs` and `transport.rs`, and
+draining first needs the loop in `lib.rs`. Give one fixer `lib.rs`,
+`transport.rs`, `endpoint/writer.rs`, `endpoint/health.rs` and
+`endpoint/registry.rs` together.
 
 ## CLIENT-010 - A failed first Local handshake with machines configured throws away its diagnostic
 
@@ -249,24 +140,6 @@ Scope: client-endpoint.
   losing the local server does not end the client" for this narrow resource
   failure.
 
-## CLIENT-013 - The snapshot-install resize in `install_client_shell_snapshot` is either dead or aimed at the wrong endpoint
-
-Scopes: client-endpoint and client-shell, with differing readings.
-
-`install_client_shell_snapshot` (`shell_runtime.rs`) compares `surface_size`
-before and after installing a snapshot and sends a resize to the endpoint whose
-snapshot arrived (`endpoints.send_to(endpoint_id, ..)`) if it changed.
-
-- The client-endpoint hunter's reading: the resize goes to the snapshot's
-  endpoint even when that endpoint is not active and the size change came from
-  the shell's active projection; if a non-active snapshot can change
-  `surface_size`, the resize goes to the wrong server. That hunter left open
-  whether it can.
-- The client-shell hunter's reading: `surface_size` depends only on sidebar
-  state, which snapshot installation does not change (`apply_endpoint_config`
-  swaps only keybinds), so the branch cannot fire; it is dead code suggesting a
-  coupling that no longer exists.
-
 ## CLIENT-014 - An in-flight copy-mode request captures every key, and a failed one throws them away
 
 Scope: client-shell. Related: WIRE-002 (the same unbounded `push_target_event`).
@@ -299,87 +172,13 @@ too.
   loses focus), but `copy_operation_in_flight` stays set, so text typed into the
   new pane is queued behind an unrelated copy request and, on failure, discarded
   with no notice.
-- The queue has no bound. On replay, `dispatch_queued_copy_input` runs every key
-  through `handle_key` into one `ClientShellInput`, and `push_target_event`
-  (`input/events.rs`) appends consecutive same-pane events to a single
-  `ClientShellPaneInput` with no size or count cap; the server closes the whole
-  connection when one message expands past `MAX_INPUT_EVENT_BATCH` (4096)
-  (`shepr-server/src/server/client_transport.rs`, "oversized targeted pane input
-  batch, closing"). A long stall followed by held keys or key repeat can end in a
-  disconnect.
+- The queue has no bound in memory. (The replayed input no longer risks a
+  disconnect: the client batcher now splits every message at the shared payload
+  and event limits.)
 
 **Direction.** Gate the queue on copy mode actually owning the key (copy mode
 active and the copy pane focused); let prefix and Detach bindings pass; bound the
-queue; on failure replay queued non-copy keys instead of dropping them; cap
-`push_target_event` batches at the server's limits as `push_focused_paste` does
-for text.
-
-## CLIENT-016 - An "Unavailable" notice shows once per boot of the active endpoint, then never again
-
-Scope: client-shell.
-
-`push_endpoint_notice` (actions.rs) deduplicates every non-`Rejected` notice with
-`endpoint_notice_seen.insert(key)`, keyed `(active snapshot boot_id, kind,
-code)`. The set is cleared only by `reset_endpoint_projection` (a boot or
-endpoint change); the only other removal is a Timeout key, cleared after a later
-success of the same method. Expiry or dismissal does not re-arm it.
-
-- `receive_endpoint_unavailable(message)` uses the message itself as the code, so
-  the second time the same activation fails with the same text the user sees
-  nothing: they click the machine and nothing happens. Examples:
-  `"{label}: {error}"` from a preflight failure, `"buildbox did not produce a
-  coherent surface in time"` from rollback, `"{label} is not ready"`, `"Local is
-  reconnecting; ..."`. `begin_endpoint_activation` (shell_runtime.rs) reports every
-  preflight failure through this call, so that reporting is best-effort once.
-- `ClientShellEndpointError::Cancelled` maps to kind `Unavailable`, code
-  `"cancelled"`, so only the first interrupted action per boot is reported. The
-  notice says "Check its state before retrying", so later interruptions (a
-  workspace close lost in flight) are exactly the ones the user needs.
-- The key's `boot_id` is documented as "the server boot the notice is about", but
-  is always the active snapshot's boot; a failed switch to another machine is
-  recorded against the boot of the machine being left.
-
-Related: `dispatch_client_shell_actions` (shell_runtime.rs) cancels an endpoint
-request that never left the client (endpoint not active, or not owning the
-presentation, as during a handoff) and still shows "This server action was
-interrupted. Check its state before retrying.", suggesting it may have been
-partly applied. `Cancelled` does not distinguish "never sent" from "sent, outcome
-unknown".
-
-## CLIENT-017 - The active remote endpoint cannot be picked explicitly; only Local can
-
-Scope: client-shell.
-
-**Claims broken.** `begin_endpoint_activation`: "With no proven owner
-(`Unavailable`) a pick of the active endpoint re-proves ownership through a
-handoff." `automatic_activation`: a failed handoff "is not retried ... until a new
-connection or an explicit pick".
-
-The shell never emits that pick for an already-active remote. `activate_endpoint`
-and `focus_or_activate` (`navigation/endpoint_navigation.rs`) push
-`ActivateEndpoint` only when `endpoint_id != active`, or for Local
-(`endpoint_id.is_local() && (multi_endpoint_active() || !online)`). For the active
-remote:
-
-- Clicking its machine row in `handle_endpoint_machine_click` only toggles
-  collapse (Local also activates on the same click).
-- Picking it in the navigator (`Machine` target) closes the overlay and does
-  nothing.
-- Picking one of its workspaces or panes produces a plain `WorkspaceFocus` or
-  `PaneFocus`, which `dispatch_client_shell_actions` cancels because the
-  presentation is not owned, triggering the misleading notice from CLIENT-016.
-
-Once the automatic re-proof has failed, a remote active endpoint left
-`Unavailable` cannot be recovered by the promised pick; the user must pick another
-machine or wait for a reconnect. The Local special case is justified as "Local can
-still be displayed while a remote activation is pending. Route explicit selections
-through the runtime so they can cancel that handoff"; the same applies to a
-displayed remote while a handoff to a third machine is pending, where clicking the
-displayed remote produces a cancelled command instead of cancelling the handoff.
-
-**Fix.** Route the pick through `ActivateEndpoint` whenever the presentation is
-not owned, for any endpoint. The shell cannot see ownership today, so either the
-runtime decides or the shell is told.
+queue; on failure replay queued non-copy keys instead of dropping them.
 
 ## CLIENT-019 - Two sort keys for the same agent list
 
@@ -469,14 +268,35 @@ keymap is filed under WIRE-011, and its dead-resize note under CLIENT-013.)
   report-all mode until the next input. Harmless today because the next batch
   re-syncs, but "host mode follows shell mode" is only restored lazily.
 
-## CLIENT-024 - An automatic notice with a multi-line ssh error can cover most of the UI unasked
+## CLIENT-025 - A request that never left the client is still presented as interrupted
+
+Scope: client-endpoint (lateral).
+
+Requests refused before they enter the send queue now complete silently, since
+their outcome is known. `EndpointCommands::send_next` still reports two different
+cases through one outcome: a request retired for a stale connection generation
+before it was ever sent, and a transport send failure after it may have reached
+the server. Its caller presents both as "This server action was interrupted.
+Check its state before retrying", which suggests a partial application that
+cannot have happened in the first case. Split the outcome in the endpoint command
+lane so a never-sent request is reported as not sent (or silently dropped with
+the others), and only a send failure keeps the interrupted wording.
+
+## CLIENT-026 - Side effects of routing every explicit pick through the runtime
 
 Scope: client-shell (lateral).
 
-The notice card now renders every line of its body and grows up to the rows below
-`top_offset`, so a machine diagnostic opened from its badge is readable. The same
-card also carries automatic notices: an Unavailable notice whose text is a
-multi-line ssh error pops up large, over the sidebar and panes, without any click,
-until dismissed. Keep automatic notices to a bounded height (first line or a few
-lines, with the badge leading to the full text), and let only an explicitly
-opened diagnostic grow.
+Every sidebar and navigator pick now goes through `ActivateEndpoint`, so the
+runtime can re-prove an unowned endpoint or retarget a handoff.
+
+- **An offline active machine shows a notice on every row click.** Clicking the
+  active remote's row outside the collapse toggle toggles collapse and also sends
+  a pick; when that remote is offline, the pick shows "X is not ready" each time.
+  Only send the pick when it can do something (the presentation is not owned and
+  the endpoint is online), or keep row clicks collapse-only for the active
+  machine.
+- **Picks wait one loop iteration.** The pick is scheduled for the next loop
+  event, so pane input from the same stdin read is written before the focus
+  change; before, a sidebar workspace click queued its focus command in the same
+  dispatch. Unlikely to matter, but it is an ordering change worth keeping in
+  mind.

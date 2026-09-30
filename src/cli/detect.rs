@@ -1,10 +1,10 @@
 //! `shepr detect`: the manifest-maintenance commands. `capture` prints the
-//! exact text the detector evaluates for a pane; `explain` shows which rule
-//! decided a pane's state, or evaluates a saved capture locally.
+//! screen and OSC values the detector evaluates for a pane; `explain` shows
+//! which rule decided a pane's state, or evaluates a saved capture locally.
 
 use clap::ArgMatches;
 
-use shepr_api::schema::{ErrorBody, ErrorResponse, Method, PaneTarget, Request};
+use shepr_api::schema::{DetectionCapture, ErrorBody, ErrorResponse, Method, PaneTarget, Request};
 
 use super::matches::{flag, string};
 
@@ -51,9 +51,8 @@ pub(super) fn run_detect_command(
     }
 }
 
-/// The request behind `detect capture`: the server answers with the exact text
-/// the detector evaluates for that pane, plain and whole, whether or not an
-/// agent is currently detected there.
+/// The request behind `detect capture`: the server answers with the complete
+/// detector input for that pane, whether or not an agent is currently detected.
 fn capture_request(pane: &str) -> Request {
     Request {
         id: "cli:detect:capture".into(),
@@ -69,9 +68,12 @@ fn capture(paths: &super::target::CliContext, pane: &str) -> super::CliResult<i3
         print_detect_error(&response)?;
         return Ok(1);
     }
-    if let Some(text) = response["result"]["text"].as_str() {
-        print!("{text}");
-    }
+    let capture: DetectionCapture = serde_json::from_value(response["result"]["capture"].clone())
+        .map_err(std::io::Error::other)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&capture).map_err(std::io::Error::other)?
+    );
     Ok(0)
 }
 
@@ -139,8 +141,21 @@ pub(super) fn explain_file(path: &str, agent_label: &str) -> super::CliResult<se
             }));
         }
     };
+    let capture: DetectionCapture = serde_json::from_str(&content).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to parse detection capture {path}: {error}"),
+        )
+    })?;
     Ok(shepr_agent::detect::manifest::explain_to_json_value(
-        &shepr_agent::detect::manifest::explain_for_label(agent_label, &content),
+        &shepr_agent::detect::manifest::explain_for_label(
+            agent_label,
+            shepr_agent::detect::manifest::DetectionInput {
+                screen: &capture.screen,
+                osc_title: &capture.osc_title,
+                osc_progress: &capture.osc_progress,
+            },
+        ),
     ))
 }
 
@@ -360,8 +375,14 @@ mod tests {
     #[test]
     fn explain_file_evaluates_without_a_server() {
         let scratch = crate::test_support::ScratchDir::new("detect-explain-file");
-        let path = scratch.join("screen.txt");
-        std::fs::write(&path, "press enter to confirm or esc to cancel").expect("write capture");
+        let path = scratch.join("capture.json");
+        let capture = DetectionCapture {
+            screen: "press enter to confirm or esc to cancel".into(),
+            osc_title: String::new(),
+            osc_progress: String::new(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&capture).expect("encode capture"))
+            .expect("write capture");
 
         let explain = explain_file(path.to_str().expect("utf8 path"), "codex")
             .expect("file evaluation should not need a server");
@@ -370,5 +391,41 @@ mod tests {
 
         let missing = scratch.join("missing.txt");
         assert!(explain_file(missing.to_str().expect("utf8 path"), "codex").is_err());
+    }
+
+    #[test]
+    fn explain_file_uses_the_captured_osc_title() {
+        let scratch = crate::test_support::ScratchDir::new("detect-explain-osc-file");
+        let path = scratch.join("capture.json");
+        let capture = DetectionCapture {
+            screen: "screen without a blocker".into(),
+            osc_title: "Action Required".into(),
+            osc_progress: "4;3;".into(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&capture).expect("encode capture"))
+            .expect("write capture");
+
+        let explain = explain_file(path.to_str().expect("utf8 path"), "codex")
+            .expect("file evaluation should not need a server");
+        assert_eq!(explain["state"], "blocked");
+        assert_eq!(explain["matched_rule"]["id"], "osc_title_blocked");
+    }
+
+    #[test]
+    fn explain_file_uses_the_captured_osc_progress() {
+        let scratch = crate::test_support::ScratchDir::new("detect-explain-progress-file");
+        let path = scratch.join("capture.json");
+        let capture = DetectionCapture {
+            screen: "screen without a blocker".into(),
+            osc_title: String::new(),
+            osc_progress: "4;3;".into(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&capture).expect("encode capture"))
+            .expect("write capture");
+
+        let explain = explain_file(path.to_str().expect("utf8 path"), "letta")
+            .expect("file evaluation should not need a server");
+        assert_eq!(explain["state"], "blocked");
+        assert_eq!(explain["matched_rule"]["id"], "osc_progress_blocked");
     }
 }

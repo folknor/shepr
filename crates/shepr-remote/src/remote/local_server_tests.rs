@@ -632,19 +632,75 @@ fn a_probe_failure_kills_the_daemon() {
     assert_group_dies(group);
 }
 
+/// Runs `launch_with` against the fixture daemon in `dir` with a probe that
+/// answers as a server of another build whose boot id names `answering_pid`
+/// (given the spawned daemon's pid, 0 before the spawn).
+fn launch_against_other_build(
+    dir: &ScratchDir,
+    steps: &[Step],
+    timeout: Duration,
+    answering_pid: impl Fn(u32) -> u32,
+) -> (io::Result<RuntimeStatus>, u32) {
+    let server = dir.join("shepr-server");
+    let boot_log = dir.join("server-boot.log");
+    let server_log = dir.join("shepr-server.log");
+    let pid = Cell::new(0);
+    let result = launch_with(
+        &LaunchFiles {
+            server: &server,
+            boot_log: &boot_log,
+            server_log: &server_log,
+        },
+        timeout,
+        fixture_daemon(steps, &pid),
+        || {
+            Ok(Probed::Running(RuntimeStatus {
+                boot_id: shepr_protocol::BootId::from_process_clock(
+                    answering_pid(pid.get()),
+                    Ok(Duration::from_secs(1_700_000_000)),
+                )
+                .as_str()
+                .to_owned(),
+                ..other_build()
+            }))
+        },
+        &mut Instant::now,
+        &mut std::thread::sleep,
+    );
+    (result, pid.get())
+}
+
 #[test]
 fn a_sibling_of_another_build_is_killed_and_reported() {
     let dir = ScratchDir::new("launch-sibling-mismatch");
-    let (result, group) =
-        launch_fixture(&dir, &idle_daemon_steps(), Duration::from_secs(10), || {
-            Ok(Probed::Running(other_build()))
-        });
+    let (result, group) = launch_against_other_build(
+        &dir,
+        &idle_daemon_steps(),
+        Duration::from_secs(10),
+        |daemon| daemon,
+    );
     let message = result
         .expect_err("a server of another build is not this client's")
         .to_string();
     assert!(message.contains("different build"), "{message}");
     assert!(message.contains("install"), "{message}");
     assert_group_dies(group);
+}
+
+#[test]
+fn another_builds_server_answering_for_a_live_daemon_is_not_blamed_on_it() {
+    let dir = ScratchDir::new("launch-external-occupant");
+    // The daemon is still booting when a server it did not start answers; it
+    // then gives way on its own, as one that finds the socket taken does.
+    let (result, group) = launch_against_other_build(
+        &dir,
+        &[Step::Sleep(Duration::from_millis(300))],
+        Duration::from_secs(10),
+        |daemon| daemon.wrapping_add(1),
+    );
+    let status = result.expect("the external occupant is handed back to the caller");
+    assert_eq!(status.build_id, other_build_id());
+    assert_ne!(group, 0);
 }
 
 #[test]

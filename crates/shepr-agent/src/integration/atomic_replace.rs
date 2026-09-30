@@ -113,8 +113,7 @@ impl PermissionPolicy<'_> {
                 Ok(())
             }
             Self::UserConfig { existing } => {
-                drop(file);
-                shepr_platform::write_config_temporary(existing, temporary, contents)
+                shepr_platform::write_config_temporary(existing, file, contents)
             }
         }
     }

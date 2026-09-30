@@ -160,7 +160,7 @@ pub(crate) const SSH_NO_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts
 /// command, enough for ordinary interactive authentication flows.
 pub(crate) const SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts=3";
 
-/// OpenSSH keepalive settings shared by command arguments and managed config.
+/// OpenSSH keepalive settings written to the managed SSH config.
 #[derive(Clone, Copy)]
 pub(crate) struct SshKeepalive {
     /// Seconds between probes of an idle SSH connection.

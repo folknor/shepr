@@ -10,7 +10,8 @@
 //! The mechanism lives in `shepr_remote::preflight`; this module supplies the
 //! config, the terminal, the local server and the words.
 
-use std::io::{BufRead as _, IsTerminal, Write as _};
+use std::io::{self, IsTerminal, Write as _};
+use std::os::fd::AsRawFd as _;
 
 use shepr_api::RuntimeStatus;
 use shepr_api::server_stop::ServerStopError;
@@ -28,7 +29,11 @@ use crate::limits::MAX_LOCAL_OFFERS;
 /// and keeps retrying. Host keys are never accepted; a machine whose key is
 /// unknown or changed is named so the operator can fix it. A server left
 /// running is reported with what to do about it.
-pub(crate) fn run(config: &shepr_config::ValidatedConfig, paths: &shepr_config::AppPaths) {
+pub(crate) fn run(
+    config: &shepr_config::ValidatedConfig,
+    paths: &shepr_config::AppPaths,
+    local_restart_ends_launching_pane: bool,
+) {
     // Questions go to stderr and answers come from stdin, and ssh prompts use
     // the terminal too, so asking needs both to be a terminal.
     let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
@@ -47,7 +52,7 @@ pub(crate) fn run(config: &shepr_config::ValidatedConfig, paths: &shepr_config::
         || local_server_status(paths),
         |boot_id| shepr_api::server_stop::stop_active_server(paths, Some(boot_id)),
         |status| {
-            let consent = confirm(&local_offer(status));
+            let consent = confirm(&local_offer(status, local_restart_ends_launching_pane));
             if consent {
                 crate::cli::print_notice(&"shepr: stopping the local server.");
             }
@@ -93,28 +98,63 @@ fn local_server_status(paths: &shepr_config::AppPaths) -> Option<RuntimeStatus> 
     }
 }
 
-/// Asks `question` on stderr and reads one line from stdin. Only an explicit yes
-/// counts: an empty answer, anything else and a closed stdin all keep the server.
+/// Asks `question` on stderr and reads one line directly from stdin's file
+/// descriptor. Single-byte reads leave any type-ahead after the answer for the
+/// client's raw-fd input loop. Only an explicit yes counts: an empty answer,
+/// anything else and a closed stdin all keep the server.
 fn confirm(question: &str) -> bool {
     eprint!("{question}");
     if std::io::stderr().flush().is_err() {
         return false;
     }
-    let mut answer = String::new();
-    match std::io::stdin().lock().read_line(&mut answer) {
-        Ok(read) if read > 0 => is_yes(&answer),
-        Ok(_) | Err(_) => false,
+    let stdin = std::io::stdin();
+    let stdin_fd = stdin.as_raw_fd();
+    match read_answer_line(|byte| shepr_platform::read_fd(stdin_fd, byte)) {
+        Ok(Some(answer)) => is_yes(&answer),
+        Ok(None) | Err(_) => false,
     }
+}
+
+fn read_answer_line(
+    mut read: impl FnMut(&mut [u8]) -> io::Result<usize>,
+) -> io::Result<Option<String>> {
+    let mut answer = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        let count = match read(&mut byte) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            if answer.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        answer.push(byte[0]);
+    }
+    String::from_utf8(answer)
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-fn local_offer(status: &RuntimeStatus) -> String {
+fn local_offer(status: &RuntimeStatus, includes_launching_pane: bool) -> String {
+    let launching_pane = if includes_launching_pane {
+        "\nThis includes the pane running this shepr process, so answering yes ends the terminal asking this question."
+    } else {
+        ""
+    };
     format!(
         "shepr: the local shepr server is a different build (server build {}, boot {}, this shepr build {}).\n\
-         Restarting it stops that server, which ends every pane process it hosts. The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
+         Restarting it stops that server, which ends every pane process it hosts.{launching_pane}\n\
+         The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
         status.build_id,
         status.boot_id,
@@ -221,10 +261,12 @@ fn prompt_notice(machine: &MachineConfig) -> String {
 }
 
 /// The command an operator runs to stop a remote server themselves.
-fn remote_stop_command(machine: &MachineConfig) -> String {
+fn remote_stop_command(machine: &MachineConfig, server: &DifferentBuildServer) -> String {
     format!(
-        "ssh {} shepr server stop",
-        shepr_remote::shell_quote(machine.ssh.as_str())
+        "ssh {} {} server stop --expect-boot {}",
+        shepr_remote::shell_quote(machine.ssh.as_str()),
+        shepr_remote::shell_quote(server.executable.as_str()),
+        shepr_remote::shell_quote(&server.boot_id)
     )
 }
 
@@ -300,26 +342,30 @@ fn result_notices(
 fn restart_notice(machine: &MachineConfig, outcome: &PreflightOutcome) -> Option<String> {
     let restart = outcome.restart.as_ref()?;
     let label = &outcome.label;
-    let left_running = |build_id: &str| {
-        format!(
-            "the shepr server on machine {label} is a different build (build {build_id}, this shepr is build {}) and is left running, so the machine is unavailable. To restart it, run `{}` (this ends its pane processes; the layout is restored when a server starts again), then run shepr again.",
-            shepr_protocol::BUILD_ID,
-            remote_stop_command(machine)
-        )
+    let server = match &outcome.check {
+        MachineCheck::DifferentBuild(server) => Some(server),
+        _ => None,
     };
-    let running_build = match &outcome.check {
-        MachineCheck::DifferentBuild(server) => server.build_id.as_str(),
-        _ => "unknown",
+    let left_running = || match server {
+        Some(server) => format!(
+            "the shepr server on machine {label} is a different build (build {}, this shepr is build {}) and is left running, so the machine is unavailable. To restart it, run `{}` (this ends its pane processes; the layout is restored when a server starts again), then run shepr again.",
+            server.build_id,
+            shepr_protocol::BUILD_ID,
+            remote_stop_command(machine, server)
+        ),
+        None => format!(
+            "the shepr server on machine {label} is left running, so the machine is unavailable. Its executable and boot identity are not available for a safe stop command; run shepr again to check it."
+        ),
     };
     let notice = match restart {
         RestartResult::NoTerminal => format!(
             "{} Run shepr from an interactive terminal to be offered a restart.",
-            left_running(running_build)
+            left_running()
         ),
-        RestartResult::Declined => left_running(running_build),
+        RestartResult::Declined => left_running(),
         RestartResult::Failed(error) => format!(
             "could not stop the shepr server on machine {label}: {error}\n{}",
-            left_running(running_build)
+            left_running()
         ),
         RestartResult::Stopped => format!(
             "stopped the shepr server of a different build on machine {label}; one of this build starts when the client attaches."
@@ -513,7 +559,8 @@ mod tests {
             let notice = &notices[0];
             assert!(notice.contains("ffffffffffffffff"), "{notice}");
             assert!(
-                notice.contains("`ssh build.example shepr server stop`"),
+                notice
+                    .contains("`ssh build.example /usr/bin/shepr server stop --expect-boot 17-23`"),
                 "{notice}"
             );
             assert!(notice.contains("pane processes"), "{notice}");
@@ -544,7 +591,8 @@ mod tests {
     #[test]
     fn the_offers_say_what_a_restart_ends_and_what_is_restored() {
         let remote = remote_offer(&machine("build"), &different_build_server());
-        let local = local_offer(&status("ffffffffffffffff", "17-23"));
+        let local = local_offer(&status("ffffffffffffffff", "17-23"), false);
+        let local_from_its_own_pane = local_offer(&status("ffffffffffffffff", "17-23"), true);
         for offer in [&remote, &local] {
             assert!(offer.contains("different build"), "{offer}");
             assert!(offer.contains("ends every pane process"), "{offer}");
@@ -553,6 +601,25 @@ mod tests {
             assert!(offer.contains("[y/N]"), "the default is to keep: {offer}");
         }
         assert!(remote.contains("build (build.example)"), "{remote}");
+        assert!(
+            local_from_its_own_pane.contains(
+                "This includes the pane running this shepr process, so answering yes ends the terminal asking this question."
+            ),
+            "{local_from_its_own_pane}"
+        );
+    }
+
+    #[test]
+    fn consent_reads_only_through_the_answer_newline() {
+        use std::io::Read as _;
+
+        let mut input = io::Cursor::new(b"yes\nkeys typed ahead".as_slice());
+        let answer = read_answer_line(|buffer| input.read(buffer))
+            .expect("reading the answer succeeds")
+            .expect("the answer is present");
+
+        assert_eq!(answer, "yes");
+        assert_eq!(input.position(), 4, "bytes after the answer stay unread");
     }
 
     #[test]

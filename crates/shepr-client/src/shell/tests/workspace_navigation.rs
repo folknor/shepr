@@ -539,8 +539,18 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
     for _ in 0..down {
         preview_key(state, b"\x1b[B");
     }
-    let outcome = state.handle_input_bytes(b"\r");
-    let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
+    let activation = state.handle_input_bytes(b"\r");
+    let [
+        ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            target: Some(target),
+        },
+    ] = activation.actions.as_slice()
+    else {
+        panic!("expected a local activation request");
+    };
+    let actions = state.focus_endpoint_target((*target).clone());
+    let [ClientShellAction::Endpoint { request, .. }] = actions.as_slice() else {
         panic!("expected a local workspace focus request");
     };
     assert!(matches!(

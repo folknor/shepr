@@ -1,11 +1,22 @@
 use crossterm::event::{KeyCode, KeyModifiers, MediaKeyCode, ModifierKeyCode};
+use shepr_config::BindingKey;
 
 use super::TerminalKey;
 
 pub fn parse_terminal_key_sequence(data: &str) -> Option<TerminalKey> {
-    parse_kitty_key_sequence(data)
+    let mut key = parse_kitty_key_sequence(data)
         .or_else(|| parse_modify_other_keys_sequence(data))
-        .or_else(|| parse_legacy_key_sequence(data))
+        .or_else(|| parse_legacy_key_sequence(data))?;
+
+    // Keep the parser's two Shift+Tab spellings in the same form used by
+    // binding dispatch and legacy pane encoding. Kitty panes restore Tab+Shift
+    // when their keyboard protocol is selected.
+    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+        let (code, modifiers) = key.canonical_key();
+        key.code = code;
+        key.modifiers = modifiers;
+    }
+    Some(key)
 }
 
 fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
@@ -686,6 +697,24 @@ mod tests {
         assert_eq!(key.modifiers, KeyModifiers::SHIFT);
         assert_eq!(key.kind, crossterm::event::KeyEventKind::Press);
         assert_eq!(key.shifted_codepoint, Some('!' as u32));
+        assert_eq!(
+            key.canonical_key(),
+            (KeyCode::Char('!'), KeyModifiers::empty())
+        );
+    }
+
+    #[test]
+    fn parse_shift_tab_uses_the_shared_backtab_identity() {
+        for sequence in ["\x1b[9;2u", "\x1b[Z"] {
+            let key = parse_terminal_key_sequence(sequence).expect("test precondition");
+            assert_eq!(key.code, KeyCode::BackTab, "{sequence:?}");
+            assert!(key.modifiers.is_empty(), "{sequence:?}");
+            assert_eq!(
+                key.canonical_key(),
+                (KeyCode::BackTab, KeyModifiers::empty()),
+                "{sequence:?}"
+            );
+        }
     }
 
     #[test]

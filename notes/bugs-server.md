@@ -349,157 +349,6 @@ Scope: server-serving-ui.
   missed signal only matters when a render was deferred, which could be tracked on
   the shared writer queue instead.
 
-## SRV-025 - One bad pane field throws away the whole saved session, though the docs say restore drops only the bad workspace
-
-Scope: mux-persist-git-workspace.
-
-**Claim broken.** `persist/snapshot.rs`, `parse_snapshot`: "Deserializes the saved
-shape only. Semantic checks stay in `restore`, so one invalid workspace can be
-dropped while healthy ones survive". `restore.rs`: "An invalid saved split ratio
-drops this one workspace, like every other per-workspace restore defect below,
-rather than refusing the whole session".
-
-Several semantic checks run inside serde and fail the whole `SessionSnapshot`
-parse:
-
-- `PaneSnapshot.cwd` and `WorkspaceSnapshot.identity_cwd` go through
-  `path_bytes::deserialize_saved_cwd`, which returns a serde error for a relative
-  path.
-- `PaneSnapshot.agent_session` is a `PaneAgentSessionSnapshot` with a typed
-  `shepr_agent::agent::Agent`, whose `Deserialize` (`shepr-agent/src/agent/mod.rs`)
-  fails with "unknown agent label" for any label this build does not know.
-  `AgentSource` and `AgentSessionRef` validate the same way.
-
-On failure `io::load` logs `parse_error` and returns `None`, the server restores
-nothing (`app/mod.rs` sets `protect_unloaded`), and every workspace is gone from
-the live session. The file is copied to `session-backups` before the first save,
-but nothing restores it automatically. Realistic: detection changes ship as new
-builds and the owner rebuilds often; a build that renames or removes an `Agent`
-variant, or changes what `AgentSource` accepts, fails the previous build's file as
-soon as any pane had a hook-reported session. A hand edit making one cwd relative
-does the same.
-
-**Fix.** Parse permissively and validate in restore: take `agent_session` as
-`Option<serde_json::Value>` (or a lenient newtype turning any error into `None`
-plus a warning) and convert it in `restore_plan_for_snapshot` /
-`restored_terminal_agent_session`; parse cwds as plain `PathBuf`s (keeping the
-byte-sequence form) and check absoluteness in `restore_workspace`, where a bad
-pane becomes `RestoredPaneStart::Unavailable` and a bad `identity_cwd` falls back
-to the root pane's cwd. Only `SnapshotVersion` should reject the whole file.
-
-## SRV-026 - Restore validates public pane numbers only after it has started every shell
-
-Scope: mux-persist-git-workspace.
-
-**Claim broken.** `restore_workspace`: "That happens before any pane starts, so
-every shell starts at its size in the layout the workspace ends up with"; it also
-describes per-workspace defects as dropping the workspace before anything runs.
-
-Two checks run only after `PaneRuntime::spawn_with_initial_history` for every
-surviving pane: the duplicate or zero public-number check (in
-`Workspace::from_restored` via `valid_panes`) and the "restored pane has no public
-number" check. When either drops the workspace, the code has already:
-
-- forked a shell for every pane, each with a `SHEPR_PANE_ID` launch env
-  (duplicated across panes in the collision case); the runtimes are dropped and
-  `PaneRuntime::drop` tears down the sessions;
-- inserted resume reservations into `resumed_agent_sessions` for panes of the
-  dropped workspace, so a later, healthy pane with the same saved session is
-  treated as a duplicate: `restored_terminal_agent_session` returns `None` for it,
-  it loses its agent session for good, and the next save writes it without one;
-- added `history_carry.carry_restored` entries (harmless; the first save prunes
-  them).
-
-**Fix.** Everything `valid_panes` checks is known before any spawn (public
-numbers come from `assign_public_pane_numbers`; the rest is structural). Run it
-right after pruning and reserve resume keys only once the workspace is known to
-survive. Best: a two-phase restore that validates the whole snapshot into plain
-restore plans with no side effects, then spawns.
-
-## SRV-028 - Git status passes unvalidated ref-file contents to `git rev-list` as argv
-
-Scope: mux-persist-git-workspace.
-
-**Claim broken.** The git reader avoids trusting repository files
-(`GitReadError::FileRead`: "A repository file could not be read or was not safe to
-trust"; `read_ref_oid_with_errors` refuses stale packed fallbacks), but the OIDs it
-produces are never validated as object names.
-
-- `read_ref_oid_with_errors` returns the trimmed content of a loose ref file, or
-  the first token of a packed-refs line, verbatim; `read_head_identity_from_files`
-  does the same for a detached `HEAD`.
-- `git_ahead_behind_between` formats `"{head_oid}...{upstream_oid}"` and runs
-  `git rev-list --left-right --count <that>` with no `--end-of-options` or `--`.
-
-A loose ref whose content starts with `-` becomes a git option: `.git/refs/heads/main`
-containing `--output=/path/x` makes git's revision parser handle the diff option
-`--output=`, which opens that path for writing. More ways in: `full_ref` comes from
-`HEAD` (`ref: refs/heads/...`) or the branch's `merge` config; `upstream_full_ref`
-returns `merge_ref` unchanged for `remote = "."`, and `common_dir.join(full_ref)`
-with an absolute or `..` path reads any file (up to the ref size cap) as an "oid".
-A legitimate symbolic loose ref (`ref: refs/heads/other`, for branch aliases) is
-also passed as an oid; rev-list fails and the refresh enters a permanent retry
-loop.
-
-**Threat model.** Needs someone else's `.git` on disk (an extracted tarball or
-copied checkout; `git clone` never writes these files). Running `git` there
-already carries config risk; the marginal risk is shepr turning plain ref files
-Git itself would treat as broken into argv options.
-
-**Fix.** Accept an oid only if it is 40 or 64 lowercase hex characters and put
-`--end-of-options` before the range; reject `full_ref` values that are absolute,
-contain `..`, or do not start with `refs/` (as Git's `check_refname_format` does);
-follow `ref: ` indirection in loose refs, or report the ref unavailable.
-
-## SRV-032 - Overflow on hand-edited public pane numbers panics restore in the dev build
-
-Scope: mux-persist-git-workspace.
-
-**Claim broken.** `PaneSnapshot.public_number`: "Restore gives a pane with none, or
-with zero ..., a fresh free number."
-
-In `restore_workspace`, `next_public_pane_number` starts as
-`...max(snap.next_public_pane_number)`. If the file says
-`next_public_pane_number: 18446744073709551615` and some pane lacks a number,
-`assign_public_pane_numbers` runs `*next_public_pane_number += 1`: an overflow
-panic in the dev profile (the server dies on every start until the file is fixed)
-and a wrap in release. `valid_panes` would drop the workspace, but only if
-execution got that far. Live splits have the same pattern in
-`register_new_pane_with_number` (`number + 1`), though a live counter cannot get
-there. Use `checked_add` and treat exhaustion as a per-workspace defect.
-
-## SRV-033 - The Git config reimplementation differs from Git where its docs claim Git's semantics
-
-Scope: mux-persist-git-workspace.
-
-`git/config.rs` and `git/discovery.rs` re-derive Git's config chain to find the
-upstream without spawning git. Docs promise Git-equivalent behaviour
-(`git_dir_is_bare`: "Git's effective `core.bare` ... comes from the whole config
-chain ... each with its includes"). Differences that change the answer:
-
-- `includeIf "gitdir:"`, `onbranch:` and `hasconfig:remote.*.url:` go through
-  `wildcard_match`, where `*` matches across `/` and `?`, `[...]` and `\` escapes
-  are literal. Git uses wildmatch with `WM_PATHNAME` (`*` stops at `/`, only `**`
-  crosses). `gitdir:/work/*/.git` includes configs at any depth here but one level
-  in Git, so the upstream (and ahead/behind) can come from a config Git would not
-  read.
-- `normalize_config_value` strips outer quotes only: no escapes (`\"`, `\\`,
-  `\t`), no mid-value quoting (`a"b c"d`), no continuation lines ending in `\`. It
-  also skips the deprecated `[branch.main]` subsection syntax.
-- packed-refs parsing in `read_ref_oid_with_errors` uses `parts.next()?` in a
-  loop, so one line with an oid but no name aborts the whole lookup instead of
-  skipping the line. packed-refs is read with no size cap, although loose refs are
-  capped at `MAX_GIT_REF_FILE_BYTES`.
-
-**Structural recommendation.** Stop reimplementing Git's config resolution. Keep
-stat-level change detection (stamp `HEAD`, the branch's loose ref, `packed-refs`,
-and every config file Git would read), and on change ask Git with one spawn:
-`git for-each-ref --format='%(refname) %(objectname) %(upstream) %(upstream:track,nobracket)' refs/heads/<branch>`,
-or `git rev-parse --symbolic-full-name @{u}` followed by the existing `rev-list`.
-That removes about 1200 lines of config grammar (`config.rs`), fixes the fidelity
-gaps at once, and closes SRV-028's config-driven paths; Git status refreshes on an
-interval off the loop, so one extra spawn per changed repository is cheap.
-
 ## SRV-034 - Smaller persistence notes
 
 Scope: mux-persist-git-workspace (lateral).
@@ -531,3 +380,17 @@ layout partner. Pruning walks layout files only, and `recovery_timestamp` does n
 match history names, so the orphan stays forever. A small leak, only after a
 crash. Prune history sidecars that have no layout partner and are older than the
 newest layout copy.
+
+## SRV-037 - Smaller restore and Git refresh notes
+
+Scope: mux-persist, mux-git (lateral).
+
+- **A pruned pane takes no backup.** Restore drops a pane whose saved cwd is
+  relative (shepr only saves absolute cwds, so it is damage), but that pane does
+  not count toward `dropped_workspaces`, so the first save overwrites the file
+  without backing up the original. Layout leaves with no saved state were already
+  handled the same way. Count any pruned pane as a restore defect that triggers
+  the backup.
+- **Stamp after query.** Git refresh stamps the config origin files after the
+  `--show-origin` query returns, so an edit landing between the query and the
+  stamp is cached as seen. Stamp before the query, or re-stamp and compare after.

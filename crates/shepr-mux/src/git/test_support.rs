@@ -75,6 +75,7 @@ pub(crate) fn create_bare_repo_with_linked_worktree(name: &str) -> (PathBuf, Pat
 }
 
 pub(super) fn write_fake_tracked_repo(root: &Path) {
+    std::fs::create_dir_all(root.join(".git/objects")).expect("test precondition");
     let head_oid = "1111111111111111111111111111111111111111";
     let upstream_oid = "2222222222222222222222222222222222222222";
     std::fs::create_dir_all(root.join(".git/refs/heads")).expect("test precondition");
@@ -89,7 +90,7 @@ pub(super) fn write_fake_tracked_repo(root: &Path) {
     .expect("test precondition");
     std::fs::write(
         root.join(".git/config"),
-        "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n",
+        "[remote \"origin\"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n",
     )
     .expect("test precondition");
 }

@@ -32,6 +32,14 @@ impl ChildLiveness {
         self.pid.load(Ordering::Acquire)
     }
 
+    /// The child pid while it still names this unreaped child. A numeric pid
+    /// is unsafe for /proc reads once the child has been reaped and the kernel
+    /// may have assigned that number to another process.
+    pub(super) fn live_pid(&self) -> Option<u32> {
+        let pid = self.pid();
+        (pid != 0 && !self.wait_completed() && !self.is_reaped()).then_some(pid)
+    }
+
     pub(super) fn mark_wait_completed(&self) {
         self.wait_completed.store(true, Ordering::Release);
     }

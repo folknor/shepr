@@ -106,11 +106,15 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
         );
         assert!(repaint);
         assert!(state.pending_requests.is_empty());
-        assert!(
+        // A request refused before it entered the send queue has a known
+        // outcome and is not reported as interrupted; one whose send failed
+        // may have reached the server.
+        assert_eq!(
             state
                 .visible_endpoint_notice
                 .as_ref()
-                .is_some_and(|notice| { notice.title == "Action interrupted" })
+                .is_some_and(|notice| { notice.title == "Action interrupted" }),
+            fail_send
         );
         assert!(commands.disconnect(&ClientEndpointId::Local).is_empty());
     }

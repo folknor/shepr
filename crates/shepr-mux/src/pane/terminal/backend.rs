@@ -1,3 +1,4 @@
+use super::super::teardown::ChildLiveness;
 use super::*;
 
 impl PaneTerminal {
@@ -95,16 +96,23 @@ impl PaneTerminal {
         appearance.map(|appearance| Bytes::from_static(appearance.report()))
     }
 
-    pub(crate) fn has_transient_default_color_override(&self) -> bool {
-        shepr_vt::lock_terminal_core(&self.core)
-            .is_ok_and(|core| core.transient_default_color_owner_pgid.is_some())
+    /// Whether a transient override can eventually be restored to a known
+    /// host theme. Alternate-screen state may delay the restore probe.
+    pub(crate) fn has_theme_restore_candidate(&self) -> bool {
+        shepr_vt::lock_terminal_core(&self.core).is_ok_and(|core| {
+            core.transient_default_color_owner_pgid.is_some()
+                && !core.host_terminal_theme.is_empty()
+        })
     }
 
-    pub(crate) fn maybe_restore_host_terminal_theme(
+    pub(in crate::pane) fn maybe_restore_host_terminal_theme(
         &self,
         pane_id: PaneId,
-        shell_pid: u32,
+        child_liveness: &ChildLiveness,
     ) -> bool {
+        let Some(shell_pid) = child_liveness.live_pid() else {
+            return false;
+        };
         {
             let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
                 self.report_terminal_mutation_failure("host theme restore");
@@ -116,6 +124,9 @@ impl PaneTerminal {
         }
 
         let foreground_job = shepr_agent::detect::foreground_job(shell_pid);
+        if child_liveness.live_pid() != Some(shell_pid) {
+            return false;
+        }
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             self.report_terminal_mutation_failure("host theme restore");
             return false;
@@ -137,18 +148,20 @@ impl PaneTerminal {
             .and_then(|core| core.agent_osc_state.terminal_title().map(str::to_string))
     }
 
-    /// Returns the latest OSC 0/2 title retained for agent detection, or `""`
-    /// if no title has been seen or the last update was an empty clear.
-    pub(crate) fn agent_osc_title(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
-            .map_or_default(|core| core.agent_osc_state.latest_title().to_owned())
-    }
-
-    /// Returns the latest OSC 9 progress payload retained for agent detection,
-    /// or `""` if none has been seen.
-    pub(crate) fn agent_osc_progress(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
-            .map_or_default(|core| core.agent_osc_state.latest_progress().to_owned())
+    /// Reads the three inputs to screen detection under one terminal-core
+    /// lock, so they describe the same observed terminal state. The OSC title
+    /// is the latest OSC 0/2 title retained for detection and the progress the
+    /// latest OSC 9;4 payload; each is `""` when none was seen or it was cleared.
+    pub(crate) fn agent_detection_inputs(&self) -> AgentDetectionInputs {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+            self.report_terminal_mutation_failure("agent detection read");
+            return AgentDetectionInputs::default();
+        };
+        AgentDetectionInputs {
+            screen_text: terminal_detection_text(&mut core).unwrap_or_default(),
+            osc_title: core.agent_osc_state.latest_title().to_owned(),
+            osc_progress: core.agent_osc_state.latest_progress().to_owned(),
+        }
     }
 
     /// Clears retained OSC title/progress evidence when the pane's foreground
@@ -251,18 +264,21 @@ impl PaneTerminal {
     /// method takes the terminal lock briefly to store the answer. The
     /// generation check drops an answer if another OSC colour write arrived
     /// during the scan.
-    pub(crate) fn resolve_default_color_owner(
+    pub(in crate::pane) fn resolve_default_color_owner(
         &self,
         pane_id: PaneId,
-        shell_pid: u32,
+        child_liveness: &ChildLiveness,
         generation: u64,
     ) {
-        if shell_pid == 0 {
+        let Some(shell_pid) = child_liveness.live_pid() else {
             return;
-        }
+        };
         let Some(owner_pgid) = current_transient_default_color_owner(shell_pid) else {
             return;
         };
+        if child_liveness.live_pid() != Some(shell_pid) {
+            return;
+        }
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             self.report_terminal_mutation_failure("default color owner update");
             return;
@@ -936,6 +952,11 @@ impl PaneTerminal {
 
 #[cfg(test)]
 impl PaneTerminal {
+    pub(crate) fn has_transient_default_color_override(&self) -> bool {
+        shepr_vt::lock_terminal_core(&self.core)
+            .is_ok_and(|core| core.transient_default_color_owner_pgid.is_some())
+    }
+
     /// The active screen, its width and, on the alternate screen only, its
     /// rows as owned text. On the primary screen the retained rows are the
     /// whole scrollback, so the rows come back empty there rather than being

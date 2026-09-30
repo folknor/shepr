@@ -163,6 +163,14 @@ pub(crate) struct PaneTerminal {
     dirty_patch_fallback_reported: AtomicBool,
 }
 
+/// What agent screen detection evaluates for one pane, read at one instant.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentDetectionInputs {
+    pub screen_text: String,
+    pub osc_title: String,
+    pub osc_progress: String,
+}
+
 pub(crate) struct PaneTerminalCore {
     /// Runs inside the next dirty-patch collection; see
     /// `PaneRuntime::on_next_dirty_collection`.

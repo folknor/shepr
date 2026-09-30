@@ -4,17 +4,31 @@ use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::Request;
 use shepr_remote::{COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS};
 
+/// Writes CLI output to stdout, as `std::print!` does (a failed write
+/// panics), unless a test has captured this thread's output.
+fn write_cli_output(arguments: std::fmt::Arguments<'_>) {
+    if output_capture::write(arguments) {
+        return;
+    }
+    use std::io::Write as _;
+    shepr_platform::begin_cli_output();
+    if let Err(error) = std::io::stdout().lock().write_fmt(arguments) {
+        panic!("write CLI output: {error}");
+    }
+}
+
 macro_rules! print {
     ($($arg:tt)*) => {{
-        shepr_platform::begin_cli_output();
-        std::print!($($arg)*);
+        $crate::cli::write_cli_output(format_args!($($arg)*));
     }};
 }
 
 macro_rules! println {
+    () => {{
+        $crate::cli::write_cli_output(format_args!("\n"));
+    }};
     ($($arg:tt)*) => {{
-        shepr_platform::begin_cli_output();
-        std::println!($($arg)*);
+        $crate::cli::write_cli_output(format_args!("{}\n", format_args!($($arg)*)));
     }};
 }
 
@@ -258,6 +272,59 @@ fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
     }
 }
 
+/// Outside tests, nothing captures CLI output.
+#[cfg(not(test))]
+mod output_capture {
+    pub(super) fn write(_arguments: std::fmt::Arguments<'_>) -> bool {
+        false
+    }
+}
+
+/// Test capture of CLI output, per thread, so tests assert on what a command
+/// prints instead of writing it into the test run's stdout.
+#[cfg(test)]
+mod output_capture {
+    use std::cell::RefCell;
+    use std::io::Write as _;
+    use std::rc::Rc;
+
+    type Buffer = Rc<RefCell<Vec<u8>>>;
+
+    std::thread_local! {
+        static BUFFER: RefCell<Option<Buffer>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn write(arguments: std::fmt::Arguments<'_>) -> bool {
+        let Some(buffer) = BUFFER.with(|slot| slot.borrow().as_ref().map(Rc::clone)) else {
+            return false;
+        };
+        buffer
+            .borrow_mut()
+            .write_fmt(arguments)
+            .expect("write captured CLI output");
+        true
+    }
+
+    /// Runs `run` with this thread's CLI output captured, and returns what it
+    /// printed.
+    pub(super) fn capture<T>(run: impl FnOnce() -> T) -> (T, Vec<u8>) {
+        struct Restore(Option<Buffer>);
+
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                BUFFER.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+
+        let buffer = Rc::new(RefCell::new(Vec::new()));
+        let restore = BUFFER.with(|slot| Restore(slot.replace(Some(Rc::clone(&buffer)))));
+        let result = run();
+        drop(restore);
+        let output = buffer.borrow().clone();
+        (result, output)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CliCommand, Invocation, Launch};
@@ -390,10 +457,11 @@ mod tests {
         let Launch::Cli(command) = invocation.launch else {
             panic!("status client should be a CLI command");
         };
-        assert_eq!(
-            super::run(&command).expect("client status needs no paths"),
-            0
-        );
+        let (result, output) = super::output_capture::capture(|| super::run(&command));
+        assert_eq!(result.expect("client status needs no paths"), 0);
+        let output: serde_json::Value =
+            serde_json::from_slice(&output).expect("client status writes JSON");
+        assert_eq!(output["build_id"].as_str(), Some(shepr_protocol::BUILD_ID));
     }
 
     #[test]

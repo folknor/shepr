@@ -34,35 +34,6 @@ blip longer than that now forces a reconnect, while the ssh keepalive budget the
 connection already tolerates is 15 s times 4. Decide whether the writer limit
 should sit near that budget.
 
-## PLAT-002 - The logind monitor requests its delay lock before checking for a pending shutdown, which logind refuses
-
-Hunter's severity: Medium. Scope: core-platform.
-
-**Claims broken.** `watch_connection` in `shutdown.rs`: "Taken before the state
-is read: logind honours a delay lock taken while it is already waiting on
-others, so a warning that is pending at (re)connect is still held up until the
-server has checkpointed." The module and `Shared::refresh_warning` also promise
-that a warning still pending after a reconnect is refreshed.
-
-**What the code does.** `watch_connection` calls `take_inhibitor(&manager).await?`
-before reading `PreparingForShutdown`. systemd-logind's `method_inhibit` refuses
-a delay lock when the delayed action it would cover is already running, with
-`org.freedesktop.login1.OperationInProgress` ("The operation inhibition has been
-requested for is already running"). The `?` turns that into an `Err`, `monitor`
-reads it as "logind unavailable" and retries, and every retry fails the same way
-until the host goes down. `announce` and `refresh_warning` are never reached
-against a real logind, so a server that connects during a shutdown (fresh start,
-system bus restart) never checkpoints. The ignored D-Bus test cannot catch it:
-its fake `LoginManager::inhibit` always grants the lock.
-
-The hunter notes this rests on systemd's `logind-dbus.c` behaviour as they know
-it, and should be checked against the installed systemd version.
-
-**Direction.** Read `PreparingForShutdown` first. When a shutdown is already
-pending, announce it without a lock and treat `OperationInProgress` as "no lock
-available", not a connection failure. Make the fake manager refuse `Inhibit`
-while `preparing` is true so the ordering is tested.
-
 ## PLAT-005 - Cleanup sweeps scan the whole `$XDG_RUNTIME_DIR`, which shepr does not own
 
 Hunter's severity: Low. Scope: core-platform.
@@ -87,24 +58,6 @@ shepr-owned subdirectory (the per-profile runtime directory already exists), so
 the sweeps only see shepr's own files. The socket-path budget allows it: the
 staged path is short, and `/run/user/<uid>/shepr/` adds only a few bytes.
 
-## PLAT-006 - `write_config_temporary` reopens the temporary file by path
-
-Hunter's severity: Low. Scope: core-platform.
-
-In `atomic_replace.rs`, `AtomicReplace::prepare_with_policy` creates the
-temporary with `create_new` (via `create_private_file` or
-`create_config_temporary`). `PermissionPolicy::write` then drops that handle and
-calls `shepr_platform::write_config_temporary(existing, temporary, contents)`,
-which reopens the path with `O_TRUNC` and without `O_NOFOLLOW`, then chowns,
-copies ACLs, chmods and writes secrets through the new descriptor. The handle
-that proved the file fresh has been thrown away; anyone who can write to the
-agent's config directory could swap in a symlink between the two opens and have
-the contents written (and truncated) elsewhere. `File::open(source)` also
-follows a symlink when reading the metadata to copy.
-
-**Direction.** `write_config_temporary` should take the `File` returned by the
-create call, not a path; the platform API forces the reopen as it stands.
-
 ## PLAT-011 - Local and bridge connects ignore the per-attempt deadline
 
 Hunter's severity: not given (lateral). Scope: core-platform.
@@ -115,17 +68,17 @@ fixed 5-second budget. `MachineSshConnector::attempt` does the same for the
 bridge socket. `connect_trusted_local_stream_within(path, remaining)` exists and
 would honour the deadline.
 
-## PLAT-013 - Data and metadata directories are created with the umask mode
+## PLAT-013 - The data directory itself is created by the lease with the umask mode
 
-Hunter's severity: Low (lateral). Scopes: core-platform, remote.
+Hunter's severity: Low (lateral). Scope: mux persist.
 
-`RotatingFileMakeWriter::new`, `persist/io.rs` and `persist/writer.rs` all create
-the data directory with plain `create_dir_all`. The log comment says the files
-are "private to the user like the rest of the data directory's state". The files
-are 0600, but the directory holding history is world-listable under a 022 umask.
-The remote hunter found the same for the SSH metadata directory created by
-`store_private_json` (`crates/shepr-remote/src/machine/ssh_metadata.rs`), unlike
-the private file inside it.
+The log writer, session persistence, recovery snapshots and backups, and the SSH
+metadata store now create their directories private. The data directory itself is
+still created first by `DataDirLease::acquire`
+(`crates/shepr-mux/src/persist/lock.rs`) with plain `create_dir_all`, before any
+save runs; the private-directory helper leaves an existing directory unchanged,
+so the later sites cannot tighten it. Under a 022 umask the directory holding
+history is world-listable. Use the private-directory helper at the lease.
 
 ## PLAT-014 - `shepr-platform` holds higher-level policy its own doc says belongs elsewhere
 
@@ -137,52 +90,6 @@ warning-generation policy, clipboard helper selection, Git environment policy,
 and multi-process log rotation. It also makes the `shepr` client binary depend
 on `zbus` and `tokio` for a monitor only the server runs. Moving the shutdown
 monitor to `shepr-server` and the Git runner to `shepr-mux` would match the doc.
-
-## PLAT-017 - The "stop it yourself" hint for a remote server runs a bare `shepr` that may not be on the remote PATH
-
-Hunter's severity: Medium (termio-root). Scopes: remote, termio-root.
-
-Where: `remote_stop_command` in `src/preflight.rs`, used by `restart_notice` for
-Declined, NoTerminal and Failed.
-
-The hint is `ssh <target> shepr server stop`, which runs `shepr` through the
-remote user's non-interactive shell. Discovery exists because that PATH often
-lacks `~/.cargo/bin` and `~/.local/bin` (see the doc on
-`known_remote_binary_candidate_script`: "which misses them when a
-non-interactive SSH shell has a minimal PATH"; `discovery.rs` tries a
-login-shell `command -v`, then `/bin/sh`, then known locations). On such a host
-the printed command fails with `shepr: command not found`.
-
-Every `restart_notice` branch that prints `left_running` has
-`MachineCheck::DifferentBuild(server)` carrying the verified absolute
-`server.executable`, and `stop_remote_server` itself runs exactly that path
-(`server.executable.command(&args)`). The notice should render the same path,
-quoted with `shell_quote`.
-
-**Claim broken.** AGENTS.md: "on refusal, the server is left running and
-unavailable and shepr says how to stop it". The notice text itself says "To
-restart it, run `...`".
-
-## PLAT-019 - User keepalive settings are overridden despite the comment that says they are preserved
-
-Scope: remote.
-
-Where: `write_managed_ssh_config` and `apply_batch_ssh_options`
-(`crates/shepr-remote/src/remote/ssh.rs`).
-
-The comment on `write_managed_ssh_config` says the user config is included first
-"so OpenSSH's first-value-wins behavior preserves explicit user keepalives". But
-`apply_batch_ssh_options` passes `-o ServerAliveInterval=15 -o
-ServerAliveCountMax=4` on the command line to every BatchMode command and every
-bridge, and command-line options beat every config file. If a BatchMode check or
-bridge creates the ControlPersist master (the normal case when no prompt was
-needed), the master carries shepr's keepalive for its whole life. `ssh_tests.rs`
-asserts both halves, locking the contradiction in.
-
-**Claims broken.** The doc comment on `write_managed_ssh_config`, and the
-`limits` doc "OpenSSH keepalive settings shared by command arguments and managed
-config". Either drop the command-line keepalive and rely on the config's
-`Host *` block, or drop the comment.
 
 ## PLAT-022 - A remote server started by the bridge lives in the ssh session's cgroup
 
@@ -198,22 +105,6 @@ live in a headless server that outlives clients. Depends on the host's logind
 config. Fix if it matters: start the daemon in its own transient user scope
 (`systemd-run --user --scope` or the D-Bus equivalent) when a user manager is
 available.
-
-## PLAT-023 - `launch_with` can blame and kill its own daemon for another server
-
-Scope: remote (lateral). Rare.
-
-Where: `launch_with` (`crates/shepr-remote/src/remote/local_server.rs`).
-
-When the probe answers with a different build while our daemon has not exited,
-the launch returns `sibling_build_mismatch` ("... is a different build than this
-shepr and was stopped") and the guard kills our daemon. The launch lock only
-orders clients; a `shepr-server` started directly (for example
-`brokkr run shepr-server`) takes no launch lock and can bind between our second
-probe and our daemon's bind. The answering server is then not ours: the message
-blames the installed pair wrongly, and a daemon that was about to exit
-`AlreadyRunning` is killed. Checking the answering server's pid or boot against
-the spawned child would close it.
 
 ## PLAT-024 - The connector cannot recover when `XDG_RUNTIME_DIR` itself disappears
 
@@ -265,25 +156,6 @@ running executable, which `launch_executable` already resolves. The address type
 knows sockets, not which binary resolves to them; move the command rendering to
 the root binary, which knows its profile and path.
 
-## PLAT-027 - The dev TUI cannot be launched from a release pane, contrary to AGENTS.md
-
-Hunter's severity: Medium. Scope: termio-root.
-
-**Claim broken.** AGENTS.md: "Run it with plain `brokkr run -- [<command>]`,
-including from inside a pane of the installed server." With no command that is
-the TUI.
-
-**Path.** `main.rs` `refuse_if_nested_disabled` blocks the TUI and `client`
-launches whenever `SHEPR_ENV == SHEPR_ENV_IN_PANE` and
-`experimental.allow_nested` is false (the default). It ignores
-`SHEPR_BUILD_PROFILE`. A release pane exports both, so the dev TUI launched from
-it fails with "nested shepr is disabled by default". The profile marker already
-decides that a dev process in a release pane is not talking to that pane's
-server (the socket overrides are dropped); the nesting guard does not use the
-same fact. Either pass the guard when the marker's profile differs from
-`BuildProfile::current()`, or have AGENTS.md say the dev TUI needs
-`allow_nested`.
-
 ## PLAT-028 - `matches::flag` and `matches::string` turn a spec/handler mismatch into a valid-looking value
 
 Hunter's severity: Low, latent. Scope: termio-root.
@@ -298,36 +170,6 @@ unconditional stop (`expected_boot: None`), the exact race the flag exists to
 close. Today the ids derive from the same constant (`option_name_from_flag`) and
 `server_stop_parses_the_expected_boot` covers it. Either return `Result` and
 fail the parse (exit 2), or fix the doc.
-
-## PLAT-029 - Preflight runs before the terminal usability check it depends on
-
-Hunter's severity: Low. Scope: termio-root.
-
-**Claim.** `autodetect.rs`: "The client requires terminal geometry before it can
-attach. Reject an unusable terminal before socket lookup creates directories or
-starts a daemon."
-
-`main.rs` calls `preflight::run` before `auto_detect_launch`, so before the
-terminal check a launch can probe the local socket, run the full SSH check round
-against every machine (up to `PREFLIGHT_CHECK_BUDGET`), prompt for
-authentication, and with consent stop the local server (`restart_local`, with
-`can_prompt` needing only stdin and stderr to be terminals). Only then does
-`terminal_grid_size` reject the terminal. Move the grid-size check ahead of
-`preflight::run`, or into it.
-
-## PLAT-030 - The restart offer does not say it can end the launching terminal
-
-Hunter's severity: Low. Scope: termio-root.
-
-**Claim.** AGENTS.md: the offer "says that the restart ends the server's pane
-processes".
-
-With `allow_nested` and a same-profile server whose pane runs this `shepr`,
-`restart_local` offers to stop the server that owns the launching shell, which
-ends the process asking the question. The text ("ends every pane process it
-hosts") is literally true but does not tell the operator it includes the
-terminal they are typing in. `SHEPR_ENV` and a matching `SHEPR_BUILD_PROFILE`
-are enough to detect this and either refuse or say so.
 
 ## PLAT-031 - The cross-build status and stop surface is implicit
 
@@ -379,41 +221,3 @@ outlived the brokkr run". Some test spawns a fixture child and does not reap or
 kill it. Find the test (run the two packages' tests one module at a time and
 watch for the report) and make its fixture owned by a guard that kills and waits
 on drop. It may predate the wave that noticed it.
-
-## PLAT-036 - Smaller ssh classification and discovery notes
-
-Scope: remote (lateral).
-
-- **`RemoteRejected` catches a transient refusal.** sshd's MaxStartups throttling
-  reads "kex_exchange_identification: Connection closed by remote host", which
-  the classifier files as `RemoteRejected`. That shows as Attention and retries
-  only at `ATTENTION_RETRY_DELAY`, although the condition is transient. Match that
-  signature as a link failure.
-- **Misleading probe prefix.** `remote_client_status` (`discovery.rs`) prefixes
-  every non-success result with "remote client status probe failed", including
-  ssh's own exit 255, where the probe never ran. The typed origin, and so the
-  class, is right; only the wording misleads.
-- **Test prints to stdout.** `client_status_does_not_require_runtime_paths` in
-  `src/cli.rs` prints the status JSON during the test run. Capture it through a
-  writer instead.
-
-## PLAT-037 - The Git runner's deadline starts after spawn returns
-
-Scope: core-platform (lateral).
-
-`run_git` in `crates/shepr-platform/src/git.rs` promises a short probe with a
-deadline, and the deadline now also covers draining the pipes. It is created
-after `command.spawn()` returns, so time spent in the spawn phase (exec of a
-wrapper on a slow or hung filesystem) is not bounded. Take the deadline before
-spawning, or say in the doc that it bounds the run, not the launch.
-
-## PLAT-038 - The preflight restart answer is read through std's buffered stdin
-
-Scope: root binary (lateral).
-
-`src/preflight.rs` reads the restart consent answer with
-`stdin().lock().read_line`. The client's input thread now reads the raw stdin fd
-so that its poll and its reads see the same bytes, which means anything typed
-ahead after the answer stays in std's buffer and never reaches the TUI; before,
-the input loop consumed it through the same buffered handle. Minor, but reading
-the answer from the raw fd would keep one reader of stdin.

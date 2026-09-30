@@ -9,11 +9,105 @@ use crate::limits::{
 
 pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
 
-/// The key fields needed to resolve configured bindings.
+/// The single identity used for configured bindings, conflict checks and
+/// matching parsed terminal keys. Printable shifted punctuation is identified
+/// by the character it produces; letters retain Shift as part of the chord.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CanonicalKey {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+}
+
+impl CanonicalKey {
+    fn from_combo((code, modifiers): KeyCombo) -> Self {
+        Self::from_event(code, modifiers, None)
+    }
+
+    fn from_event(code: KeyCode, modifiers: KeyModifiers, shifted_codepoint: Option<u32>) -> Self {
+        let (mut code, mut modifiers) = normalize_key_combo((code, modifiers));
+        if let KeyCode::Char(ch) = code {
+            // Unicode case folds are not always one-to-one, so only ASCII
+            // letters have a layout-independent base-key plus Shift form.
+            if modifiers.contains(KeyModifiers::SHIFT)
+                && ch.is_ascii_alphabetic()
+                && let Some(lowercase) = single_case_char(ch.to_lowercase())
+            {
+                code = KeyCode::Char(lowercase);
+            } else if modifiers.contains(KeyModifiers::SHIFT) && !ch.is_alphabetic() {
+                let shifted = shifted_codepoint
+                    .and_then(char::from_u32)
+                    .or_else(|| shifted_ascii_char(ch));
+                if let Some(shifted) = shifted {
+                    code = KeyCode::Char(shifted);
+                    modifiers.remove(KeyModifiers::SHIFT);
+                } else if is_shifted_ascii_symbol(ch) {
+                    modifiers.remove(KeyModifiers::SHIFT);
+                }
+            } else if !modifiers.contains(KeyModifiers::SHIFT)
+                && ch.is_ascii_uppercase()
+                && let Some(lowercase) = single_case_char(ch.to_lowercase())
+            {
+                code = KeyCode::Char(lowercase);
+                modifiers |= KeyModifiers::SHIFT;
+            }
+        }
+        Self { code, modifiers }
+    }
+
+    fn combo(self) -> KeyCombo {
+        (self.code, self.modifiers)
+    }
+}
+
+fn single_case_char(mut chars: impl Iterator<Item = char>) -> Option<char> {
+    let first = chars.next()?;
+    chars.next().is_none().then_some(first)
+}
+
+const SHIFTED_ASCII_KEYS: [(char, char); 21] = [
+    ('0', ')'),
+    ('1', '!'),
+    ('2', '@'),
+    ('3', '#'),
+    ('4', '$'),
+    ('5', '%'),
+    ('6', '^'),
+    ('7', '&'),
+    ('8', '*'),
+    ('9', '('),
+    ('-', '_'),
+    ('=', '+'),
+    ('[', '{'),
+    (']', '}'),
+    ('\\', '|'),
+    (';', ':'),
+    ('\'', '"'),
+    (',', '<'),
+    ('.', '>'),
+    ('/', '?'),
+    ('`', '~'),
+];
+
+/// Map Shift on a US-layout key to the character it produces for key identity.
+fn shifted_ascii_char(ch: char) -> Option<char> {
+    SHIFTED_ASCII_KEYS
+        .iter()
+        .find_map(|(base, shifted)| (*base == ch).then_some(*shifted))
+}
+
+fn is_shifted_ascii_symbol(ch: char) -> bool {
+    SHIFTED_ASCII_KEYS.iter().any(|(_, shifted)| *shifted == ch)
+}
+
+/// The key identity used to resolve configured bindings.
 pub trait BindingKey {
     fn code(&self) -> KeyCode;
     fn modifiers(&self) -> KeyModifiers;
     fn shifted_codepoint(&self) -> Option<u32>;
+
+    fn canonical_key(&self) -> (KeyCode, KeyModifiers) {
+        CanonicalKey::from_event(self.code(), self.modifiers(), self.shifted_codepoint()).combo()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -159,10 +253,7 @@ impl IndexedKeybind {
         };
         let index =
             usize::try_from(u32::from(key_number) - u32::from(FIRST_INDEXED_BINDING_KEY)).ok()?;
-        let legacy_shifted_number = matches!(key.code(), KeyCode::Char(c)
-            if shifted_number_symbol(c) == Some(key_number)
-                && indexed_shifted_number_matches(key, combo, key_number));
-        if terminal_key_matches_combo(key, combo) || legacy_shifted_number {
+        if terminal_key_matches_combo(key, combo) {
             Some(index)
         } else {
             None
@@ -224,8 +315,8 @@ struct RegisteredBinding {
 struct BindingRegistry {
     prefix_combo: Option<KeyCombo>,
     prefix_source: BindingSource,
-    direct: std::collections::HashMap<KeyCombo, RegisteredBinding>,
-    prefix: std::collections::HashMap<KeyCombo, RegisteredBinding>,
+    direct: std::collections::HashMap<CanonicalKey, RegisteredBinding>,
+    prefix: std::collections::HashMap<CanonicalKey, RegisteredBinding>,
 }
 
 impl BindingRegistry {
@@ -240,7 +331,7 @@ impl BindingRegistry {
 
     fn reserve_direct(&mut self, combo: KeyCombo, field: &str, source: BindingSource) {
         self.direct
-            .entry(normalize_key_combo(combo))
+            .entry(CanonicalKey::from_combo(combo))
             .or_insert_with(|| RegisteredBinding {
                 field: field.to_string(),
                 source,
@@ -249,13 +340,13 @@ impl BindingRegistry {
 
     fn reserved_prefix(&self, combo: KeyCombo) -> Option<KeyCombo> {
         self.prefix_combo
-            .filter(|prefix| normalize_key_combo(combo) == *prefix)
+            .filter(|prefix| CanonicalKey::from_combo(combo) == CanonicalKey::from_combo(*prefix))
     }
 
     fn conflict(&self, binding: &ResolvedBinding) -> Option<&RegisteredBinding> {
         match binding.trigger {
-            BindingTrigger::Direct(combo) => self.direct.get(&normalize_key_combo(combo)),
-            BindingTrigger::Prefix(combo) => self.prefix.get(&normalize_key_combo(combo)),
+            BindingTrigger::Direct(combo) => self.direct.get(&CanonicalKey::from_combo(combo)),
+            BindingTrigger::Prefix(combo) => self.prefix.get(&CanonicalKey::from_combo(combo)),
         }
     }
 
@@ -266,10 +357,12 @@ impl BindingRegistry {
         };
         match binding.trigger {
             BindingTrigger::Direct(combo) => {
-                self.direct.insert(normalize_key_combo(combo), registered());
+                self.direct
+                    .insert(CanonicalKey::from_combo(combo), registered());
             }
             BindingTrigger::Prefix(combo) => {
-                self.prefix.insert(normalize_key_combo(combo), registered());
+                self.prefix
+                    .insert(CanonicalKey::from_combo(combo), registered());
             }
         }
     }
@@ -916,9 +1009,11 @@ pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
         "plus" => KeyCode::Char('+'),
         _ if single_char.is_some() => {
             let ch = single_char?;
-            if ch.is_ascii_uppercase() {
+            if ch.is_ascii_uppercase()
+                && let Some(lowercase) = single_case_char(ch.to_lowercase())
+            {
                 modifiers |= KeyModifiers::SHIFT;
-                KeyCode::Char(ch.to_ascii_lowercase())
+                KeyCode::Char(lowercase)
             } else {
                 KeyCode::Char(ch)
             }
@@ -957,156 +1052,13 @@ pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
 }
 
 pub fn terminal_key_matches_combo(key: &impl BindingKey, combo: KeyCombo) -> bool {
-    key_parts_match_combo(key.code(), key.modifiers(), key.shifted_codepoint(), combo)
-}
-
-fn key_parts_match_combo(
-    actual_code: KeyCode,
-    actual_modifiers: KeyModifiers,
-    shifted_codepoint: Option<u32>,
-    combo: KeyCombo,
-) -> bool {
-    let (actual_code, actual_modifiers) = normalize_key_combo((actual_code, actual_modifiers));
-    let (expected_code, expected_modifiers) = normalize_key_combo(combo);
-
-    if actual_modifiers == expected_modifiers
-        && key_codes_match(
-            actual_code,
-            actual_modifiers,
-            expected_code,
-            expected_modifiers,
-            shifted_codepoint,
-        )
-    {
-        return true;
-    }
-
-    let actual_without_shift = actual_modifiers.difference(KeyModifiers::SHIFT);
-    actual_modifiers.contains(KeyModifiers::SHIFT)
-        && actual_without_shift == expected_modifiers
-        && shifted_char_matches_expected(actual_code, shifted_codepoint, expected_code)
-        || legacy_shifted_ascii_letter_matches(
-            actual_code,
-            actual_modifiers,
-            expected_code,
-            expected_modifiers,
-        )
-}
-
-fn key_codes_match(
-    actual: KeyCode,
-    actual_modifiers: KeyModifiers,
-    expected: KeyCode,
-    expected_modifiers: KeyModifiers,
-    shifted_codepoint: Option<u32>,
-) -> bool {
-    match (actual, expected) {
-        (KeyCode::Char(actual), KeyCode::Char(expected))
-            if actual.is_ascii_alphabetic() && expected.is_ascii_alphabetic() =>
-        {
-            actual == expected
-                || actual_modifiers.contains(KeyModifiers::SHIFT)
-                    && expected_modifiers.contains(KeyModifiers::SHIFT)
-                    && actual.eq_ignore_ascii_case(&expected)
-        }
-        (KeyCode::Char(actual), KeyCode::Char(expected)) => {
-            actual == expected
-                || shifted_char_matches_expected(
-                    KeyCode::Char(actual),
-                    shifted_codepoint,
-                    KeyCode::Char(expected),
-                )
-        }
-        (actual, expected) => actual == expected,
-    }
-}
-
-fn legacy_shifted_ascii_letter_matches(
-    actual_code: KeyCode,
-    actual_modifiers: KeyModifiers,
-    expected_code: KeyCode,
-    expected_modifiers: KeyModifiers,
-) -> bool {
-    if actual_modifiers.contains(KeyModifiers::SHIFT) {
-        return false;
-    }
-    let (KeyCode::Char(actual), KeyCode::Char(expected)) = (actual_code, expected_code) else {
-        return false;
-    };
-    actual.is_ascii_uppercase()
-        && expected.is_ascii_lowercase()
-        && actual.to_ascii_lowercase() == expected
-        && actual_modifiers | KeyModifiers::SHIFT == expected_modifiers
-}
-
-const SHIFTED_NUMBER_SYMBOLS: [(char, char); 9] = [
-    ('1', '!'),
-    ('2', '@'),
-    ('3', '#'),
-    ('4', '$'),
-    ('5', '%'),
-    ('6', '^'),
-    ('7', '&'),
-    ('8', '*'),
-    ('9', '('),
-];
-
-fn shifted_number_symbol(ch: char) -> Option<char> {
-    SHIFTED_NUMBER_SYMBOLS
-        .iter()
-        .find_map(|(number, symbol)| (*symbol == ch).then_some(*number))
-}
-
-fn indexed_shifted_number_matches(key: &impl BindingKey, combo: KeyCombo, number: char) -> bool {
-    let (expected_code, expected_modifiers) = normalize_key_combo(combo);
-    matches!(expected_code, KeyCode::Char(expected) if expected == number)
-        && expected_modifiers.contains(KeyModifiers::SHIFT)
-        && key.modifiers() == expected_modifiers.difference(KeyModifiers::SHIFT)
-}
-
-fn shifted_char_matches_expected(
-    actual_code: KeyCode,
-    shifted_codepoint: Option<u32>,
-    expected_code: KeyCode,
-) -> bool {
-    let KeyCode::Char(expected) = expected_code else {
-        return false;
-    };
-    if let Some(shifted) = shifted_codepoint.and_then(char::from_u32) {
-        return shifted == expected;
-    }
-    matches!(actual_code, KeyCode::Char(actual) if actual == expected && is_shifted_punctuation(expected))
-}
-
-fn is_shifted_punctuation(ch: char) -> bool {
-    matches!(
-        ch,
-        '!' | '@'
-            | '#'
-            | '$'
-            | '%'
-            | '^'
-            | '&'
-            | '*'
-            | '('
-            | ')'
-            | '_'
-            | '+'
-            | '{'
-            | '}'
-            | '|'
-            | ':'
-            | '"'
-            | '<'
-            | '>'
-            | '?'
-            | '~'
-    )
+    key.canonical_key() == CanonicalKey::from_combo(combo).combo()
 }
 
 fn is_unmodified_printable(combo: KeyCombo) -> bool {
-    matches!(combo.0, KeyCode::Char(ch) if !ch.is_control())
-        && combo.1.difference(KeyModifiers::SHIFT).is_empty()
+    let key = CanonicalKey::from_combo(combo);
+    matches!(key.code, KeyCode::Char(ch) if !ch.is_control())
+        && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
 }
 
 #[cfg(test)]
@@ -1114,7 +1066,8 @@ use crossterm::event::KeyEvent;
 
 #[cfg(test)]
 pub(crate) fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
-    key_parts_match_combo(key.code, key.modifiers, None, combo)
+    CanonicalKey::from_event(key.code, key.modifiers, None).combo()
+        == CanonicalKey::from_combo(combo).combo()
 }
 
 #[cfg(test)]
@@ -1485,10 +1438,10 @@ close_workspace = "X"
     }
 
     #[test]
-    fn legacy_uppercase_shift_fallback_is_limited_to_ascii_letters() {
+    fn canonical_identity_folds_legacy_ascii_uppercase_and_shifted_symbols() {
         let shifted_number = ActionKeybinds::prefix("shift+1");
         assert!(
-            !shifted_number
+            shifted_number
                 .matches_prefix_key(&TerminalKey::new(KeyCode::Char('!'), KeyModifiers::empty(),))
         );
 
@@ -1497,6 +1450,50 @@ close_workspace = "X"
             !shifted_non_ascii
                 .matches_prefix_key(&TerminalKey::new(KeyCode::Char('Ö'), KeyModifiers::empty(),))
         );
+
+        assert_eq!(
+            CanonicalKey::from_combo((KeyCode::Char('/'), KeyModifiers::SHIFT)),
+            CanonicalKey::from_combo((KeyCode::Char('?'), KeyModifiers::empty()))
+        );
+        assert_eq!(
+            CanonicalKey::from_combo((KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            CanonicalKey::from_combo((KeyCode::Char('?'), KeyModifiers::empty()))
+        );
+    }
+
+    #[test]
+    fn keybinding_registry_rejects_shifted_punctuation_aliases() {
+        for alias in ["prefix+shift+/", "prefix+shift+?"] {
+            let config: Config = toml::from_str(&format!("[keys]\nnew_workspace = {alias:?}\n"))
+                .expect("test precondition");
+            let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_workspace"]);
+            assert!(keybinds.is_none(), "{alias}");
+            assert!(
+                diagnostics.iter().any(|diag| {
+                    diag.contains("keybinding conflict")
+                        && diag.contains("keys.new_workspace")
+                        && diag.contains("keys.help")
+                }),
+                "{alias}: {diagnostics:?}"
+            );
+        }
+
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+switch_workspace = "prefix+shift+1..9"
+zoom = "prefix+!"
+"#,
+        )
+        .expect("test precondition");
+        let (diagnostics, keybinds) =
+            diagnostics_and_keybinds(&config, &["switch_workspace", "zoom"]);
+        assert!(keybinds.is_none());
+        assert!(diagnostics.iter().any(|diag| {
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.zoom")
+                && diag.contains("keys.switch_workspace")
+        }));
     }
 
     #[test]

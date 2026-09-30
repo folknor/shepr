@@ -843,6 +843,10 @@ impl ClientLoop {
             .presentation
             .handoff()
             .is_some_and(|pending| pending.accepts_endpoint(endpoint_id, generation));
+        let buffer_surface_evidence = state
+            .presentation
+            .handoff()
+            .is_some_and(|pending| pending.buffers_surface_evidence_for(endpoint_id, generation));
         let command_response = match message.as_ref() {
             ServerMessage::ClientShellEndpointResponse {
                 boot_id,
@@ -853,7 +857,9 @@ impl ClientLoop {
         };
         let presentation_decision = endpoint::PresentationGate::new(
             endpoint_active,
+            state.presentation.owned(),
             activation_message,
+            buffer_surface_evidence,
             command_response,
             state.presentation.frames_frozen(),
         )
@@ -890,6 +896,23 @@ impl ClientLoop {
                 }
             }
             ServerMessage::PaneSurfacePatch(patch) => {
+                if presentation_decision == endpoint::PresentationDecision::Buffer {
+                    let progress = state
+                        .presentation
+                        .handoff_mut()
+                        .map(|pending| pending.receive_patch(endpoint_id, generation, &patch));
+                    if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
+                        && let Some(event) = complete_endpoint_activation(
+                            state,
+                            write_stream,
+                            endpoint_commands,
+                            now,
+                        )?
+                    {
+                        *scheduled_activation = Some(event);
+                    }
+                    return Ok(ClientLoopAction::NextEvent);
+                }
                 let outcome = state.shell.apply_pane_surface_patch(&patch);
                 let compose_fallback = match outcome {
                     shell::ClientPaneSurfacePatchOutcome::Applied(Some(composed)) => {
@@ -917,7 +940,25 @@ impl ClientLoop {
                         }
                     }
                     shell::ClientPaneSurfacePatchOutcome::Applied(None) => true,
-                    shell::ClientPaneSurfacePatchOutcome::Rejected => false,
+                    shell::ClientPaneSurfacePatchOutcome::Rejected => {
+                        // The reader already accepted this patch against its connection
+                        // baseline. The shell can reject it after presentation filtering has
+                        // advanced that baseline without its display; no repaint request can
+                        // repair the gap, so reconnect for a fresh full surface baseline.
+                        tracing::error!(
+                            endpoint = %endpoint_id.storage_key(),
+                            generation,
+                            "client shell rejected a pane surface patch; failing its connection"
+                        );
+                        write_stream.fail(
+                            endpoint_id,
+                            &io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "client shell rejected a pane surface patch",
+                            ),
+                        );
+                        false
+                    }
                 };
                 if compose_fallback {
                     let composed = state.shell.compose(

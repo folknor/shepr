@@ -96,6 +96,65 @@ impl SurfaceDecodeError {
     }
 }
 
+/// Applies a decoded patch to its complete surface baseline.
+///
+/// The decoder validates wire deltas against its connection-local cell grid. Client activation
+/// evidence can outlive the presentation state that normally applies patches, so it uses this
+/// helper to keep its full-surface baseline at the same revision as the decoder.
+pub fn apply_patch_to_surface(
+    surface: &mut PaneSurfaceFrame,
+    patch: &PaneSurfacePatch,
+) -> Result<(), SurfaceDecodeError> {
+    if patch.boot_id != surface.boot_id
+        || patch.projection_revision != surface.projection_revision
+        || patch.base_surface_revision != surface.surface_revision
+        || surface.surface_revision.checked_next() != Some(patch.surface_revision)
+    {
+        return Err(patch_error(
+            patch,
+            SurfaceDecodeError::PatchBaselineMismatch,
+        ));
+    }
+    let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
+    else {
+        return Err(patch_error(patch, SurfaceDecodeError::InvalidDimensions));
+    };
+    if surface.frame.cells.len() != expected_cells {
+        return Err(patch_error(patch, SurfaceDecodeError::InvalidCellCount));
+    }
+    if patch.panes.iter().any(|updated| {
+        !surface
+            .panes
+            .iter()
+            .any(|existing| existing.pane_id == updated.pane_id)
+    }) {
+        return Err(patch_error(patch, SurfaceDecodeError::MetadataMismatch));
+    }
+    super::surface_delta::apply_rows(
+        &mut surface.frame.cells,
+        surface.frame.width,
+        surface.frame.height,
+        &patch.rows,
+    )
+    .map_err(|error| patch_error(patch, SurfaceDecodeError::RejectedPatch(error)))?;
+    for updated in &patch.panes {
+        if let Some(existing) = surface
+            .panes
+            .iter_mut()
+            .find(|existing| existing.pane_id == updated.pane_id)
+        {
+            *existing = updated.clone();
+        }
+    }
+    surface.frame.cursor = patch.cursor.clone();
+    surface.surface_revision = patch.surface_revision;
+    Ok(())
+}
+
+fn patch_error(patch: &PaneSurfacePatch, error: SurfaceDecodeError) -> SurfaceDecodeError {
+    error.with_subject(SurfaceDecodeSubject::from_patch(patch))
+}
+
 impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
     fn from(error: super::surface_delta::SurfaceDeltaError) -> Self {
         Self::Delta(error)
@@ -623,5 +682,16 @@ mod tests {
             decoder.current_surface().expect("baseline").frame.cells[0],
             cell("z")
         );
+
+        // A second baseline kept outside the decoder stays in lockstep by
+        // applying the same patch, and refuses to apply it twice.
+        let mut kept = surface();
+        apply_patch_to_surface(&mut kept, &patch).expect("patch applies to its baseline");
+        assert_eq!(Some(kept.clone()), decoder.current_surface());
+        assert!(matches!(
+            apply_patch_to_surface(&mut kept, &patch),
+            Err(SurfaceDecodeError::WithSubject { source, .. })
+                if matches!(source.as_ref(), SurfaceDecodeError::PatchBaselineMismatch)
+        ));
     }
 }

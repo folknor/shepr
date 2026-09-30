@@ -13,7 +13,6 @@ use crate::limits::{
 pub struct ForegroundProcess {
     pub pid: u32,
     pub name: String,
-    pub argv0: Option<String>,
     pub argv: Option<Vec<String>>,
     pub cmdline: Option<String>,
 }
@@ -83,7 +82,6 @@ fn foreground_job_from_members(
             ForegroundProcess {
                 pid: member.pid,
                 name: member.comm,
-                argv0: None,
                 cmdline: argv.as_ref().map(|parts| parts.join(" ")),
                 argv,
             }
@@ -290,7 +288,6 @@ pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJo
         processes: vec![ForegroundProcess {
             pid: process_group_id,
             name,
-            argv0: None,
             cmdline: argv.as_ref().map(|parts| parts.join(" ")),
             argv,
         }],

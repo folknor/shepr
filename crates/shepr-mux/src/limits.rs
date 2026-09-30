@@ -47,6 +47,10 @@ pub(crate) const PROCESS_ACQUISITION_IDLE_RESET: Duration = Duration::from_secs(
 /// Probe cadence during a transient color override, when a visible state
 /// change is expected immediately.
 pub(crate) const PROCESS_RECHECK_TRANSIENT: Duration = Duration::from_millis(50);
+/// How long after a foreground change the transient cadence runs. A
+/// color-setting program that stays in the foreground or on the alternate
+/// screen falls back to the ordinary cadence after this.
+pub(crate) const TRANSIENT_COLOR_RECHECK_WINDOW: Duration = Duration::from_secs(2);
 /// Probe cadence when no agent is identified, balancing acquisition latency
 /// against repeated process scans.
 pub(crate) const PROCESS_RECHECK_NO_AGENT: Duration = Duration::from_millis(500);

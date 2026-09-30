@@ -55,6 +55,17 @@ impl ActivationEvidence {
         }
     }
 
+    pub(super) fn record_patch(&mut self, patch: &shepr_protocol::PaneSurfacePatch) {
+        let Some(surface) = self.surface.as_mut() else {
+            return;
+        };
+        if shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch).is_err() {
+            // Activation can complete only from a full baseline that stayed in lockstep with
+            // the connection decoder. A mismatch must wait for another full surface.
+            self.surface = None;
+        }
+    }
+
     pub(super) fn invalidate_surface(&mut self) {
         self.surface = None;
     }

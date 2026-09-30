@@ -461,11 +461,11 @@ fn config_metadata_preserves_acl_without_inheriting_extra_access() {
         }
         set_attribute(&input, c"user.shepr-test", b"preserve this attribute");
         let original = input.metadata().expect("test precondition");
-        drop(create_private_file(&target).expect("test precondition"));
+        let staged = create_private_file(&target).expect("test precondition");
         let output = std::fs::File::open(&target).expect("test precondition");
         // Model a default ACL inherited from the destination's parent directory.
         set_attribute(&output, c"system.posix_acl_access", &acl);
-        write_config_temporary(Some(&source), &target, b"new").expect("test precondition");
+        write_config_temporary(Some(&source), staged, b"new").expect("test precondition");
         let actual = output.metadata().expect("test precondition");
         assert_eq!(
             (actual.uid(), actual.gid(), actual.mode()),
@@ -500,9 +500,9 @@ fn config_metadata_preserves_a_different_source_owner() {
     // SAFETY: fchown(2) on an fd `input` keeps open; integers only.
     assert_eq!(unsafe { libc::fchown(input.as_raw_fd(), 1001, 1002) }, 0);
     let original = input.metadata().expect("test precondition");
-    drop(create_private_file(&target).expect("test precondition"));
+    let staged = create_private_file(&target).expect("test precondition");
 
-    write_config_temporary(Some(&source), &target, b"new").expect("test precondition");
+    write_config_temporary(Some(&source), staged, b"new").expect("test precondition");
 
     let actual = std::fs::metadata(&target).expect("test precondition");
     assert_eq!(

@@ -72,9 +72,13 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     state.accept_navigator_selection(&mut outcome);
 
     assert!(state.overlay.is_none());
-    let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
-        panic!("expected the visible fallback row to be accepted");
-    };
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
+        }] if workspace_id == "w1"
+    ));
     assert_eq!(
         expected,
         ClientNavigatorTarget::Workspace {
@@ -82,11 +86,6 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
             workspace_id: test_workspace_id("w1"),
         }
     );
-    assert!(matches!(
-        &request.command,
-        shepr_protocol::command::EndpointCommand::WorkspaceFocus(target)
-            if target.workspace_id == "w1"
-    ));
 }
 
 #[test]

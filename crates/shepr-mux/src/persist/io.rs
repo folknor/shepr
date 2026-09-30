@@ -222,7 +222,9 @@ fn save_serialized_to_path(path: &Path, json: &[u8]) -> std::io::Result<Publishe
     let target = resolve_write_target(path)?;
     let directory = containing_directory(&target);
     let missing_directories = missing_directory_chain(directory)?;
-    std::fs::create_dir_all(directory)?;
+    // The session root may already have been created by DataDirLease before
+    // this save runs; that earlier creator must apply the same private mode.
+    shepr_platform::create_private_directory_all(directory)?;
     let pending = target.with_extension("json.tmp");
     let mut source = json;
     let published = publish_private_file(&mut source, &pending, &target, true)?;
@@ -1302,20 +1304,21 @@ mod tests {
     #[test]
     fn saved_session_and_history_files_are_private() {
         use std::os::unix::fs::PermissionsExt;
-        let (session_path, history_path) = temp_session_paths("private-mode");
-        std::fs::create_dir_all(session_path.parent().expect("test precondition"))
-            .expect("test precondition");
+        let data_dir = crate::test_support::ScratchDir::new("private-mode").join("data");
+        let session = session_path(&data_dir);
+        let history = session_history_path(&data_dir);
+        save_to_path(&session, &empty_snapshot()).expect("create private session directory");
         // Publishing renames a fresh private file over the target, so an
         // existing file with a broader mode is replaced, not reused.
-        std::fs::write(&history_path, b"old").expect("test precondition");
-        std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o644))
+        std::fs::write(&history, b"old").expect("test precondition");
+        std::fs::set_permissions(&history, std::fs::Permissions::from_mode(0o644))
             .expect("test precondition");
 
-        save_to_path(&session_path, &empty_snapshot()).expect("test precondition");
-        save_history_to_path(&history_path, Some(&history_snapshot("private-secret")))
+        save_to_path(&session, &empty_snapshot()).expect("test precondition");
+        save_history_to_path(&history, Some(&history_snapshot("private-secret")))
             .expect("test precondition");
 
-        for path in [&session_path, &history_path] {
+        for path in [&session, &history] {
             let mode = std::fs::metadata(path)
                 .expect("test precondition")
                 .permissions()
@@ -1323,11 +1326,17 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600, "{}", path.display());
         }
         assert!(
-            !session_path
+            !session
                 .with_extension("json.tmp")
                 .try_exists()
                 .expect("test stat")
         );
+        let directory_mode = std::fs::metadata(&data_dir)
+            .expect("data directory")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(directory_mode, 0o700);
     }
 
     #[test]

@@ -242,6 +242,20 @@ impl PendingEndpointActivation {
             || (self.target.endpoint_id == *endpoint_id && self.target.generation == generation)
     }
 
+    pub(crate) fn buffers_surface_evidence_for(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+    ) -> bool {
+        let lease = match &self.phase {
+            ActivationPhase::ActivatingTarget { .. } => &self.target,
+            ActivationPhase::RestoringSource { .. } => &self.source,
+            ActivationPhase::SynchronizingPresentation { lease, .. } => lease,
+            _ => return false,
+        };
+        lease.endpoint_id == *endpoint_id && lease.generation == generation
+    }
+
     pub(crate) fn involves_endpoint(&self, endpoint_id: &ClientEndpointId) -> bool {
         self.source.endpoint_id == *endpoint_id || self.target.endpoint_id == *endpoint_id
     }
@@ -494,6 +508,32 @@ impl PendingEndpointActivation {
             // The lease match above only succeeds in the three phases handled here.
             _ => return SurfaceActivationProgress::Stale,
         }
+        self.progress()
+    }
+
+    pub(crate) fn receive_patch(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        patch: &shepr_protocol::PaneSurfacePatch,
+    ) -> SurfaceActivationProgress {
+        let evidence = match &mut self.phase {
+            ActivationPhase::ActivatingTarget { evidence, .. }
+                if endpoint_matches(&self.target, endpoint_id, generation, &patch.boot_id) =>
+            {
+                evidence
+            }
+            ActivationPhase::RestoringSource { evidence, .. }
+                if endpoint_matches(&self.source, endpoint_id, generation, &patch.boot_id) =>
+            {
+                evidence
+            }
+            ActivationPhase::SynchronizingPresentation {
+                lease, evidence, ..
+            } if endpoint_matches(lease, endpoint_id, generation, &patch.boot_id) => evidence,
+            _ => return SurfaceActivationProgress::Stale,
+        };
+        evidence.record_patch(patch);
         self.progress()
     }
 

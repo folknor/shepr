@@ -62,63 +62,6 @@ direct dependency edge in `shepr-vt/Cargo.toml` and a `Cargo.lock` update; a not
 beside the search says so. Take the edge (it adds no new crate to the build) and
 switch the search.
 
-## TERM-010 - A transient default-colour override can pin a pane's detection loop at 20 Hz indefinitely
-
-Hunter's severity: Medium, hot path. Scope: mux-pane.
-
-`DetectorState::tick_interval` returns `PROCESS_RECHECK_TRANSIENT` (50 ms)
-whenever `terminal.has_transient_default_color_override()`, i.e. whenever
-`transient_default_color_owner_pgid` is `Some`. `resolve_default_color_owner`
-sets the owner as soon as a non-shell foreground program sets OSC 10/11,
-regardless of host theme. It is cleared only by
-`restore_host_terminal_theme_if_needed`, which returns early when
-`core.host_terminal_theme.is_empty()` (and
-`should_probe_host_terminal_theme_restore` refuses to try), or when the child
-resets the colours itself.
-
-- With an empty host theme (no client has reported one, or the client's terminal
-  does not answer colour queries; the server's theme comes from the foreground
-  client), the override is never restored, so the pane runs detection at 20 Hz
-  for the rest of its life: two core locks for the override check, a
-  `spawn_blocking` `/proc` read for the foreground group, another
-  `spawn_blocking` for the restore probe, plus screen-scan gating.
-- With a known theme, the 20 Hz cadence holds for as long as the owner stays in
-  the foreground or on the alternate screen (vim, or an agent TUI that sets OSC
-  11 and runs for hours).
-
-The limit's own doc says the cadence is for "when a visible state change is
-expected immediately", which neither case is; AGENTS.md "Hot paths multiply".
-
-**Fix.** Use the fast cadence only for a bounded window after the foreground
-group changes (the only event that can make a restore possible), keyed off the
-foreground-group-change signal the detector already computes; do not arm it at
-all while the host theme is empty.
-
-## TERM-012 - Pid use after reap is guarded in one accessor and not the others
-
-Hunter's severity: Low. Scope: mux-pane.
-
-`PaneCwdProbe::read` refuses to read `/proc/<pid>` once `wait_completed()`,
-because "its numeric PID may belong to another process by now". The same hazard
-is unguarded in:
-
-- `PaneRuntime::cwd()`, `follow_cwd()`, `foreground_cwd()` and `child_pid()`;
-- the detection task, which keeps probing `child_liveness.pid()`
-  (`foreground_process_group_id`, `probe_foreground_process`,
-  `maybe_restore_host_terminal_theme`) until the runtime is dropped. Between the
-  watcher's reap and the event loop processing `PaneDied` (the channel can back
-  up; the watcher `send().await`s), a reused pid can be identified as an agent and
-  published as `AgentProcessDetected` for a dead pane.
-
-`PaneCwdProbe::read` itself is check-then-read: the child can be reaped between
-`wait_completed()` and the readlink. A zombie keeps its pid until reaped, so the
-sound order is read first, then confirm the leader is still unreaped
-(`leader.is_unreaped()`, which `ProcessHandle` offers).
-
-**Fix.** One `ChildLiveness::live_pid()` returning the pid only while unreaped,
-re-checked after the `/proc` read, used by every accessor; the detection loop
-should exit once `wait_completed()`.
-
 ## TERM-014 - Deferred read effects block the PTY reader thread
 
 Hunter's severity: Low (perf smell). Scope: mux-pane.

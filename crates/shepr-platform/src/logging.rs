@@ -152,7 +152,7 @@ struct RotatingFileMakeWriter {
 
 impl RotatingFileMakeWriter {
     fn new(dir: &Path, file_name: &str, max_bytes: u64, retained_files: usize) -> io::Result<Self> {
-        fs::create_dir_all(dir)?;
+        super::create_private_directory_all(dir)?;
         let path = dir.join(file_name);
         let mut state = RotatingFileState {
             path,
@@ -647,13 +647,19 @@ mod tests {
     fn log_files_are_private_to_the_user() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = temp_log_path("mode");
-        let dir = path.parent().expect("test precondition").to_path_buf();
-        fs::create_dir_all(&dir).expect("test precondition");
+        let root = shepr_test_support::ScratchDir::new("mode");
+        let dir = root.join("logs");
+        let path = dir.join("shepr.log");
 
         let _created = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
         let created_mode = fs::metadata(&path).expect("log").permissions().mode() & 0o777;
+        let directory_mode = fs::metadata(&dir)
+            .expect("log directory")
+            .permissions()
+            .mode()
+            & 0o777;
 
         assert_eq!(created_mode, 0o600);
+        assert_eq!(directory_mode, 0o700);
     }
 }

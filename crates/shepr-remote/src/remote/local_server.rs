@@ -613,10 +613,23 @@ fn launch_with(
                 return Ok(status);
             }
             if exited.is_none() {
-                return Err(sibling_build_mismatch(files, &status));
+                if daemon
+                    .id()
+                    .is_some_and(|pid| boot_id_process_id(&status.boot_id) == Some(pid))
+                {
+                    return Err(sibling_build_mismatch(files, &status));
+                }
+                // A directly launched server can bind after our second probe
+                // and before this daemon reaches its own bind. Its answer is
+                // not proof that the daemon we started has the wrong build.
+                // Keep polling until that daemon reports AlreadyRunning or
+                // otherwise exits; then this external occupant can be handed
+                // back without the launch guard killing a healthy process.
+            } else {
+                // The daemon gave way to a different build, so this is the
+                // external occupant the caller's build-check policy handles.
+                return Ok(status);
             }
-            // The daemon is gone and another server of another build answers.
-            return Ok(status);
         }
         if let Some(status) = failed {
             return Err(boot_failure(files, status));
@@ -652,6 +665,12 @@ fn launch_with(
         }
         sleep(SOCKET_POLL_INTERVAL);
     }
+}
+
+/// The pid in a server's reported boot identity; `None` when it is not a boot
+/// id in the canonical form.
+fn boot_id_process_id(boot_id: &str) -> Option<u32> {
+    boot_id.parse::<shepr_protocol::BootId>().ok()?.process_id()
 }
 
 /// The daemon exited during boot: how, and what it printed.

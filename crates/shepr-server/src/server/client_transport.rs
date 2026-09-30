@@ -18,11 +18,13 @@ use tracing::{debug, warn};
 
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointServerWelcome;
-use shepr_protocol::{self, ClientMessage, ClientPaneInputEvent, MAX_INPUT_PAYLOAD, ServerMessage};
+use shepr_protocol::{
+    self, ClientMessage, ClientPaneInputEvent, MAX_INPUT_EVENT_BATCH, MAX_INPUT_PAYLOAD,
+    ServerMessage,
+};
 
 use crate::limits::{
-    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, MAX_INPUT_EVENT_BATCH,
-    UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
 };
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
@@ -373,19 +375,7 @@ fn pane_input_event_limit(events: &[ClientPaneInputEvent]) -> InputEventLimit {
     let mut paste_bytes = 0usize;
     let mut input_bytes = 0usize;
     for event in events {
-        expanded_events = expanded_events.saturating_add(match event {
-            ClientPaneInputEvent::Key { repeat_count, .. } => usize::from((*repeat_count).max(1)),
-            ClientPaneInputEvent::Mouse {
-                kind:
-                    shepr_protocol::ClientMouseKind::ScrollUp
-                    | shepr_protocol::ClientMouseKind::ScrollDown,
-                lines,
-                ..
-            } => usize::from((*lines).max(1)),
-            ClientPaneInputEvent::TextCommit(_)
-            | ClientPaneInputEvent::Mouse { .. }
-            | ClientPaneInputEvent::Paste(_) => 1,
-        });
+        expanded_events = expanded_events.saturating_add(event.expanded_event_count());
         // Clients pre-check pastes with the same `text_bytes` accounting.
         if matches!(event, ClientPaneInputEvent::Paste(_)) {
             paste_bytes = paste_bytes.saturating_add(event.text_bytes());

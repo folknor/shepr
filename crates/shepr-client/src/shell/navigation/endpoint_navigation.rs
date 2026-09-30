@@ -56,7 +56,7 @@ impl ClientShellState {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
             outcome.repaint = true;
-            if !collapse_toggle && endpoint_id.is_local() {
+            if !collapse_toggle {
                 self.activate_endpoint(endpoint_id, outcome);
             }
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
@@ -233,14 +233,10 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
-        if (endpoint_id.is_local() && (self.multi_endpoint_active() || !online))
-            || endpoint_id != self.active_endpoint_id
-        {
-            outcome.actions.push(ClientShellAction::ActivateEndpoint {
-                endpoint_id,
-                target: None,
-            });
-        }
+        outcome.actions.push(ClientShellAction::ActivateEndpoint {
+            endpoint_id,
+            target: None,
+        });
         true
     }
 
@@ -259,27 +255,13 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
-        // Local can still be displayed while a remote activation is pending.
-        // Route explicit selections through the runtime so they can cancel that handoff.
-        if endpoint_id == self.active_endpoint_id
-            && !(endpoint_id.is_local() && (self.multi_endpoint_active() || !online))
-        {
-            use shepr_protocol::command::{EndpointCommand, PaneTarget, WorkspaceTarget};
-            let command = match target {
-                ClientEndpointFocusTarget::Workspace(workspace_id) => {
-                    EndpointCommand::WorkspaceFocus(WorkspaceTarget { workspace_id })
-                }
-                ClientEndpointFocusTarget::Pane(pane_id) => {
-                    EndpointCommand::PaneFocus(PaneTarget { pane_id })
-                }
-            };
-            self.push_endpoint_command(command, outcome);
-        } else {
-            outcome.actions.push(ClientShellAction::ActivateEndpoint {
-                endpoint_id,
-                target: Some(target),
-            });
-        }
+        // Only the runtime knows whether this endpoint still owns the presentation. Routing
+        // every explicit pick through it lets it focus an owned endpoint, re-prove an unavailable
+        // one, or retarget a handoff already in progress.
+        outcome.actions.push(ClientShellAction::ActivateEndpoint {
+            endpoint_id,
+            target: Some(target),
+        });
         true
     }
 }

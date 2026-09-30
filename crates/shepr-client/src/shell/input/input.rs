@@ -228,6 +228,7 @@ impl ClientShellState {
         self.host_reports_all_keys = host_reports_all_keys;
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(!inputs.is_empty(), &mut outcome);
+        let mut accounting = PaneInputBatchAccounting::default();
         for input in inputs {
             if let Some(pixels) = input.pixel_mouse {
                 let RawInputEvent::Mouse(mut mouse) = input.event else {
@@ -239,10 +240,15 @@ impl ClientShellState {
                 mouse.column = column;
                 mouse.row = row;
                 let previous = self.host_mouse_pixels.replace(pixels);
-                self.handle_raw_event(RawInputEvent::Mouse(mouse), now, &mut outcome);
+                self.handle_raw_event(
+                    RawInputEvent::Mouse(mouse),
+                    now,
+                    &mut outcome,
+                    &mut accounting,
+                );
                 self.host_mouse_pixels = previous;
             } else {
-                self.handle_raw_event(input.event, now, &mut outcome);
+                self.handle_raw_event(input.event, now, &mut outcome, &mut accounting);
             }
         }
         outcome
@@ -260,6 +266,7 @@ impl ClientShellState {
         event: RawInputEvent,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         if self.handle_machine_badge_event(&event, outcome) {
             return;
@@ -268,7 +275,7 @@ impl ClientShellState {
             push_host_theme_update(&mut outcome.requests, update);
         }
         match event {
-            RawInputEvent::Key(key) => self.handle_key(key, now, outcome),
+            RawInputEvent::Key(key) => self.handle_key(key, outcome, accounting),
             RawInputEvent::Paste(text) => {
                 if self.prepare_committed_text(&text, outcome) {
                     return;
@@ -276,10 +283,12 @@ impl ClientShellState {
                 if self.insert_overlay_text(&text) {
                     outcome.repaint = true;
                 } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
-                    self.push_focused_paste(text, outcome);
+                    self.push_focused_paste(text, outcome, accounting);
                 }
             }
-            RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, now, outcome),
+            RawInputEvent::Mouse(mouse) => {
+                self.handle_mouse_with_accounting(mouse, now, outcome, accounting);
+            }
             RawInputEvent::OuterFocusGained => {
                 self.outer_focused = Some(true);
                 outcome.query_host_appearance = true;
@@ -293,7 +302,7 @@ impl ClientShellState {
             }
             RawInputEvent::OuterFocusLost => {
                 self.outer_focused = Some(false);
-                self.release_input_leases(outcome);
+                self.release_input_leases(outcome, accounting);
                 outcome
                     .requests
                     .push(ClientMessage::ClientShellFocus { focused: false });
@@ -341,8 +350,8 @@ impl ClientShellState {
     pub(super) fn handle_key(
         &mut self,
         key: shepr_termio::input::TerminalKey,
-        now: std::time::Instant,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         if self.copy_operation_in_flight {
             self.copy_input_queue.push_back(key);
@@ -356,9 +365,9 @@ impl ClientShellState {
         match key.kind {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
-                let target = self.route_key_press(&key, now, outcome);
+                let target = self.route_key_press(&key, outcome);
                 if let Some(target) = target.as_ref() {
-                    self.push_pane_key(target.clone(), key.clone(), outcome);
+                    self.push_pane_key(target.clone(), key.clone(), outcome, accounting);
                 }
                 let resulting_context = self.input_context();
                 let plan = self.input_leases.complete_press(
@@ -369,14 +378,14 @@ impl ClientShellState {
                     target,
                     host_reports_all_keys,
                 );
-                self.execute_repeat_plan(lease_key, key, plan, now, outcome);
+                self.execute_repeat_plan(lease_key, key, plan, outcome, accounting);
             }
             KeyEventKind::Repeat => {
                 let context = self.input_context();
                 let plan = self
                     .input_leases
                     .plan_repeat(lease_key, &key, Some(&context));
-                self.execute_repeat_plan(lease_key, key, plan, now, outcome);
+                self.execute_repeat_plan(lease_key, key, plan, outcome, accounting);
             }
             KeyEventKind::Release => {
                 if let Some(lease) = self.input_leases.remove_forwarded(&lease_key) {
@@ -384,7 +393,7 @@ impl ClientShellState {
                         .key
                         .with_modifiers(key.modifiers)
                         .with_kind(KeyEventKind::Release);
-                    self.push_pane_key(lease.target, release, outcome);
+                    self.push_pane_key(lease.target, release, outcome, accounting);
                 } else {
                     let _ = self.input_leases.remove(&lease_key);
                 }
@@ -392,12 +401,17 @@ impl ClientShellState {
         }
     }
 
-    fn release_input_leases(&mut self, outcome: &mut ClientShellInput) {
+    fn release_input_leases(
+        &mut self,
+        outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
+    ) {
         for lease in self.input_leases.remove_source(LOCAL_INPUT_SOURCE) {
             self.push_pane_key(
                 lease.target,
                 lease.key.with_kind(KeyEventKind::Release),
                 outcome,
+                accounting,
             );
         }
         if let Some(gesture) = self.pane_mouse_gesture.take() {
@@ -427,6 +441,7 @@ impl ClientShellState {
                     lines: self.config.mouse_scroll_lines,
                 },
                 outcome,
+                accounting,
             );
         }
         self.copy_input_queue.clear();
@@ -437,12 +452,12 @@ impl ClientShellState {
         lease_key: shepr_termio::input::InputLeaseKey<u8>,
         key: shepr_termio::input::TerminalKey,
         plan: shepr_termio::input::RepeatPlan<ClientInputContext, shepr_protocol::PublicPaneId>,
-        now: std::time::Instant,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         match plan {
             shepr_termio::input::RepeatPlan::Forwarded(target) => {
-                self.push_pane_key(target, key, outcome);
+                self.push_pane_key(target, key, outcome, accounting);
             }
             shepr_termio::input::RepeatPlan::Reprocess {
                 context,
@@ -463,8 +478,8 @@ impl ClientShellState {
                         .clone()
                         .with_repeat_count(1)
                         .with_kind(KeyEventKind::Repeat);
-                    if let Some(target) = self.route_key_press(&repeated, now, outcome) {
-                        self.push_pane_key(target, repeated, outcome);
+                    if let Some(target) = self.route_key_press(&repeated, outcome) {
+                        self.push_pane_key(target, repeated, outcome, accounting);
                     }
                 }
             }
@@ -523,7 +538,6 @@ impl ClientShellState {
     fn route_key_press(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
-        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> Option<shepr_protocol::PublicPaneId> {
         if self.handle_modal_paste_shortcut_with(key, outcome, read_clipboard_text_bounded) {
@@ -608,7 +622,7 @@ impl ClientShellState {
                 None
             }
             ClientShellMode::Navigate => {
-                self.route_navigate_key(key, now, outcome);
+                self.route_navigate_key(key, outcome);
                 None
             }
             ClientShellMode::Resize => {
@@ -658,7 +672,6 @@ impl ClientShellState {
     fn route_navigate_key(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
-        now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
         use shepr_termio::input::{KeybindAction, KeybindDispatch, KeybindMatch};
@@ -690,7 +703,7 @@ impl ClientShellState {
                 return;
             }
             Some(NavigateAction::OpenWorkspace) => {
-                self.accept_navigate_workspace(outcome, now);
+                self.accept_navigate_workspace(outcome);
                 return;
             }
             _ => {}
@@ -947,9 +960,10 @@ impl ClientShellState {
         target: shepr_protocol::PublicPaneId,
         key: shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
     ) {
         if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
-            super::push_target_event(target, event, outcome);
+            super::push_target_event(target, event, outcome, accounting);
         }
     }
 
@@ -960,9 +974,14 @@ impl ClientShellState {
     /// Checking here means an oversized paste never goes out: a paste past the
     /// frame cap would otherwise make the server drop the connection, and
     /// anything over the limit would only come back as a rejection anyway. A
-    /// paste that fits on its own but would push an already batched message
-    /// past the limit starts a message of its own instead of joining the batch.
-    fn push_focused_paste(&mut self, text: String, outcome: &mut ClientShellInput) {
+    /// paste that fits on its own but would cross either batch limit with the
+    /// pending message starts a new message instead of joining the batch.
+    fn push_focused_paste(
+        &mut self,
+        text: String,
+        outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
+    ) {
         let size = text.len();
         if size > shepr_protocol::MAX_INPUT_PAYLOAD {
             outcome.repaint |= self.receive_endpoint_error(paste_rejected_notice(
@@ -974,24 +993,8 @@ impl ClientShellState {
         let Some(pane_id) = self.focused_pane_id() else {
             return;
         };
-        let batched = match outcome.requests.last() {
-            Some(ClientMessage::ClientShellPaneInput {
-                pane_id: pending,
-                events,
-            }) if *pending == pane_id => events
-                .iter()
-                .map(ClientPaneInputEvent::text_bytes)
-                .fold(0usize, usize::saturating_add),
-            _ => 0,
-        };
         let event = ClientPaneInputEvent::Paste(text);
-        if batched.saturating_add(size) > shepr_protocol::MAX_INPUT_PAYLOAD {
-            outcome
-                .requests
-                .push(super::target_event_message(pane_id, event));
-        } else {
-            super::push_target_event(pane_id, event, outcome);
-        }
+        super::push_target_event(pane_id, event, outcome, accounting);
     }
 }
 
@@ -1018,11 +1021,17 @@ impl ClientShellState {
         mouse.row = row;
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(true, &mut outcome);
+        let mut accounting = PaneInputBatchAccounting::default();
         let previous = self.host_mouse_pixels.replace(pixels);
         // clock-io-ok: this test-only entry stands in for the client loop.
         let now = std::time::Instant::now();
         self.now = now;
-        self.handle_raw_event(RawInputEvent::Mouse(mouse), now, &mut outcome);
+        self.handle_raw_event(
+            RawInputEvent::Mouse(mouse),
+            now,
+            &mut outcome,
+            &mut accounting,
+        );
         self.host_mouse_pixels = previous;
         outcome
     }
@@ -1054,8 +1063,9 @@ impl ClientShellState {
         self.now = now;
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(!events.is_empty(), &mut outcome);
+        let mut accounting = PaneInputBatchAccounting::default();
         for event in events {
-            self.handle_raw_event(event, now, &mut outcome);
+            self.handle_raw_event(event, now, &mut outcome, &mut accounting);
         }
         outcome
     }

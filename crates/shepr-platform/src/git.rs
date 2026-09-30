@@ -34,8 +34,11 @@ impl std::fmt::Display for GitCommandError {
 
 impl std::error::Error for GitCommandError {}
 
-/// Runs Git in `cwd` under [`GIT_COMMAND_TIMEOUT`]. A nonzero exit is an `Ok`
-/// output; the caller decides which failures are ordinary answers.
+/// Runs Git in `cwd` with one budget for launch, execution and pipe draining.
+/// The synchronous OS spawn cannot be interrupted; if it exceeds
+/// [`GIT_COMMAND_TIMEOUT`], the child is stopped as soon as spawn returns.
+/// A nonzero exit is an `Ok` output; the caller decides which failures are
+/// ordinary answers.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
     run_git_with_program(OsStr::new("git"), cwd, args, GIT_COMMAND_TIMEOUT)
 }
@@ -71,6 +74,10 @@ fn run_git_with_program_and_clock(
         // probe at some other repository than `cwd`'s; prompt helpers could
         // open a dialog. Config-source overrides and GIT_CEILING_DIRECTORIES
         // stay, so Git follows the user's own configuration and discovery.
+        // GIT_CONFIG selects a file only for `git config`, not for Git's
+        // ordinary repository commands. Keep origin probes on the same
+        // effective chain as the ref queries they cache.
+        .env_remove("GIT_CONFIG")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
@@ -85,23 +92,21 @@ fn run_git_with_program_and_clock(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let deadline = now() + timeout;
     let mut child = command.spawn().map_err(GitCommandError::Spawn)?;
     // Both pipes are drained while the child runs, so output larger than a
     // pipe buffer cannot stall Git into a spurious timeout.
     let stdout = child.stdout.take().map(drain_pipe::<ChildStdout>);
     let stderr = child.stderr.take().map(drain_pipe::<ChildStderr>);
-    let deadline = now() + timeout;
     let status = loop {
+        if now() >= deadline {
+            kill_and_reap(&mut child);
+            return Err(GitCommandError::TimedOut);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if now() < deadline => {
-                std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
-            }
             Ok(None) => {
-                kill_and_reap(&mut child);
-                // The readers are not joined: whatever still holds the pipes
-                // open must not hold this probe past its deadline too.
-                return Err(GitCommandError::TimedOut);
+                std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
             }
             Err(error) => {
                 kill_and_reap(&mut child);
@@ -185,6 +190,27 @@ mod tests {
     use shepr_test_support::fixture::{Step, stand_in};
 
     #[test]
+    fn git_runner_samples_deadline_even_when_spawn_fails() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = shepr_test_support::ScratchDir::new("git-spawn-clock");
+        let reads = std::cell::Cell::new(0);
+        let now = || {
+            reads.set(reads.get() + 1);
+            Instant::now()
+        };
+        let missing = root.path().join("missing-program");
+        let result = run_git_with_program_and_clock(
+            missing.as_os_str(),
+            root.path(),
+            &[],
+            Duration::from_secs(1),
+            &now,
+        );
+        assert!(matches!(result, Err(GitCommandError::Spawn(_))));
+        assert_eq!(reads.get(), 1, "the budget starts before attempting spawn");
+    }
+
+    #[test]
     fn git_runner_sanitizes_terminal_inputs_and_enforces_a_deadline() {
         let env = shepr_test_support::IsolatedEnv::new();
         let root = shepr_test_support::ScratchDir::new("git-runner");
@@ -195,6 +221,7 @@ mod tests {
             root.path(),
             "fake-git",
             &[
+                Step::PrintEnv("GIT_CONFIG".into()),
                 Step::PrintEnv("GIT_DIR".into()),
                 Step::PrintEnv("GIT_WORK_TREE".into()),
                 Step::PrintEnv("GIT_ASKPASS".into()),
@@ -203,6 +230,7 @@ mod tests {
                 Step::Cat,
             ],
         );
+        env.set("GIT_CONFIG", "/unrelated/config");
         env.set("GIT_DIR", "/unrelated/repository");
         env.set("GIT_WORK_TREE", "/unrelated/worktree");
         env.set("GIT_ASKPASS", "/unrelated/askpass");
@@ -214,7 +242,7 @@ mod tests {
             Duration::from_secs(5),
         )
         .expect("fake git should finish");
-        assert_eq!(output.stdout, b"\n\n\n0\n0\n");
+        assert_eq!(output.stdout, b"\n\n\n\n0\n0\n");
 
         let slow_git = stand_in(
             root.path(),

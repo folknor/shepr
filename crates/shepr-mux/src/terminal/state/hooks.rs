@@ -52,7 +52,15 @@ impl TerminalState {
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
             return None;
         }
-        let owner_conflicts = self.current_session_owner_conflicts(&source, &agent_label);
+        let custom_state_report = session_ref.is_none()
+            && matches!(
+                shepr_agent::agent::AgentSource::parse(&source),
+                shepr_agent::agent::AgentSource::Custom(_)
+            );
+        // A sessionless custom report updates state but cannot claim the
+        // resume identity already stored for this pane.
+        let owner_conflicts =
+            !custom_state_report && self.current_session_owner_conflicts(&source, &agent_label);
         let foreground_takeover_allowed = owner_conflicts
             && self.foreground_agent_confirms_hook_authority_takeover(
                 &source,
@@ -108,7 +116,13 @@ impl TerminalState {
                 suppressed_ref,
             );
         }
-        self.persisted_agent_session = None;
+        if custom_state_report {
+            // A custom state report cannot replace the session identity used
+            // for resume, even when the previous authority held that identity.
+            self.persisted_agent_session = previous_session.clone();
+        } else {
+            self.persisted_agent_session = None;
+        }
         self.hook_authority = Some(HookAuthority {
             source,
             agent_label,
@@ -282,12 +296,13 @@ impl TerminalState {
                 .as_ref()
                 .is_none_or(|incoming| incoming == anchored)
         });
-        let opencode_cross_talk = (source, agent_label) == ("shepr:opencode", "opencode")
-            && process_present
+        // A live state report cannot switch the session generation. Session
+        // starts reconcile replacements through the session-report path.
+        let live_session_cross_talk = process_present
             && anchored_session_ref
                 .zip(session_ref.as_ref())
                 .is_some_and(|(anchored, incoming)| anchored != incoming);
-        if opencode_cross_talk {
+        if live_session_cross_talk {
             return FullLifecycleHookReportRoute::Ignore;
         }
         if let Some(suppressed) = self.suppressed_full_lifecycle_hook_reports.get(source) {

@@ -187,14 +187,26 @@ impl Workspace {
         if !self.has_consistent_panes() {
             return false;
         }
-        let mut pane_numbers = HashSet::new();
+        if !Self::valid_public_numbers(
+            self.panes.values().map(|pane| pane.public_number),
+            self.next_public_pane_number,
+        ) {
+            return false;
+        }
         let mut terminal_ids = HashSet::new();
-        self.panes.values().all(|pane| {
-            pane.public_number != 0
-                && pane.public_number < self.next_public_pane_number
-                && pane_numbers.insert(pane.public_number)
-                && terminal_ids.insert(pane.attached_terminal_id.clone())
-        })
+        self.panes
+            .values()
+            .all(|pane| terminal_ids.insert(pane.attached_terminal_id.clone()))
+    }
+
+    pub(crate) fn valid_public_numbers(
+        numbers: impl IntoIterator<Item = usize>,
+        next: usize,
+    ) -> bool {
+        let mut used = HashSet::new();
+        numbers
+            .into_iter()
+            .all(|number| number != 0 && number < next && used.insert(number))
     }
 
     /// A workspace rebuilt from a saved pane tree. `None` when the tree is
@@ -479,7 +491,7 @@ impl Workspace {
     }
 
     fn advance_next_public_pane_number(&mut self, number: usize) {
-        self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
+        self.next_public_pane_number = self.next_public_pane_number.max(number.saturating_add(1));
     }
 }
 

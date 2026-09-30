@@ -3,10 +3,15 @@ use std::fmt::Write as _;
 
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
 use crate::limits::{KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_MOUSE_REPORT_INITIAL_CAPACITY};
+use shepr_config::BindingKey;
 use shepr_core::limits::UTF8_MAX_BYTES_PER_CODEPOINT;
 use shepr_protocol::KittyKeyboardFlags;
 
-pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
+pub fn encode_terminal_key(mut key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
+    normalize_backtab_key(
+        &mut key,
+        matches!(protocol, KeyboardProtocol::Kitty { flags } if flags != 0),
+    );
     // Super has no legacy character encoding. Preserve the chord with CSI-u
     // instead of leaking the unmodified character into the pane.
     if matches!(protocol, KeyboardProtocol::Legacy)
@@ -280,12 +285,11 @@ pub struct KeyEncodeModes {
 /// child negotiated: kitty flags first, then modifyOtherKeys, then legacy
 /// xterm sequences honouring application cursor mode.
 pub fn encode_terminal_key_with_modes(mut key: TerminalKey, modes: KeyEncodeModes) -> Vec<u8> {
+    normalize_backtab_key(
+        &mut key,
+        modes.kitty_flags != 0 || modes.modify_other_keys >= 2,
+    );
     if modes.kitty_flags != 0 {
-        // Kitty has no Backtab key; it is Tab with Shift.
-        if key.code == KeyCode::BackTab {
-            key.code = KeyCode::Tab;
-            key.modifiers |= KeyModifiers::SHIFT;
-        }
         // Disambiguation makes a bare Escape press unambiguous as CSI 27 u.
         if key.code == KeyCode::Esc
             && key.modifiers.is_empty()
@@ -324,6 +328,20 @@ pub fn encode_terminal_key_with_modes(mut key: TerminalKey, modes: KeyEncodeMode
 
     let bytes = encode_terminal_key(key.clone(), KeyboardProtocol::Legacy);
     apply_application_cursor(bytes, &key, modes.application_cursor)
+}
+
+fn normalize_backtab_key(key: &mut TerminalKey, kitty_enabled: bool) {
+    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+        let (canonical_code, canonical_modifiers) = key.canonical_key();
+        if canonical_code == KeyCode::BackTab && kitty_enabled {
+            // Enhanced keyboard protocols encode Backtab as Tab with Shift.
+            key.code = KeyCode::Tab;
+            key.modifiers = canonical_modifiers | KeyModifiers::SHIFT;
+        } else {
+            key.code = canonical_code;
+            key.modifiers = canonical_modifiers;
+        }
+    }
 }
 
 /// `CSI 27 ; mods ; code ~` for modified Enter/Tab/Backspace/Escape. Level 1
@@ -1753,6 +1771,20 @@ mod tests {
         );
         assert_eq!(
             encode_terminal_key_with_modes(
+                TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT),
+                level(1)
+            ),
+            b"\x1b[Z"
+        );
+        assert_eq!(
+            encode_terminal_key_with_modes(
+                TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT),
+                level(2)
+            ),
+            b"\x1b[27;2;9~"
+        );
+        assert_eq!(
+            encode_terminal_key_with_modes(
                 TerminalKey::new(KeyCode::Backspace, KeyModifiers::CONTROL),
                 level(0)
             ),
@@ -1762,6 +1794,14 @@ mod tests {
 
     #[test]
     fn mode_aware_encoder_maps_backtab_and_escape_under_kitty() {
+        assert_eq!(
+            encode_terminal_key_with_modes(
+                TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT),
+                KeyEncodeModes::default(),
+            ),
+            b"\x1b[Z"
+        );
+
         let kitty = KeyEncodeModes {
             kitty_flags: 1,
             ..KeyEncodeModes::default()

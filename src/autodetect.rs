@@ -4,7 +4,9 @@
 use std::io;
 use std::time::Duration;
 
-/// Checks the local server, starts it when needed, then runs the client.
+/// Checks the local server, starts it when needed, then runs the client. The
+/// caller has already rejected an unusable terminal
+/// ([`ensure_terminal_geometry`]) before preflight and before this runs.
 ///
 /// A running server of a different build fails the launch with guidance for
 /// the resolved socket target. The startup step before this one
@@ -24,14 +26,6 @@ pub(crate) fn auto_detect_launch<T>(
     server_ready_timeout: Duration,
     run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> T,
 ) -> io::Result<T> {
-    // The client requires terminal geometry before it can attach. Reject an
-    // unusable terminal before socket lookup creates directories or starts a daemon.
-    shepr_platform::terminal_grid_size().map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
-        )
-    })?;
     let socket_path = paths.server_address().client_socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
@@ -54,6 +48,19 @@ pub(crate) fn auto_detect_launch<T>(
     }
 
     Ok(run_client(config, paths))
+}
+
+/// Rejects a TUI launch with no usable terminal geometry before preflight can
+/// authenticate machines or offer to restart a server.
+pub(crate) fn ensure_terminal_geometry() -> io::Result<()> {
+    shepr_platform::terminal_grid_size()
+        .map(|_| ())
+        .map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
+            )
+        })
 }
 
 /// What the operator is told when Local fails to start or is refused while

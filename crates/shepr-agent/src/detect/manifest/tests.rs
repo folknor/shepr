@@ -5,6 +5,7 @@ fn local_manifest(state: &str, contains: &str) -> String {
     format!(
         r#"
 id = "codex"
+fallback = "unknown"
 
 [[rules]]
 id = "test"
@@ -47,12 +48,12 @@ impl TestManifests {
         explain_with_manifest(agent, input, Some(&self.loaded))
     }
 
-    fn detect(&self, agent: Agent, screen: &str) -> AgentDetection {
-        self.detect_input(agent, screen_input(screen))
+    fn detect(&self, screen: &str) -> AgentDetection {
+        self.detect_input(screen_input(screen))
     }
 
-    fn detect_input(&self, agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
-        detect_with_manifest(agent, input, Some(&self.loaded))
+    fn detect_input(&self, input: DetectionInput<'_>) -> AgentDetection {
+        detect_with_manifest(input, Some(&self.loaded))
     }
 }
 
@@ -101,7 +102,7 @@ contains = ["shared"]
 id = "high"
 state = "blocked"
 priority = 50
-region = "bottom_lines(1)"
+region = "bottom_non_empty_lines(1)"
 contains = ["HIGH"]
 
 [[rules]]
@@ -140,13 +141,13 @@ fn distinct_regions_are_interned_and_contains_needles_are_prepared_at_load() {
 [[rules]]
 id = "a"
 state = "idle"
-region = "bottom_lines(2)"
+region = "bottom_non_empty_lines(2)"
 regex = ['x']
 
 [[rules]]
 id = "b"
 state = "working"
-region = "bottom_lines(2)"
+region = "bottom_non_empty_lines(2)"
 contains = ["y"]
 
 [[rules]]
@@ -162,7 +163,7 @@ regex = ['z']
     );
     let bottom = &loaded.regions[loaded.compiled_rules[0].region];
     let whole = &loaded.regions[loaded.compiled_rules[2].region];
-    assert_eq!(bottom.spec, RegionSpec::BottomLines(2));
+    assert_eq!(bottom.spec, RegionSpec::BottomNonEmptyLines(2));
     assert_eq!(whole.spec, RegionSpec::WholeRecent);
     let contains = &loaded.compiled_rules[1].gate.contains[0];
     assert!(contains.matches("Y"));
@@ -313,7 +314,7 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
     assert!(!explain.visible_idle);
     assert_eq!(
         explain.fallback_reason.as_deref(),
-        Some("codex_state_ambiguous")
+        Some(UNKNOWN_MANIFEST_FALLBACK)
     );
     let pi = bundled_loaded(Agent::Pi);
     let other = fallback_explain(Some(Agent::Pi), Some((&pi, Vec::new())));
@@ -328,8 +329,8 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
 fn agents_without_a_screen_manifest_are_unknown_not_idle() {
     for agent in [Agent::Omp, Agent::Mastracode] {
         assert!(!agent.screen_manifest());
-        assert!(!has_screen_manifest(agent));
-        let detection = detect_with_manifest(agent, screen_input(" \n"), None);
+        assert!(screen_unknown_is_stable(agent));
+        let detection = detect_with_manifest(screen_input(" \n"), None);
         assert_eq!(detection.state, AgentState::Unknown);
         assert!(!detection.visible_idle);
         let explain = fallback_explain(Some(agent), None);
@@ -339,19 +340,21 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
             Some(NO_SCREEN_MANIFEST_FALLBACK)
         );
     }
-    assert!(has_screen_manifest(Agent::Pi));
+    assert!(screen_unknown_is_stable(Agent::Codex));
+    assert!(screen_unknown_is_stable(Agent::Letta));
+    assert!(!screen_unknown_is_stable(Agent::Gemini));
 }
 
 #[test]
 fn explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label() {
     let screen =
         "Bash command\n  rm -rf build\nDo you want to proceed?\n 1. Yes\n  2. No\nEsc to cancel\n";
-    let by_label = explain_for_label("claude", screen);
+    let by_label = explain_for_label("claude", screen_input(screen));
     let direct = explain(Agent::Claude, screen);
     assert_eq!(by_label, direct);
     assert_eq!(by_label.state, AgentState::Blocked);
 
-    let unknown = explain_for_label("no-such-agent", screen);
+    let unknown = explain_for_label("no-such-agent", screen_input(screen));
     assert_eq!(unknown.state, AgentState::Unknown);
     assert_eq!(unknown.fallback_reason.as_deref(), Some("unknown_agent"));
 }
@@ -496,7 +499,7 @@ regex = ['^progress-marker$']
                     .map(|matched| matched.id.as_str()),
                 Some(rule)
             );
-            let detection = manifests.detect_input(Agent::Codex, input);
+            let detection = manifests.detect_input(input);
             assert_eq!(detection.state, state);
             assert_eq!(detection.visible_idle, state == AgentState::Idle);
             assert_eq!(detection.visible_working, state == AgentState::Working);
@@ -545,14 +548,13 @@ contains = ["overlay-marker"]
         assert!(!result.visible_idle);
         assert!(!result.visible_working);
         assert!(!result.visible_blocker);
-        assert!(manifests.detect(Agent::Codex, screen).skip_state_update);
+        assert!(manifests.detect(screen).skip_state_update);
     }
 }
 
 #[test]
 fn screen_regions_extract_structure_without_classifying_agent_state() {
     for (screen, spec, expected) in [
-        ("old\n\nnew\n", "bottom_lines(2)", "\nnew\n"),
         (
             "before\n› input\nafter\n",
             "after_last_prompt_marker",
@@ -572,22 +574,6 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
             "no marker\n",
             "whole_recent_without_current_prompt_marker",
             "no marker\n",
-        ),
-        (
-            "• old\n■ latest\n› input\n",
-            "current_prompt_block_marker",
-            "■ latest",
-        ),
-        (
-            "• old\n■ latest\n› input\n",
-            "after_current_prompt_block_marker",
-            "› input\n",
-        ),
-        ("› old\n• new\n", "current_prompt_block_marker", ""),
-        (
-            "above\n\n───\nbody\n───\nfooter\n",
-            "above_prompt_box",
-            "above\n\n",
         ),
         (
             "above\n\n───\nbody\n───\nfooter\n",
@@ -848,11 +834,7 @@ fn top_non_empty_lines_uses_top_occurrence_for_repeated_text() {
 
 #[test]
 fn manifest_validation_rejects_invalid_counted_line_regions() {
-    for name in [
-        "bottom_lines",
-        "bottom_non_empty_lines",
-        "top_non_empty_lines",
-    ] {
+    for name in ["bottom_non_empty_lines", "top_non_empty_lines"] {
         assert!(validate_region_name(&format!("{name}(1)")).is_ok());
         assert!(validate_region_name(&format!("{name}({})", u16::MAX)).is_ok());
         for count in ["0", "00", "01", "+1", "65536", "999999999999999999999999"] {

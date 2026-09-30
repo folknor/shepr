@@ -282,6 +282,21 @@ fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
 }
 
 #[test]
+fn status_probe_diagnostic_distinguishes_ssh_failure_from_remote_failure() {
+    let ssh_failure = remote_client_status_failure(&ssh_output(255, "Connection refused"));
+    assert_eq!(
+        ssh_failure.to_string(),
+        "remote SSH connection failed: Connection refused"
+    );
+
+    let remote_failure = remote_client_status_failure(&ssh_output(2, "status command failed"));
+    assert_eq!(
+        remote_failure.to_string(),
+        "remote client status probe failed: status command failed"
+    );
+}
+
+#[test]
 fn command_remote_stderr_is_filtered_before_error_output() {
     let error = command_failed(
         "remote binary discovery failed",
