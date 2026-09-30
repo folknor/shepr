@@ -19,7 +19,7 @@ struct Effects {
 struct Observation {
     geometry: (u16, u16),
     cells: Vec<CellData>,
-    text_rows: Vec<shepr_vt::ScreenTextRow>,
+    screen_text: String,
     links: Vec<((u16, u16), String, String)>,
     cursor: TerminalCursorState,
     input: InputState,
@@ -97,13 +97,23 @@ impl Harness {
         )
     }
 
+    fn screen_text(&self) -> String {
+        let core = shepr_vt::lock_terminal_core(&self.pane.core).expect("test precondition");
+        let terminal = &core.terminal;
+        let last_row = terminal.total_rows().saturating_sub(1);
+        terminal
+            .read_text_screen(
+                Point::new(ScreenRow(0), 0),
+                Point::new(ScreenRow(last_row), terminal.cols().saturating_sub(1)),
+            )
+            .expect("test precondition")
+    }
+
     fn observe(&self) -> Observation {
-        let (_, cols, text_rows) = self.pane.screen_text_snapshot().expect("test precondition");
-        assert_eq!(cols, self.width);
         Observation {
             geometry: (self.width, self.height),
             cells: self.full_cells(),
-            text_rows,
+            screen_text: self.screen_text(),
             links: self.links(),
             cursor: self.cursor().expect("test precondition"),
             input: self.pane.input_state().expect("test precondition"),
@@ -355,11 +365,20 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
     let mut terminal = Harness::new(8, 6);
     terminal.write(b"\x1b[2;3H");
     terminal.pane.collect_dirty_patch(8, 6);
+    let hook_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_ran_from_collection = std::sync::Arc::clone(&hook_ran);
+    terminal.pane.on_next_dirty_collection(Box::new(move || {
+        hook_ran_from_collection.store(true, std::sync::atomic::Ordering::Release);
+    }));
     terminal.write(b"\x1b[2;3HX\x1b[5;4H\x1b]8;;https://example.test\x1b\\Y\x1b]8;;\x1b\\");
     assert!(matches!(
         terminal.pane.collect_dirty_patch(8, 6),
         TerminalDirtyPatchOutcome::Fallback
     ));
+    assert!(
+        !hook_ran.load(std::sync::atomic::Ordering::Acquire),
+        "a fallback discards the collection and leaves its hook pending"
+    );
     let core = shepr_vt::lock_terminal_core(&terminal.pane.core).expect("test precondition");
     #[expect(
         clippy::redundant_closure_for_method_calls,

@@ -97,7 +97,7 @@ fn launch_fixture(
     steps: &[Step],
     timeout: Duration,
     probe: impl FnMut() -> io::Result<Probed>,
-) -> (io::Result<RuntimeStatus>, u32) {
+) -> (io::Result<RuntimeStatus>, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = dir.join("server-boot.log");
     let server_log = dir.join("shepr-server.log");
@@ -114,7 +114,57 @@ fn launch_fixture(
         &mut Instant::now,
         &mut std::thread::sleep,
     );
-    (result, pid.get())
+    (result, FixtureDaemonGuard::new(pid.get()))
+}
+
+/// Owns a detached fixture daemon's process group until the test has finished
+/// inspecting it. `SpawnedDaemon::disarm` transfers the leader to a background
+/// reaper; this guard also kills and waits for fixture descendants.
+struct FixtureDaemonGuard {
+    process_group: u32,
+}
+
+impl FixtureDaemonGuard {
+    fn new(process_group: u32) -> Self {
+        Self { process_group }
+    }
+
+    fn process_group(&self) -> u32 {
+        self.process_group
+    }
+}
+
+impl Drop for FixtureDaemonGuard {
+    fn drop(&mut self) {
+        if self.process_group == 0 {
+            return;
+        }
+        let group = libc::pid_t::try_from(self.process_group).expect("fixture pid fits");
+        // SAFETY: the test daemon called setsid, so its pid is the process
+        // group id; the guard owns that fixture group until this drop.
+        let result = unsafe { libc::kill(-group, libc::SIGKILL) };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return;
+            }
+            if !std::thread::panicking() {
+                panic!("could not kill fixture process group {group}: {error}");
+            }
+            return;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !group_is_gone(self.process_group) {
+            if Instant::now() >= deadline {
+                if !std::thread::panicking() {
+                    panic!("fixture process group {group} survived cleanup");
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 fn group_is_gone(group: u32) -> bool {
@@ -134,13 +184,6 @@ fn assert_group_dies(group: u32) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn kill_group(group: u32) {
-    let group = libc::pid_t::try_from(group).expect("pid fits");
-    // SAFETY: the test owns the daemon this group belongs to.
-    let result = unsafe { libc::kill(-group, libc::SIGKILL) };
-    assert_eq!(result, 0, "clean up the stand-in daemon");
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +551,7 @@ fn launch_after_a_refused_first_daemon(
     dir: &ScratchDir,
     timeout: Duration,
     mut probe: impl FnMut(u32) -> io::Result<Probed>,
-) -> (io::Result<RuntimeStatus>, u32, u32) {
+) -> (io::Result<RuntimeStatus>, u32, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = dir.join("server-boot.log");
     let server_log = dir.join("shepr-server.log");
@@ -538,7 +581,7 @@ fn launch_after_a_refused_first_daemon(
         &mut Instant::now,
         &mut std::thread::sleep,
     );
-    (result, spawned.get(), group.get())
+    (result, spawned.get(), FixtureDaemonGuard::new(group.get()))
 }
 
 #[test]
@@ -558,10 +601,9 @@ fn a_daemon_refused_by_a_leaving_holder_is_started_again_once_nothing_listens() 
     assert!(shepr_protocol::is_this_build(&status.build_id));
     assert_eq!(spawned, 2, "one restart, not one per poll");
     assert!(
-        !group_is_gone(group),
+        !group_is_gone(group.process_group()),
         "the answering daemon is kept running"
     );
-    kill_group(group);
 }
 
 #[test]
@@ -596,7 +638,7 @@ fn a_holder_that_never_leaves_ends_the_launch_in_a_timeout_with_restarts_paced()
         (2..=4).contains(&spawned),
         "restarts are paced by the interval, got {spawned} starts"
     );
-    assert_group_dies(group);
+    assert_group_dies(group.process_group());
 }
 
 #[test]
@@ -614,7 +656,7 @@ fn the_timeout_kills_the_daemons_whole_process_group() {
         error.to_string().contains("did not become ready"),
         "{error}"
     );
-    assert_group_dies(group);
+    assert_group_dies(group.process_group());
 }
 
 #[test]
@@ -629,7 +671,7 @@ fn a_probe_failure_kills_the_daemon() {
         });
     let error = result.expect_err("an untrusted socket fails the launch");
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    assert_group_dies(group);
+    assert_group_dies(group.process_group());
 }
 
 /// Runs `launch_with` against the fixture daemon in `dir` with a probe that
@@ -640,7 +682,7 @@ fn launch_against_other_build(
     steps: &[Step],
     timeout: Duration,
     answering_pid: impl Fn(u32) -> u32,
-) -> (io::Result<RuntimeStatus>, u32) {
+) -> (io::Result<RuntimeStatus>, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = dir.join("server-boot.log");
     let server_log = dir.join("shepr-server.log");
@@ -667,7 +709,7 @@ fn launch_against_other_build(
         &mut Instant::now,
         &mut std::thread::sleep,
     );
-    (result, pid.get())
+    (result, FixtureDaemonGuard::new(pid.get()))
 }
 
 #[test]
@@ -684,7 +726,7 @@ fn a_sibling_of_another_build_is_killed_and_reported() {
         .to_string();
     assert!(message.contains("different build"), "{message}");
     assert!(message.contains("install"), "{message}");
-    assert_group_dies(group);
+    assert_group_dies(group.process_group());
 }
 
 #[test]
@@ -700,7 +742,7 @@ fn another_builds_server_answering_for_a_live_daemon_is_not_blamed_on_it() {
     );
     let status = result.expect("the external occupant is handed back to the caller");
     assert_eq!(status.build_id, other_build_id());
-    assert_ne!(group, 0);
+    assert_ne!(group.process_group(), 0);
 }
 
 #[test]
@@ -717,12 +759,14 @@ fn a_daemon_that_proves_its_build_is_kept_running() {
             })
         });
     result.expect("a booting daemon that answers is a successful launch");
-    assert_ne!(group, 0);
+    assert_ne!(group.process_group(), 0);
     assert!(
-        !group_is_gone(group),
+        !group_is_gone(group.process_group()),
         "the launched daemon must keep running"
     );
-    kill_group(group);
+    let process_group = group.process_group();
+    drop(group);
+    assert_group_dies(process_group);
 }
 
 #[test]

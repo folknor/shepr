@@ -65,12 +65,14 @@ pub struct RestoredSession {
     /// session's persister takes it; every later history capture of this
     /// session is resolved against it.
     pub history_carry: HistoryCarry,
+    /// Restore pruned pane data or layout leaves from a workspace plan. This
+    /// is separate from `dropped_workspaces`: the caller must also preserve
+    /// the source file when only part of a workspace was pruned.
+    pub restore_damage: bool,
     /// Saved workspaces restore dropped (invalid layout, or no pane
     /// survived). The first save of this session overwrites the file those
     /// workspaces are still in, so a nonzero count tells the caller to back
-    /// the file up first. A pane pruned from a surviving workspace is not
-    /// included; callers need a separate damage signal before treating that
-    /// case as a partial restore.
+    /// the file up first.
     pub dropped_workspaces: usize,
 }
 
@@ -107,6 +109,7 @@ struct WorkspaceRestorePlan {
     zoomed: bool,
     numbers: HashMap<u32, usize>,
     next_number: usize,
+    restore_damage: bool,
 }
 
 /// Restore workspaces from a snapshot. Each pane gets a fresh shell in its
@@ -147,6 +150,7 @@ pub fn restore(
     // Where each saved workspace ended up, `None` for a dropped one.
     let mut restored_index = Vec::with_capacity(snapshot.workspaces.len());
     let plans: Vec<_> = snapshot.workspaces.iter().map(plan_workspace).collect();
+    let restore_damage = plans.iter().flatten().any(|plan| plan.restore_damage);
     let saved_ids = snapshot
         .workspaces
         .iter()
@@ -211,6 +215,7 @@ pub fn restore(
         terminal_runtimes,
         active,
         history_carry,
+        restore_damage,
         dropped_workspaces,
     }
 }
@@ -334,11 +339,13 @@ fn restored_pane_size(
 /// leaves nothing usable to restore.
 fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> {
     let mut snap = original.clone();
+    let mut restore_damage = false;
     // shepr only ever saves absolute cwds, so a relative one is a damaged
     // value, not a directory that went missing. It is dropped with its pane
     // rather than kept as an unavailable pane: a relative cwd in live terminal
     // state would reach splits and cwd following, which would resolve it
     // against the server's own working directory.
+    let saved_pane_count = snap.panes.len();
     snap.panes.retain(|_, pane| {
         let valid = pane.cwd.is_absolute();
         if !valid {
@@ -346,10 +353,7 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
         }
         valid
     });
-    // A pane pruned here may leave its workspace alive, so it does not affect
-    // `dropped_workspaces`; reporting it for that count would claim the whole
-    // workspace was dropped. The caller currently needs a separate damage
-    // signal to back up the source file for this case.
+    restore_damage |= snap.panes.len() != saved_pane_count;
     // An invalid saved split ratio drops this one workspace, like every other
     // per-workspace restore defect below, rather than refusing the whole
     // session (which would lose every healthy workspace for one bad number) or
@@ -380,8 +384,10 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     // if it had been the user's; the leaf is dropped and pruning collapses
     // its split. That happens before any pane starts, so every shell starts
     // at its size in the layout the workspace ends up with.
+    let layout_pane_ids = collect_pane_ids(&node);
+    let layout_pane_count = layout_pane_ids.len();
     let mut surviving = HashSet::new();
-    for id in collect_pane_ids(&node) {
+    for id in layout_pane_ids {
         let old_id = reverse_id_map.get(&id);
         if old_id.is_some_and(|old_id| snap.panes.contains_key(old_id)) {
             surviving.insert(id);
@@ -393,6 +399,7 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
             );
         }
     }
+    restore_damage |= surviving.len() != layout_pane_count;
     let Some(node) = prune_restored_node(node, &surviving) else {
         warn!(
             workspace = ?snap.id,
@@ -432,8 +439,10 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
 
     // Assign only surviving panes; stale entries cannot exhaust numbering or
     // collide with a pane that will actually be restored.
+    let planned_pane_count = snap.panes.len();
     snap.panes
         .retain(|old, _| id_map.get(old).is_some_and(|id| surviving.contains(id)));
+    restore_damage |= snap.panes.len() != planned_pane_count;
     let max = snap
         .panes
         .values()
@@ -465,6 +474,7 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
         zoomed,
         numbers,
         next_number: next,
+        restore_damage,
     })
 }
 
@@ -488,6 +498,7 @@ fn restore_workspace(
         zoomed,
         numbers: public_pane_numbers_by_old_raw,
         next_number: next_public_pane_number,
+        restore_damage: _,
     } = plan;
     let public_pane_ids_by_old_raw: HashMap<_, _> = public_pane_numbers_by_old_raw
         .iter()
@@ -1341,6 +1352,7 @@ mod tests {
         assert_eq!(plan.snapshot.panes.len(), 1);
         assert_eq!(plan.snapshot.identity_cwd, PathBuf::from("/surviving"));
         assert_eq!(plan.pane_ids.len(), 1);
+        assert!(plan.restore_damage);
     }
 
     fn restore_runtimeless(snapshot: &SessionSnapshot) -> RestoredSession {

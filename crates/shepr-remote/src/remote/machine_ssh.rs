@@ -260,9 +260,9 @@ impl MachineSshConnector {
         }
         // A missing managed config can mean its temporary directory was removed
         // while the client stayed open. Rebuild it as local setup rather than retrying
-        // ssh forever with a path that no longer exists.
-        // This repairs a removed Shepr config directory while its XDG runtime root
-        // still exists. The private profile runtime directory and config can be rebuilt.
+        // ssh with a path that no longer exists. If logind removed the XDG runtime
+        // root itself, the resulting NotFound is shown as Attention and retried;
+        // setup rebuilds once that root returns.
         ensure_managed_ssh_config(state, &self.target, &self.paths)?;
         let ConnectorState {
             ssh,
@@ -482,6 +482,35 @@ mod tests {
         assert!(is_launch_fatal_setup_error(&io::Error::from(
             io::ErrorKind::InvalidInput,
         )));
+    }
+
+    #[test]
+    fn a_vanished_xdg_runtime_root_is_a_retryable_attention_failure() {
+        // A successful rebuild needs a runtime root as short as a real
+        // `/run/user/<uid>` for the SSH control socket name, which no scratch
+        // directory is; this covers how the missing root is classified.
+        let scratch = shepr_test_support::ScratchDir::new("machine-runtime-root-recovery");
+        let xdg_runtime = scratch.join("xdg-runtime");
+        let paths = shepr_config::AppPaths::rooted_at(&xdg_runtime, None, None);
+        let target = SshTarget::parse("build.example").expect("test precondition");
+        let mut state = ConnectorState::default();
+
+        let error = ensure_managed_ssh_config(&mut state, &target, &paths)
+            .expect_err("missing runtime root prevents SSH setup");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !is_launch_fatal_setup_error(&error),
+            "a runtime root that can return remains retryable: {error}"
+        );
+        assert!(
+            !super::is_ssh_link_failure(&error),
+            "a missing local runtime root is not a dropped SSH link"
+        );
+        assert!(
+            super::super::SshFailureDiagnostic::from_error(&error).needs_attention(),
+            "a missing local runtime root is actionable, not a dropped SSH link"
+        );
+        assert!(state.ssh.is_none(), "a failed setup keeps nothing to reuse");
     }
 
     fn cache_in(scratch: &shepr_test_support::ScratchDir) -> SshMetadataCache {

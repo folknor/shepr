@@ -59,8 +59,10 @@ detect capture <pane>` prints the screen text and OSC title and progress the
 detector evaluates for a pane, as JSON that `detect explain --file` reads back,
 and `shepr detect explain <pane>` says which rule decided its state.
 
-Config is read and validated once at launch. There is no reload. Any config
-problem fails the launch; no fallbacks. Directories follow the XDG spec.
+Config is read and validated once at launch, by the TUI (and its internal
+`client` launch) and by `shepr-server`; CLI subcommands and the internal
+`remote-client-bridge` launch do not load it. There is no reload. Any config problem fails the launch; no
+fallbacks. Directories follow the XDG spec.
 Config never crosses hosts. Each process uses only the config.toml of the
 host it runs on, and the handshake welcome carries no config. (The client's
 hello does report its mouse-capture preference, which comes from its own

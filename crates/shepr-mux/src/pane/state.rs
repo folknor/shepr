@@ -1,6 +1,6 @@
 use shepr_protocol::TerminalId;
 
-/// Viewport state for a pane.
+/// Per-pane state: its terminal link and input flags.
 ///
 /// Terminal identity, cwd, labels, and agent state live in TerminalState.
 pub struct PaneState {

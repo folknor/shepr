@@ -37,10 +37,6 @@ impl<R> Point<R> {
     pub const fn new(row: R, col: u16) -> Self {
         Self { row, col }
     }
-
-    pub(crate) fn map_row<T>(self, map: impl FnOnce(R) -> T) -> Point<T> {
-        Point::new(map(self.row), self.col)
-    }
 }
 
 impl AbsRow {

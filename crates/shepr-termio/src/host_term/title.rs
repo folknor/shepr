@@ -1,6 +1,4 @@
-//! Clipboard bytes may contain credentials or other private text. Keep them
-//! out of logs and error messages; diagnostics may carry only byte counts and
-//! error kinds.
+//! Host terminal output for window titles and clipboard contents.
 
 use std::io::{self, Write};
 
@@ -37,7 +35,8 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// `Ok` means the native tool took the bytes or the OSC 52 sequence was
 /// written and flushed to the host terminal (whether the terminal honours
 /// OSC 52 cannot be observed). `Err` means the copy did not happen; the caller
-/// logs it with its own context.
+/// logs it with its own context. Clipboard bytes may contain private text, so
+/// diagnostics should include only their byte count and error kind.
 pub fn write_clipboard_bytes<W: Write>(
     bytes: &[u8],
     prefers_osc52_clipboard: bool,

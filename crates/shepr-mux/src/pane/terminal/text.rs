@@ -707,8 +707,22 @@ pub(super) struct OwnedTextBuffer {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone)]
+pub(super) struct OwnedTextCell {
+    pub(super) wide: shepr_vt::CellWide,
+    pub(super) graphemes: Vec<u32>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(super) struct OwnedTextRow {
+    pub(super) cells: Vec<OwnedTextCell>,
+    pub(super) soft_wrapped: bool,
+}
+
+#[cfg(test)]
 impl OwnedTextBuffer {
-    pub(super) fn new(cols: u16, rows: Vec<shepr_vt::ScreenTextRow>) -> Self {
+    pub(super) fn new(cols: u16, rows: Vec<OwnedTextRow>) -> Self {
         let mut builder = TextBufferBuilder::new(true, true);
         let mut lines = Vec::new();
         for (row, screen_row) in (0u64..).zip(rows) {
@@ -716,7 +730,7 @@ impl OwnedTextBuffer {
             for (col, cell) in (0u16..).zip(&screen_row.cells) {
                 builder.push_cell(row, col, cell.wide, &terminal_cell_text(&cell.graphemes));
             }
-            if builder.end_row(screen_row.wrap.soft_wrapped) {
+            if builder.end_row(screen_row.soft_wrapped) {
                 lines.push(std::mem::take(&mut builder.line));
             }
         }
@@ -730,6 +744,27 @@ impl OwnedTextBuffer {
             cols,
             lines,
         }
+    }
+
+    pub(super) fn from_terminal(terminal: &shepr_vt::Terminal) -> Self {
+        let mut rows = Vec::with_capacity(terminal.total_rows());
+        let mut scratch = String::new();
+        for row in 0..terminal.total_rows() {
+            let mut cells = Vec::new();
+            let wrap = terminal
+                .visit_screen_row_text(shepr_vt::ScreenRow(row), &mut scratch, |_, wide, text| {
+                    cells.push(OwnedTextCell {
+                        wide,
+                        graphemes: text.chars().map(u32::from).collect(),
+                    });
+                })
+                .expect("test precondition");
+            rows.push(OwnedTextRow {
+                cells,
+                soft_wrapped: wrap.soft_wrapped,
+            });
+        }
+        Self::new(terminal.cols(), rows)
     }
 
     pub(super) fn word_motion(

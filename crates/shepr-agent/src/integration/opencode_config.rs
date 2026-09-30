@@ -70,7 +70,7 @@ pub(crate) fn prepare_tui_plugin(
     paths: &AgentIntegrationPaths,
 ) -> io::Result<PluginConfigEdit> {
     for path in tui_config_paths(config_dir) {
-        if plugin_is_configured(&path, "plugin", plugin_spec) {
+        if plugin_is_configured(&path, "plugin", plugin_spec)? {
             return Ok(PluginConfigEdit::unchanged(path));
         }
     }
@@ -150,13 +150,16 @@ fn prepare_plugin(
     })
 }
 
-pub(crate) fn tui_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> bool {
-    tui_config_paths(config_dir)
-        .iter()
-        .any(|path| plugin_is_configured(path, "plugin", plugin_spec))
+pub(crate) fn tui_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> io::Result<bool> {
+    for path in tui_config_paths(config_dir) {
+        if plugin_is_configured(&path, "plugin", plugin_spec)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> bool {
+pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> io::Result<bool> {
     plugin_is_configured(
         &config_dir.join(super::OPENCODE_CLI_CONFIG_NAME),
         "plugins",
@@ -164,17 +167,20 @@ pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> 
     )
 }
 
-fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> bool {
-    let Ok(content) = fs::read_to_string(config_path) else {
-        return false;
+fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
+    let content = match fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("cannot read {}: {error}", config_path.display()),
+            ));
+        }
     };
-    let Ok(root) = parse_root(&content, config_path) else {
-        return false;
-    };
-    let Ok(object) = root_object(&root, config_path) else {
-        return false;
-    };
-    object
+    let root = parse_root(&content, config_path)?;
+    let object = root_object(&root, config_path)?;
+    Ok(object
         .get(key)
         .and_then(|property| property.array_value())
         .is_some_and(|plugins| {
@@ -183,7 +189,7 @@ fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> boo
                     .to_serde_value()
                     .is_some_and(|entry| plugin_entry_matches(&entry, plugin_spec))
             })
-        })
+        }))
 }
 
 fn parse_root(content: &str, path: &Path) -> io::Result<CstRootNode> {
@@ -398,7 +404,8 @@ mod tests {
         )
         .expect("test precondition");
 
-        let configured = tui_plugin_is_configured(&dir, "./shepr-tui-session.js");
+        let configured =
+            tui_plugin_is_configured(&dir, "./shepr-tui-session.js").expect("config status");
         fs::remove_dir_all(dir).expect("test precondition");
         assert!(
             configured,
@@ -416,7 +423,7 @@ mod tests {
         )
         .expect("test precondition");
 
-        assert!(tui_plugin_is_configured(&dir, "./shepr-tui-state.js"));
+        assert!(tui_plugin_is_configured(&dir, "./shepr-tui-state.js").expect("config status"));
 
         fs::remove_dir_all(dir).expect("test precondition");
     }
@@ -429,7 +436,7 @@ mod tests {
         let path = dir.join("cli.json");
         fs::write(&path, r#"{"theme":{"name":"catppuccin"},"plugins":[{"package":"./shepr-opencode","options":{"custom":true}},"example"]}"#).expect("test precondition");
         add_cli_plugin(&dir, &state, "./shepr-opencode").expect("test precondition");
-        assert!(cli_plugin_is_configured(&dir, "./shepr-opencode"));
+        assert!(cli_plugin_is_configured(&dir, "./shepr-opencode").expect("config status"));
         assert_eq!(
             parse_config(&path)["plugins"]
                 .as_array()
@@ -463,7 +470,7 @@ mod tests {
             parse_config(&path),
             json!({ "plugins": ["./shepr-opencode"] })
         );
-        assert!(cli_plugin_is_configured(&dir, "./shepr-opencode"));
+        assert!(cli_plugin_is_configured(&dir, "./shepr-opencode").expect("config status"));
         fs::remove_dir_all(dir).expect("test precondition");
         fs::remove_dir_all(state).expect("test precondition");
     }

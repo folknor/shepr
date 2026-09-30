@@ -219,7 +219,16 @@ pub fn session_ref_from_report(
     agent_session_path: Option<String>,
 ) -> Option<AgentSessionRef> {
     let source = AgentSource::from_pair(source, agent_label)?;
-    let agent = source.agent()?;
+    session_ref_for_agent_report(source.agent()?, agent_session_id, agent_session_path)
+}
+
+/// Decode an official report after its source/label pair has been validated.
+/// The API can retain its parsed agent instead of resolving the pair again.
+pub fn session_ref_for_agent_report(
+    agent: Agent,
+    agent_session_id: Option<String>,
+    agent_session_path: Option<String>,
+) -> Option<AgentSessionRef> {
     let policy = agent.descriptor().resume_support?.session_ref_policy;
     match (policy, agent_session_path, agent_session_id) {
         (SessionRefPolicy::IdOrPath, Some(path), agent_session_id) => {

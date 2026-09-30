@@ -18,6 +18,19 @@ pub(crate) struct HandshakeGeometry {
     pub(crate) surface_size: shepr_protocol::ClientSurfaceSize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HandshakeLinkKind {
+    Local,
+    Remote,
+}
+
+fn read_timeout_for_link(link_kind: HandshakeLinkKind) -> Duration {
+    match link_kind {
+        HandshakeLinkKind::Local => LOCAL_HANDSHAKE_READ_TIMEOUT,
+        HandshakeLinkKind::Remote => REMOTE_HANDSHAKE_READ_TIMEOUT,
+    }
+}
+
 fn set_handshake_recv_timeout(
     stream: &LocalStream,
     timeout: Option<Duration>,
@@ -47,7 +60,7 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
     }
 }
 
-/// Performs the client→server handshake.
+/// Performs the initial Local client→server handshake.
 ///
 /// The connection opens with the raw build-identity preamble in both
 /// directions (`shepr_protocol::preamble`), so a server of any other build is
@@ -57,14 +70,31 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 /// The welcome accepts or refuses the connection and carries no config.
 /// A malformed welcome is a protocol failure of the handshake.
 ///
-/// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
-/// machine endpoint supervisor bounds each whole connection attempt by its
-/// attempt budget.
+/// `deadline`, when given, caps the wait for the reply below the Local read timeout.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
     geometry: HandshakeGeometry,
     mouse_capture: bool,
     surface_active: bool,
+    deadline: Option<std::time::Instant>,
+) -> Result<(), ClientError> {
+    do_handshake_for_link(
+        stream,
+        geometry,
+        mouse_capture,
+        surface_active,
+        HandshakeLinkKind::Local,
+        deadline,
+    )
+}
+
+/// Performs a supervised handshake using the transport link kind to select its read timeout.
+pub(crate) fn do_handshake_for_link(
+    stream: &mut LocalStream,
+    geometry: HandshakeGeometry,
+    mouse_capture: bool,
+    surface_active: bool,
+    link_kind: HandshakeLinkKind,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
     let surface_size = geometry.surface_size;
@@ -102,14 +132,7 @@ pub(super) fn do_handshake(
             .map_err(|error| hello_write_error(shepr_protocol::FramingError::Io(error)))?;
     }
 
-    // The hello's presentation flag is not the connection's link kind. A supervised Local
-    // reconnect also passes false here and currently gets the remote timeout; correcting that
-    // requires its caller to pass Local explicitly.
-    let read_timeout = if surface_active {
-        LOCAL_HANDSHAKE_READ_TIMEOUT
-    } else {
-        REMOTE_HANDSHAKE_READ_TIMEOUT
-    };
+    let read_timeout = read_timeout_for_link(link_kind);
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
     // clock-io-ok: bound the real handshake reads after writing the hello.
@@ -126,8 +149,9 @@ pub(super) fn do_handshake(
         "failed to clear client handshake read timeout",
     )?;
 
-    // A server that is going down answers the hello with its shutdown notice. That is
-    // a transient condition to report as such, not a malformed welcome.
+    // A pre-welcome shutdown notice is transient if a peer sends one. The local server closes
+    // without a welcome when stopping is observed during the handshake; if stopping races
+    // after acceptance, it sends its notice after the welcome.
     let welcome = match welcome {
         ServerMessage::ServerShutdown { reason } => {
             return Err(ClientError::ServerShutdown { reason });
@@ -228,6 +252,18 @@ mod tests {
         let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted());
         let frames = shepr_protocol::encode_message(&welcome).expect("test precondition");
         handshake_against_welcome("accepted-welcome", frames).expect("accepted welcome");
+    }
+
+    #[test]
+    fn handshake_timeout_follows_link_kind_not_surface_activity() {
+        assert_eq!(
+            read_timeout_for_link(HandshakeLinkKind::Local),
+            LOCAL_HANDSHAKE_READ_TIMEOUT
+        );
+        assert_eq!(
+            read_timeout_for_link(HandshakeLinkKind::Remote),
+            REMOTE_HANDSHAKE_READ_TIMEOUT
+        );
     }
 
     #[test]

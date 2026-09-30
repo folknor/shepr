@@ -57,6 +57,7 @@ mod lifecycle;
 mod render;
 mod retained_surface;
 mod surface_interest;
+mod worker;
 
 pub use bootstrap::{RunServerError, ServerReady, ServerSocket, run_server};
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
@@ -82,9 +83,19 @@ enum LoopEvent<'a> {
     Internal(AppEvent),
     Api(Box<shepr_api::ApiRequestMessage>),
     ServerEvent(ServerEvent),
+    WorkerCompletion(worker::WorkerCompletion),
     RenderRequested,
     ClientListenerReady(AsyncFdReadyGuard<'a, ListenerFd>),
     ClientListenerError(io::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct EndpointReplyTicket(u64);
+
+struct EndpointReplyEntry {
+    ticket: EndpointReplyTicket,
+    message: Option<ServerMessage>,
+    shutdown_message: Option<ServerMessage>,
 }
 
 struct PendingCheckpointedPaneExit {
@@ -129,12 +140,12 @@ pub struct HeadlessServer {
     focused_panes: HashSet<(shepr_protocol::WorkspaceId, shepr_core::layout::PaneId)>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
-    /// the clients and on workspace/pane topology, which change only while
-    /// handling an internal event, an API request, a server event or a client
-    /// removal; a PTY render wake changes neither. Recomputing it on every loop
-    /// wake walked every pane per PTY notify. A missed mark would only delay a
-    /// visible pane's repaint to the normal render cadence, never drop it:
-    /// visibility at render time is computed fresh.
+    /// the clients' workspace views, pane membership, and focused pane when a
+    /// workspace is zoomed. A PTY render wake changes none of those.
+    /// Recomputing it on every loop wake walked every pane per PTY notify. A
+    /// missed mark would only delay a visible pane's repaint to the normal
+    /// render cadence, never drop it: visibility at render time is computed
+    /// fresh.
     immediate_pty_sources_dirty: bool,
     /// Whether the host mouse-capture and keyboard modes pushed to clients
     /// (`stream_host_mouse_capture_mode`, `stream_shell_keyboard_mode`)
@@ -167,12 +178,15 @@ pub struct HeadlessServer {
     /// Set only while a ready held exit is routed back through the forwarding
     /// handler, which then skips its initial App preparation step.
     replaying_checkpointed_pane_exit: Option<u64>,
-    /// Answers to client-shell endpoint commands, in the order the commands
-    /// ran, waiting for the render that shows their effect. The loop queues
-    /// them to the clients after that render (or at once when no render is
-    /// pending), so a reply never reaches a client ahead of the projection
-    /// its command changed. See `flush_endpoint_replies`.
-    endpoint_replies: Vec<(ClientId, ServerMessage)>,
+    /// Per-client endpoint reply queues preserve command order. An unfinished
+    /// worker reply holds later replies for that client, but never holds other
+    /// clients. Ready replies leave after the render their command needs.
+    endpoint_replies: HashMap<ClientId, VecDeque<EndpointReplyEntry>>,
+    next_endpoint_reply_ticket: u64,
+    worker_tx: tokio::sync::mpsc::UnboundedSender<worker::WorkerCompletion>,
+    worker_rx: tokio::sync::mpsc::UnboundedReceiver<worker::WorkerCompletion>,
+    checkout_root_runner: worker::CheckoutRootRunner,
+    resume_cwd_checks_in_flight: HashSet<(shepr_protocol::TerminalId, PathBuf)>,
     // Kept after the listener so it is released only after socket cleanup and listener drop.
     _client_socket_startup_lock: SocketStartupLock,
 }
@@ -218,6 +232,8 @@ impl HeadlessServer {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
 
+        let (worker_tx, worker_rx) = worker::channel();
+
         Ok(Self {
             app,
             _api_server: api_server,
@@ -240,7 +256,12 @@ impl HeadlessServer {
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
             replaying_checkpointed_pane_exit: None,
-            endpoint_replies: Vec::new(),
+            endpoint_replies: HashMap::new(),
+            next_endpoint_reply_ticket: 0,
+            worker_tx,
+            worker_rx,
+            checkout_root_runner: worker::default_checkout_root_runner(),
+            resume_cwd_checks_in_flight: HashSet::new(),
             _client_socket_startup_lock: client_socket_startup_lock,
         })
     }
@@ -286,6 +307,7 @@ impl HeadlessServer {
                 // Commands answered before the stop (a command that arrived
                 // while stopping is answered with the refusal) still reach
                 // their clients, ahead of the shutdown notice.
+                self.resolve_pending_endpoint_replies_for_shutdown();
                 self.flush_endpoint_replies();
                 if let Err(err) = self.complete_shutdown().await {
                     run_error.get_or_insert(err);
@@ -463,6 +485,10 @@ impl HeadlessServer {
                         Some(ev) => LoopEvent::ServerEvent(ev),
                         None => LoopEvent::Timer,
                     },
+                    maybe_worker = self.worker_rx.recv() => match maybe_worker {
+                        Some(completion) => LoopEvent::WorkerCompletion(completion),
+                        None => LoopEvent::Timer,
+                    },
                     _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
                     // A save ended: the scheduled tasks reap it and start
                     // whatever save waited for it.
@@ -521,6 +547,8 @@ impl HeadlessServer {
                         tracing::error!(error = %err, "client listener readiness failed");
                         run_error.get_or_insert(err);
                     }
+                    // A worker completion lands here too: the shutdown flush
+                    // answers its pending reply with the shutdown refusal.
                     _ => {}
                 }
                 continue;
@@ -540,6 +568,11 @@ impl HeadlessServer {
                 }
                 LoopEvent::ServerEvent(ev) => {
                     if self.handle_server_event_with_render_impact(ev) == RenderDemand::Full {
+                        render_demand.join(RenderDemand::Full);
+                    }
+                }
+                LoopEvent::WorkerCompletion(completion) => {
+                    if self.handle_worker_completion(completion, event_time) {
                         render_demand.join(RenderDemand::Full);
                     }
                 }
@@ -662,6 +695,7 @@ impl HeadlessServer {
 
     fn remove_client(&mut self, client_id: ClientId) -> bool {
         self.immediate_pty_sources_dirty = true;
+        self.endpoint_replies.remove(&client_id);
         let (removed, was_foreground) = self.clients.remove_client(client_id);
         if let Some(mut removed) = removed {
             let held_inputs = removed.drain_shell_held_inputs();
@@ -979,7 +1013,50 @@ impl HeadlessServer {
 
     /// Holds an endpoint command's reply for the post-render flush.
     fn queue_endpoint_reply(&mut self, client_id: ClientId, message: ServerMessage) {
-        self.endpoint_replies.push((client_id, message));
+        let ticket = self.next_endpoint_reply_ticket();
+        self.endpoint_replies
+            .entry(client_id)
+            .or_default()
+            .push_back(EndpointReplyEntry {
+                ticket,
+                message: Some(message),
+                shutdown_message: None,
+            });
+    }
+
+    fn reserve_endpoint_reply(
+        &mut self,
+        client_id: ClientId,
+        shutdown_message: ServerMessage,
+    ) -> EndpointReplyTicket {
+        let ticket = self.next_endpoint_reply_ticket();
+        self.endpoint_replies
+            .entry(client_id)
+            .or_default()
+            .push_back(EndpointReplyEntry {
+                ticket,
+                message: None,
+                shutdown_message: Some(shutdown_message),
+            });
+        ticket
+    }
+
+    fn next_endpoint_reply_ticket(&mut self) -> EndpointReplyTicket {
+        let ticket = EndpointReplyTicket(self.next_endpoint_reply_ticket);
+        self.next_endpoint_reply_ticket = self.next_endpoint_reply_ticket.wrapping_add(1);
+        ticket
+    }
+
+    fn complete_endpoint_reply(&mut self, ticket: EndpointReplyTicket, message: ServerMessage) {
+        for replies in self.endpoint_replies.values_mut() {
+            if let Some(reply) = replies.iter_mut().find(|reply| reply.ticket == ticket) {
+                if reply.message.is_none() {
+                    reply.message = Some(message);
+                    reply.shutdown_message = None;
+                }
+                return;
+            }
+        }
     }
 
     /// Hands every held endpoint reply to its client's control lane, in the
@@ -993,8 +1070,32 @@ impl HeadlessServer {
         if self.endpoint_replies.is_empty() {
             return;
         }
-        for (client_id, message) in std::mem::take(&mut self.endpoint_replies) {
-            self.send_to_client(client_id, &message);
+        let client_ids = self.endpoint_replies.keys().copied().collect::<Vec<_>>();
+        for client_id in client_ids {
+            let Some(mut replies) = self.endpoint_replies.remove(&client_id) else {
+                continue;
+            };
+            // A reply still waiting for its worker holds every later reply
+            // of this client, so they leave in command order.
+            while let Some(message) = replies.front_mut().and_then(|reply| reply.message.take()) {
+                replies.pop_front();
+                if !self.send_to_client(client_id, &message) {
+                    break;
+                }
+            }
+            if self.clients.get(&client_id).is_some() && !replies.is_empty() {
+                self.endpoint_replies.insert(client_id, replies);
+            }
+        }
+    }
+
+    fn resolve_pending_endpoint_replies_for_shutdown(&mut self) {
+        for replies in self.endpoint_replies.values_mut() {
+            for reply in replies {
+                if reply.message.is_none() {
+                    reply.message = reply.shutdown_message.take();
+                }
+            }
         }
     }
 
@@ -1416,7 +1517,99 @@ impl HeadlessServer {
             // the next focus change.
             self.sync_pane_focus();
         }
-        changed | resumed
+        let resumed_after_check_start = self.schedule_resume_cwd_checks(now);
+        changed | resumed | resumed_after_check_start
+    }
+
+    fn schedule_resume_cwd_checks(&mut self, now: Instant) -> bool {
+        let mut check_start_failed = false;
+        for (terminal_id, cwd) in self.app.pending_agent_resume_cwd_checks(now) {
+            let key = (terminal_id.clone(), cwd.clone());
+            if !self.resume_cwd_checks_in_flight.insert(key) {
+                continue;
+            }
+            if let Err(error) =
+                worker::resume_cwd_check(&self.worker_tx, terminal_id.clone(), cwd.clone())
+            {
+                warn!(
+                    terminal = %terminal_id,
+                    cwd = %cwd.display(),
+                    %error,
+                    "failed to start saved agent resume directory check"
+                );
+                self.resume_cwd_checks_in_flight
+                    .remove(&(terminal_id.clone(), cwd.clone()));
+                self.app
+                    .record_pending_agent_resume_cwd_check(terminal_id, cwd, false);
+                check_start_failed = true;
+            }
+        }
+        if !check_start_failed {
+            return false;
+        }
+        let resumed = self.app.start_pending_agent_resumes(now);
+        if resumed {
+            self.sync_pane_focus();
+        }
+        resumed
+    }
+
+    fn handle_worker_completion(
+        &mut self,
+        completion: worker::WorkerCompletion,
+        now: Instant,
+    ) -> bool {
+        match completion {
+            worker::WorkerCompletion::CheckoutRoot {
+                ticket,
+                boot_id,
+                request_id,
+                home,
+                result,
+            } => {
+                let result = result
+                    .map(
+                        |root| shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot {
+                            root,
+                            home,
+                        },
+                    )
+                    .map_err(shepr_protocol::command::EndpointError::Rejected);
+                self.complete_endpoint_reply(
+                    ticket,
+                    crate::server::client_commands::response_message(boot_id, request_id, result),
+                );
+                false
+            }
+            worker::WorkerCompletion::ResumeCwdChecked {
+                terminal_id,
+                cwd,
+                result,
+            } => {
+                self.resume_cwd_checks_in_flight
+                    .remove(&(terminal_id.clone(), cwd.clone()));
+                let available = match result {
+                    Ok(available) => available,
+                    Err(error) => {
+                        warn!(
+                            terminal = %terminal_id,
+                            cwd = %cwd.display(),
+                            %error,
+                            "saved agent resume directory cannot be read"
+                        );
+                        false
+                    }
+                };
+                self.app
+                    .record_pending_agent_resume_cwd_check(terminal_id, cwd, available);
+                let resumed = self.app.start_pending_agent_resumes(now);
+                if resumed {
+                    self.sync_pane_focus();
+                }
+                let resumed_after_check_start = self.schedule_resume_cwd_checks(now);
+                resumed | resumed_after_check_start
+            }
+        }
     }
 }
 

@@ -15,6 +15,32 @@ pub(super) struct ShellSessionCache {
     /// When the snapshot last read the `/proc`-derived fields.
     pub(super) built_at: Instant,
     pub(super) session: crate::app::SessionSnapshot,
+    /// Projections already checked by the cwd timer, available to the render
+    /// pass that the first changed projection requests.
+    pub(super) timer_projections: HashMap<ClientId, CachedShellProjection>,
+}
+
+pub(super) struct CachedShellProjection {
+    location_generation: u64,
+    projection_revision: u64,
+    snapshot: shepr_protocol::ClientShellSnapshot,
+}
+
+type PaneSurfaceRenderKey = (Option<shepr_protocol::WorkspaceId>, u16, u16, u32, u32);
+
+fn pane_surface_render_key(
+    target: Option<&shepr_protocol::WorkspaceId>,
+    area: Rect,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+) -> PaneSurfaceRenderKey {
+    let cell_size = cell_size.or_default();
+    (
+        target.cloned(),
+        area.width,
+        area.height,
+        cell_size.width_px,
+        cell_size.height_px,
+    )
 }
 
 impl HeadlessServer {
@@ -35,14 +61,14 @@ impl HeadlessServer {
             revision: self.app.state.shell_projection_revision,
             built_at: self.app.clock.now,
             session: self.app.session_snapshot(),
+            timer_projections: HashMap::new(),
         });
     }
 
     /// Timer path for inputs no event reports. Rebuilds the shared session and
-    /// projects it for every shell client without sending anything. Only when
-    /// some client's projection differs from what it was last sent does the
-    /// shared generation move and a full render get requested, so an idle
-    /// server pays one session build and one projection per client each
+    /// checks clients until the first changed projection. That change requests
+    /// a render, which reuses the projections already built on this pass. An
+    /// idle server pays one session build and one projection per client each
     /// interval, not a surface render. This also bounds how long any missed
     /// invalidation can leave a client stale.
     pub(super) fn refresh_shell_projection_sources(&mut self) -> bool {
@@ -50,22 +76,39 @@ impl HeadlessServer {
         let Some(cache) = self.shell_session_cache.as_ref() else {
             return false;
         };
-        let changed = self.clients.values().any(|client| {
+        let mut timer_projections = HashMap::new();
+        let mut changed = false;
+        for (&client_id, client) in &self.clients {
             let shell = client.shell_state();
-            let Some(sent) = shell.snapshot.as_ref() else {
-                return true;
-            };
             let candidate = crate::server::client_shell::snapshot_from_session(
                 &self.app,
-                cache.session.clone(),
+                &cache.session,
                 &self.client_shell_boot_id,
                 shell.projection_revision.get(),
                 &shell.location,
             );
-            candidate != *sent
-        });
+            let client_changed = shell
+                .snapshot
+                .as_ref()
+                .is_none_or(|sent| candidate != *sent);
+            timer_projections.insert(
+                client_id,
+                CachedShellProjection {
+                    location_generation: shell.location.generation(),
+                    projection_revision: shell.projection_revision.get(),
+                    snapshot: candidate,
+                },
+            );
+            if client_changed {
+                changed = true;
+                break;
+            }
+        }
         if changed {
             self.shell_session_generation = self.shell_session_generation.saturating_add(1);
+            if let Some(cache) = self.shell_session_cache.as_mut() {
+                cache.timer_projections = timer_projections;
+            }
         }
         changed
     }
@@ -304,10 +347,32 @@ impl HeadlessServer {
             let laid_out =
                 self.app.state.has_workspace_without_area() && self.apply_all_workspace_geometry();
             self.app.full_redraw_pending = false;
+            if let Some(cache) = self.shell_session_cache.as_mut() {
+                cache.timer_projections.clear();
+            }
             debug!(laid_out, "updated geometry with no attached clients");
             return;
         }
         let render_target_count = render_targets.len();
+        let mut remaining_surface_renders = HashMap::new();
+        for target in &render_targets {
+            let Some(client) = self.clients.get(&target.client_id) else {
+                continue;
+            };
+            if !client.is_active_shell_client() {
+                continue;
+            }
+            let area = Rect::new(
+                0,
+                0,
+                target.terminal_size.cols.get(),
+                target.terminal_size.rows.get(),
+            );
+            let shell_target = self.shell_target_for_client(target.client_id);
+            let key = pane_surface_render_key(shell_target.as_ref(), area, target.cell_size);
+            *remaining_surface_renders.entry(key).or_insert(0usize) += 1;
+        }
+        let mut shared_surface_renders = HashMap::new();
 
         // Resize a workspace from its geometry source before drawing any observer.
         // Retained updates fall back here when a pane changes alternate screens.
@@ -331,23 +396,41 @@ impl HeadlessServer {
                 .render_state
                 .last_pane_surface()
                 .is_none_or(|surface| {
-                    surface.panes.iter().any(|pane| {
-                        let Some((workspace_index, pane_id)) =
-                            self.app.parse_pane_id(&pane.pane_id)
-                        else {
-                            return false;
-                        };
-                        self.app
-                            .state
-                            .runtime_for_pane_in_workspace(
-                                &self.app.terminal_runtimes,
-                                workspace_index,
-                                pane_id,
-                            )
-                            .is_some_and(|runtime| {
-                                runtime.alternate_screen_active() != pane.alternate_screen_active
-                            })
-                    })
+                    let identities = &client.surface_pane_identities;
+                    if identities.len() != surface.panes.len() {
+                        return true;
+                    }
+                    let Some(first_identity) = identities.first() else {
+                        return false;
+                    };
+                    let Some(workspace_index) =
+                        self.app.resolve_workspace_id(&first_identity.workspace_id)
+                    else {
+                        return false;
+                    };
+                    if identities
+                        .iter()
+                        .any(|identity| identity.workspace_id != first_identity.workspace_id)
+                    {
+                        return true;
+                    }
+                    surface
+                        .panes
+                        .iter()
+                        .zip(identities)
+                        .any(|(pane, identity)| {
+                            self.app
+                                .state
+                                .runtime_for_pane_in_workspace(
+                                    &self.app.terminal_runtimes,
+                                    workspace_index,
+                                    identity.pane_id,
+                                )
+                                .is_some_and(|runtime| {
+                                    runtime.alternate_screen_active()
+                                        != pane.alternate_screen_active
+                                })
+                        })
                 });
             if !changed || self.workspace_has_synchronized_pane(&surface_target) {
                 continue;
@@ -386,12 +469,39 @@ impl HeadlessServer {
                 .is_some_and(ClientConnection::is_active_shell_client)
             {
                 let render_cell_size = cell_size.or_default();
-                let result = render_client_shell_pane_surface(
-                    &self.app,
-                    shell_target.as_ref(),
-                    area,
-                    render_cell_size,
-                );
+                let key = pane_surface_render_key(shell_target.as_ref(), area, render_cell_size);
+                let remaining = remaining_surface_renders
+                    .get_mut(&key)
+                    .map_or(1, |remaining| {
+                        let current = *remaining;
+                        *remaining = remaining.saturating_sub(1);
+                        current
+                    });
+                // Pane rendering reads shared terminal cores and produces the
+                // same frame for clients with the same workspace and geometry.
+                // Keep an Arc-backed result until the last matching client so
+                // only the per-client wire surface has to own a frame copy.
+                let result = if remaining == 1 {
+                    shared_surface_renders.remove(&key).unwrap_or_else(|| {
+                        render_client_shell_pane_surface(
+                            &self.app,
+                            shell_target.as_ref(),
+                            area,
+                            render_cell_size,
+                        )
+                    })
+                } else if let Some(result) = shared_surface_renders.get(&key) {
+                    result.clone()
+                } else {
+                    let result = render_client_shell_pane_surface(
+                        &self.app,
+                        shell_target.as_ref(),
+                        area,
+                        render_cell_size,
+                    );
+                    shared_surface_renders.insert(key, result.clone());
+                    result
+                };
                 match result {
                     Ok(surface) => Some(surface),
                     Err(reason) => {
@@ -428,18 +538,32 @@ impl HeadlessServer {
                     || shell.snapshot.is_none()
             };
             if needs_projection {
-                let Some(cache) = self.shell_session_cache.as_ref() else {
-                    continue;
+                let (location_generation, projection_revision) = {
+                    let shell = client.shell_state();
+                    (shell.location.generation(), shell.projection_revision.get())
                 };
-                let mut candidate = crate::server::client_shell::snapshot_from_session(
-                    &self.app,
-                    // Focus and new-workspace cwd differ per client. Copy only
-                    // when the shared source generation changed.
-                    cache.session.clone(),
-                    &self.client_shell_boot_id,
-                    client.shell_state().projection_revision.get(),
-                    &client.shell_state().location,
-                );
+                let cached_projection = self
+                    .shell_session_cache
+                    .as_mut()
+                    .and_then(|cache| cache.timer_projections.remove(&client_id))
+                    .filter(|candidate| {
+                        candidate.location_generation == location_generation
+                            && candidate.projection_revision == projection_revision
+                    });
+                let mut candidate = if let Some(cached) = cached_projection {
+                    cached.snapshot
+                } else {
+                    let Some(cache) = self.shell_session_cache.as_ref() else {
+                        continue;
+                    };
+                    crate::server::client_shell::snapshot_from_session(
+                        &self.app,
+                        &cache.session,
+                        &self.client_shell_boot_id,
+                        projection_revision,
+                        &client.shell_state().location,
+                    )
+                };
                 let snapshot_changed = client.shell_state().snapshot.as_ref() != Some(&candidate);
                 if snapshot_changed {
                     let shell = client.shell_state_mut();
@@ -496,10 +620,20 @@ impl HeadlessServer {
                 frame,
                 panes,
                 splits,
+                pane_identities,
             }) = shell_render
             else {
                 continue;
             };
+            let frame =
+                std::sync::Arc::try_unwrap(frame).unwrap_or_else(|shared| shared.as_ref().clone());
+
+            // A public pane ID can outlive a layout update with no change to
+            // the wire fields, but its internal pane identity still belongs
+            // in the committed baseline used by retained rendering.
+            if client.surface_pane_identities != pane_identities {
+                client.render_state.request_recompute();
+            }
 
             let Some(writer) = client.writer.as_ref().cloned() else {
                 continue;
@@ -556,6 +690,7 @@ impl HeadlessServer {
             match send {
                 Ok(()) => {
                     client.render_state.commit_sent_frame(prepared);
+                    client.commit_surface_pane_identities(pane_identities);
                     client.clear_deferred_render();
                     client.oversized_surface_reported = false;
                 }
@@ -582,6 +717,9 @@ impl HeadlessServer {
             for client_id in broken_clients {
                 self.remove_client_and_resize_if_needed(client_id);
             }
+        }
+        if let Some(cache) = self.shell_session_cache.as_mut() {
+            cache.timer_projections.clear();
         }
 
         // Full-frame recovery is tracked per connection. A slow client must not

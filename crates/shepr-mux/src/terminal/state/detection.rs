@@ -49,6 +49,9 @@ impl TerminalState {
     /// pane empty it would show an idle agent on a dead pane indefinitely.
     /// The saved session stays, as for any unavailable restored pane, so a
     /// later save writes it back.
+    // Failure presentation and persistence are handled by the resume caller.
+    // Removing its synthetic detected identity is not a new agent activity
+    // transition: Unknown and Idle have the same sidebar presentation.
     pub fn abandon_agent_resume(&mut self, error: super::RestoreFailure, now: Instant) {
         self.pending_agent_resume_plan = None;
         self.restore_error = Some(error);
@@ -72,13 +75,12 @@ impl TerminalState {
         now: Instant,
     ) -> TerminalStateMutation {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
-        let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
         let previous_detected_agent = self.detected_agent;
         let previous_session = self.current_session_identity_for_persistence();
         let newer_custom_authority = process_exited
             && self.hook_authority.as_ref().is_some_and(|authority| {
-                shepr_agent::detect::parse_agent_label(&authority.agent_label) == agent
+                Agent::parse_canonical_label(&authority.agent_label) == agent
                     && !shepr_agent::agent::resume::is_official_agent_source(
                         &authority.source,
                         &authority.agent_label,
@@ -88,18 +90,17 @@ impl TerminalState {
         let agent_released =
             process_exited && !newer_custom_authority && previous_agent_label.is_some();
         if self.should_ignore_detected_state_under_full_lifecycle_hook(agent, process_exited) {
-            if self.hook_authority.as_ref().and_then(|authority| {
-                shepr_agent::detect::parse_agent_label(&authority.agent_label)
-            }) == agent
+            if self
+                .hook_authority
+                .as_ref()
+                .and_then(|authority| Agent::parse_canonical_label(&authority.agent_label))
+                == agent
             {
                 self.detected_agent = agent;
             }
             return TerminalStateMutation {
-                effective_state_change: self.recompute_effective_state(
-                    previous_agent_label,
-                    previous_known_agent,
-                    previous_state,
-                ),
+                effective_state_change: self
+                    .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                 session_ref_changed: previous_session
                     != self.current_session_identity_for_persistence(),
                 agent_released: false,
@@ -112,11 +113,8 @@ impl TerminalState {
                 .is_some_and(|exit| Some(exit.agent) == agent && exit.observed_at < now);
         if !process_exited && self.detected_state_observed_before_release_suppression(agent, now) {
             return TerminalStateMutation {
-                effective_state_change: self.recompute_effective_state(
-                    previous_agent_label,
-                    previous_known_agent,
-                    previous_state,
-                ),
+                effective_state_change: self
+                    .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                 session_ref_changed: previous_session
                     != self.current_session_identity_for_persistence(),
                 agent_released: false,
@@ -148,44 +146,10 @@ impl TerminalState {
             self.recent_agent_process_exit = None;
         }
         if process_exited {
-            let mut reset_sources = Vec::new();
-            let mut stale_sessions = Vec::new();
-            for (source, suppressed) in &mut self.suppressed_full_lifecycle_hook_reports {
-                if shepr_agent::detect::parse_agent_label(&suppressed.agent_label) != agent
-                    || suppressed.reason == FullLifecycleHookSuppressionReason::HookClear
-                {
-                    continue;
-                }
-                let exited_session_ref = suppressed
-                    .replacement_session_ref
-                    .take()
-                    .or_else(|| {
-                        suppressed
-                            .pending_replacement_report
-                            .as_ref()
-                            .and_then(|pending| pending.authority.session_ref.clone())
-                    })
-                    .or_else(|| suppressed.session_ref.clone());
-                if let (Some(previous), Some(exited)) =
-                    (suppressed.session_ref.as_ref(), exited_session_ref.as_ref())
-                    && previous != exited
-                {
-                    stale_sessions.push((
-                        source.clone(),
-                        suppressed.agent_label.clone(),
-                        previous.clone(),
-                    ));
-                }
-                suppressed.session_ref = exited_session_ref;
-                suppressed.pending_replacement_report = None;
-                suppressed.observed_at = now;
-                reset_sources.push(source.clone());
-            }
-            for (source, agent_label, session_ref) in stale_sessions {
-                self.remember_stale_full_lifecycle_hook_session(source, agent_label, session_ref);
-            }
-            for source in reset_sources {
-                self.clear_hook_report_sequence(&source);
+            if let Some(source) = agent.and_then(Agent::integration_source)
+                && let Some(record) = self.hook_sources.get_mut(source)
+            {
+                record.process_exited(now);
             }
 
             let official_session = self
@@ -195,7 +159,7 @@ impl TerminalState {
                     shepr_agent::agent::resume::is_official_agent_source(
                         &authority.source,
                         &authority.agent_label,
-                    ) && shepr_agent::detect::parse_agent_label(&authority.agent_label) == agent
+                    ) && Agent::parse_canonical_label(&authority.agent_label) == agent
                 })
                 .map(|authority| {
                     (
@@ -231,12 +195,12 @@ impl TerminalState {
                     source,
                     agent_label,
                     session_ref,
-                    FullLifecycleHookSuppressionReason::ProcessExit,
+                    FullLifecycleHookSuppressionReason::AwaitingProcess,
                     now,
                 );
             }
             let cleared_hook_source = self.hook_authority.as_ref().and_then(|authority| {
-                (shepr_agent::detect::parse_agent_label(&authority.agent_label) == agent
+                (Agent::parse_canonical_label(&authority.agent_label) == agent
                     && !newer_custom_authority)
                     .then(|| authority.source.clone())
             });
@@ -258,7 +222,7 @@ impl TerminalState {
                 || (previous_detected_agent.is_some()
                     && agent != previous_detected_agent
                     && self.hook_authority.as_ref().is_some_and(|authority| {
-                        shepr_agent::detect::parse_agent_label(&authority.agent_label)
+                        Agent::parse_canonical_label(&authority.agent_label)
                             == previous_detected_agent
                     })))
         {
@@ -278,11 +242,8 @@ impl TerminalState {
             self.hook_authority = None;
             self.persisted_agent_session = durable_session;
         }
-        let effective_state_change = self.recompute_effective_state(
-            previous_agent_label,
-            previous_known_agent,
-            previous_state,
-        );
+        let effective_state_change =
+            self.recompute_effective_state(previous_agent_label.as_deref(), previous_state);
         TerminalStateMutation {
             effective_state_change,
             session_ref_changed: previous_session

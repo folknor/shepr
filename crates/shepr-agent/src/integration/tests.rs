@@ -411,6 +411,33 @@ fn launch_install_covers_present_agents_only() {
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 }
 
+#[test]
+fn launch_install_leaves_a_current_hook_alone_when_its_config_cannot_be_read() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    fs::create_dir_all(&claude_dir).expect("test precondition");
+    env.set("HOME", &home);
+    let paths = AgentIntegrationPaths::resolve();
+    let installed = install_claude(&paths).expect("test precondition");
+    let hook_path = install_path(&installed, ArtifactRole::Hook);
+    let settings_path = claude_dir.join("settings.json");
+    let broken_settings = "{ not json";
+    fs::write(&settings_path, broken_settings).expect("test precondition");
+
+    install_present_integrations(&paths);
+
+    assert_eq!(
+        fs::read_to_string(&settings_path).expect("settings remain readable"),
+        broken_settings
+    );
+    assert_eq!(
+        fs::read_to_string(hook_path).expect("hook remains readable"),
+        CLAUDE_HOOK_ASSET
+    );
+}
+
 /// One agent whose install fails does not stop the others.
 #[test]
 fn launch_install_failure_for_one_agent_leaves_the_others() {
@@ -1486,21 +1513,38 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
             crate::agent::IntegrationTarget::Opencode,
             install_path(&installed, ArtifactRole::Plugin).clone(),
         )
-        .expect("stat plugin")
-        .state
     };
 
-    assert_eq!(status(), IntegrationStatusKind::Current);
+    assert_eq!(
+        status().expect("status").state,
+        IntegrationStatusKind::Current
+    );
     fs::remove_file(install_path(&installed, ArtifactRole::TuiPlugin)).expect("test precondition");
-    assert_eq!(status(), IntegrationStatusKind::Outdated);
+    assert_eq!(
+        status().expect("status").state,
+        IntegrationStatusKind::Outdated
+    );
     fs::write(
         install_path(&installed, ArtifactRole::TuiPlugin),
         OPENCODE_TUI_PLUGIN_ASSET,
     )
     .expect("test precondition");
-    assert_eq!(status(), IntegrationStatusKind::Current);
+    assert_eq!(
+        status().expect("status").state,
+        IntegrationStatusKind::Current
+    );
     fs::write(install_path(&installed, ArtifactRole::TuiConfig), "{}").expect("test precondition");
-    assert_eq!(status(), IntegrationStatusKind::Outdated);
+    assert_eq!(
+        status().expect("status").state,
+        IntegrationStatusKind::Outdated
+    );
+    fs::write(
+        install_path(&installed, ArtifactRole::TuiConfig),
+        "{ invalid json",
+    )
+    .expect("test precondition");
+    let error = status().expect_err("invalid config must be reported");
+    assert!(error.to_string().contains("failed to parse"));
 }
 
 #[test]
@@ -2634,7 +2678,7 @@ fn grok_integration_status_is_current_after_install() {
 }
 
 #[test]
-fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
+fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let grok_dir = base.join(".grok");
@@ -2643,7 +2687,13 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME);
 
-    let grok_state = || status_of(crate::agent::IntegrationTarget::Grok);
+    let grok_status = || {
+        integration_status(
+            &AgentIntegrationPaths::resolve(),
+            crate::agent::IntegrationTarget::Grok,
+        )
+    };
+    let grok_state = || grok_status().expect("grok status").state;
 
     // Missing config: grok never runs the hook, so the install is not current.
     fs::remove_file(&config_path).expect("test precondition");
@@ -2651,7 +2701,8 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
 
     // Corrupt config.
     fs::write(&config_path, "{not json").expect("test precondition");
-    assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
+    let error = grok_status().expect_err("invalid config must be reported");
+    assert!(error.to_string().contains("cannot parse"));
 
     // Config that no longer references the hook script.
     fs::write(
@@ -2659,7 +2710,10 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
         r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo other"}]}]}}"#,
     )
     .expect("test precondition");
-    assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
+    assert_eq!(
+        grok_status().expect("status after valid config edit").state,
+        IntegrationStatusKind::Outdated
+    );
 
     // Config that mentions the script name without invoking it, and one that
     // invokes it without the required `session` action: both are

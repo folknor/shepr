@@ -541,6 +541,8 @@ impl ClientLoop {
                 },
                 &self.supervisor_tx,
             );
+            // Keep the timer-service cadence for endpoint health and reconnect work; a shell
+            // deadline may shorten it, but cannot replace those endpoint-owned deadlines.
             let timer_delay = self.state.shell.timer_delay(loop_now);
             let timer_deadline = self.client_timer.deadline(loop_now, timer_delay);
             let event = if let Some(event) = self.scheduled_activation.take() {

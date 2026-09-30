@@ -1,7 +1,5 @@
 use std::borrow::Cow;
 
-use crossterm::event::{KeyCode, KeyModifiers};
-
 use crate::input::TerminalKey;
 use shepr_config::{ActionKeybinds, IndexedKeybind, Keybinds};
 
@@ -9,16 +7,7 @@ pub(crate) type KeybindHelpEntry = (String, Cow<'static, str>);
 pub(crate) type KeybindHelpGroup = (&'static str, Vec<KeybindHelpEntry>);
 
 pub fn keybind_help_text_char(key: &TerminalKey) -> Option<char> {
-    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-        return None;
-    }
-    if let Some(character) = key.shifted_codepoint.and_then(char::from_u32) {
-        return Some(character);
-    }
-    let KeyCode::Char(character) = key.code else {
-        return None;
-    };
-    Some(character)
+    crate::copy_mode::copy_mode_command_char(key)
 }
 
 fn entry(key: impl Into<String>, label: &'static str) -> KeybindHelpEntry {
@@ -201,6 +190,7 @@ pub fn filter_keybind_help_groups(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     fn groups() -> Vec<KeybindHelpGroup> {
         vec![
@@ -228,6 +218,17 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1[0].1, "close pane");
         assert!(filter_keybind_help_groups(groups(), "panes").is_empty());
+    }
+
+    #[test]
+    fn help_filter_and_copy_mode_agree_on_shifted_ascii_keys() {
+        let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT);
+
+        assert_eq!(keybind_help_text_char(&key), Some('?'));
+        assert_eq!(
+            keybind_help_text_char(&key),
+            crate::copy_mode::copy_mode_command_char(&key)
+        );
     }
 
     /// Pins the whole default help screen, row for row, so a change to the

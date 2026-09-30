@@ -21,8 +21,20 @@
 # selection_bg = "#313244"
 # panel_bg = "reset"
 # accent = "#f5c2e7"
+# surface0 = "#313244"
+# surface1 = "#45475a"
+# surface_dim = "#181825"
+# overlay0 = "#6c7086"
+# overlay1 = "#7f849c"
+# text = "#cdd6f4"
+# subtext0 = "#a6adc8"
+# mauve = "#cba6f7"
 # red = "#ff6188"
 # green = "#a6e3a1"
+# yellow = "#f9e2af"
+# blue = "#89b4fa"
+# teal = "#94e2d5"
+# peach = "#fab387"
 
 [terminal]
 # Executable used for new interactive panes.

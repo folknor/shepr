@@ -1,8 +1,7 @@
-pub(crate) use crate::limits::HOOK_SEQUENCE_REANCHOR_AFTER;
 use crate::limits::{MAX_HOOK_REPORT_SOURCES, MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 // Effective state arbitration is intentionally centralized here. Full lifecycle
 // Shepr hook integrations are hook-authoritative while live; screen recovery
@@ -13,80 +12,24 @@ use shepr_agent::agent::resume::AgentSessionStartSource;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_protocol::TerminalId;
 
-/// Whether a report carrying `seq` is older than the source's last accepted
-/// `last_seq` (accepted at `last_accepted_at`). The one ordering rule for
-/// every per-source hook report sequence (state and session reports): a
-/// non-increasing `seq` is a straggler unless it arrives
-/// [`HOOK_SEQUENCE_REANCHOR_AFTER`] or more after the last acceptance, when
-/// it is taken as a clock step and re-anchors the source.
-pub(crate) fn report_seq_superseded(
-    last_seq: u64,
-    last_accepted_at: Option<Instant>,
-    seq: u64,
-    now: Instant,
-) -> bool {
-    if seq > last_seq {
-        return false;
-    }
-    !last_accepted_at.is_some_and(|accepted_at| {
-        now.saturating_duration_since(accepted_at) >= HOOK_SEQUENCE_REANCHOR_AFTER
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Runtime hook authority. Observation times are monotonic instants sampled
+/// by the server; they are not the reporter's wall-clock sequence numbers.
+/// `reported_at` is the loop's report observation time. Detector observations
+/// retain their pre-probe timestamp, so an older queued detector observation
+/// cannot override a report merely because it is processed later. Sequence
+/// ordering separately samples monotonic and wall clocks at acceptance.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookAuthority {
     pub source: String,
     pub agent_label: String,
     pub state: AgentState,
-    pub message: Option<String>,
-    // Serde's zero-argument default cannot receive the app clock. Decoding
-    // needs a fresh local observation time.
-    #[serde(skip, default = "Instant::now")]
     pub reported_at: Instant,
     pub session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SuppressedFullLifecycleHookReport {
-    agent_label: String,
-    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-    observed_at: Instant,
-    reason: FullLifecycleHookSuppressionReason,
-    replacement_session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-    pending_replacement_report: Option<PendingFullLifecycleHookReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingFullLifecycleHookReport {
-    authority: HookAuthority,
-    seq: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FullLifecycleHookSuppressionReason {
-    HookClear,
-    ProcessExit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FullLifecycleHookReportRoute {
-    Accept { reanchor_sequence: bool },
-    Ignore,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StaleFullLifecycleHookSession {
-    agent_label: String,
-    session_ref: shepr_agent::agent::resume::AgentSessionRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveStateChange {
-    pub previous_agent_label: Option<String>,
-    pub previous_known_agent: Option<Agent>,
     pub previous_state: AgentState,
-    pub agent_label: Option<String>,
-    pub known_agent: Option<Agent>,
     pub state: AgentState,
 }
 
@@ -214,16 +157,7 @@ pub struct TerminalState {
     pub persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
-    hook_report_sequences: HashMap<String, u64>,
-    /// When each source's entry in `hook_report_sequences` was last
-    /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].
-    hook_report_accepted_at: HashMap<String, Instant>,
-    /// Only canonical built-in source/label pairs with full-lifecycle
-    /// authority can enter this map; custom report sources cannot grow it.
-    suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
-    /// The source keys have the same restriction, and each source retains at
-    /// most `MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE` sessions.
-    stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
+    hook_sources: HashMap<String, HookSourceState>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
@@ -238,6 +172,9 @@ mod lifecycle;
 mod names;
 mod presentation;
 mod sessions;
+mod source;
+
+use source::*;
 
 #[cfg(test)]
 mod tests;

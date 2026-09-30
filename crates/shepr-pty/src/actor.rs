@@ -1394,8 +1394,10 @@ mod tests {
 
     #[test]
     fn actor_open_pty_handles_io_resize_and_slave_close() {
-        let crate::backend::OpenedPty { master, slave } =
-            crate::backend::open_pty(24, 80).expect("open PTY pair");
+        let crate::backend::OpenedPty { master, slave } = crate::backend::open_pty_with_geometry(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+        )
+        .expect("open PTY pair");
         let control_master = master.try_clone().expect("clone PTY master for ioctl");
         let mut slave = std::fs::File::from(slave);
         let (read_tx, read_rx) = std_mpsc::channel::<Bytes>();

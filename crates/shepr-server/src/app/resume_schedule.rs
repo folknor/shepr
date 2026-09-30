@@ -1,7 +1,8 @@
 //! When deferred agent resumes may be attempted, as one pure value.
 //!
 //! `App` owns a [`ResumeSchedule`] and keeps the candidate walk and runtime
-//! creation; this type only decides *when*. Nothing here is stored twice: the
+//! creation. The schedule decides *when* and holds cwd check results until
+//! their matching candidate is attempted. Nothing here is stored twice: the
 //! loop wakeup is derived by [`ResumeSchedule::wakeup`] from the two instants
 //! the schedule does keep, so no pass that merely runs (a geometry change with
 //! resume starting disabled, a loop iteration) can clear or restart anything.
@@ -16,7 +17,11 @@
 //!
 //! The theme arriving bypasses the theme wait but never a barrier.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use shepr_protocol::TerminalId;
 
 /// How one resume attempt ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +48,7 @@ pub(crate) struct ResumeSchedule {
     spacing: Duration,
     backoff: Duration,
     pending: Option<Pending>,
+    directory_checks: HashMap<(TerminalId, PathBuf), bool>,
 }
 
 impl ResumeSchedule {
@@ -55,6 +61,7 @@ impl ResumeSchedule {
             spacing,
             backoff,
             pending: None,
+            directory_checks: HashMap::new(),
         }
     }
 
@@ -67,6 +74,7 @@ impl ResumeSchedule {
     pub(crate) fn observe(&mut self, now: Instant, has_pending_plans: bool, eligible: bool) {
         if !has_pending_plans {
             self.pending = None;
+            self.directory_checks.clear();
             return;
         }
         let theme_wait = self.theme_wait;
@@ -77,6 +85,33 @@ impl ResumeSchedule {
         if eligible && pending.theme_wait_until.is_none() {
             pending.theme_wait_until = Some(now + theme_wait);
         }
+    }
+
+    /// Saves the result of a directory check performed away from the headless
+    /// loop. It is consumed by the matching resume attempt.
+    pub(crate) fn record_directory_check(
+        &mut self,
+        terminal_id: TerminalId,
+        cwd: PathBuf,
+        available: bool,
+    ) {
+        self.directory_checks.insert((terminal_id, cwd), available);
+    }
+
+    /// Returns whether a worker has already checked this candidate's cwd.
+    pub(crate) fn has_directory_check(&self, terminal_id: &TerminalId, cwd: &Path) -> bool {
+        self.directory_checks
+            .contains_key(&(terminal_id.clone(), cwd.to_path_buf()))
+    }
+
+    /// Takes a worker result when the matching candidate is attempted.
+    pub(crate) fn take_directory_check(
+        &mut self,
+        terminal_id: &TerminalId,
+        cwd: &Path,
+    ) -> Option<bool> {
+        self.directory_checks
+            .remove(&(terminal_id.clone(), cwd.to_path_buf()))
     }
 
     /// When the loop should wake for a resume: `None` while nothing is

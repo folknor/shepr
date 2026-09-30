@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn every_registered_environment_variable_has_a_pane_policy() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut command = PtyCommand::new("shell");
+        let mut command = PtyCommand::interactive_shell("shell", false);
         for (name, _) in every_policy() {
             command.env(name, "inherited");
         }
@@ -352,7 +352,7 @@ mod tests {
             .filter(|&(_, policy)| policy != PaneEnvPolicy::Allowed)
             .map(|(name, _)| (name.to_owned(), "explicit".to_owned()))
             .collect();
-        let mut command = PtyCommand::new("shell");
+        let mut command = PtyCommand::interactive_shell("shell", false);
         for (name, _) in &extra {
             command.env(name, "inherited");
         }
@@ -383,7 +383,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let workspace_id = "w1".parse().expect("test workspace id");
         let inherited = PublicPaneId::new(&workspace_id, 17);
-        let mut command = PtyCommand::new("shell");
+        let mut command = PtyCommand::interactive_shell("shell", false);
         command.env(EnvVar::SheprPaneId, inherited.to_string());
 
         apply_pane_launch_env(
@@ -409,7 +409,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let api_socket = std::path::PathBuf::from("/run/shepr.sock");
         let client_socket = std::path::PathBuf::from("/run/shepr-client.sock");
-        let mut command = PtyCommand::new("shell");
+        let mut command = PtyCommand::interactive_shell("shell", false);
 
         apply_pane_launch_env(
             &mut command,
@@ -435,7 +435,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let api_socket = std::path::PathBuf::from("/run/shepr/shepr.sock");
         let client_socket = std::path::PathBuf::from("/custom/shepr-client.sock");
-        let mut command = PtyCommand::new("shell");
+        let mut command = PtyCommand::interactive_shell("shell", false);
         command.env(EnvVar::SheprSocketPath, "/inherited/shepr.sock");
         command.env(EnvVar::SheprClientSocketPath, "/inherited/client.sock");
 

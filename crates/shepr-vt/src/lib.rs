@@ -51,8 +51,8 @@ pub use cell::{
     is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
     unicode_codepoint_width, unicode_text_width,
 };
-use cell::{CellText, cell_graphemes, cell_text, cell_text_into, cell_wide};
-pub use cell::{RowWrap, ScreenTextCell, ScreenTextRow, unicode_display_units};
+use cell::{CellText, cell_text, cell_text_into, cell_wide};
+pub use cell::{RowWrap, unicode_display_units};
 pub use format::AnsiCarry;
 pub use modes::DecMode;
 // limits-exempt: this fixed terminfo name advertises the pane terminal type.
@@ -85,7 +85,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use unicode_width::UnicodeWidthChar;
-use vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb, Timeout};
+use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb, Timeout};
 
 pub use coords::Point;
 pub use coords::{AbsRow, ScreenRow, ViewportRow};
@@ -807,26 +807,6 @@ impl Terminal {
             modes::Getter::SynchronizedOutput => self.synchronized_output_deadline().is_some(),
             modes::Getter::Unsupported => false,
         }
-    }
-
-    /// Sets a DEC private mode with the same effect as the child's
-    /// `CSI ? mode h/l`, but through the handler directly: nothing is fed to
-    /// the parser, so a sequence the child has half-written is not disturbed
-    /// and a synchronized update does not defer it. Mode 2026 is refused: it
-    /// is parser state, not terminal state.
-    pub fn mode_set(&mut self, mode: DecMode, value: bool) -> Result<(), Error> {
-        if mode == DecMode::SynchronizedOutput {
-            return Err(Error("synchronized output is driven by the parser"));
-        }
-        let private_mode = handler::private_mode(mode);
-        self.with_handler(|handler, _parser| {
-            if value {
-                Handler::set_private_mode(handler, private_mode);
-            } else {
-                Handler::unset_private_mode(handler, private_mode);
-            }
-        });
-        Ok(())
     }
 
     /// Active kitty keyboard flags (bit 0 disambiguate through bit 4 associated text).

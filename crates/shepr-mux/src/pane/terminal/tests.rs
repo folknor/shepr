@@ -30,8 +30,8 @@ fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
     );
 }
 
-fn text_cell(text: &str) -> shepr_vt::ScreenTextCell {
-    shepr_vt::ScreenTextCell {
+fn text_cell(text: &str) -> OwnedTextCell {
+    OwnedTextCell {
         wide: shepr_vt::CellWide::Narrow,
         graphemes: text.chars().map(u32::from).collect(),
     }
@@ -108,29 +108,23 @@ fn direct_rgb_cells_are_unaffected_by_palette_overrides() {
     );
 }
 
-fn wide_text_cells(text: &str) -> [shepr_vt::ScreenTextCell; 2] {
+fn wide_text_cells(text: &str) -> [OwnedTextCell; 2] {
     [
-        shepr_vt::ScreenTextCell {
+        OwnedTextCell {
             wide: shepr_vt::CellWide::Wide,
             graphemes: text.chars().map(u32::from).collect(),
         },
-        shepr_vt::ScreenTextCell {
+        OwnedTextCell {
             wide: shepr_vt::CellWide::SpacerTail,
             graphemes: Vec::new(),
         },
     ]
 }
 
-fn text_row(
-    cells: impl IntoIterator<Item = shepr_vt::ScreenTextCell>,
-    soft_wrapped: bool,
-) -> shepr_vt::ScreenTextRow {
-    shepr_vt::ScreenTextRow {
+fn text_row(cells: impl IntoIterator<Item = OwnedTextCell>, soft_wrapped: bool) -> OwnedTextRow {
+    OwnedTextRow {
         cells: cells.into_iter().collect(),
-        wrap: shepr_vt::RowWrap {
-            soft_wrapped,
-            wrap_continuation: false,
-        },
+        soft_wrapped,
     }
 }
 
@@ -231,7 +225,7 @@ fn retained_text_search_skips_wide_spacer_heads_at_soft_wraps() {
         .chars()
         .map(|ch| text_cell(&ch.to_string()))
         .collect::<Vec<_>>();
-    first.push(shepr_vt::ScreenTextCell {
+    first.push(OwnedTextCell {
         wide: shepr_vt::CellWide::SpacerHead,
         graphemes: Vec::new(),
     });
@@ -263,7 +257,7 @@ fn retained_text_word_motion_does_not_split_at_a_wide_spacer_head() {
         .chars()
         .map(|ch| text_cell(&ch.to_string()))
         .collect::<Vec<_>>();
-    first.push(shepr_vt::ScreenTextCell {
+    first.push(OwnedTextCell {
         wide: shepr_vt::CellWide::SpacerHead,
         graphemes: Vec::new(),
     });
@@ -1346,9 +1340,7 @@ fn terminal_char_keys_still_use_shepr_encoding() {
 #[test]
 fn terminal_key_encoding_honors_application_cursor_mode() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
-    terminal
-        .mode_set(shepr_vt::DecMode::ApplicationCursorKeys, true)
-        .expect("test precondition");
+    terminal.write(b"\x1b[?1h");
     let pane = PaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
@@ -2276,9 +2268,7 @@ fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() 
 #[test]
 fn resize_returns_in_band_size_report_response() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
-    terminal
-        .mode_set(shepr_vt::DecMode::InBandResize, true)
-        .expect("test precondition");
+    terminal.write(b"\x1b[?2048h");
     let pane = PaneTerminal::new(terminal);
 
     let responses = pane.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 1_000, 20));
@@ -3643,7 +3633,7 @@ fn chunked_search_matches_a_whole_buffer_search() {
         AbsRow(0),
         "history must not be full"
     );
-    let whole = OwnedTextBuffer::new(terminal.cols(), terminal.screen_text_rows());
+    let whole = OwnedTextBuffer::from_terminal(&terminal);
     let pane = PaneTerminal::new(terminal);
 
     let at = |row: u64| TerminalTextPoint {
@@ -3868,21 +3858,19 @@ fn primary_history_is_unavailable_on_the_alternate_screen() {
 }
 
 #[test]
-fn screen_text_snapshot_copies_rows_only_on_the_alternate_screen() {
+fn live_text_reads_the_active_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
 
-    let (screen, cols, rows) = pane.screen_text_snapshot().expect("snapshot");
-    assert_eq!(screen, shepr_vt::ActiveScreen::Primary);
-    assert_eq!(cols, 20);
-    assert!(rows.is_empty());
+    let primary = pane.visible_text();
+    assert!(primary.contains("five"), "{primary:?}");
 
     pane.process_pty_bytes(pane_id, b"\x1b[?1049h\x1b[2J\x1b[Hframe");
-    let (screen, _, rows) = pane.screen_text_snapshot().expect("snapshot");
-    assert_eq!(screen, shepr_vt::ActiveScreen::Alternate);
-    assert_eq!(rows.len(), 3);
+    let alternate = pane.visible_text();
+    assert!(alternate.contains("frame"), "{alternate:?}");
+    assert!(!alternate.contains("five"), "{alternate:?}");
 }
 
 #[test]

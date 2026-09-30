@@ -412,31 +412,13 @@ fn capture_workspace(
                 .push(((workspace_index, id.raw()), runtime.cwd_probe()));
         }
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
-        let agent_session = terminal.and_then(|terminal| {
-            let hook_session = terminal.hook_authority.as_ref().and_then(|authority| {
-                let session_ref = authority.session_ref.as_ref()?;
-                Some(PaneAgentSessionSnapshot {
-                    source: shepr_agent::agent::AgentSource::from_pair(
-                        &authority.source,
-                        &authority.agent_label,
-                    )?,
-                    agent: shepr_agent::agent::Agent::parse_canonical_label(
-                        &authority.agent_label,
-                    )?,
-                    session_ref: session_ref.clone(),
-                })
+        let agent_session = terminal
+            .and_then(crate::terminal::TerminalState::current_session_identity_for_persistence)
+            .map(|session| PaneAgentSessionSnapshot {
+                source: session.source,
+                agent: session.agent,
+                session_ref: session.session_ref,
             });
-            hook_session.or_else(|| {
-                terminal
-                    .persisted_agent_session
-                    .as_ref()
-                    .map(|session| PaneAgentSessionSnapshot {
-                        source: session.source.clone(),
-                        agent: session.agent,
-                        session_ref: session.session_ref.clone(),
-                    })
-            })
-        });
         panes.insert(
             id.raw(),
             PaneSnapshot {
@@ -1136,61 +1118,71 @@ mod tests {
 
     #[test]
     fn invalid_live_hook_authority_falls_back_to_persisted_agent_session() {
-        let workspace = Workspace::test_new("snapshot-session-fallback");
-        let pane_id = workspace.root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .expect("test terminal")
-            .clone();
-        let saved_ref = shepr_agent::agent::resume::AgentSessionRef::id("saved-session")
-            .expect("test session ref");
-        let mut terminal = TerminalState::new(terminal_id.clone(), PathBuf::from("/"));
-        terminal.hook_authority = Some(crate::terminal::state::HookAuthority {
-            source: "unrecognised-source".into(),
-            agent_label: "unrecognised-agent".into(),
-            state: shepr_agent::detect::AgentState::Working,
-            message: None,
-            reported_at: std::time::Instant::now(),
-            session_ref: Some(
-                shepr_agent::agent::resume::AgentSessionRef::id("live-session")
-                    .expect("test session ref"),
+        use shepr_agent::agent::resume::AgentSessionRef;
+        for (source, label, live_ref) in [
+            (
+                "unrecognised-source",
+                "unrecognised-agent",
+                AgentSessionRef::id("live-session").expect("test session ref"),
             ),
-        });
-        terminal.persisted_agent_session =
-            Some(shepr_agent::agent::resume::PersistedAgentSession {
-                source: shepr_agent::agent::AgentSource::Official(
-                    shepr_agent::agent::Agent::Claude,
-                ),
-                agent: shepr_agent::agent::Agent::Claude,
-                session_ref: saved_ref.clone(),
+            (
+                "shepr:claude",
+                "claude",
+                AgentSessionRef::path("/session.jsonl").expect("test session ref"),
+            ),
+        ] {
+            let workspace = Workspace::test_new("snapshot-session-fallback");
+            let pane_id = workspace.root_pane();
+            let terminal_id = workspace
+                .terminal_id(pane_id)
+                .expect("test terminal")
+                .clone();
+            let saved_ref = shepr_agent::agent::resume::AgentSessionRef::id("saved-session")
+                .expect("test session ref");
+            let mut terminal = TerminalState::new(terminal_id.clone(), PathBuf::from("/"));
+            terminal.hook_authority = Some(crate::terminal::state::HookAuthority {
+                source: source.into(),
+                agent_label: label.into(),
+                state: shepr_agent::detect::AgentState::Working,
+                reported_at: std::time::Instant::now(),
+                session_ref: Some(live_ref),
             });
-        let terminals = HashMap::from([(terminal_id, terminal)]);
+            terminal.persisted_agent_session =
+                Some(shepr_agent::agent::resume::PersistedAgentSession {
+                    source: shepr_agent::agent::AgentSource::Official(
+                        shepr_agent::agent::Agent::Claude,
+                    ),
+                    agent: shepr_agent::agent::Agent::Claude,
+                    session_ref: saved_ref.clone(),
+                });
+            let terminals = HashMap::from([(terminal_id, terminal)]);
 
-        let snapshot = super::capture(
-            &[workspace],
-            &terminals,
-            &PaneRuntimeRegistry::new(),
-            PathBuf::from("/").as_path(),
-            None,
-            Default::default(),
-        );
+            let snapshot = super::capture(
+                &[workspace],
+                &terminals,
+                &PaneRuntimeRegistry::new(),
+                PathBuf::from("/").as_path(),
+                None,
+                Default::default(),
+            );
 
-        let saved = snapshot.workspaces[0]
-            .panes
-            .values()
-            .next()
-            .expect("saved pane")
-            .agent_session
-            .as_ref();
-        assert_eq!(
-            saved,
-            Some(&super::PaneAgentSessionSnapshot {
-                source: shepr_agent::agent::AgentSource::Official(
-                    shepr_agent::agent::Agent::Claude,
-                ),
-                agent: shepr_agent::agent::Agent::Claude,
-                session_ref: saved_ref,
-            })
-        );
+            let saved = snapshot.workspaces[0]
+                .panes
+                .values()
+                .next()
+                .expect("saved pane")
+                .agent_session
+                .as_ref();
+            assert_eq!(
+                saved,
+                Some(&super::PaneAgentSessionSnapshot {
+                    source: shepr_agent::agent::AgentSource::Official(
+                        shepr_agent::agent::Agent::Claude,
+                    ),
+                    agent: shepr_agent::agent::Agent::Claude,
+                    session_ref: saved_ref,
+                })
+            );
+        }
     }
 }

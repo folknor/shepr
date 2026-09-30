@@ -19,7 +19,7 @@ use crate::fd;
 use crate::limits::GETDENTS_READ_BUFFER_BYTES;
 
 /// Both ends of a freshly opened PTY. Both fds are close-on-exec.
-pub struct OpenedPty {
+pub(crate) struct OpenedPty {
     pub master: OwnedFd,
     pub slave: OwnedFd,
 }
@@ -30,15 +30,10 @@ pub struct SpawnedPty {
     pub child: Child,
 }
 
-/// Open a PTY pair with the given grid size and no pixel size.
-pub fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
-    open_pty_with_geometry(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0))
-}
-
 /// Open a PTY pair whose first `TIOCSWINSZ` carries `geometry`, pixel
 /// dimensions included, so a child that reads its window size once at startup
 /// sees the pixel size it will keep.
-pub fn open_pty_with_geometry(
+pub(crate) fn open_pty_with_geometry(
     geometry: shepr_core::geometry::PaneGeometry,
 ) -> io::Result<OpenedPty> {
     // Linux accepts O_CLOEXEC while opening /dev/ptmx, closing the race with
@@ -119,7 +114,7 @@ fn enable_utf8_input(master: &OwnedFd) {
 /// Spawn `cmd` as a session leader whose controlling terminal and stdio are
 /// `slave`. The caller keeps ownership of `slave` and should drop it once no
 /// more children will be spawned into this PTY.
-pub fn spawn_in_pty(slave: &OwnedFd, cmd: &PtyCommand) -> io::Result<Child> {
+fn spawn_in_pty(slave: &OwnedFd, cmd: &PtyCommand) -> io::Result<Child> {
     let mut command = cmd.to_std_command()?;
     command
         .stdin(Stdio::from(slave.try_clone()?))
@@ -355,9 +350,9 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     fn fixture_command(steps: &[Step]) -> PtyCommand {
-        let mut cmd = PtyCommand::new(fixture::path());
-        cmd.args(fixture::args(steps));
-        cmd
+        let scratch = shepr_test_support::ScratchDir::new("pty-backend-fixture");
+        let path = fixture::stand_in(scratch.path(), "shepr-fixture", steps);
+        PtyCommand::interactive_shell(path.to_str().expect("fixture path is UTF-8"), false)
     }
 
     fn test_geometry() -> shepr_core::geometry::PaneGeometry {

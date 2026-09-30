@@ -14,7 +14,11 @@ pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
     event: crate::server::client_transport::ServerEvent,
 ) -> bool {
-    server.handle_server_event(event)
+    let changed = server.handle_server_event(event);
+    // The loop flushes endpoint replies at the end of its pass. The cross-crate
+    // handoff tests drive renders themselves, so replies leave here at once.
+    server.flush_endpoint_replies();
+    changed
 }
 
 pub(crate) fn render_and_stream(server: &mut HeadlessServer) {
@@ -68,6 +72,7 @@ pub(crate) fn dispatch_lifecycle_messages(
         };
         server.handle_server_event(event);
     }
+    server.flush_endpoint_replies();
 }
 
 #[cfg(test)]
@@ -135,6 +140,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         .set_nonblocking(ListenerNonblockingMode::Accept)
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
+    let (worker_tx, worker_rx) = worker::channel();
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
     HeadlessServer {
@@ -159,7 +165,12 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
         replaying_checkpointed_pane_exit: None,
-        endpoint_replies: Vec::new(),
+        endpoint_replies: HashMap::new(),
+        next_endpoint_reply_ticket: 0,
+        worker_tx,
+        worker_rx,
+        checkout_root_runner: worker::default_checkout_root_runner(),
+        resume_cwd_checks_in_flight: HashSet::new(),
         _client_socket_startup_lock: client_socket_startup_lock,
     }
 }
@@ -1076,6 +1087,367 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
 }
 
 #[tokio::test]
+async fn immediate_endpoint_replies_stay_after_earlier_commands() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("ordered")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_bookmark_index(Some(0));
+    let (control, _render) = connect_matching_test_shell(&mut server, 40);
+    let _initial_snapshot = client_shell_snapshot(&control);
+    let client_id = ClientId::test_new(40);
+    let current_boot = server.client_shell_boot_id.clone();
+    let workspace_id = server.app.state.workspaces[0].id.clone();
+
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: current_boot.clone(),
+        request_id: "held".into(),
+        command: Box::new(EndpointCommand::WorkspaceRename(
+            shepr_protocol::command::WorkspaceRenameParams {
+                workspace_id,
+                label: "updated".into(),
+            },
+        )),
+    });
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: shepr_test_fixtures::fixed_boot_id(2),
+        request_id: "stale".into(),
+        command: Box::new(EndpointCommand::PaneClear(
+            shepr_protocol::command::PaneTarget {
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+            },
+        )),
+    });
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: current_boot.clone(),
+        request_id: "deactivate".into(),
+        command: Box::new(EndpointCommand::ClientShellSurfaceSet(
+            shepr_protocol::command::ClientShellSurfaceSetParams { active: false },
+        )),
+    });
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: current_boot.clone(),
+        request_id: "inactive".into(),
+        command: Box::new(EndpointCommand::PaneClear(
+            shepr_protocol::command::PaneTarget {
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+            },
+        )),
+    });
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: current_boot.clone(),
+        request_id: "activate".into(),
+        command: Box::new(EndpointCommand::ClientShellSurfaceSet(
+            shepr_protocol::command::ClientShellSurfaceSetParams { active: true },
+        )),
+    });
+
+    server.render_and_stream();
+    server.flush_endpoint_replies();
+    let mut replies = Vec::new();
+    while replies.len() < 5 {
+        if let ServerMessage::ClientShellEndpointResponse {
+            request_id, result, ..
+        } = read_server_message(
+            control
+                .recv_timeout(Duration::from_secs(1))
+                .expect("ordered endpoint replies"),
+        ) {
+            replies.push((request_id, result));
+        }
+    }
+    assert_eq!(
+        replies
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["held", "stale", "deactivate", "inactive", "activate"]
+    );
+    assert!(matches!(
+        &replies[1].1,
+        Err(shepr_protocol::command::EndpointError::StaleBoot)
+    ));
+    assert!(matches!(
+        &replies[2].1,
+        Ok(shepr_protocol::command::EndpointReply::ClientShellSurfaceSet { active: false, .. })
+    ));
+    assert!(matches!(
+        &replies[3].1,
+        Err(shepr_protocol::command::EndpointError::SurfaceInactive)
+    ));
+    assert!(matches!(
+        &replies[4].1,
+        Ok(shepr_protocol::command::EndpointReply::ClientShellSurfaceSet { active: true, .. })
+    ));
+    assert!(server.endpoint_replies.is_empty());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
+    let mut server = test_headless_server();
+    let _input = install_focused_test_runtime(&mut server, b"BASE");
+    server
+        .app
+        .state
+        .workspaces
+        .push(shepr_mux::workspace::Workspace::test_new("second"));
+    server.app.state.ensure_test_terminals();
+    let (control, _render) = connect_matching_test_shell(&mut server, 45);
+    let _initial_snapshot = client_shell_snapshot(&control);
+    server.immediate_pty_sources_dirty = false;
+    let boot_id = server.client_shell_boot_id.clone();
+    let client_id = ClientId::test_new(45);
+
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: boot_id.clone(),
+        request_id: "scroll".into(),
+        command: Box::new(EndpointCommand::PaneScroll(
+            shepr_protocol::command::PaneScrollParams {
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                offset_from_bottom: 0,
+            },
+        )),
+    });
+    assert!(
+        !server.immediate_pty_sources_dirty,
+        "pane scrolling changes its surface but not the set of immediate PTY sources"
+    );
+
+    let second_workspace = server.app.state.workspaces[1].id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id,
+        request_id: "focus-workspace".into(),
+        command: Box::new(EndpointCommand::WorkspaceFocus(
+            shepr_protocol::command::WorkspaceTarget {
+                workspace_id: second_workspace,
+            },
+        )),
+    });
+    assert!(
+        server.immediate_pty_sources_dirty,
+        "moving a client to another workspace changes the immediate PTY sources"
+    );
+    server.immediate_pty_sources_dirty = false;
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id: server.client_shell_boot_id.clone(),
+        request_id: "deactivate-surface".into(),
+        command: Box::new(EndpointCommand::ClientShellSurfaceSet(
+            shepr_protocol::command::ClientShellSurfaceSetParams { active: false },
+        )),
+    });
+    assert!(
+        server.immediate_pty_sources_dirty,
+        "removing an active surface changes which client views contribute sources"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn slow_checkout_root_worker_does_not_hold_other_clients() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("checkout")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_bookmark_index(Some(0));
+    let (control_a, _render_a) = connect_matching_test_shell(&mut server, 51);
+    let (control_b, _render_b) = connect_matching_test_shell(&mut server, 52);
+    let _initial_a = client_shell_snapshot(&control_a);
+    let _initial_b = client_shell_snapshot(&control_b);
+    let client_a = ClientId::test_new(51);
+    let client_b = ClientId::test_new(52);
+    let boot_id = server.client_shell_boot_id.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+    server.checkout_root_runner = std::sync::Arc::new(move |_| {
+        started_tx.send(()).map_err(|error| error.to_string())?;
+        let released = release_rx
+            .lock()
+            .ok()
+            .is_some_and(|receiver| receiver.recv_timeout(Duration::from_secs(3)).is_ok());
+        if !released {
+            return Err("slow worker test gate timed out".to_owned());
+        }
+        Ok(Some("/checkout".to_owned()))
+    });
+
+    let started = std::time::Instant::now();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id: client_a,
+        boot_id: boot_id.clone(),
+        request_id: "slow-checkout".into(),
+        command: Box::new(EndpointCommand::WorkspaceCheckoutRoot(
+            shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: "/".into() },
+        )),
+    });
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the request handler must return while Git work is still pending"
+    );
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("checkout worker should have started");
+
+    let workspace_id = server.app.state.workspaces[0].id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id: client_a,
+        boot_id: boot_id.clone(),
+        request_id: "after-slow".into(),
+        command: Box::new(EndpointCommand::WorkspaceFocus(
+            shepr_protocol::command::WorkspaceTarget {
+                workspace_id: workspace_id.clone(),
+            },
+        )),
+    });
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id: client_b,
+        boot_id,
+        request_id: "other-client".into(),
+        command: Box::new(EndpointCommand::WorkspaceFocus(
+            shepr_protocol::command::WorkspaceTarget { workspace_id },
+        )),
+    });
+    server.render_and_stream();
+    server.flush_endpoint_replies();
+    let mut other_client_replied = false;
+    while !other_client_replied {
+        if let ServerMessage::ClientShellEndpointResponse { request_id, .. } = read_server_message(
+            control_b
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the other client's command should complete"),
+        ) {
+            other_client_replied = request_id == "other-client";
+        }
+    }
+    assert!(
+        server.endpoint_replies[&client_a]
+            .front()
+            .is_some_and(|reply| reply.message.is_none()),
+        "the slow client's reserved reply should remain held"
+    );
+    assert!(server.endpoint_replies[&client_a][1].message.is_some());
+    release_tx
+        .send(())
+        .expect("checkout worker should still wait");
+
+    let completion = tokio::time::timeout(Duration::from_secs(1), server.worker_rx.recv())
+        .await
+        .expect("checkout completion should wake the loop")
+        .expect("worker channel should stay open");
+    assert!(!server.handle_worker_completion(completion, server.app.clock.now));
+    server.flush_endpoint_replies();
+    let mut client_a_replies = Vec::new();
+    while client_a_replies.len() < 2 {
+        if let ServerMessage::ClientShellEndpointResponse {
+            request_id, result, ..
+        } = read_server_message(
+            control_a
+                .recv_timeout(Duration::from_secs(1))
+                .expect("slow client's ordered responses"),
+        ) {
+            client_a_replies.push((request_id, result));
+        }
+    }
+    assert_eq!(
+        client_a_replies
+            .iter()
+            .map(|(request_id, _)| request_id.as_str())
+            .collect::<Vec<_>>(),
+        ["slow-checkout", "after-slow"]
+    );
+    assert!(matches!(
+        &client_a_replies[0].1,
+        Ok(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot {
+            root: Some(root),
+            ..
+        }) if root == "/checkout"
+    ));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdown() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("pending")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_bookmark_index(Some(0));
+    let (control_a, _render_a) = connect_matching_test_shell(&mut server, 61);
+    let (control_b, _render_b) = connect_matching_test_shell(&mut server, 62);
+    let _initial_a = client_shell_snapshot(&control_a);
+    let _initial_b = client_shell_snapshot(&control_b);
+    let client_a = ClientId::test_new(61);
+    let client_b = ClientId::test_new(62);
+    let boot_id = server.client_shell_boot_id.clone();
+    let refusal = |request_id: &str| {
+        crate::server::client_commands::error_message(
+            boot_id.clone(),
+            request_id.into(),
+            shepr_protocol::command::EndpointError::ShuttingDown,
+        )
+    };
+
+    // A client that leaves takes its pending slot with it, and the worker
+    // result that arrives for it afterwards finds nothing to fill.
+    let gone = server.reserve_endpoint_reply(client_a, refusal("gone"));
+    server.remove_client(client_a);
+    assert!(!server.endpoint_replies.contains_key(&client_a));
+    server.complete_endpoint_reply(gone, refusal("late"));
+    assert!(server.endpoint_replies.is_empty());
+
+    // At shutdown a pending slot is answered with its refusal, and a reply
+    // queued behind it still leaves after it.
+    server.reserve_endpoint_reply(client_b, refusal("pending"));
+    server.queue_endpoint_reply(
+        client_b,
+        crate::server::client_commands::response_message(
+            boot_id.clone(),
+            "after".into(),
+            Ok(shepr_protocol::command::EndpointReply::Done),
+        ),
+    );
+    server.flush_endpoint_replies();
+    assert_eq!(
+        server.endpoint_replies[&client_b].len(),
+        2,
+        "the pending slot holds the reply behind it"
+    );
+    server.resolve_pending_endpoint_replies_for_shutdown();
+    server.flush_endpoint_replies();
+    let mut replies = Vec::new();
+    while replies.len() < 2 {
+        if let ServerMessage::ClientShellEndpointResponse {
+            request_id, result, ..
+        } = read_server_message(
+            control_b
+                .recv_timeout(Duration::from_secs(1))
+                .expect("both replies reach the client"),
+        ) {
+            replies.push((request_id, result));
+        }
+    }
+    assert_eq!(
+        replies
+            .iter()
+            .map(|(request_id, _)| request_id.as_str())
+            .collect::<Vec<_>>(),
+        ["pending", "after"]
+    );
+    assert!(matches!(
+        &replies[0].1,
+        Err(shepr_protocol::command::EndpointError::ShuttingDown)
+    ));
+    assert!(server.endpoint_replies.is_empty());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn an_endpoint_error_reply_is_held_until_the_flush() {
     let mut server = test_headless_server();
     server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("no-render")];
@@ -1549,7 +1921,25 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     assert!(control.try_recv().is_err(), "no event reported the change");
     age_cache(&mut server);
     assert!(server.refresh_shell_projection_sources());
+    assert_eq!(
+        server
+            .shell_session_cache
+            .as_ref()
+            .expect("session cache")
+            .timer_projections
+            .len(),
+        1,
+        "the changed client's projection is retained for the render pass"
+    );
     server.render_and_stream();
+    assert!(
+        server
+            .shell_session_cache
+            .as_ref()
+            .expect("session cache")
+            .timer_projections
+            .is_empty()
+    );
     assert_eq!(
         client_shell_snapshot(&control).workspaces[0].label,
         "silent"
@@ -2147,8 +2537,18 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
         server.pty_sources_visible_to_any_render_target(&HashSet::from([first_pane, second_pane,]))
     );
     server.render_and_stream();
-    let _ = recv_pane_surface(&mut first_render, "first baseline");
-    let _ = recv_pane_surface(&mut second_render, "second baseline");
+    let first_surface = recv_pane_surface(&mut first_render, "first baseline");
+    let second_surface = recv_pane_surface(&mut second_render, "second baseline");
+    assert_eq!(
+        (first_surface.frame.width, first_surface.frame.height),
+        (80, 23)
+    );
+    assert_eq!(
+        (second_surface.frame.width, second_surface.frame.height),
+        (80, 23)
+    );
+    assert!(frame_text(&first_surface.frame).contains("FIRST"));
+    assert!(frame_text(&second_surface.frame).contains("SECOND"));
 
     server
         .app
@@ -4575,7 +4975,12 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .pending_agent_resume_wakeup()
         .expect("clientless resume should wait briefly for a host theme");
 
-    assert!(server.handle_scheduled_tasks_headless(deadline));
+    assert!(
+        !server.handle_scheduled_tasks_headless(deadline),
+        "the due pass hands the saved cwd check to a worker first"
+    );
+    assert!(server.app.terminal_runtimes.get(&terminal_id).is_none());
+    assert!(complete_resume_cwd_check(&mut server, deadline).await);
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
     assert!(
         server
@@ -4636,9 +5041,25 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         assert_eq!(server.app.pending_agent_resume_wakeup(), Some(deadline));
     }
 
-    assert!(server.handle_scheduled_tasks_headless(deadline));
+    assert!(!server.handle_scheduled_tasks_headless(deadline));
+    assert!(complete_resume_cwd_check(&mut server, deadline).await);
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
     shutdown_test_runtimes(&mut server);
+}
+
+/// Receives the worker's saved-cwd check and hands it to the loop, as the
+/// headless loop does when the completion wakes it. Returns whether the
+/// completion started a resume.
+async fn complete_resume_cwd_check(server: &mut HeadlessServer, now: Instant) -> bool {
+    let completion = tokio::time::timeout(Duration::from_secs(5), server.worker_rx.recv())
+        .await
+        .expect("the resume cwd check completes")
+        .expect("worker channel should stay open");
+    assert!(matches!(
+        completion,
+        worker::WorkerCompletion::ResumeCwdChecked { .. }
+    ));
+    server.handle_worker_completion(completion, now)
 }
 
 #[test]

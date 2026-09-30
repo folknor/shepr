@@ -2,6 +2,7 @@ use super::*;
 use crate::limits::{
     LIGHT_LUMINANCE_THRESHOLD, LUMINANCE_BLUE_WEIGHT, LUMINANCE_GREEN_WEIGHT, LUMINANCE_RED_WEIGHT,
 };
+use vte::ansi::Handler;
 
 // limits-exempt: the xterm palette starts with its 16 named ANSI colors.
 pub(super) const NAMED_COLOR_COUNT: usize = 16;

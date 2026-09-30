@@ -72,23 +72,12 @@ use vte::ansi::{
 
 use crate::limits::KEYBOARD_MODE_STACK_MAX_DEPTH;
 
-use super::DecMode;
 use super::ExtraModes;
 use super::color::color_query_format;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
 use super::{ColorQuery, ColorQueryTarget, RgbColor, TerminalEvent};
 use shepr_core::geometry::{GridSize, PaneGeometry};
-
-/// The vte private mode a write of `mode` goes through, from the mode table
-/// (`PrivateMode::new` is private to vte). Adapter-stored and unlisted modes
-/// stay `Unknown`, exactly as vte's parser would deliver them.
-pub(super) fn private_mode(mode: DecMode) -> PrivateMode {
-    match modes::lookup(mode).set {
-        modes::Setter::Vte(named) => PrivateMode::Named(named),
-        modes::Setter::Extra(_) => PrivateMode::Unknown(mode.number()),
-    }
-}
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
 /// `None` while no pixel geometry is known.

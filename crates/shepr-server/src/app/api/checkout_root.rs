@@ -13,26 +13,39 @@ impl App {
     /// here, is an ordinary `None`; a failure that kept Git from answering is an
     /// error, and the client falls back to a path-based label.
     ///
-    /// The headless loop runs endpoint commands inline and holds replies in an
-    /// ordered outbox. A worker result must return through that loop to preserve
-    /// reply order; sending from a detached worker can overtake later commands,
-    /// while waiting for it here still blocks client and PTY work.
     pub(super) fn handle_workspace_checkout_root(
         &mut self,
         params: &WorkspaceCheckoutRootParams,
     ) -> HandlerResult {
-        let cwd = super::cwd::launch_cwd(&params.cwd)?;
-        match checkout_root(&cwd) {
+        let (cwd, home) = self.prepare_workspace_checkout_root(params)?;
+        match Self::checkout_root_for_worker(&cwd) {
             Ok(root) => Handled::reply(EndpointReply::WorkspaceCheckoutRoot {
                 root,
                 // An unusable `HOME` just means the `~` label is not offered.
-                home: self
-                    .paths
-                    .home_dir()
-                    .and_then(|home| home.to_str().map(str::to_owned)),
+                home,
             }),
             Err(message) => rejected(message),
         }
+    }
+
+    /// Resolves the request data on the server loop. The directory stat and
+    /// Git query run in a worker; their result returns to the loop for its
+    /// ordered endpoint reply outbox.
+    pub(crate) fn prepare_workspace_checkout_root(
+        &self,
+        params: &WorkspaceCheckoutRootParams,
+    ) -> Result<(std::path::PathBuf, Option<String>), shepr_protocol::command::EndpointError> {
+        let cwd = super::cwd::launch_cwd(&params.cwd)?;
+        let home = self
+            .paths
+            .home_dir()
+            .and_then(|home| home.to_str().map(str::to_owned));
+        Ok((cwd, home))
+    }
+
+    /// Does the blocking filesystem and Git work for `workspace.checkout_root`.
+    pub(crate) fn checkout_root_for_worker(cwd: &Path) -> Result<Option<String>, String> {
+        checkout_root(cwd)
     }
 }
 

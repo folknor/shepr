@@ -26,8 +26,8 @@ impl SpawnGeometry {
 /// All application state - pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime. Live pane runtimes and the
 /// channels they report through belong to `App` (`terminal_runtimes`,
-/// `pane_spawn_handles`); state reaches a runtime only through the registry
-/// it is handed, keyed by terminal id.
+/// `pane_spawn_handles`); App-level code supplies runtime observations to
+/// reducers instead of having state perform process or filesystem probes.
 pub struct AppState {
     pub(crate) clock_now: std::time::Instant,
     pub terminals:

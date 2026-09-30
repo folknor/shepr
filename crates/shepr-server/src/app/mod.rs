@@ -155,7 +155,8 @@ impl App {
             .map_or_default(|snapshot| snapshot.host_theme.to_theme());
         // Whether the first save must copy the on-disk session into
         // `session-backups` before replacing it: the file either could not be
-        // loaded, or restore dropped saved workspaces that are still only in it.
+        // loaded, or restore discarded saved workspace or pane data still only
+        // present in it.
         let mut protect_unloaded = policy.persists_session() && snapshot.is_none();
         let (workspaces, active) = if let Some(snap) = snapshot {
             let history = config
@@ -191,14 +192,16 @@ impl App {
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
             pane_history_carry = restored.history_carry;
-            if restored.dropped_workspaces > 0 {
+            let restore_was_partial = restored.dropped_workspaces > 0 || restored.restore_damage;
+            if restore_was_partial {
                 protect_unloaded = true;
                 warn!(
                     dropped_workspaces = restored.dropped_workspaces,
-                    "session restore dropped saved workspaces; the saved session is backed up to session-backups before the first save"
+                    restore_damage = restored.restore_damage,
+                    "session restore discarded saved data; the saved session is backed up to session-backups before the first save"
                 );
             }
-            let outcome = if restored.dropped_workspaces > 0 {
+            let outcome = if restore_was_partial {
                 "partial"
             } else if restored.workspaces.is_empty() {
                 "empty"
@@ -485,6 +488,85 @@ mod tests {
         let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.settings.default_shell = exiting_test_command().into();
         app
+    }
+
+    #[test]
+    fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
+        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+        use shepr_mux::persist::snapshot::{
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
+        };
+
+        let scratch = crate::test_support::ScratchDir::new("pruned-pane-backup");
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
+            Config::default(),
+            None,
+            paths.clone(),
+        );
+        let data_dir = paths.data_dir().to_path_buf();
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
+
+        let pane = |cwd: std::path::PathBuf| PaneSnapshot {
+            cwd,
+            public_number: None,
+            label: None,
+            agent_session: None,
+        };
+        let snapshot = SessionSnapshot {
+            version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w1".into()),
+                custom_name: Some("surviving workspace".into()),
+                identity_cwd: scratch.path().to_path_buf(),
+                next_public_pane_number: 0,
+                layout: LayoutSnapshot::Split {
+                    direction: DirectionSnapshot::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(LayoutSnapshot::Pane(1)),
+                    second: Box::new(LayoutSnapshot::Pane(2)),
+                },
+                panes: std::collections::HashMap::from([
+                    (1, pane("relative-cwd".into())),
+                    (2, pane(scratch.join("missing-cwd"))),
+                ]),
+                zoomed: false,
+                focused: Some(2),
+                root_pane: Some(2),
+            }],
+            active: Some(0),
+        };
+        let original = serde_json::to_vec(&snapshot).expect("encode the saved session");
+        let session_file = data_dir.join("session.json");
+        std::fs::write(&session_file, &original).expect("write the saved session");
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_paths(
+            &config,
+            &paths,
+            lease,
+            AppPolicy::Production,
+            api_rx,
+            test_clock(),
+        );
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.terminals.len(), 1);
+
+        assert!(app.save_session_now(), "first save");
+        let backups = data_dir.join("session-backups");
+        let backup_files = std::fs::read_dir(&backups)
+            .expect("backup directory")
+            .map(|entry| entry.expect("backup entry").path())
+            .collect::<Vec<_>>();
+        assert_eq!(backup_files.len(), 1);
+        assert_eq!(
+            std::fs::read(&backup_files[0]).expect("read backup"),
+            original
+        );
+
+        app.policy = AppPolicy::Test;
     }
 
     #[test]

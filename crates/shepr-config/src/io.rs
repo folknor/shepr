@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 use shepr_core::env::EnvVar;
 
-use super::{
-    Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, ValidatedConfig, model::LoadedConfig,
-};
+use super::{Config, ConfigDiagnostic, ConfigProvenance, ValidatedConfig, model::LoadedConfig};
 
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 
@@ -92,22 +90,6 @@ pub struct AppPaths {
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
     server_address: super::ServerAddress,
-    provenance: PathProvenance,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PathProvenance {
-    pub config_dir: ConfigSource,
-    pub state_dir: ConfigSource,
-    pub runtime_dir: ConfigSource,
-    pub config_file: ConfigSource,
-    pub home_dir: ConfigSource,
-    /// Captured at launch: the process's working directory, or for the server
-    /// the launch directory handed over as `SHEPR_STARTUP_CWD`. No config
-    /// setting selects it.
-    pub current_dir: ConfigSource,
-    pub api_socket: ConfigSource,
-    pub client_socket: ConfigSource,
 }
 
 impl AppPaths {
@@ -170,10 +152,6 @@ impl AppPaths {
         &self.server_address
     }
 
-    pub fn provenance(&self) -> &PathProvenance {
-        &self.provenance
-    }
-
     /// Resolve XDG directories and the local socket target once from the
     /// inherited process environment, for this build's profile.
     pub fn resolve() -> Result<Self, Vec<String>> {
@@ -210,16 +188,6 @@ impl AppPaths {
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
             server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None, None),
-            provenance: PathProvenance {
-                config_dir: ConfigSource::Default,
-                state_dir: ConfigSource::Default,
-                runtime_dir: ConfigSource::Default,
-                config_file: ConfigSource::Default,
-                home_dir: ConfigSource::Default,
-                current_dir: ConfigSource::Default,
-                api_socket: ConfigSource::Default,
-                client_socket: ConfigSource::Default,
-            },
         }
     }
 }
@@ -233,22 +201,16 @@ fn platform_xdg_dir(
     home_suffix: &str,
     home_dir: Option<&Path>,
     app_dir: &str,
-) -> io::Result<(PathBuf, ConfigSource)> {
+) -> io::Result<PathBuf> {
     // Empty follows the XDG Base Directory spec, which treats it as unset
     // (the registry reads empty as unset). Relative is refused, which the
     // spec also calls invalid.
     if let Some(directory) = shepr_core::env::read_path(variable)? {
-        return Ok((
-            directory.join(app_dir),
-            ConfigSource::EnvironmentVariable(variable.name().to_owned()),
-        ));
+        return Ok(directory.join(app_dir));
     }
 
     let home_dir = home_dir.ok_or_else(shepr_core::pathutil::missing_home_error)?;
-    Ok((
-        home_dir.join(home_suffix).join(app_dir),
-        ConfigSource::Default,
-    ))
+    Ok(home_dir.join(home_suffix).join(app_dir))
 }
 
 fn socket_path_override(variable: EnvVar, diagnostics: &mut Vec<String>) -> Option<PathBuf> {
@@ -269,18 +231,13 @@ enum CurrentDirOrigin {
     StartupHandoff,
 }
 
-fn resolve_current_dir(
-    origin: CurrentDirOrigin,
-) -> Result<(Option<PathBuf>, ConfigSource), String> {
-    let process = || (std::env::current_dir().ok(), ConfigSource::Default);
+fn resolve_current_dir(origin: CurrentDirOrigin) -> Result<Option<PathBuf>, String> {
+    let process = || std::env::current_dir().ok();
     match origin {
         CurrentDirOrigin::Process => Ok(process()),
         CurrentDirOrigin::StartupHandoff => {
             match shepr_core::env::read_path(EnvVar::SheprStartupCwd) {
-                Ok(Some(path)) if path.is_absolute() => Ok((
-                    Some(path),
-                    ConfigSource::EnvironmentVariable(EnvVar::SheprStartupCwd.name().to_owned()),
-                )),
+                Ok(Some(path)) if path.is_absolute() => Ok(Some(path)),
                 Ok(Some(path)) => Err(format!(
                     "{} must be an absolute path, got {}",
                     EnvVar::SheprStartupCwd,
@@ -326,27 +283,18 @@ fn resolve_paths_from_env(
     }
 
     let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
-    let (current_dir, current_dir_source) =
-        resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
-    let (config_dir, config_dir_source) = platform_xdg_dir(
+    let current_dir = resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
+    let config_dir = platform_xdg_dir(
         EnvVar::XdgConfigHome,
         ".config",
         Some(&home_dir),
         SHARED_APP_DIR_NAME,
-    )
-    .map_or_else(
-        |error| (Err(error), ConfigSource::Default),
-        |(path, source)| (Ok(path), source),
     );
-    let (state_dir, state_dir_source) = platform_xdg_dir(
+    let state_dir = platform_xdg_dir(
         EnvVar::XdgStateHome,
         ".local/state",
         Some(&home_dir),
         SHARED_APP_DIR_NAME,
-    )
-    .map_or_else(
-        |error| (Err(error), ConfigSource::Default),
-        |(path, source)| (Ok(path), source),
     );
     // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
     // and empty are an error for shepr because its runtime sockets need a
@@ -363,11 +311,6 @@ fn resolve_paths_from_env(
     let xdg_runtime_dir = xdg_runtime_dir.ok().flatten();
 
     let config_path_override = shepr_core::env::read_path(EnvVar::SheprConfigPath);
-    let config_file_source = if matches!(config_path_override, Ok(Some(_))) {
-        ConfigSource::EnvironmentVariable(EnvVar::SheprConfigPath.name().to_owned())
-    } else {
-        config_dir_source.clone()
-    };
     let config_file = match config_path_override {
         Err(error) => Err(io::Error::from(error)),
         Ok(Some(path)) => {
@@ -443,22 +386,6 @@ fn resolve_paths_from_env(
             // The saved layout sits beside the shared state directory under the
             // profile's directory name: the state directory itself for release.
             let data_dir = state_dir.with_file_name(profile.app_dir_name());
-            let home_dir_source = ConfigSource::EnvironmentVariable(EnvVar::Home.name().to_owned());
-            let runtime_dir_source =
-                ConfigSource::EnvironmentVariable(EnvVar::XdgRuntimeDir.name().to_owned());
-            let api_socket_source = if api_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
-            } else {
-                runtime_dir_source.clone()
-            };
-            // Report the override that selected the client endpoint. A pane
-            // can export the ordinary runtime API path beside its distinct
-            // client-socket override, so the API variable alone does not
-            // always select the client socket.
-            let client_socket_source = server_address.override_variable().map_or_else(
-                || runtime_dir_source.clone(),
-                |variable| ConfigSource::EnvironmentVariable(variable.name().to_owned()),
-            );
             Ok(AppPaths {
                 config_dir,
                 state_dir,
@@ -469,16 +396,6 @@ fn resolve_paths_from_env(
                 home_dir: Some(home_dir),
                 current_dir,
                 server_address,
-                provenance: PathProvenance {
-                    config_dir: config_dir_source,
-                    state_dir: state_dir_source,
-                    runtime_dir: runtime_dir_source,
-                    config_file: config_file_source,
-                    home_dir: home_dir_source,
-                    current_dir: current_dir_source,
-                    api_socket: api_socket_source,
-                    client_socket: client_socket_source,
-                },
             })
         }
         _ if diagnostics.is_empty() => Err(vec![
@@ -1096,7 +1013,6 @@ window_title = "{unknown}"
                 .join("config.toml")
                 .as_path()
         );
-        assert_eq!(paths.provenance().config_file, ConfigSource::Default);
 
         env.set(EnvVar::SheprConfigPath, format!("{} ", custom.display()));
         let errors = AppPaths::resolve().expect_err("a padded override is refused");
@@ -1119,15 +1035,10 @@ window_title = "{unknown}"
         // Without the handoff the server uses its own working directory.
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
         assert_eq!(paths.current_dir(), process_dir.as_deref());
-        assert_eq!(paths.provenance().current_dir, ConfigSource::Default);
 
         env.set(EnvVar::SheprStartupCwd, &launch);
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
         assert_eq!(paths.current_dir(), Some(launch.as_path()));
-        assert_eq!(
-            paths.provenance().current_dir,
-            ConfigSource::EnvironmentVariable(EnvVar::SheprStartupCwd.name().to_owned())
-        );
         // Only the server reads the handoff; any other process keeps its own.
         let cli = AppPaths::resolve().expect("CLI paths resolve");
         assert_eq!(cli.current_dir(), process_dir.as_deref());
@@ -1158,7 +1069,7 @@ window_title = "{unknown}"
     }
 
     #[test]
-    fn socket_path_provenance_is_tracked_independently() {
+    fn socket_path_overrides_resolve_independently() {
         let env = shepr_test_support::IsolatedEnv::new();
         env.remove(EnvVar::SheprSocketPath);
         env.remove(EnvVar::SheprClientSocketPath);
@@ -1166,12 +1077,12 @@ window_title = "{unknown}"
         env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
         let paths = AppPaths::resolve().expect("API socket override resolves");
         assert_eq!(
-            paths.provenance().api_socket,
-            ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
+            paths.server_address().api_socket(),
+            env.path().join("api.sock")
         );
         assert_eq!(
-            paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
+            paths.server_address().client_socket(),
+            crate::derive_client_socket_from_api_socket(&env.path().join("api.sock"))
         );
 
         env.set(
@@ -1185,10 +1096,6 @@ window_title = "{unknown}"
             paths.server_address().client_socket(),
             expected_client.as_path()
         );
-        assert_eq!(
-            paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
-        );
 
         env.remove(EnvVar::SheprSocketPath);
         env.set(
@@ -1197,12 +1104,12 @@ window_title = "{unknown}"
         );
         let paths = AppPaths::resolve().expect("client socket override resolves");
         assert_eq!(
-            paths.provenance().api_socket,
-            ConfigSource::EnvironmentVariable("XDG_RUNTIME_DIR".to_owned())
+            paths.server_address().api_socket(),
+            paths.runtime_dir().join("shepr.sock")
         );
         assert_eq!(
-            paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(EnvVar::SheprClientSocketPath.name().to_owned())
+            paths.server_address().client_socket(),
+            env.path().join("client.sock")
         );
     }
 
@@ -1302,10 +1209,6 @@ window_title = "{unknown}"
                 paths.server_address().api_socket(),
                 env.path().join("api.sock")
             );
-            assert_eq!(
-                paths.provenance().api_socket,
-                ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
-            );
         }
     }
 
@@ -1332,10 +1235,6 @@ window_title = "{unknown}"
             assert_eq!(
                 paths.server_address().client_socket(),
                 runtime.join("shepr-client.sock")
-            );
-            assert_eq!(
-                paths.provenance().api_socket,
-                ConfigSource::EnvironmentVariable("XDG_RUNTIME_DIR".to_owned())
             );
         }
     }

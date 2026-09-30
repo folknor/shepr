@@ -1,15 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-#[expect(
-    variant_size_differences,
-    reason = "a Copy row coordinate of sixteen bytes, passed by value"
-)]
-enum Coordinates {
-    Screen(ScreenRow),
-    Viewport(ViewportRow),
-}
-
 impl Terminal {
     /// Visits the cells of screen row `y` without allocating: `visit` gets
     /// each cell's column, width class and text. The text is what readers
@@ -75,53 +65,6 @@ impl Terminal {
         Some(Line(i32::try_from(line).ok()?))
     }
 
-    pub fn screen_cell(&self, x: u16, y: ScreenRow) -> Result<(CellWide, Vec<u32>), Error> {
-        let line = self
-            .screen_line(y)
-            .ok_or(Error("screen row out of range"))?;
-        let column = usize::from(x);
-        if column >= self.term.columns() {
-            return Err(Error("screen column out of range"));
-        }
-        let cell = &self.term.grid()[line][Column(column)];
-        Ok((cell_wide(cell), cell_graphemes(cell)))
-    }
-
-    pub fn screen_text_rows(&self) -> Vec<ScreenTextRow> {
-        self.screen_text_rows_range(ScreenRow(0), ScreenRow(usize::MAX))
-    }
-
-    pub fn screen_text_rows_range(
-        &self,
-        start_row: ScreenRow,
-        end_row_exclusive: ScreenRow,
-    ) -> Vec<ScreenTextRow> {
-        let total_rows = self.term.total_lines();
-        let start_row = start_row.0.min(total_rows);
-        let end_row_exclusive = end_row_exclusive.0.min(total_rows).max(start_row);
-        let grid = self.term.grid();
-        let columns = grid.columns();
-        let mut rows = Vec::with_capacity(end_row_exclusive - start_row);
-        for y in start_row..end_row_exclusive {
-            let Some(line) = self.screen_line(ScreenRow(y)) else {
-                break;
-            };
-            let row = &grid[line];
-            let cells = (0..columns)
-                .map(|x| {
-                    let cell = &row[Column(x)];
-                    ScreenTextCell {
-                        wide: cell_wide(cell),
-                        graphemes: cell_graphemes(cell),
-                    }
-                })
-                .collect();
-            let wrap = self.row_wrap(line);
-            rows.push(ScreenTextRow { cells, wrap });
-        }
-        rows
-    }
-
     pub fn viewport_hyperlink_uri(&self, x: u16, y: ViewportRow) -> Result<Option<String>, Error> {
         let line = self
             .viewport_line(y)
@@ -135,120 +78,41 @@ impl Terminal {
             .map(|link| link.uri().to_owned()))
     }
 
-    pub fn read_text_viewport(
-        &self,
-        start: Point<ViewportRow>,
-        end: Point<ViewportRow>,
-        rectangle: bool,
-    ) -> Result<String, Error> {
-        self.read_range(
-            start.map_row(Coordinates::Viewport),
-            end.map_row(Coordinates::Viewport),
-            rectangle,
-            Format::Plain,
-            true,
-        )
-    }
-
-    pub fn read_ansi_viewport(
-        &self,
-        start: Point<ViewportRow>,
-        end: Point<ViewportRow>,
-        rectangle: bool,
-    ) -> Result<String, Error> {
-        self.read_range(
-            start.map_row(Coordinates::Viewport),
-            end.map_row(Coordinates::Viewport),
-            rectangle,
-            Format::Vt,
-            false,
-        )
-    }
-
     pub fn read_text_screen(
         &self,
         start: Point<ScreenRow>,
         end: Point<ScreenRow>,
-        rectangle: bool,
     ) -> Result<String, Error> {
-        self.read_range(
-            start.map_row(Coordinates::Screen),
-            end.map_row(Coordinates::Screen),
-            rectangle,
-            Format::Plain,
-            true,
-        )
-    }
-
-    pub fn read_ansi_screen(
-        &self,
-        start: Point<ScreenRow>,
-        end: Point<ScreenRow>,
-        rectangle: bool,
-        unwrap: bool,
-    ) -> Result<String, Error> {
-        self.read_range(
-            start.map_row(Coordinates::Screen),
-            end.map_row(Coordinates::Screen),
-            rectangle,
-            Format::Vt,
-            unwrap,
-        )
-    }
-
-    fn read_range(
-        &self,
-        start: Point<Coordinates>,
-        end: Point<Coordinates>,
-        rectangle: bool,
-        format: Format,
-        unwrap: bool,
-    ) -> Result<String, Error> {
-        let to_line = |coordinate| match coordinate {
-            Coordinates::Screen(y) => self.screen_line(y),
-            Coordinates::Viewport(y) => self.viewport_line(y),
-        };
         let grid = self.term.grid();
-        let start = to_line(start.row)
+        let start = self
+            .screen_line(start.row)
             .and_then(|line| format::grid_point(grid, line, start.col))
             .ok_or(Error("selection start out of range"))?;
-        let end = to_line(end.row)
+        let end = self
+            .screen_line(end.row)
             .and_then(|line| format::grid_point(grid, line, end.col))
             .ok_or(Error("selection end out of range"))?;
-        Ok(format::format_range(
-            grid,
-            start,
-            end,
-            format::RangeOptions {
-                rectangle,
-                format,
-                unwrap,
-                trim: true,
-            },
-        ))
+        Ok(format::format_range(grid, start, end, Format::Plain))
     }
 
-    /// [`read_ansi_screen`] (unwrapped) for a range that lies inside one
-    /// logical line's continuation or ends inside a logical line, so a long
-    /// line can be read a few rows at a time. The read starts from the state
-    /// `carry` holds (default at a logical line start). With `open_end` the
-    /// last row must be a soft-wrapped row whose line continues in the next
-    /// row: every cell of it is emitted, nothing is closed or trimmed, and
-    /// `carry` holds the state the read of the next rows starts from. Joining
-    /// such reads with no separator gives exactly the bytes one read of the
-    /// whole line gives. Without `open_end` the range ends its line like any
-    /// read, and `carry` is left at the default. `carry` is unchanged on
-    /// error.
+    /// A VT read for a range that lies inside one logical line's continuation
+    /// or ends inside a logical line, so a long line can be read a few rows
+    /// at a time. The read starts from the state `carry` holds (default at a
+    /// logical line start). With `open_end` the last row must be a
+    /// soft-wrapped row whose line continues in the next row: every cell of it
+    /// is emitted, nothing is closed or trimmed, and `carry` holds the state
+    /// the read of the next rows starts from. Joining such reads with no
+    /// separator gives exactly the bytes one read of the whole line gives.
+    /// Without `open_end` the range ends its line like any read, and `carry`
+    /// is left at the default. `carry` is unchanged on error.
     ///
-    /// Unlike [`read_ansi_screen`] the text is not cut back to its last
-    /// content: trailing blank lines stay in it. The second value is the byte
-    /// length the text has when cut there, `None` when the range has no
-    /// content at all, `Some(0)` when it only finishes a line that began
-    /// before it (a carry that has started) without emitting a cell, and the
-    /// whole length with `open_end`. The caller that joins reads picks the
-    /// end of the whole read from the last read that has content.
-    ///
-    /// [`read_ansi_screen`]: Self::read_ansi_screen
+    /// The text is not cut back to its last content: trailing blank lines stay
+    /// in it. The second value is the byte length the text has when cut there,
+    /// `None` when the range has no content at all, `Some(0)` when it only
+    /// finishes a line that began before it (a carry that has started) without
+    /// emitting a cell, and the whole length with `open_end`. The caller that
+    /// joins reads picks the end of the whole read from the last read that has
+    /// content.
     pub fn read_ansi_screen_carrying(
         &self,
         start: Point<ScreenRow>,
@@ -269,12 +133,7 @@ impl Terminal {
             grid,
             start,
             end,
-            format::RangeOptions {
-                rectangle: false,
-                format: Format::Vt,
-                unwrap: true,
-                trim: true,
-            },
+            Format::Vt,
             carry,
             open_end,
         ))

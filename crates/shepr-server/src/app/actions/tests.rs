@@ -139,13 +139,11 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
         .expect("test precondition");
     let second_id = state.workspaces[1].id.to_string();
 
-    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
-    let changed = state.apply_workspace_git_statuses(
-        &terminal_runtimes,
-        vec![WorkspaceGitStatus {
+    let changed = state.apply_workspace_git_statuses(vec![(
+        WorkspaceGitStatus {
             workspace_id: first_id,
             resolved_identity_cwd: first_cwd.clone(),
-            status_cache_key: first_cwd,
+            status_cache_key: first_cwd.clone(),
             demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: Some("main".into()),
@@ -154,8 +152,9 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
                 behind: 1,
             }),
             space: None,
-        }],
-    );
+        },
+        Some(first_cwd),
+    )]);
 
     assert!(changed);
     assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
@@ -180,10 +179,11 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
         behind: 0,
     });
 
-    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
-    let changed = state.apply_workspace_git_statuses(
-        &terminal_runtimes,
-        vec![WorkspaceGitStatus {
+    let current_cwd = state.workspaces[0]
+        .resolved_identity_cwd()
+        .expect("test precondition");
+    let changed = state.apply_workspace_git_statuses(vec![(
+        WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
             status_cache_key: std::path::PathBuf::from("/definitely/not/current"),
@@ -195,8 +195,9 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
                 behind: 1,
             }),
             space: None,
-        }],
-    );
+        },
+        Some(current_cwd),
+    )]);
 
     assert!(!changed);
     assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
@@ -219,13 +220,11 @@ fn apply_workspace_git_statuses_ignores_unrequested_branch_changes() {
     state.workspaces[0].cached_auto_label = "one".into();
     state.workspaces[0].cached_git_branch = Some("old".into());
 
-    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
-    let changed = state.apply_workspace_git_statuses(
-        &terminal_runtimes,
-        vec![WorkspaceGitStatus {
+    let changed = state.apply_workspace_git_statuses(vec![(
+        WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd,
+            status_cache_key: cwd.clone(),
             demand: shepr_mux::git::GitStatusRefreshDemand {
                 branch: false,
                 ahead_behind: true,
@@ -234,8 +233,9 @@ fn apply_workspace_git_statuses_ignores_unrequested_branch_changes() {
             branch: Some("new".into()),
             ahead_behind: None,
             space: None,
-        }],
-    );
+        },
+        Some(cwd),
+    )]);
 
     assert!(!changed);
     assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
@@ -254,20 +254,19 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
         behind: 2,
     });
 
-    let terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
-    let changed = state.apply_workspace_git_statuses(
-        &terminal_runtimes,
-        vec![WorkspaceGitStatus {
+    let changed = state.apply_workspace_git_statuses(vec![(
+        WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd,
+            status_cache_key: cwd.clone(),
             demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: None,
             ahead_behind: None,
             space: None,
-        }],
-    );
+        },
+        Some(cwd),
+    )]);
 
     assert!(changed);
     assert_eq!(state.workspaces[0].branch(), None);
@@ -529,6 +528,43 @@ fn state_changed_events_advance_the_agent_state_change_sequence() {
         );
     }
     app.assert_invariants_for_test();
+}
+
+#[test]
+fn agent_state_change_sequence_ignores_idle_unknown_presentation_changes() {
+    let mut app = app_with_workspaces(&["active"]);
+    let pane_id = app.workspaces[0].root_pane();
+    let terminal_id = app.workspaces[0].panes()[&pane_id]
+        .attached_terminal_id
+        .clone();
+    let state_changed = |state| AppEvent::StateChanged {
+        pane_id,
+        agent: Some(Agent::Pi),
+        state,
+        visible_blocker: false,
+        process_exited: false,
+        observed_at: Instant::now(),
+    };
+
+    app.handle_app_event(state_changed(AgentState::Idle));
+    assert_eq!(app.terminals[&terminal_id].state, AgentState::Idle);
+    assert_eq!(
+        app.terminals[&terminal_id].last_agent_state_change_seq,
+        None
+    );
+
+    app.handle_app_event(state_changed(AgentState::Unknown));
+    assert_eq!(app.terminals[&terminal_id].state, AgentState::Unknown);
+    assert_eq!(
+        app.terminals[&terminal_id].last_agent_state_change_seq,
+        None
+    );
+
+    app.handle_app_event(state_changed(AgentState::Working));
+    assert_eq!(
+        app.terminals[&terminal_id].last_agent_state_change_seq,
+        Some(1)
+    );
 }
 
 #[test]

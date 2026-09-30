@@ -62,8 +62,8 @@ pub fn copy_mode_command_char(key: &TerminalKey) -> Option<char> {
     }
 }
 
-/// Shift on a US-layout key. Copy mode and the legacy key encoder share this
-/// one table so both read an unshifted key with Shift the same way.
+/// Shift on a US-layout key. Copy mode, key help, and the legacy key encoder
+/// share this table so they read an unshifted key with Shift the same way.
 pub(crate) fn shifted_ascii_char(ch: char) -> Option<char> {
     match ch {
         'a'..='z' => Some(ch.to_ascii_uppercase()),

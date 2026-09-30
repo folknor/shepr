@@ -99,9 +99,13 @@ fn main() -> ExitCode {
 
 fn launch() -> CliResult<i32> {
     let raw_args: Vec<String> = args_as_utf8(std::env::args_os()).map_err(CliError::Usage)?;
+    launch_with_args(&raw_args)
+}
+
+fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
     // The one command-line parser: the clap spec in `cli/spec.rs`. It prints
     // its own usage errors and subcommand help, and hands back only the status.
-    let invocation = match cli::parse_invocation(&raw_args) {
+    let invocation = match cli::parse_invocation(raw_args) {
         Ok(invocation) => invocation,
         Err(exit_code) => return Ok(exit_code),
     };
@@ -249,6 +253,21 @@ mod tests {
     fn nested_shepr_does_not_block_without_env() {
         let config = shepr_config::ValidatedConfig::test_default();
         assert!(!should_block_nested_for_env(&config, None, None));
+    }
+
+    #[test]
+    fn server_stop_does_not_load_a_broken_config() {
+        let env = crate::test_support::IsolatedEnv::new();
+        let config = env.path().join("broken-config.toml");
+        std::fs::write(&config, "this = [not valid TOML").expect("write broken config");
+        env.set(EnvVar::SheprConfigPath, &config);
+        let args = ["shepr", "server", "stop"].map(str::to_owned);
+
+        let result = launch_with_args(&args);
+        assert!(
+            matches!(&result, Err(CliError::ServerStop(_))),
+            "server stop should reach its local server check without parsing config: {result:?}"
+        );
     }
 
     #[test]

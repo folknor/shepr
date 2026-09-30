@@ -507,6 +507,14 @@ fn launch_daemon(
         },
         timeout,
         |stderr| {
+            // Keep startup attached to the child guard below. A transient
+            // `systemd-run --user --scope` needs an active user manager and
+            // waits synchronously for its command to exit, which would block
+            // readiness checks; an asynchronous service launch would need a
+            // different owner for startup failure cleanup. Without lingering,
+            // a user scope also ends with the user manager after the last login.
+            // `setsid` separates the terminal session, but logind's cgroup
+            // policy still applies.
             let mut command =
                 build_server_daemon_command(server, &working_dir, paths.current_dir(), paths);
             command.stderr(stderr);

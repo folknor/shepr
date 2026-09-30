@@ -10,12 +10,12 @@ pub(crate) const FIRST_WORKSPACE_NUMBER: usize = 1;
 /// from its own wall clock (nanoseconds for the shell/python hooks,
 /// microseconds for the JS plugins; only ever compared within one source).
 /// A report whose `seq` is not above the last accepted one is normally a
-/// straggler from a racing hook process and is dropped. Hook processes race
-/// over milliseconds, though; a non-increasing `seq` arriving this long after
-/// the source's last accepted report means the clock stepped backwards (NTP,
-/// resume, a manual change), and dropping would lose every report until the
-/// clock caught up again. Such a report is accepted and re-anchors the
-/// source's sequence.
+/// straggler from a racing hook process and is dropped, however late it
+/// arrives: silence is not evidence of anything. When the host's wall clock
+/// has fallen this far behind its monotonic clock since the last acceptance,
+/// the clock stepped backwards (NTP, a manual change), and dropping would lose
+/// every report until it caught up again. Such a report is accepted and
+/// re-anchors the source's sequence.
 pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
 /// Maximum distinct hook sources tracked by a terminal, preventing arbitrary
 /// source names from growing the ordering map without bound.

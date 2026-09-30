@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -11,25 +10,6 @@ use super::{
     window_title::WindowTitleTemplate,
 };
 use crate::limits::{MAX_INPUT_EVENT_BATCH, MIN_MOUSE_SCROLL_LINES};
-
-/// The source that selected a resolved path.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum ConfigSource {
-    #[default]
-    Default,
-    EnvironmentVariable(String),
-}
-
-impl fmt::Display for ConfigSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Default => formatter.write_str("default"),
-            Self::EnvironmentVariable(variable) => {
-                write!(formatter, "environment variable {variable}")
-            }
-        }
-    }
-}
 
 /// Client preferences that yield to explicit configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,7 +697,6 @@ impl ValidatedConfig {
 
 #[cfg(test)]
 impl ConfigResolution {
-    #[cfg(test)]
     pub(crate) fn parse_document(
         config: &Config,
         provenance: &ConfigProvenance,

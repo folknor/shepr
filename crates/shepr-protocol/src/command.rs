@@ -7,6 +7,7 @@
 //! no field is skipped or flattened, and every id is typed.
 
 use serde::{Deserialize, Serialize};
+use shepr_core::geometry::SplitBranch;
 
 use crate::{AgentStatus, PublicPaneId, WorkspaceId};
 
@@ -136,7 +137,7 @@ pub struct PaneZoomParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
     pub workspace_id: WorkspaceId,
-    pub path: Vec<bool>,
+    pub path: Vec<SplitBranch>,
     pub ratio: f32,
 }
 
@@ -252,7 +253,6 @@ pub struct PaneScrollInfo {
 pub struct PaneInfo {
     pub pane_id: PublicPaneId,
     pub focused: bool,
-    #[serde(default)]
     pub scroll: Option<PaneScrollInfo>,
 }
 
@@ -297,8 +297,8 @@ pub struct EndpointCommandTraits {
     /// workspaces (which client locations track by index), so every shell
     /// client's location is reconciled after it.
     pub changes_topology: bool,
-    /// The requesting shell claims the geometry of the workspace the command
-    /// acted on.
+    /// The requesting shell claims geometry when the command's action should
+    /// make it the PTY size source for the workspace.
     pub claims_shell_geometry: bool,
 }
 
@@ -321,8 +321,8 @@ impl EndpointCommand {
             Self::PaneScroll(_) => ("pane.scroll", true, false, true),
             Self::PaneClear(_) => ("pane.clear", true, false, true),
             Self::PaneSelectionRead(_) => ("pane.selection.read", false, false, false),
-            Self::PaneCopyMotion(_) => ("pane.copy_motion", false, false, true),
-            Self::PaneCopySearch(_) => ("pane.copy_search", false, false, true),
+            Self::PaneCopyMotion(_) => ("pane.copy_motion", false, false, false),
+            Self::PaneCopySearch(_) => ("pane.copy_search", false, false, false),
             Self::PaneFocus(_) => ("pane.focus", true, false, true),
             Self::PaneInputSet(_) => ("pane.input.set", true, false, true),
             Self::PaneRename(_) => ("pane.rename", true, false, true),

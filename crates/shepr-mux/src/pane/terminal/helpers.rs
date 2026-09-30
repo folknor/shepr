@@ -368,7 +368,6 @@ pub(super) fn terminal_extract_selection<P>(
         .read_text_screen(
             Point::new(start_row, start.col),
             Point::new(end_row, end.col),
-            false,
         )
         .ok()
 }
@@ -662,10 +661,14 @@ pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, s
     if rows == 0 || cols == 0 {
         return Ok(String::new());
     }
-    core.terminal.read_ansi_viewport(
-        Point::new(ViewportRow(0), 0),
-        Point::new(ViewportRow(rows.saturating_sub(1)), cols.saturating_sub(1)),
-        false,
+    let offset = core.terminal.scrollbar().offset;
+    terminal_read_ansi_screen(
+        &core.terminal,
+        Point::new(ScreenRow(offset), 0),
+        Point::new(
+            ScreenRow(offset.saturating_add(usize::from(rows) - 1)),
+            cols - 1,
+        ),
     )
 }
 
@@ -673,19 +676,33 @@ pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, s
 pub(super) fn terminal_recent_ansi_snapshot(
     core: &mut PaneTerminalCore,
     lines: usize,
-    unwrap: bool,
 ) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
     };
-    let text = terminal.read_ansi_screen(
+    let text = terminal_read_ansi_screen(
+        terminal,
         Point::new(ScreenRow(start), 0),
         Point::new(ScreenRow(end), cols.saturating_sub(1)),
-        false,
-        unwrap,
     )?;
     Ok(finish_recent_snapshot(text, start))
+}
+
+#[cfg(test)]
+fn terminal_read_ansi_screen(
+    terminal: &shepr_vt::Terminal,
+    start: Point<ScreenRow>,
+    end: Point<ScreenRow>,
+) -> Result<String, shepr_vt::Error> {
+    let (mut text, content_end) = terminal.read_ansi_screen_carrying(
+        start,
+        end,
+        &mut shepr_vt::AnsiCarry::default(),
+        false,
+    )?;
+    text.truncate(content_end.unwrap_or(0));
+    Ok(text)
 }
 
 /// Recent read limits are measured in rendered rows, including blank or styled
@@ -724,7 +741,6 @@ pub(super) fn terminal_recent_text_unwrapped_snapshot(
     let text = terminal.read_text_screen(
         Point::new(ScreenRow(start), 0),
         Point::new(ScreenRow(end), cols.saturating_sub(1)),
-        false,
     )?;
     Ok(finish_recent_snapshot(text, start))
 }

@@ -18,7 +18,13 @@ pub(super) fn detect_state_from_api(
 pub(super) fn pane_agent_status(
     state: shepr_agent::detect::AgentState,
 ) -> shepr_api::schema::AgentStatus {
-    match state.presentation_state() {
+    presented_agent_status(state.presentation_state())
+}
+
+pub(super) fn presented_agent_status(
+    state: shepr_agent::detect::PresentedAgentState,
+) -> shepr_api::schema::AgentStatus {
+    match state {
         shepr_agent::detect::PresentedAgentState::Idle => shepr_api::schema::AgentStatus::Idle,
         shepr_agent::detect::PresentedAgentState::Working => {
             shepr_api::schema::AgentStatus::Working

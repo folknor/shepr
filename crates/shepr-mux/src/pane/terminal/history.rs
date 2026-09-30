@@ -674,7 +674,7 @@ mod tests {
         if core.terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
             return None;
         }
-        terminal_recent_ansi_snapshot(&mut core, usize::MAX, true)
+        terminal_recent_ansi_snapshot(&mut core, usize::MAX)
             .ok()
             .map(|snapshot| snapshot.text)
     }

@@ -553,7 +553,13 @@ fn send_stop_request(
 ) -> Result<(), ServerStopError> {
     // clock-io-ok: the deadline is the one the real socket reader below keeps.
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
-        return Ok(());
+        return Err(ServerStopError::Io {
+            context: format!("could not send stop request to {label}"),
+            source: io::Error::new(
+                io::ErrorKind::TimedOut,
+                "stop deadline expired before the request was sent",
+            ),
+        });
     }
     let client = ApiClient::for_socket(socket_path);
     match client.request_value_until(request, deadline) {

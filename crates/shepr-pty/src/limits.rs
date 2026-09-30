@@ -1,9 +1,5 @@
 use shepr_core::limits::KIBIBYTE_BYTES;
 
-/// Compiled-in shell used when neither the inherited nor passwd shell can be
-/// resolved to an executable. It is the baseline POSIX shell path on Linux.
-pub(crate) const FALLBACK_SHELL: &str = "/bin/sh";
-
 /// Initial scratch allocation passed to `getpwuid_r` for one passwd lookup.
 /// A small initial buffer avoids a large allocation for the common short
 /// entry; it grows on `ERANGE` up to `PASSWD_BUFFER_MAX_BYTES`.

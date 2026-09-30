@@ -966,10 +966,9 @@ mod tests {
             core.terminal.write(b"1mX");
             assert_eq!(
                 core.terminal
-                    .read_text_viewport(
-                        shepr_vt::Point::new(shepr_vt::ViewportRow(0), 0),
-                        shepr_vt::Point::new(shepr_vt::ViewportRow(0), 0),
-                        false,
+                    .read_text_screen(
+                        shepr_vt::Point::new(shepr_vt::ScreenRow(0), 0),
+                        shepr_vt::Point::new(shepr_vt::ScreenRow(0), 0),
                     )
                     .expect("test precondition"),
                 "X"

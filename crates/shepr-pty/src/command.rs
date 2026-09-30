@@ -1,4 +1,4 @@
-//! Shepr-owned description of a process to launch inside a pane PTY.
+//! Shepr-owned description of the shell to launch inside a pane PTY.
 //!
 //! `PtyCommand` starts from the server's own environment (see `base_env` for
 //! why it is inherited whole) and lets callers set, remove, and inspect
@@ -14,74 +14,31 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use crate::limits::{
-    FALLBACK_SHELL, PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES,
-    PASSWD_BUFFER_MAX_BYTES,
+    PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES, PASSWD_BUFFER_MAX_BYTES,
 };
 use shepr_core::env::{ChildEnv, EnvVar};
 use shepr_core::shell::ExecutableStatus as CandidateStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Program {
-    /// The interactive pane shell selected and resolved during config loading.
-    Shell { login: bool, program: OsString },
-    /// Explicit argv; `argv[0]` is resolved against the command's `PATH`.
-    Argv(Vec<OsString>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PtyCommand {
-    program: Program,
+    program: OsString,
+    login: bool,
     envs: BTreeMap<OsString, OsString>,
     cwd: Option<OsString>,
 }
 
 impl PtyCommand {
-    /// Run `program` (argv\[0\]) with no further arguments yet.
-    pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
-        Self::with_program(Program::Argv(vec![program.as_ref().to_owned()]))
-    }
-
     /// Run the shell selected and resolved while the server loaded its config.
     pub fn interactive_shell(default_shell: &str, login: bool) -> Self {
         let default_shell = default_shell.trim();
-        let mut command = Self::with_program(Program::Shell {
-            login,
+        let mut command = Self {
             program: default_shell.into(),
-        });
-        command.env(ChildEnv::Shell, default_shell);
-        command
-    }
-
-    fn with_program(program: Program) -> Self {
-        Self {
-            program,
+            login,
             envs: base_env(),
             cwd: None,
-        }
-    }
-
-    pub fn is_login_shell(&self) -> bool {
-        matches!(self.program, Program::Shell { login: true, .. })
-    }
-
-    /// Append an argument. An interactive shell takes no arguments; they are ignored.
-    pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) {
-        match &mut self.program {
-            Program::Shell { .. } => {
-                tracing::warn!("ignoring argument for interactive shell pty command");
-            }
-            Program::Argv(argv) => argv.push(arg.as_ref().to_owned()),
-        }
-    }
-
-    pub fn args<I, S>(&mut self, args: I)
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        for arg in args {
-            self.arg(arg);
-        }
+        };
+        command.env(ChildEnv::Shell, default_shell);
+        command
     }
 
     pub fn env<K, V>(&mut self, key: K, value: V)
@@ -113,7 +70,7 @@ impl PtyCommand {
     /// environment is cleared first). If a requested cwd became unusable after
     /// validation, it starts in a usable `HOME`, then the passwd home, then
     /// `/`. PTY stdio and session setup are added by `crate::backend`.
-    pub fn to_std_command(&self) -> io::Result<std::process::Command> {
+    pub(crate) fn to_std_command(&self) -> io::Result<std::process::Command> {
         let dir: OsString = match self.cwd.as_ref() {
             Some(dir) if usable_directory(Path::new(dir), "pty working directory") => dir.clone(),
             requested => {
@@ -128,33 +85,14 @@ impl PtyCommand {
                 home
             }
         };
-        let (mut cmd, shell) = match &self.program {
-            Program::Shell { login, program } => {
-                let shell = self.search_path(program, &dir)?;
-                let mut cmd = command_in(&shell, &dir);
-                if *login {
-                    let basename = Path::new(&shell).file_name().unwrap_or(shell.as_os_str());
-                    let mut argv0 = OsString::from("-");
-                    argv0.push(basename);
-                    cmd.arg0(argv0);
-                }
-                (cmd, shell)
-            }
-            Program::Argv(argv) => {
-                let shell = self.resolve_shell(&dir)?;
-                let Some((program, args)) = argv.split_first() else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "pty command argv must not be empty",
-                    ));
-                };
-                let resolved = self.search_path(program, &dir)?;
-                let mut cmd = command_in(&resolved, &dir);
-                cmd.arg0(program);
-                cmd.args(args);
-                (cmd, shell)
-            }
-        };
+        let shell = self.search_path(&self.program, &dir)?;
+        let mut cmd = command_in(&shell, &dir);
+        if self.login {
+            let basename = Path::new(&shell).file_name().unwrap_or(shell.as_os_str());
+            let mut argv0 = OsString::from("-");
+            argv0.push(basename);
+            cmd.arg0(argv0);
+        }
         cmd.env_clear();
         cmd.envs(&self.envs);
         // `PWD` belongs to the pane's working directory, which can differ from
@@ -170,30 +108,6 @@ impl PtyCommand {
         // The child sees the same resolved `$SHELL` that was selected above.
         cmd.env(ChildEnv::Shell, shell);
         Ok(cmd)
-    }
-
-    /// Resolve the child environment's `$SHELL`, falling back to passwd and
-    /// then the compiled-in shell when neither value can be used.
-    fn resolve_shell(&self, cwd: &OsStr) -> io::Result<OsString> {
-        let inherited = self.get_env(ChildEnv::Shell).and_then(trimmed_shell);
-        let candidate = inherited.clone().unwrap_or_else(passwd_shell);
-        match self.search_path(&candidate, cwd) {
-            Ok(resolved) => Ok(resolved),
-            Err(_) if inherited.is_none() => Ok(OsString::from(FALLBACK_SHELL)),
-            Err(err) => {
-                if let Some(shell) = inherited {
-                    tracing::warn!(
-                        shell = %shell.to_string_lossy(),
-                        error = %err,
-                        "SHELL is not executable; falling back to passwd shell"
-                    );
-                }
-                let fallback = passwd_shell();
-                Ok(self
-                    .search_path(&fallback, cwd)
-                    .unwrap_or_else(|_| OsString::from(FALLBACK_SHELL)))
-            }
-        }
     }
 
     fn home_dir(&self) -> OsString {
@@ -285,12 +199,6 @@ fn classify_candidate(path: &Path) -> CandidateStatus {
     }
 }
 
-/// Trim whitespace from `$SHELL` without discarding valid non-UTF-8 path
-/// bytes. Non-UTF-8 values only recognize ASCII whitespace at the edges.
-fn trimmed_shell(shell: &OsStr) -> Option<OsString> {
-    shepr_core::shell::trim_shell_value(shell)
-}
-
 /// The server's environment, copied whole. A pane is the user's shell, so it
 /// inherits what the session that started the server set up, as a shell under
 /// tmux does: the agent socket, the display, the locale, `PATH`
@@ -307,20 +215,6 @@ fn trimmed_shell(shell: &OsStr) -> Option<OsString> {
 )]
 fn base_env() -> BTreeMap<OsString, OsString> {
     std::env::vars_os().collect()
-}
-
-fn passwd_shell() -> OsString {
-    match passwd_field(|entry| entry.pw_shell.cast_const()) {
-        Some(shell) if access_ok(Path::new(&shell), libc::X_OK) => shell,
-        Some(shell) => {
-            tracing::warn!(
-                shell = %shell.to_string_lossy(),
-                "passwd shell is not executable, falling back to the compiled-in shell"
-            );
-            OsString::from(FALLBACK_SHELL)
-        }
-        None => OsString::from(FALLBACK_SHELL),
-    }
 }
 
 /// Read one string field of the current user's passwd entry.
@@ -376,6 +270,12 @@ mod tests {
     use super::*;
     use shepr_test_support::fixture;
 
+    fn fixture_shell(steps: &[fixture::Step]) -> PtyCommand {
+        let scratch = shepr_test_support::ScratchDir::new("pty-command-fixture");
+        let shell = fixture::stand_in(scratch.path(), "shepr-fixture", steps);
+        PtyCommand::interactive_shell(shell.to_str().expect("fixture path is UTF-8"), false)
+    }
+
     #[test]
     fn path_candidate_classification_distinguishes_all_filesystem_cases() {
         let scratch = shepr_test_support::ScratchDir::new("pty-candidates");
@@ -408,7 +308,7 @@ mod tests {
 
     #[test]
     fn env_edits_are_visible_before_spawn() {
-        let mut cmd = PtyCommand::new(fixture::path());
+        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
         cmd.env("SHEPR_PTY_TEST_KEY", "value");
         assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
         cmd.env_remove("SHEPR_PTY_TEST_KEY");
@@ -419,7 +319,7 @@ mod tests {
 
     #[test]
     fn std_command_carries_exactly_the_command_env() {
-        let mut cmd = PtyCommand::new(fixture::path());
+        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
         cmd.env("SHEPR_PTY_TEST_SET", "1");
         cmd.env("SHEPR_PTY_TEST_REMOVED", "1");
         cmd.env_remove("SHEPR_PTY_TEST_REMOVED");
@@ -439,7 +339,7 @@ mod tests {
     fn std_command_sets_pwd_to_pane_cwd_and_drops_server_oldpwd() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("pty-command-cwd-env");
-        let mut cmd = PtyCommand::new(fixture::path());
+        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
         cmd.cwd(scratch.path());
         cmd.env("PWD", "/server/working-directory");
         cmd.env("OLDPWD", "/server/previous-directory");
@@ -468,10 +368,6 @@ mod tests {
         let shell = shell.to_str().expect("scratch shell path is UTF-8");
         let mut cmd = PtyCommand::interactive_shell(shell, true);
         cmd.cwd(scratch.path());
-        let std_cmd = cmd.to_std_command().expect("build std command");
-        assert_eq!(std_cmd.get_program(), OsStr::new(shell));
-        assert_eq!(std_cmd.get_args().count(), 0);
-
         let mut spawned =
             crate::backend::spawn_pty(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0), &cmd)
                 .expect("spawn shell fixture");
@@ -490,12 +386,16 @@ mod tests {
             OsStr::from_bytes(&command_line[..argv0_end]),
             OsStr::new("-shepr-login-shell")
         );
+        assert!(command_line[argv0_end + 1..].is_empty());
     }
 
     #[test]
     fn child_sees_resolved_shell_not_a_non_executable_shell_env() {
-        let mut cmd = PtyCommand::new(fixture::path());
-        cmd.args(fixture::args(&[fixture::Step::PrintEnv("SHELL".into())]));
+        let mut cmd = fixture_shell(&[fixture::Step::PrintEnv("SHELL".into())]);
+        let selected = cmd
+            .get_env(ChildEnv::Shell)
+            .expect("selected shell")
+            .to_owned();
         cmd.env("SHELL", "/__shepr_missing_shell__");
         let mut std_cmd = cmd.to_std_command().expect("build std command");
         std_cmd.stdout(std::process::Stdio::piped());
@@ -507,7 +407,7 @@ mod tests {
             .strip_suffix(b"\n")
             .expect("fixture prints SHELL with a newline");
         let shell = OsStr::from_bytes(shell);
-        assert_ne!(shell, OsStr::new("/__shepr_missing_shell__"));
+        assert_eq!(shell, selected.as_os_str());
         assert!(Path::new(shell).is_absolute());
         assert_eq!(
             classify_candidate(Path::new(shell)),
@@ -530,7 +430,7 @@ mod tests {
     #[test]
     fn home_fallback_requires_an_existing_absolute_directory() {
         let scratch = shepr_test_support::ScratchDir::new("pty-home");
-        let mut cmd = PtyCommand::new(fixture::path());
+        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
         cmd.env("HOME", scratch.path());
         assert_eq!(cmd.home_dir(), scratch.path().as_os_str());
 
@@ -549,7 +449,7 @@ mod tests {
     #[test]
     fn unusable_requested_cwd_starts_in_the_validated_home_fallback() {
         let scratch = shepr_test_support::ScratchDir::new("pty-stale-cwd");
-        let mut cmd = PtyCommand::new(fixture::path());
+        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
         cmd.env(EnvVar::Home, scratch.path());
         cmd.cwd(scratch.join("removed-before-spawn"));
 
@@ -561,8 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_program_is_reported_before_spawn() {
-        let cmd = PtyCommand::new("/__shepr_missing_program__");
+    fn missing_configured_shell_is_reported_before_spawn() {
+        let cmd = PtyCommand::interactive_shell("/__shepr_missing_program__", false);
         let err = cmd
             .to_std_command()
             .expect_err("missing program must be rejected");

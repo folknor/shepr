@@ -1,25 +1,22 @@
 //! The DEC private modes the terminal core knows, in one table: the typed
-//! mode, its name, how the live state is read, and how a write is routed.
+//! mode, its name, and how its live state is read.
 //!
-//! Modes alacritty implements are written through vte's `NamedPrivateMode`
-//! and read from `TermMode` (or the cursor style for 12). Modes alacritty
-//! does not know (9, 1016, 2031, 2048) arrive from vte as
-//! `PrivateMode::Unknown` and are stored in the adapter's [`ExtraModes`]; the
-//! handler owns their side effects. 2026 is parser state and reads through
-//! the synchronized-output deadline.
+//! Modes alacritty implements are read from `TermMode` (or the cursor style
+//! for 12). Modes the parser passes through as unknown (9, 1016, 2031, 2048)
+//! are stored in the adapter's [`ExtraModes`]; the handler owns their side
+//! effects. 2026 is parser state and reads through the synchronized-output
+//! deadline.
 //!
 //! A number missing from the table is unsupported for both query and write.
 //! That includes 47 and 1047: vte only implements the 1049 screen swap, so
 //! the other alternate-screen spellings neither switch screens nor report the
-//! 1049 state. 3 (DECCOLM) is written through vte but reports unsupported,
-//! because alacritty only performs its side effects and keeps no state.
+//! 1049 state. 3 (DECCOLM) performs alacritty's page reset but reports
+//! unsupported because it stores no mode state.
 //!
 //! Number lookups scan the short static slice without allocation or locking.
 
-use alacritty_terminal::term::TermMode;
-use vte::ansi::NamedPrivateMode;
-
 use super::ExtraModes;
+use alacritty_terminal::term::TermMode;
 
 /// A DEC private mode supported by the terminal adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,16 +116,8 @@ pub(super) enum Getter {
     CursorBlink,
     Extra(ExtraMode),
     SynchronizedOutput,
-    /// Writable but always reported as unsupported.
+    /// Parsed but always reported as unsupported.
     Unsupported,
-}
-
-/// How a write reaches the terminal.
-#[derive(Debug, Clone, Copy)]
-pub(super) enum Setter {
-    // Production mode writes use this to route table entries through vte.
-    Vte(NamedPrivateMode),
-    Extra(ExtraMode),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -140,20 +129,15 @@ pub(super) struct ModeSpec {
     )]
     pub(super) name: &'static str,
     pub(super) get: Getter,
-    pub(super) set: Setter,
+    pub(super) extra: Option<ExtraMode>,
 }
 
-const fn vte(
-    mode: DecMode,
-    name: &'static str,
-    term_mode: TermMode,
-    named: NamedPrivateMode,
-) -> ModeSpec {
+const fn term_mode(mode: DecMode, name: &'static str, term_mode: TermMode) -> ModeSpec {
     ModeSpec {
         mode,
         name,
         get: Getter::Term(term_mode),
-        set: Setter::Vte(named),
+        extra: None,
     }
 }
 
@@ -162,118 +146,80 @@ const fn extra(mode: DecMode, name: &'static str, extra: ExtraMode) -> ModeSpec 
         mode,
         name,
         get: Getter::Extra(extra),
-        set: Setter::Extra(extra),
+        extra: Some(extra),
     }
 }
 
 pub(super) const MODES: &[ModeSpec] = &[
-    vte(
+    term_mode(
         DecMode::ApplicationCursorKeys,
         "application cursor keys",
         TermMode::APP_CURSOR,
-        NamedPrivateMode::CursorKeys,
     ),
     ModeSpec {
         mode: DecMode::ColumnMode,
         name: "column mode",
         get: Getter::Unsupported,
-        set: Setter::Vte(NamedPrivateMode::ColumnMode),
+        extra: None,
     },
-    vte(
-        DecMode::Origin,
-        "origin",
-        TermMode::ORIGIN,
-        NamedPrivateMode::Origin,
-    ),
-    vte(
-        DecMode::LineWrap,
-        "line wrap",
-        TermMode::LINE_WRAP,
-        NamedPrivateMode::LineWrap,
-    ),
+    term_mode(DecMode::Origin, "origin", TermMode::ORIGIN),
+    term_mode(DecMode::LineWrap, "line wrap", TermMode::LINE_WRAP),
     extra(DecMode::X10Mouse, "x10 mouse", ExtraMode::X10Mouse),
     ModeSpec {
         mode: DecMode::CursorBlink,
         name: "cursor blink",
         get: Getter::CursorBlink,
-        set: Setter::Vte(NamedPrivateMode::BlinkingCursor),
+        extra: None,
     },
-    vte(
-        DecMode::ShowCursor,
-        "show cursor",
-        TermMode::SHOW_CURSOR,
-        NamedPrivateMode::ShowCursor,
-    ),
-    vte(
+    term_mode(DecMode::ShowCursor, "show cursor", TermMode::SHOW_CURSOR),
+    term_mode(
         DecMode::MousePressRelease,
         "mouse clicks",
         TermMode::MOUSE_REPORT_CLICK,
-        NamedPrivateMode::ReportMouseClicks,
     ),
-    vte(
+    term_mode(
         DecMode::MouseButtonMotion,
         "mouse drag",
         TermMode::MOUSE_DRAG,
-        NamedPrivateMode::ReportCellMouseMotion,
     ),
-    vte(
+    term_mode(
         DecMode::MouseAnyMotion,
         "mouse motion",
         TermMode::MOUSE_MOTION,
-        NamedPrivateMode::ReportAllMouseMotion,
     ),
-    vte(
-        DecMode::FocusEvents,
-        "focus events",
-        TermMode::FOCUS_IN_OUT,
-        NamedPrivateMode::ReportFocusInOut,
-    ),
-    vte(
-        DecMode::MouseUtf8,
-        "utf-8 mouse",
-        TermMode::UTF8_MOUSE,
-        NamedPrivateMode::Utf8Mouse,
-    ),
-    vte(
-        DecMode::MouseSgr,
-        "sgr mouse",
-        TermMode::SGR_MOUSE,
-        NamedPrivateMode::SgrMouse,
-    ),
-    vte(
+    term_mode(DecMode::FocusEvents, "focus events", TermMode::FOCUS_IN_OUT),
+    term_mode(DecMode::MouseUtf8, "utf-8 mouse", TermMode::UTF8_MOUSE),
+    term_mode(DecMode::MouseSgr, "sgr mouse", TermMode::SGR_MOUSE),
+    term_mode(
         DecMode::MouseAlternateScroll,
         "alternate scroll",
         TermMode::ALTERNATE_SCROLL,
-        NamedPrivateMode::AlternateScroll,
     ),
     extra(
         DecMode::MouseSgrPixels,
         "sgr pixel mouse",
         ExtraMode::SgrPixelsMouse,
     ),
-    vte(
+    term_mode(
         DecMode::UrgencyHints,
         "urgency hints",
         TermMode::URGENCY_HINTS,
-        NamedPrivateMode::UrgencyHints,
     ),
-    vte(
+    term_mode(
         DecMode::AlternateScreen,
         "alternate screen",
         TermMode::ALT_SCREEN,
-        NamedPrivateMode::SwapScreenAndSetRestoreCursor,
     ),
-    vte(
+    term_mode(
         DecMode::BracketedPaste,
         "bracketed paste",
         TermMode::BRACKETED_PASTE,
-        NamedPrivateMode::BracketedPaste,
     ),
     ModeSpec {
         mode: DecMode::SynchronizedOutput,
         name: "synchronized output",
         get: Getter::SynchronizedOutput,
-        set: Setter::Vte(NamedPrivateMode::SyncUpdate),
+        extra: None,
     },
     extra(
         DecMode::ColorSchemeReport,
@@ -309,10 +255,7 @@ pub(super) fn lookup_number(number: u16) -> Option<&'static ModeSpec> {
 
 /// The adapter-stored mode for a number vte passed through as unknown.
 pub(super) fn extra_mode(number: u16) -> Option<ExtraMode> {
-    match lookup_number(number)?.set {
-        Setter::Extra(mode) => Some(mode),
-        Setter::Vte(_) => None,
-    }
+    lookup_number(number)?.extra
 }
 
 #[cfg(test)]

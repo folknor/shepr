@@ -499,6 +499,10 @@ impl<'a> SshControlDir<'a> {
 /// then checks the resulting directory before SSH names sockets or config files
 /// under it.
 pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_config::AppPaths) -> io::Result<&Path> {
+    // Keep bridge sockets, SSH control sockets and managed configs under the
+    // same validated XDG runtime root. A missing root returns its local setup
+    // error, which the connector reports as Attention and retries; do not move
+    // private SSH state to a fallback with a different lifetime or socket policy.
     shepr_platform::validate_ssh_runtime_dir(app_paths.xdg_runtime_dir())?;
     let runtime_dir = app_paths.runtime_dir();
     shepr_platform::create_private_directory_all(runtime_dir)?;

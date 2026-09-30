@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::state::SpawnGeometry;
-use super::{App, api_helpers::pane_agent_status};
+use super::{App, api_helpers::presented_agent_status};
 use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
 use shepr_termio::host_term::cell_size::HostCellSize;
@@ -50,10 +50,13 @@ pub(super) fn launch_cwd_for_terminal(
 
 impl App {
     pub(super) fn seed_cwd_from_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
-        self.state
-            .workspaces
-            .get(ws_idx)?
-            .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
+        let workspace = self.state.workspaces.get(ws_idx)?;
+        let root_pane_cwd = workspace.cwd_for_pane(
+            workspace.root_pane(),
+            &self.state.terminals,
+            &self.terminal_runtimes,
+        );
+        Some(workspace.resolved_identity_cwd_from_root_pane(root_pane_cwd))
     }
 
     pub(super) fn launch_cwd_for_pane_in_workspace(
@@ -229,7 +232,7 @@ impl App {
             label: ws.display_name(),
             focused: false,
             pane_count: ws.pane_count(),
-            agent_status: pane_agent_status(agg_state),
+            agent_status: presented_agent_status(agg_state),
         })
     }
 }

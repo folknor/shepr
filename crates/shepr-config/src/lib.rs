@@ -47,7 +47,7 @@ pub use self::{
     },
     theme_config::ThemeConfig,
     validated::{
-        ConfigProvenance, ConfigSource, NewTerminalCwd, UiPreferenceKey, ValidatedConfig,
+        ConfigProvenance, NewTerminalCwd, UiPreferenceKey, ValidatedConfig,
         ValidatedTerminalConfig, ValidatedUiConfig,
     },
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
@@ -80,7 +80,12 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::model::KeysConfig;
+    use std::collections::BTreeSet;
+
+    use super::model::{
+        AdvancedConfig, ExperimentalConfig, KeysConfig, ServerConfig, SessionConfig,
+        TerminalConfig, UiConfig,
+    };
     use super::*;
 
     #[test]
@@ -138,6 +143,214 @@ mod tests {
         // The optional input resolves to the same default, despite Some/None.
         documented.ui.mouse_scroll_lines = defaults.ui.mouse_scroll_lines;
         assert_eq!(documented, defaults);
+    }
+
+    #[test]
+    fn default_template_documents_every_config_field() {
+        let mut config = Config::default();
+        config.theme.custom = Some(CustomThemeColors::default());
+        config.machines.push(MachineConfig {
+            label: MachineLabel::parse("schema example").expect("valid test label"),
+            ssh: SshTarget::parse("example.invalid").expect("valid test target"),
+        });
+        let fields = config_field_paths(config);
+
+        let mut documented = BTreeSet::new();
+        let mut section = String::new();
+        for line in DEFAULT_CONFIG.lines() {
+            let line = line.trim();
+            let content = line.strip_prefix("# ").unwrap_or(line);
+            if content.starts_with('[') && content.ends_with(']') {
+                section = content.to_owned();
+                let table = section.trim_start_matches('[').trim_end_matches(']');
+                // A nested header documents every table above it too.
+                for (index, _) in table.match_indices('.') {
+                    documented.insert(table[..index].to_owned());
+                }
+                documented.insert(table.to_owned());
+                continue;
+            }
+            let Some(setting) = line.strip_prefix("# ") else {
+                continue;
+            };
+            let Some((key, _)) = setting.split_once(" = ") else {
+                continue;
+            };
+            if !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                || section == "[ui.sidebar.agents.rows_by_agent]"
+            {
+                continue;
+            }
+            let table = section.trim_start_matches('[').trim_end_matches(']');
+            let path = if table.is_empty() {
+                key.to_owned()
+            } else {
+                format!("{table}.{key}")
+            };
+            documented.insert(path);
+        }
+
+        let missing = fields.difference(&documented).collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "default.toml does not document config fields: {missing:?}"
+        );
+    }
+
+    // These exact destructures make adding a config field a compile error until
+    // its documented path is included in this list and the template.
+    macro_rules! record_config_fields {
+        ($fields:ident, $value:expr, $prefix:expr, $type:ident {
+            $($field:ident => $binding:pat),+ $(,)?
+        }) => {
+            let $type { $($field: $binding),+ } = $value;
+            $(
+                let path = if ($prefix).is_empty() {
+                    stringify!($field).to_owned()
+                } else {
+                    format!("{}.{}", $prefix, stringify!($field))
+                };
+                $fields.insert(path);
+            )+
+        };
+    }
+
+    macro_rules! record_key_config_fields {
+        (
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        ) => {
+            fn record_key_config_fields(fields: &mut BTreeSet<String>, keys: KeysConfig) {
+                let KeysConfig {
+                    prefix: _,
+                    $($action_field: _,)*
+                    $($indexed_field: _,)*
+                    $($navigate_config_field: _,)*
+                    $($navigate_indexed_config_field: _,)*
+                } = keys;
+                fields.insert("keys.prefix".to_owned());
+                $(fields.insert(format!("keys.{}", stringify!($action_field)));)*
+                $(fields.insert(format!("keys.{}", stringify!($indexed_field)));)*
+                $(fields.insert(format!("keys.{}", stringify!($navigate_config_field)));)*
+                $(fields.insert(format!("keys.{}", stringify!($navigate_indexed_config_field)));)*
+            }
+        };
+    }
+    crate::keybinding_table!(record_key_config_fields);
+
+    fn config_field_paths(config: Config) -> BTreeSet<String> {
+        let mut fields = BTreeSet::new();
+        record_config_fields!(fields, config, "", Config {
+            theme => theme,
+            terminal => terminal,
+            session => session,
+            server => server,
+            keys => keys,
+            ui => ui,
+            advanced => advanced,
+            experimental => experimental,
+            machines => machines,
+        });
+        record_config_fields!(fields, theme, "theme", ThemeConfig {
+            name => _,
+            custom => custom,
+        });
+        if let Some(custom) = custom {
+            record_config_fields!(fields, custom, "theme.custom", CustomThemeColors {
+                accent => _,
+                panel_bg => _,
+                sidebar_bg => _,
+                active_row_bg => _,
+                selection_bg => _,
+                surface0 => _,
+                surface1 => _,
+                surface_dim => _,
+                overlay0 => _,
+                overlay1 => _,
+                text => _,
+                subtext0 => _,
+                mauve => _,
+                green => _,
+                yellow => _,
+                red => _,
+                blue => _,
+                teal => _,
+                peach => _,
+            });
+        }
+        record_config_fields!(fields, terminal, "terminal", TerminalConfig {
+            default_shell => _,
+            login_shell => _,
+            new_cwd => _,
+        });
+        record_config_fields!(fields, session, "session", SessionConfig {
+            resume_agents_on_restore => _,
+            startup_per_agent_delay_ms => _,
+        });
+        record_config_fields!(fields, server, "server", ServerConfig {
+            headless_cols => _,
+            headless_rows => _,
+        });
+        record_key_config_fields(&mut fields, keys);
+        record_config_fields!(fields, ui, "ui", UiConfig {
+            sidebar_width => _,
+            sidebar_min_width => _,
+            sidebar_max_width => _,
+            sidebar_start_collapsed => _,
+            sidebar_collapsed_mode => _,
+            mouse_capture => _,
+            copy_on_select => _,
+            host_cursor => _,
+            right_click_passthrough_modifier => _,
+            redraw_on_focus_gained => _,
+            mouse_scroll_lines => _,
+            confirm_close => _,
+            prompt_new_workspace_name => _,
+            pane_borders => _,
+            pane_outer_borders => _,
+            pane_scrollbars => _,
+            pane_gaps => _,
+            show_agent_labels_on_pane_borders => _,
+            window_title => _,
+            agent_panel_sort => _,
+            status_indicators => _,
+            sidebar => sidebar,
+            accent => _,
+        });
+        record_config_fields!(fields, sidebar, "ui.sidebar", SidebarConfig {
+            agents => agents,
+            spaces => spaces,
+        });
+        record_config_fields!(fields, agents, "ui.sidebar.agents", AgentsSidebarConfig {
+            rows => _,
+            rows_by_agent => _,
+            row_gap => _,
+        });
+        record_config_fields!(fields, spaces, "ui.sidebar.spaces", SpacesSidebarConfig {
+            rows => _,
+            row_gap => _,
+        });
+        record_config_fields!(fields, advanced, "advanced", AdvancedConfig {
+            scrollback_limit_bytes => _,
+        });
+        record_config_fields!(fields, experimental, "experimental", ExperimentalConfig {
+            allow_nested => _,
+            pane_history => _,
+            reveal_hidden_cursor_for_cjk_ime => _,
+            cjk_ime_agents => _,
+            cjk_ime_cursor_shape => _,
+        });
+        for machine in machines {
+            record_config_fields!(fields, machine, "machines", MachineConfig {
+                label => _,
+                ssh => _,
+            });
+        }
+        fields
     }
 
     #[test]

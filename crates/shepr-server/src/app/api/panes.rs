@@ -15,7 +15,10 @@ use shepr_protocol::command::{
 use super::super::api_helpers::{
     detect_state_from_api, normalize_reported_agent_label, pane_not_found,
 };
-use super::endpoint::{Handled, HandlerResult, pane_missing, rejected};
+use super::endpoint::{
+    EndpointEffects, Handled, HandlerError, HandlerResult, pane_missing, rejected,
+    rejected_with_effects,
+};
 use super::responses::{failure, success};
 
 mod copy;
@@ -53,7 +56,7 @@ impl App {
         let host_terminal_appearance = self.state.host_terminal_appearance;
         let spawn = self.pane_spawn_handles();
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
         let direction = match params.direction {
             shepr_protocol::command::SplitDirection::Right => {
@@ -84,7 +87,7 @@ impl App {
             Some(Err(err)) => {
                 return rejected(format!("the pane could not be split: {err}"));
             }
-            None => return Err(pane_missing(&params.pane_id)),
+            None => return Err(pane_missing(&params.pane_id).into()),
         };
         let shepr_mux::workspace::NewPane {
             pane_id,
@@ -102,15 +105,23 @@ impl App {
         };
         self.terminal_runtimes.insert(terminal_id, runtime);
         self.schedule_session_save();
+        let effects = EndpointEffects {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            focus_changed: true,
+            layout_changed: true,
+            ..EndpointEffects::default()
+        };
         let Some(pane) = self.pane_info(outcome.workspace_index, outcome.pane_id) else {
-            return rejected("the new pane is unavailable");
+            return rejected_with_effects("the new pane is unavailable", effects);
         };
 
-        Handled::navigating(
+        Handled::navigating_with_effects(
             EndpointReply::PaneInfo {
                 pane: Box::new(pane),
             },
             workspace_id,
+            effects,
         )
     }
 
@@ -118,16 +129,26 @@ impl App {
     /// the pane already holds focus.
     pub(super) fn handle_pane_focus(&mut self, target: &PaneTarget) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&target.pane_id)?;
-        self.state.focus_pane_in_workspace(ws_idx, pane_id);
+        let focus_changed = self.state.focus_pane_in_workspace(ws_idx, pane_id);
+        let effects = EndpointEffects {
+            shell_projection_changed: focus_changed,
+            pane_surface_changed: focus_changed,
+            focus_changed,
+            ..EndpointEffects::default()
+        };
 
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return Err(pane_missing(&target.pane_id));
+            return Err(HandlerError {
+                error: pane_missing(&target.pane_id),
+                effects,
+            });
         };
-        Handled::navigating(
+        Handled::navigating_with_effects(
             EndpointReply::PaneInfo {
                 pane: Box::new(pane),
             },
             target.pane_id.workspace_id().clone(),
+            effects,
         )
     }
 
@@ -139,13 +160,18 @@ impl App {
             .get_mut(ws_idx)
             .and_then(|workspace| workspace.pane_state_mut(pane_id))
         else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
-        pane.right_click_passthrough = matches!(
+        let right_click_passthrough = matches!(
             params.right_click,
             shepr_protocol::command::PaneRightClickTarget::Pane
         );
-        Handled::done()
+        let changed = pane.right_click_passthrough != right_click_passthrough;
+        pane.right_click_passthrough = right_click_passthrough;
+        Handled::done_with_effects(EndpointEffects {
+            shell_projection_changed: changed,
+            ..EndpointEffects::default()
+        })
     }
 
     pub(super) fn handle_pane_rename(&mut self, params: PaneRenameParams) -> HandlerResult {
@@ -157,37 +183,75 @@ impl App {
             .and_then(|ws| ws.terminal_id(pane_id))
             .cloned()
         else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
-        match params.label.map(|label| label.trim().to_string()) {
-            Some(label) if !label.is_empty() => terminal.set_manual_label(label),
-            _ => terminal.clear_manual_label(),
+        let label = params
+            .label
+            .map(|label| label.trim().to_string())
+            .filter(|label| !label.is_empty());
+        let changed = terminal.manual_label != label;
+        if changed {
+            match label {
+                Some(label) => terminal.set_manual_label(label),
+                None => terminal.clear_manual_label(),
+            }
+            self.state.mark_session_dirty();
         }
-        self.state.mark_session_dirty();
+        let effects = EndpointEffects {
+            shell_projection_changed: changed,
+            ..EndpointEffects::default()
+        };
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(HandlerError {
+                error: pane_missing(&params.pane_id),
+                effects,
+            });
         };
 
-        Handled::reply(EndpointReply::PaneInfo {
-            pane: Box::new(pane),
-        })
+        Handled::reply_with_effects(
+            EndpointReply::PaneInfo {
+                pane: Box::new(pane),
+            },
+            effects,
+        )
     }
 
     pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&target.pane_id)?;
+        let focus_before = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .map(shepr_mux::workspace::Workspace::focused_pane_id);
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
-            return Err(pane_missing(&target.pane_id));
+            return Err(pane_missing(&target.pane_id).into());
         };
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
-            return Err(pane_missing(&target.pane_id));
+            return Err(pane_missing(&target.pane_id).into());
         };
+        let workspace_removed =
+            outcome.removal.scope == shepr_mux::workspace::PaneRemovalScope::Workspace;
+        let focus_changed = !workspace_removed
+            && focus_before.is_some_and(|focused| {
+                self.state
+                    .workspaces
+                    .get(ws_idx)
+                    .is_some_and(|workspace| workspace.focused_pane_id() != focused)
+            });
         self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
         self.schedule_session_save();
 
-        Handled::done()
+        Handled::done_with_effects(EndpointEffects {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            focus_changed,
+            layout_changed: true,
+            workspace_membership_changed: workspace_removed,
+            ..EndpointEffects::default()
+        })
     }
 }
 

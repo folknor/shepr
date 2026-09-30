@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use shepr_protocol::command::EndpointError;
 
-use super::endpoint::rejected;
+use super::endpoint::endpoint_rejected;
 
 /// The launch cwd named by a client-shell command (`workspace.create`), or the
 /// directory `workspace.checkout_root` asks about.
@@ -16,7 +16,7 @@ use super::endpoint::rejected;
 pub(super) fn launch_cwd(raw: &str) -> Result<PathBuf, EndpointError> {
     let path = PathBuf::from(raw);
     if !path.is_absolute() {
-        return rejected(format!("cwd {raw:?} must be an absolute path"));
+        return endpoint_rejected(format!("cwd {raw:?} must be an absolute path"));
     }
     Ok(path)
 }

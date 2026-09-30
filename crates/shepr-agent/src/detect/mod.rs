@@ -47,10 +47,17 @@ impl AgentState {
 
     /// Rank agent states for attention, from least to most urgent.
     pub const fn attention_rank(self) -> u8 {
-        match self.presentation_state() {
-            PresentedAgentState::Idle => 0,
-            PresentedAgentState::Working => 1,
-            PresentedAgentState::Blocked => 2,
+        self.presentation_state().attention_rank()
+    }
+}
+
+impl PresentedAgentState {
+    /// Rank presented states for attention, from least to most urgent.
+    pub const fn attention_rank(self) -> u8 {
+        match self {
+            Self::Idle => 0,
+            Self::Working => 1,
+            Self::Blocked => 2,
         }
     }
 }
@@ -611,8 +618,8 @@ fn path_basename(path: &str) -> &str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ProcessPriority {
     GenericRuntime,
-    AgentExecutable,
     NormalizedAlias,
+    AgentExecutable,
 }
 
 fn process_priority(process: &ForegroundProcess, normalized_name: &str) -> ProcessPriority {
@@ -1070,6 +1077,23 @@ mod tests {
     }
 
     #[test]
+    fn identify_agent_in_job_prefers_an_agent_executable_over_a_wrapped_alias() {
+        let job = ForegroundJob {
+            process_group_id: 42,
+            processes: vec![
+                foreground_process(42, "bash", &["bash"]),
+                foreground_process(43, "node", &["node", "/opt/mcp/bin/codex"]),
+                foreground_process(44, "claude", &["claude"]),
+            ],
+        };
+
+        assert_eq!(
+            identify_agent_in_job(&job),
+            Some((Agent::Claude, "claude".to_string()))
+        );
+    }
+
+    #[test]
     fn identify_agent_in_job_detects_python_version_wrapped_script() {
         let job = ForegroundJob {
             process_group_id: 123,
@@ -1502,21 +1526,25 @@ mod tests {
 
     // ---- Process identification (real PTY) ----
 
-    fn open_test_pty() -> shepr_pty::backend::OpenedPty {
-        shepr_pty::backend::open_pty(24, 80).expect("failed to open pty")
-    }
-
     #[test]
     fn foreground_job_detects_sleep() {
-        use shepr_pty::{PtyCommand, backend::spawn_in_pty};
-
-        let pty = open_test_pty();
+        use shepr_pty::{PtyCommand, backend::spawn_pty};
 
         // A known, deterministic process that is no agent.
-        let mut cmd = PtyCommand::new(fixture::path());
-        cmd.args(fixture::args(&[Step::Sleep(Duration::from_secs(999))]));
-        let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
-        let pid = child.id();
+        let scratch = shepr_test_support::ScratchDir::new("detect-pty-sleep");
+        let process = fixture::stand_in(
+            scratch.path(),
+            "shepr-fixture",
+            &[Step::Sleep(Duration::from_secs(999))],
+        );
+        let command =
+            PtyCommand::interactive_shell(process.to_str().expect("fixture path is UTF-8"), false);
+        let mut spawned = spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &command,
+        )
+        .expect("failed to spawn");
+        let pid = spawned.child.id();
 
         // Give the process a moment to become the foreground group
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1535,16 +1563,14 @@ mod tests {
         );
 
         // Clean up
-        child.kill().expect("kill the fixture");
-        child.wait().expect("reap the fixture");
+        spawned.child.kill().expect("kill the fixture");
+        spawned.child.wait().expect("reap the fixture");
     }
 
     #[test]
     fn foreground_job_detects_shell_running_command() {
-        use shepr_pty::{PtyCommand, backend::spawn_in_pty};
+        use shepr_pty::{PtyCommand, backend::spawn_pty};
         use std::io::Write;
-
-        let pty = open_test_pty();
 
         // A stand-in shell named `sh` that, given a line, replaces itself
         // with a command, as `exec` typed into a shell does.
@@ -1562,12 +1588,14 @@ mod tests {
                 ),
             ],
         );
-        let cmd = PtyCommand::new(&shell);
-        let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
-        let pid = child.id();
+        let cmd =
+            PtyCommand::interactive_shell(shell.to_str().expect("shell path is UTF-8"), false);
+        let mut spawned = spawn_pty(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0), &cmd)
+            .expect("failed to spawn");
+        let pid = spawned.child.id();
 
         // Write a command to the shell
-        let mut writer = std::fs::File::from(pty.master.try_clone().expect("clone master"));
+        let mut writer = std::fs::File::from(spawned.master_fd.try_clone().expect("clone master"));
         writer
             .write_all(b"exec the command\n")
             .expect("write the command to the stand-in shell");
@@ -1588,15 +1616,13 @@ mod tests {
             "the command should not map to an agent"
         );
 
-        child.kill().expect("kill the command");
-        child.wait().expect("reap the command");
+        spawned.child.kill().expect("kill the command");
+        spawned.child.wait().expect("reap the command");
     }
 
     #[test]
     fn foreground_job_detects_agent_behind_shell_wrapper() {
-        use shepr_pty::{PtyCommand, backend::spawn_in_pty};
-
-        let pty = open_test_pty();
+        use shepr_pty::{PtyCommand, backend::spawn_pty};
 
         // A stand-in wrapper named `bash` that starts a child whose argv[0]
         // is `codex` and waits for it.
@@ -1613,9 +1639,11 @@ mod tests {
                 Step::Wait,
             ],
         );
-        let cmd = PtyCommand::new(&wrapper);
-        let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
-        let pid = child.id();
+        let cmd =
+            PtyCommand::interactive_shell(wrapper.to_str().expect("wrapper path is UTF-8"), false);
+        let mut spawned = spawn_pty(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0), &cmd)
+            .expect("failed to spawn");
+        let pid = spawned.child.id();
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let job = foreground_job(pid);
@@ -1627,7 +1655,7 @@ mod tests {
         unsafe {
             libc::kill(-process_group_id, libc::SIGKILL);
         }
-        child.wait().expect("reap the wrapper");
+        spawned.child.wait().expect("reap the wrapper");
 
         let job = job.expect("expected foreground job");
         assert!(

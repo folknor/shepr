@@ -24,36 +24,12 @@ and multi-process log rotation. It also makes the `shepr` client binary depend
 on `zbus` and `tokio` for a monitor only the server runs. Moving the shutdown
 monitor to `shepr-server` and the Git runner to `shepr-mux` would match the doc.
 
-## PLAT-022 - A remote server started by the bridge lives in the ssh session's cgroup
-
-Scope: remote (lateral, unverified on a host).
-
-`run_remote_client_bridge` calls `local_server::ensure_running`, then
-`build_server_daemon_command` and `detach_server_daemon_command` (`setsid` only).
-The daemon is detached by session id but stays in the ssh login session's
-systemd scope. On a host with logind `KillUserProcesses=yes`, systemd kills the
-scope when that ssh session ends (when the bridge disconnects), taking the remote
-server and every pane with it, against the promise that workspaces and panes
-live in a headless server that outlives clients. Depends on the host's logind
-config. Fix if it matters: start the daemon in its own transient user scope
-(`systemd-run --user --scope` or the D-Bus equivalent) when a user manager is
-available.
-
-## PLAT-024 - The connector cannot recover when `XDG_RUNTIME_DIR` itself disappears
-
-Hunter's severity: Low. Scope: remote.
-
-Where: `ConnectorState::ssh` in `machine_ssh.rs`, `RemoteSsh::new` and the
-managed ssh config path policy in `crates/shepr-remote/src/remote/ssh.rs`.
-
-The connector now rebuilds `RemoteSsh` when its managed config file is missing,
-which covers a removed shepr config directory. It does not cover the runtime root
-vanishing (logind removes `/run/user/<uid>` after the last login session ends
-while the TUI keeps running under tmux): `RemoteSsh::new` validates that root and
-fails, so every attempt fails and the endpoint shows Reconnecting forever. The
-limitation is noted at the call site. Recovery needs a decision in the ssh config
-path policy: fall back to a shepr-owned directory elsewhere, or surface the loss
-as an Attention diagnostic instead of a link failure.
+The owner has approved the move, including the `brokkr.toml` layer allow-list
+changes it needs (the `zbus` edge moves with the monitor). The Git runner is
+`run_git` in `crates/shepr-platform/src/git.rs` (the spawn with a scrubbed
+environment and a deadline); its callers are the mux Git status code and
+`workspace.checkout_root`. Clipboard helper selection and log rotation can stay
+unless moving them pays.
 
 ## PLAT-031 - The cross-build status and stop surface is implicit
 
@@ -85,23 +61,3 @@ separate method name for the conditional stop (an unaware server answers
 `invalid_request` and stops nothing), plus a frozen test fixture for `ping` and
 `server.stop` as the one cross-build JSON surface. See also WIRE-024 on the
 client status JSON.
-
-## PLAT-032 - CLI subcommands never load or validate config
-
-Scope: termio-root (structural note).
-
-`status`, `server stop` and `detect` resolve paths only. Probably intended (a
-broken config must not block `server stop`), but AGENTS.md says "Config is read
-and validated once at launch ... Any config problem fails the launch" without
-carving out the CLI. The doc or the behaviour should say which.
-
-## PLAT-035 - A test leaves an orphaned `shepr-fixture` process behind
-
-Scope: test support (lateral, source not pinned down).
-
-After `brokkr test` runs of shepr-remote and shepr-mux, the next brokkr command
-twice reported "SIGKILL sent to 1 orphaned test process (shepr-fixture) that
-outlived the brokkr run". Some test spawns a fixture child and does not reap or
-kill it. Find the test (run the two packages' tests one module at a time and
-watch for the report) and make its fixture owned by a guard that kills and waits
-on drop. It may predate the wave that noticed it.

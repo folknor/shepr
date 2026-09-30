@@ -106,15 +106,6 @@ impl AnsiCarry {
     }
 }
 
-/// How a range is read.
-#[derive(Clone, Copy)]
-pub(super) struct RangeOptions {
-    pub(super) rectangle: bool,
-    pub(super) format: Format,
-    pub(super) unwrap: bool,
-    pub(super) trim: bool,
-}
-
 impl VtState {
     fn new() -> Self {
         Self {
@@ -141,17 +132,10 @@ impl VtState {
 /// of a soft-wrapped line before it keep every cell, so a line can be read in
 /// pieces (see [`format_range_carrying`]) without a later piece changing what
 /// an earlier one emitted.
-pub(super) fn format_range(
-    grid: &Grid<Cell>,
-    start: Point,
-    end: Point,
-    options: RangeOptions,
-) -> String {
+pub(super) fn format_range(grid: &Grid<Cell>, start: Point, end: Point, format: Format) -> String {
     let (mut text, content_end) =
-        format_range_carrying(grid, start, end, options, &mut AnsiCarry::default(), false);
-    if options.trim {
-        text.truncate(content_end.unwrap_or(0));
-    }
+        format_range_carrying(grid, start, end, format, &mut AnsiCarry::default(), false);
+    text.truncate(content_end.unwrap_or(0));
     text
 }
 
@@ -169,21 +153,15 @@ pub(super) fn format_range(
 /// range has no content. `Some(0)` is real: the range finishes a logical line
 /// that began before it (`carry.started`) without emitting a cell. With
 /// `open_end` the whole text is content, because the line it stops inside
-/// has started. Without `trim` every line is content.
+/// has started.
 pub(super) fn format_range_carrying(
     grid: &Grid<Cell>,
     start: Point,
     end: Point,
-    options: RangeOptions,
+    format: Format,
     carry: &mut AnsiCarry,
     open_end: bool,
 ) -> (String, Option<usize>) {
-    let RangeOptions {
-        rectangle,
-        format,
-        unwrap,
-        trim,
-    } = options;
     let mut out = String::new();
     if grid.columns() == 0 || start > end {
         return (out, None);
@@ -200,21 +178,15 @@ pub(super) fn format_range_carrying(
     let mut line = start.line;
     while line <= end.line {
         let row = &grid[line];
-        let (first_col, last_in_range) = if rectangle {
-            (start.column.0, end.column.0)
+        let first_col = if line == start.line {
+            start.column.0
         } else {
-            (
-                if line == start.line {
-                    start.column.0
-                } else {
-                    0
-                },
-                if line == end.line {
-                    end.column.0
-                } else {
-                    last_col
-                },
-            )
+            0
+        };
+        let last_in_range = if line == end.line {
+            end.column.0
+        } else {
+            last_col
         };
         let last_in_range = last_in_range.min(last_col);
         // Where this row's cells begin: trimming stops at the row's start.
@@ -239,7 +211,7 @@ pub(super) fn format_range_carrying(
 
         let is_last = line == end.line;
         let soft_wrapped = row[Column(last_col)].flags.contains(Flags::WRAPLINE);
-        let join = unwrap && soft_wrapped && !is_last && !rectangle && last_in_range == last_col;
+        let join = soft_wrapped && !is_last && last_in_range == last_col;
         if !join {
             if is_last && open_end {
                 emit_cells(&mut out, &pending, format, &mut vt);
@@ -249,13 +221,13 @@ pub(super) fn format_range_carrying(
                 return (out, Some(len));
             }
             let had_content =
-                emit_line(&mut out, &pending, row_start, format, trim, &mut vt) || continuing;
+                emit_line(&mut out, &pending, row_start, format, &mut vt) || continuing;
             continuing = false;
             pending.clear();
             if format == Format::Vt {
                 vt.close(&mut out);
             }
-            if had_content || !trim {
+            if had_content {
                 content_end = Some(out.len());
             }
             if !is_last {
@@ -280,17 +252,12 @@ fn emit_line(
     cells: &[&Cell],
     last_row_start: usize,
     format: Format,
-    trim: bool,
     vt: &mut VtState,
 ) -> bool {
-    let keep = if trim {
-        cells[last_row_start..]
-            .iter()
-            .rposition(|cell| !is_trimmable(cell, format))
-            .map_or(last_row_start, |index| last_row_start + index + 1)
-    } else {
-        cells.len()
-    };
+    let keep = cells[last_row_start..]
+        .iter()
+        .rposition(|cell| !is_trimmable(cell, format))
+        .map_or(last_row_start, |index| last_row_start + index + 1);
     emit_cells(out, &cells[..keep], format, vt);
     keep > 0
 }

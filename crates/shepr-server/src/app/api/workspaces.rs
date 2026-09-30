@@ -4,7 +4,10 @@ use shepr_protocol::command::{
     WorkspaceCreateSource, WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
 };
 
-use super::endpoint::{Handled, HandlerResult, rejected, workspace_missing};
+use super::endpoint::{
+    EndpointEffects, Handled, HandlerError, HandlerResult, rejected, rejected_with_effects,
+    workspace_missing,
+};
 
 /// A workspace label as the server stores it: trimmed, and an empty one
 /// clears the custom name so the automatic label returns, as a pane rename does.
@@ -52,17 +55,24 @@ impl App {
             workspace.set_custom_name(label);
             crate::logging::workspace_renamed(&workspace.id);
         }
-        let Some(workspace_id) = self.public_workspace_id(index) else {
-            return rejected("the new workspace is unavailable");
+        let effects = EndpointEffects {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            layout_changed: true,
+            workspace_membership_changed: true,
+            ..EndpointEffects::default()
         };
-        Handled::navigating(EndpointReply::Done, workspace_id)
+        let Some(workspace_id) = self.public_workspace_id(index) else {
+            return rejected_with_effects("the new workspace is unavailable", effects);
+        };
+        Handled::navigating_with_effects(EndpointReply::Done, workspace_id, effects)
     }
 
     /// Moves the requester onto the workspace, even when it already views it.
     pub(super) fn handle_workspace_focus(&mut self, target: &WorkspaceTarget) -> HandlerResult {
         let index = self.endpoint_workspace(&target.workspace_id)?;
         let Some(workspace) = self.workspace_info(index) else {
-            return Err(workspace_missing(&target.workspace_id));
+            return Err(workspace_missing(&target.workspace_id).into());
         };
         Handled::navigating(
             EndpointReply::WorkspaceInfo { workspace },
@@ -76,16 +86,27 @@ impl App {
     ) -> HandlerResult {
         let index = self.endpoint_workspace(&params.workspace_id)?;
         let Some(ws) = self.state.workspaces.get_mut(index) else {
-            return Err(workspace_missing(&params.workspace_id));
+            return Err(workspace_missing(&params.workspace_id).into());
         };
-        ws.custom_name = normalized_workspace_label(params.label);
-        crate::logging::workspace_renamed(&ws.id);
-        self.schedule_session_save();
+        let label = normalized_workspace_label(params.label);
+        let changed = ws.custom_name != label;
+        if changed {
+            ws.custom_name = label;
+            crate::logging::workspace_renamed(&ws.id);
+            self.schedule_session_save();
+        }
+        let effects = EndpointEffects {
+            shell_projection_changed: changed,
+            ..EndpointEffects::default()
+        };
         let Some(workspace) = self.workspace_info(index) else {
-            return Err(workspace_missing(&params.workspace_id));
+            return Err(HandlerError {
+                error: workspace_missing(&params.workspace_id),
+                effects,
+            });
         };
 
-        Handled::reply(EndpointReply::WorkspaceInfo { workspace })
+        Handled::reply_with_effects(EndpointReply::WorkspaceInfo { workspace }, effects)
     }
 
     pub(super) fn handle_workspace_move(&mut self, params: &WorkspaceMoveParams) -> HandlerResult {
@@ -98,9 +119,17 @@ impl App {
         }
 
         // A no-op move (the workspace already sits there) still succeeds.
-        self.state.move_workspace(index, params.insert_index);
-
-        Handled::done()
+        let changed = self.state.move_workspace(index, params.insert_index);
+        let effects = if changed {
+            EndpointEffects {
+                shell_projection_changed: true,
+                workspace_order_changed: true,
+                ..EndpointEffects::default()
+            }
+        } else {
+            EndpointEffects::default()
+        };
+        Handled::done_with_effects(effects)
     }
 
     pub(super) fn handle_workspace_close(
@@ -108,11 +137,19 @@ impl App {
         params: &WorkspaceCloseParams,
     ) -> HandlerResult {
         let index = self.endpoint_workspace(&params.workspace_id)?;
-        if let Some(outcome) = self.state.close_workspace_at(index) {
+        let effects = if let Some(outcome) = self.state.close_workspace_at(index) {
             self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
-        }
-
-        Handled::done()
+            EndpointEffects {
+                shell_projection_changed: true,
+                pane_surface_changed: true,
+                layout_changed: true,
+                workspace_membership_changed: true,
+                ..EndpointEffects::default()
+            }
+        } else {
+            EndpointEffects::default()
+        };
+        Handled::done_with_effects(effects)
     }
 }
 
@@ -367,7 +404,7 @@ mod tests {
             })
             .expect_err("past the end is refused");
         assert_eq!(
-            refused,
+            refused.error,
             EndpointError::Rejected("insert_index 3 is out of bounds".into())
         );
     }
@@ -444,26 +481,34 @@ mod tests {
         assert_eq!(
             app.handle_workspace_focus(&WorkspaceTarget {
                 workspace_id: gone.clone()
-            }),
-            Err(refusal.clone())
+            })
+            .expect_err("the workspace is gone")
+            .error,
+            refusal
         );
         assert_eq!(
             app.handle_workspace_rename(WorkspaceRenameParams {
                 workspace_id: gone.clone(),
                 label: "x".into(),
-            }),
-            Err(refusal.clone())
+            })
+            .expect_err("the workspace is gone")
+            .error,
+            refusal
         );
         assert_eq!(
             app.handle_workspace_move(&WorkspaceMoveParams {
                 workspace_id: gone.clone(),
                 insert_index: 0,
-            }),
-            Err(refusal.clone())
+            })
+            .expect_err("the workspace is gone")
+            .error,
+            refusal
         );
         assert_eq!(
-            app.handle_workspace_close(&WorkspaceCloseParams { workspace_id: gone }),
-            Err(refusal)
+            app.handle_workspace_close(&WorkspaceCloseParams { workspace_id: gone })
+                .expect_err("the workspace is gone")
+                .error,
+            refusal
         );
     }
 

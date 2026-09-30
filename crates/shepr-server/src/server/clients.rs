@@ -9,6 +9,13 @@ use shepr_protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
 };
 
+/// Typed identity paired with one pane in a client's committed surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientPaneIdentity {
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) pane_id: shepr_core::layout::PaneId,
+}
+
 /// Identity of a connection accepted by this server. Only the registry's
 /// allocator mints production values; disconnecting never reuses one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -474,6 +481,8 @@ pub(crate) struct ClientConnection {
     pub(crate) last_activity: ActivityStamp,
     /// Render baseline for the negotiated client encoding.
     pub(crate) render_state: ClientRenderState,
+    /// Typed identities aligned with the panes in `render_state`'s baseline.
+    pub(crate) surface_pane_identities: Vec<ClientPaneIdentity>,
     /// Whether this frontend preserves exact SGR pixel reports.
     pub(crate) pixel_mouse: bool,
     /// Whether an ordinary render was skipped because the render channel was full.
@@ -516,6 +525,7 @@ impl ClientConnection {
             cell_size,
             last_activity: last_activity.into(),
             render_state: ClientRenderState::new(),
+            surface_pane_identities: Vec::new(),
             pixel_mouse: false,
             render_pending: RenderDemand::None,
             oversized_surface_reported: false,
@@ -536,6 +546,11 @@ impl ClientConnection {
 
     pub(crate) fn request_repaint(&mut self) {
         self.render_state.request_repaint();
+        self.surface_pane_identities.clear();
+    }
+
+    pub(crate) fn commit_surface_pane_identities(&mut self, identities: Vec<ClientPaneIdentity>) {
+        self.surface_pane_identities = identities;
     }
 
     pub(crate) fn request_recompute(&mut self) {

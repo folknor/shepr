@@ -17,6 +17,9 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_i
             command: surface_set(true),
         })
     );
+    // The acknowledgement waits in the client's ordered reply queue, as every
+    // endpoint reply does; the loop flushes it once the pass has rendered.
+    server.flush_endpoint_replies();
 }
 
 #[tokio::test]
@@ -82,6 +85,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             )),
         })
     );
+    server.flush_endpoint_replies();
     let ServerMessage::ClientShellEndpointResponse {
         result: Err(error), ..
     } = read_server_message(control_rx.recv().expect("inactive mutation response"))
@@ -115,6 +119,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             command: surface_set(true),
         })
     );
+    server.flush_endpoint_replies();
     let ServerMessage::ClientShellEndpointResponse {
         result:
             Ok(EndpointReply::ClientShellSurfaceSet {
@@ -150,6 +155,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             command: surface_set(false),
         })
     );
+    server.flush_endpoint_replies();
     let _ = control_rx.recv().expect("surface deactivation response");
     assert!(server.clients.contains_key(&client_id));
     let (_, runtime_pane_id) = server
@@ -177,6 +183,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             command: surface_set(true),
         })
     );
+    server.flush_endpoint_replies();
     let result = loop {
         let message =
             read_server_message(control_rx.recv().expect("surface reactivation response"));
@@ -381,6 +388,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
             command: surface_set(true),
         })
     );
+    server.flush_endpoint_replies();
     let _ = control_rx
         .recv()
         .expect("typed surface reassertion acknowledgement");

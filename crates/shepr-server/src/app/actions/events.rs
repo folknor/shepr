@@ -89,11 +89,10 @@ impl StateEvent {
 impl AppState {
     pub(crate) fn apply_workspace_git_statuses(
         &mut self,
-        terminal_runtimes: &shepr_mux::pane::PaneRuntimeRegistry,
-        results: Vec<WorkspaceGitStatus>,
+        results: Vec<(WorkspaceGitStatus, Option<std::path::PathBuf>)>,
     ) -> bool {
         let mut changed = false;
-        for result in results {
+        for (result, resolved_identity_cwd) in results {
             let Some(ws_idx) = self
                 .workspaces
                 .iter()
@@ -102,15 +101,9 @@ impl AppState {
                 continue;
             };
 
-            // Resolve the live cwd again so a Git result is rejected if the
-            // process changed directories while the worker ran. This follows
-            // PaneRuntime::follow_cwd into /proc from AppState; App should make
-            // this comparison and pass the resolved cwd into this data reducer.
-            if self.workspaces[ws_idx]
-                .resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
-                .as_ref()
-                != Some(&result.resolved_identity_cwd)
-            {
+            // App resolves the live cwd before entering this pure state reducer
+            // so a result is admitted only for the identity the worker saw.
+            if resolved_identity_cwd.as_ref() != Some(&result.resolved_identity_cwd) {
                 continue;
             }
 
@@ -291,14 +284,14 @@ impl AppState {
     }
 
     /// Pane status is the current state directly; state-change sequences
-    /// remain so endpoint agent sorting can observe transitions between
-    /// snapshots.
+    /// observe changes in the presented state so endpoint sorting does not
+    /// react to Unknown/Idle transitions that both display as Idle.
     pub(super) fn record_agent_state_change_seq(
         &mut self,
         terminal_id: &shepr_protocol::TerminalId,
         change: &EffectiveStateChange,
     ) {
-        if change.previous_state == change.state {
+        if change.previous_state.presentation_state() == change.state.presentation_state() {
             return;
         }
         self.next_agent_state_change_seq += 1;

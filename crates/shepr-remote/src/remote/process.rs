@@ -224,6 +224,44 @@ mod tests {
     use shepr_test_support::fixture::{self, Held, Step};
     use std::process::Stdio;
 
+    fn fixture_process_group_is_gone(group: libc::pid_t) -> bool {
+        // SAFETY: signal zero checks whether this test-owned group exists; it
+        // does not signal or alter any process.
+        let result = unsafe { libc::kill(-group, 0) };
+        result != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
+    struct FixtureProcessGroupGuard(libc::pid_t);
+
+    impl Drop for FixtureProcessGroupGuard {
+        fn drop(&mut self) {
+            // SAFETY: the test fixture was started in a new session below, so
+            // its pid is the process group id for it and its spawned fixture.
+            let result = unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            if result != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    return;
+                }
+                if !std::thread::panicking() {
+                    panic!("could not kill fixture process group {}: {error}", self.0);
+                }
+                return;
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !fixture_process_group_is_gone(self.0) {
+                if Instant::now() >= deadline {
+                    if !std::thread::panicking() {
+                        panic!("fixture process group {} survived cleanup", self.0);
+                    }
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
     #[test]
     fn timeout_kills_the_child() {
         let mut command = fixture::command(&[Step::Sleep(Duration::from_secs(10))]);
@@ -252,12 +290,16 @@ mod tests {
             Step::PrintErr("err".into()),
         ]);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // This stand-in intentionally leaves a background fixture holding
+        // stderr. Put it and that child in a test-owned group so drop can clean
+        // up and wait for the simulated ControlPersist process tree, even on panic.
+        shepr_platform::detach_server_daemon_command(&mut command);
+        let child = command.spawn().expect("test precondition");
+        let process_group = libc::pid_t::try_from(child.id()).expect("fixture pid fits");
+        let fixture_group = FixtureProcessGroupGuard(process_group);
         let started = Instant::now();
-        let output = wait_with_output_timeout(
-            command.spawn().expect("test precondition"),
-            Duration::from_secs(10),
-        )
-        .expect("the child itself exits immediately");
+        let output = wait_with_output_timeout(child, Duration::from_secs(10))
+            .expect("the child itself exits immediately");
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "waited on the background holder: {:?}",
@@ -266,6 +308,11 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"err");
+        drop(fixture_group);
+        assert!(
+            fixture_process_group_is_gone(process_group),
+            "the fixture's background child outlived the test"
+        );
     }
 
     #[test]

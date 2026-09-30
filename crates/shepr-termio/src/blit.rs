@@ -80,6 +80,13 @@ impl BlitEncoder {
         repaint: bool,
         suppress_visible_cursor: bool,
     ) -> EncodedBlit {
+        if !frame_cell_count_matches(frame) {
+            return EncodedBlit {
+                bytes: Vec::new(),
+                next_last_visible_cursor: self.last_visible_cursor,
+                next_last_cursor_shape: self.last_cursor_shape,
+            };
+        }
         let previous_frame = self.last_frame.as_ref();
         let prev = if repaint { None } else { previous_frame };
         let clear_before_full_redraw = previous_frame.is_none();
@@ -105,6 +112,9 @@ impl BlitEncoder {
     }
 
     pub fn commit(&mut self, frame: FrameData, encoded: &EncodedBlit) {
+        if !frame_cell_count_matches(&frame) {
+            return;
+        }
         self.last_visible_cursor = encoded.next_last_visible_cursor;
         self.last_cursor_shape = encoded.next_last_cursor_shape;
         self.last_frame = Some(frame);
@@ -121,7 +131,7 @@ impl BlitEncoder {
         suppress_visible_cursor: bool,
     ) -> Option<EncodedBlit> {
         let frame = self.last_frame.as_ref()?;
-        if !patch_rows_fit(frame, rows) {
+        if !frame_cell_count_matches(frame) || !patch_rows_fit(frame, rows) {
             return None;
         }
         // Metadata revisions need no terminal output. Keep visible cursors on
@@ -371,6 +381,11 @@ fn frame_cell_index(frame: &FrameData, x: u16, y: u16) -> Option<usize> {
         .then(|| usize::from(y) * usize::from(frame.width) + usize::from(x))
 }
 
+/// `FrameData` is a mutable protocol struct, so check its grid at the terminal output boundary.
+fn frame_cell_count_matches(frame: &FrameData) -> bool {
+    usize::from(frame.width).checked_mul(usize::from(frame.height)) == Some(frame.cells.len())
+}
+
 fn patch_cell_mut(rows: &mut [PaneSurfacePatchRow], x: u16, y: u16) -> Option<&mut CellData> {
     rows.iter_mut().rev().find_map(|row| {
         if row.y != y || x < row.x {
@@ -474,6 +489,18 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
 ) -> io::Result<()> {
+    if !frame_cell_count_matches(frame)
+        || prev.is_some_and(|previous| {
+            previous.width == frame.width
+                && previous.height == frame.height
+                && !frame_cell_count_matches(previous)
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame cell count does not match its dimensions",
+        ));
+    }
     // On first frame or size change, do a full redraw; otherwise diff against
     // the previous frame.
     let diff_base = prev.filter(|p| p.width == frame.width && p.height == frame.height);
@@ -1570,13 +1597,15 @@ mod tests {
         blit_frame_to(&mut diff, &curr, Some(&prev));
         terminal.write(&diff);
 
+        let mut scratch = String::new();
         for row in 0_usize..3 {
-            for col in 0..4 {
-                let (_, graphemes) = terminal
-                    .screen_cell(col, shepr_vt::ScreenRow(row))
-                    .expect("test precondition");
-                assert_eq!(graphemes, vec![u32::from('B')]);
-            }
+            let mut cells = Vec::new();
+            terminal
+                .visit_screen_row_text(shepr_vt::ScreenRow(row), &mut scratch, |_, _, text| {
+                    cells.push(text.to_owned());
+                })
+                .expect("test precondition");
+            assert_eq!(cells, vec!["B"; 4]);
         }
     }
 
@@ -1607,6 +1636,19 @@ mod tests {
 
         assert!(!output.contains("\x1b[2J"));
         assert!(output.bytes().filter(|byte| *byte == b'A').count() >= 6);
+    }
+
+    #[test]
+    fn encoder_rejects_a_frame_with_a_cell_count_mismatch() {
+        let malformed = make_frame(2, 1, vec![default_cell("x")]);
+        let mut encoder = BlitEncoder::new();
+
+        let encoded = encoder.encode(&malformed, false);
+
+        assert!(encoded.bytes.is_empty());
+        encoder.commit(malformed, &encoded);
+        assert!(encoder.last_frame.is_none());
+        assert!(encoder.encode_patch(&[], None, false).is_none());
     }
 
     #[test]

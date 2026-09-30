@@ -185,7 +185,11 @@ fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
         &request.command,
         EndpointCommand::LayoutSetSplitRatio(params)
             if params.workspace_id == "w1"
-                && params.path == vec![false, true]
+                && params.path
+                    == vec![
+                        shepr_core::geometry::SplitBranch::First,
+                        shepr_core::geometry::SplitBranch::Second,
+                    ]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
     ));
     let release =

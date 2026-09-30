@@ -1,5 +1,6 @@
 use super::*;
 use crate::server::ClientId;
+use crate::server::clients::ClientPaneIdentity;
 use tracing::trace;
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
@@ -158,7 +159,7 @@ fn retained_cursor(
     let runtime = app.state.runtime_for_pane_in_workspace(
         &app.terminal_runtimes,
         pane.workspace_index,
-        pane.pane_id,
+        pane.identity.pane_id,
     )?;
     if runtime.synchronized_output_active() {
         return None;
@@ -182,19 +183,19 @@ fn retained_cursor(
 struct RetainedRecipient<'a> {
     client_id: ClientId,
     surface: &'a shepr_protocol::PaneSurfaceFrame,
-    // Resolve public ids once per surface and reuse their typed identities for
-    // source matching, synchronized-output checks, and cursor lookup.
+    // Reuse the typed identities committed next to this connection's wire pane
+    // entries for source matching, synchronized-output checks, and cursor lookup.
     panes: Vec<ResolvedRetainedPane<'a>>,
 }
 
 struct ResolvedRetainedPane<'a> {
     pane: &'a shepr_protocol::PaneSurfacePane,
     workspace_index: usize,
-    pane_id: shepr_core::layout::PaneId,
+    identity: &'a ClientPaneIdentity,
 }
 
 struct CollectedPanePatch {
-    pane_id: shepr_protocol::PublicPaneId,
+    identity: ClientPaneIdentity,
     patch: shepr_mux::pane::TerminalDirtyPatch,
     content_revision: u64,
     scroll_metrics: Option<shepr_mux::pane::ScrollMetrics>,
@@ -211,19 +212,33 @@ struct RetainedRecipientUpdate {
 fn resolve_retained_panes<'a>(
     app: &app::App,
     surface: &'a shepr_protocol::PaneSurfaceFrame,
-) -> Vec<ResolvedRetainedPane<'a>> {
-    surface
-        .panes
+    identities: &'a [ClientPaneIdentity],
+) -> Option<Vec<ResolvedRetainedPane<'a>>> {
+    if surface.panes.len() != identities.len() {
+        return None;
+    }
+    let Some(first_identity) = identities.first() else {
+        return Some(Vec::new());
+    };
+    let workspace_index = app.resolve_workspace_id(&first_identity.workspace_id)?;
+    if identities
         .iter()
-        .filter_map(|pane| {
-            let (workspace_index, pane_id) = app.parse_pane_id(&pane.pane_id)?;
-            Some(ResolvedRetainedPane {
+        .any(|identity| identity.workspace_id != first_identity.workspace_id)
+    {
+        return None;
+    }
+    Some(
+        surface
+            .panes
+            .iter()
+            .zip(identities)
+            .map(|(pane, identity)| ResolvedRetainedPane {
                 pane,
                 workspace_index,
-                pane_id,
+                identity,
             })
-        })
-        .collect()
+            .collect(),
+    )
 }
 
 fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> bool {
@@ -232,7 +247,7 @@ fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> 
             .runtime_for_pane_in_workspace(
                 &app.terminal_runtimes,
                 pane.workspace_index,
-                pane.pane_id,
+                pane.identity.pane_id,
             )
             .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
     })
@@ -308,7 +323,11 @@ impl HeadlessServer {
             {
                 fallback!("baseline_mismatch");
             }
-            let panes = resolve_retained_panes(&self.app, surface);
+            let Some(panes) =
+                resolve_retained_panes(&self.app, surface, &client.surface_pane_identities)
+            else {
+                fallback!("baseline_mismatch");
+            };
             if has_synchronized_pane(&self.app, &panes) {
                 fallback!("synchronized_visible");
             }
@@ -328,18 +347,22 @@ impl HeadlessServer {
             let mut width = 0u16;
             let mut height = 0u16;
             for recipient in &recipients {
-                let Some(pane) = recipient.panes.iter().find(|pane| pane.pane_id == *source) else {
+                let Some(pane) = recipient
+                    .panes
+                    .iter()
+                    .find(|pane| pane.identity.pane_id == *source)
+                else {
                     continue;
                 };
                 source_pane.get_or_insert((
-                    pane.pane.pane_id.clone(),
+                    (*pane.identity).clone(),
                     pane.workspace_index,
-                    pane.pane_id,
+                    pane.identity.pane_id,
                 ));
                 width = width.max(pane.pane.inner_rect.width);
                 height = height.max(pane.pane.inner_rect.height);
             }
-            let Some((public_pane_id, workspace_index, pane_id)) = source_pane else {
+            let Some((identity, workspace_index, pane_id)) = source_pane else {
                 continue;
             };
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
@@ -362,7 +385,7 @@ impl HeadlessServer {
                 }
             };
             collected.push(CollectedPanePatch {
-                pane_id: public_pane_id,
+                identity,
                 patch,
                 content_revision: snapshot.content_revision,
                 scroll_metrics: snapshot.scroll_metrics,
@@ -383,11 +406,16 @@ impl HeadlessServer {
             let mut patch_rows = Vec::new();
             let mut metadata_changed = false;
             for collected_pane in &collected {
-                let Some(pane) = panes
-                    .iter_mut()
-                    .find(|pane| pane.pane_id == collected_pane.pane_id)
+                let Some((pane_index, _)) = recipient
+                    .panes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, pane)| pane.identity == &collected_pane.identity)
                 else {
                     continue;
+                };
+                let Some(pane) = panes.get_mut(pane_index) else {
+                    fallback!("baseline_mismatch");
                 };
                 // Alternate-screen transitions change whether the pane reserves
                 // a scrollbar gutter. Recompute layout and resize the runtime
@@ -497,7 +525,7 @@ impl HeadlessServer {
                         %error,
                         "failed to serialize retained pane surface patch"
                     );
-                    client.render_state.request_repaint();
+                    client.request_repaint();
                     client.defer_full_render();
                     continue;
                 }
@@ -507,6 +535,9 @@ impl HeadlessServer {
                 Ok(()) => {
                     client.clear_deferred_render();
                     client.render_state.commit_sent_frame(prepared);
+                    if client.render_state.last_pane_surface().is_none() {
+                        client.request_repaint();
+                    }
                     sent += 1;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -530,6 +561,7 @@ impl HeadlessServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::WorkspaceFixture as _;
 
     fn cell(symbol: &str) -> shepr_protocol::CellData {
         shepr_protocol::CellData {
@@ -540,6 +572,63 @@ mod tests {
             skip: false,
             hyperlink: None,
         }
+    }
+
+    #[test]
+    fn retained_resolution_uses_the_typed_baseline_identity() {
+        let mut app = app::App::new(
+            &shepr_config::Config::default(),
+            app::AppPolicy::Test,
+            tokio::sync::mpsc::unbounded_channel().1,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("typed-baseline");
+        let pane_id = workspace.root_pane();
+        app.state.workspaces.push(workspace);
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let wire_workspace_id =
+            shepr_protocol::WorkspaceId::from_number(999).expect("test workspace id");
+        let surface = shepr_protocol::PaneSurfaceFrame {
+            boot_id: shepr_test_fixtures::fixed_boot_id(1),
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            frame: FrameData::blank(1, 1),
+            panes: vec![shepr_protocol::PaneSurfacePane {
+                pane_id: shepr_protocol::PublicPaneId::new(&wire_workspace_id, 1),
+                content_revision: 0,
+                rect: shepr_protocol::SurfaceRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                inner_rect: shepr_protocol::SurfaceRect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+                scrollbar_rect: None,
+                scroll: None,
+                focused: true,
+                mouse_reporting: false,
+                sgr_pixel_mouse: false,
+                alternate_screen_active: false,
+                pixel_width: 0,
+                pixel_height: 0,
+            }],
+            splits: Vec::new(),
+        };
+        let identities = vec![ClientPaneIdentity {
+            workspace_id,
+            pane_id,
+        }];
+
+        let resolved = resolve_retained_panes(&app, &surface, &identities)
+            .expect("typed identity resolves without parsing the wire id");
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].workspace_index, 0);
+        assert_eq!(resolved[0].identity.pane_id, pane_id);
     }
 
     #[test]

@@ -6,10 +6,10 @@
 //! protocol number cannot guard that, because nothing forces anyone to bump
 //! it. This script fingerprints every input that shapes the binary and hands
 //! the result to the crate as `BUILD_ID`, which the handshake preamble, `ping`
-//! and `status` compare exactly. Any change to an input yields a new identity,
-//! so a stale server, a hand-copied remote binary, or a dev build meeting the
-//! installed release server is reported as a mismatch instead of passing as
-//! compatible.
+//! and `status` compare exactly. Any change to an observed input yields a new
+//! identity, so a stale server, a hand-copied remote binary, or a dev build
+//! meeting the installed release server is reported as a mismatch instead of
+//! passing as compatible.
 //!
 //! The inputs come in two halves:
 //!
@@ -27,7 +27,10 @@
 //!   of one tree would share an identity, and a dev run would attach to the
 //!   installed server as if it were the same binary. Profile settings made in a
 //!   config file that surface in no build-script variable (`lto`,
-//!   `codegen-units`) stay invisible to any build script.
+//!   `codegen-units`) stay invisible to any build script. A `CARGO_PROFILE_*`
+//!   or `CARGO_CFG_*` variable first added after the script last ran is also
+//!   invisible until another tracked input causes a rerun, because its name
+//!   was not available to register as a rerun trigger.
 //!
 //! When the profile half cannot be established (a variable cargo always sets
 //! is missing, or the compiler cannot answer `--version`), the identity is
@@ -332,7 +335,16 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let build_id = build_id(&root, &ProfileInputs::from_env(&root))?;
+    let profile_inputs = ProfileInputs::from_env(&root);
+    for (name, _) in &profile_inputs.vars {
+        if PROFILE_VAR_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            println!("cargo:rerun-if-env-changed={name}");
+        }
+    }
+    let build_id = build_id(&root, &profile_inputs)?;
 
     fs::write(
         out_dir.join("build_id.rs"),
@@ -356,9 +368,7 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     for name in ROOT_INPUTS {
         println!("cargo:rerun-if-changed={}", root.join(name).display());
     }
-    // Inputs inherited from the invoking environment. The ones cargo derives
-    // itself (profile, target, cfg) live in a per-profile, per-target output
-    // directory, so a change there already runs this script afresh.
+    // Inputs inherited from the invoking environment.
     for name in OPTIONAL_PROFILE_VARS {
         println!("cargo:rerun-if-env-changed={name}");
     }

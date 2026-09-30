@@ -855,13 +855,7 @@ impl ClientShellState {
                             shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                 shepr_protocol::command::LayoutSetSplitRatioParams {
                                     workspace_id: workspace_id.clone(),
-                                    path: hit
-                                        .path
-                                        .into_iter()
-                                        .map(|branch| {
-                                            branch == shepr_core::geometry::SplitBranch::Second
-                                        })
-                                        .collect(),
+                                    path: hit.path,
                                     ratio,
                                 },
                             ),
@@ -960,13 +954,7 @@ impl ClientShellState {
                                 shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                     shepr_protocol::command::LayoutSetSplitRatioParams {
                                         workspace_id: workspace_id.clone(),
-                                        path: hit
-                                            .path
-                                            .into_iter()
-                                            .map(|branch| {
-                                                branch == shepr_core::geometry::SplitBranch::Second
-                                            })
-                                            .collect(),
+                                        path: hit.path,
                                         ratio,
                                     },
                                 ),

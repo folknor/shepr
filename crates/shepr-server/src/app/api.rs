@@ -14,6 +14,7 @@ use shepr_api::error::ApiResult;
 use shepr_protocol::WorkspaceId;
 use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 
+pub(crate) use endpoint::EndpointEffects;
 use endpoint::{HandlerResult, rejected};
 
 /// What the server loop knows about the requesting client that no app state
@@ -31,6 +32,9 @@ pub(crate) struct EndpointOutcome {
     /// The workspace the command moves the requesting client to. Only a
     /// command that succeeded navigates; the server loop applies it.
     pub(crate) navigate: Option<WorkspaceId>,
+    /// Shared effects committed by the handler, including changes committed
+    /// before a later refusal.
+    pub(crate) effects: EndpointEffects,
     pub(crate) render: RenderDemand,
 }
 
@@ -77,37 +81,20 @@ impl App {
         command: EndpointCommand,
         ctx: &EndpointContext,
     ) -> EndpointOutcome {
-        let mutates_ui = command.traits().mutates_ui;
-        // These commands change scroll position, split ratios or PTY input
-        // only; the shell snapshot carries none of those. Anything the agent
-        // does in response arrives later through its own hook report. Focusing
-        // a workspace changes no shared state at all: only the requester's own
-        // location moves, which invalidates only its projection.
-        let changes_shell_projection = mutates_ui
-            && !matches!(
-                &command,
-                EndpointCommand::PaneScroll(_)
-                    | EndpointCommand::PaneClear(_)
-                    | EndpointCommand::PaneResize(_)
-                    | EndpointCommand::LayoutSetSplitRatio(_)
-                    | EndpointCommand::WorkspaceFocus(_)
-            );
-        // HandlerResult currently carries replies and navigation only. Until
-        // handlers return their mutation effects, successful mutating commands
-        // conservatively render; rejected commands must not invalidate views.
-        // Some handlers can commit before a later reply lookup fails, so retain
-        // any projection revision they published even when the reply is an error.
+        // Some app operations publish their projection revision at the state
+        // mutation site. Keep that signal too: a handler can commit before a
+        // later reply lookup refuses the command.
         let projection_before = self.state.shell_projection_revision;
         self.sync_pending_terminal_titles();
-        let (result, navigate) = match self.dispatch_endpoint_command(command, ctx) {
-            Ok(handled) => (Ok(handled.reply), handled.navigate),
-            Err(error) => (Err(error), None),
+        let (result, navigate, effects) = match self.dispatch_endpoint_command(command, ctx) {
+            Ok(handled) => (Ok(handled.reply), handled.navigate, handled.effects),
+            Err(error) => (Err(error.error), None, error.effects),
         };
-        let changed = self.state.shell_projection_revision != projection_before;
-        let render = if changed || (mutates_ui && result.is_ok()) {
-            if changes_shell_projection && !changed {
-                self.state.mark_shell_projection_dirty();
-            }
+        let projection_revision_changed = self.state.shell_projection_revision != projection_before;
+        if effects.shell_projection_changed && !projection_revision_changed {
+            self.state.mark_shell_projection_dirty();
+        }
+        let render = if effects.needs_render() || projection_revision_changed {
             RenderDemand::Full
         } else {
             RenderDemand::None
@@ -115,6 +102,7 @@ impl App {
         EndpointOutcome {
             result,
             navigate,
+            effects,
             render,
         }
     }
@@ -306,13 +294,38 @@ mod tests {
                 &EndpointContext::without_geometry(),
             );
             assert!(outcome.result.is_ok(), "{label:?}");
-            assert_eq!(outcome.render, RenderDemand::Full, "{label:?}");
-            assert_ne!(app.state.shell_projection_revision, before, "{label:?}");
-            app.state.workspaces[0].custom_name.clone()
+            (
+                app.state.workspaces[0].custom_name.clone(),
+                outcome.effects,
+                outcome.render,
+                before,
+                app.state.shell_projection_revision,
+            )
         };
 
-        assert_eq!(rename("  logs  "), Some("logs".to_owned()));
-        assert_eq!(rename("   "), None);
+        let (name, effects, render, before, after) = rename("  logs  ");
+        assert_eq!(name, Some("logs".to_owned()));
+        assert!(effects.shell_projection_changed);
+        assert_eq!(render, RenderDemand::Full);
+        assert_ne!(after, before);
+
+        let (name, effects, render, before, after) = rename("logs");
+        assert_eq!(name, Some("logs".to_owned()));
+        assert_eq!(effects, EndpointEffects::default());
+        assert_eq!(render, RenderDemand::None);
+        assert_eq!(after, before);
+
+        let (name, effects, render, before, after) = rename("   ");
+        assert_eq!(name, None);
+        assert!(effects.shell_projection_changed);
+        assert_eq!(render, RenderDemand::Full);
+        assert_ne!(after, before);
+
+        let (name, effects, render, before, after) = rename("");
+        assert_eq!(name, None);
+        assert_eq!(effects, EndpointEffects::default());
+        assert_eq!(render, RenderDemand::None);
+        assert_eq!(after, before);
     }
 
     #[test]

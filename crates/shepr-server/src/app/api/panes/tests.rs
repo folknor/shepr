@@ -320,11 +320,10 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
         },
         motion: PaneCopyMotion::Line(PaneLineMotion::End),
     });
+    let error = evicted.expect_err("an evicted row is refused");
     assert_eq!(
-        evicted,
-        Err(EndpointError::Rejected(
-            "terminal row is unavailable".into()
-        ))
+        error.error,
+        EndpointError::Rejected("terminal row is unavailable".into())
     );
 }
 
@@ -642,7 +641,10 @@ fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
         pane_id: missing_pane(),
         direction: PaneDirection::Right,
     });
-    assert!(matches!(refused, Err(EndpointError::Rejected(_))));
+    assert!(matches!(
+        refused,
+        Err(error) if matches!(error.error, EndpointError::Rejected(_))
+    ));
 
     // Stale explicit ids are a successful no-op, whichever one is stale.
     for (source, target) in [
@@ -968,11 +970,9 @@ fn pane_focus_rejects_a_pane_that_is_gone() {
         pane_id: missing_pane(),
     });
 
+    let error = response.expect_err("a missing pane is refused");
     assert_eq!(
-        response,
-        Err(EndpointError::Rejected(format!(
-            "pane {} not found",
-            missing_pane()
-        )))
+        error.error,
+        EndpointError::Rejected(format!("pane {} not found", missing_pane()))
     );
 }

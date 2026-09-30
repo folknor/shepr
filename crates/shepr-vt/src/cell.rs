@@ -66,19 +66,6 @@ pub enum CellWide {
     SpacerHead,
 }
 
-/// An owned copy of one cell's text. Building these costs an allocation per
-/// non-blank cell (blank cells hold an empty, unallocated `Vec`); readers
-/// that run per tick or over the whole history use
-/// [`Terminal::visit_screen_row_text`] instead. The one remaining builder of
-/// whole screens, the alternate-screen history read, copies a single
-/// viewport per poll step of an explicit API read, so the per-cell `Vec` is
-/// kept rather than moving every consumer to a packed representation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScreenTextCell {
-    pub wide: CellWide,
-    pub graphemes: Vec<u32>,
-}
-
 /// How a row joins its neighbours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RowWrap {
@@ -86,12 +73,6 @@ pub struct RowWrap {
     pub soft_wrapped: bool,
     /// The row continues the previous row's text.
     pub wrap_continuation: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScreenTextRow {
-    pub cells: Vec<ScreenTextCell>,
-    pub wrap: RowWrap,
 }
 
 pub(super) fn is_halfwidth_voiced_mark_codepoint(codepoint: u32) -> bool {
@@ -233,21 +214,6 @@ pub(super) fn cell_text(cell: &Cell) -> CellText<'_> {
     CellText::Grapheme {
         base: if cell.c == '\t' { ' ' } else { cell.c },
         zerowidth,
-    }
-}
-
-/// The cell's text as codepoints; empty for blank cells and spacers.
-pub(super) fn cell_graphemes(cell: &Cell) -> Vec<u32> {
-    match cell_text(cell) {
-        CellText::Empty => Vec::new(),
-        CellText::Grapheme { base, zerowidth } => {
-            // A non-empty grapheme always has one base codepoint before its
-            // zero-width suffix.
-            let mut graphemes = Vec::with_capacity(1 + zerowidth.len());
-            graphemes.push(u32::from(base));
-            graphemes.extend(zerowidth.iter().map(|&ch| u32::from(ch)));
-            graphemes
-        }
     }
 }
 

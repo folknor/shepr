@@ -4,14 +4,9 @@ use crate::server::ClientId;
 use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 
 impl HeadlessServer {
-    /// Runs one endpoint command from a client shell. Refusals (an earlier
-    /// boot, an inactive surface) and the surface-set acknowledgement, which
-    /// carries the projection revision the client waits for, go out at once.
-    /// Any other command's answer is held in the endpoint reply outbox and
-    /// sent after the render its effect needs (`flush_endpoint_replies`).
-    /// Commands from one client run in arrival order on this loop, so a
-    /// second command sent before the first was answered simply runs after
-    /// it, and the replies leave in the same order.
+    /// Runs one endpoint command from a client shell. Each answer enters that
+    /// client's ordered outbox; ready replies leave after any render the
+    /// command needs (`flush_endpoint_replies`).
     pub(super) fn handle_client_shell_endpoint_request(
         &mut self,
         client_id: ClientId,
@@ -29,7 +24,7 @@ impl HeadlessServer {
                 request_id,
                 EndpointError::StaleBoot,
             );
-            self.send_to_client(client_id, &message);
+            self.queue_endpoint_reply(client_id, message);
             return false;
         }
         if let EndpointCommand::ClientShellSurfaceSet(params) = &command {
@@ -38,9 +33,12 @@ impl HeadlessServer {
             else {
                 return false;
             };
-            self.send_to_client(
+            if surface_active != params.active {
+                self.immediate_pty_sources_dirty = true;
+            }
+            self.queue_endpoint_reply(
                 client_id,
-                &crate::server::client_commands::response_message(
+                crate::server::client_commands::response_message(
                     boot_id,
                     request_id,
                     Ok(EndpointReply::ClientShellSurfaceSet {
@@ -57,11 +55,53 @@ impl HeadlessServer {
                 request_id,
                 EndpointError::SurfaceInactive,
             );
-            self.send_to_client(client_id, &message);
+            self.queue_endpoint_reply(client_id, message);
             return false;
         }
 
         let foreground_changed = self.promote_client_to_foreground(client_id);
+        if let EndpointCommand::WorkspaceCheckoutRoot(params) = &command {
+            let drained_changed = self.drain_all_internal_events_with_forwarding();
+            match self.app.prepare_workspace_checkout_root(params) {
+                Ok((cwd, home)) => {
+                    let shutdown_message = crate::server::client_commands::error_message(
+                        boot_id.clone(),
+                        request_id.clone(),
+                        EndpointError::ShuttingDown,
+                    );
+                    let ticket = self.reserve_endpoint_reply(client_id, shutdown_message);
+                    if let Err(error) = super::worker::checkout_root(
+                        &self.worker_tx,
+                        std::sync::Arc::clone(&self.checkout_root_runner),
+                        ticket,
+                        boot_id.clone(),
+                        request_id.clone(),
+                        cwd,
+                        home,
+                    ) {
+                        self.complete_endpoint_reply(
+                            ticket,
+                            crate::server::client_commands::response_message(
+                                boot_id,
+                                request_id,
+                                Err(EndpointError::Rejected(format!(
+                                    "failed to start checkout root worker: {error}"
+                                ))),
+                            ),
+                        );
+                    }
+                }
+                Err(error) => self.queue_endpoint_reply(
+                    client_id,
+                    crate::server::client_commands::response_message(
+                        boot_id,
+                        request_id,
+                        Err(error),
+                    ),
+                ),
+            }
+            return foreground_changed | drained_changed;
+        }
         let (changed, result) = self.handle_client_shell_command(client_id, command);
         self.queue_endpoint_reply(
             client_id,
@@ -95,7 +135,6 @@ impl HeadlessServer {
         if self.lifecycle.phase() == ShutdownPhase::Stopping {
             return (false, Err(EndpointError::ShuttingDown));
         }
-        self.immediate_pty_sources_dirty = true;
         let traits = command.traits();
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
@@ -110,14 +149,23 @@ impl HeadlessServer {
         };
         let mut outcome = self.app.handle_endpoint_command_with_render(command, &ctx);
         changed |= outcome.render != RenderDemand::None;
+        let mut immediate_sources_changed = outcome.effects.changes_immediate_pty_sources();
 
         if let Some(workspace_id) = &outcome.navigate {
-            changed |= self.navigate_shell_client(client_id, workspace_id);
+            let navigated = self.navigate_shell_client(client_id, workspace_id);
+            changed |= navigated;
+            immediate_sources_changed |= navigated;
         }
         // A command can empty the session (the last pane closing), and a
         // session some client looks at is never left without a workspace.
-        changed |= self.create_automatic_workspace(Some(client_id));
-        changed |= self.reconcile_client_shell_locations();
+        // Both move what some client views, so both change the sources.
+        let created = self.create_automatic_workspace(Some(client_id));
+        let reconciled = self.reconcile_client_shell_locations();
+        changed |= created | reconciled;
+        immediate_sources_changed |= created | reconciled;
+        if immediate_sources_changed {
+            self.immediate_pty_sources_dirty = true;
+        }
         if traits.claims_shell_geometry {
             changed |= if traits.changes_topology {
                 self.reapply_controlled_shell_workspace_geometry(false)
@@ -145,16 +193,17 @@ impl HeadlessServer {
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
     ) {
-        self.flush_endpoint_replies();
-        let sent = self.send_to_client(
+        self.resolve_pending_endpoint_replies_for_shutdown();
+        self.queue_endpoint_reply(
             client_id,
-            &crate::server::client_commands::error_message(
+            crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
                 EndpointError::ShuttingDown,
             ),
         );
-        if sent && let Some(writer) = self.clients.get(&client_id).and_then(|c| c.writer.as_ref()) {
+        self.flush_endpoint_replies();
+        if let Some(writer) = self.clients.get(&client_id).and_then(|c| c.writer.as_ref()) {
             self.shutdown_flushes.push(writer.flush());
         }
     }

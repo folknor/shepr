@@ -33,39 +33,22 @@ fn anchor_full_lifecycle_session(
 }
 
 #[test]
-fn hook_sequence_drops_stragglers_but_survives_a_clock_stepping_back() {
+fn hook_sequence_drops_stragglers_until_an_explicit_generation_reset() {
     let mut terminal = test_terminal();
     let t0 = Instant::now();
     assert!(terminal.accept_hook_report_at("shepr:kimi", Some(1_000), t0));
-    // A racing hook process delivering an older report moments later.
-    assert!(!terminal.accept_hook_report_at(
-        "shepr:kimi",
-        Some(999),
-        t0 + Duration::from_millis(50)
-    ));
-    assert!(!terminal.accept_hook_report_at(
-        "shepr:kimi",
-        Some(1_000),
-        t0 + Duration::from_millis(50)
-    ));
-    // Rejections do not extend the window.
-    assert!(!terminal.accept_hook_report_at(
-        "shepr:kimi",
-        Some(10),
-        t0 + HOOK_SEQUENCE_REANCHOR_AFTER - Duration::from_millis(1)
-    ));
-    // The wall clock stepped back: after the window the lower seq is
-    // accepted and becomes the new anchor.
-    let t1 = t0 + HOOK_SEQUENCE_REANCHOR_AFTER;
-    assert!(terminal.accept_hook_report_at("shepr:kimi", Some(10), t1));
-    assert!(terminal.accept_hook_report_at("shepr:kimi", Some(11), t1 + Duration::from_millis(10)));
-    assert!(!terminal.accept_hook_report_at(
-        "shepr:kimi",
-        Some(10),
-        t1 + Duration::from_millis(20)
-    ));
-    // Other sources keep their own order.
-    assert!(terminal.accept_hook_report_at("shepr:pi", Some(5), t1));
+    for delay in [
+        Duration::from_millis(50),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+    ] {
+        assert!(!terminal.accept_hook_report_at("shepr:kimi", Some(999), t0 + delay));
+        assert!(!terminal.accept_hook_report_at("shepr:kimi", Some(1_000), t0 + delay));
+    }
+    assert!(terminal.accept_hook_report_at("shepr:pi", Some(5), t0));
+    terminal.clear_hook_report_sequence("shepr:kimi");
+    assert!(terminal.accept_hook_report_at("shepr:kimi", Some(10), t0 + Duration::from_secs(10)));
+    assert!(!terminal.accept_hook_report_at("shepr:kimi", Some(10), t0 + Duration::from_secs(11)));
 }
 
 #[test]
@@ -154,9 +137,7 @@ fn process_exit_suppresses_only_full_lifecycle_sources() {
         );
 
         assert_eq!(
-            terminal
-                .suppressed_full_lifecycle_hook_reports
-                .contains_key(source),
+            terminal.suppressed_hook_source(source).is_some(),
             full_lifecycle,
             "{label}"
         );
@@ -716,7 +697,9 @@ fn late_full_lifecycle_hook_with_same_session_after_process_exit_does_not_reacqu
         Some(21),
     );
 
-    assert!(late.is_none());
+    assert!(late.is_some_and(
+        |mutation| mutation.effective_state_change.is_none() && !mutation.session_ref_changed
+    ));
     assert!(terminal.hook_authority.is_none());
     assert_eq!(terminal.state, AgentState::Idle);
 }
@@ -775,11 +758,7 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
 
     assert!(follow_up.is_some());
     assert_eq!(terminal.state, AgentState::Idle);
-    assert!(
-        !terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:pi")
-    );
+    assert!(terminal.suppressed_hook_source("shepr:pi").is_none());
 }
 
 #[test]
@@ -838,8 +817,11 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
         Some(501),
     );
 
-    assert!(late_old.is_none());
-    assert!(fresh_new.is_none());
+    assert!(late_old.is_some());
+    assert!(fresh_new.is_some());
+    // Both are parked for the session start, and neither takes authority
+    // before it: the fresh process has not started a session yet.
+    assert!(terminal.hook_authority.is_none());
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:pi".into(),
@@ -910,10 +892,10 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
         Some(2000),
         Some("startup"),
     );
-    assert!(startup.is_none());
-    assert!(lower_sequence.is_none());
+    assert!(startup.is_some());
+    assert!(lower_sequence.is_some());
     assert!(missing_sequence.is_none());
-    assert!(buffered_working.is_none());
+    assert!(buffered_working.is_some());
     assert!(!terminal.full_lifecycle_hook_authority_active());
 
     terminal.set_detected_state_with_screen_signals_at(
@@ -1085,7 +1067,7 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
         now + Duration::from_millis(2),
     );
 
-    assert!(early_new.is_none());
+    assert!(early_new.is_some());
     assert!(terminal.hook_authority.is_none());
 
     terminal.set_detected_state_with_screen_signals_at(
@@ -1264,7 +1246,9 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
         shepr_agent::agent::resume::AgentSessionRef::id("omp-old"),
         Some(500),
     );
-    assert!(stale.is_none());
+    assert!(stale.is_some_and(
+        |mutation| mutation.effective_state_change.is_none() && !mutation.session_ref_changed
+    ));
     assert!(terminal.hook_authority.is_none());
 
     terminal.set_detected_state_with_screen_signals_at(
@@ -2189,7 +2173,7 @@ fn stale_hook_report_cannot_overwrite_session_ref() {
 }
 
 #[test]
-fn accepted_hook_report_without_session_ref_clears_previous_ref() {
+fn accepted_hook_report_without_session_ref_preserves_current_generation() {
     let mut terminal = test_terminal();
     let session_path = test_session_path("pi.jsonl");
     anchor_full_lifecycle_session(
@@ -2220,7 +2204,7 @@ fn accepted_hook_report_without_session_ref_clears_previous_ref() {
         )
         .expect("accepted report");
 
-    assert!(mutation.session_ref_changed);
+    assert!(!mutation.session_ref_changed);
     assert!(mutation.effective_state_change.is_none());
     assert!(
         terminal
@@ -2228,8 +2212,24 @@ fn accepted_hook_report_without_session_ref_clears_previous_ref() {
             .as_ref()
             .expect("test precondition")
             .session_ref
-            .is_none()
+            .is_some()
     );
+    let identity = terminal
+        .current_session_identity_for_persistence()
+        .expect("resume identity");
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref(
+                "shepr:pi".into(),
+                "pi".into(),
+                AgentState::Idle,
+                None,
+                Some(identity.session_ref),
+                Some(22)
+            )
+            .is_some()
+    );
+    assert_eq!(terminal.state, AgentState::Idle);
 }
 
 #[test]
@@ -2253,8 +2253,11 @@ fn different_same_agent_session_ref_is_ignored_until_current_session_clears() {
 
     assert!(mutation.is_none());
     assert_eq!(
-        terminal.hook_report_sequences.get("shepr:claude"),
-        Some(&21)
+        terminal
+            .hook_sources
+            .get("shepr:claude")
+            .and_then(HookSourceState::sequence_value),
+        Some(20)
     );
     assert_eq!(
         terminal
@@ -2543,12 +2546,14 @@ fn opencode_tui_selection_anchors_after_process_detection() {
         None,
         Some("select"),
     );
-    assert!(startup_selection.is_none());
+    assert!(startup_selection.is_some());
     assert_eq!(
         terminal
-            .suppressed_full_lifecycle_hook_reports
-            .get("shepr:opencode")
-            .and_then(|suppressed| suppressed.replacement_session_ref.as_ref())
+            .suppressed_hook_source("shepr:opencode")
+            .and_then(|suppressed| suppressed
+                .pending_start
+                .as_ref()
+                .map(|start| &start.session_ref))
             .map(shepr_agent::agent::resume::AgentSessionRef::value_str),
         Some("opencode-startup-selection")
     );
@@ -2561,23 +2566,20 @@ fn opencode_tui_selection_anchors_after_process_detection() {
             .map(|session| session.session_ref.value_str()),
         Some("opencode-startup-selection")
     );
-    assert!(
-        !terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode")
-    );
+    assert!(terminal.suppressed_hook_source("shepr:opencode").is_none());
 
-    terminal.suppressed_full_lifecycle_hook_reports.insert(
-        "shepr:opencode".into(),
-        SuppressedFullLifecycleHookReport {
+    terminal
+        .hook_sources
+        .entry("shepr:opencode".into())
+        .or_default()
+        .release(SuppressedFullLifecycleHookReport {
             agent_label: "opencode".into(),
             session_ref: None,
             observed_at: Instant::now(),
-            reason: FullLifecycleHookSuppressionReason::ProcessExit,
-            replacement_session_ref: None,
+            reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
+            pending_start: None,
             pending_replacement_report: None,
-        },
-    );
+        });
     let selected = terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode".into(),
@@ -2589,11 +2591,7 @@ fn opencode_tui_selection_anchors_after_process_detection() {
         .expect("local TUI selection should reconcile generation suppression");
 
     assert!(selected.session_ref_changed);
-    assert!(
-        !terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode")
-    );
+    assert!(terminal.suppressed_hook_source("shepr:opencode").is_none());
     assert_eq!(
         terminal
             .persisted_agent_session
@@ -2603,8 +2601,9 @@ fn opencode_tui_selection_anchors_after_process_detection() {
     );
     assert!(
         !terminal
-            .hook_report_sequences
-            .contains_key("shepr:opencode")
+            .hook_sources
+            .get("shepr:opencode")
+            .is_some_and(|record| record.sequence_value().is_some())
     );
 }
 
@@ -2700,11 +2699,7 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         Some(21),
     );
     assert!(attached.is_none());
-    assert!(
-        !terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode")
-    );
+    assert!(terminal.suppressed_hook_source("shepr:opencode").is_none());
 
     let selected = terminal
         .set_agent_session_ref_for_session_start(
@@ -2718,14 +2713,13 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
 
     assert!(selected.session_ref_changed);
     assert!(terminal.hook_authority.is_none());
-    assert!(
-        !terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode")
-    );
+    assert!(terminal.suppressed_hook_source("shepr:opencode").is_none());
     assert_eq!(
-        terminal.hook_report_sequences.get("shepr:opencode"),
-        Some(&20)
+        terminal
+            .hook_sources
+            .get("shepr:opencode")
+            .and_then(HookSourceState::sequence_value),
+        None
     );
     assert_eq!(
         terminal
@@ -2753,6 +2747,33 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
             .and_then(|authority| authority.session_ref.as_ref()),
         Some(&selected_session)
     );
+
+    let ordered_generation = terminal.hook_sources.clone();
+    assert!(
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "shepr:opencode".into(),
+                "opencode".into(),
+                Some(selected_session.clone()),
+                None,
+                Some("select")
+            )
+            .is_some()
+    );
+    assert_eq!(terminal.hook_sources, ordered_generation);
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref(
+                "shepr:opencode".into(),
+                "opencode".into(),
+                AgentState::Idle,
+                None,
+                Some(selected_session.clone()),
+                Some(20)
+            )
+            .is_none()
+    );
+    assert_eq!(terminal.state, AgentState::Working);
 
     let late_old_session = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode".into(),
@@ -2801,11 +2822,7 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
             .map(|session| &session.session_ref),
         Some(&final_session)
     );
-    assert!(
-        !terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode")
-    );
+    assert!(terminal.suppressed_hook_source("shepr:opencode").is_none());
 }
 
 #[test]
@@ -3468,10 +3485,10 @@ fn same_sequence_from_different_sources_is_independent() {
 }
 
 /// A pane's hook ordering marks stay bounded: once the source cap is reached,
-/// marks that protect nothing current are dropped for a new source, the two
-/// maps stay in step, and a source that is still protected keeps its mark.
+/// unprotected records can be evicted for a new source, while a protected
+/// source retains its ordering mark.
 #[test]
-fn hook_report_sources_are_capped_and_the_sequence_maps_stay_in_step() {
+fn hook_report_sources_are_capped_and_ordering_is_one_record() {
     let mut terminal = test_terminal();
     let now = Instant::now();
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
@@ -3490,28 +3507,38 @@ fn hook_report_sources_are_capped_and_the_sequence_maps_stay_in_step() {
         Some("custom:kept"),
         "test precondition"
     );
-    assert!(terminal.hook_report_sequences.contains_key("custom:kept"));
+    assert!(
+        terminal
+            .hook_sources
+            .get("custom:kept")
+            .is_some_and(|record| record.sequence_value().is_some())
+    );
     for index in 1..MAX_HOOK_REPORT_SOURCES {
         assert!(terminal.accept_hook_report_at(&format!("custom:{index}"), Some(1), now));
     }
-    assert_eq!(
-        terminal.hook_report_sequences.len(),
-        MAX_HOOK_REPORT_SOURCES
-    );
+    assert_eq!(terminal.hook_sources.len(), MAX_HOOK_REPORT_SOURCES);
 
     assert!(terminal.accept_hook_report_at("custom:new", Some(1), now));
-    assert!(terminal.hook_report_sequences.len() <= MAX_HOOK_REPORT_SOURCES);
-    assert!(terminal.hook_report_sequences.contains_key("custom:kept"));
-    assert!(terminal.hook_report_sequences.contains_key("custom:new"));
-    let mut sequence_sources: Vec<_> = terminal.hook_report_sequences.keys().collect();
-    let mut accepted_sources: Vec<_> = terminal.hook_report_accepted_at.keys().collect();
-    sequence_sources.sort();
-    accepted_sources.sort();
-    assert_eq!(sequence_sources, accepted_sources);
-
+    assert!(terminal.hook_sources.len() <= MAX_HOOK_REPORT_SOURCES);
+    assert!(
+        terminal
+            .hook_sources
+            .get("custom:kept")
+            .is_some_and(|record| record.sequence_value().is_some())
+    );
+    assert!(
+        terminal
+            .hook_sources
+            .get("custom:new")
+            .is_some_and(|record| record.sequence_value().is_some())
+    );
     terminal.clear_hook_report_sequence("custom:new");
-    assert!(!terminal.hook_report_sequences.contains_key("custom:new"));
-    assert!(!terminal.hook_report_accepted_at.contains_key("custom:new"));
+    assert!(
+        terminal
+            .hook_sources
+            .get("custom:new")
+            .is_some_and(|record| record.sequence_value().is_none())
+    );
 }
 
 /// Stale session identities per official source keep only the newest ones.
@@ -3527,7 +3554,7 @@ fn stale_full_lifecycle_sessions_are_capped_per_source() {
                 .expect("test precondition"),
         );
     }
-    let sessions = &terminal.stale_full_lifecycle_hook_sessions["shepr:codex"];
+    let sessions = terminal.hook_sources["shepr:codex"].stale_sessions();
     assert_eq!(
         sessions.len(),
         MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE
@@ -3549,4 +3576,257 @@ fn stale_full_lifecycle_sessions_are_capped_per_source() {
             .first()
             .is_some_and(|first| first.session_ref == oldest_kept)
     );
+}
+
+#[test]
+fn hook_clock_reanchor_requires_a_corroborated_wall_clock_step() {
+    let accepted_at = Instant::now();
+    let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    let sequence = HookSequence {
+        value: 1_000,
+        accepted_at,
+        accepted_wall_clock: wall,
+    };
+    let later = accepted_at + Duration::from_secs(10);
+    // A request arriving within the hook timeout is still a straggler.
+    assert!(sequence.supersedes(999, later, wall + Duration::from_secs(10)));
+    assert!(sequence.supersedes(1_000, later, wall + Duration::from_secs(10)));
+    // A monotonic/wall-clock discrepancy corroborates a backward clock step.
+    assert!(!sequence.supersedes(10, later, wall - Duration::from_secs(1)));
+    assert!(sequence.supersedes(10, accepted_at + Duration::from_secs(4), wall));
+}
+
+#[test]
+fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_state() {
+    for (agent, source, start) in [
+        (Agent::Kimi, "shepr:kimi", "new"),
+        (Agent::Kilo, "shepr:kilo", "startup"),
+    ] {
+        let mut terminal = test_terminal();
+        let old = shepr_agent::agent::resume::AgentSessionRef::id("old").expect("session");
+        let new = shepr_agent::agent::resume::AgentSessionRef::id("new").expect("session");
+        anchor_full_lifecycle_session(&mut terminal, agent, source, agent.label(), old.clone());
+        assert!(
+            terminal
+                .set_hook_authority_with_session_ref(
+                    source.into(),
+                    agent.label().into(),
+                    AgentState::Blocked,
+                    None,
+                    Some(old.clone()),
+                    Some(10)
+                )
+                .is_some()
+        );
+        let changed = terminal
+            .set_agent_session_ref_for_session_start(
+                source.into(),
+                agent.label().into(),
+                Some(new.clone()),
+                Some(11),
+                Some(start),
+            )
+            .expect("recognized selection");
+        assert!(changed.session_ref_changed);
+        assert!(terminal.hook_authority.is_none());
+        assert_eq!(
+            terminal
+                .current_session_identity_for_persistence()
+                .expect("identity")
+                .session_ref,
+            new.clone()
+        );
+        assert!(
+            terminal
+                .set_hook_authority_with_session_ref(
+                    source.into(),
+                    agent.label().into(),
+                    AgentState::Working,
+                    None,
+                    Some(new.clone()),
+                    Some(12)
+                )
+                .is_some()
+        );
+        assert!(
+            terminal
+                .set_hook_authority_with_session_ref(
+                    source.into(),
+                    agent.label().into(),
+                    AgentState::Idle,
+                    None,
+                    Some(new),
+                    Some(11)
+                )
+                .is_none()
+        );
+        assert!(
+            terminal
+                .set_hook_authority_with_session_ref(
+                    source.into(),
+                    agent.label().into(),
+                    AgentState::Blocked,
+                    None,
+                    Some(old),
+                    Some(13)
+                )
+                .is_none()
+        );
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+}
+
+#[test]
+fn refused_session_replacement_preserves_authority_and_source_ordering() {
+    let mut terminal = test_terminal();
+    let old = shepr_agent::agent::resume::AgentSessionRef::id("old").expect("session");
+    anchor_full_lifecycle_session(
+        &mut terminal,
+        Agent::Kilo,
+        "shepr:kilo",
+        "kilo",
+        old.clone(),
+    );
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:kilo".into(),
+        "kilo".into(),
+        AgentState::Working,
+        None,
+        Some(old.clone()),
+        Some(10),
+    );
+    let sources = terminal.hook_sources.clone();
+    let authority = terminal.hook_authority.clone();
+    assert!(
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "shepr:kilo".into(),
+                "kilo".into(),
+                shepr_agent::agent::resume::AgentSessionRef::id("different"),
+                Some(100),
+                Some("unknown")
+            )
+            .is_none()
+    );
+    assert_eq!(terminal.hook_sources, sources);
+    assert_eq!(terminal.hook_authority, authority);
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref(
+                "shepr:kilo".into(),
+                "kilo".into(),
+                AgentState::Idle,
+                None,
+                Some(old),
+                Some(11)
+            )
+            .is_some()
+    );
+}
+
+#[test]
+fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
+    let mut terminal = test_terminal();
+    let old = shepr_agent::agent::resume::AgentSessionRef::id("old").expect("session");
+    anchor_full_lifecycle_session(
+        &mut terminal,
+        Agent::Kimi,
+        "shepr:kimi",
+        "kimi",
+        old.clone(),
+    );
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:kimi".into(),
+        "kimi".into(),
+        AgentState::Working,
+        None,
+        Some(old),
+        Some(10),
+    );
+    let sources = terminal.hook_sources.clone();
+    let authority = terminal.hook_authority.clone();
+    let invalid =
+        shepr_agent::agent::resume::AgentSessionRef::path(test_session_path("invalid-kind"));
+    assert!(
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "shepr:kimi".into(),
+                "kimi".into(),
+                invalid.clone(),
+                Some(100),
+                Some("new")
+            )
+            .is_none()
+    );
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref(
+                "shepr:kimi".into(),
+                "kimi".into(),
+                AgentState::Blocked,
+                None,
+                invalid,
+                Some(100)
+            )
+            .is_none()
+    );
+    assert!(
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "shepr:kilo".into(),
+                "kilo".into(),
+                shepr_agent::agent::resume::AgentSessionRef::id("other"),
+                Some(100),
+                Some("startup")
+            )
+            .is_none()
+    );
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref(
+                "shepr:kimi".into(),
+                "kilo".into(),
+                AgentState::Blocked,
+                None,
+                None,
+                Some(100)
+            )
+            .is_none()
+    );
+    assert_eq!(terminal.hook_sources, sources);
+    assert_eq!(terminal.hook_authority, authority);
+    assert_eq!(terminal.state, AgentState::Working);
+}
+
+#[test]
+fn older_pending_report_returns_none_without_changing_the_generation() {
+    let mut terminal = test_terminal();
+    let session = shepr_agent::agent::resume::AgentSessionRef::id("pending").expect("session");
+    let pending = terminal
+        .set_hook_authority_with_session_ref(
+            "shepr:kimi".into(),
+            "kimi".into(),
+            AgentState::Working,
+            None,
+            Some(session.clone()),
+            Some(100),
+        )
+        .expect("accepted pending report");
+    assert!(pending.effective_state_change.is_none());
+    assert!(!pending.session_ref_changed);
+    assert!(terminal.hook_authority.is_none());
+    let sources = terminal.hook_sources.clone();
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref(
+                "shepr:kimi".into(),
+                "kimi".into(),
+                AgentState::Idle,
+                None,
+                Some(session),
+                Some(99)
+            )
+            .is_none()
+    );
+    assert_eq!(terminal.hook_sources, sources);
 }

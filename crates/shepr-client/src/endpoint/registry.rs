@@ -161,6 +161,9 @@ impl EndpointRegistry {
             .is_some_and(|connection| connection.generation == generation)
     }
 
+    /// Records arrivals for transports without a reader-owned activity stamp. Native
+    /// connections are stamped on the reader thread, so this call intentionally leaves their
+    /// health unchanged when the client loop processes a message.
     pub(crate) fn received(
         &mut self,
         endpoint_id: &ClientEndpointId,

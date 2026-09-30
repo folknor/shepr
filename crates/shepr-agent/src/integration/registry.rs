@@ -334,18 +334,22 @@ pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> io
 
 /// Whether the Shepr-owned Grok hook config exactly matches the installed
 /// integration. JSON formatting and object key order do not affect validity.
-fn grok_hook_config_is_valid(hook_path: &Path) -> bool {
+fn grok_hook_config_is_valid(hook_path: &Path) -> io::Result<bool> {
     let Some(hooks_dir) = hook_path.parent() else {
-        return false;
+        return Ok(false);
     };
-    let Ok(expected_config) = super::targets::grok_hook_config(hook_path) else {
-        return false;
-    };
+    let expected_config = super::targets::grok_hook_config(hook_path)?;
     let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
-    fs::read_to_string(config_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .is_some_and(|config| config == expected_config)
+    let Some(content) = read_config_content(&config_path)? else {
+        return Ok(false);
+    };
+    let config = serde_json::from_str::<serde_json::Value>(&content).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot parse {}: {error}", config_path.display()),
+        )
+    })?;
+    Ok(config == expected_config)
 }
 
 fn opencode_tui_integration_is_valid(plugin_path: &Path) -> io::Result<bool> {
@@ -367,17 +371,20 @@ fn opencode_tui_integration_is_valid(plugin_path: &Path) -> io::Result<bool> {
         .join("tui.js");
     let v2_plugin_current =
         file_matches_asset(&v2_plugin_path, super::OPENCODE_V2_TUI_PLUGIN_ASSET)?;
-    Ok(tui_plugin_current
-        && v2_plugin_current
-        && super::opencode_config::tui_plugin_is_configured(
+    if !tui_plugin_current || !v2_plugin_current {
+        return Ok(false);
+    }
+    if !super::opencode_config::tui_plugin_is_configured(
+        config_dir,
+        super::OPENCODE_TUI_PLUGIN_SPEC,
+    )? {
+        return Ok(false);
+    }
+    Ok(!cli_config_exists
+        || super::opencode_config::cli_plugin_is_configured(
             config_dir,
-            super::OPENCODE_TUI_PLUGIN_SPEC,
-        )
-        && (!cli_config_exists
-            || super::opencode_config::cli_plugin_is_configured(
-                config_dir,
-                super::OPENCODE_V2_TUI_PLUGIN_SPEC,
-            )))
+            super::OPENCODE_V2_TUI_PLUGIN_SPEC,
+        )?)
 }
 
 /// `levels` directories up from `path` (1 is the parent).
@@ -477,8 +484,27 @@ fn json_event_has_command(
     }
 }
 
-fn read_json(path: &Path) -> Option<serde_json::Value> {
-    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+fn read_config_content(path: &Path) -> io::Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("cannot read {}: {error}", path.display()),
+        )),
+    }
+}
+
+fn read_json(path: &Path) -> io::Result<Option<serde_json::Value>> {
+    let Some(content) = read_config_content(path)? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&content).map(Some).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot parse {}: {error}", path.display()),
+        )
+    })
 }
 
 /// Every `(event, command)` pair appears in the command field used by that
@@ -488,53 +514,68 @@ fn json_hook_commands_registered(
     root: HooksRoot,
     expected: &[(&str, String)],
     shape: &JsonHookShape,
-) -> bool {
-    let Some(document) = read_json(config_path) else {
-        return false;
+) -> io::Result<bool> {
+    let Some(document) = read_json(config_path)? else {
+        return Ok(false);
     };
     let events = match root {
         HooksRoot::HooksKey => document.get("hooks"),
         HooksRoot::Document => Some(&document),
     };
     let Some(events) = events.and_then(serde_json::Value::as_object) else {
-        return false;
+        return Ok(false);
     };
-    expected.iter().all(|(event, command)| {
+    Ok(expected.iter().all(|(event, command)| {
         events
             .get(*event)
             .is_some_and(|entries| json_event_has_command(entries, command, shape))
+    }))
+}
+
+fn read_toml(path: &Path) -> io::Result<Option<toml::Value>> {
+    let Some(content) = read_config_content(path)? else {
+        return Ok(None);
+    };
+    toml::from_str(&content).map(Some).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot parse {}: {error}", path.display()),
+        )
     })
 }
 
-fn read_toml(path: &Path) -> Option<toml::Value> {
-    toml::from_str(&fs::read_to_string(path).ok()?).ok()
+fn codex_hooks_feature_enabled(config_path: &Path) -> io::Result<bool> {
+    let feature_enabled = read_toml(config_path)?.and_then(|config| {
+        config
+            .get("features")
+            .and_then(|features| features.get("hooks"))
+            .and_then(toml::Value::as_bool)
+    });
+    Ok(feature_enabled == Some(true))
 }
 
-fn codex_hooks_feature_enabled(config_path: &Path) -> bool {
-    read_toml(config_path).and_then(|config| config.get("features")?.get("hooks")?.as_bool())
-        == Some(true)
-}
-
-fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> bool {
-    let Some(config) = read_toml(config_path) else {
-        return false;
+fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> io::Result<bool> {
+    let Some(config) = read_toml(config_path)? else {
+        return Ok(false);
     };
     let Some(entries) = config.get("hooks").and_then(toml::Value::as_array) else {
-        return false;
+        return Ok(false);
     };
-    integration_hook_events(crate::agent::IntegrationTarget::Kimi)
-        .iter()
-        .all(|hook| {
-            hook.action.is_some_and(|action| {
-                let command = hook_command(hook_path, Some(action.as_str()));
-                entries.iter().any(|entry| {
-                    entry.get("event").and_then(toml::Value::as_str) == Some(hook.event)
-                        && entry.get("command").and_then(toml::Value::as_str)
-                            == Some(command.as_str())
-                        && entry.get("matcher").and_then(toml::Value::as_str) == hook.matcher
+    Ok(
+        integration_hook_events(crate::agent::IntegrationTarget::Kimi)
+            .iter()
+            .all(|hook| {
+                hook.action.is_some_and(|action| {
+                    let command = hook_command(hook_path, Some(action.as_str()));
+                    entries.iter().any(|entry| {
+                        entry.get("event").and_then(toml::Value::as_str) == Some(hook.event)
+                            && entry.get("command").and_then(toml::Value::as_str)
+                                == Some(command.as_str())
+                            && entry.get("matcher").and_then(toml::Value::as_str) == hook.matcher
+                    })
                 })
-            })
-        })
+            }),
+    )
 }
 
 /// Convert an agent's hook events into the commands its integration registers.
@@ -575,17 +616,17 @@ fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io:
     };
     let registered = match spec.registration {
         RegistrationCheck::DirectoryLoaded => true,
-        RegistrationCheck::Grok => grok_hook_config_is_valid(hook_path),
+        RegistrationCheck::Grok => grok_hook_config_is_valid(hook_path)?,
         RegistrationCheck::Opencode => return opencode_tui_integration_is_valid(hook_path),
-        RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path),
+        RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path)?,
         RegistrationCheck::AntigravityCli => {
             let expected_block = super::targets::antigravity_cli_hook_block(hook_path)?;
-            read_json(&config(0)?).is_some_and(|document| {
+            read_json(&config(0)?)?.is_some_and(|document| {
                 document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME) == Some(&expected_block)
             })
         }
         RegistrationCheck::Codex => {
-            json_hook_commands_registered(
+            let hook_commands_registered = json_hook_commands_registered(
                 &config(0)?,
                 HooksRoot::HooksKey,
                 &hook_event_commands(hook_path, spec.target.hook_events()),
@@ -593,7 +634,9 @@ fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io:
                     matcher: None,
                     timeout_seconds: hook_timeout_seconds(spec)?,
                 },
-            ) && codex_hooks_feature_enabled(&config(1)?)
+            )?;
+            let hooks_feature_enabled = codex_hooks_feature_enabled(&config(1)?)?;
+            hook_commands_registered && hooks_feature_enabled
         }
         RegistrationCheck::Json { root, shape } => {
             let expected = match shape {
@@ -632,7 +675,7 @@ fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io:
                 },
                 JsonShape::Simple => JsonHookShape::Simple,
             };
-            json_hook_commands_registered(&config(0)?, root, &expected, &shape)
+            json_hook_commands_registered(&config(0)?, root, &expected, &shape)?
         }
     };
     Ok(registered)
@@ -710,11 +753,10 @@ fn integration_state_for_path(
     Ok((state, installed_version))
 }
 
-/// The status of the integration installed at `path`. A stat error on the
-/// installed file (or on a file its validity depends on) is returned, not
-/// reported as `NotInstalled`. A current hook file whose registration in the
-/// agent's own config is missing or drifted reads `Outdated`, so the next
-/// install repairs it.
+/// The status of the integration installed at `path`. A stat or read error on
+/// its asset, or a stat, read or parse error on its registration config, is
+/// returned. A missing registration reads `Outdated`, so the next install
+/// repairs it.
 pub(crate) fn integration_status_at(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
@@ -871,6 +913,37 @@ mod registration_tests {
         );
     }
 
+    #[test]
+    fn config_status_readers_distinguish_missing_files_from_errors() {
+        let dir = base("config-status-readers");
+        let json_path = dir.join("settings.json");
+        let toml_path = dir.join("config.toml");
+
+        assert!(
+            read_json(&json_path)
+                .expect("missing JSON config")
+                .is_none()
+        );
+        assert!(
+            read_toml(&toml_path)
+                .expect("missing TOML config")
+                .is_none()
+        );
+
+        fs::write(&json_path, "{ invalid json").expect("test precondition");
+        let error = read_json(&json_path).expect_err("invalid JSON must be reported");
+        assert!(error.to_string().contains("cannot parse"));
+
+        fs::write(&toml_path, "[broken\n").expect("test precondition");
+        let error = read_toml(&toml_path).expect_err("invalid TOML must be reported");
+        assert!(error.to_string().contains("cannot parse"));
+
+        fs::remove_file(&json_path).expect("test precondition");
+        fs::create_dir(&json_path).expect("test precondition");
+        let error = read_json(&json_path).expect_err("JSON read failure must be reported");
+        assert!(error.to_string().contains("cannot read"));
+    }
+
     fn base(name: &str) -> PathBuf {
         shepr_test_support::ScratchDir::new(name).to_path_buf()
     }
@@ -920,10 +993,15 @@ mod registration_tests {
             IntegrationStatusKind::Outdated
         );
         fs::write(&settings_path, "{ not json").expect("test precondition");
-        assert_eq!(
-            state(IntegrationTarget::Claude, &hook),
-            IntegrationStatusKind::Outdated
-        );
+        let error = integration_status_at(IntegrationTarget::Claude, hook.clone())
+            .expect_err("invalid config must be reported");
+        assert!(error.to_string().contains("cannot parse"));
+
+        fs::remove_file(&settings_path).expect("test precondition");
+        fs::create_dir(&settings_path).expect("test precondition");
+        let error = integration_status_at(IntegrationTarget::Claude, hook)
+            .expect_err("config read failure must be reported");
+        assert!(error.to_string().contains("cannot read"));
     }
 
     #[test]
@@ -1203,7 +1281,9 @@ mod registration_tests {
             // Apply `edit` to every event entry that carries this hook.
             let edit_entries = |edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
                 let hook = status().path.display().to_string();
-                let mut document = read_json(&config_path).expect("test precondition");
+                let mut document = read_json(&config_path)
+                    .expect("read config")
+                    .expect("config exists");
                 let events = match root {
                     HooksRoot::HooksKey => document.get_mut("hooks"),
                     HooksRoot::Document => Some(&mut document),

@@ -484,15 +484,24 @@ fn establish(
     generation: u64,
     deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    let (ssh_bridge, mismatch_guidance) = match link {
-        EndpointLink::Local { mismatch_guidance } => (None, Some(mismatch_guidance)),
-        EndpointLink::Ssh(bridge) => (Some(bridge), None),
+    let (ssh_bridge, mismatch_guidance, link_kind) = match link {
+        EndpointLink::Local { mismatch_guidance } => (
+            None,
+            Some(mismatch_guidance),
+            crate::handshake::HandshakeLinkKind::Local,
+        ),
+        EndpointLink::Ssh(bridge) => (
+            Some(bridge),
+            None,
+            crate::handshake::HandshakeLinkKind::Remote,
+        ),
     };
-    super::super::do_handshake(
+    crate::handshake::do_handshake_for_link(
         &mut stream,
         options.geometry,
         options.mouse_capture,
         false,
+        link_kind,
         Some(deadline),
     )
     .map_err(|error| {

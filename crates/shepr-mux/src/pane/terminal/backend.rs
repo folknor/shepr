@@ -959,16 +959,20 @@ impl PaneTerminal {
         {
             return TerminalDirtyPatchOutcome::Fallback;
         }
-        if let Some(hook) = core.dirty_collection_hook.take() {
-            hook();
-        }
         let collection = terminal_collect_dirty_patch(&mut core, area_width, area_height);
         let fallback_reason = collection.fallback_reason;
         let outcome = collection.outcome;
-        drop(core);
-        if let Some(reason) = fallback_reason {
-            self.report_dirty_patch_fallback(reason);
+        if matches!(outcome, TerminalDirtyPatchOutcome::Fallback) {
+            drop(core);
+            if let Some(reason) = fallback_reason {
+                self.report_dirty_patch_fallback(reason);
+            }
+            return outcome;
         }
+        if let Some(hook) = core.dirty_collection_hook.take() {
+            hook();
+        }
+        drop(core);
         outcome
     }
 }
@@ -994,22 +998,6 @@ impl PaneTerminal {
             .is_ok_and(|core| core.transient_default_color_owner_pgid.is_some())
     }
 
-    /// The active screen, its width and, on the alternate screen only, its
-    /// rows as owned text. On the primary screen the retained rows are the
-    /// whole scrollback, so the rows come back empty there rather than being
-    /// copied cell by cell under the core lock.
-    pub(crate) fn screen_text_snapshot(
-        &self,
-    ) -> Option<(shepr_vt::ActiveScreen, u16, Vec<shepr_vt::ScreenTextRow>)> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        let screen = core.terminal.active_screen();
-        let rows = match screen {
-            shepr_vt::ActiveScreen::Alternate => core.terminal.screen_text_rows(),
-            shepr_vt::ActiveScreen::Primary => Vec::new(),
-        };
-        Some((screen, core.terminal.cols(), rows))
-    }
-
     pub(crate) fn visible_text(&self) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .map_or_default(|mut core| terminal_visible_text(&mut core))
@@ -1032,7 +1020,7 @@ impl PaneTerminal {
     pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, false).ok())
+            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
@@ -1046,7 +1034,7 @@ impl PaneTerminal {
     pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines, true).ok())
+            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
@@ -1135,10 +1123,7 @@ mod tests {
         let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
         {
             let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("terminal core");
-            core.terminal
-                .mode_set(shepr_vt::DecMode::InBandResize, true)
-                .expect("mode set");
-            core.terminal.write(b"\x1b[5n");
+            core.terminal.write(b"\x1b[?2048h\x1b[5n");
         }
 
         let replies = pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));

@@ -16,8 +16,22 @@ impl App {
         else {
             return Handled::done();
         };
-        self.state.focus_pane_in_workspace(ws_idx, target_pane_id);
-        Handled::navigating(EndpointReply::Done, params.pane_id.workspace_id().clone())
+        let focus_changed = self.state.focus_pane_in_workspace(ws_idx, target_pane_id);
+        let effects = if focus_changed {
+            EndpointEffects {
+                shell_projection_changed: true,
+                pane_surface_changed: true,
+                focus_changed: true,
+                ..EndpointEffects::default()
+            }
+        } else {
+            EndpointEffects::default()
+        };
+        Handled::navigating_with_effects(
+            EndpointReply::Done,
+            params.pane_id.workspace_id().clone(),
+            effects,
+        )
     }
 
     pub(crate) fn handle_pane_resize(&mut self, params: &PaneResizeParams) -> HandlerResult {
@@ -38,7 +52,15 @@ impl App {
         if changed {
             self.schedule_session_save();
         }
-        Handled::done()
+        Handled::done_with_effects(if changed {
+            EndpointEffects {
+                pane_surface_changed: true,
+                layout_changed: true,
+                ..EndpointEffects::default()
+            }
+        } else {
+            EndpointEffects::default()
+        })
     }
 
     /// Swaps two panes of one workspace, named by a direction from a pane or by
@@ -71,14 +93,26 @@ impl App {
         let Some(workspace) = self.state.workspaces.get_mut(ws_idx) else {
             return Handled::done();
         };
+        let focus_before = workspace.focused_pane_id();
         if !workspace.swap_panes(source_pane_id, target_pane_id) {
             return Handled::done();
         }
         workspace.focus_pane(source_pane_id);
+        let focus_changed = workspace.focused_pane_id() != focus_before;
         let workspace_id = workspace.id.clone();
         self.state.mark_session_dirty();
         self.schedule_session_save();
-        Handled::navigating(EndpointReply::Done, workspace_id)
+        Handled::navigating_with_effects(
+            EndpointReply::Done,
+            workspace_id,
+            EndpointEffects {
+                shell_projection_changed: true,
+                pane_surface_changed: true,
+                focus_changed,
+                layout_changed: true,
+                ..EndpointEffects::default()
+            },
+        )
     }
 
     /// Toggles the zoom of the pane's workspace, focusing the pane first, and
@@ -89,11 +123,21 @@ impl App {
         let Some(outcome) = self.state.toggle_pane_zoom(ws_idx, pane_id) else {
             // toggle_pane_zoom returns None only when the pane is absent. Its
             // one-pane zoom no-op is handled before set_zoomed can refuse it.
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
         if outcome.changed || outcome.focus_changed {
             self.schedule_session_save();
         }
-        Handled::navigating(EndpointReply::Done, params.pane_id.workspace_id().clone())
+        Handled::navigating_with_effects(
+            EndpointReply::Done,
+            params.pane_id.workspace_id().clone(),
+            EndpointEffects {
+                shell_projection_changed: outcome.focus_changed,
+                pane_surface_changed: outcome.changed || outcome.focus_changed,
+                focus_changed: outcome.focus_changed,
+                layout_changed: outcome.changed,
+                ..EndpointEffects::default()
+            },
+        )
     }
 }

@@ -20,8 +20,8 @@ pub struct ClientStatusJson {
     pub build_id: Option<String>,
     pub binary: Option<String>,
     /// The `shepr-server` installed beside this client, as that host resolved
-    /// it. `None` from a client that predates the field, which discovery treats
-    /// as an installation without a usable server.
+    /// it. This JSON is read across builds during remote discovery; an absent
+    /// or null value is treated as an installation without a usable server.
     pub server: Option<SiblingServerJson>,
 }
 

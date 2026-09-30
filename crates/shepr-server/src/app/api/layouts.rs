@@ -1,7 +1,7 @@
 use crate::app::App;
 use shepr_protocol::command::LayoutSetSplitRatioParams;
 
-use super::endpoint::{Handled, HandlerResult, rejected};
+use super::endpoint::{EndpointEffects, Handled, HandlerResult, rejected};
 
 impl App {
     /// Sets one split's ratio. Moves nobody: a client changing the layout of a
@@ -14,31 +14,42 @@ impl App {
             return rejected("ratio must be finite");
         }
         let ws_idx = self.endpoint_workspace(&params.workspace_id)?;
-
-        // A split path is spelled as booleans: `true` descends into the second
-        // branch.
-        let path = params
-            .path
-            .iter()
-            .map(|&second| {
-                if second {
-                    shepr_core::geometry::SplitBranch::Second
-                } else {
-                    shepr_core::geometry::SplitBranch::First
-                }
-            })
-            .collect::<Vec<_>>();
-        let changed = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .is_some_and(|ws| ws.set_split_ratio_at(&path, params.ratio));
-        if !changed {
+        let area = shepr_mux::workspace::layout_rect(self.state.workspace_layout_area(ws_idx));
+        let Some(current_ratio) = self.state.workspaces.get(ws_idx).and_then(|workspace| {
+            workspace
+                .layout()
+                .splits(area)
+                .into_iter()
+                .find(|split| split.path == params.path)
+                .map(|split| split.ratio)
+        }) else {
             return rejected("split path not found");
+        };
+        let next_ratio = shepr_core::layout::SplitRatio::clamped(params.ratio).get();
+        // Both sides went through the same clamp, so a repeat of the stored
+        // ratio is bit-for-bit equal.
+        let changed = current_ratio.to_bits() != next_ratio.to_bits();
+        if changed {
+            let set = self
+                .state
+                .workspaces
+                .get_mut(ws_idx)
+                .is_some_and(|workspace| workspace.set_split_ratio_at(&params.path, params.ratio));
+            if !set {
+                return rejected("split path not found");
+            }
+            self.schedule_session_save();
         }
-
-        self.schedule_session_save();
-        Handled::done()
+        let effects = if changed {
+            EndpointEffects {
+                pane_surface_changed: true,
+                layout_changed: true,
+                ..EndpointEffects::default()
+            }
+        } else {
+            EndpointEffects::default()
+        };
+        Handled::done_with_effects(effects)
     }
 }
 
@@ -92,14 +103,21 @@ mod tests {
     fn layout_set_split_ratio_rejects_missing_split_and_bad_ratios() {
         let mut app = app_with_workspace();
 
+        let missing_params = params(&app, 0.72);
+        let missing = app
+            .handle_layout_set_split_ratio(&missing_params)
+            .expect_err("a one-pane workspace has no split");
         assert_eq!(
-            app.handle_layout_set_split_ratio(&params(&app, 0.72)),
-            Err(EndpointError::Rejected("split path not found".into())),
-            "a one-pane workspace has no split"
+            missing.error,
+            EndpointError::Rejected("split path not found".into())
         );
+        let bad_ratio_params = params(&app, f32::NAN);
+        let bad_ratio = app
+            .handle_layout_set_split_ratio(&bad_ratio_params)
+            .expect_err("a non-finite ratio is refused");
         assert_eq!(
-            app.handle_layout_set_split_ratio(&params(&app, f32::NAN)),
-            Err(EndpointError::Rejected("ratio must be finite".into()))
+            bad_ratio.error,
+            EndpointError::Rejected("ratio must be finite".into())
         );
     }
 }

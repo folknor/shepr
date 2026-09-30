@@ -9,10 +9,14 @@ impl App {
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_missing(&target.pane_id));
+            return Err(pane_missing(&target.pane_id).into());
         };
+        let content_before = runtime.content_seq();
         match runtime.clear_screen() {
-            Ok(()) => Handled::done(),
+            Ok(()) => Handled::done_with_effects(EndpointEffects {
+                pane_surface_changed: runtime.content_seq() != content_before,
+                ..EndpointEffects::default()
+            }),
             Err(shepr_mux::pane::PaneClearError::AlternateScreenActive) => {
                 rejected("the pane is on the alternate screen")
             }
@@ -26,17 +30,33 @@ impl App {
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
+        let scroll_before = runtime.scroll_metrics();
         runtime.set_scroll_offset_from_bottom(
             usize::try_from(params.offset_from_bottom).unwrap_or(usize::MAX),
         );
+        let scroll_changed = scroll_before
+            .zip(runtime.scroll_metrics())
+            .is_some_and(|(before, after)| before.offset_from_bottom != after.offset_from_bottom);
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(HandlerError {
+                error: pane_missing(&params.pane_id),
+                effects: EndpointEffects {
+                    pane_surface_changed: scroll_changed,
+                    ..EndpointEffects::default()
+                },
+            });
         };
-        Handled::reply(EndpointReply::PaneInfo {
-            pane: Box::new(pane),
-        })
+        Handled::reply_with_effects(
+            EndpointReply::PaneInfo {
+                pane: Box::new(pane),
+            },
+            EndpointEffects {
+                pane_surface_changed: scroll_changed,
+                ..EndpointEffects::default()
+            },
+        )
     }
 
     pub(crate) fn pane_selection_text(
@@ -56,7 +76,9 @@ impl App {
             shepr_vt::Point::new(params.cursor.row, params.cursor.col),
         );
         let Some(text) = runtime.extract_selection(&selection) else {
-            return rejected("selection text is unavailable");
+            return Err(EndpointError::Rejected(
+                "selection text is unavailable".to_owned(),
+            ));
         };
         Ok(text)
     }
@@ -81,7 +103,7 @@ impl App {
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
         let target = match params.motion {
             PaneCopyMotion::Line(motion) => {
@@ -156,7 +178,7 @@ impl App {
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_missing(&params.pane_id));
+            return Err(pane_missing(&params.pane_id).into());
         };
         if params.query.len() > MAX_QUERY_BYTES {
             return rejected("copy search query is too large");

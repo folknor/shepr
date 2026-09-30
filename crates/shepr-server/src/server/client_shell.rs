@@ -1,6 +1,8 @@
 use ratatui::layout::Rect;
+use std::sync::Arc;
 
 use crate::app;
+use crate::server::clients::ClientPaneIdentity;
 use shepr_protocol::FrameData;
 
 pub(super) fn snapshot(
@@ -9,21 +11,23 @@ pub(super) fn snapshot(
     revision: u64,
     location: &crate::server::clients::ClientShellLocation,
 ) -> shepr_protocol::ClientShellSnapshot {
-    snapshot_from_session(app, app.session_snapshot(), boot_id, revision, location)
+    snapshot_from_session(app, &app.session_snapshot(), boot_id, revision, location)
 }
 
 /// Projects an already built `app.session_snapshot()` for one shell
 /// client.
 ///
 /// The session snapshot underneath is cached by the headless server and shared
-/// across clients. Rendering re-projects it when the shared generation moves,
-/// this client's location generation moves, or its snapshot is missing. The
-/// shared generation advances after an application revision or when the cwd
-/// timer finds a changed projection; a location change invalidates only the
-/// client that moved.
+/// across clients. Borrowing it avoids cloning its source vectors before
+/// building the owned client snapshot; fields carried onto the wire still need
+/// their own owned values. Rendering re-projects it when the shared generation
+/// moves, this client's location generation moves, or its snapshot is
+/// missing. The shared generation advances after an application revision or
+/// when the cwd timer finds a changed projection; a location change invalidates
+/// only the client that moved.
 pub(super) fn snapshot_from_session(
     app: &app::App,
-    snapshot: crate::app::SessionSnapshot,
+    snapshot: &crate::app::SessionSnapshot,
     boot_id: &shepr_protocol::BootId,
     revision: u64,
     location: &crate::server::clients::ClientShellLocation,
@@ -48,17 +52,17 @@ pub(super) fn snapshot_from_session(
     // lookup only runs when it does not match.
     let workspaces = snapshot
         .workspaces
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(position, workspace)| {
-            let workspace_id = workspace.workspace_id;
+            let workspace_id = &workspace.workspace_id;
             let workspace_index = app
                 .state
                 .workspaces
                 .get(position)
-                .is_some_and(|state| state.id == workspace_id)
+                .is_some_and(|state| &state.id == workspace_id)
                 .then_some(position)
-                .or_else(|| app.resolve_workspace_id(&workspace_id));
+                .or_else(|| app.resolve_workspace_id(workspace_id));
             let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
             let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
                 app.resolved_new_workspace_cwd(workspace_index)
@@ -66,11 +70,11 @@ pub(super) fn snapshot_from_session(
                     .to_string()
             });
             shepr_protocol::ClientShellWorkspace {
-                focused: focused_workspace_id.as_ref() == Some(&workspace_id),
-                workspace_id,
+                focused: focused_workspace_id.as_ref() == Some(workspace_id),
+                workspace_id: workspace_id.clone(),
                 new_workspace_cwd,
                 number: workspace.number,
-                label: workspace.label,
+                label: workspace.label.clone(),
                 custom_label: state.is_some_and(|state| state.custom_name.is_some()),
                 branch: state.and_then(shepr_mux::workspace::Workspace::branch),
                 git_ahead_behind: state
@@ -82,12 +86,11 @@ pub(super) fn snapshot_from_session(
         .collect();
     let panes = snapshot
         .panes
-        .into_iter()
+        .iter()
         .map(|pane| {
-            let pane_id = pane.pane_id;
-            let focused = focused_pane_id.as_ref() == Some(&pane_id);
+            let focused = focused_pane_id.as_ref() == Some(&pane.pane_id);
             let right_click_passthrough = app
-                .resolve_pane_id(&pane_id)
+                .resolve_pane_id(&pane.pane_id)
                 .and_then(|(workspace_index, pane_id)| {
                     app.state
                         .workspaces
@@ -96,11 +99,11 @@ pub(super) fn snapshot_from_session(
                 })
                 .is_some_and(|pane| pane.right_click_passthrough);
             shepr_protocol::ClientShellPane {
-                pane_id,
-                workspace_id: pane.workspace_id,
-                label: pane.label,
-                cwd: pane.cwd,
-                foreground_cwd: pane.foreground_cwd,
+                pane_id: pane.pane_id.clone(),
+                workspace_id: pane.workspace_id.clone(),
+                label: pane.label.clone(),
+                cwd: pane.cwd.clone(),
+                foreground_cwd: pane.foreground_cwd.clone(),
                 focused,
                 right_click_passthrough,
             }
@@ -108,15 +111,15 @@ pub(super) fn snapshot_from_session(
         .collect();
     let agents = snapshot
         .agents
-        .into_iter()
+        .iter()
         .map(|agent| {
             let focused = focused_pane_id.as_ref() == Some(&agent.pane_id);
             shepr_protocol::ClientShellAgent {
-                pane_id: agent.pane_id,
-                workspace_id: agent.workspace_id,
-                agent: agent.agent,
-                terminal_title: agent.terminal_title,
-                terminal_title_stripped: agent.terminal_title_stripped,
+                pane_id: agent.pane_id.clone(),
+                workspace_id: agent.workspace_id.clone(),
+                agent: agent.agent.clone(),
+                terminal_title: agent.terminal_title.clone(),
+                terminal_title_stripped: agent.terminal_title_stripped.clone(),
                 agent_status: agent.agent_status,
                 state_change_seq: agent.state_change_seq,
                 focused,
@@ -135,13 +138,19 @@ pub(super) fn snapshot_from_session(
     }
 }
 
+#[derive(Clone)]
 pub(super) struct RenderedPaneSurface {
-    pub(super) frame: FrameData,
+    /// Shared by clients with the same workspace and geometry during one
+    /// render pass. Each wire surface takes an owned frame at the boundary.
+    pub(super) frame: Arc<FrameData>,
     pub(super) panes: Vec<shepr_protocol::PaneSurfacePane>,
     pub(super) splits: Vec<shepr_protocol::PaneSurfaceSplit>,
+    /// Typed identities aligned with `panes` and retained beside each client's
+    /// committed wire baseline for later render paths.
+    pub(super) pane_identities: Vec<ClientPaneIdentity>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum SurfaceRenderDeferred {
     Synchronized,
     Changed,
@@ -186,69 +195,73 @@ pub(super) fn render_pane_surface(
         layout,
         area,
     );
-    let panes = target
-        .and_then(|target| app.state.workspace_index(target))
-        .map_or_default(|workspace_index| {
-            layout
-                .pane_infos
-                .iter()
-                .filter_map(|pane| {
-                    app.public_pane_id(workspace_index, pane.id).map(|pane_id| {
-                        let runtime = app.state.runtime_for_pane_in_workspace(
-                            &app.terminal_runtimes,
-                            workspace_index,
-                            pane.id,
-                        );
-                        let mouse_reporting = runtime
-                            .is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
-                        let sgr_pixel_mouse = runtime
-                            .is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
-                        let (pixel_width, pixel_height) = if cell_size.is_known() {
-                            (
-                                u32::from(pane.inner_rect.width) * cell_size.width_px,
-                                u32::from(pane.inner_rect.height) * cell_size.height_px,
-                            )
-                        } else {
-                            (0, 0)
-                        };
-                        let content_revision = runtime.map_or(0, |runtime| {
-                            let after = runtime.content_seq();
-                            if content_revisions_before
-                                .get(&pane.id)
-                                .is_some_and(|&(_, before)| before == after)
-                                && after.is_multiple_of(2)
-                            {
-                                after
-                            } else {
-                                after | 1
-                            }
-                        });
-                        shepr_protocol::PaneSurfacePane {
-                            pane_id,
-                            content_revision,
-                            rect: pane.rect.into(),
-                            inner_rect: pane.inner_rect.into(),
-                            scrollbar_rect: pane.scrollbar_rect.map(Into::into),
-                            scroll: runtime
-                                .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
-                                .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
-                                    offset_from_bottom: metrics.offset_from_bottom as u64,
-                                    max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
-                                    viewport_rows: metrics.viewport_rows as u64,
-                                    history_origin: metrics.history_origin,
-                                }),
-                            focused: pane.is_focused,
-                            mouse_reporting,
-                            sgr_pixel_mouse,
-                            alternate_screen_active: runtime
-                                .is_some_and(shepr_mux::pane::PaneRuntime::alternate_screen_active),
-                            pixel_width,
-                            pixel_height,
-                        }
-                    })
-                })
-                .collect()
-        });
+    let mut panes = Vec::new();
+    let mut pane_identities = Vec::new();
+    if let Some(workspace_index) = target.and_then(|target| app.state.workspace_index(target)) {
+        let Some(workspace_id) = app.public_workspace_id(workspace_index) else {
+            return Err(SurfaceRenderDeferred::Changed);
+        };
+        for pane in &layout.pane_infos {
+            let Some(pane_id) = app.public_pane_id(workspace_index, pane.id) else {
+                continue;
+            };
+            let runtime = app.state.runtime_for_pane_in_workspace(
+                &app.terminal_runtimes,
+                workspace_index,
+                pane.id,
+            );
+            let mouse_reporting =
+                runtime.is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
+            let sgr_pixel_mouse =
+                runtime.is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
+            let (pixel_width, pixel_height) = if cell_size.is_known() {
+                (
+                    u32::from(pane.inner_rect.width) * cell_size.width_px,
+                    u32::from(pane.inner_rect.height) * cell_size.height_px,
+                )
+            } else {
+                (0, 0)
+            };
+            let content_revision = runtime.map_or(0, |runtime| {
+                let after = runtime.content_seq();
+                if content_revisions_before
+                    .get(&pane.id)
+                    .is_some_and(|&(_, before)| before == after)
+                    && after.is_multiple_of(2)
+                {
+                    after
+                } else {
+                    after | 1
+                }
+            });
+            panes.push(shepr_protocol::PaneSurfacePane {
+                pane_id,
+                content_revision,
+                rect: pane.rect.into(),
+                inner_rect: pane.inner_rect.into(),
+                scrollbar_rect: pane.scrollbar_rect.map(Into::into),
+                scroll: runtime
+                    .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
+                    .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
+                        offset_from_bottom: metrics.offset_from_bottom as u64,
+                        max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
+                        viewport_rows: metrics.viewport_rows as u64,
+                        history_origin: metrics.history_origin,
+                    }),
+                focused: pane.is_focused,
+                mouse_reporting,
+                sgr_pixel_mouse,
+                alternate_screen_active: runtime
+                    .is_some_and(shepr_mux::pane::PaneRuntime::alternate_screen_active),
+                pixel_width,
+                pixel_height,
+            });
+            pane_identities.push(ClientPaneIdentity {
+                workspace_id: workspace_id.clone(),
+                pane_id: pane.id,
+            });
+        }
+    }
     let pane_frames = layout
         .pane_infos
         .iter()
@@ -296,9 +309,10 @@ pub(super) fn render_pane_surface(
         }
     }
     Ok(RenderedPaneSurface {
-        frame,
+        frame: Arc::new(frame),
         panes,
         splits,
+        pane_identities,
     })
 }
 

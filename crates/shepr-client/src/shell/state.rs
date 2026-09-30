@@ -1010,6 +1010,8 @@ impl ClientShellState {
             self.word_selection_gesture = None;
             self.last_pane_click = None;
         }
+        // Snapshot reconciliation only enters or leaves Copy mode. Report-all is requested by
+        // Prefix and Navigate, which this projection update does not change.
         if let Some(copy_pane_id) = self
             .copy_mode
             .as_ref()
@@ -1329,6 +1331,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {
+        // The fallback also drives ClientLoop health checks and due reconnect attempts. Their
+        // deadlines live in endpoint modules, so extending the sleep to a shell-only deadline
+        // could delay those services until the shell deadline expires.
         let default = crate::limits::MAX_CLIENT_TIMER_DELAY;
         self.selection_autoscroll_deadline
             .into_iter()

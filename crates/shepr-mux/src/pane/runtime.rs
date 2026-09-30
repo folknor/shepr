@@ -1577,13 +1577,10 @@ impl PaneRuntime {
         area_width: u16,
         area_height: u16,
     ) -> Option<TerminalDirtyPatchSnapshot> {
-        // PTY/resize writers announce changes before locking the terminal core.
-        // Exclude them until rows and metadata have been paired with their revision.
+        // The guard waits for announced writes to finish and excludes new ones,
+        // so the revision and the terminal metadata remain paired throughout.
         let _content_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
         let revision = self.content_seq();
-        if !revision.is_multiple_of(2) {
-            return None;
-        }
         let patch = self.terminal.collect_dirty_patch(area_width, area_height);
         if matches!(patch, TerminalDirtyPatchOutcome::Fallback) {
             return None;
@@ -1596,7 +1593,7 @@ impl PaneRuntime {
             sgr_pixel_mouse: self.sgr_pixel_mouse_enabled(),
             alternate_screen_active: self.alternate_screen_active(),
         };
-        (self.content_seq() == revision).then_some(snapshot)
+        Some(snapshot)
     }
 
     pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {
@@ -1640,16 +1637,15 @@ impl PaneRuntime {
         Bytes::from(payload)
     }
 
-    pub fn try_send_focus_event(&self, event: shepr_vt::FocusEvent) -> bool {
+    pub fn try_send_focus_event(&self, event: shepr_vt::FocusEvent) {
         if !self.focus_reporting_enabled() {
-            return false;
+            return;
         }
 
         let bytes = shepr_vt::encode_focus(event);
         if let Err(err) = self.try_send_bytes(Bytes::from_static(bytes)) {
             warn!(error = %err, ?event, "failed to forward pane focus event");
         }
-        true
     }
 
     pub fn wheel_routing(&self) -> Option<WheelRouting> {
@@ -2312,17 +2308,23 @@ mod tests {
         // The common close path: the pane's child has exited and been reaped,
         // but it left a job behind in its session that ignores SIGHUP and
         // SIGTERM, as a daemonised dev server might.
-        let mut cmd = PtyCommand::new(fixture::path());
-        cmd.args(fixture::args(&[
-            Step::Ignore(Signal::Hup),
-            Step::Ignore(Signal::Term),
-            Step::Spawn {
-                argv0: "dev-server".into(),
-                sleep: std::time::Duration::from_secs(30),
-                held: Held::All,
-            },
-            Step::Exit(0),
-        ]));
+        let scratch = crate::test_support::ScratchDir::new("pane-teardown-fixture");
+        let program = fixture::stand_in(
+            scratch.path(),
+            "shepr-fixture",
+            &[
+                Step::Ignore(Signal::Hup),
+                Step::Ignore(Signal::Term),
+                Step::Spawn {
+                    argv0: "dev-server".into(),
+                    sleep: std::time::Duration::from_secs(30),
+                    held: Held::All,
+                },
+                Step::Exit(0),
+            ],
+        );
+        let cmd =
+            PtyCommand::interactive_shell(program.to_str().expect("fixture path is UTF-8"), false);
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -2521,12 +2523,17 @@ mod tests {
     fn capture_terminal_identity(extra_env: &[(&str, &str)]) -> String {
         let scratch = crate::test_support::ScratchDir::new("pane-term");
         let output_path = scratch.join("output.txt");
-        let mut cmd = PtyCommand::new(fixture::path());
-        cmd.args(fixture::args(&[
-            Step::To(output_path.clone()),
-            Step::PrintEnv("TERM".into()),
-            Step::PrintEnv("COLORTERM".into()),
-        ]));
+        let process = fixture::stand_in(
+            scratch.path(),
+            "shepr-fixture",
+            &[
+                Step::To(output_path.clone()),
+                Step::PrintEnv("TERM".into()),
+                Step::PrintEnv("COLORTERM".into()),
+            ],
+        );
+        let mut cmd =
+            PtyCommand::interactive_shell(process.to_str().expect("fixture path is UTF-8"), false);
         cmd.cwd(scratch.path());
         cmd.env("TERM", "xterm-ghostty");
         cmd.env("COLORTERM", "falsecolor");
@@ -2562,17 +2569,6 @@ mod tests {
         let shell = shell.to_str().expect("scratch shell path is UTF-8");
         let mut cmd = pane_shell_command_builder(PaneShellConfig::new(shell, true));
         cmd.cwd(scratch.path());
-        assert!(cmd.is_login_shell());
-        let std_cmd = cmd.to_std_command().expect("test precondition");
-        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new(shell));
-        assert_eq!(std_cmd.get_args().count(), 0);
-        assert_eq!(
-            std_cmd
-                .get_envs()
-                .find(|(key, _)| *key == std::ffi::OsStr::new("SHELL"))
-                .and_then(|(_, value)| value),
-            Some(std::ffi::OsStr::new(shell))
-        );
 
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
@@ -2580,6 +2576,7 @@ mod tests {
         )
         .expect("spawn test shell");
         let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
+        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
         spawned
             .child
             .kill()
@@ -2595,50 +2592,101 @@ mod tests {
             std::ffi::OsStr::from_bytes(&command_line[..argv0_end]),
             std::ffi::OsStr::new("-shepr-login-shell")
         );
+        assert!(command_line[argv0_end + 1..].is_empty());
+        assert_eq!(
+            child_shell_environment(&shell_env.expect("read fixture environment")),
+            shell.as_bytes()
+        );
     }
 
     #[test]
     fn non_login_shell_builder_execs_configured_shell_without_login_argv0() {
-        let shell = fixture::path_str();
+        let scratch = crate::test_support::ScratchDir::new("pane-non-login-shell");
+        let shell = fixture::stand_in(
+            scratch.path(),
+            "fake-shell",
+            &[Step::Sleep(std::time::Duration::from_secs(30))],
+        );
+        let shell = shell.to_str().expect("scratch shell path is UTF-8");
         let cmd = pane_shell_command_builder(PaneShellConfig::new(shell, false));
-        assert!(!cmd.is_login_shell());
-        let std_cmd = cmd.to_std_command().expect("test precondition");
-        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new(shell));
-        assert_eq!(std_cmd.get_args().count(), 0);
+        let mut spawned = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+        )
+        .expect("spawn test shell");
+        let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
+        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
+        spawned
+            .child
+            .kill()
+            .expect("stop the sleeping shell fixture");
+        spawned.child.wait().expect("reap the shell fixture");
+        let command_line = command_line.expect("read the fixture command line");
+        let argv0_end = command_line
+            .iter()
+            .position(|byte| *byte == 0)
+            .expect("command line has an argv0 terminator");
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            std::ffi::OsStr::from_bytes(&command_line[..argv0_end]),
+            std::ffi::OsStr::new(shell)
+        );
+        assert!(command_line[argv0_end + 1..].is_empty());
+        assert_eq!(
+            child_shell_environment(&shell_env.expect("read fixture environment")),
+            shell.as_bytes()
+        );
     }
 
     #[test]
     fn pane_shell_spawn_rejects_a_missing_configured_shell() {
         let cmd =
             pane_shell_command_builder(PaneShellConfig::new("/__shepr_missing_shell__", true));
-        let err = cmd.to_std_command().expect_err("test precondition");
+        let err = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+        )
+        .err()
+        .expect("test precondition");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
     fn pane_shell_spawn_resolves_a_bare_name_on_the_child_path() {
         let bin = crate::test_support::ScratchDir::new("bin");
-        let shell = bin.join("fake-shell");
-        // Never run: resolution asks access(2) whether it could execute the
-        // file, without executing it.
-        std::fs::write(&shell, "content").expect("test precondition");
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
-                .expect("test precondition");
-        }
+        let shell = fixture::stand_in(
+            bin.path(),
+            "fake-shell",
+            &[Step::Sleep(std::time::Duration::from_secs(30))],
+        );
 
         let mut cmd = pane_shell_command_builder(PaneShellConfig::new("fake-shell", false));
         cmd.env("PATH", bin.as_os_str());
-        let std_cmd = cmd.to_std_command().expect("test precondition");
-        assert_eq!(std_cmd.get_program(), shell.as_os_str());
+        let mut spawned = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+        )
+        .expect("spawn executable selected through PATH");
+        let executable = std::fs::read_link(format!("/proc/{}/exe", spawned.child.id()));
+        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
+        spawned
+            .child
+            .kill()
+            .expect("stop the sleeping shell fixture");
+        spawned.child.wait().expect("reap the shell fixture");
+        assert_eq!(executable.expect("read resolved executable"), shell);
+        use std::os::unix::ffi::OsStrExt;
         assert_eq!(
-            std_cmd
-                .get_envs()
-                .find(|(key, _)| *key == std::ffi::OsStr::new("SHELL"))
-                .and_then(|(_, value)| value),
-            Some(shell.as_os_str())
+            child_shell_environment(&shell_env.expect("read fixture environment")),
+            shell.as_os_str().as_bytes()
         );
+    }
+
+    fn child_shell_environment(environment: &[u8]) -> &[u8] {
+        environment
+            .split(|byte| *byte == 0)
+            .find_map(|entry| entry.strip_prefix(b"SHELL="))
+            .expect("child environment contains SHELL")
     }
 
     #[test]
@@ -2705,9 +2753,7 @@ mod tests {
     async fn focus_events_are_forwarded_when_enabled() {
         let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
         let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
-        terminal
-            .mode_set(shepr_vt::DecMode::FocusEvents, true)
-            .expect("test precondition");
+        terminal.write(b"\x1b[?1004h");
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
@@ -2727,7 +2773,7 @@ mod tests {
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
-        assert!(runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained));
+        runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained);
         assert_eq!(
             rx.recv().await.expect("test precondition"),
             Bytes::from_static(b"\x1b[I")
@@ -2757,7 +2803,7 @@ mod tests {
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
-        assert!(!runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained));
+        runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
                 .await

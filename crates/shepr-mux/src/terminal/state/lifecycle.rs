@@ -1,44 +1,76 @@
 use super::*;
 
+pub(super) struct EffectiveAgent<'a> {
+    pub(super) label: Option<&'a str>,
+    pub(super) known_agent: Option<Agent>,
+    pub(super) state: AgentState,
+    pub(super) full_lifecycle_hook: bool,
+}
+
 impl TerminalState {
-    pub(super) fn hook_authority_is_effective(&self, authority: &HookAuthority) -> bool {
-        !shepr_agent::detect::full_lifecycle_hook_authority(
-            &authority.source,
-            &authority.agent_label,
-        ) || shepr_agent::detect::parse_agent_label(&authority.agent_label).is_none_or(|agent| {
-            self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
-        })
+    /// The arbitration table has three rows:
+    /// - a live full-lifecycle source supplies identity and state;
+    /// - other effective hooks supply identity and state, except that a newer
+    ///   visible blocker for the same agent supplies Blocked;
+    /// - without an effective hook, detection supplies identity and state.
+    ///
+    /// Process exits withdraw detector identity; suspension does not.
+    pub(super) fn effective_agent(&self) -> EffectiveAgent<'_> {
+        let hook = self.hook_authority.as_ref().and_then(|authority| {
+            let known = Agent::parse_canonical_label(&authority.agent_label);
+            let full = shepr_agent::detect::full_lifecycle_hook_authority(
+                &authority.source,
+                &authority.agent_label,
+            );
+            (!full || (known == self.detected_agent && self.recent_agent_process_exit.is_none()))
+                .then_some((authority, known, full))
+        });
+        match hook {
+            Some((authority, known_agent, full_lifecycle_hook)) => {
+                let visible_blocker = !full_lifecycle_hook
+                    && self.fallback_visible_blocker
+                    && self.fallback_not_older_than_hook()
+                    && known_agent == self.detected_agent
+                    && authority.state != AgentState::Blocked;
+                EffectiveAgent {
+                    label: Some(&authority.agent_label),
+                    known_agent,
+                    state: if visible_blocker {
+                        AgentState::Blocked
+                    } else {
+                        authority.state
+                    },
+                    full_lifecycle_hook,
+                }
+            }
+            None => {
+                let known_agent = self
+                    .recent_agent_process_exit
+                    .is_none()
+                    .then_some(self.detected_agent)
+                    .flatten();
+                EffectiveAgent {
+                    label: known_agent.map(Agent::label),
+                    known_agent,
+                    state: self.fallback_state,
+                    full_lifecycle_hook: false,
+                }
+            }
+        }
     }
 
     pub fn effective_agent_label(&self) -> Option<&str> {
-        self.hook_authority
-            .as_ref()
-            .filter(|authority| self.hook_authority_is_effective(authority))
-            .map(|authority| authority.agent_label.as_str())
-            .or_else(|| {
-                self.recent_agent_process_exit
-                    .is_none()
-                    .then(|| self.detected_agent.map(shepr_agent::detect::agent_label))
-                    .flatten()
-            })
+        self.effective_agent().label
     }
 
     pub fn effective_known_agent(&self) -> Option<Agent> {
-        self.effective_agent_label()
-            .and_then(shepr_agent::detect::parse_agent_label)
+        self.effective_agent().known_agent
     }
 
     pub fn unchanged_effective_state_change(&self) -> EffectiveStateChange {
-        let agent_label = self.effective_agent_label().map(str::to_string);
-        let known_agent = self.effective_known_agent();
-        let state = self.state;
         EffectiveStateChange {
-            previous_agent_label: agent_label.clone(),
-            previous_known_agent: known_agent,
-            previous_state: state,
-            agent_label,
-            known_agent,
-            state,
+            previous_state: self.state,
+            state: self.state,
         }
     }
 
@@ -46,26 +78,7 @@ impl TerminalState {
         self.live_full_lifecycle_hook_authority()
     }
 
-    pub(super) fn visible_blocker_overrides_hook(&self) -> bool {
-        if self.live_full_lifecycle_hook_authority() {
-            return false;
-        }
-        self.fallback_visible_blocker
-            && self.fallback_not_older_than_hook()
-            && self.hook_authority.as_ref().is_some_and(|authority| {
-                authority.state != AgentState::Blocked
-                    && shepr_agent::detect::parse_agent_label(&authority.agent_label)
-                        == self.detected_agent
-            })
-    }
-
     pub(super) fn live_full_lifecycle_hook_authority(&self) -> bool {
-        self.hook_authority.as_ref().is_some_and(|authority| {
-            self.hook_authority_is_effective(authority)
-                && shepr_agent::detect::full_lifecycle_hook_authority(
-                    &authority.source,
-                    &authority.agent_label,
-                )
-        })
+        self.effective_agent().full_lifecycle_hook
     }
 }

@@ -405,13 +405,27 @@ impl Workspace {
         self.custom_name = Some(name);
     }
 
+    /// App-side convenience for resolving the live workspace identity. This
+    /// may read the root pane's process cwd through its runtime; state reducers
+    /// should instead receive the observed cwd and call
+    /// `resolved_identity_cwd_from_root_pane`.
     pub fn resolved_identity_cwd_from(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
         terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
-        self.cwd_for_pane(self.root_pane, terminals, terminal_runtimes)
-            .or_else(|| Some(self.identity_cwd.clone()))
+        Some(self.resolved_identity_cwd_from_root_pane(self.cwd_for_pane(
+            self.root_pane,
+            terminals,
+            terminal_runtimes,
+        )))
+    }
+
+    /// Resolves the workspace identity from a root pane cwd already observed
+    /// by the App. This stays as data-only path selection so state reducers can
+    /// compare cwd snapshots without probing a pane runtime.
+    pub fn resolved_identity_cwd_from_root_pane(&self, root_pane_cwd: Option<PathBuf>) -> PathBuf {
+        root_pane_cwd.unwrap_or_else(|| self.identity_cwd.clone())
     }
 
     /// The workspace label: the custom name, else the automatic label cached
@@ -992,6 +1006,21 @@ mod tests {
         assert_eq!(
             ws.resolved_identity_cwd_from(&terminals, &terminal_runtimes),
             Some(PathBuf::from("/shepr-test/pion"))
+        );
+    }
+
+    #[test]
+    fn resolved_identity_cwd_from_root_pane_uses_observation_or_identity_fallback() {
+        let mut ws = Workspace::test_new("ignored");
+        ws.identity_cwd = PathBuf::from("/saved/workspace");
+
+        assert_eq!(
+            ws.resolved_identity_cwd_from_root_pane(Some(PathBuf::from("/live/pane"))),
+            PathBuf::from("/live/pane")
+        );
+        assert_eq!(
+            ws.resolved_identity_cwd_from_root_pane(None),
+            PathBuf::from("/saved/workspace")
         );
     }
 

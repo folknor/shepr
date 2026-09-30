@@ -620,6 +620,9 @@ pub(super) fn install_client_shell_snapshot(
     if !waits_for_selected_surface {
         shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
     }
+    // Snapshot application only moves Copy and Terminal modes; neither asks the host for
+    // report-all keys. Prefix and Navigate mode changes come from input and are synchronized
+    // by finish_client_shell_input.
     if project_snapshot {
         shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
     } else {

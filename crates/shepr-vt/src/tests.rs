@@ -4,12 +4,42 @@ use crate::limits::{
     MIN_SCROLLBACK_LINES,
 };
 
-fn vp(col: u16, row: u16) -> Point<ViewportRow> {
-    Point::new(ViewportRow(row), col)
+/// The screen point shown at viewport row `row`: screen rows count from the
+/// oldest retained line, so the viewport starts below the history that is not
+/// scrolled into view.
+fn viewport_point(terminal: &Terminal, col: u16, row: u16) -> Point<ScreenRow> {
+    let top = terminal.scrollbar().offset;
+    Point::new(ScreenRow(top + usize::from(row)), col)
 }
 
 fn sr(col: u16, row: usize) -> Point<ScreenRow> {
     Point::new(ScreenRow(row), col)
+}
+
+fn screen_row_cells(
+    terminal: &Terminal,
+    row: ScreenRow,
+) -> (RowWrap, Vec<(u16, CellWide, String)>) {
+    let mut scratch = String::new();
+    let mut cells = Vec::new();
+    let wrap = terminal
+        .visit_screen_row_text(row, &mut scratch, |col, wide, text| {
+            cells.push((col, wide, text.to_owned()));
+        })
+        .expect("screen row is retained");
+    (wrap, cells)
+}
+
+fn read_ansi_screen_text(
+    terminal: &Terminal,
+    start: Point<ScreenRow>,
+    end: Point<ScreenRow>,
+) -> String {
+    let (mut text, content_end) = terminal
+        .read_ansi_screen_carrying(start, end, &mut AnsiCarry::default(), false)
+        .expect("test precondition");
+    text.truncate(content_end.unwrap_or(0));
+    text
 }
 
 fn write_numbered_lines(terminal: &mut Terminal, count: usize) {
@@ -136,9 +166,7 @@ fn terminal_reports_pty_responses_and_pwd_changes() {
 #[test]
 fn modes_and_kitty_flags_follow_terminal_state() {
     let mut terminal = Terminal::new(80, 24, 0);
-    terminal
-        .mode_set(DecMode::ApplicationCursorKeys, true)
-        .expect("test precondition");
+    terminal.write(b"\x1b[?1h");
     terminal.write(b"\x1b[>1u\x1b[?1000h\x1b[?1006h");
     terminal.write(b"\x1b[?12h\x1b[?1042h");
 
@@ -418,7 +446,10 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     assert!(!terminal.tick(deadline - std::time::Duration::from_millis(1)));
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(19, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 19, 0)
+            )
             .expect("test precondition"),
         ""
     );
@@ -430,7 +461,10 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     assert!(!terminal.mode_get(DecMode::SynchronizedOutput));
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(19, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 19, 0)
+            )
             .expect("test precondition"),
         "hidden"
     );
@@ -446,19 +480,25 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     assert!(!terminal.mode_get(DecMode::SynchronizedOutput));
     assert!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(19, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 19, 0)
+            )
             .expect("test precondition")
             .contains("forgotten")
     );
 }
 
 #[test]
-fn terminal_read_text_viewport_unwraps_soft_wrapped_selection() {
+fn terminal_read_text_screen_unwraps_soft_wrapped_selection() {
     let mut terminal = Terminal::new(5, 3, 0);
     terminal.write("1ABCD2EFGH3IJKL".as_bytes());
 
     let text = terminal
-        .read_text_viewport(vp(0, 1), vp(2, 2), false)
+        .read_text_screen(
+            viewport_point(&terminal, 0, 1),
+            viewport_point(&terminal, 2, 2),
+        )
         .expect("test precondition");
     assert_eq!(text, "2EFGH3IJ");
 }
@@ -484,22 +524,31 @@ fn terminal_extracts_viewport_hyperlink_uri() {
 }
 
 #[test]
-fn terminal_read_text_viewport_handles_wide_chars() {
+fn terminal_read_text_screen_handles_wide_chars() {
     let mut terminal = Terminal::new(5, 3, 0);
     terminal.write("1A\u{26A1}".as_bytes());
 
     let full = terminal
-        .read_text_viewport(vp(0, 0), vp(3, 0), false)
+        .read_text_screen(
+            viewport_point(&terminal, 0, 0),
+            viewport_point(&terminal, 3, 0),
+        )
         .expect("test precondition");
     assert_eq!(full, "1A\u{26A1}");
 
     let through_wide_head = terminal
-        .read_text_viewport(vp(0, 0), vp(2, 0), false)
+        .read_text_screen(
+            viewport_point(&terminal, 0, 0),
+            viewport_point(&terminal, 2, 0),
+        )
         .expect("test precondition");
     assert_eq!(through_wide_head, "1A\u{26A1}");
 
     let wide_only = terminal
-        .read_text_viewport(vp(3, 0), vp(3, 0), false)
+        .read_text_screen(
+            viewport_point(&terminal, 3, 0),
+            viewport_point(&terminal, 3, 0),
+        )
         .expect("test precondition");
     assert_eq!(wide_only, "\u{26A1}");
 }
@@ -582,7 +631,10 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     assert_eq!(terminal.scrollbar().offset, 0);
     assert!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(19, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 19, 0)
+            )
             .expect("test precondition")
             .starts_with("FIRST \u{1F1E7}\u{1F1F7}")
     );
@@ -601,7 +653,10 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     assert_eq!(metrics.len, 5);
     assert!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(9, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 9, 0)
+            )
             .expect("test precondition")
             .starts_with("FIRST")
     );
@@ -625,7 +680,6 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
             .read_text_screen(
                 sr(0, 0),
                 sr(cols - 1, terminal.total_rows().saturating_sub(1)),
-                false,
             )
             .expect("test precondition");
         assert!(
@@ -639,7 +693,10 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
     terminal.resize(shepr_core::geometry::PaneGeometry::new(12, 3, 8, 16));
     assert!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(11, 2), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 11, 2)
+            )
             .expect("test precondition")
             .trim()
             .is_empty()
@@ -736,7 +793,10 @@ fn active_screen_and_cursor_visibility_contract() {
     assert_eq!(terminal.active_screen(), ActiveScreen::Primary);
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(6, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 6, 0)
+            )
             .expect("test precondition"),
         "primary"
     );
@@ -751,7 +811,10 @@ fn active_screen_and_cursor_visibility_contract() {
     assert_eq!(terminal.active_screen(), ActiveScreen::Alternate);
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(2, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 2, 0)
+            )
             .expect("test precondition"),
         "ALT"
     );
@@ -760,7 +823,10 @@ fn active_screen_and_cursor_visibility_contract() {
     assert_eq!(terminal.active_screen(), ActiveScreen::Primary);
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(6, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 6, 0)
+            )
             .expect("test precondition"),
         "primary"
     );
@@ -958,42 +1024,50 @@ fn halfwidth_voiced_marks_take_their_own_cell() {
         for chunk in &chunks {
             terminal.write(chunk);
         }
-        let rows = terminal.screen_text_rows();
-        let graphemes: Vec<_> = rows[0].cells[..3]
-            .iter()
-            .map(|cell| cell.graphemes.clone())
-            .collect();
+        let (_, cells) = screen_row_cells(&terminal, ScreenRow(0));
         assert_eq!(
-            graphemes,
-            vec![vec![0xff76], vec![0xff9e], vec![u32::from('Z')]],
+            cells[..3]
+                .iter()
+                .map(|(_, wide, text)| (*wide, text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (CellWide::Narrow, "ｶ"),
+                (CellWide::Narrow, "ﾞ"),
+                (CellWide::Narrow, "Z"),
+            ],
             "{chunks:?}"
         );
     }
 
     let mut terminal = Terminal::new(4, 2, 0);
     terminal.write("abcd\u{ff9f}".as_bytes());
-    let rows = terminal.screen_text_rows();
-    assert!(rows[0].wrap.soft_wrapped);
-    assert_eq!(rows[1].cells[0].graphemes, vec![0xff9f]);
+    assert!(
+        terminal
+            .screen_row_wrap(ScreenRow(0))
+            .expect("first screen row")
+            .soft_wrapped
+    );
+    assert_eq!(screen_row_cells(&terminal, ScreenRow(1)).1[0].2, "ﾟ");
 }
 
 #[test]
-fn screen_text_rows_preserve_wrap_and_grapheme_cells() {
+fn screen_row_readers_preserve_wrap_and_grapheme_cells() {
     let mut terminal = Terminal::new(5, 3, 100);
     terminal.write("abcdef\r\n界e\u{301}".as_bytes());
 
-    let rows = terminal.screen_text_rows();
-
-    assert_eq!(rows.len(), 3);
-    assert!(rows[0].wrap.soft_wrapped);
-    assert!(!rows[0].wrap.wrap_continuation);
-    assert!(!rows[1].wrap.soft_wrapped);
-    assert!(rows[1].wrap.wrap_continuation);
-    assert!(!rows[2].wrap.wrap_continuation);
-    assert_eq!(rows[2].cells[0].wide, CellWide::Wide);
-    assert_eq!(rows[2].cells[0].graphemes, vec!['界' as u32]);
-    assert_eq!(rows[2].cells[1].wide, CellWide::SpacerTail);
-    assert_eq!(rows[2].cells[2].graphemes, vec!['e' as u32, 0x301]);
+    let first_wrap = terminal.screen_row_wrap(ScreenRow(0)).expect("first row");
+    let second_wrap = terminal.screen_row_wrap(ScreenRow(1)).expect("second row");
+    let third_wrap = terminal.screen_row_wrap(ScreenRow(2)).expect("third row");
+    assert!(first_wrap.soft_wrapped);
+    assert!(!first_wrap.wrap_continuation);
+    assert!(!second_wrap.soft_wrapped);
+    assert!(second_wrap.wrap_continuation);
+    assert!(!third_wrap.wrap_continuation);
+    let cells = screen_row_cells(&terminal, ScreenRow(2)).1;
+    assert_eq!(cells[0].1, CellWide::Wide);
+    assert_eq!(cells[0].2, "界");
+    assert_eq!(cells[1].1, CellWide::SpacerTail);
+    assert_eq!(cells[2].2, "e\u{301}");
 }
 
 #[test]
@@ -1077,7 +1151,10 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
     assert_eq!(terminal.cursor_y(), 0);
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(9, 3), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 9, 3)
+            )
             .expect("test precondition"),
         "$ prompt"
     );
@@ -1122,7 +1199,10 @@ fn clear_screen_moves_the_saved_cursor_and_fills_with_default_colours() {
     terminal.write(b"\x1b8X");
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(9, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 9, 0)
+            )
             .expect("test precondition"),
         "X"
     );
@@ -1144,7 +1224,7 @@ fn widening_resize_keeps_history_that_already_fit() {
     assert_eq!(terminal.scrollback_rows(), before);
     assert_eq!(
         terminal
-            .read_text_screen(sr(0, 0), sr(39, 0), false)
+            .read_text_screen(sr(0, 0), sr(39, 0))
             .expect("test precondition"),
         "000000"
     );
@@ -1162,27 +1242,32 @@ fn vt_history_round_trips_through_the_parser() {
          last"
             .as_bytes(),
     );
-    let total = u32::try_from(source.total_rows()).unwrap_or(u32::MAX);
-    let ansi = source
-        .read_ansi_screen(
-            sr(0, 0),
-            sr(11, usize::try_from(total - 1).unwrap_or(usize::MAX)),
-            false,
-            true,
-        )
-        .expect("test precondition");
+    let ansi = read_ansi_screen_text(
+        &source,
+        sr(0, 0),
+        sr(11, source.total_rows().saturating_sub(1)),
+    );
     assert!(ansi.contains("id=x_alacritty"));
 
     let mut restored = Terminal::new(12, 4, 100_000);
     restored.write(ansi.as_bytes());
 
-    assert_eq!(
-        restored.screen_text_rows(),
-        source.screen_text_rows(),
-        "{ansi:?}"
-    );
+    let source_text = source
+        .read_text_screen(sr(0, 0), sr(11, source.total_rows().saturating_sub(1)))
+        .expect("source screen text");
+    let restored_text = restored
+        .read_text_screen(sr(0, 0), sr(11, restored.total_rows().saturating_sub(1)))
+        .expect("restored screen text");
+    assert_eq!(restored_text, source_text, "{ansi:?}");
     let source_rows = restored.total_rows();
     assert_eq!(source_rows, source.total_rows());
+    for row in 0..source_rows {
+        assert_eq!(
+            screen_row_cells(&restored, ScreenRow(row)),
+            screen_row_cells(&source, ScreenRow(row)),
+            "row {row}: {ansi:?}"
+        );
+    }
     let styles = |terminal: &Terminal| {
         let grid = terminal.term.grid();
         let history = i32::try_from(terminal.term.history_size()).unwrap_or(i32::MAX);
@@ -1208,13 +1293,19 @@ fn plain_reads_trim_trailing_blank_lines_and_spaces() {
     terminal.write(b"a  \r\n\r\nb   ");
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(9, 3), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 9, 3)
+            )
             .expect("test precondition"),
         "a\n\nb"
     );
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 3), vp(9, 3), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 3),
+                viewport_point(&terminal, 9, 3)
+            )
             .expect("test precondition"),
         ""
     );
@@ -1375,27 +1466,28 @@ fn cursor_shape_override_follows_decscusr_osc50_and_ris() {
     assert!(!terminal.cursor_shape_overridden());
 }
 
-/// Host-side mode changes must not be fed through the parser: a sequence the
-/// child has half-written would be cut short.
 #[test]
-fn mode_set_does_not_disturb_a_partial_child_sequence() {
+fn parser_completes_a_child_sequence_split_across_writes() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b[3");
-    terminal
-        .mode_set(DecMode::BracketedPaste, true)
-        .expect("test precondition");
     terminal.write(b"1mred");
-    assert!(terminal.mode_get(DecMode::BracketedPaste));
+    assert!(!terminal.mode_get(DecMode::BracketedPaste));
     assert_eq!(
         terminal
-            .read_text_viewport(vp(0, 0), vp(19, 0), false)
+            .read_text_screen(
+                viewport_point(&terminal, 0, 0),
+                viewport_point(&terminal, 19, 0)
+            )
             .expect("test precondition"),
         "red"
     );
-    assert!(
-        terminal
-            .mode_set(DecMode::SynchronizedOutput, true)
-            .is_err()
+    let mut render_state = RenderState::new();
+    render_state.update(&terminal);
+    let row = render_state.iter_rows().next().expect("terminal has rows");
+    let cell = row.cells().next().expect("row has cells");
+    assert_eq!(
+        cell.basic_data().style.fg_color,
+        Some(CellColor::Palette(1))
     );
 }
 
@@ -1411,9 +1503,7 @@ fn write_line_range(terminal: &mut Terminal, lines: std::ops::Range<usize>, per_
 fn absolute_row_text(terminal: &Terminal, row: AbsRow) -> Option<String> {
     let y = terminal.screen_row_for_absolute(row)?;
     let last = terminal.cols().saturating_sub(1);
-    terminal
-        .read_text_screen(sr(0, y.0), sr(last, y.0), false)
-        .ok()
+    terminal.read_text_screen(sr(0, y.0), sr(last, y.0)).ok()
 }
 
 /// Line `i` of `write_line_range` output was written on absolute row `i`.
@@ -1568,51 +1658,27 @@ fn height_resizes_keep_row_ids_and_column_resizes_retire_them() {
 }
 
 #[test]
-fn visited_rows_match_the_owned_text_rows() {
+fn visited_rows_match_plain_screen_reads() {
     let mut terminal = Terminal::new(6, 3, 100_000);
     terminal.write("ab界e\u{301}\u{10eeee}x\r\nwrapped-row-text\r\n".as_bytes());
-    let owned = terminal.screen_text_rows();
-    let mut scratch = String::new();
-    for (y, row) in owned.iter().enumerate() {
-        let mut cells = Vec::new();
-        let wrap = terminal
-            .visit_screen_row_text(ScreenRow(y), &mut scratch, |x, wide, text| {
-                cells.push((x, wide, text.to_owned()));
-            })
-            .expect("row is retained");
-        assert_eq!(
-            (wrap.soft_wrapped, wrap.wrap_continuation),
-            (row.wrap.soft_wrapped, row.wrap.wrap_continuation),
-            "row {y}"
-        );
-        let expected: Vec<_> = row
-            .cells
+    let rows = terminal.total_rows();
+    for y in 0..rows {
+        let (_, cells) = screen_row_cells(&terminal, ScreenRow(y));
+        let visited: String = cells
             .iter()
-            .enumerate()
-            .map(|(x, cell)| {
-                // The owned rows already blank the kitty placeholder; see
-                // `kitty_unicode_placeholder_is_blank_in_reads_and_rendering`.
-                let text = if cell.graphemes.is_empty() {
-                    " ".to_owned()
-                } else {
-                    cell.graphemes
-                        .iter()
-                        .filter_map(|&codepoint| char::from_u32(codepoint))
-                        .collect()
-                };
-                (
-                    u16::try_from(x).expect("test precondition"),
-                    cell.wide,
-                    text,
-                )
-            })
+            .filter(|(_, wide, _)| *wide != CellWide::SpacerTail)
+            .map(|(_, _, text)| text.as_str())
             .collect();
-        assert_eq!(cells, expected, "row {y}");
+        let visited = visited.trim_end();
+        let read = terminal
+            .read_text_screen(sr(0, y), sr(terminal.cols() - 1, y))
+            .expect("test precondition");
+        assert_eq!(read, visited, "row {y}");
     }
     assert!(
         terminal
-            .visit_screen_row_text(ScreenRow(owned.len()), &mut scratch, |_, _, _| {})
-            .is_none()
+            .visit_screen_row_text(ScreenRow(rows), &mut String::new(), |_, _, _| {})
+            .is_none(),
     );
 }
 
@@ -1623,16 +1689,7 @@ fn kitty_unicode_placeholder_is_blank_in_reads_and_rendering() {
 
     assert_eq!(
         terminal
-            .screen_cell(1, ScreenRow(0))
-            .expect("test precondition")
-            .1,
-        Vec::<u32>::new()
-    );
-    let rows = terminal.screen_text_rows();
-    assert!(rows[0].cells[1].graphemes.is_empty());
-    assert_eq!(
-        terminal
-            .read_text_screen(sr(0, 0), sr(2, 0), true)
+            .read_text_screen(sr(0, 0), sr(2, 0))
             .expect("test precondition"),
         "A B"
     );
@@ -1711,9 +1768,7 @@ fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
     terminal.write(b"\r\nnext line\r\nlast");
     let cols = terminal.cols();
     let last_row = terminal.total_rows() - 1;
-    let whole = terminal
-        .read_ansi_screen(sr(0, 0), sr(cols - 1, last_row), false, true)
-        .expect("test precondition");
+    let whole = read_ansi_screen_text(&terminal, sr(0, 0), sr(cols - 1, last_row));
 
     // The wrapped line is the rows from 1 up to the first row that is not
     // soft-wrapped. Cut it after every soft-wrapped row in turn, and after
@@ -1728,9 +1783,7 @@ fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
     assert!(line_end > 4, "the line must wrap over several rows");
     for step in [1, 2, 3] {
         let mut carry = AnsiCarry::default();
-        let mut joined = terminal
-            .read_ansi_screen(sr(0, 0), sr(cols - 1, 0), false, true)
-            .expect("test precondition");
+        let mut joined = read_ansi_screen_text(&terminal, sr(0, 0), sr(cols - 1, 0));
         joined.push_str("\r\n");
         let mut row = 1;
         while row <= line_end {
@@ -1747,11 +1800,11 @@ fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
         }
         // The rest of the screen follows the line as it does in the whole read.
         joined.push_str("\r\n");
-        joined.push_str(
-            &terminal
-                .read_ansi_screen(sr(0, line_end + 1), sr(cols - 1, last_row), false, true)
-                .expect("test precondition"),
-        );
+        joined.push_str(&read_ansi_screen_text(
+            &terminal,
+            sr(0, line_end + 1),
+            sr(cols - 1, last_row),
+        ));
         assert_eq!(joined, whole, "step {step}");
     }
 }

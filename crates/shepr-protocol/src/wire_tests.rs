@@ -151,7 +151,7 @@ mod tests {
             }),
             EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
                 workspace_id: workspace.clone(),
-                path: vec![false, true],
+                path: vec![SplitBranch::First, SplitBranch::Second],
                 ratio: 0.6,
             }),
             EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {

@@ -36,16 +36,41 @@ impl TerminalState {
         now: Instant,
     ) -> Option<TerminalStateMutation> {
         self.warn_unrecognized_hook_identity(&source, &agent_label);
+        // Built-in source names cannot claim another agent. Custom sources
+        // retain arbitrary labels, but cannot mint official resume identities.
+        if Agent::parse_source(&source).is_some_and(|agent| agent.label() != agent_label) {
+            return None;
+        }
         let session_ref = session_ref?;
-        let known_agent = shepr_agent::detect::parse_agent_label(&agent_label);
+        // Policy validation belongs here too: callers need not have used the
+        // API constructor, and a rejected reference cannot alter authority.
+        let persisted_session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
+            &source,
+            &agent_label,
+            session_ref.clone(),
+        )?;
+        if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
+            return None;
+        }
+        let owner_conflicts = self.current_session_owner_conflicts(&source, &agent_label);
+        let foreground_takeover_allowed = owner_conflicts
+            && self.foreground_agent_confirms_different_owner_takeover(
+                &source,
+                &agent_label,
+                &session_ref,
+                session_start_source,
+            );
+        if owner_conflicts && !foreground_takeover_allowed {
+            return None;
+        }
+        let known_agent = Agent::parse_canonical_label(&agent_label);
         let process_present = known_agent.is_some()
             && self.detected_agent == known_agent
             && self.recent_agent_process_exit.is_none();
         let full_lifecycle_source =
             shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label);
         let generation_gated = self
-            .suppressed_full_lifecycle_hook_reports
-            .get(&source)
+            .suppressed_hook_source(&source)
             .is_some_and(|suppressed| {
                 suppressed.agent_label == agent_label
                     && suppressed.reason != FullLifecycleHookSuppressionReason::HookClear
@@ -62,9 +87,7 @@ impl TerminalState {
             seq,
         );
         let selection_can_reconcile = unsequenced_selection && process_present;
-        if selection_can_reconcile {
-            self.suppressed_full_lifecycle_hook_reports.remove(&source);
-        } else if full_lifecycle_source && unsequenced_selection {
+        if full_lifecycle_source && unsequenced_selection && !selection_can_reconcile {
             let previous_session_ref = self
                 .hook_authority
                 .as_ref()
@@ -81,20 +104,21 @@ impl TerminalState {
                         })
                         .map(|session| session.session_ref.clone())
                 });
-            let suppressed = self
-                .suppressed_full_lifecycle_hook_reports
-                .entry(source)
-                .or_insert_with(|| SuppressedFullLifecycleHookReport {
+            if !self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source) {
+                return None;
+            }
+            self.hook_sources.entry(source).or_default().park_start(
+                SuppressedFullLifecycleHookReport {
                     agent_label,
                     session_ref: previous_session_ref,
                     observed_at: now,
-                    reason: FullLifecycleHookSuppressionReason::ProcessExit,
-                    replacement_session_ref: None,
+                    reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
+                    pending_start: None,
                     pending_replacement_report: None,
-                });
-            suppressed.replacement_session_ref = Some(session_ref);
-            suppressed.pending_replacement_report = None;
-            return None;
+                },
+                persisted_session,
+            );
+            return Some(TerminalStateMutation::default());
         }
         if full_lifecycle_source
             && !selection_can_reconcile
@@ -112,35 +136,27 @@ impl TerminalState {
             }
 
             let previous_agent_label = self.effective_agent_label().map(str::to_string);
-            let previous_known_agent = self.effective_known_agent();
             let previous_state = self.state;
             let previous_session = self.current_session_identity_for_persistence();
-            let suppressed = self
-                .suppressed_full_lifecycle_hook_reports
-                .entry(source.clone())
-                .or_insert_with(|| SuppressedFullLifecycleHookReport {
-                    agent_label: agent_label.clone(),
-                    session_ref: None,
-                    observed_at: now,
-                    reason: FullLifecycleHookSuppressionReason::ProcessExit,
-                    replacement_session_ref: None,
-                    pending_replacement_report: None,
-                });
-            if suppressed.replacement_session_ref.as_ref() != Some(&session_ref) {
-                if suppressed
-                    .pending_replacement_report
-                    .as_ref()
-                    .is_some_and(|pending| {
-                        pending.authority.session_ref.as_ref() != Some(&session_ref)
-                    })
-                {
-                    suppressed.pending_replacement_report = None;
-                }
-                suppressed.replacement_session_ref = Some(session_ref);
-            }
+            // Capacity and ordering were validated above. Commit the sequence
+            // before the pending start; no fallible step follows either write.
             if !self.record_hook_seq(source.clone(), seq, now) {
                 return None;
             }
+            self.hook_sources
+                .entry(source.clone())
+                .or_default()
+                .park_start(
+                    SuppressedFullLifecycleHookReport {
+                        agent_label: agent_label.clone(),
+                        session_ref: None,
+                        observed_at: now,
+                        reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
+                        pending_start: None,
+                        pending_replacement_report: None,
+                    },
+                    persisted_session,
+                );
 
             if process_present {
                 self.clear_full_lifecycle_hook_suppression_for_detected_agent(
@@ -150,22 +166,13 @@ impl TerminalState {
                 );
                 let current_session = self.current_session_identity_for_persistence();
                 return Some(TerminalStateMutation {
-                    effective_state_change: self.recompute_effective_state(
-                        previous_agent_label,
-                        previous_known_agent,
-                        previous_state,
-                    ),
+                    effective_state_change: self
+                        .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                     session_ref_changed: previous_session != current_session,
                     agent_released: false,
                 });
             }
-            return None;
-        }
-        if !unsequenced_selection && !self.accept_hook_report_at(&source, seq, now) {
-            return None;
-        }
-        if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
-            return None;
+            return Some(TerminalStateMutation::default());
         }
         let session_replacement_allowed = Self::session_report_allows_session_replacement(
             &source,
@@ -191,17 +198,6 @@ impl TerminalState {
         if replacing_identity_only_session && !process_present {
             return None;
         }
-        let owner_conflicts = self.current_session_owner_conflicts(&source, &agent_label);
-        let foreground_takeover_allowed = owner_conflicts
-            && self.foreground_agent_confirms_different_owner_takeover(
-                &source,
-                &agent_label,
-                &session_ref,
-                session_start_source,
-            );
-        if owner_conflicts && !foreground_takeover_allowed {
-            return None;
-        }
         if self
             .conflicting_same_owner_session_ref(
                 &source,
@@ -218,17 +214,42 @@ impl TerminalState {
             &agent_label,
             &session_ref,
         );
+        // A refused replacement preserves the confirmed live authority and
+        // identity. A different ref alone can be delayed cross-talk; releasing
+        // authority here would let an unrecognized start withdraw a live agent.
         if replaced_hook_session.is_some() && !session_replacement_allowed {
             return None;
         }
 
+        if !unsequenced_selection && !self.accept_hook_report_at(&source, seq, now) {
+            return None;
+        }
+        if selection_can_reconcile {
+            let new_generation = self.suppressed_hook_source(&source).is_some()
+                || self
+                    .current_session_identity_for_persistence()
+                    .is_none_or(|current| {
+                        current.source.as_str() != source
+                            || current.agent.label() != agent_label
+                            || current.session_ref != session_ref
+                    });
+            self.activate_hook_source(&source);
+            // A trusted unsequenced selection starts one generation. Selecting
+            // the current session again must not revive its older state reports.
+            if new_generation {
+                self.clear_hook_report_sequence(&source);
+            }
+        }
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
-        let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
         let previous_session = self.current_session_identity_for_persistence();
         // A replacing Codex session must not stay shadowed by the previous
         // session's turn report, which would keep supplying the identity.
-        if (source.as_str(), agent_label.as_str()) == ("shepr:codex", "codex")
+        if persisted_session
+            .agent
+            .descriptor()
+            .hook_session_policy
+            .state_requires_current_session
             && session_replacement_allowed
             && self.hook_authority.as_ref().is_some_and(|authority| {
                 authority.source == source
@@ -258,19 +279,11 @@ impl TerminalState {
             );
             self.hook_authority = None;
         }
-        let persisted_session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
-            &source,
-            &agent_label,
-            session_ref,
-        )?;
         self.persisted_agent_session = Some(persisted_session);
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {
-            effective_state_change: self.recompute_effective_state(
-                previous_agent_label,
-                previous_known_agent,
-                previous_state,
-            ),
+            effective_state_change: self
+                .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
             session_ref_changed: previous_session != current_session,
             agent_released: false,
         })
@@ -283,7 +296,7 @@ impl TerminalState {
         let Some(detected_agent) = self.detected_agent else {
             return false;
         };
-        shepr_agent::detect::parse_agent_label(agent_label)
+        Agent::parse_canonical_label(agent_label)
             .is_some_and(|hook_agent| hook_agent != detected_agent)
     }
 
@@ -294,7 +307,9 @@ impl TerminalState {
         session_ref: &shepr_agent::agent::resume::AgentSessionRef,
         session_start_source: Option<AgentSessionStartSource>,
     ) -> bool {
-        (source, agent_label) != ("shepr:grok", "grok")
+        shepr_agent::agent::AgentSource::from_pair(source, agent_label)
+            .and_then(|source| source.agent())
+            .is_some_and(|agent| agent.descriptor().hook_session_policy.foreground_takeover)
             && Self::session_start_source_is_recognized(session_start_source)
             && self.foreground_agent_confirms_session_owner(source, agent_label, session_ref)
     }
@@ -319,7 +334,7 @@ impl TerminalState {
         let Some(detected_agent) = self.detected_agent else {
             return false;
         };
-        shepr_agent::detect::parse_agent_label(agent_label) == Some(detected_agent)
+        Agent::parse_canonical_label(agent_label) == Some(detected_agent)
             && shepr_agent::agent::resume::PersistedAgentSession::from_report(
                 source,
                 agent_label,
@@ -329,80 +344,108 @@ impl TerminalState {
             .is_some()
     }
 
+    pub(super) fn hook_report_order_allows(
+        &self,
+        source: &str,
+        seq: Option<u64>,
+        now: Instant,
+    ) -> bool {
+        seq.map_or_else(
+            || {
+                self.hook_sources
+                    .get(source)
+                    .is_none_or(|record| record.sequence_value().is_none())
+            },
+            |seq| !self.hook_seq_superseded(source, seq, now),
+        )
+    }
+
     pub(super) fn accept_hook_report_at(
         &mut self,
         source: &str,
         seq: Option<u64>,
         now: Instant,
     ) -> bool {
-        let Some(seq) = seq else {
-            return !self.hook_report_sequences.contains_key(source);
-        };
-        if self.hook_seq_superseded(source, seq, now) {
+        if !self.hook_report_order_allows(source, seq, now) {
             return false;
         }
-        self.record_hook_seq(source.to_string(), seq, now)
+        match seq {
+            Some(seq) => self.record_hook_seq(source.to_string(), seq, now),
+            None => true,
+        }
     }
 
-    /// Whether `seq` from `source` is older than what was already accepted.
-    /// See [`HOOK_SEQUENCE_REANCHOR_AFTER`] for why a non-increasing `seq`
-    /// long after the last acceptance is not.
-    pub(super) fn hook_seq_superseded(&self, source: &str, seq: u64, now: Instant) -> bool {
-        let Some(last_seq) = self.hook_report_sequences.get(source) else {
-            return false;
-        };
-        report_seq_superseded(
-            *last_seq,
-            self.hook_report_accepted_at.get(source).copied(),
-            seq,
-            now,
-        )
+    /// Sequence numbers are wall-clock stamps, not monotonic observation times.
+    /// Within one generation they must increase unless a backward step in the
+    /// server's wall clock is corroborated by its monotonic clock. Both clocks
+    /// are sampled at acceptance, independently of the event observation time.
+    /// Generation transitions also reset ordering. Mere silence never does.
+    pub(super) fn hook_seq_superseded(&self, source: &str, seq: u64, _now: Instant) -> bool {
+        self.hook_sources
+            .get(source)
+            .is_some_and(|record| record.seq_superseded(seq, Instant::now(), SystemTime::now()))
     }
 
-    pub(super) fn record_hook_seq(&mut self, source: String, seq: u64, now: Instant) -> bool {
+    pub(super) fn record_hook_seq(&mut self, source: String, seq: u64, _now: Instant) -> bool {
         if !self.hook_report_sequence_has_room(&source) {
-            tracing::debug!(
-                source = %source,
-                limit = MAX_HOOK_REPORT_SOURCES,
-                "ignoring hook report from a new source: too many sources"
-            );
+            tracing::debug!(source = %source, limit = MAX_HOOK_REPORT_SOURCES,
+                "ignoring hook report from a new source: too many sources");
             return false;
         }
-        self.hook_report_accepted_at.insert(source.clone(), now);
-        self.hook_report_sequences.insert(source, seq);
+        if !self.prepare_hook_source(&source) {
+            return false;
+        }
+        self.hook_sources
+            .entry(source)
+            .or_default()
+            .record_sequence(seq);
         true
     }
 
-    /// Drop ordering marks that no longer protect a current hook, session,
-    /// suppression, or stale-session record before refusing a new source.
-    pub(super) fn hook_report_sequence_has_room(&mut self, source: &str) -> bool {
-        if self.hook_report_sequences.contains_key(source)
-            || self.hook_report_sequences.len() < MAX_HOOK_REPORT_SOURCES
+    /// Capacity validation never mutates. Unprotected records are evicted only
+    /// when the validated report commits, so rejection preserves all ordering.
+    pub(super) fn hook_report_sequence_has_room(&self, source: &str) -> bool {
+        self.hook_sources.contains_key(source)
+            || self.hook_sources.len() < MAX_HOOK_REPORT_SOURCES
+            || self
+                .hook_sources
+                .iter()
+                .any(|(source, record)| !self.hook_source_protected(source, record))
+    }
+
+    pub(super) fn hook_source_protected(&self, source: &str, record: &HookSourceState) -> bool {
+        self.hook_authority
+            .as_ref()
+            .is_some_and(|authority| authority.source == source)
+            || self
+                .persisted_agent_session
+                .as_ref()
+                .is_some_and(|session| session.source.as_str() == source)
+            || record.suppressed().is_some()
+            || !record.stale_sessions().is_empty()
+    }
+
+    pub(super) fn prepare_hook_source(&mut self, source: &str) -> bool {
+        if !self.hook_sources.contains_key(source)
+            && self.hook_sources.len() >= MAX_HOOK_REPORT_SOURCES
         {
-            return true;
+            let evict = self
+                .hook_sources
+                .iter()
+                .find(|(source, record)| !self.hook_source_protected(source, record))
+                .map(|(source, _)| source.clone());
+            let Some(evict) = evict else {
+                return false;
+            };
+            self.hook_sources.remove(&evict);
         }
-
-        let mut protected_sources = std::collections::HashSet::new();
-        if let Some(authority) = &self.hook_authority {
-            protected_sources.insert(authority.source.clone());
-        }
-        if let Some(session) = &self.persisted_agent_session {
-            protected_sources.insert(session.source.as_str().to_owned());
-        }
-        protected_sources.extend(self.suppressed_full_lifecycle_hook_reports.keys().cloned());
-        protected_sources.extend(self.stale_full_lifecycle_hook_sessions.keys().cloned());
-
-        self.hook_report_sequences
-            .retain(|known_source, _| protected_sources.contains(known_source));
-        let sequences = &self.hook_report_sequences;
-        self.hook_report_accepted_at
-            .retain(|known_source, _| sequences.contains_key(known_source));
-        self.hook_report_sequences.len() < MAX_HOOK_REPORT_SOURCES
+        true
     }
 
     pub(super) fn clear_hook_report_sequence(&mut self, source: &str) {
-        self.hook_report_sequences.remove(source);
-        self.hook_report_accepted_at.remove(source);
+        if let Some(record) = self.hook_sources.get_mut(source) {
+            record.clear_sequence();
+        }
     }
 }
 

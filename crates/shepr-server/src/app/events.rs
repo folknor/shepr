@@ -45,15 +45,34 @@ pub(crate) enum StateEvent {
 }
 
 impl App {
+    fn live_workspace_identity_cwd(&self, workspace_id: &str) -> Option<std::path::PathBuf> {
+        let workspace = self
+            .state
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == *workspace_id)?;
+        let root_pane_cwd = workspace.cwd_for_pane(
+            workspace.root_pane(),
+            &self.state.terminals,
+            &self.terminal_runtimes,
+        );
+        Some(workspace.resolved_identity_cwd_from_root_pane(root_pane_cwd))
+    }
+
     fn handle_git_status_refreshed(
         &mut self,
         results: Vec<shepr_mux::git::WorkspaceGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, shepr_mux::git::GitStatusCacheEntry)>,
     ) -> bool {
         self.git_refresh.finish(self.clock.now, cache_updates);
-        let changed = self
-            .state
-            .apply_workspace_git_statuses(&self.terminal_runtimes, results);
+        let results = results
+            .into_iter()
+            .map(|result| {
+                let resolved_identity_cwd = self.live_workspace_identity_cwd(&result.workspace_id);
+                (result, resolved_identity_cwd)
+            })
+            .collect();
+        let changed = self.state.apply_workspace_git_statuses(results);
         if changed {
             self.state.mark_shell_projection_dirty();
             self.render_dirty.request_generic();

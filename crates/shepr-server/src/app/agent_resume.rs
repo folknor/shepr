@@ -62,6 +62,16 @@ impl App {
         }
 
         let pending = self.pending_agent_resume_candidates();
+        // A candidate is not safe to launch until a worker has checked its
+        // saved cwd. Waiting for every candidate in this pass keeps the
+        // schedule's candidate order and spacing rules intact.
+        if pending.iter().any(|candidate| {
+            !self
+                .resume_schedule
+                .has_directory_check(&candidate.terminal_id, &candidate.cwd)
+        }) {
+            return false;
+        }
         let mut pass = self.resume_schedule.begin_pass(now);
         for PendingAgentResumeCandidate {
             pane_id,
@@ -74,8 +84,19 @@ impl App {
             if self.terminal_runtimes.get(terminal_id).is_some() {
                 continue;
             }
-            let outcome =
-                self.start_pending_agent_resume(*pane_id, terminal_id, cwd, plan, *geometry, now);
+            let directory_available = self
+                .resume_schedule
+                .take_directory_check(terminal_id, cwd)
+                .unwrap_or(false);
+            let outcome = self.start_pending_agent_resume(
+                *pane_id,
+                terminal_id,
+                cwd,
+                plan,
+                *geometry,
+                directory_available,
+                now,
+            );
             if !pass.record(outcome) {
                 break;
             }
@@ -90,6 +111,45 @@ impl App {
             self.resume_schedule.observe(now, false, false);
         }
         changed
+    }
+
+    /// Cwds that need checking before the next due resume pass. The headless
+    /// server runs these checks on workers and records their results here.
+    pub(crate) fn pending_agent_resume_cwd_checks(
+        &mut self,
+        now: Instant,
+    ) -> Vec<(shepr_protocol::TerminalId, std::path::PathBuf)> {
+        let has_pending_plans = self.has_pending_agent_resumes();
+        let eligible = has_pending_plans && self.has_pending_agent_resume_candidates();
+        self.resume_schedule
+            .observe(now, has_pending_plans, eligible);
+        if !self
+            .resume_schedule
+            .is_due(now, eligible, self.host_theme_available())
+        {
+            return Vec::new();
+        }
+        self.pending_agent_resume_candidates()
+            .into_iter()
+            .filter(|candidate| {
+                !self
+                    .resume_schedule
+                    .has_directory_check(&candidate.terminal_id, &candidate.cwd)
+            })
+            .map(|candidate| (candidate.terminal_id, candidate.cwd))
+            .collect()
+    }
+
+    /// Records a cwd check completed by a worker. The result stays paired with
+    /// both the terminal and the path so a changed cwd is checked separately.
+    pub(crate) fn record_pending_agent_resume_cwd_check(
+        &mut self,
+        terminal_id: shepr_protocol::TerminalId,
+        cwd: std::path::PathBuf,
+        available: bool,
+    ) {
+        self.resume_schedule
+            .record_directory_check(terminal_id, cwd, available);
     }
 
     /// Whether any pane would be a resume candidate right now, without cloning
@@ -223,6 +283,7 @@ impl App {
         cwd: &std::path::Path,
         plan: &shepr_agent::agent::resume::AgentResumePlan,
         geometry: shepr_core::geometry::PaneGeometry,
+        directory_available: bool,
         now: Instant,
     ) -> AttemptOutcome {
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -259,29 +320,6 @@ impl App {
         };
         let launch_env = launch_env.for_agent_resume();
 
-        // This stat can block the loop on a dead mount. It cannot simply be
-        // dropped: PTY command construction falls back to HOME for an unusable
-        // cwd, and sending the saved resume command there would resume in the
-        // wrong directory. Moving the check off-loop needs the resume attempt to
-        // receive its result before it starts the PTY.
-        // Any stat failure makes the directory unavailable for the resume; one
-        // other than absence (permissions, a dead mount) is logged, since the
-        // pane's message cannot tell the user which it was.
-        let directory_available = match std::fs::metadata(cwd) {
-            Ok(metadata) => metadata.is_dir(),
-            Err(error) => {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        pane = pane_id.raw(),
-                        terminal = %terminal_id,
-                        cwd = %cwd.display(),
-                        %error,
-                        "saved agent resume directory cannot be read"
-                    );
-                }
-                false
-            }
-        };
         if !directory_available {
             if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                 terminal.abandon_agent_resume(
@@ -399,7 +437,22 @@ fn derived_pending_agent_resume_pane_infos(
 }
 
 #[cfg(test)]
+fn directory_available(cwd: &std::path::Path) -> bool {
+    std::fs::metadata(cwd).is_ok_and(|metadata| metadata.is_dir())
+}
+
+#[cfg(test)]
 impl App {
+    /// A resume pass with the worker's cwd checks run inline first, as the
+    /// headless loop would run them on its workers.
+    fn start_pending_agent_resumes_inline_for_test(&mut self, now: Instant) -> bool {
+        for (terminal_id, cwd) in self.pending_agent_resume_cwd_checks(now) {
+            let available = directory_available(&cwd);
+            self.record_pending_agent_resume_cwd_check(terminal_id, cwd, available);
+        }
+        self.start_pending_agent_resumes(now)
+    }
+
     pub(crate) fn start_pending_agent_resume_for_terminal(
         &mut self,
         terminal_id: &shepr_protocol::TerminalId,
@@ -433,6 +486,7 @@ impl App {
             &cwd,
             &plan,
             shepr_mux::workspace::spawn_geometry(rows, cols, None),
+            directory_available(&cwd),
             self.clock.now,
         );
         let changed = outcome != AttemptOutcome::Retryable;
@@ -489,12 +543,12 @@ mod tests {
             }
             let now = Instant::now();
             // No host theme yet: the first pass only starts the theme wait.
-            assert!(!app.start_pending_agent_resumes(now));
+            assert!(!app.start_pending_agent_resumes_inline_for_test(now));
             let theme_wait = now + PENDING_AGENT_RESUME_THEME_WAIT;
             assert_eq!(app.pending_agent_resume_wakeup(), Some(theme_wait));
             // An abandonment starts no agent, so it spaces nothing out: every
             // overdue candidate is settled in the one pass whatever the delay.
-            assert!(app.start_pending_agent_resumes(theme_wait));
+            assert!(app.start_pending_agent_resumes_inline_for_test(theme_wait));
             assert!(!app.has_pending_agent_resumes());
             assert_eq!(app.pending_agent_resume_wakeup(), None);
             assert!(!app.resume_schedule.is_pending());
@@ -537,9 +591,9 @@ mod tests {
         ));
 
         let now = Instant::now();
-        assert!(!app.start_pending_agent_resumes(now));
+        assert!(!app.start_pending_agent_resumes_inline_for_test(now));
         let due = now + PENDING_AGENT_RESUME_THEME_WAIT;
-        assert!(app.start_pending_agent_resumes(due));
+        assert!(app.start_pending_agent_resumes_inline_for_test(due));
         // The plan is consumed, the pane says why, and nothing is left to
         // wake for or to hold back.
         assert!(!app.has_pending_agent_resumes());
@@ -548,7 +602,7 @@ mod tests {
         assert!(terminal.restore_error.is_some());
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
         assert_eq!(app.pending_agent_resume_wakeup(), None);
-        assert!(!app.start_pending_agent_resumes(due));
+        assert!(!app.start_pending_agent_resumes_inline_for_test(due));
     }
 
     #[tokio::test]
@@ -719,7 +773,7 @@ mod tests {
             marker_resume_test_argv(),
         ));
 
-        assert!(!app.start_pending_agent_resumes(Instant::now()));
+        assert!(!app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
 
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -736,7 +790,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
+        assert!(app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
         let terminal = app
             .state
@@ -796,8 +850,10 @@ mod tests {
         ));
 
         let now = Instant::now();
-        assert!(!app.start_pending_agent_resumes(now));
-        assert!(app.start_pending_agent_resumes(now + PENDING_AGENT_RESUME_THEME_WAIT));
+        assert!(!app.start_pending_agent_resumes_inline_for_test(now));
+        assert!(
+            app.start_pending_agent_resumes_inline_for_test(now + PENDING_AGENT_RESUME_THEME_WAIT)
+        );
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
 
         for (_, runtime) in app.terminal_runtimes.drain() {
@@ -850,14 +906,14 @@ mod tests {
         }
 
         let now = Instant::now();
-        assert!(app.start_pending_agent_resumes(now));
+        assert!(app.start_pending_agent_resumes_inline_for_test(now));
         assert!(app.terminal_runtimes.get(&active_terminal).is_some());
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_none());
         // The launch spaces the next one out; the wakeup is the barrier.
         let barrier = now + std::time::Duration::from_millis(100);
-        assert!(!app.start_pending_agent_resumes(now));
+        assert!(!app.start_pending_agent_resumes_inline_for_test(now));
         assert_eq!(app.pending_agent_resume_wakeup(), Some(barrier));
-        assert!(app.start_pending_agent_resumes(barrier));
+        assert!(app.start_pending_agent_resumes_inline_for_test(barrier));
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
         assert_eq!(
             app.pending_agent_resume_wakeup(),
@@ -909,7 +965,7 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
+        assert!(app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
         assert!(
             app.state
@@ -963,7 +1019,7 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
+        assert!(app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         assert!(app.terminal_runtimes.get(&previous_terminal).is_some());
         assert!(
             app.state
@@ -1038,7 +1094,7 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
+        assert!(app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         let launched = app
             .terminal_runtimes
             .get(&terminal_id)

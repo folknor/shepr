@@ -15,35 +15,6 @@ detection and hook reports).
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## AGENT-009 - Restored history is read as live agent chrome
-
-Scope: agent-detection. The hunter flags this as a risk, not reproduced.
-
-`seed_history_ansi` writes saved history into the fresh terminal, so the previous
-session's last frame sits on the live screen, and `detection_text` reads live
-screen rows. A resumed agent that draws inline (not on the alternate screen)
-leaves that old frame above its output, inside `whole_recent` and other broad
-regions. Several blocker rules read `whole_recent` with `visible_blocker = true`
-(Claude's `bash_permission_prompt` and `legacy_no_prompt_blocker`, Amp's
-`approval_footer`, Cursor's `approval_prompt`, Grok's `option_dialog_blocked`).
-Codex's `screen_working_fallback` accepts arbitrary non-marker lines after a
-timer line up to the end of the region. A saved frame that ended on a dialog or a
-live timer can therefore classify the resumed agent as Blocked or Working until
-enough output scrolls it off. The 3 s startup grace only delays the first scan.
-The hunter suggests one capture test with a restored Codex or Claude frame.
-
-## AGENT-010 - Identification ranking prefers a wrapped child over a real agent executable
-
-Scope: agent-detection. The hunter flags this as a smell; no doc promises
-otherwise.
-
-In `identify_agent_in_job`, `ProcessPriority::NormalizedAlias` ranks above
-`AgentExecutable`. When the group leader is unrecognised (an `npx`/npm leader or
-a wrapper script), a node child whose argv names a different agent outranks a
-process whose own name is an agent: for example an MCP server shipped as
-`.../bin/codex`, while the other process is named `claude`. The alias rank exists
-for Nix `.x-wrapped` and node-wrapped agents but applies to every job member.
-
 ## AGENT-011 - The per-pane detection state machine is spread over three files
 
 Scope: agent-detection (structural note).
@@ -58,95 +29,6 @@ skip rule in another, an early `continue` in the third. A single pure
 probe result, content seq, screen and OSC, authority flag, `now`; output: events
 to publish and the next wake) would put every transition in one testable
 function and leave the runtime as I/O only.
-
-## AGENT-014 - A state report without a session ref erases the resume identity, then freezes hook authority
-
-Scope: agent-integration.
-
-**Claims broken.** Resume on restore (AGENTS.md "Session restore ... and agent
-resume on restore") and the asset comments that the full-lifecycle plugins are
-the pane's authority.
-
-- In `set_hook_authority_at`, an accepted report always does
-  `self.persisted_agent_session = None` and stores `session_ref` from the report.
-  `route_full_lifecycle_hook_report` treats an incoming `None` as anchored
-  (`is_none_or`), so a session-less report sets `hook_authority.session_ref =
-  None` and clears the persisted session: the pane loses its resume identity.
-  Intended per `accepted_hook_report_without_session_ref_clears_previous_ref`.
-- The next report has nothing to anchor against. A session-less report hits
-  `let Some(session_ref) = session_ref.clone() else { return Ignore }`; a
-  session-bearing report is parked. Hook authority stays frozen at that one
-  session-less report's state until the next session report with a recognized
-  start source. Kimi and MastraCode send one only on SessionStart; Kilo and
-  OpenCode-run in practice never do (AGENT-012, AGENT-013).
-- Assets that emit session-less state reports:
-  - `session.error` in the opencode and kilo plugins calls
-    `reportState("blocked", sessionID)`. OpenCode's error event has an optional
-    `sessionID`, so a global error (provider or auth failure) produces a
-    `blocked` report with no session, pinning the pane at Blocked.
-  - The kimi and mastracode hooks send state reports without `agent_session_id`
-    whenever the payload lacks `session_id`.
-  - The pi and omp plugins (`withSessionRef`) do the same when the session
-    manager has no file or id (for example a no-session run).
-
-**Fix direction.** Decide the contract in one place: either assets never send a
-full-lifecycle state report without a session ref, or the server keeps the
-anchored ref when the incoming report has none. The current combination is the
-worst of both.
-
-## AGENT-015 - Kimi and Kilo have no session-replacement rule, so an in-process session switch freezes the pane
-
-Scope: agent-integration.
-
-**Claim broken.** The Kimi asset says it passes the start source through ("shepr
-ignores values it does not know"); the integration is meant to report the current
-session and state.
-
-- `session_report_allows_session_replacement` has arms for Claude, Codex,
-  MastraCode, OpenCode, Pi, Grok, OMP and Antigravity, none for Kimi or Kilo.
-- After a Kimi session change in the same process (a new SessionStart with a new
-  `session_id`): the session report is refused
-  (`replaced_hook_session.is_some() && !session_replacement_allowed`); every
-  later state report carries the new id, is not anchored and is parked; hook
-  authority stays at the old session's last state, and resume targets the old
-  session.
-- The Kilo comment says this is deliberate for Kilo ("neither lets Kilo replace a
-  session"); the frozen state that follows is not called out anywhere.
-
-Depends on Kimi switching sessions in-process (`/clear`, `/new`, a resume
-picker), which the hunter could not verify. Then either add an arm or have the
-server release authority on a refused replacement.
-
-## AGENT-020 - Hook seq ordering and the arbitration's clocks rest on assumptions that do not hold
-
-Scopes: agent-integration, mux-terminal (its finding 12, filed there as a note
-rather than a proven defect), agent-detection (structural note).
-
-- **Stamp timing.** The kimi and mastracode hooks stamp `date +%s%N` at hook
-  start, and their comments explain that stamping after python start lets startup
-  jitter reorder near-simultaneous events. The codex hook, which also sends
-  `working` and `idle`, stamps `time.time_ns()` after `cat` and python start; if
-  Codex ever fires hooks concurrently, the same reordering applies.
-- **Re-anchor rule.** `report_seq_superseded` accepts a non-increasing seq as a
-  clock step when it arrives `HOOK_SEQUENCE_REANCHOR_AFTER` (5 s) or more after
-  the last acceptance. The hooks' budget is `HOOK_TIMEOUT` (10 s); each python
-  socket op may take 0.5 s (connect, send and recv each); the Devin list call
-  alone is up to 2 s, and the API request waits up to `ORDINARY_REQUEST_TIMEOUT`.
-  A report delayed but still within budget can arrive more than 5 s late, be
-  taken as a clock step, and overwrite a newer state; a straggler and a clock
-  step look the same to this rule. The mux-terminal hunter notes the rule is
-  documented as intended, and that since the seqs are wall-clock nanoseconds
-  (`time.time_ns()` in every shipped hook), the server could judge a straggler
-  against its own wall clock instead of "5 s since the last acceptance".
-- **Clock mixing.** Hook reports are stamped with the loop's per-iteration
-  `clock_now`, sampled before the drain that handles them; detection events carry
-  the runtime's tick `now`, sampled before its `/proc` probe and screen read.
-  Every "newer than" decision (`newer_custom_authority`,
-  `hook_authority_not_newer_than`, `fallback_not_older_than_hook`,
-  `detected_state_observed_before_release_suppression`) compares the two. The
-  windows are milliseconds wide, and the headless loop drains queued internal
-  events before API requests, which removes the worst ordering; it is still an
-  implicit, undocumented contract.
 
 ## AGENT-024 - Nothing checks the integration assets against the server's acceptance contract
 
@@ -177,142 +59,80 @@ event spelling (`SessionStart` here, camelCase in Copilot's own hooks format) an
 settings file name; whether Codex has an `Interrupt` hook event; OpenCode's
 global plugin directory name (`plugins/` for OpenCode vs `plugin/` for Kilo).
 
-## AGENT-027 - Idle and Unknown flips reorder the sidebar although both present as Idle
+## AGENT-009 - Seeded history in a restored plain shell reads as live agent chrome
 
-Scope: mux-terminal. Hunter's confidence: high. Related: AGENT-003.
+Scope: agent-detection, pane runtime, restore.
 
-**Claim broken.** "Unknown presents as Idle" (AGENTS.md). The comment on
-`record_agent_state_change_seq` says the seq exists "so endpoint agent sorting
-can observe transitions".
+Restore does not seed saved history for a pane that has an agent resume plan.
+A restored plain shell still gets its history seeded onto the live screen, and if
+an agent is started there later, broad detection regions (Claude's permission
+and no-prompt blockers, Amp's approval footer, Cursor's approval prompt, Grok's
+option dialog, Codex's timer fallback) can read the saved frame as live chrome
+until it scrolls off. The screen snapshot cannot tell seeded rows from new
+output, so no manifest rule can distinguish them. A capture test that seeds a
+Claude dialog and writes a working frame is in
+`crates/shepr-mux/src/pane/agent_detection.rs`. Fix at the restore and pane
+runtime boundary: record which rows were seeded (or the seeded row count) so the
+detector can exclude them, or clear the seeded rows' eligibility once new output
+arrives.
 
-`record_agent_state_change_seq` (`app/actions/events.rs`) compares raw
-`AgentState`, so a change between Idle and Unknown bumps
-`last_agent_state_change_seq`. The client uses that seq as the secondary sort key
-under Priority sort (`agent_sidebar.rs`) and as the recency change trigger
-(`shell/endpoints.rs`). A screen whose rules stop matching for a moment
-(`manifest.rs` returns `Unknown` when no rule fires) moves the row to the top
-with no visible state change; so does process re-detection
-(`set_detected_agent_process_at` resets the fallback to Unknown). Compare
-`presentation_state()` instead.
+## AGENT-034 - Typed report sources stop at the API edge
 
-## AGENT-030 - Mutating TerminalState paths that return `None` leave the caller unaware
+Scope: mux-terminal, server-app.
 
-Scope: mux-terminal. Hunter's confidence: medium; the paths are real, the
-reachable impact small today.
+The arbitration is now one per-source ledger with explicit states, validation
+precedes mutation, and per-agent quirks are descriptor policies. The API parses
+official sources once for reference-policy validation, but internal events
+(`StateEvent` and its reducer in `crates/shepr-server/src/app/`) still carry the
+source and agent label as strings, so `TerminalState` re-parses them. Carry the
+typed source through the event and the reducer. `crates/shepr-mux/src/limits.rs`
+still documents the old silence-based re-anchor rule, which the ledger replaced
+with server wall-clock versus monotonic-clock evidence; reword it.
 
-`update_terminal_state` treats `None` as "nothing changed" (no dirty mark, no
-state-change seq). Several paths mutate and then return `None`:
+## AGENT-032 - Dead data left on the hook and read paths
 
-- `set_agent_session_ref_for_typed_start_source_at` (`sessions.rs`) can clear
-  `hook_authority` (the Codex replacement branch, `replaced_hook_session`, the
-  foreground takeover) and remember stale sessions, and only then run
-  `PersistedAgentSession::from_report(..)?`. If `from_report` fails, the
-  effective state has changed but the caller hears `None`. Latent today, since
-  the API only builds refs through `session_ref_from_report`, which respects the
-  agent's policy: an invariant held in a different crate.
-- Both entry points record the report's seq (`accept_hook_report_at`) before the
-  known-agent, owner and conflicting-session rejections, so a rejected report
-  still advances the source's ordering: a partial mutation on a rejected input.
-- `abandon_agent_resume` discards its own mutation (`let _ =`); the label
-  disappears without `record_agent_state_change_seq`. Given AGENT-027, skipping
-  the bump happens to be right here.
+Scope: mux-terminal, server-app, api.
 
-**Structural fix.** Each entry point validates first and mutates second, so a
-`None` means untouched.
+The unused authority message storage, the runtime serde derives and the unused
+effective-change projections are gone. Left:
 
-## AGENT-032 - Dead or misleading data on the hook path
-
-Scope: mux-terminal. Hunter's confidence: high; each states something untrue.
-Related: TERM-006.
-
-- `HookAuthority.message` is accepted from `pane.report_agent`, stored, cloned
-  into pending reports, and never read.
-- `HookAuthority` derives `Serialize` and `Deserialize`, with a comment about
-  "Decoding needs a fresh local observation time", but is never serialized or
-  decoded. The derives and `#[serde(skip, default = "Instant::now")]` are dead,
-  and the comment describes a path that does not exist.
-- `EffectiveStateChange` computes and allocates two labels and two known agents on
-  every mutation; the only reader (`record_agent_state_change_seq`) uses
-  `previous_state` and `state`. `unchanged_effective_state_change()` builds a full
-  struct whose only use is `previous_state == state`, so the seq code returns
-  immediately, just to make `update_terminal_state` return `Released`. A `bool`
-  would carry the same.
-- `TerminalReadSnapshot` and `truncated` (`read_snapshot.rs`) plus the four
+- The report's `message` still crosses the API and the internal event envelope
+  though nothing reads it; drop it from the parameters, the event and the
+  reducer together.
+- `TerminalReadSnapshot`, its `truncated` flag
+  (`crates/shepr-mux/src/pane/terminal/read_snapshot.rs`) and the four
   `recent_*_snapshot` methods have no production reader apart from history
-  persistence, which ignores `truncated`: leftovers of the pane reads the project
-  removed on purpose.
+  persistence, which ignores `truncated`. Remove what history does not use.
+  (`recent_ansi_snapshot` and `recent_unwrapped_ansi_snapshot` in
+  `pane/terminal/backend.rs` are now identical, and the `format.rs` module doc
+  still names the unwrapped one.)
 
-## AGENT-033 - Two definitions of "the session to persist"
+## AGENT-036 - Hook ordering reads the host clocks inside TerminalState
 
-Scope: mux-terminal. Hunter's confidence: medium (smell with divergence risk).
+Scope: mux-terminal (from the review of the hook ledger).
 
-`TerminalState::current_session_identity_for_persistence` (`hooks.rs`) decides
-`session_ref_changed`, and so when the session is marked dirty, using
-`from_report`: `AgentSource::parse` plus the `accepted_for` check.
-`persist/snapshot.rs` `capture_workspace` decides what is written, re-implementing
-the logic from public fields with `AgentSource::from_pair` and no `accepted_for`
-check. They agree only because `session_ref` is built solely for official pairs
-with a policy-valid kind. Make the method public and have the snapshot call it,
-so the value that marks a save dirty is the value the save writes.
+The per-source hook ledger now accepts a non-increasing sequence as a clock step
+only when the host wall clock has fallen behind its monotonic clock by the
+threshold since the last acceptance. `HookSourceState::record_sequence` and
+`hook_seq_superseded` read `Instant::now()` and `SystemTime::now()` themselves,
+so the `now` parameters of `hook_seq_superseded` and `record_hook_seq` are dead
+and the ordering tests' `t0 + delay` arguments no longer mean anything. Inject a
+wall-clock sample next to the monotonic `now`, as the rest of the arbitration
+does. Separately, a backward wall-clock step smaller than the 5 s threshold still
+drops reports until the clock catches up, which can lose a final idle report;
+decide whether a smaller step should be tolerated.
 
-## AGENT-034 - The TerminalState arbitration is a web of predicates and maps whose invariants live in prose
+## AGENT-037 - A Claude session replaced by /clear may stay pinned to the old id
 
-Scopes: mux-terminal (structural recommendation), agent-detection (structural
-note on the merge layer).
+Scope: mux-terminal (lateral from review, unverified).
 
-`terminal/state/` is about 1,500 lines of arbitration over four maps
-(`hook_report_sequences` and `hook_report_accepted_at`, the suppression map, the
-stale-session map, plus `recent_agent_process_exit`) whose invariants live in
-prose on the fields; AGENT-025, AGENT-026, AGENT-030 and AGENT-031 all break
-them. Effective state is decided by interacting predicates
-(`hook_authority_is_effective`,
-`should_ignore_detected_state_under_full_lifecycle_hook`,
-`visible_blocker_overrides_hook`, release suppression, stale-session memory)
-comparing timestamps from two clocks (AGENT-020). It is string-typed at the
-boundary: the API already canonicalizes labels, yet every report re-parses
-`source` and `agent_label` many times (`parse_agent_label` allocates through
-`normalized_agent_lookup_name`), and agent-specific rules appear as literal pairs
-(`("shepr:codex", "codex")`, `("shepr:opencode", "opencode")`,
-`("shepr:mastracode", "mastracode")`, `("shepr:grok", "grok")`).
-
-The mux-terminal hunter's case for a rewrite:
-
-- Parse once at the API edge into
-  `enum ReportSource { Official(Agent), Custom { source, label } }`, and move the
-  per-agent quirks into `AgentDescriptor` flags next to
-  `full_lifecycle_hook_authority`.
-- Model each official source as one explicit per-source generation state machine
-  (`Live { session }`, `Suspended { session }`, `Exited { session, pending }`,
-  `Cleared { session }`) instead of four maps whose keys must agree, giving "same
-  process, different session" (AGENT-025) and "suspended, not exited"
-  (AGENT-026) states of their own.
-- Validate first and mutate second at every entry point (AGENT-030).
-
-The detection hunter suggests an explicit arbitration table (inputs: detector
-report, hook authority, agent kind; output: effective agent and state) over the
-current predicate web. The cost is upstream tracking: `terminal/state/` is on the
-upstream-watch list, and a rewrite turns future herdr fixes into manual
-re-derivations; the mux-terminal hunter leaves that trade to the owner and notes
-AGENT-025 through AGENT-029 can be fixed in place without it.
-
-## AGENT-018 - Devin is still registered for every hook event
-
-Scope: agent-integration.
-
-The Devin hook now reports only a session id present in the payload, on
-SessionStart and UserPromptSubmit, and no longer guesses from `devin list`. Its
-registration list in `crates/shepr-agent/src/agent/mod.rs` still names six
-events, PreToolUse and PostToolUse included, so python starts inside a
-synchronous hook on every tool call only to exit without reporting. Register
-SessionStart and UserPromptSubmit only.
-
-## AGENT-035 - Integration status turns a config read or parse error into "outdated"
-
-Scope: agent-integration (lateral).
-
-The status readers in `crates/shepr-agent/src/integration/registry.rs` collapse
-a config file read or parse failure into an outdated status through `.ok()`, so
-install at launch tries to rewrite a file it could not read, and the real error
-(permissions, a broken user config) is never reported. Distinguish a missing
-file (not installed) from a read or parse error (report it, and do not attempt a
-rewrite that would clobber or fail on the user's file).
+For an agent without full-lifecycle authority (Claude), a recognized replacement
+start sets the persisted session, but the hook authority keeps the old session
+ref, because only full-lifecycle authorities are released on replacement.
+`current_session_identity_for_persistence` prefers the authority, and
+`conflicting_same_owner_session_ref` rewrites the next state report's new id back
+to the old one when it carries no start source. That could pin the pre-clear
+session for Claude until something clears the authority, so restore would resume
+the wrong conversation. Write a targeted test (Claude session A, SessionStart
+with source clear and session B, then a state report for B) before changing
+anything.

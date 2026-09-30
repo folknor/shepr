@@ -280,6 +280,9 @@ pub(super) fn detection_update_for_publish_with_osc(
         });
     }
 
+    // Screen text has no indication of which rows came from the current
+    // process. If restore seeds saved rows into the active screen, its caller
+    // must preserve that provenance before state matching.
     let detection =
         shepr_agent::detect::detect_agent_with_osc(agent, content, osc_title, osc_progress);
     (!detection.skip_state_update).then_some(detection)
@@ -378,6 +381,35 @@ mod tests {
         assert_eq!(hold, None);
         // The agent leaving again inside the original window is reported.
         assert!(!withhold_agent_absence(None, &mut hold, now));
+    }
+
+    #[test]
+    fn restored_claude_dialog_can_outvote_a_new_working_frame() {
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
+        pane.seed_history_ansi("Run a dynamic workflow?\r\nChoose a workflow\r\nEsc to cancel");
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        pane.process_pty_bytes(pane_id, b"* Waiting for 1 background agent to finish\r\n");
+
+        let inputs = pane.agent_detection_inputs();
+        assert!(inputs.screen_text.contains("Run a dynamic workflow?"));
+        assert!(
+            inputs
+                .screen_text
+                .contains("Waiting for 1 background agent")
+        );
+        let detection = detection_update_for_publish_with_osc(
+            Some(Agent::Claude),
+            &inputs.screen_text,
+            &inputs.osc_title,
+            &inputs.osc_progress,
+            false,
+        )
+        .expect("screen detector reports a state");
+
+        // The display carries no row provenance: saved dialog text remains
+        // indistinguishable from a live dialog after new working output arrives.
+        assert_eq!(detection.state, AgentState::Blocked);
+        assert!(detection.visible_blocker);
     }
 
     #[test]

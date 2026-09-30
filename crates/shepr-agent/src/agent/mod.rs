@@ -191,14 +191,6 @@ const DEVIN_HOOK_EVENTS: &[IntegrationHookEvent] = &[
         None,
         Some(IntegrationHookAction::Session),
     ),
-    hook_event("PreToolUse", None, Some(IntegrationHookAction::Session)),
-    hook_event("PostToolUse", None, Some(IntegrationHookAction::Session)),
-    hook_event(
-        "PermissionRequest",
-        None,
-        Some(IntegrationHookAction::Session),
-    ),
-    hook_event("Stop", None, Some(IntegrationHookAction::Session)),
 ];
 const DROID_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
     "SessionStart",
@@ -246,6 +238,105 @@ const MASTRACODE_HOOK_EVENTS: &[IntegrationHookEvent] = &[
     hook_event("Stop", None, Some(IntegrationHookAction::Idle)),
 ];
 
+/// Session transitions supported by the integration's own event vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookSessionPolicy {
+    pub replacement_starts: &'static [resume::AgentSessionStartSource],
+    pub replace_without_start: bool,
+    pub state_requires_current_session: bool,
+    pub unsequenced_selection: bool,
+    pub foreground_takeover: bool,
+}
+
+impl HookSessionPolicy {
+    const DEFAULT: Self = Self {
+        replacement_starts: &[],
+        replace_without_start: false,
+        state_requires_current_session: false,
+        unsequenced_selection: false,
+        foreground_takeover: true,
+    };
+    const CLAUDE: Self = Self {
+        replacement_starts: &[
+            resume::AgentSessionStartSource::Clear,
+            resume::AgentSessionStartSource::Resume,
+            resume::AgentSessionStartSource::Compact,
+        ],
+        ..Self::DEFAULT
+    };
+    const CODEX: Self = Self {
+        replacement_starts: &[
+            resume::AgentSessionStartSource::Startup,
+            resume::AgentSessionStartSource::Clear,
+            resume::AgentSessionStartSource::Resume,
+            resume::AgentSessionStartSource::Compact,
+        ],
+        state_requires_current_session: true,
+        ..Self::DEFAULT
+    };
+    const MASTRACODE: Self = Self {
+        replacement_starts: &[resume::AgentSessionStartSource::Startup],
+        ..Self::DEFAULT
+    };
+    const KILO: Self = Self {
+        replacement_starts: &[resume::AgentSessionStartSource::Startup],
+        ..Self::DEFAULT
+    };
+    const OPENCODE: Self = Self {
+        replacement_starts: &[resume::AgentSessionStartSource::Select],
+        unsequenced_selection: true,
+        ..Self::DEFAULT
+    };
+    const PI: Self = Self {
+        replacement_starts: &[
+            resume::AgentSessionStartSource::New,
+            resume::AgentSessionStartSource::Resume,
+            resume::AgentSessionStartSource::Fork,
+        ],
+        ..Self::DEFAULT
+    };
+    const GROK: Self = Self {
+        replacement_starts: &[
+            resume::AgentSessionStartSource::New,
+            resume::AgentSessionStartSource::Load,
+        ],
+        foreground_takeover: false,
+        ..Self::DEFAULT
+    };
+    const OMP: Self = Self {
+        replacement_starts: &[
+            resume::AgentSessionStartSource::Startup,
+            resume::AgentSessionStartSource::New,
+            resume::AgentSessionStartSource::Resume,
+            resume::AgentSessionStartSource::Fork,
+        ],
+        ..Self::DEFAULT
+    };
+    const ANTIGRAVITY: Self = Self {
+        replace_without_start: true,
+        ..Self::DEFAULT
+    };
+    // A recognized Kimi SessionStart is an explicit selection, never a state
+    // report claiming a different session in the same live process.
+    const KIMI: Self = Self {
+        replacement_starts: &[
+            resume::AgentSessionStartSource::Startup,
+            resume::AgentSessionStartSource::New,
+            resume::AgentSessionStartSource::Clear,
+            resume::AgentSessionStartSource::Resume,
+            resume::AgentSessionStartSource::Fork,
+            resume::AgentSessionStartSource::Compact,
+        ],
+        ..Self::DEFAULT
+    };
+
+    pub fn allows_replacement(self, start: Option<resume::AgentSessionStartSource>) -> bool {
+        start.map_or(self.replace_without_start, |start| {
+            self.replacement_starts.contains(&start)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDescriptor {
     pub agent: Agent,
@@ -257,6 +348,7 @@ pub struct AgentDescriptor {
     pub reserves_native_state: bool,
     pub full_lifecycle_hook_authority: bool,
     pub session_identity_only_integration: bool,
+    pub hook_session_policy: HookSessionPolicy,
     pub resume_support: Option<ResumeSupport>,
     pub screen_manifest: bool,
     pub title_activity_glyphs: &'static str,
@@ -276,6 +368,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::PI,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::IdOrPath,
             ResumeArgs::FlagValue("--session"),
@@ -294,6 +387,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::CLAUDE,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
@@ -313,6 +407,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::CODEX,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::Subcommand("resume"),
@@ -332,6 +427,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -347,6 +443,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
@@ -366,6 +463,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
@@ -385,6 +483,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: true,
+        hook_session_policy: HookSessionPolicy::ANTIGRAVITY,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue(CONVERSATION_FLAG),
@@ -404,6 +503,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -419,6 +519,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::OMP,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::IdOrPath,
             ResumeArgs::InlineFlag("--resume="),
@@ -437,6 +538,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::MASTRACODE,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--thread"),
@@ -456,6 +558,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::OPENCODE,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
@@ -474,6 +577,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::InlineFlag("--resume="),
@@ -493,6 +597,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::KIMI,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
@@ -512,6 +617,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -527,6 +633,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
@@ -546,6 +653,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -561,6 +669,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::GROK,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
@@ -580,6 +689,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::KILO,
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
@@ -598,6 +708,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -613,6 +724,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -628,6 +740,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -643,6 +756,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -658,6 +772,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
+        hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
         screen_manifest: true,
         title_activity_glyphs: "",
@@ -1022,6 +1137,18 @@ mod tests {
             Agent::all()
                 .filter(|agent| agent.integration_target().is_some())
                 .count()
+        );
+    }
+
+    #[test]
+    fn devin_registers_only_session_identity_events() {
+        assert_eq!(
+            IntegrationTarget::Devin
+                .hook_events()
+                .iter()
+                .map(|event| event.event)
+                .collect::<Vec<_>>(),
+            ["SessionStart", "UserPromptSubmit"]
         );
     }
 
