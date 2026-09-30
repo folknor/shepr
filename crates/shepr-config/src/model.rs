@@ -8,7 +8,7 @@ use super::{
     ThemeConfig,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentPanelSortConfig {
     #[default]
@@ -16,7 +16,7 @@ pub enum AgentPanelSortConfig {
     Priority,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusIndicatorStyle {
     #[default]
@@ -24,7 +24,7 @@ pub enum StatusIndicatorStyle {
     Symbols,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostCursorModeConfig {
     #[default]
@@ -32,7 +32,7 @@ pub enum HostCursorModeConfig {
     Drawn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarCollapsedModeConfig {
     #[default]
@@ -46,20 +46,6 @@ pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 impl RightClickPassthroughModifierConfig {
     pub fn modifiers(self) -> Option<KeyModifiers> {
         self.0
-    }
-
-    pub(crate) fn from_modifiers(modifiers: Option<KeyModifiers>) -> Self {
-        Self(modifiers)
-    }
-}
-
-impl Serialize for RightClickPassthroughModifierConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let value = self.0.map_or("off", canonical_right_click_modifier);
-        serializer.serialize_str(value)
     }
 }
 
@@ -91,13 +77,6 @@ const RIGHT_CLICK_MODIFIER_ALIASES: &[(&str, Option<KeyModifiers>)] = &[
         Some(KeyModifiers::CONTROL.union(KeyModifiers::ALT)),
     ),
 ];
-
-fn canonical_right_click_modifier(modifiers: KeyModifiers) -> &'static str {
-    RIGHT_CLICK_MODIFIER_ALIASES
-        .iter()
-        .find_map(|(alias, value)| (*value == Some(modifiers)).then_some(*alias))
-        .unwrap_or("off")
-}
 
 fn right_click_modifier_values_error() -> String {
     let values = RIGHT_CLICK_MODIFIER_ALIASES
@@ -168,21 +147,6 @@ pub enum NewTerminalCwdConfig {
     Path(String),
 }
 
-impl Serialize for NewTerminalCwdConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let value = match self {
-            Self::Follow => "follow",
-            Self::Home => "home",
-            Self::Current => "current",
-            Self::Path(path) => path,
-        };
-        serializer.serialize_str(value)
-    }
-}
-
 impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -198,7 +162,7 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct TerminalConfig {
     /// Executable used for new interactive panes. Empty means `$SHELL`, or
@@ -210,7 +174,7 @@ pub struct TerminalConfig {
     pub new_cwd: NewTerminalCwdConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
@@ -259,7 +223,7 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
     (min <= max).then_some(SidebarBounds { min, max })
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub theme: ThemeConfig,
@@ -316,7 +280,7 @@ macro_rules! define_keys_config {
         navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
         navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
     ) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
         #[serde(default)]
         pub struct KeysConfig {
             /// Prefix key to enter prefix mode (for example, `ctrl+b` or `f12`).
@@ -343,7 +307,7 @@ macro_rules! define_keys_config {
 
 crate::keybinding_table!(define_keys_config);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PaneBordersConfig {
     #[default]
@@ -362,7 +326,7 @@ impl PaneBordersConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
     /// Expanded sidebar width (columns). Default: 26. While unset, the client
@@ -436,7 +400,7 @@ where
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImeCursorShape {
     Block,
@@ -462,7 +426,7 @@ impl ImeCursorShape {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
     /// Virtual terminal width used when no client is attached. Default: 120.
@@ -471,7 +435,7 @@ pub struct ServerConfig {
     pub headless_rows: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct AdvancedConfig {
     /// Approximate scrollback budget in bytes per pane terminal, converted to a
@@ -501,23 +465,7 @@ where
     Ok(agents)
 }
 
-fn serialize_cjk_ime_agents<S>(
-    agents: &[crate::ConfigAgent],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeSeq;
-
-    let mut sequence = serializer.serialize_seq(Some(agents.len()))?;
-    for agent in agents {
-        sequence.serialize_element(agent.label())?;
-    }
-    sequence.end()
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
     /// Allow launching shepr inside an existing shepr pane. Default: false.
@@ -543,10 +491,7 @@ pub struct ExperimentalConfig {
     /// Agent labels and aliases are accepted; executable paths and suffixes are
     /// not config names.
     /// Default: empty.
-    #[serde(
-        deserialize_with = "deserialize_cjk_ime_agents",
-        serialize_with = "serialize_cjk_ime_agents"
-    )]
+    #[serde(deserialize_with = "deserialize_cjk_ime_agents")]
     pub cjk_ime_agents: Vec<crate::ConfigAgent>,
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
@@ -975,22 +920,13 @@ right_click_passthrough_modifier = "{value}"
         }
     }
 
-    /// Every alias parses to its table value, serializes to a canonical alias
-    /// with that same value, and is named in the error message.
+    /// Every alias parses to its table value and is named in the error message.
     #[test]
-    fn right_click_modifier_aliases_round_trip() {
+    fn right_click_modifier_aliases_parse() {
         let error = right_click_modifier_values_error();
         for (alias, value) in RIGHT_CLICK_MODIFIER_ALIASES {
             let parsed = parse_right_click_passthrough_modifier(alias).expect("alias parses");
             assert_eq!(parsed, *value, "alias {alias:?}");
-            let serialized = serde_json::to_value(RightClickPassthroughModifierConfig(parsed))
-                .expect("serializes");
-            let canonical = serialized.as_str().expect("a string");
-            assert_eq!(
-                parse_right_click_passthrough_modifier(canonical).expect("canonical parses"),
-                *value,
-                "alias {alias:?} serialized as {canonical:?}"
-            );
             if !alias.is_empty() {
                 assert!(error.contains(alias), "{error} omits {alias:?}");
             }

@@ -1,5 +1,10 @@
 # shepr configuration
 # Place this file at ~/.config/shepr/config.toml
+#
+# Each process uses its own host's config. An SSH machine decides its panes,
+# shell, session, pane borders and gaps, border colours and window title.
+# The host running the client decides keys, the sidebar, prompts, mouse and
+# copy behaviour, and the colours of everything the client draws.
 
 [theme]
 # Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,
@@ -114,7 +119,7 @@
 # Expanded sidebar width in columns. It must be between sidebar_min_width and
 # sidebar_max_width.
 # sidebar_width = 26
-# While unset, mouse or key changes to sidebar width are remembered per server.
+# While unset, mouse or key changes to sidebar width are remembered by the client.
 # Once set, this value wins at every launch.
 
 # Minimum sidebar width when expanded (columns)
@@ -125,7 +130,7 @@
 
 # Start with the sidebar collapsed. Changes take effect on the next launch.
 # sidebar_start_collapsed = false
-# While unset, mouse or key changes to the collapsed state are remembered per server.
+# While unset, mouse or key changes to the collapsed state are remembered by the client.
 # Once set, this value wins at every launch.
 
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
@@ -197,7 +202,7 @@
 
 # Agent panel ordering: "spaces" (grouped by space) or "priority" (attention queue).
 # agent_panel_sort = "spaces"
-# While unset, mouse or key changes to panel order are remembered per server.
+# While unset, mouse or key changes to panel order are remembered by the client.
 # Once set, this value wins at every launch.
 
 # Agent status indicators: "dots" preserves the compact color marks; "symbols" uses

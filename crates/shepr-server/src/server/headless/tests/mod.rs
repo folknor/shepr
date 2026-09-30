@@ -145,7 +145,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         client_socket_identity,
         clients: ClientRegistry::default(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
-        config: Arc::new(shepr_config::ValidatedConfig::test_default()),
         shell_session_cache: None,
         shell_session_generation: 0,
         focused_panes: HashSet::new(),

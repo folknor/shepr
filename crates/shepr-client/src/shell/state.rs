@@ -580,7 +580,6 @@ pub struct ClientShellState {
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
-    pub(super) active_resolved_config: Option<std::sync::Arc<shepr_config::ValidatedConfig>>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
@@ -714,7 +713,6 @@ impl ClientShellState {
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
-            active_resolved_config: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -916,7 +914,6 @@ impl ClientShellState {
         &mut self,
         snapshot: Box<ClientShellSnapshot>,
         generation: Option<u64>,
-        config: Option<&std::sync::Arc<shepr_config::ValidatedConfig>>,
     ) {
         let active_boot_key = match &self.active_endpoint_id {
             ClientEndpointId::Local => snapshot.boot_id.to_string(),
@@ -932,18 +929,6 @@ impl ClientShellState {
             })
         {
             return;
-        }
-        // The keymap follows the config of the endpoint being presented. An
-        // endpoint with no installed config (state built without a connect
-        // step) leaves the keymap as it is.
-        let endpoint_keybindings_changed = config.is_some_and(|config| {
-            self.active_resolved_config.as_ref().is_none_or(|current| {
-                !std::sync::Arc::ptr_eq(current, config)
-                    && !current.same_keybinding_resolution(config)
-            })
-        });
-        if let Some(config) = config {
-            self.active_resolved_config = Some(std::sync::Arc::clone(config));
         }
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.
@@ -977,15 +962,6 @@ impl ClientShellState {
             .filter(|previous| Some(previous.as_str()) != snapshot.focused_pane_id.as_deref())
         {
             self.previous_pane_id = Some(previous.clone());
-        }
-        if endpoint_keybindings_changed && let Some(config) = config {
-            self.config.apply_endpoint_config(config);
-            if matches!(
-                self.mode,
-                ClientShellMode::Prefix | ClientShellMode::Navigate | ClientShellMode::Resize
-            ) {
-                self.mode = ClientShellMode::Terminal;
-            }
         }
         if self
             .snapshot

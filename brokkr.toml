@@ -14,18 +14,16 @@ debug = true
 document_private_items = true
 
 # The compact codec is positional. These serde shapes either omit fields or
-# need self-describing data. Config's two TOML-only enum shapes are mirrored
-# in shepr-config/src/wire.rs and carry the allow marker on the line above
-# their attribute. Protocol messages also reuse selected shepr-core and
-# shepr-vt types directly. The code region masks string literals, quotes
-# included, so a `tag = "..."` argument is matched by the `=` followed by the
-# argument separator, the closing paren or the end of a wrapped line.
+# need self-describing data. Protocol messages also reuse selected shepr-core
+# and shepr-vt types directly. Config types never cross the wire, so config
+# is not checked. The code region masks string literals, quotes included, so
+# a `tag = "..."` argument is matched by the `=` followed by the argument
+# separator, the closing paren or the end of a wrapped line.
 [[textlint]]
 name = "wire-types-use-positional-serde-shapes"
 pattern = '\b(?:skip_serializing_if|flatten|untagged)\b|\btag\s*=\s*(?:,|\)|$)'
 paths = [
     "crates/shepr-protocol/src/**/*.rs",
-    "crates/shepr-config/src/**/*.rs",
     "crates/shepr-core/src/**/*.rs",
     "crates/shepr-vt/src/**/*.rs",
 ]
@@ -34,7 +32,7 @@ skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "toml-only-serde-shape"
 allow_marker_above = 1
-message = "positional wire types cannot use skip_serializing_if, flatten, untagged or tagged serde enums; mirror TOML-only config shapes before wire encoding"
+message = "positional wire types cannot use skip_serializing_if, flatten, untagged or tagged serde enums"
 
 [[textlint]]
 name = "persist-clock-is-injected"
@@ -815,11 +813,11 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-config-layer"
 from = "shepr-config"
-allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "shepr-platform", "toml"]
+allow = ["crossterm", "ratatui", "serde", "serde_ignored", "shepr-agent", "shepr-core", "shepr-platform", "toml"]
 kinds = ["normal"]
 
-# The welcome carries the server's validated config, so protocol sits above
-# config; config never depends on protocol.
+# Protocol shares grid and input-batch limits with config; config never
+# depends on protocol.
 [[dependency_rule]]
 name = "shepr-protocol-layer"
 from = "shepr-protocol"

@@ -115,9 +115,6 @@ pub struct HeadlessServer {
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: shepr_protocol::BootId,
-    /// The config this server was launched with, immutable for its lifetime.
-    /// Each connection's welcome carries it; snapshots never do.
-    config: Arc<shepr_config::ValidatedConfig>,
     /// Shared session source for shell projections; `None` until a render
     /// with a shell client builds it.
     shell_session_cache: Option<render::ShellSessionCache>,
@@ -194,7 +191,6 @@ impl HeadlessServer {
     pub fn new(
         app: app::App,
         api_server: Option<shepr_api::ServerHandle>,
-        config: Arc<shepr_config::ValidatedConfig>,
         stop_requested: Arc<shepr_api::ServerStopSignal>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
@@ -230,7 +226,6 @@ impl HeadlessServer {
             client_socket_identity,
             clients: ClientRegistry::default(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
-            config,
             shell_session_cache: None,
             shell_session_generation: 0,
             focused_panes: HashSet::new(),
@@ -748,7 +743,6 @@ impl HeadlessServer {
             &mut self.clients,
             self.lifecycle.stop_signal(),
             &self.server_event_tx,
-            &self.config,
         )
     }
 

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::ops::Deref;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::limits::MAX_SSH_TARGET_BYTES;
 
@@ -97,12 +97,6 @@ impl SshTarget {
     }
 }
 
-impl Serialize for SshTarget {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for SshTarget {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <String as Deserialize>::deserialize(deserializer)?;
@@ -179,12 +173,6 @@ impl fmt::Display for MachineLabel {
     }
 }
 
-impl Serialize for MachineLabel {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 impl<'de> Deserialize<'de> for MachineLabel {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <String as Deserialize>::deserialize(deserializer)?;
@@ -193,7 +181,7 @@ impl<'de> Deserialize<'de> for MachineLabel {
 }
 
 /// One `[[machines]]` entry: a label and the SSH target it reaches.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MachineConfig {
     pub label: MachineLabel,
     pub ssh: SshTarget,

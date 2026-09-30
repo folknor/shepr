@@ -110,18 +110,14 @@ impl App {
         let refresh_repo_discovery = self.git_refresh.git_identity_refresh_requested
             || now.saturating_duration_since(self.git_refresh.last_git_repo_discovery_refresh)
                 >= GIT_REPO_DISCOVERY_REFRESH_INTERVAL;
-        let mut workspaces = self.workspace_git_refresh_items(refresh_repo_discovery);
-        let mut demand = self.git_refresh_demand();
-        let identity_only = demand.is_empty() && !self.git_refresh.git_identity_refresh_requested;
-        if identity_only {
-            // Nothing shows Git status, but the workspace label still follows
-            // the resolved cwd. Only workspaces whose identity has to be
-            // (re)discovered need work: an item without a cache key hint is
-            // one whose cwd moved away from the cached identity, one that was
-            // never discovered, or one due for periodic rediscovery.
-            workspaces.retain(|item| item.cache_key_hint.is_none());
-        }
-
+        let workspaces = self.workspace_git_refresh_items(refresh_repo_discovery);
+        // Clients draw the sidebar from their own config, so the server
+        // always computes both Git values. Keep this demand full when porting
+        // upstream Git refresh changes, which derive it from sidebar rows.
+        let demand = GitStatusRefreshDemand {
+            branch: true,
+            ahead_behind: true,
+        };
         if workspaces.is_empty() {
             self.git_refresh.last_git_remote_status_refresh = now;
             self.git_refresh.git_identity_refresh_requested = false;
@@ -131,11 +127,6 @@ impl App {
         self.git_refresh.git_refresh_in_flight = true;
         let event_tx = self.event_tx.clone();
         let cache = self.git_refresh.git_status_cache.clone();
-        // A rediscovered identity may be a different repo, so its branch is
-        // refreshed with it rather than left pointing at the old one.
-        if self.git_refresh.git_identity_refresh_requested || identity_only {
-            demand.branch = true;
-        }
         self.git_refresh.git_identity_refresh_requested = false;
         if refresh_repo_discovery {
             self.git_refresh.last_git_repo_discovery_refresh = now;
@@ -176,26 +167,10 @@ impl App {
         self.git_refresh.mark_due(now);
     }
 
-    /// When the next Git refresh pass is due. There is always a pass while
-    /// workspaces exist, even when no sidebar token shows Git status: the
-    /// workspace label is derived from the Git identity of the resolved cwd
-    /// (runtime cwd first, OSC 7 second), and a shell that never emits OSC 7
-    /// only reveals a `cd` through this poll. A pass with nothing to
-    /// rediscover returns without spawning the worker thread.
+    /// Poll Git status and the workspace identity while workspaces exist.
+    /// Runtime cwd changes without OSC 7 are discovered on this schedule too.
     pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
         self.git_refresh.deadline(!self.state.workspaces.is_empty())
-    }
-
-    fn git_refresh_demand(&self) -> GitStatusRefreshDemand {
-        let mut demand = GitStatusRefreshDemand::default();
-        for token in self.state.settings.sidebar_spaces.rows.iter().flatten() {
-            match token.parts().0 {
-                shepr_config::SpaceSidebarToken::Branch => demand.branch = true,
-                shepr_config::SpaceSidebarToken::GitStatus => demand.ahead_behind = true,
-                _ => {}
-            }
-        }
-        demand
     }
 
     fn workspace_git_refresh_items(
@@ -515,83 +490,66 @@ mod tests {
     }
 
     #[test]
-    fn due_git_refresh_does_not_start_without_sidebar_consumer() {
+    fn rows_without_git_tokens_still_refresh_branch_and_ahead_behind() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("git-full-demand");
+        let git = |args: &[&str]| {
+            let output = shepr_test_support::command_in_scratch("git", "git-full-demand-command")
+                .current_dir(scratch.path())
+                .args(args)
+                .output()
+                .expect("run fixture Git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        };
+        git(&["init", "--initial-branch=main"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+        git(&["branch", "upstream"]);
+        git(&["branch", "--set-upstream-to=upstream"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "ahead",
+        ]);
         let mut config = shepr_config::Config::default();
         config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
         let mut app = test_app(&config);
-        let mut workspace = Workspace::test_new("test");
-        // Identity already discovered and matching the resolved cwd: nothing
-        // for the refresh to (re)discover, so with no sidebar consumer of
-        // Git status it should have no work to do.
-        let identity_cwd = workspace.identity_cwd.clone();
-        workspace.cached_identity_cwd = identity_cwd.clone();
-        workspace.cached_git_status_key = identity_cwd;
-        app.state.workspaces.push(workspace);
+        let mut ws = Workspace::test_new("test");
+        ws.identity_cwd = scratch.path().to_path_buf();
+        ws.cached_identity_cwd = ws.identity_cwd.clone();
+        ws.cached_git_status_key = ws.identity_cwd.clone();
+        app.state.workspaces.push(ws);
         let now = Instant::now();
         app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
-
         app.start_git_status_refresh_if_due(now);
-
-        assert!(!app.git_refresh.git_refresh_in_flight);
-        assert!(app.event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn git_refresh_demand_matches_sidebar_rows() {
-        let cases = [
-            (
-                shepr_config::SpaceSidebarToken::Workspace,
-                GitStatusRefreshDemand::default(),
-            ),
-            (
-                shepr_config::SpaceSidebarToken::Branch,
-                GitStatusRefreshDemand {
-                    branch: true,
-                    ahead_behind: false,
-                },
-            ),
-            (
-                shepr_config::SpaceSidebarToken::GitStatus,
-                GitStatusRefreshDemand {
-                    branch: false,
-                    ahead_behind: true,
-                },
-            ),
-        ];
-
-        for (token, expected) in cases {
-            let mut config = shepr_config::Config::default();
-            config.ui.sidebar.spaces.rows = vec![vec![token.clone()]];
-            let mut app = test_app(&config);
-            app.state.workspaces.push(Workspace::test_new("test"));
-
-            assert_eq!(app.git_refresh_demand(), expected, "token: {token:?}");
-            // The label identity is polled whether or not Git status is shown.
-            assert!(app.git_refresh_deadline().is_some(), "token: {token:?}");
-        }
-    }
-
-    #[test]
-    fn settled_identity_without_git_tokens_spawns_no_refresh_worker() {
-        for custom_name in [None, Some("custom".to_string())] {
-            let mut config = shepr_config::Config::default();
-            config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
-            let mut app = test_app(&config);
-            let mut ws = Workspace::test_new("test");
-            ws.custom_name = custom_name;
-            let identity_cwd = ws.identity_cwd.clone();
-            ws.cached_identity_cwd = identity_cwd.clone();
-            ws.cached_git_status_key = identity_cwd;
-            app.state.workspaces.push(ws);
-            let now = Instant::now();
-            app.git_refresh.last_git_remote_status_refresh =
-                now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
-
-            app.start_git_status_refresh_if_due(now);
-
-            assert!(!app.git_refresh.git_refresh_in_flight);
-            assert_eq!(app.git_refresh.last_git_remote_status_refresh, now);
-        }
+        assert!(app.git_refresh.git_refresh_in_flight);
+        let AppEvent::GitStatusRefreshed { results, .. } =
+            app.event_rx.blocking_recv().expect("refresh")
+        else {
+            panic!("expected Git refresh");
+        };
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].branch.as_deref(), Some("main"));
+        let counts = results[0].ahead_behind.expect("ahead/behind");
+        assert_eq!(counts.ahead, 1);
+        assert_eq!(counts.behind, 0);
     }
 
     #[test]

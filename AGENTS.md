@@ -61,18 +61,21 @@ and `shepr detect explain <pane>` says which rule decided its state.
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.
-One thing qualifies that: each connection's handshake welcome carries the
-server's config, and the client validates it again when it decodes the welcome,
-with the checks that only mean something on the sending host (the new-pane cwd
-exists, the shell resolves) skipped. The server's config crosses hosts, and the
-client rebuilds its runtime values from it; the build-identity handshake is
-what guarantees both ends run the same validator. The config belongs to the
-accepted connection generation: it arrives once per connection (a reconnect may
-carry a different one), each endpoint keeps the one it was last given, the
-client installs it before it processes that generation's snapshots, and a
-handoff applies the destination endpoint's config at the presentation
-transition. A config that fails to decode fails that handshake and shows as
-that endpoint's Attention diagnostic; the other endpoints stay usable.
+Config never crosses hosts. Each process uses only the config.toml of the
+host it runs on, and the handshake welcome carries no config. (The client's
+hello does report its mouse-capture preference, which comes from its own
+`ui.mouse_capture`, so the server knows when to capture the mouse for that
+client.) A setting
+belongs to whoever draws or interprets it. The client applies its own
+config to everything it draws and interprets: keys, the sidebar, agent
+panel order, status indicators, prompts, mouse and copy behaviour and
+their colours, the same whichever machine is being presented. Each server
+applies its own config to what it runs and to what it renders into pane
+cells: shell and working directory, session, pane borders, gaps and
+scrollbars, the colours of that pane chrome, and the window title. A
+machine whose theme differs from the local one therefore draws its pane
+chrome in its own colours. A server always computes a workspace's Git
+branch and ahead/behind, whatever any sidebar shows.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
@@ -130,7 +133,7 @@ orientation, and nothing checks them:
 - `shepr-agent`: detection manifests and agent integrations.
 - `shepr-config`: configuration parsing and validation.
 - `shepr-protocol`: compact wire types and codec; it depends on `shepr-config`
-  because the handshake welcome carries the server's validated config.
+  for the grid and input-batch limits the two share.
 - `shepr-api`: JSON API schema, client and server transport.
 - `shepr-termio`: terminal input and copy mode.
 - `shepr-remote`: configured machines and SSH connections.

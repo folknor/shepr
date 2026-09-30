@@ -54,7 +54,7 @@ pub fn terminal_grid_cells(cols: u16, rows: u16) -> Option<usize> {
 
 /// Maximum length in bytes of an SSH target.
 ///
-/// Bounds a value that ends up on an ssh command line and in the wire config.
+/// Bounds a value that ends up on an ssh command line.
 pub(crate) const MAX_SSH_TARGET_BYTES: usize = 1024;
 
 /// Maximum rows accepted in each configured sidebar layout.
@@ -118,28 +118,6 @@ pub(crate) const MIN_FUNCTION_KEY_NUMBER: u8 = 1;
 /// Crossterm's Unix parser sets the upper bound because larger function-key
 /// names cannot be represented by its key events.
 pub(crate) const MAX_FUNCTION_KEY_NUMBER: u8 = 35;
-
-macro_rules! count_key_binding_fields {
-    (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-    ) => {
-        [
-            $(stringify!($action_field),)*
-            $(stringify!($indexed_field),)*
-            $(stringify!($navigate_config_field),)*
-            $(stringify!($navigate_indexed_config_field),)*
-        ].len()
-    };
-}
-
-/// Number of keybinding fields in the wire config.
-///
-/// The value is derived from the shared keybinding table so the wire vector
-/// accepts exactly the same set of fields as config parsing and presentation.
-pub(crate) const KEY_BINDING_COUNT: usize = crate::keybinding_table!(count_key_binding_fields);
 
 #[cfg(test)]
 mod tests {

@@ -2,8 +2,6 @@ use super::*;
 use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
 
-mod codec;
-
 /// A public pane id from its canonical spelling (`<workspace>:p<number>`).
 /// Test ids go through the parser a server's ids go through, so a test cannot
 /// build an id no server would issue.

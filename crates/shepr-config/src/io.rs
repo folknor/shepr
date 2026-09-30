@@ -1,13 +1,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use shepr_core::env::EnvVar;
 
 use super::{
-    Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, ValidatedConfig,
-    model::LoadedConfig,
-    validated::{CwdCheck, ShellCheck},
+    Config, ConfigDiagnostic, ConfigProvenance, ConfigSource, ValidatedConfig, model::LoadedConfig,
 };
 
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
@@ -32,7 +29,7 @@ pub const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
 /// flag. Config and the client-owned state stay shared by every profile.
 /// A server of another build is still refused by the build-identity checks,
 /// which is what tells the two apart once they can no longer collide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
     Release,
     Dev,
@@ -84,7 +81,7 @@ impl BuildProfile {
 /// Paths and the local target resolved once at the process boundary and
 /// passed to consumers. Production constructors reject unresolved path inputs
 /// that would put files relative to the working directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     config_dir: PathBuf,
     state_dir: PathBuf,
@@ -98,46 +95,7 @@ pub struct AppPaths {
     provenance: PathProvenance,
 }
 
-impl<'de> Deserialize<'de> for AppPaths {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Wire {
-            config_dir: PathBuf,
-            state_dir: PathBuf,
-            data_dir: PathBuf,
-            xdg_runtime_dir: PathBuf,
-            runtime_dir: PathBuf,
-            config_file: PathBuf,
-            home_dir: Option<PathBuf>,
-            current_dir: Option<PathBuf>,
-            server_address: super::ServerAddress,
-            provenance: PathProvenance,
-        }
-
-        let wire = Wire::deserialize(deserializer)?;
-        let paths = Self {
-            config_dir: wire.config_dir,
-            state_dir: wire.state_dir,
-            data_dir: wire.data_dir,
-            xdg_runtime_dir: wire.xdg_runtime_dir,
-            runtime_dir: wire.runtime_dir,
-            config_file: wire.config_file,
-            home_dir: wire.home_dir,
-            current_dir: wire.current_dir,
-            server_address: wire.server_address,
-            provenance: wire.provenance,
-        };
-        paths
-            .validate_resolved()
-            .map_err(serde::de::Error::custom)?;
-        Ok(paths)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathProvenance {
     pub config_dir: ConfigSource,
     pub state_dir: ConfigSource,
@@ -153,30 +111,6 @@ pub struct PathProvenance {
 }
 
 impl AppPaths {
-    fn validate_resolved(&self) -> Result<(), String> {
-        for (name, path) in [
-            ("config_dir", self.config_dir()),
-            ("state_dir", self.state_dir()),
-            ("data_dir", self.data_dir()),
-            ("XDG runtime directory", self.xdg_runtime_dir()),
-            ("runtime_dir", self.runtime_dir()),
-            ("config_file", self.config_file()),
-            ("API socket", self.server_address.api_socket()),
-            ("client socket", self.server_address.client_socket()),
-        ] {
-            if !path.is_absolute() {
-                return Err(format!("resolved {name} must be an absolute path"));
-            }
-        }
-        if self.home_dir().is_none_or(|path| !path.is_absolute()) {
-            return Err("resolved home_dir must be an absolute path".to_owned());
-        }
-        if self.current_dir().is_some_and(|path| !path.is_absolute()) {
-            return Err("resolved current_dir must be an absolute path".to_owned());
-        }
-        Ok(())
-    }
-
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
     }
@@ -615,19 +549,9 @@ impl Config {
             Ok(Some(content)) => Self::load_from_str_with_paths(&content, paths),
             Ok(None) => {
                 let config = Self::default();
-                let provenance = match ConfigProvenance::from_config(&config, None) {
-                    Ok(provenance) => provenance,
-                    Err(error) => {
-                        return default_loaded_config(vec![ConfigDiagnostic::Provenance(error)]);
-                    }
-                };
-                let resolution = super::validated::ConfigResolution::parse(
-                    &config,
-                    &provenance,
-                    paths,
-                    CwdCheck::AtLaunch,
-                    ShellCheck::AtLaunch,
-                );
+                let provenance = ConfigProvenance::from_document(None);
+                let resolution =
+                    super::validated::ConfigResolution::parse(&config, &provenance, paths);
                 let diagnostics = resolution
                     .diagnostics
                     .iter()
@@ -658,22 +582,9 @@ impl Config {
                 let document = toml::Value::Table(table);
                 match deserialize_with_ignored::<Config, _>(document.clone()) {
                     Ok((config, ignored_keys)) => {
-                        let provenance =
-                            match ConfigProvenance::from_config(&config, Some(&document)) {
-                                Ok(provenance) => provenance,
-                                Err(error) => {
-                                    return default_loaded_config(vec![
-                                        ConfigDiagnostic::Provenance(error),
-                                    ]);
-                                }
-                            };
-                        let resolution = super::validated::ConfigResolution::parse(
-                            &config,
-                            &provenance,
-                            paths,
-                            CwdCheck::AtLaunch,
-                            ShellCheck::AtLaunch,
-                        );
+                        let provenance = ConfigProvenance::from_document(Some(&document));
+                        let resolution =
+                            super::validated::ConfigResolution::parse(&config, &provenance, paths);
                         let (unknown_sections, unknown_diagnostics) =
                             unknown_top_level_sections(&document, &ignored_keys);
                         let mut diagnostics = unknown_diagnostics
@@ -726,7 +637,7 @@ pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDia
 
 fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
     let config = Config::default();
-    let provenance = ConfigProvenance::defaults(&config);
+    let provenance = ConfigProvenance::defaults();
     LoadedConfig {
         config,
         provenance,
@@ -844,8 +755,8 @@ where
     Ok((value, ignored))
 }
 
-/// Absolute, so a config built on them survives the resolved-path check on
-/// the wire, and identical across calls, so two test configs compare equal.
+/// Absolute like resolved launch paths, and identical across calls, so two
+/// test configs compare equal.
 /// The root cannot be created by an unprivileged user: a test that writes
 /// through these paths fails instead of leaving files in a shared location.
 #[cfg(test)]
@@ -1642,46 +1553,6 @@ id = "example"
         }
         env.remove("HOME");
         assert!(AppPaths::resolve().is_err());
-    }
-
-    #[test]
-    fn app_paths_wire_deserialization_rejects_unresolved_paths() {
-        let scratch = shepr_test_support::ScratchDir::new("app-paths-wire");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None);
-        let wire = serde_json::to_value(&paths).expect("serialize test paths");
-        assert!(serde_json::from_value::<AppPaths>(wire.clone()).is_ok());
-
-        for field in [
-            "config_dir",
-            "state_dir",
-            "data_dir",
-            "runtime_dir",
-            "config_file",
-        ] {
-            let mut invalid = wire.clone();
-            invalid[field] = serde_json::json!("relative/path");
-            assert!(
-                serde_json::from_value::<AppPaths>(invalid).is_err(),
-                "accepted relative {field}"
-            );
-        }
-
-        let mut invalid_home = wire.clone();
-        invalid_home["home_dir"] = serde_json::json!("relative/home");
-        assert!(serde_json::from_value::<AppPaths>(invalid_home).is_err());
-
-        let mut missing_home = wire.clone();
-        missing_home["home_dir"] = serde_json::Value::Null;
-        assert!(serde_json::from_value::<AppPaths>(missing_home).is_err());
-
-        let mut invalid_current_dir = wire.clone();
-        invalid_current_dir["current_dir"] = serde_json::json!("relative/current");
-        assert!(serde_json::from_value::<AppPaths>(invalid_current_dir).is_err());
-
-        let mut invalid_socket = wire;
-        invalid_socket["server_address"]["client_socket"] =
-            serde_json::json!("relative/client.sock");
-        assert!(serde_json::from_value::<AppPaths>(invalid_socket).is_err());
     }
 
     #[test]

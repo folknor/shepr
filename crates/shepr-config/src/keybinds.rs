@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyModifiers};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::Config;
 use crate::limits::{
@@ -116,8 +116,7 @@ pub struct LiveKeybindConfig {
     pub keybinds: Keybinds,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-// toml-only-serde-shape: `wire::WireBindingConfig` carries this on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum BindingConfig {
     One(String),

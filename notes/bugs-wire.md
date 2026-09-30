@@ -82,198 +82,6 @@ crosses the wire, and a client-side `DecodedServerMessage` (or a decoder-owned
 enum) adding `PaneSurfacePatch`. That removes the skip, the unreachable arm, and
 the `write_message` failure test that guards the skip.
 
-## WIRE-011 - The client applies only the keymap from the endpoint config it receives
-
-Scopes: config; also surfaced as lateral findings in client-endpoint and
-client-shell.
-
-**Claim broken.** AGENTS.md: "The server's config crosses hosts, and the client
-rebuilds its runtime values from it ... a handoff applies the destination
-endpoint's config at the presentation transition." The `EndpointServerWelcome`
-doc in `crates/shepr-protocol/src/endpoint.rs` says the same, and
-`ClientShellEndpoint::config`'s doc says a reconnect "to a server launched with
-another config shows that config".
-
-**What the code does.** `ClientShellState::apply_active_snapshot`
-(`crates/shepr-client/src/shell/state.rs`) keeps the received
-`Arc<ValidatedConfig>` in `active_resolved_config`; its only effect is
-`ClientShellConfig::apply_endpoint_config`
-(`crates/shepr-client/src/shell/presentation/config.rs`), which copies
-`live_keybinds()` and nothing else, and only when `same_keybinding_resolution`
-differs. Everything else the client renders or acts on comes from its own
-`config.toml` read at launch (`run_launched_client` ->
-`ClientShellConfig::from_validated_config(config)`, `ClientSettings::resolve`):
-palette, sidebar rows, bounds and width, agent panel sort, status indicators,
-mouse and copy settings, confirm prompts.
-
-**Consequences.**
-
-- Two configs apply to one screen. The server renders pane borders and chrome
-  into wire cells with its palette (`AppSettings::palette`, from the server's
-  config in `crates/shepr-server/src/app/state.rs`); the client draws the sidebar
-  with its own. A machine with another `theme.name` or `ui.accent` gets
-  remote-themed borders next to a locally themed sidebar. For the local endpoint,
-  when `config.toml` was edited after the long-lived local server started, the
-  client takes the new theme and sidebar and the server's old keymap: a partial
-  reload, which "There is no reload" says does not exist.
-- The keymap changes under the user during connect: the shell starts with the
-  client's keymap and switches to the server's when the first snapshot arrives.
-- A welcome can fail on sections the client never uses: the decode runs
-  `ValidatedConfig::deserialize` over the whole config (remote `AppPaths`,
-  machines, provenance), and any failing check makes the endpoint unusable over
-  data the client would discard.
-- Every client connection is sent the host's full config: every `[[machines]]`
-  ssh target, every resolved path, and a stringified copy of every leaf
-  (WIRE-017). No client needs any of it.
-
-The client-endpoint and client-shell hunters each framed this as "either the doc
-overclaims or the shell under-applies"; the client-shell hunter adds that what
-"shows" covers is not stated, so if only the keymap is meant, the doc wording
-should say so.
-
-**Recommended fix (config hunter, structural).** Decide which side owns each
-setting and put it in the types:
-
-- (a) The endpoint owns presentation: the client rebuilds `ClientShellConfig`
-  (palette, sidebar, keymap and the rest) from the endpoint config at every
-  presentation transition, keeping only host-terminal settings local
-  (`host_cursor`, mouse capture, OSC 52).
-- (b) The client owns presentation: the welcome carries a small typed
-  `EndpointPresentation` (the keymap, and what the server needs from the client,
-  such as the git demand in WIRE-012) and stops carrying `ValidatedConfig`.
-
-Either way, drop `ValidatedConfig: Serialize/Deserialize`, `WireConfig`, and the
-received-value rebuild path (`CwdCheck::Received`, `ShellCheck::Received`,
-`AppPaths`/`ServerAddress` wire validation), which removes most of `wire.rs` and
-WIRE-012/WIRE-013 with it.
-
-## WIRE-012 - The server picks which Git data to compute from its own `ui.sidebar.spaces`; the client renders from its own
-
-Scope: config. The concrete case of WIRE-011.
-
-**Claim broken.** The sidebar config documents that the `branch` and `git_status`
-tokens show branch and ahead/behind; AGENTS.md keeps "Git status in the sidebar
-(branch, ahead/behind)".
-
-`App::git_refresh_demand` (`crates/shepr-server/src/app/git_refresh.rs`) scans
-`self.state.settings.sidebar_spaces`, the server host's `ui.sidebar.spaces.rows`
-(`AppSettings::from_config`), and sets `demand.branch` / `demand.ahead_behind`
-only when those tokens appear there. The client lays out and renders space rows
-from `ClientShellConfig.spaces`, from its own config.
-
-If a machine's `config.toml` sets `[ui.sidebar.spaces] rows =
-[["state_icon","workspace"]]` and the client keeps the default rows (`branch`,
-`git_status`), the remote never computes branch or ahead/behind and those tokens
-stay empty for that machine. The reverse wastes git work. The local endpoint is
-affected whenever the server's and the client's reads of the file differ.
-
-**Fix.** Make the demand the presenting client's (send it in the hello or as an
-endpoint command, union across attached clients), or always compute both. The
-server should not read `ui.sidebar` at all.
-
-## WIRE-013 - Received configs skip every structural check that lives in a serde `Deserialize` impl
-
-Scope: config.
-
-**Claims broken.** AGENTS.md: "the client validates it again when it decodes the
-welcome, with the checks that only mean something on the sending host skipped
-(the new-pane cwd exists, the shell resolves)". The comment on
-`impl Eq for SidebarTokenRule` (`crates/shepr-config/src/sidebar/rules.rs`):
-"Deserialization rejects non-finite thresholds, so equality is reflexive."
-
-At launch these checks run only inside the TOML-facing `Deserialize` impls:
-
-- `deserialize_sidebar_rows`: the `MAX_SIDEBAR_ROWS` and
-  `MAX_SIDEBAR_TOKENS_PER_ROW` caps.
-- `deserialize_rows_by_agent`: canonical agent ids as keys, plus per-agent row
-  caps.
-- `RawSidebarToken::parts`: the `MAX_SIDEBAR_RULES` cap.
-- `AgentSidebarToken`/`SpaceSidebarToken::deserialize`: `allows_rules` (no rules
-  on `state_icon`/`git_status`).
-- `TryFrom<RawRule>`: exactly one condition, finite `gt`/`lt`, no `ignore_case`
-  on numeric conditions.
-- `deserialize_cjk_ime_agents`: dedup.
-
-The wire path skips them all. `WireAgentsSidebarConfig`,
-`WireSpacesSidebarConfig`, `WireAgentSidebarToken`/`WireSpaceSidebarToken` and
-`WireSidebarTokenRule` (`wire.rs`, `sidebar/rules.rs`) convert with infallible
-`From` impls. `SidebarTokenRule::from_wire` accepts NaN/inf thresholds and
-`ignore_case` on numeric rules. `WireAgentSidebarToken::Styled { token: Box<Self>
-}` accepts `Styled` nested in `Styled`, which TOML cannot produce and whose
-`parts()` then returns a `Styled` as the inner token. `rows_by_agent` keys are not
-checked. `ConfigResolution::parse` runs none of these, so a received config
-becomes a `ValidatedConfig` without them.
-
-The pure shell checks are skipped too: `ShellCheck::Received` keeps
-`terminal.default_shell` as sent (even empty, relative or unrecognized), though
-`ValidatedTerminalConfig::default_shell` is documented as "Absolute, recognized
-shell"; neither check depends on the receiving host.
-
-Mostly latent because the client discards all of this (WIRE-011). One effect is
-live: a received NaN threshold makes `ValidatedConfig == itself` false,
-contradicting the reflexive-`Eq` claim.
-
-**Fix.** If `ValidatedConfig` keeps crossing the wire, move the structural checks
-out of the serde impls into one validator over `Config` that
-`ConfigResolution::parse` runs for launch and receive alike; make `from_wire`
-fallible (`TryFrom`); make the wire token shape non-recursive
-(`Styled { token: Plain, .. }`). Better: WIRE-011 option (b) and delete the path.
-
-## WIRE-017 - `ConfigProvenance.values` claims a use nobody has, and one of its values is stale
-
-Scope: config.
-
-**Claim broken.** The doc on `ConfigProvenance` (`validated.rs`): "Every value is
-stringified and shipped to each attached client for display."
-
-No client code displays `values()`. Its consumers are `key_is_configured`
-(whether a `keys.*` field is user-set) and `same_keybinding_resolution`; the
-client reads provenance only through `is_explicit` for three UI keys
-(`preferences.rs`). Every welcome still carries a JSON-stringified copy of every
-config leaf, machine ssh targets and paths included.
-
-`ConfigProvenance::from_config` runs on the loaded `Config` before
-`ValidatedConfig::from_loaded` rewrites `config.terminal.default_shell` to the
-resolved path, so the provenance value for `terminal.default_shell` is `""` while
-the config holds `/usr/bin/zsh`.
-
-**Fix.** Replace `values` with what is asked: a typed set of explicitly configured
-keys (a bitset over the keybinding table plus the four `UiPreferenceKey` flags).
-That makes `same_keybinding_resolution` exact and cheap and removes the JSON
-round-trip (`serde_json::to_value(config)`, `collect_paths`, the `RawRule`
-"optional fields remain present as null" coupling in `SidebarTokenRule`'s
-serializer).
-
-## WIRE-018 - Remembered sidebar chrome is stored per local socket, not per server or per endpoint
-
-Scope: config.
-
-**Claim broken.** default.toml, for `sidebar_width`, `sidebar_start_collapsed`
-and `agent_panel_sort`: "While unset, mouse or key changes ... are remembered per
-server." The `ClientChromePreferences` doc: "Sidebar chrome the user changed by
-hand, remembered per endpoint across launches."
-
-`run_launched_client` calls `with_local_endpoint` once, so `preferences_path` is
-one file named after the hashed local client socket (`path_for_local_endpoint`),
-and `persist_chrome_preferences` writes that file whichever endpoint is
-presented. Machines have no preferences file; a width dragged while viewing a
-machine is saved as the local endpoint's. The "is it configured" test uses the
-client's config provenance, not the endpoint's.
-
-**Fix.** Key preferences by `ClientEndpointId::storage_key()` and switch files at
-the presentation transition, or reword both docs to "remembered per client".
-
-## WIRE-021 - `ui.accent` can be set and still ignored
-
-Scope: config (lateral).
-
-`ValidatedConfig::from_values(config, None, ..)` treats every value as default,
-so `resolve_palette` drops a non-empty `config.ui.accent` (applied only when
-`is_explicit(Accent)`). The config keeps the accent while the palette ignores it.
-Only tests and `shepr-protocol`/`shepr-termio` test helpers call this today. The
-accent's effect should depend on the value, since `Some` already means "set in
-the file" after `deserialize_ui_accent`, not on a provenance side channel.
-
 ## WIRE-023 - The build identity may not be recomputed when `CARGO_PROFILE_*` environment overrides change
 
 Scope: protocol-api. Unverified; the hunter proposes one experiment.
@@ -327,3 +135,25 @@ Scope: protocol-api (structural and lateral).
   already passed (`send_stop_request`'s first check); the following wait then
   reports `TimedOut` for a stop never sent. Unreachable with a 15 s budget;
   returning a timeout error there would be clearer.
+
+## WIRE-026 - Config leftovers after config became launch-only
+
+Scope: config (lateral, from the change that stopped config crossing hosts).
+
+- **The default-template test no longer catches an undocumented key.** The old
+  test serialized `Config::default()` and failed when any default leaf was
+  missing from the commented `default.toml`. With `Serialize` gone from the
+  model, the new `default_template_documented_values_match_defaults` only checks
+  that documented values parse and equal the defaults, and it skips `[theme]`,
+  `[theme.custom]`, `rows_by_agent` and machines. A new config key with no
+  template entry now passes. Getting the coverage back needs a way to list
+  `Config`'s fields without production `Serialize`: test-only
+  `cfg_attr(test, derive(Serialize))` across the model types, or a hand-kept key
+  list checked against the template. Decide whether the coverage is worth that.
+- **`PathProvenance` and `ConfigSource` have no production reader.**
+  `AppPaths::provenance()` is read only by shepr-config's own tests; nothing
+  outside the crate reads either type, so their `Display` is unused too. Delete
+  them, or keep them only if a diagnostic or `status` output is meant to show
+  where paths came from.
+- `parse_document` in `validated.rs` carries `#[cfg(test)]` on both its impl
+  block and itself; the inner one is redundant.

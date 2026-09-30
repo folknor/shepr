@@ -70,11 +70,14 @@ pub struct AppState {
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
+///
+/// The sidebar settings are deliberately absent: each client draws its
+/// sidebar from its own config, and the Git refresh always computes both the
+/// branch and ahead/behind whatever any sidebar shows.
 #[derive(Debug, Clone)]
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: shepr_core::geometry::GridSize,
-    pub(crate) sidebar_spaces: shepr_config::SpacesSidebarConfig,
     pub(crate) pane_borders: shepr_config::PaneBordersConfig,
     pub(crate) pane_outer_borders: bool,
     pub(crate) pane_scrollbars: bool,
@@ -102,7 +105,6 @@ impl AppSettings {
         let terminal = config.terminal();
         Self {
             headless_size: config.headless_size(),
-            sidebar_spaces: ui.sidebar.spaces.clone(),
             pane_borders: ui.pane_borders,
             pane_outer_borders: ui.pane_outer_borders,
             pane_scrollbars: ui.pane_scrollbars,
@@ -438,6 +440,27 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use crossterm::event::KeyEvent;
+
+    #[test]
+    fn pane_settings_use_the_resolved_absolute_shell() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("pane-resolved-shell");
+        let shell = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
+        env.set("PATH", scratch.path());
+        let mut values = shepr_config::Config::default();
+        values.terminal.default_shell = "zsh".into();
+        let paths = shepr_config::AppPaths::rooted_at(
+            scratch.path(),
+            Some(scratch.path()),
+            Some(scratch.path()),
+        );
+        let config = shepr_config::ValidatedConfig::from_values(values, None, paths)
+            .expect("shell resolves");
+        assert_eq!(
+            AppSettings::from_config(&config).default_shell,
+            shell.to_string_lossy()
+        );
+    }
 
     #[test]
     fn an_unrecorded_workspace_is_laid_out_in_the_headless_area() {

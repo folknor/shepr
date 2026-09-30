@@ -1,13 +1,11 @@
 mod rules;
 
 pub use rules::SidebarTokenRule;
-pub(crate) use rules::WireSidebarTokenRule;
-pub(crate) use rules::WireSidebarTokenStyle;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::{Deserialize, Serialize, de::MapAccess, de::Visitor};
+use serde::{Deserialize, de::MapAccess, de::Visitor};
 
 use super::ConfigAgent;
 use crate::limits::{
@@ -52,23 +50,6 @@ impl SidebarTokenColor {
     pub fn ratatui(self) -> ratatui::style::Color {
         ratatui::style::Color::Rgb(self.r, self.g, self.b)
     }
-
-    pub(crate) fn rgb(self) -> (u8, u8, u8) {
-        (self.r, self.g, self.b)
-    }
-
-    pub(crate) fn from_rgb((r, g, b): (u8, u8, u8)) -> Self {
-        Self { r, g, b }
-    }
-}
-
-impl Serialize for SidebarTokenColor {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b))
-    }
 }
 
 impl<'de> Deserialize<'de> for SidebarTokenColor {
@@ -109,7 +90,7 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct SidebarTokenStyle {
     pub fg: Option<SidebarTokenColor>,
     pub bold: Option<bool>,
@@ -131,13 +112,6 @@ macro_rules! define_sidebar_token {
                 style: SidebarTokenStyle,
                 rules: Vec<SidebarTokenRule>,
             },
-        }
-
-        fn $token_name(token: &$token) -> String {
-            match token {
-                $($token::$variant => $name.into(),)+
-                $token::Styled { token, .. } => $token_name(token),
-            }
         }
 
         fn $parse_builtin(name: &str) -> Option<$token> {
@@ -322,41 +296,6 @@ fn parse_sidebar_token<T>(value: &str, parse_builtin: fn(&str) -> Option<T>) -> 
     parse_builtin(value).ok_or_else(|| format!("unknown sidebar token `{value}`"))
 }
 
-fn serialize_styled_token<S>(
-    name: &str,
-    style: SidebarTokenStyle,
-    rules: &[SidebarTokenRule],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeMap;
-    let mut map = serializer.serialize_map(None)?;
-    map.serialize_entry("token", &name)?;
-    map.serialize_entry("fg", &style.fg)?;
-    map.serialize_entry("bold", &style.bold)?;
-    map.serialize_entry("dim", &style.dim)?;
-    map.serialize_entry("rules", rules)?;
-    map.end()
-}
-
-impl Serialize for AgentSidebarToken {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Self::Styled {
-                token,
-                style,
-                rules,
-            } => serialize_styled_token(&agent_token_name(token), *style, rules, serializer),
-            token => serializer.serialize_str(&agent_token_name(token)),
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for AgentSidebarToken {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -380,22 +319,6 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
             },
             None => token,
         })
-    }
-}
-
-impl Serialize for SpaceSidebarToken {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Self::Styled {
-                token,
-                style,
-                rules,
-            } => serialize_styled_token(&space_token_name(token), *style, rules, serializer),
-            token => serializer.serialize_str(&space_token_name(token)),
-        }
     }
 }
 
@@ -450,7 +373,7 @@ where
     Ok(rows_by_agent)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct AgentsSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
@@ -486,7 +409,7 @@ impl Default for AgentsSidebarConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
@@ -506,7 +429,7 @@ impl Default for SpacesSidebarConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default)]
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
@@ -640,7 +563,7 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "branch", bold = 
     }
 
     #[test]
-    fn conditional_sidebar_rules_round_trip() {
+    fn conditional_sidebar_rules_parse() {
         let input = r##"
 [agents]
 rows = [[{ token = "machine", fg = "#fff", rules = [{ equals = "Local", fg = "#f00" }, { starts_with = "fed", ignore_case = true, bold = true }] }]]
@@ -650,11 +573,11 @@ pi = [[{ token = "pane", rules = [{ gt = 80, dim = false }, { lt = 20.5, dim = t
 rows = [[{ token = "branch", rules = [{ contains = "error", bold = true }] }]]
 "##;
         let config: SidebarConfig = toml::from_str(input).expect("conditional sidebar config");
-        let encoded = toml::to_string(&config).expect("test precondition");
-        assert!(encoded.contains("rules"));
-        assert_eq!(
-            toml::from_str::<SidebarConfig>(&encoded).expect("test precondition"),
-            config
+        assert!(
+            matches!(&config.agents.rows[0][0], AgentSidebarToken::Styled { rules, .. } if rules.len() == 2)
+        );
+        assert!(
+            matches!(&config.spaces.rows[0][0], SpaceSidebarToken::Styled { rules, .. } if rules.len() == 1)
         );
     }
 

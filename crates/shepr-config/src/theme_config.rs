@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES, canonical_theme_name};
 
@@ -12,7 +12,7 @@ use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES, canonical_them
 /// accent = "#f5c2e7"
 /// red = "#ff6188"
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
     /// Built-in theme name. The default is the first built-in theme.
@@ -24,7 +24,7 @@ pub struct ThemeConfig {
 macro_rules! define_custom_theme_colors {
     ($($field:ident),+ $(,)?) => {
         /// Per-token color overrides. All fields optional - only set what you want to change.
-        #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+        #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
         #[serde(default)]
         pub struct CustomThemeColors {
             $(pub $field: Option<String>,)+
@@ -93,7 +93,6 @@ fn parse_configured_color(
 
 pub(crate) fn resolve_palette(
     config: &super::Config,
-    ui_accent_is_explicit: bool,
 ) -> Result<crate::theme::Palette, Vec<String>> {
     let mut diagnostics = Vec::new();
     let name = config.theme.name.as_deref().unwrap_or(DEFAULT_THEME);
@@ -142,10 +141,7 @@ pub(crate) fn resolve_palette(
         .custom
         .as_ref()
         .is_some_and(|custom| custom.accent.is_some());
-    if !custom_accent
-        && ui_accent_is_explicit
-        && let Some(accent) = ui_accent
-    {
+    if !custom_accent && let Some(accent) = ui_accent {
         palette.accent = accent;
     }
     Ok(palette)
@@ -386,18 +382,9 @@ peach = "#aééb"
     fn empty_ui_accent_is_unset_and_uses_the_theme_accent() {
         let source = "[ui]\naccent = \"\"\n";
         let config: Config = toml::from_str(source).expect("empty accent parses as unset");
-        let document: toml::Value = toml::from_str(source).expect("source parses as TOML");
-        let provenance = crate::validated::ConfigProvenance::from_config(&config, Some(&document))
-            .expect("config provenance resolves");
-
         assert_eq!(config.ui.accent, None);
-        assert!(!provenance.is_explicit(crate::UiPreferenceKey::Accent));
-
-        let palette = resolve_palette(
-            &config,
-            provenance.is_explicit(crate::UiPreferenceKey::Accent),
-        )
-        .expect("empty accent leaves the theme palette in effect");
+        let palette =
+            resolve_palette(&config).expect("empty accent leaves the theme palette in effect");
         assert_eq!(palette.accent, crate::theme::Palette::catppuccin().accent);
     }
 

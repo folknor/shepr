@@ -336,10 +336,6 @@ pi = [[{ token = "workspace", rules = [{ lt = 50, hide = true }] }], ["agent"]]
 rows = [[{ token = "workspace", rules = [{ lt = 50, hide = true }] }], ["state_text"]]
 "##,
         ).expect("test precondition");
-        let encoded = toml::to_string(&config).expect("test precondition");
-        assert!(encoded.contains("hide = true"));
-        let config: shepr_config::SidebarConfig =
-            toml::from_str(&encoded).expect("test precondition");
         let mut entry = entry();
         entry.canonical_agent = None;
         for (machine, count) in [("Local", 1), ("Remote", 2)] {

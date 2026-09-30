@@ -1,39 +1,15 @@
-use serde::{Deserialize, Serialize};
 use shepr_core::env::EnvVar;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAddress {
     api_socket: PathBuf,
     client_socket: PathBuf,
     source: AddressSource,
 }
 
-impl<'de> Deserialize<'de> for ServerAddress {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Wire {
-            api_socket: PathBuf,
-            client_socket: PathBuf,
-            source: AddressSource,
-        }
-
-        let wire = Wire::deserialize(deserializer)?;
-        let address = Self {
-            api_socket: wire.api_socket,
-            client_socket: wire.client_socket,
-            source: wire.source,
-        };
-        address.validate_paths().map_err(serde::de::Error::custom)?;
-        Ok(address)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AddressSource {
     /// The build's runtime directory: no socket override applies.
     Runtime,
@@ -42,16 +18,6 @@ enum AddressSource {
 }
 
 impl ServerAddress {
-    pub(crate) fn validate_paths(&self) -> Result<(), String> {
-        if !self.api_socket.is_absolute() {
-            return Err("API socket path must be absolute".to_owned());
-        }
-        if !self.client_socket.is_absolute() {
-            return Err("client socket path must be absolute".to_owned());
-        }
-        Ok(())
-    }
-
     // Address construction needs a resolved runtime directory and the socket overrides.
     // A context-free default cannot describe the selected server target or guarantee valid paths.
     pub(crate) fn resolve_paths(

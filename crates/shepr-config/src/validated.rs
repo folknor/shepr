@@ -1,4 +1,3 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -10,16 +9,14 @@ use super::{
         UiConfig,
     },
     window_title::WindowTitleTemplate,
-    wire::WireConfig,
 };
 use crate::limits::{MAX_INPUT_EVENT_BATCH, MIN_MOUSE_SCROLL_LINES};
 
-/// The source that selected a resolved configuration value.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The source that selected a resolved path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ConfigSource {
     #[default]
     Default,
-    ConfigFileKey,
     EnvironmentVariable(String),
 }
 
@@ -27,7 +24,6 @@ impl fmt::Display for ConfigSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Default => formatter.write_str("default"),
-            Self::ConfigFileKey => formatter.write_str("config file key"),
             Self::EnvironmentVariable(variable) => {
                 write!(formatter, "environment variable {variable}")
             }
@@ -35,164 +31,50 @@ impl fmt::Display for ConfigSource {
     }
 }
 
-/// Origin attached to one resolved leaf in the config surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfigValueOrigin {
-    pub key: String,
-    pub value: String,
-    pub source: ConfigSource,
-}
-
-/// Typed queries for the client preferences whose behavior depends on whether
-/// the user supplied a value.
+/// Client preferences that yield to explicit configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiPreferenceKey {
     SidebarWidth,
     SidebarStartCollapsed,
     AgentPanelSort,
-    Accent,
 }
 
-/// Origins for every value in the resolved config, plus direct typed queries
-/// for settings where persisted runtime preferences yield to config.
-///
-/// Every value is stringified and shipped to each attached client for
-/// display, paths and machine ssh targets included. That is fine
-/// while no config key holds a credential; a key that does must be left out
-/// of `values`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Explicit document key paths used by keybinding validation and by client
+/// chrome preferences that yield to configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigProvenance {
-    /// One entry per resolved config leaf, so the local config file bounds
-    /// its length. It needs no field cap of its own on the wire: it travels only
-    /// inside the welcome's config, a message capped at the protocol's message
-    /// size and decoded under the codec's collection limit.
-    values: Vec<ConfigValueOrigin>,
-    ui_sidebar_width: ConfigSource,
-    ui_sidebar_start_collapsed: ConfigSource,
-    ui_agent_panel_sort: ConfigSource,
-    ui_accent: ConfigSource,
+    explicit_paths: std::collections::BTreeSet<String>,
 }
 
 impl ConfigProvenance {
-    pub(crate) fn from_config(
-        config: &Config,
-        document: Option<&toml::Value>,
-    ) -> Result<Self, String> {
-        // SidebarTokenRule serializes through RawRule, whose optional fields remain
-        // present as null so provenance can enumerate absent rule settings.
-        let encoded = serde_json::to_value(config)
-            .map_err(|error| format!("cannot enumerate resolved config values: {error}"))?;
-        let mut config_paths = Vec::new();
-        collect_paths(&encoded, &mut Vec::new(), &mut config_paths);
-
-        let mut explicit_paths = Vec::new();
+    pub(crate) fn from_document(document: Option<&toml::Value>) -> Self {
+        let mut paths = Vec::new();
         if let Some(document) = document {
-            collect_toml_paths(document, &mut Vec::new(), &mut explicit_paths);
+            collect_toml_paths(document, &mut Vec::new(), &mut paths);
         }
-
-        let values = config_paths
-            .into_iter()
-            .map(|(key, value)| ConfigValueOrigin {
-                value,
-                source: if explicit_paths.iter().any(|path| path == &key) {
-                    ConfigSource::ConfigFileKey
-                } else {
-                    ConfigSource::Default
-                },
-                key,
-            })
-            .collect();
-
-        let source = |key: &str| {
-            if explicit_paths.iter().any(|path| path == key) {
-                ConfigSource::ConfigFileKey
-            } else {
-                ConfigSource::Default
-            }
-        };
-        let ui_accent = if config.ui.accent.is_some() {
-            source("ui.accent")
-        } else {
-            ConfigSource::Default
-        };
-        Ok(Self {
-            values,
-            ui_sidebar_width: source("ui.sidebar_width"),
-            ui_sidebar_start_collapsed: source("ui.sidebar_start_collapsed"),
-            ui_agent_panel_sort: source("ui.agent_panel_sort"),
-            ui_accent,
-        })
-    }
-
-    pub fn values(&self) -> &[ConfigValueOrigin] {
-        &self.values
-    }
-
-    pub fn source(&self, key: UiPreferenceKey) -> &ConfigSource {
-        match key {
-            UiPreferenceKey::SidebarWidth => &self.ui_sidebar_width,
-            UiPreferenceKey::SidebarStartCollapsed => &self.ui_sidebar_start_collapsed,
-            UiPreferenceKey::AgentPanelSort => &self.ui_agent_panel_sort,
-            UiPreferenceKey::Accent => &self.ui_accent,
+        Self {
+            explicit_paths: paths.into_iter().collect(),
         }
     }
 
     pub fn is_explicit(&self, key: UiPreferenceKey) -> bool {
-        !matches!(self.source(key), ConfigSource::Default)
+        self.key_is_configured(match key {
+            UiPreferenceKey::SidebarWidth => "ui.sidebar_width",
+            UiPreferenceKey::SidebarStartCollapsed => "ui.sidebar_start_collapsed",
+            UiPreferenceKey::AgentPanelSort => "ui.agent_panel_sort",
+        })
     }
 
     pub(crate) fn key_is_configured(&self, key: &str) -> bool {
-        self.values.iter().any(|origin| {
-            let value_is_under_key = origin.key.strip_prefix(key).is_some_and(|suffix| {
+        self.explicit_paths.iter().any(|path| {
+            path.strip_prefix(key).is_some_and(|suffix| {
                 suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('[')
-            });
-            value_is_under_key && !matches!(origin.source, ConfigSource::Default)
+            })
         })
     }
 
-    fn keybinding_values(&self) -> impl Iterator<Item = &ConfigValueOrigin> {
-        self.values
-            .iter()
-            .filter(|origin| origin.key.starts_with("keys."))
-    }
-
-    /// Build a default-origin record for test fixtures and for the placeholder
-    /// config a failed load carries alongside its (non-empty) diagnostics; a
-    /// load with diagnostics never becomes a `ValidatedConfig`.
-    pub(crate) fn defaults(config: &Config) -> Self {
-        Self::from_config(config, None).unwrap_or_else(|_| Self {
-            // Production uses this only for a failed-load placeholder, whose diagnostics prevent it
-            // from becoming a ValidatedConfig.
-            values: Vec::new(),
-            ui_sidebar_width: ConfigSource::Default,
-            ui_sidebar_start_collapsed: ConfigSource::Default,
-            ui_agent_panel_sort: ConfigSource::Default,
-            ui_accent: ConfigSource::Default,
-        })
-    }
-}
-
-fn collect_paths(
-    value: &serde_json::Value,
-    path: &mut Vec<ConfigPathSegment>,
-    output: &mut Vec<(String, String)>,
-) {
-    match value {
-        serde_json::Value::Object(fields) if !fields.is_empty() => {
-            for (key, value) in fields {
-                path.push(ConfigPathSegment::Key(key.clone()));
-                collect_paths(value, path, output);
-                let _ = path.pop();
-            }
-        }
-        serde_json::Value::Array(values) if !values.is_empty() => {
-            for (index, value) in values.iter().enumerate() {
-                path.push(ConfigPathSegment::Index(index));
-                collect_paths(value, path, output);
-                let _ = path.pop();
-            }
-        }
-        _ => output.push((format_config_path(path), value.to_string())),
+    pub(crate) fn defaults() -> Self {
+        Self::from_document(None)
     }
 }
 
@@ -304,37 +186,10 @@ pub struct ValidatedTerminalConfig {
     pub new_cwd: NewTerminalCwd,
 }
 
-/// Whether resolving `terminal.new_cwd` checks the directory on this host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CwdCheck {
-    /// The process loading the config file: the directory must exist here.
-    AtLaunch,
-    /// A config decoded from a server, possibly on another host. The sender
-    /// already checked the directory against its own filesystem; only the
-    /// pure resolution (tilde, relative join) is repeated.
-    Received,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShellCheck {
-    /// Resolve the process's configured and inherited shell inputs.
-    AtLaunch,
-    /// Preserve the resolved path received from another process or host.
-    Received,
-}
-
 impl ValidatedTerminalConfig {
-    fn parse(
-        config: &TerminalConfig,
-        paths: &AppPaths,
-        cwd_check: CwdCheck,
-        shell_check: ShellCheck,
-    ) -> Result<Self, Vec<String>> {
-        let default_shell = match shell_check {
-            ShellCheck::AtLaunch => resolve_default_shell(&config.default_shell, paths),
-            ShellCheck::Received => Ok(config.default_shell.clone()),
-        };
-        let new_cwd = Self::parse_new_cwd(&config.new_cwd, paths, cwd_check);
+    fn parse(config: &TerminalConfig, paths: &AppPaths) -> Result<Self, Vec<String>> {
+        let default_shell = resolve_default_shell(&config.default_shell, paths);
+        let new_cwd = Self::parse_new_cwd(&config.new_cwd, paths);
         match (default_shell, new_cwd) {
             (Ok(default_shell), Ok(new_cwd)) => Ok(Self {
                 default_shell,
@@ -357,12 +212,7 @@ impl ValidatedTerminalConfig {
     pub(crate) fn parse_new_cwd(
         configured: &NewTerminalCwdConfig,
         paths: &AppPaths,
-        check: CwdCheck,
     ) -> Result<NewTerminalCwd, String> {
-        let check_dir = |path: &Path| match check {
-            CwdCheck::AtLaunch => checked_new_cwd_directory(path),
-            CwdCheck::Received => Ok(path.to_path_buf()),
-        };
         match configured {
             NewTerminalCwdConfig::Follow => Ok(NewTerminalCwd::Follow),
             NewTerminalCwdConfig::Home => {
@@ -372,14 +222,14 @@ impl ValidatedTerminalConfig {
                         shepr_core::pathutil::missing_home_error()
                     )
                 })?;
-                check_dir(path)?;
+                checked_new_cwd_directory(path)?;
                 Ok(NewTerminalCwd::Home)
             }
             NewTerminalCwdConfig::Current => {
                 let path = paths.current_dir().ok_or_else(|| {
                     "terminal.new_cwd current directory was unavailable at launch".to_owned()
                 })?;
-                check_dir(path)?;
+                checked_new_cwd_directory(path)?;
                 Ok(NewTerminalCwd::Current)
             }
             NewTerminalCwdConfig::Path(configured_path) => {
@@ -403,7 +253,7 @@ impl ValidatedTerminalConfig {
                     })?;
                     current_dir.join(path)
                 };
-                check_dir(&absolute).map(NewTerminalCwd::Path)
+                checked_new_cwd_directory(&absolute).map(NewTerminalCwd::Path)
             }
         }
     }
@@ -620,18 +470,23 @@ pub(crate) struct ConfigResolution {
 }
 
 impl ConfigResolution {
-    pub(crate) fn parse(
+    pub(crate) fn parse(config: &Config, provenance: &ConfigProvenance, paths: &AppPaths) -> Self {
+        Self::parse_with_terminal(
+            config,
+            provenance,
+            ValidatedTerminalConfig::parse(&config.terminal, paths),
+        )
+    }
+
+    fn parse_with_terminal(
         config: &Config,
         provenance: &ConfigProvenance,
-        paths: &AppPaths,
-        cwd_check: CwdCheck,
-        shell_check: ShellCheck,
+        terminal: Result<ValidatedTerminalConfig, Vec<String>>,
     ) -> Self {
         let keybind_validation = config.compute_keybind_validation(|field| {
             provenance.key_is_configured(&format!("keys.{field}"))
         });
-        let palette =
-            config.resolve_palette_with_ui_accent(provenance.is_explicit(UiPreferenceKey::Accent));
+        let palette = config.resolve_palette();
         let headless_size = shepr_core::geometry::GridSize::new(
             config.server.headless_cols,
             config.server.headless_rows,
@@ -645,8 +500,6 @@ impl ConfigResolution {
             config.ui.sidebar_max_width,
         );
         let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
-        let terminal =
-            ValidatedTerminalConfig::parse(&config.terminal, paths, cwd_check, shell_check);
         let mouse_scroll_lines = config.ui.mouse_scroll_lines();
         let mouse_scroll_lines = u16::try_from(mouse_scroll_lines)
             .ok()
@@ -773,15 +626,8 @@ impl ValidatedConfig {
                     .map_err(|error| vec![format!("config parse error: {error}")])
             })
             .transpose()?;
-        let provenance = ConfigProvenance::from_config(&config, document.as_ref())
-            .map_err(|error| vec![format!("config provenance error: {error}")])?;
-        Self::from_resolution(
-            config,
-            provenance,
-            paths,
-            CwdCheck::AtLaunch,
-            ShellCheck::AtLaunch,
-        )
+        let provenance = ConfigProvenance::from_document(document.as_ref());
+        Self::from_resolution(config, provenance, paths)
     }
 
     /// Build from a load whose diagnostics, including checked terminal paths,
@@ -792,11 +638,6 @@ impl ValidatedConfig {
         values: ValidatedValues,
         paths: AppPaths,
     ) -> Self {
-        let mut config = config;
-        // The wire config carries the selected path so a receiver does not
-        // resolve the sender's shell against its own search path or inherited
-        // shell variable.
-        config.terminal.default_shell = values.terminal.default_shell.clone();
         Self {
             config,
             provenance,
@@ -813,11 +654,8 @@ impl ValidatedConfig {
         config: Config,
         provenance: ConfigProvenance,
         paths: AppPaths,
-        cwd_check: CwdCheck,
-        shell_check: ShellCheck,
     ) -> Result<Self, Vec<String>> {
-        let resolution =
-            ConfigResolution::parse(&config, &provenance, &paths, cwd_check, shell_check);
+        let resolution = ConfigResolution::parse(&config, &provenance, &paths);
         let mut diagnostics = resolution.diagnostics;
         diagnostics.extend(resolution.path_diagnostics);
         if !diagnostics.is_empty() {
@@ -875,84 +713,24 @@ impl ValidatedConfig {
     pub fn live_keybinds(&self) -> super::LiveKeybindConfig {
         self.live_keybinds.clone()
     }
-
-    pub fn same_keybinding_resolution(&self, other: &Self) -> bool {
-        self.config.keys == other.config.keys
-            && self
-                .provenance
-                .keybinding_values()
-                .eq(other.provenance.keybinding_values())
-    }
 }
 
-impl PartialEq for ValidatedConfig {
-    fn eq(&self, other: &Self) -> bool {
-        // These inputs determine every resolved field cached on ValidatedConfig.
-        self.config == other.config
-            && self.provenance == other.provenance
-            && self.paths == other.paths
-    }
-}
-
-impl Eq for ValidatedConfig {}
-
-impl Serialize for ValidatedConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        #[derive(Serialize)]
-        struct Wire<'a> {
-            config: WireConfig,
-            provenance: &'a ConfigProvenance,
-            paths: &'a AppPaths,
-        }
-
-        Wire {
-            config: WireConfig::from_config(&self.config),
-            provenance: &self.provenance,
-            paths: &self.paths,
-        }
-        .serialize(serializer)
-    }
-}
-
-// Keep the received-value adapters explicit across protocol and config:
-// geometry, addresses, and paths are field mirrors with distinct checks,
-// while this wire shape omits runtime caches and rebuilds them with
-// received-value rules. A local macro per crate would duplicate its generator;
-// a shared derive needs a new proc-macro crate and per-type hooks. The explicit
-// Wire literals already make field drift a compile-time error, so that
-// machinery would cost more than it removes.
-impl<'de> Deserialize<'de> for ValidatedConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Wire {
-            config: WireConfig,
-            provenance: ConfigProvenance,
-            paths: AppPaths,
-        }
-
-        let Wire {
-            config,
-            provenance,
-            paths,
-        } = Wire::deserialize(deserializer)?;
-        let config = config.into_config().map_err(de::Error::custom)?;
-        // Rebuild runtime values from the serialized config. The shell path was
-        // resolved by the sender and is preserved; paths are also the sender's,
-        // possibly on another host, so new_cwd is not looked up here.
-        Self::from_resolution(
-            config,
-            provenance,
-            paths,
-            CwdCheck::Received,
-            ShellCheck::Received,
-        )
-        .map_err(|diagnostics| de::Error::custom(diagnostics.join("\n")))
+#[cfg(test)]
+impl ConfigResolution {
+    #[cfg(test)]
+    pub(crate) fn parse_document(
+        config: &Config,
+        provenance: &ConfigProvenance,
+        paths: &AppPaths,
+    ) -> Self {
+        let terminal = ValidatedTerminalConfig::parse_new_cwd(&config.terminal.new_cwd, paths)
+            .map(|new_cwd| ValidatedTerminalConfig {
+                default_shell: "/bin/sh".into(),
+                login_shell: config.terminal.login_shell,
+                new_cwd,
+            })
+            .map_err(|error| vec![error]);
+        Self::parse_with_terminal(config, provenance, terminal)
     }
 }
 
@@ -963,13 +741,7 @@ impl ValidatedConfig {
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        Self::from_resolution(
-            config,
-            provenance,
-            paths,
-            CwdCheck::AtLaunch,
-            ShellCheck::AtLaunch,
-        )
+        Self::from_resolution(config, provenance, paths)
     }
 
     pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
@@ -990,44 +762,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_default_provenance_includes_absent_sidebar_rule_fields() {
-        let config: Config = toml::from_str(
-            r#"
-[ui.sidebar.agents]
-rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "agent" }]]
-"#,
+    fn accent_value_applies_without_an_explicit_document() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("accent-value");
+        let mut config = Config::default();
+        config.ui.accent = Some("#123456".into());
+        let validated = ValidatedConfig::from_values(
+            config,
+            None,
+            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
         )
-        .expect("test config");
-        let encoded = toml::to_string(&config).expect("config serializes");
-        let decoded = toml::from_str::<Config>(&encoded).expect("serialized config parses");
-        assert_eq!(decoded, config);
-        let provenance = ConfigProvenance::from_config(&config, None).expect("provenance");
-        let keys = provenance
-            .values()
-            .iter()
-            .map(|origin| origin.key.as_str())
-            .collect::<Vec<_>>();
-
-        for field in [
-            "equals",
-            "contains",
-            "starts_with",
-            "gt",
-            "lt",
-            "ignore_case",
-            "fg",
-            "bold",
-            "dim",
-            "hide",
-        ] {
-            let key = format!("ui.sidebar.agents.rows[0][0].rules[0].{field}");
-            assert!(keys.contains(&key.as_str()), "missing {key}");
-        }
-        for field in ["fg", "bold", "dim"] {
-            let key = format!("ui.sidebar.agents.rows[0][0].{field}");
-            assert!(keys.contains(&key.as_str()), "missing {key}");
-        }
-        assert!(keys.contains(&"ui.sidebar.agents.rows[0][1].rules"));
+        .expect("valid accent");
+        assert_eq!(
+            validated.palette().accent,
+            ratatui::style::Color::Rgb(0x12, 0x34, 0x56)
+        );
     }
 
     #[test]
@@ -1044,7 +793,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         config.ui.sidebar_width = 26;
         config.ui.window_title = "{hostname}: {workspace}".to_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
-        let provenance = ConfigProvenance::defaults(&config);
+        let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
         let validated =
@@ -1074,7 +823,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
             .expect("the shared grid budget fits in u16 rows");
         config.server.headless_cols = cols;
         config.server.headless_rows = rows;
-        let provenance = ConfigProvenance::defaults(&config);
+        let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
         let validated = ValidatedConfig::new(config, provenance, paths)
@@ -1095,7 +844,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         std::fs::create_dir_all(&configured_cwd).expect("create home cwd");
         let mut config = Config::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
-        let provenance = ConfigProvenance::defaults(&config);
+        let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(&home), Some(scratch.path()));
 
         let validated =
@@ -1116,12 +865,9 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         for (path, expected) in [("", "must not be empty"), ("missing", "unavailable")] {
             let mut config = Config::default();
             config.terminal.new_cwd = NewTerminalCwdConfig::Path(path.to_owned());
-            let error = ValidatedConfig::new(
-                config.clone(),
-                ConfigProvenance::defaults(&config),
-                paths.clone(),
-            )
-            .expect_err("invalid cwd must fail config parsing");
+            let error =
+                ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone())
+                    .expect_err("invalid cwd must fail config parsing");
             assert!(
                 error.iter().any(|message| message.contains(expected)),
                 "expected {expected:?} in {error:?}"
@@ -1138,9 +884,8 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         config.terminal.default_shell = scratch.join("missing/zsh").to_string_lossy().into_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("missing-cwd".to_owned());
 
-        let errors =
-            ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(&config), paths)
-                .expect_err("both invalid terminal paths should be reported");
+        let errors = ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
+            .expect_err("both invalid terminal paths should be reported");
 
         assert!(
             errors
@@ -1180,12 +925,9 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         ] {
             let mut config = Config::default();
             config.terminal.default_shell = shell.to_string_lossy().into_owned();
-            let error = ValidatedConfig::new(
-                config.clone(),
-                ConfigProvenance::defaults(&config),
-                paths.clone(),
-            )
-            .expect_err("an unusable configured shell fails the launch");
+            let error =
+                ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone())
+                    .expect_err("an unusable configured shell fails the launch");
             assert!(
                 error.iter().any(|message| message.contains(expected)),
                 "expected {expected:?} in {error:?}"
@@ -1205,9 +947,8 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         let mut config = Config::default();
         config.terminal.default_shell = configured_shell.clone();
 
-        let validated =
-            ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(&config), paths)
-                .expect("a configured shell takes precedence over inherited SHELL");
+        let validated = ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
+            .expect("a configured shell takes precedence over inherited SHELL");
 
         assert_eq!(validated.terminal().default_shell, configured_shell);
     }
@@ -1221,13 +962,8 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         let scratch = shepr_test_support::ScratchDir::new("validated-config-inherited-shell");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
         let config = Config::default();
-        let validate = || {
-            ValidatedConfig::new(
-                config.clone(),
-                ConfigProvenance::defaults(&config),
-                paths.clone(),
-            )
-        };
+        let validate =
+            || ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone());
 
         let zsh = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("SHELL", &zsh);
@@ -1257,107 +993,5 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         env.remove("SHELL");
         let validated = validate().expect("an unset SHELL means /bin/sh");
         assert_eq!(validated.terminal().default_shell, "/bin/sh");
-    }
-
-    #[test]
-    fn wire_deserialization_revalidates_raw_config() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("validated-config-wire");
-        let validated = ValidatedConfig::test_from_config_with_paths(
-            Config::default(),
-            None,
-            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
-        );
-        let mut wire = serde_json::to_value(validated).expect("serialize test config");
-        wire["config"]["server"]["headless_cols"] = serde_json::json!(0);
-
-        assert!(serde_json::from_value::<ValidatedConfig>(wire).is_err());
-    }
-
-    #[test]
-    fn machines_round_trip_the_wire_and_are_validated_again() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("validated-config-machines-wire");
-        let config: Config = toml::from_str(
-            "[[machines]]\nlabel = \"build\"\nssh = \"dev@build\"\n\
-             [[machines]]\nlabel = \"gpu\"\nssh = \"gpu\"\n",
-        )
-        .expect("test precondition");
-        let validated = ValidatedConfig::test_from_config_with_paths(
-            config,
-            None,
-            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
-        );
-        let wire = serde_json::to_value(&validated).expect("serialize test config");
-        let received = serde_json::from_value::<ValidatedConfig>(wire.clone())
-            .expect("machines survive the wire");
-        assert_eq!(received.machines(), validated.machines());
-
-        for (field, value, expected) in [
-            ("ssh", "-oProxyCommand=x", "must not start with"),
-            ("label", "", "must not be blank"),
-        ] {
-            let mut bad = wire.clone();
-            bad["config"]["machines"][0][field] = serde_json::json!(value);
-            let error = serde_json::from_value::<ValidatedConfig>(bad)
-                .expect_err("a received machine is validated again");
-            assert!(error.to_string().contains(expected), "{error}");
-        }
-
-        let mut duplicate = wire;
-        duplicate["config"]["machines"][1]["label"] = serde_json::json!("build");
-        let error = serde_json::from_value::<ValidatedConfig>(duplicate)
-            .expect_err("received duplicate labels are refused");
-        assert!(error.to_string().contains("duplicates"), "{error}");
-    }
-
-    #[test]
-    fn wire_deserialization_rejects_missing_captured_home_directory() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("validated-config-home-wire");
-        let validated = ValidatedConfig::test_from_config_with_paths(
-            Config::default(),
-            None,
-            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
-        );
-        let mut wire = serde_json::to_value(validated).expect("serialize test config");
-        wire["config"]["terminal"]["new_cwd"] = serde_json::json!("Home");
-        wire["paths"]["home_dir"] = serde_json::Value::Null;
-
-        let error = serde_json::from_value::<ValidatedConfig>(wire)
-            .expect_err("resolved paths require the captured home directory");
-        assert!(
-            error.to_string().contains("resolved home_dir"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn wire_deserialization_does_not_look_up_the_senders_cwd_directory() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        // A remote server's new_cwd names a directory on the remote host; the
-        // receiving client must not require it on its own filesystem.
-        let scratch = shepr_test_support::ScratchDir::new("validated-config-cwd-wire");
-        let sender_dir = scratch.join("sender/project");
-        std::fs::create_dir_all(&sender_dir).expect("create sender cwd");
-        let mut config = Config::default();
-        config.terminal.new_cwd = NewTerminalCwdConfig::Path("project".to_owned());
-        let paths = AppPaths::rooted_at(
-            scratch.path(),
-            Some(scratch.path()),
-            Some(&scratch.join("sender")),
-        );
-        let validated =
-            ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(&config), paths)
-                .expect("the sender's directory exists");
-        let wire = serde_json::to_value(validated).expect("serialize test config");
-        std::fs::remove_dir_all(scratch.join("sender")).expect("remove sender cwd");
-
-        let received =
-            serde_json::from_value::<ValidatedConfig>(wire).expect("receiver skips the lookup");
-        assert_eq!(
-            received.terminal().new_cwd,
-            NewTerminalCwd::Path(sender_dir)
-        );
     }
 }

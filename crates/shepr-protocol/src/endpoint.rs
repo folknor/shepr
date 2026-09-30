@@ -16,20 +16,11 @@ pub struct EndpointClientHello {
     pub surface_active: bool,
 }
 
-/// Client-owned shell welcome: the server's validated config when it accepts
-/// the connection, or why it refused.
-///
-/// The config belongs to the connection the welcome opens: the receiver decodes
-/// it here, through `ValidatedConfig::deserialize` with the checks that only
-/// mean something on the sending host skipped, and installs it before it
-/// processes any snapshot of that connection. A config that does not decode
-/// fails the handshake. It is sent once per connection, never per snapshot.
+/// Accepts or refuses the connection. Each process uses its own launch config;
+/// configuration never crosses the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndpointServerWelcome {
-    /// Boxed: the config is far larger than every other message's payload.
-    Accepted {
-        config: Box<shepr_config::ValidatedConfig>,
-    },
+    Accepted,
     Refused(HandshakeRefusal),
 }
 
@@ -38,10 +29,8 @@ pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> ServerMessage {
 }
 
 impl EndpointServerWelcome {
-    pub fn accepted(config: shepr_config::ValidatedConfig) -> Self {
-        Self::Accepted {
-            config: Box::new(config),
-        }
+    pub fn accepted() -> Self {
+        Self::Accepted
     }
 
     pub fn refused(reason: HandshakeRefusal) -> Self {
@@ -79,20 +68,9 @@ mod tests {
         assert_eq!(*decoded, snapshot);
     }
 
-    /// The default config on absolute paths that survive the received-value
-    /// checks. This crate cannot use `shepr-test-fixtures`, which depends on it.
-    fn config() -> shepr_config::ValidatedConfig {
-        let mut config = shepr_config::Config::default();
-        config.terminal.default_shell = "/bin/sh".to_owned();
-        let root = std::path::Path::new("/nonexistent/shepr-test-config");
-        let paths = shepr_config::AppPaths::rooted_at(root, Some(root), None);
-        shepr_config::ValidatedConfig::from_values(config, None, paths)
-            .expect("test config is valid")
-    }
-
     #[test]
-    fn welcome_carries_the_config_through_the_wire() {
-        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted(config()));
+    fn accepted_welcome_roundtrips() {
+        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted());
         let mut bytes = Vec::new();
         crate::write_message(&mut bytes, &welcome).expect("test precondition");
         let decoded: ServerMessage =
@@ -110,16 +88,5 @@ mod tests {
         let decoded: ServerMessage =
             crate::read_message(&mut bytes.as_slice()).expect("test precondition");
         assert_eq!(decoded, welcome);
-    }
-
-    #[test]
-    fn welcome_with_a_truncated_config_does_not_decode() {
-        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted(config()));
-        let bytes = crate::encode_message(&welcome).expect("test precondition");
-        // Keep the one-byte message and welcome variant indexes and cut the
-        // config off, under a length prefix that matches.
-        let mut framed = 2u32.to_le_bytes().to_vec();
-        framed.extend_from_slice(&bytes[4..6]);
-        assert!(crate::read_message::<_, ServerMessage>(&mut framed.as_slice()).is_err());
     }
 }

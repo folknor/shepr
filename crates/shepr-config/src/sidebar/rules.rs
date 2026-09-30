@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::{SidebarTokenColor, SidebarTokenStyle};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "RawRule", into = "RawRule")]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(try_from = "RawRule")]
 pub struct SidebarTokenRule {
     condition: Condition,
     ignore_case: bool,
@@ -11,86 +11,8 @@ pub struct SidebarTokenRule {
     hide: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WireSidebarTokenRule {
-    condition: WireSidebarTokenCondition,
-    ignore_case: bool,
-    style: WireSidebarTokenStyle,
-    hide: Option<bool>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct WireSidebarTokenStyle {
-    fg: Option<(u8, u8, u8)>,
-    bold: Option<bool>,
-    dim: Option<bool>,
-}
-
-impl From<SidebarTokenStyle> for WireSidebarTokenStyle {
-    fn from(style: SidebarTokenStyle) -> Self {
-        Self {
-            fg: style.fg.map(SidebarTokenColor::rgb),
-            bold: style.bold,
-            dim: style.dim,
-        }
-    }
-}
-
-impl From<WireSidebarTokenStyle> for SidebarTokenStyle {
-    fn from(style: WireSidebarTokenStyle) -> Self {
-        Self {
-            fg: style.fg.map(SidebarTokenColor::from_rgb),
-            bold: style.bold,
-            dim: style.dim,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum WireSidebarTokenCondition {
-    Equals(String),
-    Contains(String),
-    StartsWith(String),
-    GreaterThan(f64),
-    LessThan(f64),
-}
-
 // Deserialization rejects non-finite thresholds, so equality is reflexive.
 impl Eq for SidebarTokenRule {}
-
-impl SidebarTokenRule {
-    pub(crate) fn to_wire(&self) -> WireSidebarTokenRule {
-        let condition = match &self.condition {
-            Condition::Equals(value) => WireSidebarTokenCondition::Equals(value.clone()),
-            Condition::Contains(value) => WireSidebarTokenCondition::Contains(value.clone()),
-            Condition::StartsWith(value) => WireSidebarTokenCondition::StartsWith(value.clone()),
-            Condition::GreaterThan(value) => WireSidebarTokenCondition::GreaterThan(*value),
-            Condition::LessThan(value) => WireSidebarTokenCondition::LessThan(*value),
-        };
-        WireSidebarTokenRule {
-            condition,
-            ignore_case: self.ignore_case,
-            style: self.style.into(),
-            hide: self.hide,
-        }
-    }
-
-    pub(crate) fn from_wire(wire: WireSidebarTokenRule) -> Self {
-        let condition = match wire.condition {
-            WireSidebarTokenCondition::Equals(value) => Condition::Equals(value),
-            WireSidebarTokenCondition::Contains(value) => Condition::Contains(value),
-            WireSidebarTokenCondition::StartsWith(value) => Condition::StartsWith(value),
-            WireSidebarTokenCondition::GreaterThan(value) => Condition::GreaterThan(value),
-            WireSidebarTokenCondition::LessThan(value) => Condition::LessThan(value),
-        };
-        Self {
-            condition,
-            ignore_case: wire.ignore_case,
-            style: wire.style.into(),
-            hide: wire.hide,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 enum Condition {
@@ -101,7 +23,7 @@ enum Condition {
     LessThan(f64),
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawRule {
     equals: Option<String>,
@@ -159,27 +81,6 @@ impl TryFrom<RawRule> for SidebarTokenRule {
             hide,
             style: SidebarTokenStyle { fg, bold, dim },
         })
-    }
-}
-
-impl From<SidebarTokenRule> for RawRule {
-    fn from(rule: SidebarTokenRule) -> Self {
-        let mut raw = Self {
-            ignore_case: rule.ignore_case.then_some(true),
-            fg: rule.style.fg,
-            bold: rule.style.bold,
-            dim: rule.style.dim,
-            hide: rule.hide,
-            ..Self::default()
-        };
-        match rule.condition {
-            Condition::Equals(value) => raw.equals = Some(value),
-            Condition::Contains(value) => raw.contains = Some(value),
-            Condition::StartsWith(value) => raw.starts_with = Some(value),
-            Condition::GreaterThan(value) => raw.gt = Some(value),
-            Condition::LessThan(value) => raw.lt = Some(value),
-        }
-        raw
     }
 }
 

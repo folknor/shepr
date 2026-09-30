@@ -123,7 +123,6 @@ fn run_launched_client(
     let host_size = terminal_geometry::ClientHostSize::new(cols, rows);
     let shell_surface_size = shell_config.initial_surface_size(host_size.cols, host_size.rows);
     // Healthy Local attaches directly; only an actual failure enters background recovery.
-    // The accepted connection's config travels with its stream.
     let mismatch_guidance = paths
         .server_address()
         .build_mismatch_guidance(&shepr_config::operator_entrypoint());
@@ -138,7 +137,7 @@ fn run_launched_client(
             true,
             None,
         ) {
-            Ok(config) => Some((stream, config)),
+            Ok(()) => Some(stream),
             Err(error)
                 if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) =>
             {
@@ -235,7 +234,7 @@ fn run_launched_client(
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - main loop: coordinates input, output, and server communication
 async fn run_client_loop(
-    initial: Option<(LocalStream, Arc<shepr_config::ValidatedConfig>)>,
+    initial: Option<LocalStream>,
     mut initial_local_failure: Option<shepr_remote::SshFailureDiagnostic>,
     machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
@@ -296,13 +295,6 @@ async fn run_client_loop(
     };
     state.set_host_size(cols, rows);
     state.shell.set_machines(&machines);
-    if let Some((_, config)) = initial.as_ref() {
-        // The config belongs to the accepted connection and is installed
-        // before any snapshot of it is processed.
-        state
-            .shell
-            .install_endpoint_config(&endpoint::ClientEndpointId::Local, Arc::clone(config));
-    }
     if local_unavailable {
         let status = initial_local_failure.as_ref().map_or(
             endpoint::ClientEndpointStatus::Connecting,
@@ -373,7 +365,7 @@ async fn run_client_loop(
         );
     });
 
-    let write_stream = if let Some((stream, _)) = initial {
+    let write_stream = if let Some(stream) = initial {
         let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
         match start_endpoint_transport(
             stream,
@@ -791,7 +783,6 @@ impl ClientLoop {
                 generation,
                 reader,
                 writer,
-                config,
                 connector,
             } => {
                 supervisors.return_connector(&endpoint_id, generation, connector);
@@ -803,9 +794,6 @@ impl ClientLoop {
                 ) {
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                // This generation's config replaces the last one before the
-                // reader below can deliver the generation's first snapshot.
-                state.shell.install_endpoint_config(&endpoint_id, config);
                 let frame = state.shell.compose(
                     state.reported_geometry.cols(),
                     state.reported_geometry.rows(),

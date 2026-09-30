@@ -1364,7 +1364,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_ignored",
- "serde_json",
  "shepr-agent",
  "shepr-core",
  "shepr-platform",

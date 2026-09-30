@@ -1,7 +1,7 @@
 /// The one list of configurable keybindings. Each consumer is a macro that
 /// receives every row and generates its part: the `[keys]` config fields and
-/// defaults, the resolved keybinds, the apply step, the wire mapping, the
-/// action enums, dispatch and the help screen.
+/// defaults, the resolved keybinds, the apply step, the action enums,
+/// dispatch and the help screen.
 ///
 /// Rows within a section are in help-screen order for their group.
 /// - `actions`: (field, action variant, default, help group, help label, doc)

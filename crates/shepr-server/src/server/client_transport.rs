@@ -482,14 +482,13 @@ fn classify_input_event_size(
 /// Handles the client handshake on a blocking thread.
 ///
 /// Reads the endpoint hello, validates its surface geometry, sends the welcome
-/// carrying `config`, and then forwards client messages to the server event channel. Any other
+/// accepting the connection, and then forwards client messages to the server event channel. Any other
 /// first message is refused.
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: ClientId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
-    config: &shepr_config::ValidatedConfig,
 ) -> io::Result<()> {
     if should_quit.is_requested() {
         return Ok(());
@@ -593,9 +592,7 @@ pub(crate) fn handle_client_handshake(
         return Ok(());
     }
 
-    // The config belongs to this connection: the client installs it before it
-    // processes any snapshot the server sends after this welcome.
-    let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted(config.clone()));
+    let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted());
     // Keep framing separate from transport so the welcome can also be supplied
     // as pre-encoded bytes without changing the bounded socket write path.
     let welcome = shepr_protocol::encode_message(&welcome)
@@ -1167,12 +1164,6 @@ mod tests {
         shepr_protocol::preamble::read_preamble(client_stream).expect("server preamble");
     }
 
-    /// The config the handshake tests serve; equal on every call.
-    fn served_config() -> shepr_config::ValidatedConfig {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
-        shepr_config::ValidatedConfig::test_default()
-    }
-
     fn endpoint_welcome(message: ServerMessage) -> EndpointServerWelcome {
         let ServerMessage::EndpointWelcome(welcome) = message else {
             panic!("expected endpoint welcome");
@@ -1526,7 +1517,6 @@ mod tests {
                 ClientId::test_new(45),
                 &server_event_tx,
                 &handshake_quit,
-                &served_config(),
             )
         });
 
@@ -1607,7 +1597,6 @@ mod tests {
                 ClientId::test_new(43),
                 &server_event_tx,
                 &handshake_quit,
-                &served_config(),
             )
         });
 
@@ -1615,14 +1604,8 @@ mod tests {
 
         let welcome: ServerMessage =
             shepr_protocol::read_message(&mut client_stream).expect("read welcome");
-        let EndpointServerWelcome::Accepted { config } = endpoint_welcome(welcome) else {
-            panic!("the server accepts a valid hello");
-        };
-        assert_eq!(
-            *config,
-            served_config(),
-            "the welcome carries the server config"
-        );
+        assert_eq!(endpoint_welcome(welcome), EndpointServerWelcome::Accepted);
+
         match server_event_rx
             .blocking_recv()
             .expect("client shell connected event")

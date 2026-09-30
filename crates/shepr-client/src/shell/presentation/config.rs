@@ -88,11 +88,6 @@ impl ClientShellConfig {
         self
     }
 
-    /// Takes the keymap of the config of the endpoint being presented.
-    pub(super) fn apply_endpoint_config(&mut self, config: &shepr_config::ValidatedConfig) {
-        self.keybinds = config.live_keybinds();
-    }
-
     pub(super) fn layout(
         &self,
         cols: u16,
@@ -157,31 +152,6 @@ impl ClientShellConfig {
 mod tests {
     use super::*;
     use shepr_test_fixtures::*;
-
-    #[test]
-    fn endpoint_config_applies_endpoint_keybindings_from_the_validated_value() {
-        let local = shepr_config::ValidatedConfig::test_default();
-        let mut endpoint = ClientShellConfig::from_validated_config(&local);
-        let remote_source = "[keys]\nprefix = \"ctrl+a\"\n";
-        let mut remote_raw = shepr_config::Config::default();
-        remote_raw.keys.prefix = "ctrl+a".to_owned();
-        let remote =
-            shepr_config::ValidatedConfig::test_from_config(remote_raw, Some(remote_source));
-
-        endpoint.apply_endpoint_config(&remote);
-
-        assert_eq!(
-            endpoint.keybinds.prefix,
-            (
-                crossterm::event::KeyCode::Char('a'),
-                crossterm::event::KeyModifiers::CONTROL,
-            )
-        );
-        assert_eq!(
-            endpoint.keybinds.keybinds.next_workspace.label().as_deref(),
-            Some("prefix+n")
-        );
-    }
 
     #[test]
     fn initial_surface_size_uses_persisted_endpoint_chrome() {

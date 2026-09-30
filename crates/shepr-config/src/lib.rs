@@ -12,7 +12,6 @@ pub mod theme;
 mod theme_config;
 mod validated;
 mod window_title;
-mod wire;
 
 pub use self::address::ServerAddress;
 pub use self::address::{derive_client_socket_from_api_socket, operator_entrypoint};
@@ -60,25 +59,17 @@ pub use self::window_title::sanitize_window_title_text;
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
 impl Config {
-    pub fn resolve_palette_with_ui_accent(
-        &self,
-        ui_accent_is_explicit: bool,
-    ) -> Result<crate::theme::Palette, Vec<String>> {
-        theme_config::resolve_palette(self, ui_accent_is_explicit)
+    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
+        theme_config::resolve_palette(self)
     }
 
     #[cfg(test)]
     pub fn collect_diagnostics(&self) -> Vec<String> {
-        let provenance = ConfigProvenance::defaults(self);
-        let resolution = validated::ConfigResolution::parse(
-            self,
-            &provenance,
-            &AppPaths::default(),
-            validated::CwdCheck::AtLaunch,
-            // Diagnostics here cover the document alone; the launch-time
-            // shell lookup reads the process environment.
-            validated::ShellCheck::Received,
-        );
+        let provenance = ConfigProvenance::defaults();
+        // Diagnostics here cover the document alone; the launch-time shell
+        // lookup reads the process environment, so it is skipped.
+        let resolution =
+            validated::ConfigResolution::parse_document(self, &provenance, &AppPaths::default());
         resolution
             .diagnostics
             .into_iter()
@@ -88,93 +79,65 @@ impl Config {
 }
 
 #[cfg(test)]
-impl Config {
-    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
-        self.resolve_palette_with_ui_accent(false)
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::model::KeysConfig;
     use super::*;
-    use std::collections::BTreeMap;
-
-    fn collect_default_leaves(
-        value: &toml::Value,
-        path: &mut Vec<String>,
-        leaves: &mut Vec<(Vec<String>, toml::Value)>,
-    ) {
-        match value {
-            toml::Value::Table(table) => {
-                for (key, value) in table {
-                    path.push(key.clone());
-                    collect_default_leaves(value, path, leaves);
-                    path.pop();
-                }
-            }
-            // An empty list (`machines`) has no value to document; the
-            // template shows the entry shape as a commented `[[machines]]`.
-            toml::Value::Array(values) if values.is_empty() => {}
-            _ => leaves.push((path.clone(), value.clone())),
-        }
-    }
-
-    fn default_template_values() -> BTreeMap<Vec<String>, Vec<String>> {
-        let mut values = BTreeMap::new();
-        let mut section = Vec::new();
-
-        for line in DEFAULT_CONFIG.lines() {
-            let trimmed = line.trim();
-            let content = trimmed.strip_prefix("# ").unwrap_or(trimmed);
-            if content.starts_with('[') && content.ends_with(']') {
-                section = content[1..content.len() - 1]
-                    .split('.')
-                    .map(str::to_owned)
-                    .collect();
-                continue;
-            }
-
-            let Some(setting) = trimmed.strip_prefix("# ") else {
-                continue;
-            };
-            let Some((key, value)) = setting.split_once(" = ") else {
-                continue;
-            };
-            let mut path = section.clone();
-            path.push(key.to_owned());
-            values
-                .entry(path)
-                .or_insert_with(Vec::new)
-                .push(value.to_owned());
-        }
-
-        values
-    }
 
     #[test]
-    fn default_template_documents_every_config_default() {
-        let config = toml::Value::try_from(Config::default()).expect("default config serializes");
-        let mut leaves = Vec::new();
-        collect_default_leaves(&config, &mut Vec::new(), &mut leaves);
-        assert!(!leaves.is_empty());
-
-        let documented = default_template_values();
-        for (path, value) in &leaves {
-            let key = path.join(".");
-            let expected = value.to_string();
-            let matches = documented.get(path).is_some_and(|values| {
-                values.iter().any(|documented| {
-                    documented.strip_prefix(&expected).is_some_and(|suffix| {
-                        suffix.trim().is_empty() || suffix.trim_start().starts_with('#')
-                    })
-                })
-            });
-            assert!(
-                matches,
-                "{key} = {expected} is missing from the commented default config"
-            );
+    fn default_template_documented_values_match_defaults() {
+        let mut document = String::new();
+        let mut section = String::new();
+        for line in DEFAULT_CONFIG.lines() {
+            let line = line.trim();
+            let content = line.strip_prefix("# ").unwrap_or(line);
+            if content.starts_with('[') && content.ends_with(']') {
+                section = content.to_owned();
+                if !matches!(
+                    section.as_str(),
+                    "[theme]"
+                        | "[theme.custom]"
+                        | "[ui.sidebar.agents.rows_by_agent]"
+                        | "[[machines]]"
+                ) {
+                    document.push_str(content);
+                    document.push('\n');
+                }
+                continue;
+            }
+            if matches!(
+                section.as_str(),
+                "[theme]" | "[theme.custom]" | "[ui.sidebar.agents.rows_by_agent]" | "[[machines]]"
+            ) {
+                continue;
+            }
+            let Some(setting) = line.strip_prefix("# ") else {
+                continue;
+            };
+            let Some((key, _)) = setting.split_once(" = ") else {
+                continue;
+            };
+            if !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                continue;
+            }
+            if section == "[ui]" && key == "accent" {
+                // This override is an example, rather than the unset default.
+                continue;
+            }
+            document.push_str(setting);
+            document.push('\n');
         }
+        let mut documented: Config = toml::from_str(&document).expect("documented defaults parse");
+        let defaults = Config::default();
+        assert_eq!(
+            documented.ui.mouse_scroll_lines(),
+            defaults.ui.mouse_scroll_lines()
+        );
+        // The optional input resolves to the same default, despite Some/None.
+        documented.ui.mouse_scroll_lines = defaults.ui.mouse_scroll_lines;
+        assert_eq!(documented, defaults);
     }
 
     #[test]

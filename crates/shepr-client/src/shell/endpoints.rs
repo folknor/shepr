@@ -5,13 +5,7 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) status: ClientEndpointStatus,
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
-    /// The config of this endpoint's current connection, from that connection's
-    /// welcome. Every connection replaces it, so a reconnect to a server
-    /// launched with another config shows that config. `None` until the first
-    /// connection is accepted; a handoff applies it at the presentation
-    /// transition.
-    pub(crate) config: Option<std::sync::Arc<shepr_config::ValidatedConfig>>,
-    /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
+    /// Connection generation that produced the snapshot; absent only in tests.
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<shepr_protocol::PublicPaneId, u64>,
 }
@@ -47,7 +41,6 @@ impl ClientShellState {
                 endpoint_id: ClientEndpointId::Ssh(machine.label.clone()),
                 status: ClientEndpointStatus::Connecting,
                 snapshot: None,
-                config: None,
                 snapshot_generation: None,
                 agent_recency: HashMap::new(),
             });
@@ -110,9 +103,6 @@ impl ClientShellState {
             return false;
         };
         let generation = endpoint.snapshot_generation;
-        // The destination's own config is applied with its projection, at this
-        // presentation transition.
-        let config = endpoint.config.clone();
         let pending_agent_reveal = self
             .pending_agent_reveal
             .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
@@ -124,7 +114,7 @@ impl ClientShellState {
             self.pane_surface = None;
             self.pending_pane_surface = None;
         }
-        self.apply_active_snapshot(snapshot, generation, config.as_ref());
+        self.apply_active_snapshot(snapshot, generation);
         if switching_endpoint {
             // The aggregate agent list belongs to the client, not one endpoint.
             self.agent_scroll = agent_scroll;
@@ -312,45 +302,21 @@ impl ClientShellState {
     }
 
     fn apply_cached_endpoint_snapshot(&mut self, endpoint_id: &ClientEndpointId) {
-        let Some((snapshot, generation, config)) = self
+        let Some((snapshot, generation)) = self
             .endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
             .and_then(|endpoint| {
-                endpoint.snapshot.clone().map(|snapshot| {
-                    (
-                        snapshot,
-                        endpoint.snapshot_generation,
-                        endpoint.config.clone(),
-                    )
-                })
+                endpoint
+                    .snapshot
+                    .clone()
+                    .map(|snapshot| (snapshot, endpoint.snapshot_generation))
             })
         else {
             return;
         };
         if endpoint_id == &self.active_endpoint_id {
-            self.apply_active_snapshot(snapshot, generation, config.as_ref());
-        }
-    }
-
-    /// Installs the config of the connection just accepted for `endpoint_id`,
-    /// replacing the previous connection's. The caller does this before the
-    /// connection's snapshots are processed, so no snapshot is ever applied
-    /// under another connection's config. Nothing is applied to the
-    /// presentation here: the active projection takes its config when its next
-    /// snapshot lands, and a handoff takes the destination's at the
-    /// transition.
-    pub(crate) fn install_endpoint_config(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        config: std::sync::Arc<shepr_config::ValidatedConfig>,
-    ) {
-        if let Some(endpoint) = self
-            .endpoints
-            .iter_mut()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-        {
-            endpoint.config = Some(config);
+            self.apply_active_snapshot(snapshot, generation);
         }
     }
 }
@@ -372,7 +338,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
         status: ClientEndpointStatus::Online,
         snapshot: None,
-        config: None,
         snapshot_generation: None,
         agent_recency: HashMap::new(),
     }

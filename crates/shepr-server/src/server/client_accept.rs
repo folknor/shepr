@@ -42,7 +42,6 @@ pub(crate) fn accept_client_connection(
     clients: &mut ClientRegistry,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
-    config: &Arc<shepr_config::ValidatedConfig>,
 ) -> io::Result<()> {
     let stream = match listener.accept() {
         Ok(stream) => stream,
@@ -80,7 +79,6 @@ pub(crate) fn accept_client_connection(
 
     let should_quit = Arc::clone(should_quit);
     let server_event_tx = server_event_tx.clone();
-    let config = Arc::clone(config);
     // The listener is nonblocking for accept only, leaving this stream
     // blocking for the handshake thread's deadline reader.
     std::thread::spawn(move || {
@@ -89,7 +87,6 @@ pub(crate) fn accept_client_connection(
             client_id,
             &server_event_tx,
             &should_quit,
-            &config,
         ) {
             debug!(
                 ?client_id,

@@ -104,7 +104,6 @@ fn config_error(diagnostics: &[String]) -> ExitCode {
 fn report_server_error(error: RunServerError) -> ExitCode {
     const ALREADY_RUNNING: &str = "shepr-server is already running";
     match error {
-        RunServerError::ConfigRefused(error) => config_error(&[error.to_string()]),
         RunServerError::AlreadyRunning { socket, path } => {
             eprintln!("error: {ALREADY_RUNNING}");
             eprintln!("{socket}: {}", path.display());

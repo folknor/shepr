@@ -636,7 +636,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(
             config
-                .resolve_palette_with_ui_accent(false)
+                .resolve_palette()
                 .expect("valid default theme")
                 .accent,
             theme_accent
@@ -646,17 +646,14 @@ mod tests {
         let mut config = Config::default();
         config.ui.accent = Some("cyan".into());
         assert_eq!(
-            config
-                .resolve_palette_with_ui_accent(true)
-                .expect("valid cyan accent")
-                .accent,
+            config.resolve_palette().expect("valid cyan accent").accent,
             Color::Cyan
         );
 
         config.ui.accent = Some("magenta".into());
         assert_eq!(
             config
-                .resolve_palette_with_ui_accent(true)
+                .resolve_palette()
                 .expect("valid magenta accent")
                 .accent,
             Color::Magenta
@@ -669,7 +666,7 @@ mod tests {
         });
         assert_eq!(
             config
-                .resolve_palette_with_ui_accent(true)
+                .resolve_palette()
                 .expect("valid custom accent")
                 .accent,
             Color::Rgb(1, 2, 3)
