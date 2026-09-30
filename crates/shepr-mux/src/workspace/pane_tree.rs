@@ -196,8 +196,8 @@ impl Workspace {
         target: PaneId,
         focus_new_pane: bool,
         direction: Direction,
-        ratio: Option<f32>,
         geometry: &PaneGeometry,
+        cell: Option<shepr_core::geometry::CellPx>,
         cwd: Option<PathBuf>,
         default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
@@ -208,8 +208,7 @@ impl Workspace {
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<NewPane> {
         let mut prepared_layout = self.layout.clone();
-        let Some(new_id) = prepared_layout.split_pane(target, direction, ratio.unwrap_or(0.5))
-        else {
+        let Some(new_id) = prepared_layout.split_pane(target, direction, 0.5) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "split target pane is not in the layout",
@@ -217,14 +216,13 @@ impl Workspace {
         };
         // The split un-zooms the workspace (below), so size against the tiled
         // layout.
-        let (rows, cols) = geometry
-            .pane_size(&prepared_layout, false, new_id)
-            .unwrap_or_else(|| geometry.sole_pane_size());
+        let spawn_geometry = geometry
+            .pane_spawn_geometry(&prepared_layout, false, new_id, cell)
+            .unwrap_or_else(|| geometry.sole_pane_spawn_geometry(cell));
         let actual_cwd = cwd.unwrap_or(default_cwd);
         let runtime = PaneRuntime::spawn(
             new_id,
-            rows,
-            cols,
+            spawn_geometry,
             &actual_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,

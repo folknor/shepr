@@ -137,25 +137,59 @@ mod tests {
     fn client_shell_endpoint_messages_roundtrip() -> TestResult {
         use crate::command::{
             EndpointCommand, EndpointError, EndpointReply, LayoutSetSplitRatioParams,
-            PaneSplitParams, PaneTextPoint, PaneTextRange, SplitDirection,
+            PaneCopyMotion, PaneCopyMotionParams, PaneDirection, PaneLineMotion, PaneSplitParams,
+            PaneSwapParams, PaneTextPoint, PaneTextRange, PaneWordMotion, SplitDirection,
+            WorkspaceCreateParams, WorkspaceCreateSource,
         };
+        use crate::{PublicPaneId, WorkspaceId};
 
+        let workspace: WorkspaceId = "w1".parse()?;
+        let pane: PublicPaneId = "w1:p1".parse()?;
         for command in [
             EndpointCommand::PaneSplit(PaneSplitParams {
-                workspace_id: None,
-                target_pane_id: Some("w1:p1".into()),
+                pane_id: pane.clone(),
                 direction: SplitDirection::Down,
-                ratio: Some(0.25),
-                cwd: None,
-                focus: true,
-                right_click: Default::default(),
-                env: [("A".to_owned(), "1".to_owned())].into(),
             }),
             EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
-                workspace_id: Some("w1".into()),
-                pane_id: None,
+                workspace_id: workspace.clone(),
                 path: vec![false, true],
                 ratio: 0.6,
+            }),
+            EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
+                source: WorkspaceCreateSource::Cwd("/tmp/x".into()),
+                label: Some("x".into()),
+            }),
+            EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
+                source: WorkspaceCreateSource::Follow(workspace.clone()),
+                label: None,
+            }),
+            EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
+                source: WorkspaceCreateSource::Default,
+                label: None,
+            }),
+            EndpointCommand::PaneSwap(PaneSwapParams::Direction {
+                pane_id: pane.clone(),
+                direction: PaneDirection::Left,
+            }),
+            EndpointCommand::PaneSwap(PaneSwapParams::Panes {
+                source: pane.clone(),
+                target: "w1:p2".parse()?,
+            }),
+            EndpointCommand::PaneCopyMotion(PaneCopyMotionParams {
+                pane_id: pane.clone(),
+                cursor: PaneTextPoint {
+                    row: shepr_vt::AbsRow(1),
+                    col: 2,
+                },
+                motion: PaneCopyMotion::Line(PaneLineMotion::End),
+            }),
+            EndpointCommand::PaneCopyMotion(PaneCopyMotionParams {
+                pane_id: pane.clone(),
+                cursor: PaneTextPoint {
+                    row: shepr_vt::AbsRow(1),
+                    col: 2,
+                },
+                motion: PaneCopyMotion::Word(PaneWordMotion::NextBigEnd),
             }),
         ] {
             let request = ClientMessage::ClientShellEndpointRequest {
@@ -173,7 +207,7 @@ mod tests {
         for result in [
             Ok(EndpointReply::Done),
             Ok(EndpointReply::PaneCopySearch {
-                pane_id: "w1:p1".into(),
+                pane_id: pane.clone(),
                 matches: vec![PaneTextRange {
                     start: point(3, 1),
                     end: point(3, 4),
@@ -182,9 +216,13 @@ mod tests {
                 current: Some(0),
                 current_global: None,
             }),
-            Err(EndpointError {
-                code: "pane_not_found".into(),
-                message: "pane w1:p9 not found".into(),
+            Err(EndpointError::Rejected("pane w1:p9 not found".into())),
+            Err(EndpointError::ShuttingDown),
+            Err(EndpointError::StaleBoot),
+            Err(EndpointError::SurfaceInactive),
+            Err(EndpointError::ResponseTooLarge {
+                size: 9_000_000,
+                limit: 8_000_000,
             }),
         ] {
             let response = ServerMessage::ClientShellEndpointResponse {

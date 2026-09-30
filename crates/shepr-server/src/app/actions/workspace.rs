@@ -5,24 +5,6 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 impl AppState {
-    /// Focuses workspace `idx` and moves the sidebar cursor to it. False when
-    /// `idx` is not a workspace.
-    pub fn switch_workspace(&mut self, idx: usize) -> bool {
-        if idx >= self.workspaces.len() {
-            return false;
-        }
-        let previous_focus = self.current_pane_focus_target();
-        let workspace_changed = self.active_index() != Some(idx);
-        self.set_active_index(Some(idx));
-        self.set_selected_index(Some(idx));
-        if workspace_changed {
-            crate::logging::workspace_focused(&self.workspaces[idx].id);
-        }
-        self.mark_session_dirty();
-        self.record_pane_focus_after_navigation(previous_focus);
-        true
-    }
-
     pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) -> bool {
         if source_idx >= self.workspaces.len() || insert_idx > self.workspaces.len() {
             return false;
@@ -41,6 +23,7 @@ impl AppState {
 
         let workspace = self.workspaces.remove(source_idx);
         self.workspaces.insert(target_idx, workspace);
+        self.reconcile_bookmark();
         true
     }
 
@@ -136,7 +119,6 @@ impl AppState {
             });
         }
 
-        self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         self.mark_session_dirty();
@@ -147,26 +129,9 @@ impl AppState {
         })
     }
 
-    pub(crate) fn clear_stale_previous_pane_focus(
-        &mut self,
-        pane_ids: impl IntoIterator<Item = PaneId>,
-    ) {
-        let pane_ids = pane_ids.into_iter().collect::<Vec<_>>();
-        if self
-            .previous_pane_focus
-            .as_ref()
-            .is_some_and(|focus| pane_ids.contains(&focus.pane_id))
-        {
-            self.previous_pane_focus = None;
-        }
-    }
-
-    /// Closes the workspace at `ws_idx` and everything it owns.
-    ///
-    /// Focus stays on the previously active workspace and the sidebar cursor
-    /// on the previously selected one when they survive; otherwise both fall
-    /// back to the closed slot (clamped). Closing the last workspace leaves
-    /// terminal mode, since there is no pane left to type into.
+    /// Closes the workspace at `ws_idx` and everything it owns. A bookmark on
+    /// it moves to the workspace now at its index; every client location is
+    /// settled by the server loop.
     pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) -> Option<WorkspaceRemovalOutcome> {
         let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.clone())?;
         self.mark_session_dirty();
@@ -174,38 +139,11 @@ impl AppState {
 
         let terminal_ids = self.terminal_ids_for_workspace(ws_idx);
         let pane_ids = self.pane_ids_for_workspace(ws_idx);
-        let active_workspace_id = self.active.clone();
-        let selected_workspace_id = self.selected.clone();
 
-        self.clear_stale_previous_pane_focus(pane_ids.iter().copied());
         self.workspaces.remove(ws_idx);
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(terminal_ids.iter().cloned());
-
-        if self.workspaces.is_empty() {
-            self.set_active_index(None);
-            self.set_selected_index(None);
-            if self.mode == Mode::Terminal {
-                self.mode = Mode::Navigate;
-            }
-            return Some(WorkspaceRemovalOutcome {
-                workspace_id,
-                pane_ids,
-                terminal_ids,
-                detached_terminal_ids,
-            });
-        }
-        let last = self.workspaces.len() - 1;
-        let position_of =
-            |id: Option<shepr_protocol::WorkspaceId>,
-             workspaces: &[shepr_mux::workspace::Workspace]| {
-                id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
-            };
-        let active = position_of(active_workspace_id, &self.workspaces).unwrap_or(ws_idx.min(last));
-        self.set_active_index(Some(active));
-        self.set_selected_index(Some(
-            position_of(selected_workspace_id, &self.workspaces).unwrap_or(active),
-        ));
+        self.reconcile_bookmark();
         Some(WorkspaceRemovalOutcome {
             workspace_id,
             pane_ids,
@@ -237,9 +175,5 @@ impl AppState {
             return PaneRemovalCommit::Stale;
         };
         self.commit_pane_removal(&plan)
-    }
-
-    pub fn close_selected_workspace(&mut self) {
-        self.close_workspace_at(self.selected_index().unwrap_or(0));
     }
 }

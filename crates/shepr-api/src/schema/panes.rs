@@ -2,14 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use super::common::PaneAgentState;
 
-pub use shepr_protocol::command::{
-    LayoutSetSplitRatioParams, PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection,
-    PaneCopySearchParams, PaneDirection, PaneFocusDirectionParams, PaneInputSetParams,
-    PaneRenameParams, PaneResizeParams, PaneRightClickTarget, PaneScrollParams,
-    PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneTextPoint, PaneTextRange,
-    PaneZoomMode, PaneZoomParams,
-};
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentParams {
     pub pane_id: String,

@@ -281,6 +281,44 @@ impl PaneGeometry {
         self.pane_size(&layout, false, pane_id)
             .unwrap_or((self.area.height.max(1), self.area.width.max(1)))
     }
+
+    /// The PTY geometry of `pane_id`: its content grid (`pane_size`) with the
+    /// pixel size of one cell, so the pane's first `TIOCSWINSZ` carries pixel
+    /// dimensions. `None` when the pane is not visible.
+    pub fn pane_spawn_geometry(
+        &self,
+        layout: &TileLayout,
+        zoomed: bool,
+        pane_id: PaneId,
+        cell: Option<shepr_core::geometry::CellPx>,
+    ) -> Option<shepr_core::geometry::PaneGeometry> {
+        let (rows, cols) = self.pane_size(layout, zoomed, pane_id)?;
+        Some(spawn_geometry(rows, cols, cell))
+    }
+
+    /// The PTY geometry of the only pane of a new workspace.
+    pub fn sole_pane_spawn_geometry(
+        &self,
+        cell: Option<shepr_core::geometry::CellPx>,
+    ) -> shepr_core::geometry::PaneGeometry {
+        let (rows, cols) = self.sole_pane_size();
+        spawn_geometry(rows, cols, cell)
+    }
+}
+
+/// A PTY geometry of `rows` by `cols` whose cells measure `cell` pixels;
+/// pixel-less when the cell size is unknown.
+pub fn spawn_geometry(
+    rows: u16,
+    cols: u16,
+    cell: Option<shepr_core::geometry::CellPx>,
+) -> shepr_core::geometry::PaneGeometry {
+    shepr_core::geometry::PaneGeometry::new(
+        cols,
+        rows,
+        cell.map_or(0, |cell| cell.width.get()),
+        cell.map_or(0, |cell| cell.height.get()),
+    )
 }
 
 #[cfg(test)]
@@ -296,6 +334,32 @@ mod tests {
             pane_outer_borders: true,
             pane_scrollbars: scrollbars,
         }
+    }
+
+    #[test]
+    fn spawn_geometry_pairs_the_content_grid_with_the_cell_pixel_size() {
+        let geometry = geometry(shepr_config::PaneBordersConfig::Off, true);
+        let cell = shepr_core::geometry::CellPx::new(9, 18);
+
+        let sole = geometry.sole_pane_spawn_geometry(cell);
+        assert_eq!((sole.rows(), sole.cols()), (40, 99));
+        assert_eq!(sole.text_area_px(), Some((99 * 9, 40 * 18)));
+
+        let (mut layout, root) = TileLayout::new();
+        let right = layout
+            .split_pane(root, Direction::Horizontal, 0.5)
+            .expect("split");
+        let split = geometry
+            .pane_spawn_geometry(&layout, false, right, cell)
+            .expect("the new pane is visible");
+        assert_eq!(
+            (split.rows(), split.cols()),
+            geometry.pane_size(&layout, false, right).expect("size")
+        );
+        assert_eq!(split.cell, cell);
+
+        // An unknown cell size leaves the pixel size out, not zero-sized.
+        assert_eq!(geometry.sole_pane_spawn_geometry(None).cell, None);
     }
 
     #[test]

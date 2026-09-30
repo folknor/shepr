@@ -116,8 +116,9 @@ pub struct SessionSnapshot {
     #[serde(default)]
     pub host_theme: SavedHostTheme,
     pub workspaces: Vec<WorkspaceSnapshot>,
+    /// The workspace the session's bookmark names: where a client with no
+    /// location of its own starts.
     pub active: Option<usize>,
-    pub selected: usize,
 }
 
 /// Last observed physical terminal colours, retained for headless resumes.
@@ -326,7 +327,6 @@ pub fn capture(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
-    selected: usize,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
 ) -> SessionSnapshot {
     let (mut snapshot, cwds) = capture_deferred(
@@ -335,7 +335,6 @@ pub fn capture(
         terminal_runtimes,
         fallback_cwd,
         active,
-        selected,
         host_theme,
     );
     cwds.resolve(&mut snapshot);
@@ -354,7 +353,6 @@ pub fn capture_deferred(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
-    selected: usize,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
 ) -> (SessionSnapshot, PendingCwds) {
     let mut cwds = PendingCwds::default();
@@ -376,7 +374,6 @@ pub fn capture_deferred(
             })
             .collect(),
         active,
-        selected,
     };
     (snapshot, cwds)
 }
@@ -934,7 +931,7 @@ mod tests {
     #[test]
     fn snapshot_types_reject_wrong_version_during_deserialization() {
         for json in [
-            r#"{"version":2,"workspaces":[],"active":null,"selected":0}"#,
+            r#"{"version":2,"workspaces":[],"active":null}"#,
             r#"{"version":2,"workspaces":[]}"#,
         ] {
             assert!(serde_json::from_str::<super::SessionSnapshot>(json).is_err());
@@ -1021,7 +1018,6 @@ mod tests {
             &runtimes,
             PathBuf::from("/").as_path(),
             None,
-            0,
             Default::default(),
         );
         let mut carry = super::HistoryCarry::default();
@@ -1104,7 +1100,6 @@ mod tests {
             &PaneRuntimeRegistry::new(),
             PathBuf::from("/").as_path(),
             None,
-            0,
             Default::default(),
         );
 

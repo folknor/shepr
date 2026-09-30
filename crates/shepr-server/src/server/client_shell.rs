@@ -8,7 +8,7 @@ pub(super) fn snapshot(
     resolved_config: &[u8],
     boot_id: &shepr_protocol::BootId,
     revision: u64,
-    location: Option<&crate::server::clients::ClientShellLocation>,
+    location: &crate::server::clients::ClientShellLocation,
 ) -> shepr_protocol::ClientShellSnapshot {
     snapshot_from_session(
         app,
@@ -33,19 +33,21 @@ pub(super) fn snapshot_from_session(
     resolved_config: &[u8],
     boot_id: &shepr_protocol::BootId,
     revision: u64,
-    location: Option<&crate::server::clients::ClientShellLocation>,
+    location: &crate::server::clients::ClientShellLocation,
 ) -> shepr_protocol::ClientShellSnapshot {
+    // The client views what its own location names and nothing else: a client
+    // with no workspace has no focus, never the session's bookmark.
     let focused_workspace_id = location
-        .and_then(|location| location.focused_workspace_id.clone())
-        .or(snapshot.focused_workspace_id);
+        .focused_workspace_id
+        .clone()
+        .filter(|workspace_id| app.resolve_workspace_id(workspace_id).is_some());
     let focused_pane_id = focused_workspace_id
         .as_ref()
         .and_then(|workspace_id| app.resolve_workspace_id(workspace_id))
         .and_then(|workspace_index| {
             let pane_id = app.state.workspaces.get(workspace_index)?.focused_pane_id();
             app.public_pane_id(workspace_index, pane_id)
-        })
-        .or(snapshot.focused_pane_id);
+        });
     // Snapshot entries are joined to live state by their public ids, never by
     // position: a snapshot that filtered or reordered entries would otherwise
     // hand one workspace's labels and branch to another. The snapshot is built
@@ -384,7 +386,6 @@ mod tests {
         second.custom_name = Some("named".into());
         app.state.workspaces = vec![first, second];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
         let resolved_config =
@@ -395,7 +396,7 @@ mod tests {
             &resolved_config,
             &shepr_test_fixtures::fixed_boot_id(1),
             1,
-            None,
+            &crate::server::clients::ClientShellLocation::default(),
         );
 
         for workspace in &snapshot.workspaces {

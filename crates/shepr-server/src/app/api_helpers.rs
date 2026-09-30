@@ -1,24 +1,7 @@
-use shepr_api::error::{ApiError, ApiErrorCode};
+use shepr_api::error::ApiError;
 
-pub(crate) fn pane_not_found(pane_id: Option<&str>) -> ApiError {
-    match pane_id {
-        Some(pane_id) => ApiError::pane_not_found(pane_id),
-        None => ApiError::new(ApiErrorCode::PaneNotFound, "active pane not found"),
-    }
-}
-
-pub(crate) fn pane_in_workspace_not_found(workspace_id: &str) -> ApiError {
-    ApiError::new(
-        ApiErrorCode::PaneNotFound,
-        format!("no pane available in workspace {workspace_id}"),
-    )
-}
-
-pub(crate) fn workspace_not_found(workspace_id: &str) -> ApiError {
-    ApiError::new(
-        ApiErrorCode::WorkspaceNotFound,
-        format!("workspace {workspace_id} not found"),
-    )
+pub(crate) fn pane_not_found(pane_id: &str) -> ApiError {
+    ApiError::pane_not_found(pane_id)
 }
 
 pub(super) fn detect_state_from_api(
@@ -71,25 +54,13 @@ mod agent_status_tests {
 
 #[cfg(test)]
 mod not_found_tests {
-    use super::{pane_in_workspace_not_found, pane_not_found, workspace_not_found};
+    use super::pane_not_found;
     use shepr_api::error::ApiErrorCode;
 
     #[test]
-    fn not_found_helpers_keep_the_subject_and_code_together() {
-        let error = pane_not_found(Some("w1:p2"));
+    fn pane_not_found_keeps_the_subject_and_code_together() {
+        let error = pane_not_found("w1:p2");
         assert_eq!(error.code, ApiErrorCode::PaneNotFound);
         assert_eq!(error.into_message(), "pane w1:p2 not found");
-
-        let error = pane_not_found(None);
-        assert_eq!(error.code, ApiErrorCode::PaneNotFound);
-        assert_eq!(error.into_message(), "active pane not found");
-
-        let error = pane_in_workspace_not_found("w1");
-        assert_eq!(error.code, ApiErrorCode::PaneNotFound);
-        assert_eq!(error.into_message(), "no pane available in workspace w1");
-
-        let error = workspace_not_found("w9");
-        assert_eq!(error.code, ApiErrorCode::WorkspaceNotFound);
-        assert_eq!(error.into_message(), "workspace w9 not found");
     }
 }

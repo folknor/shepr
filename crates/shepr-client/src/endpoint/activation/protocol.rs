@@ -151,12 +151,12 @@ pub(super) fn focus_request(
     let command = match focus {
         crate::shell::ClientEndpointFocusTarget::Workspace(workspace_id) => {
             EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-                workspace_id: workspace_id.to_string(),
+                workspace_id: workspace_id.clone(),
             })
         }
         crate::shell::ClientEndpointFocusTarget::Pane(pane_id) => {
             EndpointCommand::PaneFocus(PaneTarget {
-                pane_id: pane_id.to_string(),
+                pane_id: pane_id.clone(),
             })
         }
     };

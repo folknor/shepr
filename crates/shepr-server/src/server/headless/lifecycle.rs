@@ -198,8 +198,9 @@ impl ShutdownLifecycle {
         true
     }
 
-    /// The canonical rejection used for requests selected after the server
-    /// entered its terminal stopping phase.
+    /// The canonical rejection of a JSON API request selected after the
+    /// server entered its terminal stopping phase. An endpoint command gets
+    /// `EndpointError::ShuttingDown` instead.
     pub(super) fn shutdown_error(&self) -> Option<shepr_api::error::ApiError> {
         if self.phase == ShutdownPhase::Stopping {
             Some(shepr_api::error::ApiError::new(

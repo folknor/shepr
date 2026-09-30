@@ -5,7 +5,8 @@ pub(crate) fn success(result: ResponseResult) -> ApiResult {
     Ok(result)
 }
 
-/// A failed API method or client-shell command.
+/// A failed JSON API method. Client-shell commands answer with
+/// `EndpointError` instead (`endpoint.rs`).
 pub(crate) fn failure<T>(
     code: impl Into<ApiErrorCode>,
     message: impl Into<String>,

@@ -20,7 +20,8 @@ mod pane_tree;
 
 pub use self::geometry::apply_pane_chrome;
 pub use self::geometry::{
-    PaneChromeInfo, PaneGeometry, layout_rect, pane_inner_rect, terminal_content_rect,
+    PaneChromeInfo, PaneGeometry, layout_rect, pane_inner_rect, spawn_geometry,
+    terminal_content_rect,
 };
 pub use self::pane_tree::{ExistingPane, NewPane, WorkspacePane};
 
@@ -255,25 +256,25 @@ impl Workspace {
         self.cached_git_space = None;
     }
 
-    pub fn new_with_extra_env(
+    /// A new workspace with one shell pane whose PTY is spawned at `geometry`:
+    /// the grid it will have and the pixel size of one cell, so the shell's
+    /// first `TIOCSWINSZ` already carries pixel dimensions.
+    pub fn spawn(
         initial_cwd: &Path,
-        rows: u16,
-        cols: u16,
+        geometry: shepr_core::geometry::PaneGeometry,
         scrollback_limit_bytes: usize,
         host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
         host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         spawn: &PaneSpawnHandles,
-        extra_env: Vec<(String, String)>,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
-        let launch_env = PaneLaunchEnv::from_extra(extra_env, spawn.api_socket_path.clone())
+        let launch_env = PaneLaunchEnv::from_extra(Vec::new(), spawn.api_socket_path.clone())
             .with_pane_id(PublicPaneId::new(&id, 1));
         let (layout, root_pane) = TileLayout::new();
         let runtime = PaneRuntime::spawn(
             root_pane,
-            rows,
-            cols,
+            geometry,
             initial_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -302,7 +303,10 @@ impl Workspace {
         Ok((workspace, terminal, runtime))
     }
 
-    // Workspace split routing carries pane identity, geometry, host context, and focus policy.
+    /// Starts a shell in a new pane split off `pane_id`, sized from `geometry`
+    /// (the workspace's area and chrome) and `cell` (the pixel size of one
+    /// cell, `None` when unknown). The layout change is prepared on a clone and
+    /// installed by `commit_new_pane`.
     #[expect(
         clippy::too_many_arguments,
         reason = "pane creation needs launch settings and spawn context"
@@ -312,87 +316,13 @@ impl Workspace {
         pane_id: PaneId,
         direction: Direction,
         geometry: &PaneGeometry,
+        cell: Option<shepr_core::geometry::CellPx>,
         cwd: Option<PathBuf>,
         default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
         host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
-        extra_env: Vec<(String, String)>,
-        focus_new_pane: bool,
-        spawn: &PaneSpawnHandles,
-    ) -> Option<std::io::Result<NewPane>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            None,
-            geometry,
-            cwd,
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            extra_env,
-            focus_new_pane,
-            spawn,
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "pane creation needs launch settings and spawn context"
-    )]
-    pub fn split_pane_with_ratio(
-        &self,
-        pane_id: PaneId,
-        direction: Direction,
-        ratio: f32,
-        geometry: &PaneGeometry,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        extra_env: Vec<(String, String)>,
-        focus_new_pane: bool,
-        spawn: &PaneSpawnHandles,
-    ) -> Option<std::io::Result<NewPane>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            Some(ratio),
-            geometry,
-            cwd,
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            extra_env,
-            focus_new_pane,
-            spawn,
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "pane creation needs launch settings and spawn context"
-    )]
-    fn split_pane_with_runtime(
-        &self,
-        pane_id: PaneId,
-        direction: Direction,
-        ratio: Option<f32>,
-        geometry: &PaneGeometry,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        extra_env: Vec<(String, String)>,
         focus_new_pane: bool,
         spawn: &PaneSpawnHandles,
     ) -> Option<std::io::Result<NewPane>> {
@@ -400,13 +330,13 @@ impl Workspace {
             return None;
         }
         let pane_number = self.next_public_pane_number;
-        let launch_env = self.launch_env_for_new_pane(pane_number, extra_env, spawn);
+        let launch_env = self.launch_env_for_new_pane(pane_number, spawn);
         Some(self.split_pane_shell(
             pane_id,
             focus_new_pane,
             direction,
-            ratio,
             geometry,
+            cell,
             cwd,
             default_cwd,
             scrollback_limit_bytes,
@@ -438,10 +368,9 @@ impl Workspace {
     pub(crate) fn launch_env_for_new_pane(
         &self,
         pane_number: usize,
-        extra_env: Vec<(String, String)>,
         spawn: &PaneSpawnHandles,
     ) -> PaneLaunchEnv {
-        PaneLaunchEnv::from_extra(extra_env, spawn.api_socket_path.clone())
+        PaneLaunchEnv::from_extra(Vec::new(), spawn.api_socket_path.clone())
             .with_pane_id(PublicPaneId::new(&self.id, pane_number))
     }
 

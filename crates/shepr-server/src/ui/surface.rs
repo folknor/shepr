@@ -196,8 +196,7 @@ mod tests {
 
         let mut app = AppState::test_new();
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
-        app.set_selected_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;

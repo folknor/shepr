@@ -184,7 +184,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
     assert!(matches!(
         &request.command,
         EndpointCommand::LayoutSetSplitRatio(params)
-            if params.workspace_id.as_deref() == Some("w1")
+            if params.workspace_id == "w1"
                 && params.path == vec![false, true]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
     ));
@@ -371,7 +371,7 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
             &crate::tests::test_boot_id("boot-1"),
             id,
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: text.into(),
             }),
         )

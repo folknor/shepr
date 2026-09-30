@@ -3,13 +3,8 @@
 //!
 //! This is the client shell's whole vocabulary: the server dispatches an
 //! [`EndpointCommand`] straight to its handlers and answers with an
-//! [`EndpointReply`], with no JSON API method in between. The JSON API in
-//! `shepr-api` re-exports some of the parameter types here, but none of its
-//! methods is a client-shell command. The types are positional wire
-//! types: no field is skipped or flattened, so an absent `Option` is written
-//! to JSON as `null`.
-
-use std::collections::HashMap;
+//! [`EndpointReply`], with no JSON API method in between. The types are positional wire types:
+//! no field is skipped or flattened, and every id is typed.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,12 +18,12 @@ pub struct ClientShellSurfaceSetParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceTarget {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTarget {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,29 +33,33 @@ pub enum SplitDirection {
     Down,
 }
 
+/// Where a new workspace's first pane starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkspaceCreateSource {
+    /// An explicit working directory.
+    Cwd(String),
+    /// The focused pane of this workspace supplies the cwd policy
+    /// (`new_terminal_cwd`); a workspace that no longer exists falls back to
+    /// [`Self::Default`].
+    Follow(WorkspaceId),
+    /// The server's default working directory.
+    Default,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCreateParams {
-    /// Workspace whose focused pane supplies the `follow` cwd policy.
-    #[serde(default)]
-    pub source_workspace_id: Option<String>,
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub focus: bool,
-    #[serde(default)]
+    pub source: WorkspaceCreateSource,
     pub label: Option<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCloseParams {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRenameParams {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     pub label: String,
 }
 
@@ -73,7 +72,7 @@ pub struct WorkspaceCheckoutRootParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceMoveParams {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     pub insert_index: usize,
 }
 
@@ -95,28 +94,15 @@ pub enum PaneRightClickTarget {
     Pane,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSplitParams {
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
-    pub target_pane_id: Option<String>,
+    pub pane_id: PublicPaneId,
     pub direction: SplitDirection,
-    #[serde(default)]
-    pub ratio: Option<f32>,
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub focus: bool,
-    #[serde(default)]
-    pub right_click: PaneRightClickTarget,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInputSetParams {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub right_click: PaneRightClickTarget,
 }
 
@@ -129,64 +115,46 @@ pub enum PaneDirection {
     Down,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PaneSwapParams {
-    #[serde(default)]
-    pub pane_id: Option<String>,
-    #[serde(default)]
-    pub direction: Option<PaneDirection>,
-    #[serde(default)]
-    pub source_pane_id: Option<String>,
-    #[serde(default)]
-    pub target_pane_id: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneSwapParams {
+    Direction {
+        pane_id: PublicPaneId,
+        direction: PaneDirection,
+    },
+    Panes {
+        source: PublicPaneId,
+        target: PublicPaneId,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Always a toggle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneZoomParams {
-    #[serde(default)]
-    pub pane_id: Option<String>,
-    #[serde(default)]
-    pub mode: PaneZoomMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PaneZoomMode {
-    #[default]
-    Toggle,
-    On,
-    Off,
+    pub pane_id: PublicPaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
-    pub pane_id: Option<String>,
+    pub workspace_id: WorkspaceId,
     pub path: Vec<bool>,
     pub ratio: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneFocusDirectionParams {
-    #[serde(default)]
-    pub pane_id: Option<String>,
+    pub pane_id: PublicPaneId,
     pub direction: PaneDirection,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneResizeParams {
-    #[serde(default)]
-    pub pane_id: Option<String>,
+    pub pane_id: PublicPaneId,
     pub direction: PaneDirection,
-    #[serde(default)]
-    pub amount: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneScrollParams {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub offset_from_bottom: u64,
 }
 
@@ -207,29 +175,43 @@ pub struct PaneTextRange {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSelectionReadParams {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub anchor: PaneTextPoint,
     pub cursor: PaneTextPoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PaneCopyMotion {
-    LineEnd,
+pub enum PaneLineMotion {
+    End,
     FirstNonBlank,
-    NextWordStart,
-    PreviousWordStart,
-    NextWordEnd,
-    NextBigWordStart,
-    PreviousBigWordStart,
-    NextBigWordEnd,
-    PreviousParagraph,
-    NextParagraph,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneWordMotion {
+    NextStart,
+    PreviousStart,
+    NextEnd,
+    NextBigStart,
+    PreviousBigStart,
+    NextBigEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneParagraphMotion {
+    Previous,
+    Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaneCopyMotion {
+    Line(PaneLineMotion),
+    Word(PaneWordMotion),
+    Paragraph(PaneParagraphMotion),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneCopyMotionParams {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub cursor: PaneTextPoint,
     pub motion: PaneCopyMotion,
 }
@@ -243,18 +225,16 @@ pub enum PaneCopySearchDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneCopySearchParams {
-    pub pane_id: String,
+    pub pane_id: PublicPaneId,
     pub query: String,
     pub direction: PaneCopySearchDirection,
     pub cursor: PaneTextPoint,
-    #[serde(default)]
     pub previous: Option<PaneTextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneRenameParams {
-    pub pane_id: String,
-    #[serde(default)]
+    pub pane_id: PublicPaneId,
     pub label: Option<String>,
 }
 
@@ -313,7 +293,8 @@ pub struct EndpointCommandTraits {
     /// The command can change what a shell shows, so the server renders after
     /// it.
     pub mutates_ui: bool,
-    /// The command creates or removes a workspace or pane, so every shell
+    /// The command creates or removes a workspace or pane, or reorders
+    /// workspaces (which client locations track by index), so every shell
     /// client's location is reconciled after it.
     pub changes_topology: bool,
     /// The requesting shell claims the geometry of the workspace the command
@@ -329,7 +310,7 @@ impl EndpointCommand {
             Self::WorkspaceFocus(_) => ("workspace.focus", true, false, true),
             Self::WorkspaceRename(_) => ("workspace.rename", true, false, true),
             Self::WorkspaceCheckoutRoot(_) => ("workspace.checkout_root", false, false, false),
-            Self::WorkspaceMove(_) => ("workspace.move", true, false, true),
+            Self::WorkspaceMove(_) => ("workspace.move", true, true, true),
             Self::WorkspaceClose(_) => ("workspace.close", true, true, true),
             Self::PaneSplit(_) => ("pane.split", true, true, true),
             Self::PaneSwap(_) => ("pane.swap", true, false, true),
@@ -381,15 +362,15 @@ pub enum EndpointReply {
         home: Option<String>,
     },
     PaneSelection {
-        pane_id: String,
+        pane_id: PublicPaneId,
         text: String,
     },
     PaneCopyMotion {
-        pane_id: String,
+        pane_id: PublicPaneId,
         cursor: PaneTextPoint,
     },
     PaneCopySearch {
-        pane_id: String,
+        pane_id: PublicPaneId,
         matches: Vec<PaneTextRange>,
         total: u64,
         current: Option<u32>,
@@ -403,9 +384,34 @@ pub enum EndpointReply {
     },
 }
 
-/// Why an [`EndpointCommand`] failed: the server's error code and its message.
+/// Why an [`EndpointCommand`] failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EndpointError {
-    pub code: String,
-    pub message: String,
+pub enum EndpointError {
+    /// The app refused the command; the message is for the user.
+    Rejected(String),
+    /// The server is shutting down.
+    ShuttingDown,
+    /// The command was aimed at another boot of the server.
+    StaleBoot,
+    /// The requesting client's surface is not active.
+    SurfaceInactive,
+    /// The reply did not fit the wire limit.
+    ResponseTooLarge { size: u64, limit: u64 },
 }
+
+impl std::fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(message) => f.write_str(message),
+            Self::ShuttingDown => f.write_str("the server is shutting down"),
+            Self::StaleBoot => f.write_str("the command was aimed at a previous server boot"),
+            Self::SurfaceInactive => f.write_str("the client surface is not active"),
+            Self::ResponseTooLarge { size, limit } => write!(
+                f,
+                "the response of {size} bytes exceeds the {limit} byte limit"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EndpointError {}

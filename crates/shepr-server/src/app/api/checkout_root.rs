@@ -1,12 +1,10 @@
 use std::path::Path;
 
-use shepr_api::error::ApiErrorCode;
 use shepr_protocol::command::{EndpointReply, WorkspaceCheckoutRootParams};
 
 use crate::app::App;
 
-use super::EndpointResult;
-use super::responses::failure;
+use super::endpoint::{Handled, HandlerResult, rejected};
 
 impl App {
     /// `workspace.checkout_root`: the checkout root Git reports for a directory
@@ -17,17 +15,17 @@ impl App {
     pub(super) fn handle_workspace_checkout_root(
         &mut self,
         params: &WorkspaceCheckoutRootParams,
-    ) -> EndpointResult {
+    ) -> HandlerResult {
         let cwd = super::cwd::launch_cwd(&params.cwd)?;
         match checkout_root(&cwd) {
-            Ok(root) => Ok(EndpointReply::WorkspaceCheckoutRoot {
+            Ok(root) => Handled::reply(EndpointReply::WorkspaceCheckoutRoot {
                 root,
                 // An unusable `HOME` just means the `~` label is not offered.
                 home: shepr_core::pathutil::home_dir()
                     .ok()
                     .and_then(|home| home.to_str().map(str::to_owned)),
             }),
-            Err(message) => failure(ApiErrorCode::InternalError, message),
+            Err(message) => rejected(message),
         }
     }
 }
@@ -83,7 +81,7 @@ mod tests {
             cwd: "relative".into(),
         });
         let error = response.expect_err("a relative cwd is refused");
-        assert_eq!(error.code, ApiErrorCode::InvalidCwd);
+        assert!(error.to_string().contains("must be an absolute path"));
     }
 
     #[test]
@@ -94,7 +92,11 @@ mod tests {
         let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
             cwd: missing.display().to_string(),
         });
-        let Ok(EndpointReply::WorkspaceCheckoutRoot { root, .. }) = response else {
+        let Ok(Handled {
+            reply: EndpointReply::WorkspaceCheckoutRoot { root, .. },
+            ..
+        }) = response
+        else {
             panic!("expected a checkout root answer, got {response:?}");
         };
         assert_eq!(root, None);
@@ -114,8 +116,12 @@ mod tests {
         let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
             cwd: nested.display().to_string(),
         });
-        let Ok(EndpointReply::WorkspaceCheckoutRoot {
-            root: Some(root), ..
+        let Ok(Handled {
+            reply:
+                EndpointReply::WorkspaceCheckoutRoot {
+                    root: Some(root), ..
+                },
+            ..
         }) = response
         else {
             panic!("expected a checkout root, got {response:?}");

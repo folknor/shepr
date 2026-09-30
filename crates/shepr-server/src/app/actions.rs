@@ -10,7 +10,7 @@ use shepr_mux::workspace::{
     PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope,
 };
 
-use super::state::{AppState, Mode, PaneFocusTarget};
+use super::state::AppState;
 
 /// What applying an event did to a terminal's effective agent state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +60,6 @@ pub(crate) struct WorkspaceCreationOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) workspace_id: shepr_protocol::WorkspaceId,
     pub(crate) root_pane: PaneId,
-    pub(crate) focused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,27 +69,7 @@ pub(crate) struct PaneCreationOutcome {
     pub(crate) terminal_id: shepr_protocol::TerminalId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PaneContextFallback {
-    None,
-    ActiveWorkspace,
-    WorkspaceCreation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PaneContext {
-    pub(crate) workspace_index: usize,
-    pub(crate) pane_id: PaneId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PaneZoomCommand {
-    Toggle,
-    On,
-    Off,
-}
-
-/// What a zoom command did: whether the workspace's zoom and the pane focus moved.
+/// What a zoom toggle did: whether the workspace's zoom and the pane focus moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PaneZoomOutcome {
     pub changed: bool,

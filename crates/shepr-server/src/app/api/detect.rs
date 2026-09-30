@@ -13,13 +13,13 @@ impl App {
     /// never the scrolled viewport, plain text and whole.
     pub(super) fn handle_detect_capture(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_not_found(&target.pane_id));
         };
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_not_found(&target.pane_id));
         };
         let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_not_found(&target.pane_id));
         };
 
         success(ResponseResult::DetectCapture {
@@ -34,10 +34,10 @@ impl App {
     /// instead of rule evidence.
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_not_found(&target.pane_id));
         };
         let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_not_found(&target.pane_id));
         };
         let Some(terminal) = self
             .state
@@ -46,7 +46,7 @@ impl App {
             .and_then(|workspace| workspace.terminal_id(pane_id))
             .and_then(|terminal_id| self.state.terminals.get(terminal_id))
         else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_not_found(&target.pane_id));
         };
         if terminal.full_lifecycle_hook_authority_active() {
             let explain = serde_json::json!({

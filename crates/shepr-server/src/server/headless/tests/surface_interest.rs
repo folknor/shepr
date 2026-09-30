@@ -3,7 +3,7 @@ use shepr_protocol::command::{EndpointCommand, EndpointReply};
 
 fn surface_set(active: bool) -> Box<EndpointCommand> {
     Box::new(EndpointCommand::ClientShellSurfaceSet(
-        shepr_api::schema::ClientShellSurfaceSetParams { active },
+        shepr_protocol::command::ClientShellSurfaceSetParams { active },
     ))
 }
 
@@ -23,15 +23,10 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_i
 async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"");
-    let pane_id = server
-        .app
-        .session_snapshot()
-        .focused_pane_id
-        .expect("test precondition");
+    let pane_id = focused_test_pane(&server);
     let workspace_id = server
         .app
-        .session_snapshot()
-        .focused_workspace_id
+        .public_workspace_id(0)
         .expect("test precondition");
     let (writer, control_rx, render_rx) = test_client_writer();
     let client_id = ClientId::test_new(52);
@@ -81,8 +76,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             boot_id: boot_id.clone(),
             request_id: "inactive-mutation".into(),
             command: Box::new(EndpointCommand::WorkspaceFocus(
-                shepr_api::schema::WorkspaceTarget {
-                    workspace_id: workspace_id.to_string(),
+                shepr_protocol::command::WorkspaceTarget {
+                    workspace_id: workspace_id.clone(),
                 },
             )),
         })
@@ -93,7 +88,10 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     else {
         panic!("expected endpoint error response");
     };
-    assert_eq!(error.code, "surface_inactive");
+    assert_eq!(
+        error,
+        shepr_protocol::command::EndpointError::SurfaceInactive
+    );
 
     assert!(server.send_to_client(
         client_id,

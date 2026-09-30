@@ -181,7 +181,7 @@ fn copy_search_result(
 ) -> EndpointReply {
     let total = matches.len() as u64;
     EndpointReply::PaneCopySearch {
-        pane_id: "w1:p1".into(),
+        pane_id: shepr_test_fixtures::id("w1:p1"),
         matches,
         total,
         current,

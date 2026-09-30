@@ -60,8 +60,10 @@ use tracing::{info, warn};
 
 use shepr_mux::events::AppEvent;
 
+pub(crate) use api::EndpointContext;
 pub(crate) use api::session::SessionSnapshot;
-pub use state::{AppState, Mode};
+pub use state::AppState;
+pub(crate) use state::SpawnGeometry;
 
 /// Whether the app restores a saved session at startup and persists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +150,7 @@ impl App {
         // `session-backups` before replacing it: the file either could not be
         // loaded, or restore dropped saved workspaces that are still only in it.
         let mut protect_unloaded = policy.persists_session() && snapshot.is_none();
-        let (workspaces, active, selected) = if let Some(snap) = snapshot {
+        let (workspaces, active) = if let Some(snap) = snapshot {
             let history = config
                 .experimental()
                 .pane_history
@@ -202,12 +204,12 @@ impl App {
                 outcome,
             );
             if restored.workspaces.is_empty() {
-                (Vec::new(), None, 0)
+                (Vec::new(), None)
             } else {
-                (restored.workspaces, restored.active, restored.selected)
+                (restored.workspaces, restored.active)
             }
         } else {
-            (Vec::new(), None, 0)
+            (Vec::new(), None)
         };
         // From here on the persister is the one owner of the data directory:
         // it holds the lease, the writer and the carried pane history. An app
@@ -236,27 +238,14 @@ impl App {
             "using pane scrollback configuration"
         );
 
-        let mode = if active.is_some() {
-            state::Mode::Terminal
-        } else {
-            state::Mode::Navigate
-        };
-
-        let active_id =
-            active.and_then(|index| workspaces.get(index).map(|workspace| workspace.id.clone()));
-        let selected_id = workspaces
-            .get(selected)
-            .map(|workspace| workspace.id.clone());
         let mut state = AppState {
             clock_now: clock.now,
             terminals: std::collections::HashMap::new(),
             workspaces,
-            active: active_id,
-            previous_pane_focus: None,
-            selected: selected_id,
-            mode,
+            bookmark: None,
+            bookmark_position: 0,
             should_quit: false,
-            workspace_areas: std::collections::HashMap::new(),
+            workspace_geometry: std::collections::HashMap::new(),
             settings,
             next_agent_state_change_seq: 0,
             host_terminal_appearance: None,
@@ -266,6 +255,7 @@ impl App {
             shell_projection_revision: 0,
         };
 
+        state.set_bookmark_index(active);
         state.terminals = restored_terminals;
         // Restored workspaces get their Git identity (label, branch, space)
         // from the first background Git refresh, not from a synchronous walk
@@ -329,7 +319,11 @@ impl App {
         self.pane_teardowns.wait(timeout)
     }
 
-    pub(crate) fn ensure_default_workspace(&mut self) -> bool {
+    /// Creates the workspace an empty session gets, sized for `geometry`.
+    /// False when the session already has a workspace or the creation failed.
+    /// The caller chooses the geometry and settles the clients' locations and
+    /// geometry controllers (`create_automatic_workspace` on the server loop).
+    pub(crate) fn create_default_workspace(&mut self, geometry: SpawnGeometry) -> bool {
         if !self.state.workspaces.is_empty() {
             return false;
         }
@@ -338,7 +332,7 @@ impl App {
         let preserve_checkpoint =
             self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
-        match self.create_workspace_with_options(&cwd, true) {
+        match self.create_workspace(&cwd, geometry) {
             Ok(_index) => {
                 // Callers include non-mutating API requests and client
                 // connects, so the shell projection is invalidated here.
@@ -352,7 +346,6 @@ impl App {
             }
             Err(err) => {
                 tracing::error!(error = %err, "failed to create default workspace");
-                self.state.mode = Mode::Navigate;
                 false
             }
         }
@@ -375,8 +368,7 @@ mod tests {
     use shepr_config::Config;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::command::{
-        EndpointCommand, EndpointReply, PaneRightClickTarget, PaneSplitParams, PaneTarget,
-        SplitDirection,
+        EndpointCommand, EndpointReply, PaneSplitParams, PaneTarget, SplitDirection,
     };
 
     // Tests build apps that never persist their session; `AppPolicy::Test`
@@ -655,17 +647,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_default_workspace_creates_one_workspace_only_when_none_exist() {
+    async fn create_default_workspace_creates_one_workspace_only_when_none_exist() {
         let mut app = test_app();
+        let geometry = app.headless_spawn_geometry();
 
-        assert!(app.ensure_default_workspace());
+        assert!(app.create_default_workspace(geometry));
         assert_eq!(app.state.workspaces.len(), 1);
-        assert!(!app.ensure_default_workspace());
+        assert_eq!(app.state.workspace_spawn_geometry(0), Some(geometry));
+        assert!(!app.create_default_workspace(geometry));
         assert_eq!(app.state.workspaces.len(), 1);
     }
 
     #[test]
-    fn workspace_creation_in_navigate_mode_uses_selected_workspace_seed_cwd() {
+    fn workspace_seed_cwd_comes_from_the_named_workspace_not_the_bookmark() {
         let mut app = test_app();
         let mut first = Workspace::test_new("shepr");
         first.identity_cwd = std::path::PathBuf::from("/shepr-test/shepr");
@@ -673,19 +667,16 @@ mod tests {
         second.identity_cwd = std::path::PathBuf::from("/shepr-test/pion");
 
         app.state.workspaces = vec![first, second];
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(1));
-        app.state.mode = Mode::Navigate;
+        app.state.set_bookmark_index(Some(0));
 
-        let context = app
-            .state
-            .resolve_pane_context(None, None, actions::PaneContextFallback::WorkspaceCreation)
+        let followed = app
+            .resolve_workspace_id(&app.state.workspaces[1].id.clone())
             .expect("test precondition");
         let seed_cwd = app
-            .seed_cwd_from_workspace(context.workspace_index)
+            .seed_cwd_from_workspace(followed)
             .expect("test precondition");
 
-        assert_eq!(context.workspace_index, 1);
+        assert_eq!(followed, 1);
         assert_eq!(seed_cwd, std::path::PathBuf::from("/shepr-test/pion"));
     }
 
@@ -728,8 +719,25 @@ mod tests {
         assert_eq!(cwd, std::path::PathBuf::from("/shepr-test/shepr-fixed"));
     }
 
+    fn split_of(app: &App, ws_idx: usize) -> EndpointCommand {
+        let target_pane = app.state.workspaces[ws_idx].root_pane();
+        EndpointCommand::PaneSplit(PaneSplitParams {
+            pane_id: app
+                .public_pane_id(ws_idx, target_pane)
+                .expect("test precondition"),
+            direction: SplitDirection::Right,
+        })
+    }
+
+    fn shut_down_runtimes(app: &mut App) {
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            drop(runtime);
+        }
+    }
+
     #[tokio::test]
-    async fn pane_split_request_focuses_new_pane_when_requested() {
+    async fn pane_split_request_focuses_the_new_pane_and_navigates_the_requester_only() {
         let env = IsolatedEnv::new();
         env.set("SHELL", exiting_test_command());
 
@@ -739,72 +747,49 @@ mod tests {
             Workspace::test_new("api-pane-split-background"),
         ];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
+        let command = split_of(&app, 1);
 
-        let target_pane = app.state.workspaces[1].root_pane();
-        let target_pane_id = app
-            .pane_info(1, target_pane)
-            .expect("test precondition")
-            .pane_id;
-
-        let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
-            workspace_id: None,
-            target_pane_id: Some(target_pane_id.to_string()),
-            direction: SplitDirection::Right,
-            ratio: None,
-            cwd: None,
-            focus: true,
-            right_click: Default::default(),
-            env: Default::default(),
-        }));
-        let Ok(EndpointReply::PaneInfo { pane }) = result else {
+        let outcome = app.handle_endpoint_command_in(command, &EndpointContext::without_geometry());
+        let Ok(EndpointReply::PaneInfo { pane }) = outcome.result else {
             panic!("expected pane info");
         };
 
         let (reply_workspace, reply_pane) = app
-            .parse_pane_id(pane.pane_id.as_str())
+            .resolve_pane_id(&pane.pane_id)
             .expect("test precondition");
         assert_eq!(reply_workspace, 1);
         assert!(app.state.workspaces[reply_workspace].contains_pane(reply_pane));
-        assert!(pane.focused);
-        assert_eq!(app.state.active_index(), Some(1));
         assert_eq!(app.state.workspaces[1].focused_pane_id(), reply_pane);
+        // A split navigates its requester to the split workspace; the effect is
+        // returned and never applied to the session's bookmark.
+        assert_eq!(outcome.navigate, app.public_workspace_id(1));
+        assert_eq!(app.state.bookmark_index(), Some(0));
+        // Whether the pane is focused depends on the requester's location,
+        // which the server loop fills in.
+        assert!(!pane.focused);
+        let mut reply = EndpointReply::PaneInfo { pane };
+        let viewed = app.public_workspace_id(1);
+        app.fill_reply_focus(&mut reply, viewed.as_ref());
+        assert!(matches!(&reply, EndpointReply::PaneInfo { pane } if pane.focused));
+        let viewing_another = app.public_workspace_id(0);
+        app.fill_reply_focus(&mut reply, viewing_another.as_ref());
+        assert!(matches!(&reply, EndpointReply::PaneInfo { pane } if !pane.focused));
 
-        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
-        for (_terminal_id, runtime) in runtimes {
-            drop(runtime);
-        }
+        shut_down_runtimes(&mut app);
     }
 
     #[tokio::test]
-    async fn pane_split_request_applies_ratio() {
+    async fn pane_split_request_splits_in_half_and_keeps_default_input_routing() {
         let env = IsolatedEnv::new();
         env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
-        let workspace = Workspace::test_new("api-pane-split-ratio");
-        let target_pane = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.workspaces = vec![Workspace::test_new("api-pane-split-half")];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
+        let command = split_of(&app, 0);
 
-        let target_pane_id = app
-            .pane_info(0, target_pane)
-            .expect("test precondition")
-            .pane_id;
-
-        let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
-            workspace_id: None,
-            target_pane_id: Some(target_pane_id.to_string()),
-            direction: SplitDirection::Right,
-            ratio: Some(0.333),
-            cwd: None,
-            focus: false,
-            right_click: PaneRightClickTarget::Pane,
-            env: Default::default(),
-        }));
+        let result = app.handle_endpoint_command(command);
         let Ok(EndpointReply::PaneInfo { pane }) = result else {
             panic!("expected pane info");
         };
@@ -813,56 +798,81 @@ mod tests {
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
-        assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
+        assert!((splits[0].ratio - 0.5).abs() < f32::EPSILON);
         let (_, response_pane_id) = app
-            .parse_pane_id(pane.pane_id.as_str())
+            .resolve_pane_id(&pane.pane_id)
             .expect("test precondition");
         assert!(
-            app.state.workspaces[0]
+            !app.state.workspaces[0]
                 .pane_state(response_pane_id)
                 .expect("test precondition")
                 .right_click_passthrough
         );
 
-        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
-        for (_terminal_id, runtime) in runtimes {
-            drop(runtime);
-        }
+        shut_down_runtimes(&mut app);
     }
 
     #[tokio::test]
-    async fn pane_split_request_uses_active_focused_pane_when_target_is_omitted() {
+    async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requesters() {
         let env = IsolatedEnv::new();
         env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
-        let workspace = Workspace::test_new("api-pane-split-current");
-        let target_pane = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Off;
+        app.state.settings.pane_scrollbars = false;
+        app.state.workspaces = vec![
+            Workspace::test_new("recorded"),
+            Workspace::test_new("unrecorded"),
+        ];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-        app.state.focus_pane_in_workspace(0, target_pane);
+        let recorded = SpawnGeometry {
+            area: ratatui::layout::Rect::new(0, 0, 100, 20),
+            cell_size: shepr_termio::host_term::cell_size::HostCellSize {
+                width_px: 8,
+                height_px: 16,
+            },
+        };
+        let requester = SpawnGeometry {
+            area: ratatui::layout::Rect::new(0, 0, 60, 10),
+            cell_size: shepr_termio::host_term::cell_size::HostCellSize {
+                width_px: 9,
+                height_px: 18,
+            },
+        };
+        let first_id = app.state.workspaces[0].id.clone();
+        app.state.record_workspace_geometry(&first_id, recorded);
+        let ctx = EndpointContext {
+            requester_geometry: Some(requester),
+        };
 
-        let result = app.handle_endpoint_command(EndpointCommand::PaneSplit(PaneSplitParams {
-            workspace_id: None,
-            target_pane_id: None,
-            direction: SplitDirection::Right,
-            ratio: None,
-            cwd: None,
-            focus: false,
-            right_click: Default::default(),
-            env: Default::default(),
-        }));
-
-        assert!(matches!(result, Ok(EndpointReply::PaneInfo { .. })));
-        assert_eq!(app.state.workspaces[0].pane_count(), 2);
-        assert_eq!(app.state.workspaces[0].layout().focused(), target_pane);
-
-        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
-        for (_terminal_id, runtime) in runtimes {
-            drop(runtime);
+        for (ws_idx, expected) in [(0, recorded), (1, requester)] {
+            let command = split_of(&app, ws_idx);
+            let Ok(EndpointReply::PaneInfo { pane }) =
+                app.handle_endpoint_command_in(command, &ctx).result
+            else {
+                panic!("expected pane info");
+            };
+            let (_, new_pane) = app
+                .resolve_pane_id(&pane.pane_id)
+                .expect("test precondition");
+            let runtime = app.test_runtime(new_pane);
+            let grid = runtime.grid_size();
+            assert_eq!(
+                u32::from(grid.rows.get()),
+                u32::from(expected.area.height),
+                "workspace {ws_idx} is sized against the geometry it has or the requester's"
+            );
+            assert_eq!(
+                runtime.pixel_size(),
+                Some((
+                    u32::from(grid.cols.get()) * expected.cell_size.width_px,
+                    u32::from(grid.rows.get()) * expected.cell_size.height_px
+                )),
+                "workspace {ws_idx}"
+            );
         }
+
+        shut_down_runtimes(&mut app);
     }
 
     #[test]
@@ -873,8 +883,7 @@ mod tests {
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
 
         let target_pane_id = app
             .pane_info(0, target_pane)
@@ -882,7 +891,7 @@ mod tests {
             .pane_id;
 
         let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
-            pane_id: target_pane_id.to_string(),
+            pane_id: target_pane_id,
         }));
 
         assert!(matches!(result, Ok(EndpointReply::Done)));
@@ -897,8 +906,7 @@ mod tests {
         let workspace = Workspace::test_new("api-pane-close-last");
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
 
         let target_pane = app.state.workspaces[0].root_pane();
         let target_pane_id = app
@@ -907,7 +915,7 @@ mod tests {
             .pane_id;
 
         let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
-            pane_id: target_pane_id.to_string(),
+            pane_id: target_pane_id,
         }));
 
         assert!(matches!(result, Ok(EndpointReply::Done)));
@@ -1057,7 +1065,7 @@ mod tests {
         let first_pane = workspace.root_pane();
         let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
 
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
@@ -1069,7 +1077,8 @@ mod tests {
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
         assert!(app.state.workspaces.is_empty());
-        assert!(app.ensure_default_workspace());
+        let geometry = app.headless_spawn_geometry();
+        assert!(app.create_default_workspace(geometry));
 
         app.save_session_before_teardown();
         app.retire_session_writer();
@@ -1089,7 +1098,7 @@ mod tests {
         let workspace = Workspace::test_new("closed");
         let pane_id = workspace.root_pane();
         app.state.workspaces = vec![workspace];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
 
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
@@ -1137,7 +1146,7 @@ mod tests {
         let workspace = Workspace::test_new("broken");
         let pane_id = workspace.root_pane();
         app.state.workspaces = vec![workspace];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
 
         app.handle_internal_event(AppEvent::PaneDied {
@@ -1163,7 +1172,7 @@ mod tests {
             let workspace = Workspace::test_new("old");
             let pane_id = workspace.root_pane();
             app.state.workspaces = vec![workspace];
-            app.state.set_active_index(Some(0));
+            app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
 
             app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
@@ -1171,7 +1180,7 @@ mod tests {
                 exit_reason: shepr_platform::ChildExitReason::Interrupted,
             });
             app.state.workspaces = vec![Workspace::test_new("newer")];
-            app.state.set_active_index(Some(0));
+            app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
             app.state.mark_session_dirty();
             if another_interrupted_exit {
@@ -1199,9 +1208,7 @@ mod tests {
 
         app.state.workspaces = vec![ws];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-        app.state.mode = Mode::Terminal;
+        app.state.set_bookmark_index(Some(0));
 
         let terminal_id = app.state.workspaces[0]
             .pane_state(pane_id)

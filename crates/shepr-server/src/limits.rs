@@ -75,7 +75,5 @@ pub(crate) const SHELL_CWD_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// even if a task is stuck.
 pub(crate) const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Resize by a small visible step when the caller omits an amount.
+/// The fraction of a split one resize step moves its edge by.
 pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: f32 = 0.05;
-/// Bound the requested resize fraction to avoid extreme pane jumps.
-pub(crate) const MAX_PANE_RESIZE_AMOUNT: f32 = 0.5;

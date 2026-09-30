@@ -1,5 +1,5 @@
 use super::*;
-use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 
 impl ClientShellState {
     pub(super) fn record_binding(
@@ -62,11 +62,17 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             EndpointCommand::WorkspaceCreate(
                                 shepr_protocol::command::WorkspaceCreateParams {
-                                    source_workspace_id: self.workspace_action_id().map(Into::into),
-                                    cwd: None,
-                                    focus: true,
+                                    source: match self.workspace_action_id() {
+                                        Some(workspace_id) => {
+                                            shepr_protocol::command::WorkspaceCreateSource::Follow(
+                                                workspace_id,
+                                            )
+                                        }
+                                        None => {
+                                            shepr_protocol::command::WorkspaceCreateSource::Default
+                                        }
+                                    },
                                     label: None,
-                                    env: Default::default(),
                                 },
                             ),
                             outcome,
@@ -87,9 +93,7 @@ impl ClientShellState {
                         } else {
                             self.push_endpoint_command(
                                 EndpointCommand::WorkspaceClose(
-                                    shepr_protocol::command::WorkspaceCloseParams {
-                                        workspace_id: workspace_id.into(),
-                                    },
+                                    shepr_protocol::command::WorkspaceCloseParams { workspace_id },
                                 ),
                                 outcome,
                             );
@@ -143,7 +147,7 @@ impl ClientShellState {
         let (anchor, cursor) = selection.ordered_cells();
         self.push_endpoint_command_with_kind(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
-                pane_id: pane_id.to_string(),
+                pane_id,
                 anchor: shepr_protocol::command::PaneTextPoint {
                     row: anchor.0,
                     col: anchor.1,
@@ -207,14 +211,14 @@ impl ClientShellState {
         kind: PendingEndpointKind,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        let changes_focus = match &command {
+        let changes_focus = matches!(
+            &command,
             EndpointCommand::WorkspaceFocus(_)
-            | EndpointCommand::PaneFocus(_)
-            | EndpointCommand::PaneFocusDirection(_) => true,
-            EndpointCommand::WorkspaceCreate(params) => params.focus,
-            EndpointCommand::PaneSplit(params) => params.focus,
-            _ => false,
-        };
+                | EndpointCommand::PaneFocus(_)
+                | EndpointCommand::PaneFocusDirection(_)
+                | EndpointCommand::WorkspaceCreate(_)
+                | EndpointCommand::PaneSplit(_)
+        );
         if changes_focus {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
@@ -274,13 +278,11 @@ impl ClientShellState {
         let command = match target {
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
                 EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
-                    workspace_id: workspace_id.into(),
+                    workspace_id,
                 })
             }
             ClientEndpointFocusTarget::Pane(pane_id) => {
-                EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
-                    pane_id: pane_id.to_string(),
-                })
+                EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget { pane_id })
             }
         };
         let mut outcome = ClientShellInput::default();
@@ -299,11 +301,7 @@ impl ClientShellState {
         let outcome = self.handle_endpoint_result_at(
             &boot_id,
             request_id,
-            Err(ClientShellEndpointError {
-                code: crate::endpoint::commands::EndpointFailureCode::Cancelled,
-                message: "This server action was interrupted. Check its state before retrying."
-                    .into(),
-            }),
+            Err(ClientShellEndpointError::Cancelled),
             self.now,
         );
         // A cancelled copy-mode request does not continue its key queue
@@ -371,31 +369,31 @@ impl ClientShellState {
             {
                 self.pending_workspace_highlight = None;
             }
-            let code = error.code.as_str();
-            let (kind, notice_code, title, body) = match code {
-                "endpoint_timeout" => (
+            let message = error.to_string();
+            let (kind, notice_code, title, body) = match error {
+                ClientShellEndpointError::Timeout => (
                     ClientEndpointNoticeKind::Timeout,
                     pending.method_name.clone(),
                     "Server timed out",
                     format!("This server did not respond to {}.", pending.method_name),
                 ),
-                "endpoint_cancelled" => (
+                ClientShellEndpointError::Cancelled => (
                     ClientEndpointNoticeKind::Unavailable,
                     "cancelled".to_owned(),
                     "Action interrupted",
-                    error.message.clone(),
+                    message,
                 ),
-                "server_unavailable" => (
+                ClientShellEndpointError::Server(EndpointError::ShuttingDown) => (
                     ClientEndpointNoticeKind::Unavailable,
                     "server".to_owned(),
                     "Server unavailable",
-                    error.message.clone(),
+                    message,
                 ),
-                _ => (
+                ClientShellEndpointError::Server(_) => (
                     ClientEndpointNoticeKind::Rejected,
-                    format!("{}:{code}", pending.method_name),
+                    format!("{}:{message}", pending.method_name),
                     "Action rejected",
-                    error.message.clone(),
+                    message,
                 ),
             };
             self.push_endpoint_notice(kind, notice_code, title, body);
@@ -545,16 +543,12 @@ impl ClientShellState {
     ) -> Option<EndpointCommand> {
         use shepr_protocol::command::{
             PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
-            PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
-            WorkspaceTarget,
+            PaneSwapParams, PaneTarget, PaneZoomParams, SplitDirection, WorkspaceTarget,
         };
         use shepr_termio::input::KeybindAction;
 
         let snapshot = self.snapshot.as_deref()?;
-        let focused_workspace = snapshot
-            .focused_workspace_id
-            .as_ref()
-            .map(ToString::to_string)?;
+        let focused_workspace = snapshot.focused_workspace_id.clone()?;
         let focused_pane = snapshot.focused_pane_id.clone();
         let direction = |action| match action {
             KeybindAction::FocusPaneLeft
@@ -579,7 +573,7 @@ impl ClientShellState {
                     self.config.agent_panel_sort,
                 );
                 Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: agents.get(index)?.to_string(),
+                    pane_id: agents.get(index)?.clone(),
                 }))
             }
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
@@ -611,9 +605,7 @@ impl ClientShellState {
                 {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }
-                Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: pane_id.to_string(),
-                }))
+                Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }
             KeybindAction::SwitchWorkspace(index) => {
                 let entries = self.navigation_workspace_entries(snapshot);
@@ -624,7 +616,7 @@ impl ClientShellState {
                     .clone();
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-                    workspace_id: workspace_id.into(),
+                    workspace_id,
                 }))
             }
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => {
@@ -647,7 +639,7 @@ impl ClientShellState {
                 let workspace_id = snapshot.workspaces[entries[next]].workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-                    workspace_id: workspace_id.into(),
+                    workspace_id,
                 }))
             }
             KeybindAction::FocusPaneLeft
@@ -655,37 +647,31 @@ impl ClientShellState {
             | KeybindAction::FocusPaneUp
             | KeybindAction::FocusPaneRight => Some(EndpointCommand::PaneFocusDirection(
                 PaneFocusDirectionParams {
-                    pane_id: focused_pane.clone().map(|id| id.to_string()),
+                    pane_id: focused_pane.clone()?,
                     direction: direction(action)?,
                 },
             )),
             KeybindAction::SwapPaneLeft
             | KeybindAction::SwapPaneDown
             | KeybindAction::SwapPaneUp
-            | KeybindAction::SwapPaneRight => Some(EndpointCommand::PaneSwap(PaneSwapParams {
-                pane_id: focused_pane.clone().map(|id| id.to_string()),
-                direction: Some(direction(action)?),
-                source_pane_id: None,
-                target_pane_id: None,
-            })),
+            | KeybindAction::SwapPaneRight => {
+                Some(EndpointCommand::PaneSwap(PaneSwapParams::Direction {
+                    pane_id: focused_pane.clone()?,
+                    direction: direction(action)?,
+                }))
+            }
             KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
                 Some(EndpointCommand::PaneSplit(PaneSplitParams {
-                    workspace_id: Some(focused_workspace),
-                    target_pane_id: focused_pane.clone().map(|id| id.to_string()),
+                    pane_id: focused_pane.clone()?,
                     direction: if action == KeybindAction::SplitVertical {
                         SplitDirection::Right
                     } else {
                         SplitDirection::Down
                     },
-                    ratio: None,
-                    cwd: None,
-                    focus: true,
-                    right_click: Default::default(),
-                    env: Default::default(),
                 }))
             }
             KeybindAction::ClosePane => Some(EndpointCommand::PaneClose(PaneTarget {
-                pane_id: focused_pane.clone()?.to_string(),
+                pane_id: focused_pane.clone()?,
             })),
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
                 let panes = snapshot
@@ -707,7 +693,7 @@ impl ClientShellState {
                     (current + 1) % panes.len()
                 };
                 Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: panes[next].pane_id.to_string(),
+                    pane_id: panes[next].pane_id.clone(),
                 }))
             }
             KeybindAction::LastPane => {
@@ -718,24 +704,22 @@ impl ClientShellState {
                     return None;
                 }
                 Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: pane_id.to_string(),
+                    pane_id: pane_id.clone(),
                 }))
             }
             KeybindAction::Zoom => Some(EndpointCommand::PaneZoom(PaneZoomParams {
-                pane_id: focused_pane.clone().map(|id| id.to_string()),
-                mode: PaneZoomMode::Toggle,
+                pane_id: focused_pane?,
             })),
             KeybindAction::ClearPane => Some(EndpointCommand::PaneClear(PaneTarget {
-                pane_id: focused_pane?.to_string(),
+                pane_id: focused_pane?,
             })),
             KeybindAction::ResizePaneLeft
             | KeybindAction::ResizePaneDown
             | KeybindAction::ResizePaneUp
             | KeybindAction::ResizePaneRight => {
                 Some(EndpointCommand::PaneResize(PaneResizeParams {
-                    pane_id: focused_pane.map(|id| id.to_string()),
+                    pane_id: focused_pane?,
                     direction: direction(action)?,
-                    amount: None,
                 }))
             }
             _ => None,

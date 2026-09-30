@@ -253,7 +253,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     );
     assert!(
         matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if params.source_workspace_id.as_deref() == Some("w1")))
+        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == "w1")))
     );
     preview_key(&mut state, b"\x1b");
     assert!(state.navigate_workspace_id.is_none());
@@ -625,7 +625,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
 
 #[test]
 fn failed_local_navigation_releases_only_its_own_highlight() {
-    for failure in ["rejected", "endpoint_timeout", "cancelled"] {
+    for failure in ["rejected", "timeout", "cancelled"] {
         let mut state = local_navigation_state(false);
         let request_id = request_local_navigation(&mut state, 2);
         assert_local_highlight(&mut state, "w3");
@@ -635,9 +635,12 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
             state.handle_endpoint_result(
                 &crate::tests::test_boot_id("boot-1"),
                 &request_id,
-                Err(ClientShellEndpointError {
-                    code: failure.into(),
-                    message: "focus failed".into(),
+                Err(if failure == "timeout" {
+                    ClientShellEndpointError::Timeout
+                } else {
+                    ClientShellEndpointError::Server(
+                        shepr_protocol::command::EndpointError::Rejected("focus failed".into()),
+                    )
                 }),
             );
         }
@@ -729,7 +732,7 @@ fn navigation_highlight_yields_to_new_intent() {
     let mut unrelated = ClientShellInput::default();
     state.push_endpoint_command(
         EndpointCommand::PaneClear(shepr_protocol::command::PaneTarget {
-            pane_id: "w1:p1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
         }),
         &mut unrelated,
     );
@@ -770,14 +773,13 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
                 panic!("expected PaneFocusDirection");
             };
             assert_eq!(params.direction, direction);
-            assert_eq!(params.pane_id.as_deref(), Some("w1:p1"));
+            assert_eq!(params.pane_id, "w1:p1");
             assert!(state.pending_workspace_highlight.is_none());
             assert_local_highlight(&mut state, "w1");
             let result = if rejected {
-                Err(ClientShellEndpointError {
-                    code: "rejected".into(),
-                    message: "focus rejected".into(),
-                })
+                Err(ClientShellEndpointError::Server(
+                    shepr_protocol::command::EndpointError::Rejected("focus rejected".into()),
+                ))
             } else {
                 Ok(EndpointReply::Done)
             };
@@ -872,39 +874,28 @@ fn coalesced_navigation_focus_does_not_leave_a_permanent_highlight() {
 }
 
 #[test]
-fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
+fn navigation_highlight_ends_for_noop_focus_and_creation() {
     let mut state = local_navigation_state(false);
     request_local_navigation(&mut state, 0);
     assert!(state.pending_workspace_highlight.is_none());
     set_local_focus(&mut state, "w2", 2);
     assert_local_highlight(&mut state, "w2");
 
-    for focus in [false, true] {
-        for command in [
-            EndpointCommand::WorkspaceCreate(shepr_protocol::command::WorkspaceCreateParams {
-                source_workspace_id: None,
-                cwd: None,
-                focus,
-                label: None,
-                env: Default::default(),
-            }),
-            EndpointCommand::PaneSplit(shepr_protocol::command::PaneSplitParams {
-                workspace_id: Some("w1".into()),
-                target_pane_id: None,
-                direction: shepr_protocol::command::SplitDirection::Right,
-                ratio: None,
-                cwd: None,
-                focus,
-                right_click: Default::default(),
-                env: Default::default(),
-            }),
-        ] {
-            let mut state = local_navigation_state(false);
-            request_local_navigation(&mut state, 2);
-            let mut outcome = ClientShellInput::default();
-            state.push_endpoint_command(command, &mut outcome);
-            assert_eq!(state.pending_workspace_highlight.is_none(), focus);
-            assert_local_highlight(&mut state, if focus { "w1" } else { "w3" });
-        }
+    for command in [
+        EndpointCommand::WorkspaceCreate(shepr_protocol::command::WorkspaceCreateParams {
+            source: shepr_protocol::command::WorkspaceCreateSource::Default,
+            label: None,
+        }),
+        EndpointCommand::PaneSplit(shepr_protocol::command::PaneSplitParams {
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            direction: shepr_protocol::command::SplitDirection::Right,
+        }),
+    ] {
+        let mut state = local_navigation_state(false);
+        request_local_navigation(&mut state, 2);
+        let mut outcome = ClientShellInput::default();
+        state.push_endpoint_command(command, &mut outcome);
+        assert!(state.pending_workspace_highlight.is_none());
+        assert_local_highlight(&mut state, "w1");
     }
 }

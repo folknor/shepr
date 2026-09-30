@@ -2,14 +2,14 @@ use crate::app::App;
 use shepr_protocol::command::WorkspaceInfo;
 use shepr_protocol::{AgentStatus, PublicPaneId, WorkspaceId};
 
-/// The session's workspaces, panes and agents with their focus, the
-/// layout-free step between `App` state and the client-shell snapshot each
-/// shell receives. It carries only what `server::client_shell` projects; the
-/// server rebuilds it on the loop, so a field nothing reads costs every rebuild.
+/// The session's workspaces, panes and agents, the layout-free step between
+/// `App` state and the client-shell snapshot each shell receives. It names no
+/// focused workspace: which workspace a shell views is its own location, and
+/// each projection derives the focus from it. It carries only what
+/// `server::client_shell` projects; the server rebuilds it on the loop, so a
+/// field nothing reads costs every rebuild.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SessionSnapshot {
-    pub(crate) focused_workspace_id: Option<WorkspaceId>,
-    pub(crate) focused_pane_id: Option<PublicPaneId>,
     pub(crate) workspaces: Vec<WorkspaceInfo>,
     pub(crate) panes: Vec<SnapshotPane>,
     pub(crate) agents: Vec<SnapshotAgent>,
@@ -39,12 +39,6 @@ impl App {
     /// The session's workspaces, panes and agents, which the server
     /// projects into each client shell's snapshot.
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
-        let focused_workspace_id = self.state.active.clone();
-        let focused_pane_id = self.state.active_index().and_then(|ws_idx| {
-            let ws = self.state.workspaces.get(ws_idx)?;
-            self.public_pane_id(ws_idx, ws.focused_pane_id())
-        });
-
         let mut workspaces = Vec::new();
         let mut panes = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
@@ -58,8 +52,6 @@ impl App {
         }
 
         SessionSnapshot {
-            focused_workspace_id,
-            focused_pane_id,
             workspaces,
             panes,
             agents: self.collect_agent_infos(),
@@ -105,23 +97,18 @@ mod tests {
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app
     }
 
     #[test]
-    fn session_snapshot_lists_the_session_and_its_focus() {
+    fn session_snapshot_lists_the_session_without_naming_a_focus() {
         let app = app_with_two_panes();
         let snapshot = app.session_snapshot();
 
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.panes.len(), 2);
-        assert_eq!(
-            snapshot.focused_workspace_id.as_deref(),
-            Some(snapshot.workspaces[0].workspace_id.as_str())
-        );
-        let focused = app.public_pane_id(0, app.state.workspaces[0].focused_pane_id());
-        assert!(focused.is_some());
-        assert_eq!(snapshot.focused_pane_id, focused);
+        // Focus is each client's own location, not part of the shared session.
+        assert!(!snapshot.workspaces[0].focused);
     }
 }

@@ -6,7 +6,7 @@ impl App {
         params: PaneReportAgentParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_not_found(&params.pane_id));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent();
@@ -34,7 +34,7 @@ impl App {
         params: PaneReportAgentSessionParams,
     ) -> shepr_api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_not_found(&params.pane_id));
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent();

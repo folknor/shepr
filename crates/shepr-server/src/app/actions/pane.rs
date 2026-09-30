@@ -5,32 +5,28 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 impl AppState {
-    pub(crate) fn apply_pane_zoom(
+    /// Toggles the zoom of workspace `ws_idx` on `pane_id`, focusing the pane
+    /// first. `None` when the pane is not in the workspace. A workspace of one
+    /// pane has nothing to zoom over, so its toggle changes nothing, though
+    /// the pane is still focused.
+    pub(crate) fn toggle_pane_zoom(
         &mut self,
         ws_idx: usize,
         pane_id: PaneId,
-        command: PaneZoomCommand,
     ) -> Option<PaneZoomOutcome> {
         if !self.workspaces.get(ws_idx)?.contains_pane(pane_id) {
             return None;
         }
         let focus_changed = self.focus_pane_in_workspace(ws_idx, pane_id);
         let workspace = self.workspaces.get_mut(ws_idx)?;
-        let zoomed = workspace.zoomed();
-        let desired = match command {
-            PaneZoomCommand::Toggle => !zoomed,
-            PaneZoomCommand::On => true,
-            PaneZoomCommand::Off => false,
-        };
-        // Zoom needs two panes: a lone pane has nothing to zoom over, and a
-        // workspace already in the asked state stays as it is.
-        if workspace.pane_count() <= 1 || desired == zoomed {
+        if workspace.pane_count() <= 1 {
             return Some(PaneZoomOutcome {
                 changed: false,
                 focus_changed,
             });
         }
 
+        let desired = !workspace.zoomed();
         workspace.set_zoomed(desired);
         if workspace.zoomed() != desired {
             return None;
@@ -45,18 +41,17 @@ impl AppState {
 
 #[cfg(test)]
 impl AppState {
-    /// The focused workspace of the session as (workspace index, tiled
-    /// layout in the workspace's layout area). Direction uses the tiled
-    /// layout even when the workspace is zoomed, as the API does.
-    fn focused_workspace_layout(&self) -> Option<(usize, Vec<shepr_core::layout::PaneInfo>)> {
-        let ws_idx = self.active_index()?;
+    /// Workspace `ws_idx` as (its tiled layout in the workspace's layout
+    /// area). Direction uses the tiled layout even when the workspace is
+    /// zoomed, as the endpoint does.
+    fn workspace_tiled_layout(&self, ws_idx: usize) -> Option<Vec<shepr_core::layout::PaneInfo>> {
         let workspace = self.workspaces.get(ws_idx)?;
         let area = shepr_mux::workspace::layout_rect(self.workspace_layout_area(ws_idx));
-        Some((ws_idx, workspace.layout().panes(area)))
+        Some(workspace.layout().panes(area))
     }
 
-    pub fn navigate_pane(&mut self, direction: NavDirection) {
-        let Some((ws_idx, panes)) = self.focused_workspace_layout() else {
+    pub fn navigate_pane(&mut self, ws_idx: usize, direction: NavDirection) {
+        let Some(panes) = self.workspace_tiled_layout(ws_idx) else {
             return;
         };
         if let Some(focused) = panes.iter().find(|p| p.is_focused)
@@ -66,8 +61,8 @@ impl AppState {
         }
     }
 
-    pub fn swap_pane(&mut self, direction: NavDirection) -> bool {
-        let Some((ws_idx, panes)) = self.focused_workspace_layout() else {
+    pub fn swap_pane(&mut self, ws_idx: usize, direction: NavDirection) -> bool {
+        let Some(panes) = self.workspace_tiled_layout(ws_idx) else {
             return false;
         };
         let Some(focused) = panes.iter().find(|p| p.is_focused) else {
@@ -87,10 +82,7 @@ impl AppState {
         changed
     }
 
-    pub fn resize_pane(&mut self, direction: NavDirection) {
-        let Some(ws_idx) = self.active_index() else {
-            return;
-        };
+    pub fn resize_pane(&mut self, ws_idx: usize, direction: NavDirection) {
         let area = shepr_mux::workspace::layout_rect(self.workspace_layout_area(ws_idx));
         let resized = self
             .workspaces

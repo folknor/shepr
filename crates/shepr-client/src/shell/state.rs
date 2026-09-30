@@ -227,7 +227,6 @@ pub(super) enum ClientShellOverlayKind {
 #[derive(Debug)]
 pub(super) enum ClientRenameTarget {
     NewWorkspace {
-        source_workspace_id: Option<shepr_protocol::WorkspaceId>,
         cwd: Option<String>,
         suggested_name: String,
         label_lookup_id: Option<u64>,
@@ -324,7 +323,6 @@ pub(super) enum ClientContextMenuTarget {
     },
     Pane {
         pane_id: shepr_protocol::PublicPaneId,
-        workspace_id: shepr_protocol::WorkspaceId,
         source_pane_id: Option<shepr_protocol::PublicPaneId>,
         has_manual_label: bool,
         right_click_passthrough: bool,
@@ -437,9 +435,33 @@ pub(super) struct ClientVisibleEndpointNotice {
     pub(super) body: String,
 }
 
-pub(crate) struct ClientShellEndpointError {
-    pub code: crate::endpoint::commands::EndpointFailureCode,
-    pub message: String,
+/// Why an endpoint command failed: the client raises `Timeout` and
+/// `Cancelled` itself; every other failure is the server's own typed error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClientShellEndpointError {
+    Timeout,
+    Cancelled,
+    Server(shepr_protocol::command::EndpointError),
+}
+
+impl std::fmt::Display for ClientShellEndpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => f.write_str("this server did not respond to the action"),
+            Self::Cancelled => {
+                f.write_str("This server action was interrupted. Check its state before retrying.")
+            }
+            Self::Server(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for ClientShellEndpointError {}
+
+impl From<shepr_protocol::command::EndpointError> for ClientShellEndpointError {
+    fn from(error: shepr_protocol::command::EndpointError) -> Self {
+        Self::Server(error)
+    }
 }
 
 #[derive(Debug)]

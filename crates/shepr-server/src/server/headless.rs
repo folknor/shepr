@@ -344,9 +344,7 @@ impl HeadlessServer {
                 render_demand.join(RenderDemand::Full);
             }
 
-            if self.clients.latest_shell_client().is_some() && self.app.ensure_default_workspace() {
-                self.immediate_pty_sources_dirty = true;
-                self.sync_pane_focus();
+            if self.create_automatic_workspace(None) {
                 render_demand.join(RenderDemand::Full);
             }
             if self.shell_cwd_refresh_due(now) && self.refresh_shell_projection_sources() {
@@ -804,7 +802,7 @@ impl HeadlessServer {
     fn configured_window_title(&self, client_id: ClientId) -> Option<String> {
         self.shell_target_for_client(client_id)
             .map_or_else(
-                || self.app.window_title(),
+                || self.app.window_title_without_workspace(),
                 |target| {
                     self.app
                         .state
@@ -1002,7 +1000,6 @@ impl HeadlessServer {
                     surface_active,
                     "client connected"
                 );
-                self.app.ensure_default_workspace();
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.clients.allocate_activity_stamp();
                 let observed = shepr_termio::host_term::cell_size::HostCellSize {
@@ -1021,24 +1018,35 @@ impl HeadlessServer {
                 shell.mouse_capture = mouse_capture;
                 shell.surface_active = surface_active;
                 shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
+                // The location is initialised before anything is projected: a
+                // new client starts where the session's bookmark is.
+                shell.location = self.initial_client_location();
+                self.clients.insert(client_id, connection);
+                // A known connection with an empty session can create the
+                // workspace it will view. Either way the locations are settled
+                // once more: a bookmark-less session leaves the new client
+                // viewing nothing until the reconcile lands it.
+                self.create_automatic_workspace(Some(client_id));
+                self.reconcile_client_shell_locations();
+                let Some(client) = self.clients.get_mut(&client_id) else {
+                    return false;
+                };
                 let seed_snapshot = client_shell_snapshot(
                     &self.app,
                     &self.resolved_config,
                     &self.client_shell_boot_id,
-                    shell.projection_revision.get(),
-                    None,
+                    client.shell_state().projection_revision.get(),
+                    &client.shell_state().location,
                 );
-                let location =
-                    crate::server::clients::ClientShellLocation::from_snapshot(&seed_snapshot);
                 let snapshot_message = shepr_protocol::endpoint::snapshot_message(&seed_snapshot);
-                shell.location = Some(location);
+                let shell = client.shell_state_mut();
+                shell.projected_location_generation = shell.location.generation();
                 shell.snapshot = Some(seed_snapshot);
                 shell.session_generation = self.shell_session_generation;
                 if let Some(snapshot) = shell.snapshot.as_mut() {
                     // The initial frame carries config; later frames use the connection cache.
                     snapshot.resolved_config.clear();
                 }
-                self.clients.insert(client_id, connection);
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
                     self.promote_client_to_foreground(client_id);
@@ -1265,9 +1273,17 @@ impl HeadlessServer {
     }
 
     fn handle_server_event_with_render_impact(&mut self, ev: ServerEvent) -> RenderDemand {
-        let pane_input = matches!(ev, ServerEvent::ClientShellPaneInput { .. });
+        // Pane input changes nothing a projection shows. An endpoint command
+        // marks the shared projection dirty itself, and only when it changes
+        // shared state: a navigation moves one client's location and nothing
+        // else, which invalidates only that client's projection.
+        let leaves_projection_alone = matches!(
+            ev,
+            ServerEvent::ClientShellPaneInput { .. }
+                | ServerEvent::ClientShellEndpointRequest { .. }
+        );
         if self.handle_server_event(ev) {
-            if !pane_input {
+            if !leaves_projection_alone {
                 self.app.state.mark_shell_projection_dirty();
             }
             RenderDemand::Full
@@ -1300,9 +1316,7 @@ impl HeadlessServer {
         changed |= outcome.render != RenderDemand::None;
         shepr_api::send_api_response(&msg.respond_to, &request_id, method, outcome.response);
 
-        if self.clients.latest_shell_client().is_some() {
-            changed |= self.app.ensure_default_workspace();
-        }
+        changed |= self.create_automatic_workspace(None);
 
         changed
     }

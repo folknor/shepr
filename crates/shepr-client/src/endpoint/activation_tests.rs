@@ -263,10 +263,9 @@ fn workspace_focus_success(_answers: &str, workspace_id: &str) -> Reply {
 }
 
 fn failure(_answers: &str, message: &str) -> Reply {
-    Err(shepr_protocol::command::EndpointError {
-        code: "surface_rejected".into(),
-        message: message.into(),
-    })
+    Err(shepr_protocol::command::EndpointError::Rejected(
+        message.into(),
+    ))
 }
 
 fn request_id_of(message: &shepr_protocol::ClientMessage) -> Option<String> {

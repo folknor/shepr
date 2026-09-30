@@ -176,17 +176,15 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     ));
     for result in [
         Ok(EndpointReply::PaneSelection {
-            pane_id: "w1:p1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
             text: String::new(),
         }),
-        Err(ClientShellEndpointError {
-            code: "endpoint_cancelled".into(),
-            message: "cancelled".into(),
-        }),
-        Err(ClientShellEndpointError {
-            code: "selection_unavailable".into(),
-            message: "selection text is unavailable".into(),
-        }),
+        Err(ClientShellEndpointError::Cancelled),
+        Err(ClientShellEndpointError::Server(
+            shepr_protocol::command::EndpointError::Rejected(
+                "selection text is unavailable".into(),
+            ),
+        )),
     ] {
         let mut outcome = ClientShellInput::default();
         state.request_selection_copy(&mut outcome);
@@ -199,5 +197,40 @@ fn failed_selection_copy_does_not_send_terminal_input() {
             .actions;
         assert!(actions.is_empty());
         assert!(state.pending_requests.is_empty());
+    }
+}
+
+#[test]
+fn server_errors_become_unavailable_or_rejected_notices() {
+    use shepr_protocol::command::EndpointError;
+
+    let answer = |error: EndpointError| {
+        let (mut state, actions) = pending_request();
+        state.handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            request_id(&actions),
+            Err(ClientShellEndpointError::Server(error)),
+        );
+        let notice = state.visible_endpoint_notice.take().expect("notice");
+        (notice.key.kind, notice.key.code, notice.title, notice.body)
+    };
+
+    let (kind, code, title, body) = answer(EndpointError::ShuttingDown);
+    assert_eq!(kind, ClientEndpointNoticeKind::Unavailable);
+    assert_eq!(code, "server");
+    assert_eq!(title, "Server unavailable");
+    assert_eq!(body, EndpointError::ShuttingDown.to_string());
+
+    for error in [
+        EndpointError::Rejected("no such pane".into()),
+        EndpointError::StaleBoot,
+        EndpointError::SurfaceInactive,
+        EndpointError::ResponseTooLarge { size: 2, limit: 1 },
+    ] {
+        let (kind, code, title, body) = answer(error.clone());
+        assert_eq!(kind, ClientEndpointNoticeKind::Rejected);
+        assert_eq!(code, format!("workspace.rename:{error}"));
+        assert_eq!(title, "Action rejected");
+        assert_eq!(body, error.to_string());
     }
 }

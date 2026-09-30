@@ -137,7 +137,7 @@ mod tests {
         let ws = Workspace::test_new("test");
         let pane_id = ws.root_pane();
         app.state.workspaces.push(ws);
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
         (app, pane_id)

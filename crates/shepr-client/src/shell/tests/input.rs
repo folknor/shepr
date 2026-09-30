@@ -256,7 +256,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
             &crate::tests::test_boot_id("boot-1"),
             &selection_request_id,
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "needle".into(),
             }),
         )

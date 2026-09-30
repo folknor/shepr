@@ -8,59 +8,6 @@ use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use crate::limits::{ENDPOINT_COMMAND_TIMEOUT, MAX_RETIRED_REQUESTS_PER_ENDPOINT};
 use crate::shell::{ClientShellEndpointError, ClientShellEndpointRequest};
 
-/// Why an endpoint command failed. The client raises the first three itself;
-/// every server error carries the server's own code.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EndpointFailureCode {
-    Timeout,
-    ResponseTooLarge,
-    Cancelled,
-    Remote(String),
-}
-
-impl EndpointFailureCode {
-    pub(crate) fn as_str(&self) -> &str {
-        match self {
-            Self::Timeout => "endpoint_timeout",
-            Self::ResponseTooLarge => "endpoint_response_too_large",
-            Self::Cancelled => "endpoint_cancelled",
-            Self::Remote(code) => code,
-        }
-    }
-}
-
-impl From<String> for EndpointFailureCode {
-    fn from(code: String) -> Self {
-        match code.as_str() {
-            "endpoint_timeout" => Self::Timeout,
-            "endpoint_response_too_large" => Self::ResponseTooLarge,
-            "endpoint_cancelled" => Self::Cancelled,
-            _ => Self::Remote(code),
-        }
-    }
-}
-
-impl From<&str> for EndpointFailureCode {
-    fn from(code: &str) -> Self {
-        code.to_owned().into()
-    }
-}
-
-impl PartialEq<&str> for EndpointFailureCode {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl From<EndpointError> for ClientShellEndpointError {
-    fn from(error: EndpointError) -> Self {
-        Self {
-            code: error.code.into(),
-            message: error.message,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandResponseKind {
     Active,
@@ -262,10 +209,7 @@ impl EndpointCommands {
                     generation: command.key.generation.get(),
                     boot_id: command.key.boot_id,
                     request_id: command.key.request_id,
-                    result: Err(ClientShellEndpointError {
-                        code: EndpointFailureCode::Timeout,
-                        message: "this server did not respond to the action".into(),
-                    }),
+                    result: Err(ClientShellEndpointError::Timeout),
                 })
             })
             .collect()
@@ -377,7 +321,7 @@ mod tests {
                 id: request_id.into(),
                 command: shepr_protocol::command::EndpointCommand::PaneClear(
                     shepr_protocol::command::PaneTarget {
-                        pane_id: "w1:p1".into(),
+                        pane_id: shepr_test_fixtures::id("w1:p1"),
                     },
                 ),
             }),
@@ -412,7 +356,7 @@ mod tests {
                 &boot_a(),
                 &request_a(),
                 Ok(EndpointReply::PaneSelection {
-                    pane_id: "w1:p1".into(),
+                    pane_id: shepr_test_fixtures::id("w1:p1"),
                     text: "selected".into(),
                 }),
             )
@@ -430,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn server_errors_keep_their_code() {
+    fn server_errors_are_wrapped_typed() {
         let mut commands = commands_with_in_flight();
         let completed = commands
             .receive_response(
@@ -438,18 +382,14 @@ mod tests {
                 1,
                 &boot_a(),
                 &request_a(),
-                Err(EndpointError {
-                    code: "endpoint_response_too_large".into(),
-                    message: "too large".into(),
-                }),
+                Err(EndpointError::ResponseTooLarge { size: 9, limit: 8 }),
             )
             .expect("test precondition");
         assert!(matches!(
             completed.result,
-            Err(ClientShellEndpointError {
-                code: EndpointFailureCode::ResponseTooLarge,
-                ..
-            })
+            Err(ClientShellEndpointError::Server(
+                EndpointError::ResponseTooLarge { size: 9, limit: 8 }
+            ))
         ));
     }
 
@@ -480,7 +420,7 @@ mod tests {
         assert_eq!(expired.request_id, "request-a");
         assert!(matches!(
             expired.result,
-            Err(ClientShellEndpointError { code, .. }) if code == "endpoint_timeout"
+            Err(ClientShellEndpointError::Timeout)
         ));
         assert!(!has_in_flight(&commands));
         assert!(commands.expire(start + ENDPOINT_COMMAND_TIMEOUT).is_empty());

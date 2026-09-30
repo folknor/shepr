@@ -267,14 +267,10 @@ impl ClientShellState {
             use shepr_protocol::command::{EndpointCommand, PaneTarget, WorkspaceTarget};
             let command = match target {
                 ClientEndpointFocusTarget::Workspace(workspace_id) => {
-                    EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-                        workspace_id: workspace_id.into(),
-                    })
+                    EndpointCommand::WorkspaceFocus(WorkspaceTarget { workspace_id })
                 }
                 ClientEndpointFocusTarget::Pane(pane_id) => {
-                    EndpointCommand::PaneFocus(PaneTarget {
-                        pane_id: pane_id.to_string(),
-                    })
+                    EndpointCommand::PaneFocus(PaneTarget { pane_id })
                 }
             };
             self.push_endpoint_command(command, outcome);

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use ratatui::layout::Rect;
 
-use super::{AppState, Mode};
+use super::AppState;
 use shepr_core::layout::{Direction, NavDirection};
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_mux::persist::snapshot::*;
@@ -16,9 +16,7 @@ fn state_with_workspaces(names: &[&str]) -> AppState {
     state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
     state.ensure_test_terminals();
     if !state.workspaces.is_empty() {
-        state.set_active_index(Some(0));
-        state.set_selected_index(Some(0));
-        state.mode = Mode::Terminal;
+        state.set_bookmark_index(Some(0));
     }
     state
 }
@@ -41,8 +39,7 @@ fn capture_from_state_with_runtimes(
         &state.terminals,
         terminal_runtimes,
         std::path::Path::new("/"),
-        state.active_index(),
-        state.selected_index().unwrap_or(0),
+        state.bookmark_index(),
         state.host_terminal_theme,
     )
 }
@@ -80,7 +77,6 @@ fn round_trip_empty_session() {
         host_theme: Default::default(),
         workspaces: vec![],
         active: None,
-        selected: 0,
     };
     let json = serde_json::to_string(&snap).expect("test precondition");
     let restored = parse_snapshot(&json).expect("test precondition");
@@ -105,7 +101,7 @@ fn saved_host_theme_round_trips_and_old_snapshots_default_to_empty() {
     let loaded: SavedHostTheme = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(loaded.to_theme(), theme);
 
-    let old = r#"{"version":1,"workspaces":[],"active":null,"selected":0}"#;
+    let old = r#"{"version":1,"workspaces":[],"active":null}"#;
     let loaded = parse_snapshot(old).expect("old snapshot remains readable");
     assert!(loaded.host_theme.to_theme().is_empty());
 }
@@ -182,7 +178,6 @@ fn round_trip_full_workspace_snapshot() {
             root_pane: Some(0),
         }],
         active: Some(0),
-        selected: 0,
         version: SNAPSHOT_VERSION,
     };
 
@@ -207,10 +202,9 @@ fn round_trip_full_workspace_snapshot() {
 }
 
 #[test]
-fn capture_contract_tracks_workspace_order_active_and_selected() {
+fn capture_contract_tracks_workspace_order_and_the_bookmark() {
     let mut state = state_with_workspaces(&["a", "b", "c"]);
-    state.set_active_index(Some(1));
-    state.set_selected_index(Some(2));
+    state.set_bookmark_index(Some(1));
 
     state.move_workspace(1, 0);
 
@@ -222,8 +216,7 @@ fn capture_contract_tracks_workspace_order_active_and_selected() {
         .map(|ws| ws.id.clone().expect("test precondition"))
         .collect();
     assert_eq!(captured_ids, ids);
-    assert_eq!(snapshot.active, state.active_index());
-    assert_eq!(snapshot.selected, state.selected_index().unwrap_or(0));
+    assert_eq!(snapshot.active, state.bookmark_index());
 }
 
 #[test]
@@ -239,16 +232,18 @@ fn capture_contract_tracks_workspace_names() {
 #[test]
 fn capture_contract_tracks_workspace_closure() {
     let mut state = state_with_workspaces(&["one", "two"]);
-    state.set_selected_index(Some(1));
-    state.set_active_index(Some(1));
+    state.set_bookmark_index(Some(1));
 
-    state.close_selected_workspace();
+    state.close_workspace_at(1);
 
     let snapshot = capture_from_state(&state);
     assert_eq!(snapshot.workspaces.len(), 1);
     assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("one"));
-    assert_eq!(snapshot.active, Some(0));
-    assert_eq!(snapshot.selected, 0);
+    assert_eq!(
+        snapshot.active,
+        Some(0),
+        "the bookmark on the closed workspace moves to the one now at its index"
+    );
 }
 
 #[test]
@@ -258,7 +253,7 @@ fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].focus_pane(second);
     state
-        .apply_pane_zoom(0, second, crate::app::actions::PaneZoomCommand::Toggle)
+        .toggle_pane_zoom(0, second)
         .expect("test precondition");
 
     let snapshot = capture_from_state(&state);
@@ -277,7 +272,7 @@ fn capture_contract_tracks_focus_navigation() {
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
 
-    state.navigate_pane(NavDirection::Right);
+    state.navigate_pane(0, NavDirection::Right);
 
     let snapshot = capture_from_state(&state);
     assert_eq!(snapshot.workspaces[0].focused, Some(second.raw()));
@@ -293,7 +288,7 @@ fn capture_contract_tracks_resize_ratio_changes() {
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let before = capture_from_state(&state);
 
-    state.resize_pane(NavDirection::Right);
+    state.resize_pane(0, NavDirection::Right);
 
     let after = capture_from_state(&state);
     let before_ratio = root_split_ratio(&before.workspaces[0]).expect("test precondition");
@@ -357,7 +352,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     let mut state = AppState::test_new();
     state.workspaces = vec![Workspace::test_new("cwd-source")];
     state.workspaces[0].identity_cwd = old.clone();
-    state.set_active_index(Some(0));
+    state.set_bookmark_index(Some(0));
     state.ensure_test_terminals();
     let pane_id = state.workspaces[0].root_pane();
     let terminal_id = state.workspaces[0]
@@ -382,8 +377,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     );
     let runtime = shepr_mux::pane::PaneRuntime::spawn(
         pane_id,
-        24,
-        80,
+        shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
         &old,
         0,
         Default::default(),
@@ -772,9 +766,9 @@ fn capture_contract_preserves_restored_agent_session() {
 
 #[test]
 fn other_or_missing_version_is_rejected() {
-    let json = r#"{"workspaces":[],"active":null,"selected":0}"#;
+    let json = r#"{"workspaces":[],"active":null}"#;
     assert!(parse_snapshot(json).is_err());
-    let json = r#"{"version":999,"workspaces":[],"active":null,"selected":0}"#;
+    let json = r#"{"version":999,"workspaces":[],"active":null}"#;
     assert!(parse_snapshot(json).is_err());
 }
 
@@ -835,7 +829,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
             root_pane: Some(0),
         }],
         active: Some(0),
-        selected: 0,
     };
 
     let json = serde_json::to_string(&snap).expect("test precondition");

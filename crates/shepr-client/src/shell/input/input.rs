@@ -883,9 +883,7 @@ impl ClientShellState {
         let pane_id = surface.panes[next].pane_id.clone();
         self.push_endpoint_command(
             shepr_protocol::command::EndpointCommand::PaneFocus(
-                shepr_protocol::command::PaneTarget {
-                    pane_id: pane_id.to_string(),
-                },
+                shepr_protocol::command::PaneTarget { pane_id },
             ),
             outcome,
         );

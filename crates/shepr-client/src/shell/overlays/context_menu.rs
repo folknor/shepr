@@ -86,7 +86,6 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
-                workspace_id: pane.workspace_id.clone(),
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
@@ -131,13 +130,11 @@ impl ClientShellState {
             }
             ClientContextMenuTarget::Pane {
                 pane_id,
-                workspace_id,
                 source_pane_id,
                 right_click_passthrough,
                 ..
             } => self.activate_pane_context_action(
                 pane_id,
-                workspace_id,
                 source_pane_id,
                 right_click_passthrough,
                 action,
@@ -179,9 +176,7 @@ impl ClientShellState {
                 } else {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::WorkspaceClose(
-                            shepr_protocol::command::WorkspaceCloseParams {
-                                workspace_id: workspace_id.into(),
-                            },
+                            shepr_protocol::command::WorkspaceCloseParams { workspace_id },
                         ),
                         outcome,
                     );
@@ -194,7 +189,6 @@ impl ClientShellState {
     fn activate_pane_context_action(
         &mut self,
         pane_id: shepr_protocol::PublicPaneId,
-        workspace_id: shepr_protocol::WorkspaceId,
         source_pane_id: Option<shepr_protocol::PublicPaneId>,
         right_click_passthrough: bool,
         action: ClientContextMenuAction,
@@ -202,8 +196,7 @@ impl ClientShellState {
     ) {
         use shepr_protocol::command::{
             EndpointCommand, PaneInputSetParams, PaneRenameParams, PaneRightClickTarget,
-            PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams,
-            SplitDirection,
+            PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomParams, SplitDirection,
         };
 
         match action {
@@ -223,7 +216,7 @@ impl ClientShellState {
             }
             ClientContextMenuAction::ClearPaneName => self.push_endpoint_command(
                 EndpointCommand::PaneRename(PaneRenameParams {
-                    pane_id: pane_id.to_string(),
+                    pane_id,
                     label: None,
                 }),
                 outcome,
@@ -231,17 +224,15 @@ impl ClientShellState {
             ClientContextMenuAction::SwapWithFocusedPane => {
                 if let Some(source_pane_id) = source_pane_id {
                     self.push_endpoint_command(
-                        EndpointCommand::PaneSwap(PaneSwapParams {
-                            pane_id: None,
-                            direction: None,
-                            source_pane_id: Some(source_pane_id.to_string()),
-                            target_pane_id: Some(pane_id.to_string()),
+                        EndpointCommand::PaneSwap(PaneSwapParams::Panes {
+                            source: source_pane_id.clone(),
+                            target: pane_id,
                         }),
                         outcome,
                     );
                     self.push_endpoint_command(
                         EndpointCommand::PaneFocus(PaneTarget {
-                            pane_id: source_pane_id.to_string(),
+                            pane_id: source_pane_id,
                         }),
                         outcome,
                     );
@@ -250,32 +241,23 @@ impl ClientShellState {
             ClientContextMenuAction::SplitRight | ClientContextMenuAction::SplitDown => {
                 self.push_endpoint_command(
                     EndpointCommand::PaneSplit(PaneSplitParams {
-                        workspace_id: Some(workspace_id.into()),
-                        target_pane_id: Some(pane_id.to_string()),
+                        pane_id,
                         direction: if action == ClientContextMenuAction::SplitRight {
                             SplitDirection::Right
                         } else {
                             SplitDirection::Down
                         },
-                        ratio: None,
-                        cwd: None,
-                        focus: true,
-                        right_click: Default::default(),
-                        env: Default::default(),
                     }),
                     outcome,
                 );
             }
             ClientContextMenuAction::Zoom => self.push_endpoint_command(
-                EndpointCommand::PaneZoom(PaneZoomParams {
-                    pane_id: Some(pane_id.to_string()),
-                    mode: PaneZoomMode::Toggle,
-                }),
+                EndpointCommand::PaneZoom(PaneZoomParams { pane_id }),
                 outcome,
             ),
             ClientContextMenuAction::ToggleRightClickPassthrough => self.push_endpoint_command(
                 EndpointCommand::PaneInputSet(PaneInputSetParams {
-                    pane_id: pane_id.to_string(),
+                    pane_id,
                     right_click: if right_click_passthrough {
                         PaneRightClickTarget::Shepr
                     } else {
@@ -286,9 +268,7 @@ impl ClientShellState {
             ),
             ClientContextMenuAction::ClosePane => {
                 self.push_endpoint_command(
-                    EndpointCommand::PaneClose(PaneTarget {
-                        pane_id: pane_id.to_string(),
-                    }),
+                    EndpointCommand::PaneClose(PaneTarget { pane_id }),
                     outcome,
                 );
             }

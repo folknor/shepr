@@ -70,7 +70,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.workspaces = vec![Workspace::test_new("one")];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].root_pane();
         let terminal_id = app.state.workspaces[0].panes()[&pane_id]
@@ -142,7 +142,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.workspaces = vec![Workspace::test_new("one")];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].root_pane();
         let terminal_id = app.state.workspaces[0]

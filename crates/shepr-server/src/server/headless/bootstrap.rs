@@ -250,13 +250,15 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
         return;
     }
 
-    match app.create_workspace_with_options(&cwd, true) {
+    // No client has attached yet, so the workspace is sized for the headless
+    // area; the first client's geometry pass resizes it.
+    let geometry = app.headless_spawn_geometry();
+    match app.create_workspace(&cwd, geometry) {
         Ok(_) => {
             info!(cwd = %cwd.display(), "created startup workspace");
         }
         Err(err) => {
             warn!(cwd = %cwd.display(), error = %err, "failed to create startup workspace");
-            app.state.mode = app::Mode::Navigate;
         }
     }
 }

@@ -1,27 +1,17 @@
-use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, RequestId, ServerMessage};
 
 pub(crate) use crate::limits::{MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES};
 
-/// The wire form of a failed endpoint command: the server error's code and
-/// message.
-fn endpoint_error(error: ApiError) -> EndpointError {
-    EndpointError {
-        code: error.code.as_str().to_owned(),
-        message: error.into_message(),
-    }
-}
-
 /// The one response to an endpoint command. A large result (a selection of a
 /// long scrollback) crosses in as many frames as it needs; only one past
 /// `MAX_MESSAGE_SIZE`, which the client would refuse, is answered with
-/// `endpoint_response_too_large`, naming its size, rather than failing to
+/// `EndpointError::ResponseTooLarge`, naming its size, rather than failing to
 /// send and leaving the client to wait out its command timeout.
 pub(crate) fn response_message(
     boot_id: BootId,
     request_id: RequestId,
-    result: Result<EndpointReply, ApiError>,
+    result: Result<EndpointReply, EndpointError>,
 ) -> ServerMessage {
     response_within(
         boot_id,
@@ -31,39 +21,44 @@ pub(crate) fn response_message(
     )
 }
 
+/// The whole response envelope is measured, not just its result, so the bound
+/// is the size the client actually reads.
 fn response_within(
     boot_id: BootId,
     request_id: RequestId,
-    result: Result<EndpointReply, ApiError>,
+    result: Result<EndpointReply, EndpointError>,
     max: usize,
 ) -> ServerMessage {
     let message = ServerMessage::ClientShellEndpointResponse {
         boot_id: boot_id.clone(),
         request_id: request_id.clone(),
-        result: result.map_err(endpoint_error),
+        result,
     };
-    let size = match shepr_protocol::codec::encoded_len(&message) {
+    let refusal = match shepr_protocol::codec::encoded_len(&message) {
         Ok(size) if size <= max => return message,
-        Ok(size) => format!("{size} bytes"),
-        Err(error) => format!("unencodable: {error}"),
+        Ok(size) => EndpointError::ResponseTooLarge {
+            size: u64::try_from(size).unwrap_or(u64::MAX),
+            limit: u64::try_from(max).unwrap_or(u64::MAX),
+        },
+        Err(error) => {
+            tracing::warn!(%error, "an endpoint response could not be encoded");
+            EndpointError::Rejected("the response could not be encoded".to_owned())
+        }
     };
     ServerMessage::ClientShellEndpointResponse {
         boot_id,
         request_id,
-        result: Err(endpoint_error(ApiError::new(
-            ApiErrorCode::EndpointResponseTooLarge,
-            format!("the response is too large to send ({size}; the limit is {max} bytes)"),
-        ))),
+        result: Err(refusal),
     }
 }
 
+/// A refusal the server loop gives without running the command.
 pub(crate) fn error_message(
     boot_id: BootId,
     request_id: RequestId,
-    code: ApiErrorCode,
-    message: impl Into<String>,
+    error: EndpointError,
 ) -> ServerMessage {
-    response_message(boot_id, request_id, Err(ApiError::new(code, message)))
+    response_message(boot_id, request_id, Err(error))
 }
 
 #[cfg(test)]
@@ -88,25 +83,26 @@ mod tests {
     }
 
     #[test]
-    fn server_errors_keep_their_wire_code_and_message() {
-        let message = response_message(
-            shepr_test_fixtures::fixed_boot_id(1),
-            "request-a".into(),
-            Err(ApiError::pane_not_found("w1:p7")),
-        );
-        let ServerMessage::ClientShellEndpointResponse {
-            result: Err(error), ..
-        } = &message
-        else {
-            panic!("expected an error response, got {message:?}");
-        };
-        assert_eq!(
-            error,
-            &EndpointError {
-                code: "pane_not_found".into(),
-                message: "pane w1:p7 not found".into(),
-            }
-        );
+    fn server_errors_keep_their_variant_and_message() {
+        for error in [
+            EndpointError::Rejected("pane w1:p7 not found".into()),
+            EndpointError::ShuttingDown,
+            EndpointError::StaleBoot,
+            EndpointError::SurfaceInactive,
+        ] {
+            let message = error_message(
+                shepr_test_fixtures::fixed_boot_id(1),
+                "request-a".into(),
+                error.clone(),
+            );
+            let ServerMessage::ClientShellEndpointResponse {
+                result: Err(sent), ..
+            } = &message
+            else {
+                panic!("expected an error response, got {message:?}");
+            };
+            assert_eq!(sent, &error);
+        }
     }
 
     #[test]
@@ -116,7 +112,7 @@ mod tests {
             shepr_test_fixtures::fixed_boot_id(1),
             "request-a".into(),
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: text.clone(),
             }),
         );
@@ -134,12 +130,12 @@ mod tests {
     }
 
     #[test]
-    fn a_response_past_the_message_limit_becomes_an_error() {
+    fn a_response_past_the_message_limit_becomes_a_bounded_refusal() {
         let message = response_within(
             shepr_test_fixtures::fixed_boot_id(1),
             "request-a".into(),
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "x".repeat(4096),
             }),
             1024,
@@ -153,7 +149,10 @@ mod tests {
             panic!("expected an error response, got {message:?}");
         };
         assert_eq!(request_id, "request-a");
-        assert_eq!(error.code, "endpoint_response_too_large");
-        assert!(error.message.contains("the limit is 1024 bytes"));
+        let EndpointError::ResponseTooLarge { size, limit } = error else {
+            panic!("expected a too-large refusal, got {error:?}");
+        };
+        assert_eq!(*limit, 1024);
+        assert!(*size > 1024);
     }
 }

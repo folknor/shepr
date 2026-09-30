@@ -1,24 +1,36 @@
 mod checkout_root;
 mod cwd;
 mod detect;
-mod env;
+mod endpoint;
 mod layouts;
 mod panes;
 pub(super) mod responses;
 pub(super) mod session;
 mod workspaces;
 
+use super::state::SpawnGeometry;
 use super::{App, Outcome, RenderDemand};
-use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
-use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_api::error::ApiResult;
+use shepr_protocol::WorkspaceId;
+use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 
-/// A client-shell command's answer, before the server loop puts it on the
-/// client socket.
-pub(crate) type EndpointResult = Result<EndpointReply, ApiError>;
+use endpoint::{HandlerResult, rejected};
 
-/// What one client-shell command did: its answer and the render it needs.
+/// What the server loop knows about the requesting client that no app state
+/// holds.
+pub(crate) struct EndpointContext {
+    /// The geometry the requesting client presents, for a workspace with no
+    /// recorded geometry.
+    pub(crate) requester_geometry: Option<SpawnGeometry>,
+}
+
+/// What one client-shell command did: its answer, the workspace the requesting
+/// client navigates to, and the render it needs.
 pub(crate) struct EndpointOutcome {
-    pub(crate) result: EndpointResult,
+    pub(crate) result: Result<EndpointReply, EndpointError>,
+    /// The workspace the command moves the requesting client to. Only a
+    /// command that succeeded navigates; the server loop applies it.
+    pub(crate) navigate: Option<WorkspaceId>,
     pub(crate) render: RenderDemand,
 }
 
@@ -55,14 +67,23 @@ impl App {
         }
     }
 
+    /// Runs one client-shell command against the app state the server loop
+    /// has already drained internal events into. Targets, the creation source
+    /// and recorded geometry are all resolved here, against that state. The
+    /// command's navigation effect is returned, not applied: navigation is per
+    /// client and the loop owns it, as it owns the reconcile, the geometry
+    /// settlement and the reply's focus flags that follow.
     pub(crate) fn handle_endpoint_command_with_render(
         &mut self,
         command: EndpointCommand,
+        ctx: &EndpointContext,
     ) -> EndpointOutcome {
         let mutates_ui = command.traits().mutates_ui;
         // These commands change scroll position, split ratios or PTY input
         // only; the shell snapshot carries none of those. Anything the agent
-        // does in response arrives later through its own hook report.
+        // does in response arrives later through its own hook report. Focusing
+        // a workspace changes no shared state at all: only the requester's own
+        // location moves, which invalidates only its projection.
         let changes_shell_projection = mutates_ui
             && !matches!(
                 &command,
@@ -70,6 +91,7 @@ impl App {
                     | EndpointCommand::PaneClear(_)
                     | EndpointCommand::PaneResize(_)
                     | EndpointCommand::LayoutSetSplitRatio(_)
+                    | EndpointCommand::WorkspaceFocus(_)
             );
         let render = if mutates_ui {
             if changes_shell_projection {
@@ -79,35 +101,39 @@ impl App {
         } else {
             RenderDemand::None
         };
-        let result = self.handle_endpoint_command_after_internal_events_drained(command);
-        EndpointOutcome { result, render }
+        self.sync_pending_terminal_titles();
+        let (result, navigate) = match self.dispatch_endpoint_command(command, ctx) {
+            Ok(handled) => (Ok(handled.reply), handled.navigate),
+            Err(error) => (Err(error), None),
+        };
+        EndpointOutcome {
+            result,
+            navigate,
+            render,
+        }
     }
 
-    pub(crate) fn handle_endpoint_command_after_internal_events_drained(
+    fn dispatch_endpoint_command(
         &mut self,
         command: EndpointCommand,
-    ) -> EndpointResult {
-        self.sync_pending_terminal_titles();
-
+        ctx: &EndpointContext,
+    ) -> HandlerResult {
         match command {
             // The server loop answers the surface lease itself, before any
             // command reaches the app; reaching here is a routing bug.
             EndpointCommand::ClientShellSurfaceSet(_) => {
                 tracing::warn!("client_shell.surface.set routed to the app by mistake");
-                responses::failure(
-                    ApiErrorCode::InternalError,
-                    "client_shell.surface.set is not handled by the app",
-                )
+                rejected("client_shell.surface.set is not handled by the app")
             }
-            EndpointCommand::WorkspaceCreate(params) => self.handle_workspace_create(params),
+            EndpointCommand::WorkspaceCreate(params) => self.handle_workspace_create(params, ctx),
             EndpointCommand::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
             EndpointCommand::WorkspaceRename(params) => self.handle_workspace_rename(params),
             EndpointCommand::WorkspaceCheckoutRoot(params) => {
                 self.handle_workspace_checkout_root(&params)
             }
             EndpointCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
-            EndpointCommand::WorkspaceClose(target) => self.handle_workspace_close(&target),
-            EndpointCommand::PaneSplit(params) => self.handle_pane_split(params),
+            EndpointCommand::WorkspaceClose(params) => self.handle_workspace_close(&params),
+            EndpointCommand::PaneSplit(params) => self.handle_pane_split(&params, ctx),
             EndpointCommand::PaneSwap(params) => self.handle_pane_swap(&params),
             EndpointCommand::PaneZoom(params) => self.handle_pane_zoom(&params),
             EndpointCommand::LayoutSetSplitRatio(params) => {
@@ -134,6 +160,16 @@ impl App {
 use shepr_mux::events::AppEvent;
 
 #[cfg(test)]
+impl EndpointContext {
+    /// A requester that presents no geometry of its own.
+    pub(crate) fn without_geometry() -> Self {
+        Self {
+            requester_geometry: None,
+        }
+    }
+}
+
+#[cfg(test)]
 impl App {
     pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::AppRequest) -> String {
         let id = request.id.clone();
@@ -145,10 +181,25 @@ impl App {
     }
 
     /// Runs one client-shell command the way the server loop does, after
-    /// draining pending internal events.
-    pub(crate) fn handle_endpoint_command(&mut self, command: EndpointCommand) -> EndpointResult {
+    /// draining pending internal events, for a requester that presents no
+    /// geometry. Only the answer is returned.
+    pub(crate) fn handle_endpoint_command(
+        &mut self,
+        command: EndpointCommand,
+    ) -> Result<EndpointReply, EndpointError> {
+        self.handle_endpoint_command_in(command, &EndpointContext::without_geometry())
+            .result
+    }
+
+    /// As `handle_endpoint_command`, for a requester with `ctx`, returning the
+    /// whole outcome (the navigation effect included).
+    pub(crate) fn handle_endpoint_command_in(
+        &mut self,
+        command: EndpointCommand,
+        ctx: &EndpointContext,
+    ) -> EndpointOutcome {
         self.drain_all_internal_events();
-        self.handle_endpoint_command_after_internal_events_drained(command)
+        self.handle_endpoint_command_with_render(command, ctx)
     }
 }
 
@@ -173,6 +224,7 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
+    use shepr_protocol::PublicPaneId;
 
     #[test]
     fn the_surface_lease_answered_by_the_loop_is_reported_as_misrouted() {
@@ -186,12 +238,10 @@ mod tests {
         let surface = app.handle_endpoint_command(EndpointCommand::ClientShellSurfaceSet(
             shepr_protocol::command::ClientShellSurfaceSetParams { active: true },
         ));
-        assert_eq!(
-            surface
-                .expect_err("surface lease is answered by the loop")
-                .code,
-            ApiErrorCode::InternalError
-        );
+        assert!(matches!(
+            surface.expect_err("surface lease is answered by the loop"),
+            EndpointError::Rejected(_)
+        ));
         assert!(!app.state.should_quit);
     }
 
@@ -203,9 +253,9 @@ mod tests {
             crate::app::AppPolicy::Test,
             api_rx,
         );
-        let read = app.handle_endpoint_command_with_render(EndpointCommand::PaneSelectionRead(
-            shepr_protocol::command::PaneSelectionReadParams {
-                pane_id: "w1:p1".into(),
+        let read = app.handle_endpoint_command_with_render(
+            EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
+                pane_id: PublicPaneId::new(&WorkspaceId::from_number(1).expect("number"), 1),
                 anchor: shepr_protocol::command::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
@@ -214,16 +264,18 @@ mod tests {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
                 },
-            },
-        ));
+            }),
+            &EndpointContext::without_geometry(),
+        );
         assert_eq!(read.render, RenderDemand::None);
 
-        let rename = app.handle_endpoint_command_with_render(EndpointCommand::PaneRename(
-            shepr_protocol::command::PaneRenameParams {
-                pane_id: "w1:p1".into(),
+        let rename = app.handle_endpoint_command_with_render(
+            EndpointCommand::PaneRename(shepr_protocol::command::PaneRenameParams {
+                pane_id: PublicPaneId::new(&WorkspaceId::from_number(1).expect("number"), 1),
                 label: Some("logs".into()),
-            },
-        ));
+            }),
+            &EndpointContext::without_geometry(),
+        );
         assert_eq!(rename.render, RenderDemand::Full);
     }
 

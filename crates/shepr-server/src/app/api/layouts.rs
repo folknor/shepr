@@ -1,24 +1,19 @@
-use shepr_api::error::ApiErrorCode;
-
 use crate::app::App;
-use shepr_protocol::command::{EndpointReply, LayoutSetSplitRatioParams};
+use shepr_protocol::command::LayoutSetSplitRatioParams;
 
-use super::EndpointResult;
-use super::responses::failure;
+use super::endpoint::{Handled, HandlerResult, rejected};
 
 impl App {
+    /// Sets one split's ratio. Moves nobody: a client changing the layout of a
+    /// workspace it views stays where it is.
     pub(super) fn handle_layout_set_split_ratio(
         &mut self,
         params: &LayoutSetSplitRatioParams,
-    ) -> EndpointResult {
+    ) -> HandlerResult {
         if !params.ratio.is_finite() {
-            return failure(ApiErrorCode::InvalidRatio, "ratio must be finite");
+            return rejected("ratio must be finite");
         }
-        let Some(ws_idx) =
-            self.resolve_layout_target(params.workspace_id.as_deref(), params.pane_id.as_deref())
-        else {
-            return failure(ApiErrorCode::LayoutNotFound, "layout target not found");
-        };
+        let ws_idx = self.endpoint_workspace(&params.workspace_id)?;
 
         // A split path is spelled as booleans: `true` descends into the second
         // branch.
@@ -39,30 +34,11 @@ impl App {
             .get_mut(ws_idx)
             .is_some_and(|ws| ws.set_split_ratio_at(&path, params.ratio));
         if !changed {
-            return failure(ApiErrorCode::SplitNotFound, "split path not found");
+            return rejected("split path not found");
         }
 
         self.schedule_session_save();
-        Ok(EndpointReply::Done)
-    }
-
-    /// The workspace a layout request addresses: the workspace named by
-    /// `workspace_id`, the workspace holding `pane_id`, or the active
-    /// workspace when neither is given. Naming both resolves to nothing.
-    fn resolve_layout_target(
-        &self,
-        workspace_id: Option<&str>,
-        pane_id: Option<&str>,
-    ) -> Option<usize> {
-        match (workspace_id, pane_id) {
-            (Some(_), Some(_)) => None,
-            (Some(workspace_id), None) => self.parse_workspace_id(workspace_id),
-            (None, Some(pane_id)) => {
-                let (ws_idx, _) = self.parse_pane_id(pane_id)?;
-                Some(ws_idx)
-            }
-            (None, None) => self.state.active_index(),
-        }
+        Handled::done()
     }
 }
 
@@ -73,15 +49,22 @@ mod tests {
     use shepr_config::Config;
     use shepr_core::layout::Direction;
     use shepr_mux::workspace::Workspace;
+    use shepr_protocol::command::EndpointError;
 
     fn app_with_workspace() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.workspaces = vec![Workspace::test_new("layout")];
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
         app.state.ensure_test_terminals();
         app
+    }
+
+    fn params(app: &App, ratio: f32) -> LayoutSetSplitRatioParams {
+        LayoutSetSplitRatioParams {
+            workspace_id: app.public_workspace_id(0).expect("test precondition"),
+            path: vec![],
+            ratio,
+        }
     }
 
     #[test]
@@ -92,14 +75,11 @@ mod tests {
         app.state.ensure_test_terminals();
         assert!(app.state.workspaces[0].focus_pane(root));
 
-        let response = app.handle_layout_set_split_ratio(&LayoutSetSplitRatioParams {
-            workspace_id: None,
-            pane_id: None,
-            path: vec![],
-            ratio: 0.72,
-        });
+        let handled = app
+            .handle_layout_set_split_ratio(&params(&app, 0.72))
+            .expect("the ratio is set");
 
-        assert_eq!(response, Ok(EndpointReply::Done));
+        assert_eq!(handled.navigate, None);
         let splits = app.state.workspaces[0]
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
@@ -109,21 +89,17 @@ mod tests {
     }
 
     #[test]
-    fn layout_set_split_ratio_rejects_missing_split() {
+    fn layout_set_split_ratio_rejects_missing_split_and_bad_ratios() {
         let mut app = app_with_workspace();
 
-        let response = app.handle_layout_set_split_ratio(&LayoutSetSplitRatioParams {
-            workspace_id: None,
-            pane_id: None,
-            path: vec![],
-            ratio: 0.72,
-        });
-
         assert_eq!(
-            response
-                .expect_err("a one-pane workspace has no split")
-                .code,
-            ApiErrorCode::SplitNotFound
+            app.handle_layout_set_split_ratio(&params(&app, 0.72)),
+            Err(EndpointError::Rejected("split path not found".into())),
+            "a one-pane workspace has no split"
+        );
+        assert_eq!(
+            app.handle_layout_set_split_ratio(&params(&app, f32::NAN)),
+            Err(EndpointError::Rejected("ratio must be finite".into()))
         );
     }
 }

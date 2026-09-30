@@ -192,7 +192,6 @@ impl ClientShellState {
             title: "new workspace",
             input: TextEditor::new(&suggested_name, true),
             target: ClientRenameTarget::NewWorkspace {
-                source_workspace_id,
                 cwd,
                 suggested_name,
                 label_lookup_id,
@@ -681,24 +680,25 @@ impl ClientShellState {
         let trimmed = rename.input.trim();
         let command = match rename.target {
             ClientRenameTarget::NewWorkspace {
-                source_workspace_id,
                 cwd,
                 suggested_name,
                 ..
             } => Some(shepr_protocol::command::EndpointCommand::WorkspaceCreate(
                 shepr_protocol::command::WorkspaceCreateParams {
-                    source_workspace_id: source_workspace_id.map(Into::into),
-                    cwd,
-                    focus: true,
+                    // The prompt already resolved the directory the new
+                    // workspace starts in; with none known the server picks.
+                    source: match cwd {
+                        Some(cwd) => shepr_protocol::command::WorkspaceCreateSource::Cwd(cwd),
+                        None => shepr_protocol::command::WorkspaceCreateSource::Default,
+                    },
                     label: (!trimmed.is_empty() && trimmed != suggested_name)
                         .then(|| trimmed.to_owned()),
-                    env: Default::default(),
                 },
             )),
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
                 shepr_protocol::command::EndpointCommand::WorkspaceRename(
                     shepr_protocol::command::WorkspaceRenameParams {
-                        workspace_id: workspace_id.into(),
+                        workspace_id,
                         label: trimmed.to_owned(),
                     },
                 )
@@ -706,7 +706,7 @@ impl ClientShellState {
             ClientRenameTarget::Pane { pane_id } => {
                 Some(shepr_protocol::command::EndpointCommand::PaneRename(
                     shepr_protocol::command::PaneRenameParams {
-                        pane_id: pane_id.to_string(),
+                        pane_id,
                         label: Some(trimmed.to_owned()),
                     },
                 ))
@@ -726,7 +726,7 @@ impl ClientShellState {
         self.push_endpoint_command(
             shepr_protocol::command::EndpointCommand::WorkspaceClose(
                 shepr_protocol::command::WorkspaceCloseParams {
-                    workspace_id: confirm.workspace_id.into(),
+                    workspace_id: confirm.workspace_id,
                 },
             ),
             outcome,

@@ -13,8 +13,9 @@
 //!   focused views it as its workspace's focused pane.
 
 use super::*;
+use crate::app::SpawnGeometry;
 use crate::server::ClientId;
-use crate::server::clients::ClientShellTopology;
+use crate::server::clients::{ClientShellLocation, ClientShellTopology};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ShellFocusTarget {
@@ -50,7 +51,7 @@ fn workspace_geometry_source(
 ) -> Option<GeometrySource> {
     let mut presenting = clients
         .iter()
-        .filter(|(_, client)| client.is_active_shell_client() && client.writer.is_some())
+        .filter(|(_, client)| presents_surface(client))
         .map(|(&client_id, _)| client_id);
     let first = presenting.next();
     if let Some(sole) = first
@@ -71,16 +72,17 @@ fn workspace_geometry_source(
     first.is_none().then_some(GeometrySource::Headless)
 }
 
-impl HeadlessServer {
-    pub(super) fn default_shell_target(&self) -> Option<shepr_protocol::WorkspaceId> {
-        let workspace_index = self.app.state.active_index()?;
-        self.app
-            .state
-            .workspaces
-            .get(workspace_index)
-            .map(|workspace| workspace.id.clone())
-    }
+/// Whether a client presents a surface: an active shell with a way to send
+/// frames. Only such a client sizes panes, controls geometry or is chosen to
+/// create a workspace.
+fn presents_surface(client: &ClientConnection) -> bool {
+    client.is_active_shell_client() && client.writer.is_some()
+}
 
+impl HeadlessServer {
+    /// The workspace `client_id` views: what its own location names, if that
+    /// is still a workspace. A client with no workspace views none; nothing
+    /// falls back to the session's bookmark.
     pub(super) fn shell_target_for_client(
         &self,
         client_id: ClientId,
@@ -89,105 +91,91 @@ impl HeadlessServer {
             .get(&client_id)?
             .shell_state()
             .location
-            .as_ref()
-            .and_then(|location| location.focused_workspace_id.clone())
+            .focused_workspace_id
+            .clone()
             .filter(|workspace_id| self.app.state.workspace_index(workspace_id).is_some())
-            .or_else(|| self.default_shell_target())
+    }
+
+    /// The location a client that just connected starts at: the session's
+    /// bookmark.
+    pub(super) fn initial_client_location(&self) -> ClientShellLocation {
+        ClientShellLocation::initial(
+            self.app
+                .state
+                .bookmark_index()
+                .and_then(|index| Some((self.app.public_workspace_id(index)?, index))),
+        )
     }
 
     fn client_shell_topology(&self) -> ClientShellTopology {
-        let focused_workspace_id = self.app.state.active.clone();
-        let fallback_workspace_id = self
-            .app
-            .state
-            .workspaces
-            .first()
-            .map(|workspace| workspace.id.clone());
-        let live_workspace_ids = self
-            .app
+        ClientShellTopology {
+            workspace_ids: self.workspace_order(),
+            bookmark_index: self.app.state.bookmark_index(),
+        }
+    }
+
+    /// The session's workspaces in order.
+    pub(super) fn workspace_order(&self) -> Vec<shepr_protocol::WorkspaceId> {
+        self.app
             .state
             .workspaces
             .iter()
             .map(|workspace| workspace.id.clone())
-            .collect();
-        ClientShellTopology {
-            focused_workspace_id,
-            fallback_workspace_id,
-            live_workspace_ids,
-        }
+            .collect()
     }
 
-    /// Brings every client location, geometry controller and recorded
-    /// workspace area in line with the session's workspaces after they
-    /// changed.
-    pub(super) fn reconcile_client_shell_locations(&mut self) {
+    /// Brings the bookmark, every client location, geometry controller and
+    /// recorded workspace geometry in line with the session's workspaces
+    /// after they changed. Remembered indices are refreshed on every call, so
+    /// an order change is followed by one. Returns whether some client now
+    /// views another workspace, which needs a render.
+    pub(super) fn reconcile_client_shell_locations(&mut self) -> bool {
+        self.app.state.reconcile_bookmark();
         let topology = self.client_shell_topology();
+        let live_workspaces = topology
+            .workspace_ids
+            .iter()
+            .collect::<HashSet<&shepr_protocol::WorkspaceId>>();
         let live_clients = self.clients.keys().copied().collect::<HashSet<_>>();
         self.clients
             .retain_geometry_controllers(|workspace_id, client_id| {
-                topology.live_workspace_ids.contains(workspace_id)
-                    && live_clients.contains(&client_id)
+                live_workspaces.contains(workspace_id) && live_clients.contains(&client_id)
             });
-        self.app.state.retain_live_workspace_areas();
-        for client in self
-            .clients
-            .values_mut()
-            .map(crate::server::clients::ClientConnection::shell_state_mut)
-        {
-            let location = client.location.get_or_insert_with(|| {
-                crate::server::clients::ClientShellLocation {
-                    focused_workspace_id: topology.focused_workspace_id.clone(),
-                }
-            });
-            location.reconcile(&topology);
-        }
-    }
-
-    pub(super) fn focus_shell_client_on_workspace(
-        &mut self,
-        client_id: ClientId,
-        workspace_id: &shepr_protocol::WorkspaceId,
-    ) -> bool {
-        if self.app.state.workspace_index(workspace_id).is_none() {
-            return false;
-        }
-        let Some(client) = self.clients.get_mut(&client_id) else {
-            return false;
-        };
-        let Some(location) = client.shell_state_mut().location.as_mut() else {
-            return false;
-        };
-        location.focus_workspace(workspace_id.clone());
-        true
-    }
-
-    /// Makes the requesting client's workspace the session's focus before its
-    /// request runs, so a request that names no target acts on what that
-    /// client views.
-    pub(super) fn set_default_shell_target_from_client(&mut self, client_id: ClientId) -> bool {
-        let Some(target) = self.shell_target_for_client(client_id) else {
-            return false;
-        };
-        if self.default_shell_target().as_ref() == Some(&target) {
-            return false;
-        }
-        let Some(workspace_index) = self.app.state.workspace_index(&target) else {
-            return false;
-        };
-        let changed = self.app.state.switch_workspace(workspace_index);
-        if changed {
-            // The shared shell session snapshot includes default focus even
-            // when this client's projection follows its own location.
-            self.app.state.mark_shell_projection_dirty();
+        self.app.state.retain_live_workspace_geometry();
+        let mut changed = false;
+        for client in self.clients.values_mut() {
+            changed |= client.shell_state_mut().location.reconcile(&topology);
         }
         changed
     }
 
-    pub(super) fn focus_shell_client_on_default_target(&mut self, client_id: ClientId) -> bool {
-        let Some(workspace_id) = self.default_shell_target() else {
+    /// Applies a command's navigation effect: moves `client_id` onto
+    /// `workspace_id`. The session's bookmark follows only the navigation of a
+    /// client whose surface is active. Returns whether the client now views
+    /// another workspace.
+    pub(super) fn navigate_shell_client(
+        &mut self,
+        client_id: ClientId,
+        workspace_id: &shepr_protocol::WorkspaceId,
+    ) -> bool {
+        let Some(index) = self.app.state.workspace_index(workspace_id) else {
             return false;
         };
-        self.focus_shell_client_on_workspace(client_id, &workspace_id)
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return false;
+        };
+        let surface_active = client.is_active_shell_client();
+        let moved = client
+            .shell_state_mut()
+            .location
+            .navigate(workspace_id.clone(), index);
+        if moved {
+            crate::logging::workspace_focused(workspace_id);
+        }
+        if surface_active {
+            self.app.state.set_bookmark(workspace_id);
+        }
+        moved
     }
 
     fn focus_target_for_surface(
@@ -205,6 +193,63 @@ impl HeadlessServer {
             workspace_id,
             pane_id,
         })
+    }
+
+    /// The client an automatically created workspace is sized for and
+    /// controlled by: `trigger` if it presents a surface, else the presenting
+    /// client with the lowest id. `None` when no client presents one, and the
+    /// workspace is sized for the headless area with no controller.
+    fn automatic_creation_source(&self, trigger: Option<ClientId>) -> Option<ClientId> {
+        trigger
+            .filter(|client_id| self.clients.get(client_id).is_some_and(presents_surface))
+            .or_else(|| {
+                self.clients
+                    .iter()
+                    .filter(|(_, client)| presents_surface(client))
+                    .map(|(&client_id, _)| client_id)
+                    .min()
+            })
+    }
+
+    /// The one function that creates a workspace nobody asked for: the
+    /// session's first workspace (a client connecting to an empty server), and
+    /// the replacement of the last one when it closed. `trigger` is the client
+    /// whose connection or command led to it (the connecting client at setup,
+    /// the requester for an endpoint command), and `None` for the main loop and
+    /// the JSON paths.
+    ///
+    /// The workspace is sized for, and controlled by, the client
+    /// `automatic_creation_source` picks from the clients as they are now.
+    /// The intended controller is assigned before the generic settlement
+    /// below, so that settlement does not hand the workspace to someone else.
+    /// Every success is followed by a reconcile (which refreshes remembered
+    /// indices), the geometry settlement and the pane focus reports. Returns
+    /// whether a workspace was created.
+    pub(super) fn create_automatic_workspace(&mut self, trigger: Option<ClientId>) -> bool {
+        if !self.app.state.workspaces.is_empty() {
+            return false;
+        }
+        // The loop and the JSON paths only replace a workspace for a session
+        // some client is looking at.
+        if trigger.is_none() && self.clients.latest_shell_client().is_none() {
+            return false;
+        }
+        let source = self.automatic_creation_source(trigger);
+        let geometry = source
+            .and_then(|client_id| self.client_geometry(client_id))
+            .unwrap_or_else(|| self.app.headless_spawn_geometry());
+        if !self.app.create_default_workspace(geometry) {
+            return false;
+        }
+        self.immediate_pty_sources_dirty = true;
+        if let (Some(client_id), Some(workspace)) = (source, self.app.state.workspaces.last()) {
+            self.clients
+                .set_geometry_controller(workspace.id.clone(), client_id);
+        }
+        self.reconcile_client_shell_locations();
+        self.reapply_controlled_shell_workspace_geometry(false);
+        self.sync_pane_focus();
+        true
     }
 
     /// The pane a client's keyboard reaches: the focused pane of the workspace
@@ -329,34 +374,35 @@ impl HeadlessServer {
         workspace_geometry_source(&self.clients, workspace_id)
     }
 
-    /// The area and cell size a workspace's PTYs are sized for, per the PTY
-    /// size rule; `None` when the workspace keeps the size it has.
+    /// The geometry `client_id` presents: its surface size and cell size.
+    pub(super) fn client_geometry(&self, client_id: ClientId) -> Option<SpawnGeometry> {
+        let client = self.clients.get(&client_id)?;
+        Some(SpawnGeometry {
+            area: Rect::new(
+                0,
+                0,
+                client.terminal_size.cols.get(),
+                client.terminal_size.rows.get(),
+            ),
+            cell_size: client.cell_size.or_default(),
+        })
+    }
+
+    /// The geometry a workspace's PTYs are sized for, per the PTY size rule;
+    /// `None` when the workspace keeps the size it has.
     fn workspace_geometry(
         &self,
         workspace_id: &shepr_protocol::WorkspaceId,
-    ) -> Option<(Rect, shepr_termio::host_term::cell_size::HostCellSize)> {
+    ) -> Option<SpawnGeometry> {
         match self.workspace_geometry_source(workspace_id)? {
-            GeometrySource::Client(client_id) => {
-                let client = self.clients.get(&client_id)?;
-                Some((
-                    Rect::new(
-                        0,
-                        0,
-                        client.terminal_size.cols.get(),
-                        client.terminal_size.rows.get(),
-                    ),
-                    client.cell_size.or_default(),
-                ))
-            }
-            GeometrySource::Headless => Some((
-                self.app.state.settings.headless_rect(),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
-            )),
+            GeometrySource::Client(client_id) => self.client_geometry(client_id),
+            GeometrySource::Headless => Some(self.app.headless_spawn_geometry()),
         }
     }
 
     /// Applies the PTY size rule to one workspace: resizes its visible panes
-    /// and records the area on the session. Returns whether the rule sized it.
+    /// and records the geometry on the session. Returns whether the rule
+    /// sized it.
     pub(super) fn apply_workspace_geometry(
         &mut self,
         workspace_id: &shepr_protocol::WorkspaceId,
@@ -364,17 +410,19 @@ impl HeadlessServer {
         let Some(workspace_index) = self.app.state.workspace_index(workspace_id) else {
             return false;
         };
-        let Some((area, cell_size)) = self.workspace_geometry(workspace_id) else {
+        let Some(geometry) = self.workspace_geometry(workspace_id) else {
             return false;
         };
         crate::ui::resize_surface(
             &self.app.state,
             &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
             workspace_index,
-            area,
-            cell_size,
+            geometry.area,
+            geometry.cell_size,
         );
-        self.app.state.record_workspace_area(workspace_id, area);
+        self.app
+            .state
+            .record_workspace_geometry(workspace_id, geometry);
         true
     }
 

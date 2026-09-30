@@ -210,7 +210,12 @@ impl ClientShellState {
                 return;
             }
             KeyCode::End => {
-                self.request_copy_motion(shepr_protocol::command::PaneCopyMotion::LineEnd, outcome);
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::Line(
+                        shepr_protocol::command::PaneLineMotion::End,
+                    ),
+                    outcome,
+                );
                 return;
             }
             _ => {}
@@ -260,11 +265,18 @@ impl ClientShellState {
                 outcome.repaint = true;
             }
             '$' => {
-                self.request_copy_motion(shepr_protocol::command::PaneCopyMotion::LineEnd, outcome);
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::Line(
+                        shepr_protocol::command::PaneLineMotion::End,
+                    ),
+                    outcome,
+                );
             }
             '^' => {
                 self.request_copy_motion(
-                    shepr_protocol::command::PaneCopyMotion::FirstNonBlank,
+                    shepr_protocol::command::PaneCopyMotion::Line(
+                        shepr_protocol::command::PaneLineMotion::FirstNonBlank,
+                    ),
                     outcome,
                 );
             }
@@ -276,41 +288,57 @@ impl ClientShellState {
             'N' => self.repeat_copy_search(true, outcome),
             'w' => {
                 self.request_copy_motion(
-                    shepr_protocol::command::PaneCopyMotion::NextWordStart,
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::NextStart,
+                    ),
                     outcome,
                 );
             }
             'b' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::PreviousWordStart,
+                shepr_protocol::command::PaneCopyMotion::Word(
+                    shepr_protocol::command::PaneWordMotion::PreviousStart,
+                ),
                 outcome,
             ),
             'e' => {
                 self.request_copy_motion(
-                    shepr_protocol::command::PaneCopyMotion::NextWordEnd,
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::NextEnd,
+                    ),
                     outcome,
                 );
             }
             'W' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::NextBigWordStart,
+                shepr_protocol::command::PaneCopyMotion::Word(
+                    shepr_protocol::command::PaneWordMotion::NextBigStart,
+                ),
                 outcome,
             ),
             'B' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::PreviousBigWordStart,
+                shepr_protocol::command::PaneCopyMotion::Word(
+                    shepr_protocol::command::PaneWordMotion::PreviousBigStart,
+                ),
                 outcome,
             ),
             'E' => {
                 self.request_copy_motion(
-                    shepr_protocol::command::PaneCopyMotion::NextBigWordEnd,
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::NextBigEnd,
+                    ),
                     outcome,
                 );
             }
             '{' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::PreviousParagraph,
+                shepr_protocol::command::PaneCopyMotion::Paragraph(
+                    shepr_protocol::command::PaneParagraphMotion::Previous,
+                ),
                 outcome,
             ),
             '}' => {
                 self.request_copy_motion(
-                    shepr_protocol::command::PaneCopyMotion::NextParagraph,
+                    shepr_protocol::command::PaneCopyMotion::Paragraph(
+                        shepr_protocol::command::PaneParagraphMotion::Next,
+                    ),
                     outcome,
                 );
             }
@@ -776,7 +804,7 @@ impl ClientShellState {
                 ClientCopyOperation::Motion(motion) => (
                     shepr_protocol::command::EndpointCommand::PaneCopyMotion(
                         shepr_protocol::command::PaneCopyMotionParams {
-                            pane_id: pane_id.to_string(),
+                            pane_id: pane_id.clone(),
                             cursor: origin,
                             motion,
                         },
@@ -808,7 +836,7 @@ impl ClientShellState {
                     (
                         shepr_protocol::command::EndpointCommand::PaneCopySearch(
                             shepr_protocol::command::PaneCopySearchParams {
-                                pane_id: pane_id.to_string(),
+                                pane_id: pane_id.clone(),
                                 query: query.clone(),
                                 direction,
                                 cursor: origin,

@@ -35,12 +35,16 @@ impl App {
             .is_some_and(|template| template.uses(WindowTitleToken::TerminalTitle))
     }
 
-    /// Renders the configured outer window title, or `None` when window titles
-    /// are disabled or every token resolved empty.
-    pub(crate) fn window_title(&self) -> Option<String> {
-        self.window_title_for_target(self.state.active_index())
+    /// Renders the configured outer window title for a client that views no
+    /// workspace: no workspace or pane target, and never the session's
+    /// bookmark. `None` when window titles are disabled or every token
+    /// resolved empty.
+    pub(crate) fn window_title_without_workspace(&self) -> Option<String> {
+        self.window_title_for_target(None)
     }
 
+    /// The configured outer window title for a client viewing the workspace at
+    /// `workspace_index`.
     pub(crate) fn window_title_for(&self, workspace_index: usize) -> Option<String> {
         self.window_title_for_target(Some(workspace_index))
     }
@@ -108,7 +112,6 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         app.state.workspaces = vec![Workspace::test_new("herd")];
-        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app
     }
@@ -118,10 +121,10 @@ mod tests {
         let mut app = test_app();
         app.configure_window_title("{workspace}");
 
-        assert_eq!(app.window_title().as_deref(), Some("herd"));
+        assert_eq!(app.window_title_for(0).as_deref(), Some("herd"));
 
         app.state.workspaces[0].set_custom_name("build".into());
-        assert_eq!(app.window_title().as_deref(), Some("build"));
+        assert_eq!(app.window_title_for(0).as_deref(), Some("build"));
     }
 
     #[test]
@@ -141,7 +144,21 @@ mod tests {
         terminal.manual_label = Some("api".into());
         terminal.set_terminal_title(Some("⠋ building".into()));
 
-        assert_eq!(app.window_title().as_deref(), Some("api|building"));
+        assert_eq!(app.window_title_for(0).as_deref(), Some("api|building"));
+    }
+
+    #[test]
+    fn a_client_with_no_workspace_renders_no_workspace_or_pane_target() {
+        let mut app = test_app();
+        app.configure_window_title("{workspace}|{pane}|{terminal_title}|x");
+        // The bookmark names the workspace, but a client with no location does
+        // not borrow it.
+        app.state.set_bookmark_index(Some(0));
+
+        assert_eq!(
+            app.window_title_without_workspace().as_deref(),
+            Some("|||x")
+        );
     }
 
     #[test]
@@ -149,7 +166,7 @@ mod tests {
         let mut app = test_app();
         app.configure_window_title("");
 
-        assert_eq!(app.window_title(), None);
+        assert_eq!(app.window_title_for(0), None);
     }
 
     #[test]
@@ -162,6 +179,6 @@ mod tests {
         let mut app = test_app();
         app.configure_window_title("[{pane}]");
 
-        assert_eq!(app.window_title().as_deref(), Some("[]"));
+        assert_eq!(app.window_title_for(0).as_deref(), Some("[]"));
     }
 }

@@ -826,7 +826,6 @@ mod tests {
             host_theme: Default::default(),
             workspaces: vec![],
             active: None,
-            selected: 0,
         }
     }
 
@@ -1267,7 +1266,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).expect("test precondition");
 
         let mut snap = empty_snapshot();
-        snap.selected = 7;
+        snap.active = Some(7);
         save_to_path(&link, &snap).expect("test precondition");
 
         assert!(
@@ -1278,7 +1277,7 @@ mod tests {
         );
         let parsed = parse_snapshot(&std::fs::read_to_string(&target).expect("test precondition"))
             .expect("test precondition");
-        assert_eq!(parsed.selected, 7);
+        assert_eq!(parsed.active, Some(7));
     }
 
     #[test]
@@ -1339,12 +1338,12 @@ mod tests {
         std::fs::write(path.with_extension("json.tmp"), b"{\"trunc").expect("test precondition");
 
         let mut snap = empty_snapshot();
-        snap.selected = 3;
+        snap.active = Some(3);
         save_to_path(&path, &snap).expect("test precondition");
 
         let parsed = parse_snapshot(&std::fs::read_to_string(&path).expect("test precondition"))
             .expect("test precondition");
-        assert_eq!(parsed.selected, 3);
+        assert_eq!(parsed.active, Some(3));
         assert!(
             !path
                 .with_extension("json.tmp")

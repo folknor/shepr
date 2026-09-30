@@ -322,7 +322,7 @@ impl PendingEndpointActivation {
                         self.phase,
                         ActivationPhase::ReleasingSource { .. }
                     ),
-                    message: error.message,
+                    message: error.to_string(),
                 };
             }
         };

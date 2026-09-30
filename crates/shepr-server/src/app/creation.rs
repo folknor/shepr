@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
+use super::state::SpawnGeometry;
 use super::{App, api_helpers::pane_agent_status};
 use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
+use shepr_termio::host_term::cell_size::HostCellSize;
 
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwd,
@@ -91,25 +93,30 @@ impl App {
         self.resolve_new_terminal_cwd(follow_cwd)
     }
 
-    pub(crate) fn create_workspace_with_options(
-        &mut self,
-        initial_cwd: &std::path::Path,
-        focus: bool,
-    ) -> std::io::Result<usize> {
-        self.create_workspace_with_launch_env(initial_cwd, focus, Vec::new())
+    /// The geometry a workspace is created in when no client presents one: the
+    /// headless area, with no cell size.
+    pub(crate) fn headless_spawn_geometry(&self) -> SpawnGeometry {
+        SpawnGeometry {
+            area: self.state.settings.headless_rect(),
+            cell_size: HostCellSize::default(),
+        }
     }
 
-    pub(crate) fn create_workspace_with_launch_env(
+    /// Spawns a workspace of one shell pane in `initial_cwd`, sized for
+    /// `geometry`: the grid the pane will have there and the pixel size of one
+    /// cell, so the shell's first `TIOCSWINSZ` already carries pixel
+    /// dimensions. The geometry is recorded for the workspace at once, so a
+    /// later split sizes against it before any geometry pass has run. No client
+    /// is moved onto the workspace.
+    pub(crate) fn create_workspace(
         &mut self,
         initial_cwd: &std::path::Path,
-        focus: bool,
-        extra_env: Vec<(String, String)>,
+        geometry: SpawnGeometry,
     ) -> std::io::Result<usize> {
-        let (rows, cols) = self.state.pane_geometry().sole_pane_size();
-        let (ws, terminal, runtime) = Workspace::new_with_extra_env(
+        let chrome = self.state.pane_geometry_in(geometry.area);
+        let (ws, terminal, runtime) = Workspace::spawn(
             initial_cwd,
-            rows,
-            cols,
+            chrome.sole_pane_spawn_geometry(geometry.cell_px()),
             self.state.settings.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
@@ -118,19 +125,23 @@ impl App {
                 self.state.settings.login_shell,
             ),
             &self.pane_spawn_handles(),
-            extra_env,
         )?;
         let terminal_id = terminal.id.clone();
-        let outcome = self.state.commit_workspace_creation(ws, terminal, focus);
+        let outcome = self.state.commit_workspace_creation(ws, terminal);
+        self.state
+            .record_workspace_geometry(&outcome.workspace_id, geometry);
         self.terminal_runtimes.insert(terminal_id, runtime);
         crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
         self.schedule_session_save();
         Ok(outcome.workspace_index)
     }
 
-    /// The reply a pane command gives the client shell: the pane, whether it
-    /// has focus and its scroll position. Cheap on purpose; the per-pane
-    /// snapshot entry with the `/proc` reads is `snapshot_pane`.
+    /// The reply a pane command gives the client shell: the pane and its
+    /// scroll position. `focused` is left false: whether the pane is focused
+    /// depends on which workspace the requesting client views once its command
+    /// has run, which only the server loop knows (`fill_reply_focus`). Cheap
+    /// on purpose; the per-pane snapshot entry with the `/proc` reads is
+    /// `snapshot_pane`.
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,
@@ -149,12 +160,46 @@ impl App {
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                 viewport_rows: metrics.viewport_rows as u64,
             });
-        let focused = self.state.active_index() == Some(ws_idx) && ws.focused_pane_id() == pane_id;
         Some(shepr_protocol::command::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
-            focused,
+            focused: false,
             scroll,
         })
+    }
+
+    /// Sets `focused` in a reply's `PaneInfo` or `WorkspaceInfo` for a client
+    /// viewing `viewed`: a workspace is focused when it is the viewed one, and a
+    /// pane when it is the focused pane of the viewed workspace. Pane focus is
+    /// shared by every viewer of a workspace; only which workspace is viewed is
+    /// per client.
+    pub(crate) fn fill_reply_focus(
+        &self,
+        reply: &mut shepr_protocol::command::EndpointReply,
+        viewed: Option<&shepr_protocol::WorkspaceId>,
+    ) {
+        use shepr_protocol::command::EndpointReply;
+        match reply {
+            EndpointReply::PaneInfo { pane } => {
+                pane.focused = viewed == Some(pane.pane_id.workspace_id())
+                    && self
+                        .resolve_pane_id(&pane.pane_id)
+                        .is_some_and(|(ws_idx, pane_id)| {
+                            self.state
+                                .workspaces
+                                .get(ws_idx)
+                                .is_some_and(|ws| ws.focused_pane_id() == pane_id)
+                        });
+            }
+            EndpointReply::WorkspaceInfo { workspace } => {
+                workspace.focused = viewed == Some(&workspace.workspace_id);
+            }
+            EndpointReply::Done
+            | EndpointReply::WorkspaceCheckoutRoot { .. }
+            | EndpointReply::PaneSelection { .. }
+            | EndpointReply::PaneCopyMotion { .. }
+            | EndpointReply::PaneCopySearch { .. }
+            | EndpointReply::ClientShellSurfaceSet { .. } => {}
+        }
     }
 
     pub(super) fn lookup_runtime(
@@ -168,6 +213,7 @@ impl App {
         Some((runtime, self.public_workspace_id(ws_idx)?))
     }
 
+    /// `focused` is left false, as in `pane_info`; `fill_reply_focus` sets it.
     /// `None` when `index` names no workspace, like `pane_info`: every caller
     /// either resolved the index a moment ago or carries it across an event,
     /// and a stale index must not panic the server.
@@ -181,7 +227,7 @@ impl App {
             workspace_id: self.public_workspace_id(index)?,
             number: index + 1,
             label: ws.display_name(),
-            focused: self.state.active_index() == Some(index),
+            focused: false,
             pane_count: ws.pane_count(),
             agent_status: pane_agent_status(agg_state),
         })

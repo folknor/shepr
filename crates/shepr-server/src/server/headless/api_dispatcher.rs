@@ -4,12 +4,15 @@ impl super::HeadlessServer {
         msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         // No socket method moves focus or changes geometry; an internal event
-        // drained before the request runs can still change the session (a
-        // pane dying), which the client locations and pane focus follow.
-        let target_before = self.default_shell_target();
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg);
-        if self.default_shell_target() != target_before {
-            self.reconcile_client_shell_locations();
+        // drained before the request runs can still change the session's
+        // workspaces (a pane dying), which the client locations, the geometry
+        // controllers and pane focus follow. That is a topology change: the
+        // workspaces present or their order differ from before.
+        let topology_before = self.workspace_order();
+        let mut changed = self.handle_api_request_with_shutdown_check_inner(msg);
+        if self.workspace_order() != topology_before {
+            changed |= self.reconcile_client_shell_locations();
+            self.reapply_controlled_shell_workspace_geometry(false);
         }
         self.sync_pane_focus();
         changed

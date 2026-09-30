@@ -127,7 +127,7 @@ impl ClientShellState {
         if !self.push_endpoint_command_with_kind(
             shepr_protocol::command::EndpointCommand::PaneScroll(
                 shepr_protocol::command::PaneScrollParams {
-                    pane_id: pane_id.to_string(),
+                    pane_id: pane_id.clone(),
                     offset_from_bottom: offset_from_bottom as u64,
                 },
             ),
@@ -156,7 +156,7 @@ impl ClientShellState {
         self.pane_scroll_in_flight.remove(pane_id);
         let repaint = match result {
             Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane })
-                if pane.pane_id == pane_id.as_str() =>
+                if pane.pane_id == *pane_id =>
             {
                 if let Some(scroll) = pane.scroll
                     && self.pane_scroll_targets.contains_key(pane_id)
@@ -635,7 +635,7 @@ impl ClientShellState {
                 .unwrap_or(snapshot.workspaces.len());
             Some(shepr_protocol::command::EndpointCommand::WorkspaceMove(
                 shepr_protocol::command::WorkspaceMoveParams {
-                    workspace_id: source.workspace_id.to_string(),
+                    workspace_id: source.workspace_id.clone(),
                     insert_index,
                 },
             ))
@@ -848,8 +848,7 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                 shepr_protocol::command::LayoutSetSplitRatioParams {
-                                    workspace_id: Some(workspace_id.to_string()),
-                                    pane_id: None,
+                                    workspace_id: workspace_id.clone(),
                                     path: hit
                                         .path
                                         .into_iter()
@@ -954,8 +953,7 @@ impl ClientShellState {
                             self.push_endpoint_command(
                                 shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                     shepr_protocol::command::LayoutSetSplitRatioParams {
-                                        workspace_id: Some(workspace_id.to_string()),
-                                        pane_id: None,
+                                        workspace_id: workspace_id.clone(),
                                         path: hit
                                             .path
                                             .into_iter()
@@ -1301,7 +1299,7 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::PaneFocus(
                                 shepr_protocol::command::PaneTarget {
-                                    pane_id: hit.pane_id.to_string(),
+                                    pane_id: hit.pane_id.clone(),
                                 },
                             ),
                             outcome,
@@ -1537,7 +1535,7 @@ impl ClientShellState {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {
-                                pane_id: pane_id.to_string(),
+                                pane_id: pane_id.clone(),
                             },
                         ),
                         outcome,
@@ -1561,7 +1559,7 @@ impl ClientShellState {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {
-                                pane_id: hit.pane_id.to_string(),
+                                pane_id: hit.pane_id.clone(),
                             },
                         ),
                         outcome,
@@ -1672,7 +1670,7 @@ impl ClientShellState {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {
-                                pane_id: hit.pane_id.to_string(),
+                                pane_id: hit.pane_id.clone(),
                             },
                         ),
                         outcome,
@@ -1723,7 +1721,7 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::PaneFocus(
                                 shepr_protocol::command::PaneTarget {
-                                    pane_id: hit.pane_id.to_string(),
+                                    pane_id: hit.pane_id.clone(),
                                 },
                             ),
                             outcome,

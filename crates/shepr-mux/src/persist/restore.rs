@@ -50,20 +50,16 @@ struct RestoreRuntimeContext<'a> {
 
 /// Everything a restore produces. Restore can drop saved workspaces (invalid
 /// layout, or no pane survived), so saved indices into that list no longer
-/// name the same item; `active` and `selected` are already remapped onto
-/// `workspaces` and must be used as they are, not re-derived from the
-/// snapshot by clamping.
+/// name the same item; `active` is already remapped onto `workspaces` and
+/// must be used as it is, not re-derived from the snapshot by clamping.
 pub struct RestoredSession {
     pub workspaces: Vec<Workspace>,
     pub terminals: HashMap<TerminalId, TerminalState>,
     pub terminal_runtimes: HashMap<TerminalId, PaneRuntime>,
-    /// The saved active workspace as an index into `workspaces`; if it was
-    /// dropped, its nearest surviving neighbour. `None` if nothing was active
-    /// or nothing survived.
+    /// The saved bookmarked workspace as an index into `workspaces`; if it was
+    /// dropped, its nearest surviving neighbour. `None` if nothing was
+    /// bookmarked or nothing survived.
     pub active: Option<usize>,
-    /// The saved selected workspace as an index into `workspaces`, remapped
-    /// the same way; 0 when nothing survived.
-    pub selected: usize,
     /// Saved history of the panes that came back without a runtime. The
     /// session's persister takes it; every later history capture of this
     /// session is resolved against it.
@@ -185,13 +181,11 @@ pub fn restore(
     let active = snapshot
         .active
         .and_then(|active| remap_saved_index(active, &restored_index));
-    let selected = remap_saved_index(snapshot.selected, &restored_index).unwrap_or(0);
     RestoredSession {
         workspaces,
         terminals,
         terminal_runtimes,
         active,
-        selected,
         history_carry,
         dropped_workspaces,
     }
@@ -518,11 +512,12 @@ fn restore_workspace(
             continue;
         }
 
+        // Restore runs before any client has attached, so there is no cell
+        // size to give the shell; the first client geometry pass supplies it.
         let (rows, cols) = restored_pane_size(&runtime_context.geometry, &layout, zoomed, *id);
         let runtime_result = PaneRuntime::spawn_with_initial_history(
             *id,
-            rows,
-            cols,
+            crate::workspace::spawn_geometry(rows, cols, None),
             &saved_pane.cwd,
             runtime_context.scrollback_limit_bytes,
             runtime_context.host_theme,
@@ -1004,7 +999,6 @@ mod tests {
             &runtimes,
             std::path::Path::new("/"),
             Some(0),
-            0,
             Default::default(),
         );
         let panes = &captured.workspaces[0].panes;
@@ -1085,7 +1079,6 @@ mod tests {
                 &runtimes,
                 std::path::Path::new("/"),
                 Some(0),
-                0,
                 Default::default(),
             );
             let pane = captured.workspaces[0]
@@ -1231,7 +1224,7 @@ mod tests {
     }
 
     /// An invalid saved ratio drops only its own workspace: the rest of the
-    /// session restores, the saved active workspace still resolves, and the
+    /// session restores, the saved bookmarked workspace still resolves, and the
     /// drop is counted so the caller backs the saved file up before the first
     /// save.
     #[test]
@@ -1258,7 +1251,6 @@ mod tests {
                 invalid_workspace("w3", "not finite", f32::NAN),
             ],
             active: Some(2),
-            selected: 2,
         };
 
         let restored = restore_runtimeless(&snapshot);
@@ -1268,7 +1260,6 @@ mod tests {
         let workspace = &restored.workspaces[0];
         assert_eq!(workspace.custom_name.as_deref(), Some("healthy"));
         assert_eq!(restored.active, Some(0));
-        assert_eq!(restored.selected, 0);
         assert_eq!(restored.terminals.len(), 1);
     }
 
@@ -1299,7 +1290,6 @@ mod tests {
                 workspace_snapshot(Some("w2"), "healthy", LayoutSnapshot::Pane(3), &[3]),
             ],
             active: Some(1),
-            selected: 1,
         };
 
         let restored = restore_runtimeless(&snapshot);
@@ -1314,19 +1304,18 @@ mod tests {
     }
 
     #[test]
-    fn dropped_workspaces_do_not_shift_the_saved_selection() {
+    fn dropped_workspaces_do_not_shift_the_saved_bookmark() {
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
                 // Nothing survives: the layout names a pane with no saved state.
                 workspace_snapshot(Some("w1"), "dropped", LayoutSnapshot::Pane(1), &[]),
-                workspace_snapshot(Some("w2"), "selected", LayoutSnapshot::Pane(2), &[2]),
+                workspace_snapshot(Some("w2"), "kept", LayoutSnapshot::Pane(2), &[2]),
                 workspace_snapshot(Some("w3"), "gone", LayoutSnapshot::Pane(4), &[]),
                 workspace_snapshot(Some("w4"), "active", LayoutSnapshot::Pane(5), &[5]),
             ],
             active: Some(3),
-            selected: 1,
         };
 
         let restored = restore_runtimeless(&snapshot);
@@ -1336,10 +1325,9 @@ mod tests {
             .iter()
             .map(|ws| ws.custom_name.as_deref())
             .collect();
-        assert_eq!(names, vec![Some("selected"), Some("active")]);
+        assert_eq!(names, vec![Some("kept"), Some("active")]);
         assert_eq!(restored.dropped_workspaces, 2);
         assert_eq!(restored.active, Some(1));
-        assert_eq!(restored.selected, 0);
     }
 
     #[test]
@@ -1352,14 +1340,12 @@ mod tests {
                 workspace_snapshot(Some("w2"), "dropped", LayoutSnapshot::Pane(2), &[]),
             ],
             active: Some(1),
-            selected: 1,
         };
 
         let restored = restore_runtimeless(&snapshot);
 
         assert_eq!(restored.workspaces.len(), 1);
         assert_eq!(restored.active, Some(0));
-        assert_eq!(restored.selected, 0);
     }
 
     #[test]
@@ -1393,7 +1379,6 @@ mod tests {
                 host_theme: Default::default(),
                 workspaces: vec![workspace],
                 active: Some(0),
-                selected: 0,
             };
 
             let restored = restore_runtimeless(&snapshot);
@@ -1430,7 +1415,6 @@ mod tests {
                 workspace(Some("ws_1"), "non-canonical id", 5),
             ],
             active: Some(0),
-            selected: 0,
         };
 
         let restored = restore_runtimeless(&snapshot);
@@ -1673,8 +1657,7 @@ mod tests {
                         "root_pane": 3
                     }
                 ],
-                "active": 0,
-                "selected": 0
+                "active": 0
             }))
             .expect("test precondition");
             let scratch = crate::test_support::ScratchDir::new("restore-cold-cwd");
@@ -1733,7 +1716,6 @@ mod tests {
                 &runtimes,
                 std::path::Path::new("/"),
                 Some(0),
-                0,
                 Default::default(),
             );
             assert_eq!(
@@ -1807,7 +1789,6 @@ mod tests {
                 root_pane: Some(0),
             }],
             active: Some(0),
-            selected: 0,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1888,7 +1869,6 @@ mod tests {
                 root_pane: Some(10),
             }],
             active: Some(0),
-            selected: 0,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -2044,7 +2024,6 @@ mod tests {
                 root_pane: Some(10),
             }],
             active: Some(0),
-            selected: 0,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -2111,7 +2090,6 @@ mod tests {
                 root_pane: Some(0),
             }],
             active: Some(0),
-            selected: 0,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -2183,7 +2161,6 @@ mod tests {
                     ..workspace_snapshot(Some("w1"), "split", LayoutSnapshot::Pane(0), &[])
                 }],
                 active: Some(0),
-                selected: 0,
             };
             let (events, _rx) = mpsc::channel(8);
             let RestoredSession {
@@ -2404,7 +2381,6 @@ mod tests {
                 root_pane: Some(0),
             }],
             active: Some(0),
-            selected: 0,
         };
         history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
         (snapshot, history)

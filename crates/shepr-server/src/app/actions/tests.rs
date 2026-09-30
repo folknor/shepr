@@ -14,8 +14,7 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
     }
     state.ensure_test_terminals();
     if !state.workspaces.is_empty() {
-        state.set_active_index(Some(0));
-        state.mode = Mode::Terminal;
+        state.set_bookmark_index(Some(0));
     }
     state
 }
@@ -25,7 +24,7 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
 fn test_view(state: &mut AppState, area: Rect) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
     state.test_record_all_workspace_areas(area);
     state
-        .active_index()
+        .bookmark_index()
         .and_then(|ws_idx| state.workspaces.get(ws_idx))
         .map_or_default(|workspace| {
             state
@@ -41,40 +40,11 @@ fn test_view(state: &mut AppState, area: Rect) -> Vec<shepr_mux::workspace::Pane
 }
 
 fn toggle_focused_zoom(state: &mut AppState) {
-    let ws_idx = state.active_index().expect("test precondition");
+    let ws_idx = state.bookmark_index().expect("test precondition");
     let pane_id = state.workspaces[ws_idx].focused_pane_id();
     state
-        .apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle)
+        .toggle_pane_zoom(ws_idx, pane_id)
         .expect("test precondition");
-}
-
-#[test]
-fn pane_context_resolver_applies_explicit_and_creation_targets() {
-    let mut state = app_with_workspaces(&["active", "selected"]);
-    let selected_pane = state.workspaces[1].focused_pane_id();
-    state.set_active_index(Some(0));
-    state.set_selected_index(Some(1));
-    state.mode = Mode::Navigate;
-
-    let explicit = state
-        .resolve_pane_context(
-            Some((1, selected_pane)),
-            None,
-            PaneContextFallback::ActiveWorkspace,
-        )
-        .expect("explicit pane target");
-    assert_eq!(explicit.workspace_index, 1);
-    assert_eq!(explicit.pane_id, selected_pane);
-
-    let creation = state
-        .resolve_pane_context(None, None, PaneContextFallback::WorkspaceCreation)
-        .expect("selected workspace fallback");
-    assert_eq!(creation.workspace_index, 1);
-
-    let active = state
-        .resolve_pane_context(None, None, PaneContextFallback::ActiveWorkspace)
-        .expect("active workspace fallback");
-    assert_eq!(active.workspace_index, 0);
 }
 
 #[test]
@@ -116,25 +86,16 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
         terminal_id.clone(),
         std::path::PathBuf::from("/shepr-test/cwd"),
     );
-    let previous_focus = state.current_pane_focus_target();
 
     let outcome = state
-        .commit_pane_split(
-            0,
-            new_pane,
-            prepared_layout,
-            terminal,
-            true,
-            true,
-            previous_focus,
-        )
+        .commit_pane_split(0, new_pane, prepared_layout, terminal)
         .expect("prepared pane split commits");
 
     assert_eq!(outcome.pane_id, new_pane);
     assert_eq!(outcome.terminal_id, terminal_id);
     assert_eq!(state.workspaces[0].pane_count(), 2);
     assert!(
-        state.workspaces[0]
+        !state.workspaces[0]
             .pane_state(new_pane)
             .expect("committed pane is present")
             .right_click_passthrough
@@ -158,11 +119,13 @@ fn workspace_creation_state_command_commits_spawned_values() {
         std::path::PathBuf::from("/shepr-test/cwd"),
     );
 
-    let outcome = state.commit_workspace_creation(workspace, terminal, true);
+    let outcome = state.commit_workspace_creation(workspace, terminal);
 
     assert_eq!(outcome.workspace_index, 0);
     assert_eq!(outcome.root_pane, root_pane);
-    assert_eq!(state.active_index(), Some(0));
+    // Creation moves nobody: navigation is per client, and the bookmark follows
+    // only an active client's navigation.
+    assert_eq!(state.bookmark_index(), None);
     assert!(state.terminals.contains_key(&terminal_id));
     state.assert_invariants_for_test();
 }
@@ -312,27 +275,34 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
 }
 
 #[test]
-fn switch_workspace_updates_active_and_selected() {
+fn set_bookmark_moves_it_and_saves_only_when_it_moved() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
-    state.switch_workspace(2);
-    assert_eq!(state.active_index(), Some(2));
-    assert_eq!(state.selected_index().unwrap_or(0), 2);
+    state.session_dirty = false;
+    let third = state.workspaces[2].id.clone();
+
+    assert!(state.set_bookmark(&third));
+    assert_eq!(state.bookmark_index(), Some(2));
+    assert!(state.session_dirty);
+
+    state.session_dirty = false;
+    assert!(!state.set_bookmark(&third), "already bookmarked");
+    assert!(!state.session_dirty);
 }
 
 #[test]
-fn switch_workspace_out_of_bounds_is_noop() {
+fn set_bookmark_of_a_workspace_that_is_gone_is_a_noop() {
     let mut state = app_with_workspaces(&["a"]);
-    state.switch_workspace(5);
-    assert_eq!(state.active_index(), Some(0));
+    let gone = shepr_protocol::WorkspaceId::from_number(9_999).expect("nonzero number");
+
+    assert!(!state.set_bookmark(&gone));
+    assert_eq!(state.bookmark_index(), Some(0));
 }
 
 #[test]
-fn move_workspace_reorders_without_changing_logical_selection() {
+fn move_workspace_reorders_and_the_bookmark_follows_its_workspace() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
-    let active_id = state.workspaces[1].id.to_string();
-    let selected_id = state.workspaces[2].id.to_string();
-    state.set_active_index(Some(1));
-    state.set_selected_index(Some(2));
+    let bookmarked_id = state.workspaces[1].id.clone();
+    state.set_bookmark_index(Some(1));
 
     state.move_workspace(1, 0);
 
@@ -342,35 +312,24 @@ fn move_workspace_reorders_without_changing_logical_selection() {
         .map(shepr_mux::workspace::Workspace::display_name)
         .collect();
     assert_eq!(names, vec!["b", "a", "c"]);
-    assert_eq!(state.active_index(), Some(0));
-    assert_eq!(state.selected_index().unwrap_or(0), 2);
-    assert_eq!(
-        state.workspaces[state.active_index().expect("test precondition")].id,
-        active_id
-    );
-    assert_eq!(
-        state.workspaces[state.selected_index().unwrap_or(0)].id,
-        selected_id
-    );
+    assert_eq!(state.bookmark_index(), Some(0));
+    assert_eq!(state.bookmark.as_ref(), Some(&bookmarked_id));
+    state.assert_invariants_for_test();
 }
 
 #[test]
-fn active_and_selected_ids_survive_reorder_and_removal() {
+fn the_bookmark_survives_reorder_and_removal_of_other_workspaces() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
-    assert!(state.switch_workspace(1));
-    state.set_selected_index(Some(2));
-    let active_id = state.active.clone();
-    let selected_id = state.selected.clone();
+    state.set_bookmark_index(Some(1));
+    let bookmarked_id = state.bookmark.clone();
 
     assert!(state.move_workspace(1, 0));
-    assert_eq!(state.active, active_id);
-    assert_eq!(state.selected, selected_id);
-    assert_eq!(state.active_index(), Some(0));
-    assert_eq!(state.selected_index(), Some(2));
+    assert_eq!(state.bookmark, bookmarked_id);
+    assert_eq!(state.bookmark_index(), Some(0));
 
     state.close_workspace_at(1).expect("background workspace");
-    assert_eq!(state.active, active_id);
-    assert_eq!(state.selected, selected_id);
+    assert_eq!(state.bookmark, bookmarked_id);
+    assert_eq!(state.bookmark_index(), Some(0));
     state.assert_invariants_for_test();
 }
 
@@ -389,56 +348,51 @@ fn move_workspace_accepts_insert_at_end() {
 }
 
 #[test]
-fn close_workspace_adjusts_indices() {
+fn closing_the_bookmarked_workspace_moves_the_bookmark_to_the_one_now_at_its_index() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
-    state.set_selected_index(Some(1));
-    state.set_active_index(Some(1));
+    state.set_bookmark_index(Some(1));
+    state.session_dirty = false;
 
-    state.close_selected_workspace();
+    state.close_workspace_at(1);
 
     assert_eq!(state.workspaces.len(), 2);
-    assert_eq!(state.selected_index().unwrap_or(0), 1);
-    assert_eq!(state.active_index(), Some(1));
+    assert_eq!(state.bookmark_index(), Some(1));
     assert_eq!(state.workspaces[1].custom_name.as_deref(), Some("c"));
+    assert!(state.session_dirty);
 }
 
 #[test]
-fn close_last_workspace_clears_active() {
+fn closing_the_last_workspace_clears_the_bookmark() {
     let mut state = app_with_workspaces(&["only"]);
-    state.set_selected_index(Some(0));
-    state.close_selected_workspace();
+    state.close_workspace_at(0);
 
     assert!(state.workspaces.is_empty());
-    assert_eq!(state.active_index(), None);
-    assert_eq!(state.selected_index().unwrap_or(0), 0);
+    assert_eq!(state.bookmark_index(), None);
+    assert_eq!(state.bookmark, None);
 }
 
 #[test]
-fn close_workspace_at_end_adjusts_selected() {
+fn closing_the_bookmarked_workspace_at_the_end_clamps_the_bookmark() {
     let mut state = app_with_workspaces(&["a", "b"]);
-    state.set_selected_index(Some(1));
-    state.set_active_index(Some(1));
+    state.set_bookmark_index(Some(1));
 
-    state.close_selected_workspace();
+    state.close_workspace_at(1);
 
     assert_eq!(state.workspaces.len(), 1);
-    assert_eq!(state.selected_index().unwrap_or(0), 0);
-    assert_eq!(state.active_index(), Some(0));
+    assert_eq!(state.bookmark_index(), Some(0));
 }
 
 #[test]
-fn close_non_focused_workspace_keeps_focus() {
+fn closing_another_workspace_keeps_the_bookmark() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
-    state.set_selected_index(Some(1));
-    state.set_active_index(Some(0));
+    state.set_bookmark_index(Some(0));
 
-    state.close_selected_workspace();
+    state.close_workspace_at(1);
 
     assert_eq!(state.workspaces.len(), 2);
     assert_eq!(state.workspaces[0].display_name(), "a");
     assert_eq!(state.workspaces[1].display_name(), "c");
-    assert_eq!(state.selected_index().unwrap_or(0), 0);
-    assert_eq!(state.active_index(), Some(0));
+    assert_eq!(state.bookmark_index(), Some(0));
     state.assert_invariants_for_test();
 }
 
@@ -461,8 +415,7 @@ fn pane_died_last_pane_removes_workspace() {
 #[test]
 fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
     let mut state = app_with_workspaces(&["a", "dying", "c"]);
-    state.set_active_index(Some(2));
-    state.set_selected_index(Some(0));
+    state.set_bookmark_index(Some(2));
     let pane_id = state.workspaces[1].root_pane();
     let terminal_id = state
         .terminal_id_for_pane(1, pane_id)
@@ -473,12 +426,8 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
 
     assert_eq!(state.workspaces.len(), 2);
     assert_eq!(
-        state.workspaces[state.active_index().expect("active")].display_name(),
+        state.workspaces[state.bookmark_index().expect("active")].display_name(),
         "c"
-    );
-    assert_eq!(
-        state.workspaces[state.selected_index().unwrap_or(0)].display_name(),
-        "a"
     );
     assert!(!state.terminals.contains_key(&terminal_id));
     assert_eq!(detached, std::slice::from_ref(&terminal_id));
@@ -487,9 +436,8 @@ fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
 }
 
 #[test]
-fn pane_died_last_workspace_enters_navigate() {
+fn pane_died_last_workspace_clears_the_bookmark() {
     let mut state = app_with_workspaces(&["only"]);
-    state.mode = Mode::Terminal;
     let pane_id = *state.workspaces[0]
         .panes()
         .keys()
@@ -499,7 +447,7 @@ fn pane_died_last_workspace_enters_navigate() {
     let _detached = state.handle_pane_died(pane_id);
 
     assert!(state.workspaces.is_empty());
-    assert_eq!(state.mode, Mode::Navigate);
+    assert_eq!(state.bookmark, None);
     state.assert_invariants_for_test();
 }
 
@@ -586,7 +534,7 @@ fn state_changed_events_advance_the_agent_state_change_sequence() {
 #[test]
 fn visible_blocker_overrides_hook_working() {
     let mut state = app_with_workspaces(&["active", "background"]);
-    state.set_active_index(Some(0));
+    state.set_bookmark_index(Some(0));
     let bg_pane_id = *state.workspaces[1]
         .panes()
         .keys()
@@ -636,7 +584,7 @@ fn visible_blocker_overrides_hook_working() {
 #[test]
 fn reserved_native_state_report_does_not_override_screen_state() {
     let mut state = app_with_workspaces(&["active"]);
-    state.set_active_index(Some(0));
+    state.set_bookmark_index(Some(0));
     let pane_id = *state.workspaces[0]
         .panes()
         .keys()
@@ -848,11 +796,11 @@ fn toggle_zoom_single_pane_noop() {
     state.session_dirty = false;
 
     let outcome = state
-        .apply_pane_zoom(0, pane_id, PaneZoomCommand::Toggle)
+        .toggle_pane_zoom(0, pane_id)
         .expect("a lone pane is a valid target");
     assert!(!outcome.changed);
     let outcome = state
-        .apply_pane_zoom(0, pane_id, PaneZoomCommand::On)
+        .toggle_pane_zoom(0, pane_id)
         .expect("a lone pane is a valid target");
     assert!(!outcome.changed);
 
@@ -872,7 +820,7 @@ fn navigate_pane_changes_focus_while_zoomed() {
     assert_eq!(view.len(), 1);
     assert_eq!(view[0].id, root);
 
-    state.navigate_pane(NavDirection::Right);
+    state.navigate_pane(0, NavDirection::Right);
     let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert!(state.workspaces[0].zoomed());
@@ -898,7 +846,7 @@ fn swap_pane_direction_preserves_focus_and_swaps_layout_cells() {
     let before_root_rect = rect_of(&view, root);
     let before_right_rect = rect_of(&view, right);
 
-    assert!(state.swap_pane(NavDirection::Right));
+    assert!(state.swap_pane(0, NavDirection::Right));
     let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert_eq!(state.workspaces[0].focused_pane_id(), root);
@@ -915,7 +863,7 @@ fn swap_pane_direction_stays_zoomed_and_mutates_hidden_layout() {
     state.workspaces[0].set_zoomed(true);
     test_view(&mut state, Rect::new(0, 0, 100, 20));
 
-    assert!(state.swap_pane(NavDirection::Right));
+    assert!(state.swap_pane(0, NavDirection::Right));
     let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
 
     assert!(state.workspaces[0].zoomed());
@@ -956,7 +904,7 @@ fn close_pane_removes_from_workspace() {
 #[test]
 fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
     let mut state = app_with_workspaces(&["active", "background"]);
-    state.set_active_index(Some(1));
+    state.set_bookmark_index(Some(1));
     state.ensure_test_terminals();
     let pane_id = state.workspaces[0].root_pane();
     let terminal_id = state
@@ -1010,34 +958,16 @@ fn close_pane_removes_unattached_terminal_state() {
 }
 
 #[test]
-fn closing_the_last_workspace_leaves_terminal_mode() {
-    let mut state = app_with_workspaces(&["only"]);
-    assert_eq!(state.mode, Mode::Terminal);
-
-    state.close_workspace_at(0);
-
-    assert!(state.workspaces.is_empty());
-    assert_eq!(state.mode, Mode::Navigate);
-    state.assert_invariants_for_test();
-}
-
-#[test]
-fn close_workspace_at_keeps_the_sidebar_selection_and_focus() {
+fn close_workspace_at_keeps_the_bookmarked_workspace() {
     let mut state = app_with_workspaces(&["a", "b", "c", "d"]);
-    let active_id = state.workspaces[3].id.to_string();
-    let selected_id = state.workspaces[2].id.to_string();
-    state.set_active_index(Some(3));
-    state.set_selected_index(Some(2));
+    let bookmarked_id = state.workspaces[3].id.clone();
+    state.set_bookmark_index(Some(3));
 
     state.close_workspace_at(0);
 
     assert_eq!(
-        state.workspaces[state.active_index().expect("active")].id,
-        active_id
-    );
-    assert_eq!(
-        state.workspaces[state.selected_index().unwrap_or(0)].id,
-        selected_id
+        state.workspaces[state.bookmark_index().expect("bookmarked")].id,
+        bookmarked_id
     );
     state.assert_invariants_for_test();
 }
@@ -1061,20 +991,19 @@ fn close_workspace_removes_unattached_terminal_states() {
         .terminal_id_for_pane(0, pane_id)
         .expect("test precondition");
     let _ = pane_id;
-    state.close_selected_workspace();
+    state.close_workspace_at(0);
 
     assert!(!state.terminals.contains_key(&terminal_id));
     state.assert_invariants_for_test();
 }
 
 #[test]
-fn close_pane_last_pane_closes_active_workspace_not_selected_workspace() {
-    let mut state = app_with_workspaces(&["selected", "active"]);
+fn close_pane_last_pane_closes_the_panes_own_workspace_not_the_bookmarked_one() {
+    let mut state = app_with_workspaces(&["other", "closing"]);
     let active_terminal_id = state
         .terminal_id_for_pane(1, state.workspaces[1].root_pane())
         .expect("test precondition");
-    state.set_active_index(Some(1));
-    state.set_selected_index(Some(0));
+    state.set_bookmark_index(Some(0));
 
     let pane_id = state.workspaces[1].root_pane();
     assert!(matches!(
@@ -1083,7 +1012,7 @@ fn close_pane_last_pane_closes_active_workspace_not_selected_workspace() {
     ));
 
     assert_eq!(state.workspaces.len(), 1);
-    assert_eq!(state.workspaces[0].display_name(), "selected");
+    assert_eq!(state.workspaces[0].display_name(), "other");
     assert!(!state.terminals.contains_key(&active_terminal_id));
     state.assert_invariants_for_test();
 }

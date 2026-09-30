@@ -113,7 +113,7 @@ pub enum ServerMessage {
     /// The one response to a `ClientShellEndpointRequest`. A large result (a
     /// selection copy of a long scrollback) crosses in as many frames as it
     /// needs; only one past `MAX_MESSAGE_SIZE` is answered with an
-    /// `endpoint_response_too_large` error instead.
+    /// `EndpointError::ResponseTooLarge` instead.
     ClientShellEndpointResponse {
         boot_id: BootId,
         request_id: RequestId,

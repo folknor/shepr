@@ -1,40 +1,37 @@
 use super::*;
 use crate::limits::{MAX_QUERY_BYTES, MAX_RETURNED_MATCHES};
+use shepr_protocol::command::EndpointError;
 
 impl App {
-    pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> EndpointResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
-        };
+    pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> HandlerResult {
+        let (ws_idx, pane_id) = self.endpoint_pane(&target.pane_id)?;
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_not_found(Some(&target.pane_id)));
+            return Err(pane_missing(&target.pane_id));
         };
         match runtime.clear_screen() {
-            Ok(()) => Ok(EndpointReply::Done),
-            Err(err) => failure(ApiErrorCode::PaneClearFailed, err),
+            Ok(()) => Handled::done(),
+            Err(err) => rejected(format!("the pane could not be cleared: {err}")),
         }
     }
 
-    pub(crate) fn handle_pane_scroll(&mut self, params: &PaneScrollParams) -> EndpointResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
+    pub(crate) fn handle_pane_scroll(&mut self, params: &PaneScrollParams) -> HandlerResult {
+        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_missing(&params.pane_id));
         };
         runtime.set_scroll_offset_from_bottom(
             usize::try_from(params.offset_from_bottom).unwrap_or(usize::MAX),
         );
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_missing(&params.pane_id));
         };
-        Ok(EndpointReply::PaneInfo {
+        Handled::reply(EndpointReply::PaneInfo {
             pane: Box::new(pane),
         })
     }
@@ -42,15 +39,13 @@ impl App {
     pub(crate) fn pane_selection_text(
         &self,
         params: &PaneSelectionReadParams,
-    ) -> Result<String, ApiError> {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
+    ) -> Result<String, EndpointError> {
+        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_missing(&params.pane_id));
         };
         let selection = shepr_vt::selection::Selection::range(
             pane_id,
@@ -58,10 +53,7 @@ impl App {
             shepr_vt::Point::new(params.cursor.row, params.cursor.col),
         );
         let Some(text) = runtime.extract_selection(&selection) else {
-            return Err(ApiError::new(
-                ApiErrorCode::SelectionUnavailable,
-                "selection text is unavailable",
-            ));
+            return rejected("selection text is unavailable");
         };
         Ok(text)
     }
@@ -69,9 +61,9 @@ impl App {
     pub(crate) fn handle_pane_selection_read(
         &mut self,
         params: PaneSelectionReadParams,
-    ) -> EndpointResult {
+    ) -> HandlerResult {
         let text = self.pane_selection_text(&params)?;
-        Ok(EndpointReply::PaneSelection {
+        Handled::reply(EndpointReply::PaneSelection {
             pane_id: params.pane_id,
             text,
         })
@@ -80,18 +72,16 @@ impl App {
     pub(crate) fn handle_pane_copy_motion(
         &mut self,
         params: PaneCopyMotionParams,
-    ) -> EndpointResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
+    ) -> HandlerResult {
+        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_missing(&params.pane_id));
         };
         let target = match params.motion {
-            PaneCopyMotion::LineEnd | PaneCopyMotion::FirstNonBlank => {
+            PaneCopyMotion::Line(motion) => {
                 let width = runtime
                     .terminal_dimensions()
                     .map_or(1, |(cols, _)| cols.max(1));
@@ -101,47 +91,37 @@ impl App {
                     shepr_vt::Point::new(params.cursor.row, width.saturating_sub(1)),
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
-                    return failure(
-                        shepr_api::error::ApiErrorCode::CopyMotionUnavailable,
-                        "terminal row is unavailable",
-                    );
+                    return rejected("terminal row is unavailable");
                 };
-                let col = if params.motion == PaneCopyMotion::LineEnd {
-                    shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
-                } else {
-                    shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
+                let col = match motion {
+                    PaneLineMotion::End => {
+                        shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
+                    }
+                    PaneLineMotion::FirstNonBlank => {
+                        shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
+                    }
                 };
                 shepr_mux::pane::TerminalTextPoint {
                     row: params.cursor.row,
                     col: col.min(width.saturating_sub(1)),
                 }
             }
-            PaneCopyMotion::NextWordStart
-            | PaneCopyMotion::PreviousWordStart
-            | PaneCopyMotion::NextWordEnd
-            | PaneCopyMotion::NextBigWordStart
-            | PaneCopyMotion::PreviousBigWordStart
-            | PaneCopyMotion::NextBigWordEnd => {
-                let Some(motion) = terminal_word_motion(params.motion) else {
-                    return failure(
-                        shepr_api::error::ApiErrorCode::CopyMotionUnavailable,
-                        "copy motion is not a word motion",
-                    );
-                };
-                runtime
-                    .word_motion_target(params.cursor.row, params.cursor.col, motion)
-                    .unwrap_or(shepr_mux::pane::TerminalTextPoint {
-                        row: params.cursor.row,
-                        col: params.cursor.col,
-                    })
-            }
-            PaneCopyMotion::PreviousParagraph | PaneCopyMotion::NextParagraph => runtime
+            PaneCopyMotion::Word(motion) => runtime
+                .word_motion_target(
+                    params.cursor.row,
+                    params.cursor.col,
+                    terminal_word_motion(motion),
+                )
+                .unwrap_or(shepr_mux::pane::TerminalTextPoint {
+                    row: params.cursor.row,
+                    col: params.cursor.col,
+                }),
+            PaneCopyMotion::Paragraph(motion) => runtime
                 .paragraph_motion_target(
                     params.cursor.row,
-                    if params.motion == PaneCopyMotion::PreviousParagraph {
-                        -1
-                    } else {
-                        1
+                    match motion {
+                        PaneParagraphMotion::Previous => -1,
+                        PaneParagraphMotion::Next => 1,
                     },
                 )
                 .map_or(
@@ -155,7 +135,7 @@ impl App {
                     },
                 ),
         };
-        Ok(EndpointReply::PaneCopyMotion {
+        Handled::reply(EndpointReply::PaneCopyMotion {
             pane_id: params.pane_id,
             cursor: PaneTextPoint {
                 row: target.row,
@@ -167,21 +147,16 @@ impl App {
     pub(crate) fn handle_pane_copy_search(
         &mut self,
         params: PaneCopySearchParams,
-    ) -> EndpointResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(Some(&params.pane_id)));
-        };
+    ) -> HandlerResult {
+        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(runtime) =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
         else {
-            return Err(pane_not_found(Some(&params.pane_id)));
+            return Err(pane_missing(&params.pane_id));
         };
         if params.query.len() > MAX_QUERY_BYTES {
-            return failure(
-                shepr_api::error::ApiErrorCode::QueryTooLarge,
-                "copy search query is too large",
-            );
+            return rejected("copy search query is too large");
         }
         let cursor = shepr_mux::pane::TerminalTextPoint {
             row: params.cursor.row,
@@ -225,7 +200,7 @@ impl App {
                 },
             })
             .collect();
-        Ok(EndpointReply::PaneCopySearch {
+        Handled::reply(EndpointReply::PaneCopySearch {
             pane_id: params.pane_id,
             matches,
             total: u64::try_from(result.total).unwrap_or(u64::MAX),

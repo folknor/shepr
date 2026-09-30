@@ -1,156 +1,97 @@
 use super::*;
 
 impl App {
+    /// Focuses the neighbour of the pane in the given direction and moves the
+    /// requester onto its workspace. A neighbour that already holds focus
+    /// still counts as found; at an edge nothing changes and nobody moves.
     pub(crate) fn handle_pane_focus_direction(
         &mut self,
         params: &PaneFocusDirectionParams,
-    ) -> EndpointResult {
+    ) -> HandlerResult {
         // Direction and edges use the tiled layout even when this workspace is
         // zoomed, matching TUI navigation.
-        let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
-        else {
-            return Err(pane_not_found(params.pane_id.as_deref()));
-        };
-        if self.public_pane_id(ws_idx, source_pane_id).is_none() {
-            return Err(pane_not_found(params.pane_id.as_deref()));
-        }
-        // No neighbour in that direction is a successful no-op.
-        if let Some(target_pane_id) =
+        let (ws_idx, source_pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(target_pane_id) =
             self.directional_pane_target(ws_idx, source_pane_id, params.direction)
-        {
-            self.state.focus_pane_in_workspace(ws_idx, target_pane_id);
-            self.state.switch_workspace(ws_idx);
-            self.state.mode = crate::app::Mode::Terminal;
-        }
-        Ok(EndpointReply::Done)
+        else {
+            return Handled::done();
+        };
+        self.state.focus_pane_in_workspace(ws_idx, target_pane_id);
+        Handled::navigating(EndpointReply::Done, params.pane_id.workspace_id().clone())
     }
 
-    pub(crate) fn handle_pane_resize(&mut self, params: &PaneResizeParams) -> EndpointResult {
+    pub(crate) fn handle_pane_resize(&mut self, params: &PaneResizeParams) -> HandlerResult {
         // Direction and edges use the tiled layout even when this workspace is
         // zoomed, matching TUI navigation.
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return Err(pane_not_found(params.pane_id.as_deref()));
-        };
-        if self.public_pane_id(ws_idx, pane_id).is_none() {
-            return Err(pane_not_found(params.pane_id.as_deref()));
-        }
-
-        let amount = params
-            .amount
-            .filter(|amount| amount.is_finite())
-            .unwrap_or(crate::limits::DEFAULT_PANE_RESIZE_AMOUNT)
-            .abs()
-            .min(crate::limits::MAX_PANE_RESIZE_AMOUNT);
+        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let direction: NavDirection = super::nav_direction(params.direction);
         let area = shepr_mux::workspace::layout_rect(self.state.workspace_layout_area(ws_idx));
         // A resize that moves no split edge is a successful no-op.
-        let changed = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .is_some_and(|ws| ws.resize_pane(pane_id, direction, amount, area));
+        let changed = self.state.workspaces.get_mut(ws_idx).is_some_and(|ws| {
+            ws.resize_pane(
+                pane_id,
+                direction,
+                crate::limits::DEFAULT_PANE_RESIZE_AMOUNT,
+                area,
+            )
+        });
         if changed {
             self.schedule_session_save();
         }
-        Ok(EndpointReply::Done)
+        Handled::done()
     }
 
-    /// Swaps two panes of one workspace, named by a direction from `pane_id` (the
-    /// focused pane when absent) or by an explicit source and target. A swap
-    /// with nothing to swap (no neighbour, an unknown pane, the same pane
-    /// twice, or panes in different workspaces) is a successful no-op.
-    pub(crate) fn handle_pane_swap(&mut self, params: &PaneSwapParams) -> EndpointResult {
-        let directional = params.direction.is_some();
-        let explicit = params.source_pane_id.is_some() || params.target_pane_id.is_some();
-        if directional == explicit {
-            return failure(
-                ApiErrorCode::InvalidPaneSwap,
-                "provide either direction with optional pane_id, or source_pane_id and target_pane_id",
-            );
-        }
-
-        let swap = if let Some(direction) = params.direction {
-            let Some((ws_idx, source_pane_id)) =
-                self.resolve_swap_source(params.pane_id.as_deref())
-            else {
-                return Err(pane_not_found(params.pane_id.as_deref()));
-            };
-            if !self
-                .state
-                .workspaces
-                .get(ws_idx)
-                .is_some_and(|workspace| workspace.contains_pane(source_pane_id))
-            {
-                return Err(pane_not_found(
-                    self.public_pane_id(ws_idx, source_pane_id)
-                        .as_deref()
-                        .or(params.pane_id.as_deref()),
-                ));
+    /// Swaps two panes of one workspace, named by a direction from a pane or by
+    /// an explicit source and target. The requester follows the swap to its
+    /// workspace only when the layout changed. An unknown pane named by a
+    /// direction is refused; a swap with nothing to swap (no neighbour, stale
+    /// or identical ids, panes of different workspaces) is a successful no-op.
+    pub(crate) fn handle_pane_swap(&mut self, params: &PaneSwapParams) -> HandlerResult {
+        let swap = match params {
+            PaneSwapParams::Direction { pane_id, direction } => {
+                let (ws_idx, source_pane_id) = self.endpoint_pane(pane_id)?;
+                self.directional_pane_target(ws_idx, source_pane_id, *direction)
+                    .map(|target_pane_id| (ws_idx, source_pane_id, target_pane_id))
             }
-            self.directional_pane_target(ws_idx, source_pane_id, direction)
-                .map(|target_pane_id| (ws_idx, source_pane_id, target_pane_id))
-        } else {
-            let Some(source_raw) = params.source_pane_id.as_deref() else {
-                return failure(ApiErrorCode::InvalidPaneSwap, "missing source_pane_id");
-            };
-            let Some(target_raw) = params.target_pane_id.as_deref() else {
-                return failure(ApiErrorCode::InvalidPaneSwap, "missing target_pane_id");
-            };
-            let source = self.parse_pane_id(source_raw);
-            let target = self.parse_pane_id(target_raw);
-            if source.is_none() && target.is_none() && self.state.active_index().is_none() {
-                return failure(
-                    ApiErrorCode::PaneLayoutUnavailable,
-                    "pane layout unavailable",
-                );
-            }
-            match (source, target) {
-                (Some((source_ws, source)), Some((target_ws, target)))
-                    if source != target && source_ws == target_ws =>
-                {
-                    Some((source_ws, source, target))
+            PaneSwapParams::Panes { source, target } => {
+                match (self.resolve_pane_id(source), self.resolve_pane_id(target)) {
+                    (Some((source_ws, source)), Some((target_ws, target)))
+                        if source != target && source_ws == target_ws =>
+                    {
+                        Some((source_ws, source, target))
+                    }
+                    _ => None,
                 }
-                _ => None,
             }
         };
 
-        if let Some((ws_idx, source_pane_id, target_pane_id)) = swap {
-            let previous_focus = self.state.current_pane_focus_target();
-            if let Some(workspace) = self.state.workspaces.get_mut(ws_idx) {
-                let changed = workspace.swap_panes(source_pane_id, target_pane_id);
-                workspace.focus_pane(source_pane_id);
-                if changed {
-                    self.state.switch_workspace(ws_idx);
-                    self.state
-                        .record_pane_focus_change(previous_focus, ws_idx, source_pane_id);
-                    self.state.mark_session_dirty();
-                    self.schedule_session_save();
-                }
-            }
+        let Some((ws_idx, source_pane_id, target_pane_id)) = swap else {
+            return Handled::done();
+        };
+        let Some(workspace) = self.state.workspaces.get_mut(ws_idx) else {
+            return Handled::done();
+        };
+        if !workspace.swap_panes(source_pane_id, target_pane_id) {
+            return Handled::done();
         }
-        Ok(EndpointReply::Done)
+        workspace.focus_pane(source_pane_id);
+        let workspace_id = workspace.id.clone();
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        Handled::navigating(EndpointReply::Done, workspace_id)
     }
 
-    pub(crate) fn handle_pane_zoom(&mut self, params: &PaneZoomParams) -> EndpointResult {
-        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return Err(pane_not_found(params.pane_id.as_deref()));
-        };
-        let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return Err(pane_not_found(params.pane_id.as_deref()));
-        };
-        let command = match params.mode {
-            PaneZoomMode::Toggle => PaneZoomCommand::Toggle,
-            PaneZoomMode::On => PaneZoomCommand::On,
-            PaneZoomMode::Off => PaneZoomCommand::Off,
-        };
-        // A zoom that is already in the asked state is a successful no-op.
-        let Some(outcome) = self.state.apply_pane_zoom(ws_idx, pane_id, command) else {
-            return Err(pane_not_found(Some(&pane_public_id)));
+    /// Toggles the zoom of the pane's workspace, focusing the pane first, and
+    /// moves the requester onto that workspace even when the toggle changes
+    /// nothing (a workspace of one pane has nothing to zoom over).
+    pub(crate) fn handle_pane_zoom(&mut self, params: &PaneZoomParams) -> HandlerResult {
+        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(outcome) = self.state.toggle_pane_zoom(ws_idx, pane_id) else {
+            return Err(pane_missing(&params.pane_id));
         };
         if outcome.changed || outcome.focus_changed {
             self.schedule_session_save();
         }
-        self.state.mode = crate::app::Mode::Terminal;
-        Ok(EndpointReply::Done)
+        Handled::navigating(EndpointReply::Done, params.pane_id.workspace_id().clone())
     }
 }

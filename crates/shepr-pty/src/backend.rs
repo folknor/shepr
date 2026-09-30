@@ -30,9 +30,17 @@ pub struct SpawnedPty {
     pub child: Child,
 }
 
-/// Open a PTY pair with the given grid size (pixel size starts at zero; the
-/// actor reports pixel geometry on resize).
+/// Open a PTY pair with the given grid size and no pixel size.
 pub fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
+    open_pty_with_geometry(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0))
+}
+
+/// Open a PTY pair whose first `TIOCSWINSZ` carries `geometry`, pixel
+/// dimensions included, so a child that reads its window size once at startup
+/// sees the pixel size it will keep.
+pub fn open_pty_with_geometry(
+    geometry: shepr_core::geometry::PaneGeometry,
+) -> io::Result<OpenedPty> {
     // Linux accepts O_CLOEXEC while opening /dev/ptmx, closing the race with
     // unrelated concurrent process spawns before either PTY fd is wrapped.
     const PTMX: &[u8] = b"/dev/ptmx\0";
@@ -80,10 +88,7 @@ pub fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
     // SAFETY: the ioctl succeeded, so `slave` is a fresh fd nothing else owns.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
 
-    fd::resize_pty_fd(
-        master.as_raw_fd(),
-        shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0),
-    )?;
+    fd::resize_pty_fd(master.as_raw_fd(), geometry)?;
     enable_utf8_input(&master);
     Ok(OpenedPty { master, slave })
 }
@@ -134,10 +139,13 @@ pub fn spawn_in_pty(slave: &OwnedFd, cmd: &PtyCommand) -> io::Result<Child> {
     Ok(child)
 }
 
-/// Open a PTY, spawn `cmd` into it, and return the child with the master fd.
-/// The parent's slave fd is closed before returning.
-pub fn spawn_pty(rows: u16, cols: u16, cmd: &PtyCommand) -> io::Result<SpawnedPty> {
-    let OpenedPty { master, slave } = open_pty(rows, cols)?;
+/// Open a PTY sized `geometry`, spawn `cmd` into it, and return the child with
+/// the master fd. The parent's slave fd is closed before returning.
+pub fn spawn_pty(
+    geometry: shepr_core::geometry::PaneGeometry,
+    cmd: &PtyCommand,
+) -> io::Result<SpawnedPty> {
+    let OpenedPty { master, slave } = open_pty_with_geometry(geometry)?;
     let child = spawn_in_pty(&slave, cmd)?;
     drop(slave);
     Ok(SpawnedPty {
@@ -352,6 +360,10 @@ mod tests {
         cmd
     }
 
+    fn test_geometry() -> shepr_core::geometry::PaneGeometry {
+        shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0)
+    }
+
     fn pty_fd_test_lock() -> &'static Mutex<()> {
         // PTY allocation changes /proc/self/fd, so every test that opens a
         // PTY uses this guard while process-wide fd counts are asserted.
@@ -387,7 +399,7 @@ mod tests {
             shepr_core::env::SHEPR_ENV_IN_PANE,
         );
 
-        let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
+        let mut spawned = spawn_pty(test_geometry(), &cmd).expect("pty setup succeeds");
         let after_spawn = parent_pty_fd_count();
 
         assert_eq!(
@@ -406,7 +418,7 @@ mod tests {
     fn child_is_session_leader_with_pty_as_controlling_terminal() {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
-        let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
+        let mut spawned = spawn_pty(test_geometry(), &cmd).expect("pty setup succeeds");
         let pid = libc::pid_t::try_from(spawned.child.id()).expect("pid fits pid_t");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -431,7 +443,7 @@ mod tests {
     fn child_output_reaches_master_and_exit_status_is_reported() {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Print("shepr-pty-ok".into()), Step::Exit(7)]);
-        let mut spawned = spawn_pty(24, 80, &cmd).expect("pty setup succeeds");
+        let mut spawned = spawn_pty(test_geometry(), &cmd).expect("pty setup succeeds");
         let status = spawned.child.wait().expect("wait for child");
         assert_eq!(status.code(), Some(7));
 
@@ -450,6 +462,31 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&output).contains("shepr-pty-ok"),
             "unexpected pty output: {output:?}"
+        );
+    }
+    #[test]
+    fn first_window_size_carries_the_pixel_dimensions() {
+        let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
+        let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
+        let mut spawned = spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(100, 30, 9, 18),
+            &cmd,
+        )
+        .expect("pty setup succeeds");
+
+        // SAFETY: zero is a valid initial byte representation for winsize, and
+        // TIOCGWINSZ writes one winsize to this live local value.
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: the master fd is open for the whole call.
+        let result =
+            unsafe { libc::ioctl(spawned.master_fd.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+        spawned.child.kill().expect("kill the sleeping child");
+        spawned.child.wait().expect("reap the sleeping child");
+
+        assert_eq!(result, 0, "TIOCGWINSZ succeeds");
+        assert_eq!(
+            (size.ws_row, size.ws_col, size.ws_xpixel, size.ws_ypixel),
+            (30, 100, 900, 540)
         );
     }
 }

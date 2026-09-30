@@ -12,8 +12,9 @@ struct PendingAgentResumeCandidate {
     terminal_id: shepr_protocol::TerminalId,
     cwd: std::path::PathBuf,
     plan: shepr_agent::agent::resume::AgentResumePlan,
-    rows: u16,
-    cols: u16,
+    /// The PTY geometry the resumed shell starts at: its content grid and the
+    /// pixel size of one cell of the geometry the workspace was last applied.
+    geometry: shepr_core::geometry::PaneGeometry,
 }
 
 impl App {
@@ -67,22 +68,14 @@ impl App {
             terminal_id,
             cwd,
             plan,
-            rows,
-            cols,
+            geometry,
         } in &pending
         {
             if self.terminal_runtimes.get(terminal_id).is_some() {
                 continue;
             }
-            let outcome = self.start_pending_agent_resume(
-                *pane_id,
-                terminal_id,
-                cwd,
-                plan,
-                *rows,
-                *cols,
-                now,
-            );
+            let outcome =
+                self.start_pending_agent_resume(*pane_id, terminal_id, cwd, plan, *geometry, now);
             if !pass.record(outcome) {
                 break;
             }
@@ -119,10 +112,11 @@ impl App {
             })
     }
 
-    /// The area a workspace's pending resumes are sized in: the area the
-    /// server applied the workspace's PTY geometry in. A workspace it has not
-    /// laid out yet has no size to launch with, so its resumes wait for the
-    /// first geometry pass.
+    /// The area a workspace's pending resumes are sized in: the area its PTY
+    /// geometry was actually applied in (or its first pane spawned at). A
+    /// workspace with no recorded geometry has no size to launch with, so its
+    /// resumes wait for the first geometry pass; the headless area is never a
+    /// stand-in.
     fn resume_layout_area(&self, ws_idx: usize) -> Option<Rect> {
         self.state
             .workspace_area(ws_idx)
@@ -165,6 +159,10 @@ impl App {
             let Some(area) = self.resume_layout_area(ws_idx) else {
                 continue;
             };
+            let cell = self
+                .state
+                .workspace_spawn_geometry(ws_idx)
+                .and_then(|geometry| geometry.cell_px());
             for info in self.pending_agent_resume_pane_infos(ws, area) {
                 let Some(pane) = ws.panes().get(&info.id) else {
                     continue;
@@ -187,8 +185,11 @@ impl App {
                     terminal_id: pane.attached_terminal_id.clone(),
                     cwd: terminal.cwd().to_path_buf(),
                     plan,
-                    rows: info.inner_rect.height,
-                    cols: info.inner_rect.width,
+                    geometry: shepr_mux::workspace::spawn_geometry(
+                        info.inner_rect.height,
+                        info.inner_rect.width,
+                        cell,
+                    ),
                 });
             }
         }
@@ -217,8 +218,7 @@ impl App {
         terminal_id: &shepr_protocol::TerminalId,
         cwd: &std::path::Path,
         plan: &shepr_agent::agent::resume::AgentResumePlan,
-        rows: u16,
-        cols: u16,
+        geometry: shepr_core::geometry::PaneGeometry,
         now: Instant,
     ) -> AttemptOutcome {
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -242,7 +242,7 @@ impl App {
         // retry fixes.
         let Some(launch_env) = self
             .find_pane(pane_id)
-            .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id, Vec::new()))
+            .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id))
         else {
             tracing::warn!(
                 pane = pane_id.raw(),
@@ -287,8 +287,7 @@ impl App {
 
         let runtime = match shepr_mux::pane::PaneRuntime::spawn(
             pane_id,
-            rows,
-            cols,
+            geometry,
             cwd,
             self.state.settings.pane_scrollback_limit_bytes,
             host_terminal_theme,
@@ -424,8 +423,7 @@ impl App {
             terminal_id,
             &cwd,
             &plan,
-            rows,
-            cols,
+            shepr_mux::workspace::spawn_geometry(rows, cols, None),
             self.clock.now,
         );
         let changed = outcome != AttemptOutcome::Retryable;
@@ -463,7 +461,7 @@ mod tests {
             app.state.workspaces = (0..4)
                 .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
                 .collect();
-            app.state.set_active_index(Some(0));
+            app.state.set_bookmark_index(Some(0));
             app.state
                 .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
             app.state.ensure_test_terminals();
@@ -517,7 +515,7 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         // An empty argv cannot be turned into a shell command.
         app.state
@@ -557,7 +555,7 @@ mod tests {
             shepr_mux::workspace::Workspace::test_new("idle"),
             pending_workspace,
         ];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
 
         // Nothing pending anywhere.
@@ -579,10 +577,30 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].terminal_id, pending_terminal);
         assert_eq!(candidates[0].pane_id, pending_pane);
+        assert_eq!(
+            candidates[0].geometry.cell, None,
+            "no cell size was recorded"
+        );
+
+        // The resumed shell starts with the pixel size of the geometry that was
+        // actually applied to its workspace.
+        app.state
+            .test_record_all_workspace_geometry(crate::app::SpawnGeometry {
+                area: Rect::new(0, 0, 100, 30),
+                cell_size: shepr_termio::host_term::cell_size::HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            });
+        let candidates = app.pending_agent_resume_candidates();
+        assert_eq!(
+            candidates[0].geometry.cell,
+            shepr_core::geometry::CellPx::new(8, 16)
+        );
 
         // A workspace the server has not laid out has no geometry to launch with,
         // and neither has one laid out in an empty area.
-        app.state.workspace_areas.clear();
+        app.state.workspace_geometry.clear();
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
         app.state
@@ -617,7 +635,7 @@ mod tests {
                 .expect("test precondition")
                 .clone();
             app.state.workspaces = vec![workspace];
-            app.state.set_active_index(Some(0));
+            app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
             if missing_shell {
                 app.state.settings.default_shell = "__shepr_missing_resume_shell__".into();
@@ -678,7 +696,7 @@ mod tests {
             .cloned()
             .expect("test precondition");
         app.state.workspaces = vec![workspace];
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
@@ -757,7 +775,7 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         app.state
             .terminals
@@ -796,7 +814,7 @@ mod tests {
         app.state.workspaces = vec![active_workspace, hidden_workspace];
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {
@@ -858,7 +876,7 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {
@@ -912,7 +930,7 @@ mod tests {
         app.state.workspaces = vec![previous_workspace, current_workspace];
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
-        app.state.set_active_index(Some(1));
+        app.state.set_bookmark_index(Some(1));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {
@@ -971,7 +989,7 @@ mod tests {
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
         app.state.test_record_all_workspace_areas(area);
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         let target = app.state.workspaces[0].id.clone();
         let content_rect = |app: &App| {

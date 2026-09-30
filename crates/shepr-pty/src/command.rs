@@ -454,7 +454,9 @@ mod tests {
         assert_eq!(std_cmd.get_program(), OsStr::new(shell));
         assert_eq!(std_cmd.get_args().count(), 0);
 
-        let mut spawned = crate::backend::spawn_pty(24, 80, &cmd).expect("spawn shell fixture");
+        let mut spawned =
+            crate::backend::spawn_pty(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0), &cmd)
+                .expect("spawn shell fixture");
         let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
         spawned
             .child

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Index;
 
 use crate::app::RenderDemand;
@@ -42,12 +42,17 @@ pub(crate) struct ClientShellState {
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Presses forwarded by this shell that need release on abrupt teardown.
     held_inputs: HashMap<ClientShellPressId, ClientShellHeldInput>,
-    /// Connection-local workspace projection.
-    pub(crate) location: Option<ClientShellLocation>,
+    /// The workspace this connection views. Only this client's own navigation,
+    /// and the settling of workspaces that appeared or vanished, move it.
+    pub(crate) location: ClientShellLocation,
     /// Last coherent shell replacement sent to this client.
     pub(crate) snapshot: Option<shepr_protocol::ClientShellSnapshot>,
     /// Shared session-cache generation projected for this connection.
     pub(crate) session_generation: u64,
+    /// The generation of `location` the last successful projection carried. A
+    /// location change moves only this client's generation, so only its
+    /// projection is invalidated.
+    pub(crate) projected_location_generation: u64,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) projection_revision: shepr_protocol::ProjectionRevision,
 }
@@ -362,39 +367,91 @@ pub(crate) struct ClientShellHeldInput {
     pub(crate) release: ClientPaneInputEvent,
 }
 
+/// Which workspace one client views, with the index that workspace last had
+/// and a generation that moves whenever the viewed workspace changes.
+///
+/// The remembered index is what a client whose workspace vanishes lands by:
+/// the workspace now at that index, clamped. It is refreshed on every order
+/// change and navigation without moving the generation, since the client still
+/// views the same workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
     pub(crate) focused_workspace_id: Option<WorkspaceId>,
+    index: usize,
+    generation: u64,
 }
 
+/// The session's workspaces in order, and where a client with no location
+/// starts, for settling every client's location after they changed.
 pub(crate) struct ClientShellTopology {
-    pub(crate) focused_workspace_id: Option<WorkspaceId>,
-    pub(crate) fallback_workspace_id: Option<WorkspaceId>,
-    pub(crate) live_workspace_ids: HashSet<WorkspaceId>,
+    pub(crate) workspace_ids: Vec<WorkspaceId>,
+    /// The index of the bookmarked workspace, if it is a workspace.
+    pub(crate) bookmark_index: Option<usize>,
 }
 
 impl ClientShellLocation {
-    pub(crate) fn from_snapshot(snapshot: &shepr_protocol::ClientShellSnapshot) -> Self {
-        Self {
-            focused_workspace_id: snapshot.focused_workspace_id.clone(),
-        }
+    /// A new client's starting location: the workspace at `start` (the
+    /// session's bookmark), if any. Initialising counts as a change.
+    pub(crate) fn initial(start: Option<(WorkspaceId, usize)>) -> Self {
+        let mut location = Self::default();
+        location.set(start);
+        location
     }
 
-    pub(crate) fn focus_workspace(&mut self, workspace_id: WorkspaceId) {
-        self.focused_workspace_id = Some(workspace_id);
+    /// The generation of the viewed workspace: it moves on every change of
+    /// which workspace this is, and only then.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
     }
 
-    pub(crate) fn reconcile(&mut self, topology: &ClientShellTopology) {
-        if self
-            .focused_workspace_id
-            .as_ref()
-            .is_none_or(|workspace_id| !topology.live_workspace_ids.contains(workspace_id))
-        {
-            self.focused_workspace_id = topology
-                .focused_workspace_id
-                .clone()
-                .or_else(|| topology.fallback_workspace_id.clone());
+    /// Moves to `workspace_id`, now at `index`. Returns whether the viewed
+    /// workspace changed (the generation moved); navigating to the workspace
+    /// already viewed only refreshes its index.
+    pub(crate) fn navigate(&mut self, workspace_id: WorkspaceId, index: usize) -> bool {
+        self.set(Some((workspace_id, index)))
+    }
+
+    fn set(&mut self, workspace: Option<(WorkspaceId, usize)>) -> bool {
+        let (id, index) = match workspace {
+            Some((id, index)) => (Some(id), index),
+            None => (None, 0),
+        };
+        let changed = self.focused_workspace_id != id;
+        self.focused_workspace_id = id;
+        self.index = index;
+        if changed {
+            self.generation = self.generation.saturating_add(1);
         }
+        changed
+    }
+
+    /// Settles this location against the workspaces after they changed.
+    /// Returns whether the viewed workspace changed.
+    ///
+    /// A workspace that is still there stays viewed, and only its index is
+    /// refreshed. One that vanished is replaced by the workspace now at its
+    /// remembered index, clamped to the last one, or by nothing when none is
+    /// left. A client viewing nothing while workspaces exist starts on the
+    /// bookmark, else on the first workspace.
+    pub(crate) fn reconcile(&mut self, topology: &ClientShellTopology) -> bool {
+        let landed = match &self.focused_workspace_id {
+            Some(id) => match topology
+                .workspace_ids
+                .iter()
+                .position(|candidate| candidate == id)
+            {
+                Some(index) => Some(index),
+                None => topology
+                    .workspace_ids
+                    .len()
+                    .checked_sub(1)
+                    .map(|last| self.index.min(last)),
+            },
+            None => topology
+                .bookmark_index
+                .or_else(|| (!topology.workspace_ids.is_empty()).then_some(0)),
+        };
+        self.set(landed.map(|index| (topology.workspace_ids[index].clone(), index)))
     }
 }
 
@@ -702,6 +759,14 @@ impl ClientRegistry {
 }
 
 #[cfg(test)]
+impl ClientShellLocation {
+    /// The index the viewed workspace had when last seen.
+    pub(crate) fn index(&self) -> usize {
+        self.index
+    }
+}
+
+#[cfg(test)]
 impl ClientConnection {
     pub(crate) fn new(
         terminal_size: (u16, u16),
@@ -817,5 +882,80 @@ mod tests {
             held[0].release,
             key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Release)
         );
+    }
+
+    fn workspace_ids(numbers: &[usize]) -> Vec<WorkspaceId> {
+        numbers
+            .iter()
+            .map(|&number| WorkspaceId::from_number(number).expect("nonzero number"))
+            .collect()
+    }
+
+    fn topology(ids: &[WorkspaceId], bookmark: Option<usize>) -> ClientShellTopology {
+        ClientShellTopology {
+            workspace_ids: ids.to_vec(),
+            bookmark_index: bookmark,
+        }
+    }
+
+    #[test]
+    fn a_location_moves_its_generation_only_when_the_viewed_workspace_changes() {
+        let ids = workspace_ids(&[1, 2, 3]);
+        let mut location = ClientShellLocation::initial(Some((ids[0].clone(), 0)));
+        assert_eq!(location.generation(), 1, "initialising is a change");
+
+        // The same workspace at a new index (a reorder) refreshes the index
+        // and leaves the projection valid.
+        assert!(!location.navigate(ids[0].clone(), 2));
+        assert_eq!(location.index(), 2);
+        assert_eq!(location.generation(), 1);
+
+        assert!(location.navigate(ids[1].clone(), 1));
+        assert_eq!(location.generation(), 2);
+    }
+
+    #[test]
+    fn a_vanished_workspace_lands_on_the_one_now_at_its_remembered_index() {
+        let ids = workspace_ids(&[1, 2, 3, 4]);
+        let mut location = ClientShellLocation::initial(Some((ids[1].clone(), 1)));
+
+        // The workspace at index 1 closed: the next one slides into its slot.
+        let after_close = [ids[0].clone(), ids[2].clone(), ids[3].clone()];
+        assert!(location.reconcile(&topology(&after_close, Some(0))));
+        assert_eq!(location.focused_workspace_id.as_ref(), Some(&ids[2]));
+        assert_eq!(location.index(), 1);
+
+        // A survivor keeps its workspace when others move around it.
+        let reordered = [ids[3].clone(), ids[2].clone(), ids[0].clone()];
+        assert!(!location.reconcile(&topology(&reordered, Some(0))));
+        assert_eq!(location.focused_workspace_id.as_ref(), Some(&ids[2]));
+        assert_eq!(location.index(), 1);
+
+        // Past the end it clamps to the last workspace.
+        let mut at_end = ClientShellLocation::initial(Some((ids[3].clone(), 3)));
+        let shrunk = [ids[0].clone(), ids[1].clone()];
+        assert!(at_end.reconcile(&topology(&shrunk, None)));
+        assert_eq!(at_end.focused_workspace_id.as_ref(), Some(&ids[1]));
+
+        // With nothing left it views nothing.
+        assert!(at_end.reconcile(&topology(&[], None)));
+        assert_eq!(at_end.focused_workspace_id, None);
+    }
+
+    #[test]
+    fn a_client_viewing_nothing_starts_on_the_bookmark_else_the_first_workspace() {
+        let ids = workspace_ids(&[1, 2]);
+
+        let mut bookmarked = ClientShellLocation::default();
+        assert!(bookmarked.reconcile(&topology(&ids, Some(1))));
+        assert_eq!(bookmarked.focused_workspace_id.as_ref(), Some(&ids[1]));
+
+        let mut first = ClientShellLocation::default();
+        assert!(first.reconcile(&topology(&ids, None)));
+        assert_eq!(first.focused_workspace_id.as_ref(), Some(&ids[0]));
+
+        let mut empty = ClientShellLocation::default();
+        assert!(!empty.reconcile(&topology(&[], None)));
+        assert_eq!(empty.generation(), 0);
     }
 }

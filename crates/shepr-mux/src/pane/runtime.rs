@@ -691,8 +691,7 @@ impl PaneRuntime {
     )]
     pub fn spawn(
         pane_id: PaneId,
-        rows: u16,
-        cols: u16,
+        geometry: shepr_core::geometry::PaneGeometry,
         cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
         host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
@@ -706,8 +705,7 @@ impl PaneRuntime {
     ) -> std::io::Result<Self> {
         Self::spawn_with_initial_history(
             pane_id,
-            rows,
-            cols,
+            geometry,
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -728,8 +726,7 @@ impl PaneRuntime {
     )]
     pub(crate) fn spawn_with_initial_history(
         pane_id: PaneId,
-        rows: u16,
-        cols: u16,
+        geometry: shepr_core::geometry::PaneGeometry,
         cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
         host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
@@ -748,13 +745,21 @@ impl PaneRuntime {
         apply_pane_launch_env(&mut cmd, launch_env);
         let launch_purpose = launch_env.purpose();
         let teardown_tracker = Arc::clone(pane_teardowns);
-        let size = shepr_core::geometry::GridSize::clamped_pane(cols, rows);
-        let rows = size.rows.get();
-        let cols = size.cols.get();
+        // The clamped geometry is what the PTY, the terminal and the cached
+        // size all start from, so the first `TIOCSWINSZ` carries the pixel
+        // dimensions and a later `resize` to the same size is a no-op.
+        let geometry = geometry.clamped();
+        let rows = geometry.rows();
+        let cols = geometry.cols();
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal);
+        // The cached size below claims the cell size, so the terminal learns it
+        // now: a later `resize` to the same geometry is a no-op and would never
+        // tell it. Nothing has enabled in-band size reports on a fresh
+        // terminal, so there is no reply to route.
+        let _ = pane_terminal.resize(geometry);
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
         if let Some(ansi) = initial_history_ansi {
@@ -763,7 +768,7 @@ impl PaneRuntime {
         let terminal = Arc::new(pane_terminal);
         let content_write_lock = Arc::new(Mutex::new(()));
 
-        let spawned = shepr_pty::backend::spawn_pty(rows, cols, &cmd).inspect_err(
+        let spawned = shepr_pty::backend::spawn_pty(geometry, &cmd).inspect_err(
             |err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"),
         )?;
 
@@ -1202,7 +1207,7 @@ impl PaneRuntime {
             pane_id,
             terminal,
             io,
-            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
+            current_size: Cell::new(geometry),
             child_liveness,
             teardown_tracker,
             reported_cwd,
@@ -2138,7 +2143,11 @@ mod tests {
             },
             Step::Exit(0),
         ]));
-        let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session");
+        let mut spawned = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+        )
+        .expect("spawn session");
         let leader_pid = spawned.child.id();
         let leader = shepr_platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
         let child_liveness = Arc::new(ChildLiveness::new(leader_pid, Some(leader)));
@@ -2351,7 +2360,11 @@ mod tests {
             &PaneLaunchEnv::from_extra(extra_env, "/run/user/1000/shepr-test.sock".into()),
         );
 
-        let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn in pty");
+        let mut spawned = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+        )
+        .expect("spawn in pty");
         let status = spawned.child.wait().expect("wait for the fixture");
         assert!(status.success(), "the fixture failed: {status:?}");
 
@@ -2381,7 +2394,11 @@ mod tests {
             Some(std::ffi::OsStr::new(shell))
         );
 
-        let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn test shell");
+        let mut spawned = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+        )
+        .expect("spawn test shell");
         let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
         spawned
             .child

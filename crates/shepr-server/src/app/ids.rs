@@ -32,31 +32,25 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-        extra_env: Vec<(String, String)>,
     ) -> Option<shepr_mux::pane::PaneLaunchEnv> {
         let workspace = self.state.workspaces.get(ws_idx)?;
         let pane_number = workspace.public_pane_number(pane_id)?;
         let pane_id = shepr_protocol::PublicPaneId::new(&workspace.id, pane_number);
         Some(
             shepr_mux::pane::PaneLaunchEnv::from_extra(
-                extra_env,
+                Vec::new(),
                 shepr_api::socket_path(&self.paths),
             )
             .with_pane_id(pane_id),
         )
     }
 
-    /// Resolves a public workspace id (`w<n>`) to its current index.
+    /// Resolves a typed public workspace id (`w<n>`) to its current index.
     ///
-    /// Only the exact stable id is accepted. Positional forms (`w_N`, bare
-    /// `N`) are deliberately rejected: a mistyped or index-style id must fail
-    /// rather than silently target whichever workspace sits at that position.
-    pub(crate) fn parse_workspace_id(&self, id: &str) -> Option<usize> {
-        let public_id = id.parse::<shepr_protocol::WorkspaceId>().ok()?;
-        self.resolve_workspace_id(&public_id)
-    }
-
-    /// [`Self::parse_workspace_id`] for an id that is already typed.
+    /// Only the exact stable id names a workspace. Positional forms (`w_N`,
+    /// bare `N`) never parse to an id, so a mistyped or index-style id fails
+    /// rather than silently targeting whichever workspace sits at that
+    /// position.
     pub(crate) fn resolve_workspace_id(
         &self,
         public_id: &shepr_protocol::WorkspaceId,
@@ -78,7 +72,8 @@ impl App {
         self.resolve_pane_id(&public_id)
     }
 
-    /// [`Self::parse_pane_id`] for an id that is already typed.
+    /// [`Self::parse_pane_id`] for an id that is already typed: the resolver
+    /// endpoint handlers use, so a typed id is never spelled and parsed again.
     pub(crate) fn resolve_pane_id(
         &self,
         public_id: &shepr_protocol::PublicPaneId,
@@ -103,7 +98,7 @@ mod tests {
         );
         app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
+        app.state.set_bookmark_index(Some(0));
         app
     }
 
@@ -114,7 +109,7 @@ mod tests {
         app.state.ensure_test_terminals();
         let ws_id = app.state.workspaces[1].id.clone();
 
-        assert_eq!(app.parse_workspace_id(&ws_id), Some(1));
+        assert_eq!(app.resolve_workspace_id(&ws_id), Some(1));
         let pane_id = app.public_pane_id(1, second).expect("public pane id");
         assert_eq!(app.parse_pane_id(&pane_id), Some((1, second)));
     }
@@ -141,7 +136,13 @@ mod tests {
         let root = app.state.workspaces[0].root_pane();
 
         for id in ["1", "2", "w_1", "w_2"] {
-            assert_eq!(app.parse_workspace_id(id), None, "workspace id {id:?}");
+            assert_eq!(
+                id.parse::<shepr_protocol::WorkspaceId>()
+                    .ok()
+                    .and_then(|id| app.resolve_workspace_id(&id)),
+                None,
+                "workspace id {id:?}"
+            );
         }
         for id in [
             format!("p_{}", root.raw()),

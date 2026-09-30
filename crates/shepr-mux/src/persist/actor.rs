@@ -344,8 +344,7 @@ mod tests {
                 "focused": 0,
                 "root_pane": 0
             }],
-            "active": 0,
-            "selected": 0
+            "active": 0
         }))
         .expect("test precondition")
     }

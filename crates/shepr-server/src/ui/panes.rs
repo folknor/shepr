@@ -445,7 +445,7 @@ fn compute_pane_infos(
     terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
 ) -> Vec<PaneInfo> {
-    let Some(workspace_index) = app.active_index() else {
+    let Some(workspace_index) = app.bookmark_index() else {
         return Vec::new();
     };
     compute_pane_infos_for_workspace(app, terminal_runtimes, workspace_index, area)
@@ -496,7 +496,7 @@ mod tests {
         let mut app = AppState::test_new();
         app.settings.pane_scrollbars = true;
         app.workspaces = vec![Workspace::test_new("resume-pending")];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
         let area = Rect::new(0, 0, 100, 30);
 
         let infos = compute_pane_infos(&app, &PaneRuntimeRegistry::new(), area);
@@ -521,7 +521,7 @@ mod tests {
     fn unavailable_pane_renders_restore_failure_without_a_runtime() {
         let mut app = AppState::test_new();
         app.workspaces = vec![Workspace::test_new("unavailable")];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
         app.ensure_test_terminals();
         let pane_id = app.workspaces[0].root_pane();
         let terminal_id = app.workspaces[0]
@@ -954,7 +954,7 @@ mod tests {
             PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -988,7 +988,7 @@ mod tests {
             .get(&terminal_id)
             .expect("test precondition");
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let assert_geometry = |expected_width, has_scrollbar| {
@@ -1019,7 +1019,7 @@ mod tests {
             PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1042,7 +1042,7 @@ mod tests {
             PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1065,7 +1065,7 @@ mod tests {
             PaneRuntime::test_with_scrollback_bytes(4, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 4, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1105,11 +1105,11 @@ mod tests {
                     );
                 }
                 app.workspaces = vec![workspace];
-                app.set_active_index(Some(0));
+                app.set_bookmark_index(Some(0));
                 app.test_record_all_workspace_areas(area);
 
                 let infos = compute_pane_infos(&app, &terminal_runtimes, area);
-                let geometry = app.pane_geometry();
+                let geometry = app.pane_geometry_for_workspace(0);
                 assert_eq!(geometry.area, area);
                 assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
                 for info in &infos {
@@ -1142,7 +1142,7 @@ mod tests {
             ),
         );
         app.workspaces = vec![workspace];
-        app.set_active_index(Some(0));
+        app.set_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);

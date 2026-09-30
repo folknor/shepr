@@ -282,7 +282,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "LIV".into(),
             }),
         )
@@ -395,7 +395,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "yIV".into(),
             }),
         )
@@ -788,14 +788,17 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         &request.command,
         EndpointCommand::PaneCopyMotion(params)
             if params.cursor == origin
-                && params.motion == shepr_protocol::command::PaneCopyMotion::NextWordStart
+                && params.motion
+                    == shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::NextStart,
+                    )
     ));
     let (repaint, actions) = state
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(EndpointReply::PaneCopyMotion {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 cursor: shepr_protocol::command::PaneTextPoint {
                     row: origin.row,
                     col: 3,
@@ -851,7 +854,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
         &crate::tests::test_boot_id("boot-1"),
         &request_id,
         Ok(EndpointReply::PaneCopyMotion {
-            pane_id: "w1:p1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
             cursor: shepr_protocol::command::PaneTextPoint {
                 row: origin.row,
                 col: 3,
@@ -2129,7 +2132,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
             &crate::tests::test_boot_id("boot-1"),
             &first_id,
             Ok(EndpointReply::PaneCopyMotion {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 cursor: intermediate,
             }),
         )
@@ -2178,7 +2181,7 @@ fn queued_copy_keys_preserve_prefix_order() {
         &crate::tests::test_boot_id("boot-1"),
         &motion_id,
         Ok(EndpointReply::PaneCopyMotion {
-            pane_id: "w1:p1".into(),
+            pane_id: shepr_test_fixtures::id("w1:p1"),
             cursor: origin,
         }),
     );
@@ -2260,7 +2263,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
             &crate::tests::test_boot_id("boot-1"),
             &motion_id,
             Ok(EndpointReply::PaneCopyMotion {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 cursor: target,
             }),
         )
@@ -2373,7 +2376,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
             &crate::tests::test_boot_id("boot-1"),
             &request_id,
             Ok(EndpointReply::PaneSelection {
-                pane_id: "w1:p1".into(),
+                pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "hello world".into(),
             }),
         )

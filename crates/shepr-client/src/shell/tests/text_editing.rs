@@ -155,10 +155,9 @@ fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggesti
     state.handle_endpoint_result_at(
         &boot_id,
         &request,
-        Err(ClientShellEndpointError {
-            code: "internal_error".into(),
-            message: "git failed".into(),
-        }),
+        Err(ClientShellEndpointError::Server(
+            shepr_protocol::command::EndpointError::Rejected("git failed".into()),
+        )),
         state.now,
     );
     assert_eq!(editor(&mut state).as_str(), "repo");

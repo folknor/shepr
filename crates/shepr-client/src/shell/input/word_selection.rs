@@ -73,7 +73,7 @@ impl ClientShellState {
         gesture.pending_row = Some(row);
         let pane_id = gesture.pane_id.clone();
         let params = shepr_protocol::command::PaneSelectionReadParams {
-            pane_id: pane_id.to_string(),
+            pane_id: pane_id.clone(),
             anchor: shepr_protocol::command::PaneTextPoint { row, col: 0 },
             cursor: shepr_protocol::command::PaneTextPoint {
                 row,

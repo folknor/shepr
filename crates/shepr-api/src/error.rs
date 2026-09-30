@@ -1,8 +1,8 @@
 use super::schema::{ErrorBody, ErrorResponse, ResponseResult, SuccessResponse};
 
 /// Stable error categories, with one source for enum variants and wire codes.
-/// Codes only go out (to the JSON socket or as `EndpointError.code`); nothing
-/// parses a wire code back into this enum.
+/// Codes only go out (to the JSON socket and the CLI); nothing parses a wire
+/// code back into this enum.
 macro_rules! api_error_codes {
     ($($variant:ident => $wire:literal,)+) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,32 +23,13 @@ macro_rules! api_error_codes {
 api_error_codes! {
     AgentExplainFileReadFailed => "agent_explain_file_read_failed",
     AgentExplainUnavailable => "agent_explain_unavailable",
-    CopyMotionUnavailable => "copy_motion_unavailable",
-    InternalError => "internal_error",
     InvalidAgent => "invalid_agent",
-    InvalidCwd => "invalid_cwd",
-    InvalidEnv => "invalid_env",
-    InvalidPaneSwap => "invalid_pane_swap",
-    InvalidRatio => "invalid_ratio",
     InvalidRequest => "invalid_request",
-    LayoutNotFound => "layout_not_found",
-    PaneClearFailed => "pane_clear_failed",
-    PaneLayoutUnavailable => "pane_layout_unavailable",
     PaneNotFound => "pane_not_found",
-    PaneSplitFailed => "pane_split_failed",
-    QueryTooLarge => "query_too_large",
-    SelectionUnavailable => "selection_unavailable",
     SerializationError => "serialization_error",
     ServerUnavailable => "server_unavailable",
-    SplitNotFound => "split_not_found",
     Timeout => "timeout",
-    WorkspaceCreateFailed => "workspace_create_failed",
-    WorkspaceMoveFailed => "workspace_move_failed",
-    WorkspaceNotFound => "workspace_not_found",
     EndpointBusy => "endpoint_busy",
-    EndpointResponseTooLarge => "endpoint_response_too_large",
-    StaleBoot => "stale_boot",
-    SurfaceInactive => "surface_inactive",
     BuildMismatch => "build_mismatch",
     ServerNotRunning => "server_not_running",
     ServerStopFailed => "server_stop_failed",

@@ -61,7 +61,7 @@ impl HeadlessServer {
                 &[],
                 &self.client_shell_boot_id,
                 shell.projection_revision.get(),
-                shell.location.as_ref(),
+                &shell.location,
             );
             candidate != *sent
         });
@@ -419,9 +419,13 @@ impl HeadlessServer {
             let Some(client) = self.clients.get_mut(&client_id) else {
                 continue;
             };
+            // A projection is due when the shared session moved, or when this
+            // client's own location did: a location change invalidates only
+            // the projection of the client that moved.
             let needs_projection = {
                 let shell = client.shell_state();
                 shell.session_generation != self.shell_session_generation
+                    || shell.projected_location_generation != shell.location.generation()
                     || shell.snapshot.is_none()
             };
             if needs_projection {
@@ -436,7 +440,7 @@ impl HeadlessServer {
                     &[],
                     &self.client_shell_boot_id,
                     client.shell_state().projection_revision.get(),
-                    client.shell_state().location.as_ref(),
+                    &client.shell_state().location,
                 );
                 let snapshot_changed = client.shell_state().snapshot.as_ref() != Some(&candidate);
                 if snapshot_changed {
@@ -476,7 +480,10 @@ impl HeadlessServer {
                     }
                     client.shell_state_mut().snapshot = Some(candidate);
                 }
-                client.shell_state_mut().session_generation = self.shell_session_generation;
+                // Only a projection that succeeded advances what was projected.
+                let shell = client.shell_state_mut();
+                shell.session_generation = self.shell_session_generation;
+                shell.projected_location_generation = shell.location.generation();
             }
             let shell = client.shell_state();
             let shell_projection_revision = shell.projection_revision;

@@ -4,17 +4,6 @@ Things to do when the situation comes up or when there is time for a larger
 change, not defects to hunt. Each redesign below touches several modules at
 once, so it needs a wave of its own rather than parallel fixers.
 
-## JSON API leftovers
-
-- Most app-handler error codes (`copy_motion_unavailable`, `query_too_large`,
-  `pane_layout_unavailable`, `layout_not_found`, `invalid_ratio`,
-  `invalid_agent`, `pane_clear_failed`, the `*_create_failed` and
-  `*_move_failed` codes) are only ever shown: the client treats every code but
-  `endpoint_timeout`, `endpoint_cancelled`, `server_unavailable` and
-  `endpoint_response_too_large` alike. `CopyMotionUnavailable` in the
-  word-motion branch and `InvalidPaneSwap` for missing swap ids look
-  unreachable through typed commands.
-
 ## Deferred
 
 Parked until the situation comes up.
@@ -77,6 +66,3 @@ Do this the next time opencode or Kilo is in use.
   merges them (`crates/shepr-mux/src/pane/terminal/history.rs`), so a slowly
   scrolling pane collects many small chunks until eviction drops them.
 
-## Per-client presentation state on the server
-
-- `app.state.active` doubles as a request context: a client-shell command first makes the requesting client's workspace the session's focus (`set_default_shell_target_from_client`), so app handlers that take no explicit target act on what that client views, and a new pane or workspace spawns at that workspace's area. Passing the requesting client's target and area into the app handlers would leave `active` as the saved session focus only.
