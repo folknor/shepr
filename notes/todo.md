@@ -53,10 +53,8 @@ Do this the next time opencode or Kilo is in use.
 - If they are wrong, opencode/Kilo panes never show as blocked on a permission prompt; they read as working or idle while waiting on you.
 - To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
 
-## Composition and config encoding
+## Rendering and history leftovers
 
-- `ClientShellSnapshot.resolved_config` is a codec-encoded blob inside a codec
-  message.
 - The server renders pane surfaces into ratatui buffers and converts them to
   wire cells, so underline shapes still cross as `Modifier` bits there
   (`WireStyle::to_ratatui_modifier`, the `RATATUI_UNDERLINE_*` constants, used

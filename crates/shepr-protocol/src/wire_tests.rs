@@ -246,10 +246,9 @@ mod tests {
 
     #[test]
     fn server_welcome_with_error_roundtrip() -> TestResult {
-        let msg =
-            ServerMessage::EndpointWelcome(crate::endpoint::EndpointServerWelcome::incompatible(
-                crate::HandshakeRefusal::ExpectedHello,
-            ));
+        let msg = ServerMessage::EndpointWelcome(crate::endpoint::EndpointServerWelcome::refused(
+            crate::HandshakeRefusal::ExpectedHello,
+        ));
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
     }
@@ -405,7 +404,6 @@ mod tests {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),
             revision: crate::ProjectionRevision::new(1),
-            resolved_config: vec![1, 2, 3, 4],
             focused_workspace_id: Some("w1".into()),
             focused_pane_id: Some("w1:p1".into()),
             workspaces: vec![ClientShellWorkspace {
@@ -470,38 +468,6 @@ mod tests {
             let msg = ServerMessage::WindowTitle { title };
             assert_eq!(roundtrip(&msg)?, msg);
         }
-        Ok(())
-    }
-
-    #[test]
-    fn byte_fields_encode_as_length_then_raw_bytes() -> TestResult {
-        // The byte-buffer fields must keep the plain `Vec<u8>` wire layout
-        // (varint length, raw bytes) while decoding in one copy.
-        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-        struct Carrier {
-            tag: u8,
-            #[serde(
-                serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
-                deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
-            )]
-            data: Vec<u8>,
-        }
-        let data = vec![0u8, 1, 0x7f, 0x80, 0xff];
-        let chunk = |data: Vec<u8>| Carrier { tag: 7, data };
-        let encoded = codec::to_vec(&chunk(data.clone()))?;
-        // The data field is last: varint length, then the raw bytes.
-        assert_eq!(
-            encoded.get(encoded.len() - 6..),
-            Some([&[5u8][..], data.as_slice()].concat().as_slice())
-        );
-        assert_eq!(
-            codec::to_vec(&data)?.as_slice(),
-            encoded.get(encoded.len() - 6..).unwrap_or_default()
-        );
-
-        let large = chunk((0..=255u8).cycle().take(300_000).collect());
-        assert_eq!(roundtrip(&large)?, large);
-
         Ok(())
     }
 

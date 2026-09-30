@@ -52,12 +52,6 @@ impl ClientShellState {
         self.insert_machine_diagnostic(id, failure.chars(), failure.requires_authentication());
     }
 
-    /// Record a non-SSH failure (such as an undecodable endpoint config) as
-    /// the machine's diagnostic.
-    pub(super) fn set_machine_error(&mut self, id: &ClientEndpointId, message: &str) {
-        self.insert_machine_diagnostic(id, message.chars(), false);
-    }
-
     fn insert_machine_diagnostic(
         &mut self,
         id: &ClientEndpointId,

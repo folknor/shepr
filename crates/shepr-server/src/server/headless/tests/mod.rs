@@ -136,12 +136,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
-    let mut resolved_config = Vec::new();
-    shepr_protocol::codec::encode_into(
-        &mut resolved_config,
-        &shepr_config::ValidatedConfig::test_default(),
-    )
-    .expect("test config encodes");
 
     HeadlessServer {
         app,
@@ -151,7 +145,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         client_socket_identity,
         clients: ClientRegistry::default(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
-        resolved_config,
+        config: Arc::new(shepr_config::ValidatedConfig::test_default()),
         shell_session_cache: None,
         shell_session_generation: 0,
         focused_panes: HashSet::new(),
@@ -1404,11 +1398,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     server.app.state.ensure_test_terminals();
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
-    let initial = client_shell_snapshot(&control);
-    assert!(
-        !initial.resolved_config.is_empty(),
-        "the first snapshot of a connection carries the config"
-    );
+    let _ = client_shell_snapshot(&control);
     server.render_and_stream();
     assert!(control.try_recv().is_err());
     let built_at = server
@@ -1478,10 +1468,6 @@ fn next_projection(
     server.render_and_stream();
     let snapshot = client_shell_snapshot(control);
     assert!(snapshot.revision > *previous);
-    assert!(
-        snapshot.resolved_config.is_empty(),
-        "later snapshots reuse the connection's config"
-    );
     *previous = snapshot.revision;
     snapshot
 }
@@ -1507,7 +1493,6 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
     let renamed = client_shell_snapshot(&control);
     assert_eq!(renamed.workspaces[0].label, "renamed");
     assert!(renamed.revision > first.revision);
-    assert!(renamed.resolved_config.is_empty());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1539,7 +1524,6 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
         reported.panes[0].cwd.as_deref(),
         Some(cwd.to_str().expect("cwd utf8"))
     );
-    assert!(reported.resolved_config.is_empty());
 
     let age_cache = |server: &mut HeadlessServer| {
         if let Some(cache) = server.shell_session_cache.as_mut() {
@@ -1695,21 +1679,20 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
 }
 
 #[tokio::test]
-async fn a_reconnecting_shell_gets_the_config_again_and_later_changes() {
+async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
-    assert!(!client_shell_snapshot(&control).resolved_config.is_empty());
+    let _ = client_shell_snapshot(&control);
     server.render_and_stream();
     assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
         client_id: ClientId::test_new(7),
     }));
 
     // The shared cache outlives the connection; the new one is seeded fresh
-    // and still receives config bytes and subsequent changes.
+    // and still receives subsequent changes.
     let (control, _render) = connect_matching_test_shell(&mut server, 8);
     let seed = client_shell_snapshot(&control);
-    assert!(!seed.resolved_config.is_empty());
     let mut previous = seed.revision;
     server.render_and_stream();
     assert!(control.try_recv().is_err());

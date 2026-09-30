@@ -109,10 +109,9 @@ pub struct HeadlessServer {
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: shepr_protocol::BootId,
-    /// Config bytes are stable for the server lifetime and are encoded before
-    /// serving. Only the first snapshot of each shell connection carries them;
-    /// later snapshots send an empty payload that the client reads as "reuse".
-    resolved_config: Vec<u8>,
+    /// The config this server was launched with, immutable for its lifetime.
+    /// Each connection's welcome carries it; snapshots never do.
+    config: Arc<shepr_config::ValidatedConfig>,
     /// Shared session source for shell projections; `None` until a render
     /// with a shell client builds it.
     shell_session_cache: Option<render::ShellSessionCache>,
@@ -185,7 +184,7 @@ impl HeadlessServer {
     pub fn new(
         app: app::App,
         api_server: Option<shepr_api::ServerHandle>,
-        resolved_config: Vec<u8>,
+        config: Arc<shepr_config::ValidatedConfig>,
         stop_requested: Arc<shepr_api::ServerStopSignal>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
@@ -221,7 +220,7 @@ impl HeadlessServer {
             client_socket_identity,
             clients: ClientRegistry::default(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
-            resolved_config,
+            config,
             shell_session_cache: None,
             shell_session_generation: 0,
             focused_panes: HashSet::new(),
@@ -704,6 +703,7 @@ impl HeadlessServer {
             &mut self.clients,
             self.lifecycle.stop_signal(),
             &self.server_event_tx,
+            &self.config,
         )
     }
 
@@ -1033,7 +1033,6 @@ impl HeadlessServer {
                 };
                 let seed_snapshot = client_shell_snapshot(
                     &self.app,
-                    &self.resolved_config,
                     &self.client_shell_boot_id,
                     client.shell_state().projection_revision.get(),
                     &client.shell_state().location,
@@ -1043,10 +1042,6 @@ impl HeadlessServer {
                 shell.projected_location_generation = shell.location.generation();
                 shell.snapshot = Some(seed_snapshot);
                 shell.session_generation = self.shell_session_generation;
-                if let Some(snapshot) = shell.snapshot.as_mut() {
-                    // The initial frame carries config; later frames use the connection cache.
-                    snapshot.resolved_config.clear();
-                }
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
                     self.promote_client_to_foreground(client_id);

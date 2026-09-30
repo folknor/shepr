@@ -1,10 +1,11 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use interprocess::local_socket::traits::Stream as _;
 use tracing::info;
 
 use shepr_platform::ipc::LocalStream;
-use shepr_protocol::endpoint::EndpointClientHello;
+use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
 use shepr_protocol::{ClientMessage, ServerMessage};
 
 use super::ClientError;
@@ -54,6 +55,11 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 /// reported as a mismatch before either side decodes a codec frame. The client
 /// then sends its endpoint hello, and the welcome does not negotiate an encoding.
 ///
+/// The welcome carries the server's validated config for this connection, and
+/// it is what this returns. The caller installs it before it processes any
+/// snapshot of the connection. A welcome whose config does not decode is a
+/// protocol failure of the handshake, like any other malformed welcome.
+///
 /// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
 /// machine endpoint supervisor bounds each whole connection attempt by its
 /// attempt budget.
@@ -63,7 +69,7 @@ pub(super) fn do_handshake(
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
-) -> Result<(), ClientError> {
+) -> Result<Arc<shepr_config::ValidatedConfig>, ClientError> {
     let surface_size = geometry.surface_size;
     let (cell_width_px, cell_height_px, exact_cell_size) =
         super::terminal_geometry::bounded_cell_geometry(
@@ -132,11 +138,13 @@ pub(super) fn do_handshake(
     let ServerMessage::EndpointWelcome(welcome) = welcome else {
         return Err(ClientError::UnexpectedWelcome);
     };
-    if let Some(error) = welcome.error {
-        return Err(ClientError::HandshakeRejected { error });
+    match welcome {
+        EndpointServerWelcome::Accepted { config } => {
+            info!("endpoint handshake succeeded");
+            Ok(Arc::from(config))
+        }
+        EndpointServerWelcome::Refused(error) => Err(ClientError::HandshakeRejected { error }),
     }
-    info!("endpoint handshake succeeded");
-    Ok(())
 }
 
 /// Keeps the socket error itself, kind included: the endpoint supervisor decides
@@ -191,6 +199,82 @@ mod tests {
             .expect_err("a shutdown notice is not a welcome");
         peer.join().expect("test precondition");
         error
+    }
+
+    /// Runs a handshake against a peer that answers with the build preamble and
+    /// then `welcome_frames`, raw.
+    fn handshake_against_welcome(
+        name: &str,
+        welcome_frames: Vec<u8>,
+    ) -> Result<Arc<shepr_config::ValidatedConfig>, ClientError> {
+        use std::io::Write as _;
+        let (mut client, mut server) = socket_pair(name);
+        let peer = std::thread::spawn(move || {
+            shepr_protocol::preamble::write_preamble(&mut server).expect("test precondition");
+            shepr_protocol::preamble::read_preamble(&mut server).expect("client preamble");
+            let _hello: ClientMessage =
+                shepr_protocol::read_message(&mut server).expect("test precondition");
+            server
+                .write_all(&welcome_frames)
+                .expect("test precondition: the client reads the welcome");
+        });
+        let result = do_handshake(&mut client, test_geometry(), false, true, None);
+        assert!(
+            peer.join().is_ok(),
+            "test precondition: the peer thread finishes"
+        );
+        result
+    }
+
+    #[test]
+    fn welcome_config_is_what_the_handshake_returns() {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
+        let mut values = shepr_config::Config::default();
+        values.keys.prefix = "ctrl+a".to_owned();
+        let served = shepr_config::ValidatedConfig::test_from_config(
+            values,
+            Some("[keys]\nprefix = \"ctrl+a\"\n"),
+        );
+        let welcome =
+            ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted(served.clone()));
+        let frames = shepr_protocol::encode_message(&welcome).expect("test precondition");
+
+        let received =
+            handshake_against_welcome("welcome-config", frames).expect("an accepted welcome");
+
+        assert_eq!(*received, served);
+    }
+
+    #[test]
+    fn welcome_config_that_does_not_decode_fails_the_handshake() {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
+        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::accepted(
+            shepr_config::ValidatedConfig::test_default(),
+        ));
+        let encoded = shepr_protocol::encode_message(&welcome).expect("test precondition");
+        // Keep the one-byte message and welcome variant indexes and cut the
+        // config off, under a length prefix that matches.
+        let mut frames = 2u32.to_le_bytes().to_vec();
+        frames.extend_from_slice(&encoded[4..6]);
+
+        match handshake_against_welcome("welcome-bad-config", frames) {
+            Err(ClientError::Protocol(shepr_protocol::FramingError::Codec(_))) => {}
+            other => panic!("expected a codec failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refused_welcome_is_a_handshake_rejection() {
+        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::refused(
+            shepr_protocol::HandshakeRefusal::ExpectedHello,
+        ));
+        let frames = shepr_protocol::encode_message(&welcome).expect("test precondition");
+        match handshake_against_welcome("welcome-refused", frames) {
+            Err(ClientError::HandshakeRejected { error }) => {
+                assert_eq!(error, shepr_protocol::HandshakeRefusal::ExpectedHello);
+            }
+            other => panic!("expected a rejection, got {other:?}"),
+        }
     }
 
     #[test]

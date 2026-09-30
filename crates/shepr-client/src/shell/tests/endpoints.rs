@@ -53,35 +53,6 @@ fn state_with_machines(
 }
 
 #[test]
-fn repeated_endpoint_snapshots_reuse_the_validated_config() {
-    let (mut state, endpoint_id) = state_with_remote();
-
-    assert!(state.activate_endpoint_projection(&endpoint_id));
-    let first = std::sync::Arc::clone(
-        &state
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-            .and_then(|endpoint| endpoint.resolved_config.as_ref())
-            .expect("first endpoint snapshot resolves its config")
-            .config,
-    );
-
-    assert!(state.activate_endpoint_projection(&endpoint_id));
-    let second = std::sync::Arc::clone(
-        &state
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-            .and_then(|endpoint| endpoint.resolved_config.as_ref())
-            .expect("second endpoint snapshot keeps its cached config")
-            .config,
-    );
-
-    assert!(std::sync::Arc::ptr_eq(&first, &second));
-}
-
-#[test]
 fn every_endpoint_gets_the_same_pane_surface() {
     let (mut state, remote_id) = state_with_remote();
 
@@ -103,91 +74,42 @@ fn every_endpoint_gets_the_same_pane_surface() {
     );
 }
 
-#[test]
-fn switching_to_an_endpoint_with_an_undecodable_config_keeps_the_previous_one() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let machine = remote_machine();
-    let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
-    state.set_machines(&[machine]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
-    state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
-    let mut remote = snapshot();
-    remote.boot_id = crate::tests::test_boot_id("remote-boot");
-    remote.workspaces[0].label = "remote-workspace".into();
-    remote.resolved_config = vec![0xff; 3];
-    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+/// A validated config whose only difference from the default is its prefix key.
+fn config_with_prefix(prefix: &str) -> std::sync::Arc<shepr_config::ValidatedConfig> {
+    use shepr_test_fixtures::ValidatedConfigFixture as _;
+    let mut values = Config::default();
+    values.keys.prefix = prefix.to_owned();
+    std::sync::Arc::new(shepr_config::ValidatedConfig::test_from_config(
+        values,
+        Some(&format!("[keys]\nprefix = \"{prefix}\"\n")),
+    ))
+}
 
-    assert!(!state.activate_endpoint_projection(&endpoint_id));
-    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
-    assert!(state.pane_surface.is_some());
-    assert_ne!(
-        state
-            .snapshot
-            .as_deref()
-            .and_then(|snapshot| snapshot.workspaces.first())
-            .map(|workspace| workspace.label.as_str()),
-        Some("remote-workspace")
-    );
-    assert!(
-        state
-            .endpoint_error
-            .as_deref()
-            .is_some_and(|error| error.contains("invalid endpoint configuration")),
-        "{:?}",
-        state.endpoint_error
-    );
+fn default_config() -> std::sync::Arc<shepr_config::ValidatedConfig> {
+    use shepr_test_fixtures::ValidatedConfigFixture as _;
+    std::sync::Arc::new(shepr_config::ValidatedConfig::test_default())
+}
+
+const CTRL_A: (crossterm::event::KeyCode, KeyModifiers) =
+    (crossterm::event::KeyCode::Char('a'), KeyModifiers::CONTROL);
+
+fn prefix_key(state: &ClientShellState) -> (crossterm::event::KeyCode, KeyModifiers) {
+    state.config.keybinds.prefix
 }
 
 #[test]
-fn inactive_endpoint_with_an_undecodable_config_is_flagged_at_once() {
+fn snapshots_after_the_connection_config_is_installed_reuse_it() {
     let (mut state, endpoint_id) = state_with_remote();
-    let endpoint = |state: &ClientShellState| {
-        state
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-            .expect("remote endpoint")
-            .clone()
-    };
-    let good = endpoint(&state).snapshot.expect("remote snapshot");
-    let mut bad = (*good).clone();
-    bad.revision = bad.revision.checked_next().expect("test precondition");
-    bad.resolved_config = vec![0xff; 3];
-    state.cache_endpoint_snapshot(&endpoint_id, Box::new(bad.clone()));
+    let installed = config_with_prefix("ctrl+a");
+    state.install_endpoint_config(&endpoint_id, std::sync::Arc::clone(&installed));
 
-    // Surfaced while the endpoint is still in the background, and the last
-    // good config is kept rather than dropped.
-    let flagged = endpoint(&state);
-    assert_eq!(flagged.status, ClientEndpointStatus::Attention);
-    assert!(flagged.resolved_config.is_some());
-    assert!(flagged.resolved_config_error.is_some());
-    // A connection reporting itself online does not hide the bad config.
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
-    assert_eq!(endpoint(&state).status, ClientEndpointStatus::Attention);
-
-    assert!(!state.activate_endpoint_projection(&endpoint_id));
-    assert!(
-        state
-            .endpoint_error
-            .as_deref()
-            .is_some_and(|error| error.starts_with("Build: invalid endpoint configuration")),
-        "{:?}",
-        state.endpoint_error
-    );
-
-    let mut fixed = (*good).clone();
-    fixed.revision = bad.revision.checked_next().expect("test precondition");
-    state.cache_endpoint_snapshot(&endpoint_id, Box::new(fixed));
-    let recovered = endpoint(&state);
-    assert_eq!(recovered.status, ClientEndpointStatus::Online);
-    assert!(recovered.resolved_config_error.is_none());
     assert!(state.activate_endpoint_projection(&endpoint_id));
-}
+    assert!(std::sync::Arc::ptr_eq(
+        state.active_resolved_config.as_ref().expect("applied"),
+        &installed
+    ));
 
-#[test]
-fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
-    let (mut state, endpoint_id) = state_with_remote();
+    // A later snapshot of the same connection carries no config and needs none.
     let mut later = state
         .endpoints
         .iter()
@@ -196,12 +118,17 @@ fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
         .expect("remote snapshot")
         .clone();
     later.revision = later.revision.checked_next().expect("test precondition");
-    later.resolved_config.clear();
     later.workspaces[0].label = "later".into();
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(later));
 
     assert!(state.activate_endpoint_projection(&endpoint_id));
-    assert!(state.active_resolved_config.is_some());
+    assert!(std::sync::Arc::ptr_eq(
+        state
+            .active_resolved_config
+            .as_ref()
+            .expect("still applied"),
+        &installed
+    ));
     assert_eq!(
         state
             .snapshot
@@ -210,6 +137,100 @@ fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
             .map(|workspace| workspace.label.as_str()),
         Some("later")
     );
+}
+
+#[test]
+fn a_failed_handshake_marks_only_its_endpoint() {
+    let (mut state, failed) = state_with_machines(&[
+        remote_machine(),
+        machine_named("Other", "dev@other.example"),
+    ]);
+    let other = ClientEndpointId::Ssh(
+        shepr_config::MachineLabel::parse("Other").expect("test precondition"),
+    );
+    let mut other_snapshot = snapshot();
+    other_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
+    other_snapshot.workspaces[0].label = "other-workspace".into();
+    state.set_endpoint_snapshot(&other, Box::new(other_snapshot));
+    state.set_endpoint_status(&other, ClientEndpointStatus::Online);
+    state.install_endpoint_config(&other, config_with_prefix("ctrl+a"));
+
+    // A welcome whose config does not decode fails that endpoint's handshake:
+    // the loop reports it as an Attention diagnostic, like any handshake failure.
+    state.set_endpoint_status(&failed, ClientEndpointStatus::Attention);
+    state.set_machine_diagnostic(
+        &failed,
+        &shepr_remote::SshFailureDiagnostic::from_message(
+            "handshake failed: protocol error: codec error".to_owned(),
+        ),
+    );
+
+    assert_eq!(
+        state.endpoint_status(&failed),
+        Some(ClientEndpointStatus::Attention)
+    );
+    assert!(!state.activate_endpoint_projection(&failed));
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+
+    assert_eq!(
+        state.endpoint_status(&other),
+        Some(ClientEndpointStatus::Online)
+    );
+    assert!(state.activate_endpoint_projection(&other));
+    assert_eq!(state.active_endpoint_id, other);
+    assert_eq!(prefix_key(&state), CTRL_A);
+}
+
+#[test]
+fn a_reconnect_applies_the_new_connections_config_with_its_snapshot() {
+    let (mut state, endpoint_id) = state_with_remote();
+    let default_prefix = prefix_key(&state);
+    assert_ne!(default_prefix, CTRL_A, "the test needs distinct prefixes");
+    let mut remote = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .expect("remote snapshot")
+        .clone();
+
+    state.install_endpoint_config(&endpoint_id, config_with_prefix("ctrl+a"));
+    state.set_endpoint_snapshot_for_generation(&endpoint_id, 1, Box::new(remote.clone()));
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    assert_eq!(prefix_key(&state), CTRL_A);
+
+    // The connection drops and its replacement was accepted by a server
+    // launched with another config. Installing that config changes nothing on
+    // screen: the old generation's projection keeps its own until the new
+    // generation's snapshot lands.
+    state.mark_endpoint_disconnected(&endpoint_id);
+    let replacement = default_config();
+    state.install_endpoint_config(&endpoint_id, std::sync::Arc::clone(&replacement));
+    assert_eq!(prefix_key(&state), CTRL_A);
+
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    remote.revision = remote.revision.checked_next().expect("test precondition");
+    state.set_endpoint_snapshot_for_generation(&endpoint_id, 2, Box::new(remote));
+    assert_eq!(prefix_key(&state), default_prefix);
+    assert!(std::sync::Arc::ptr_eq(
+        state.active_resolved_config.as_ref().expect("applied"),
+        &replacement
+    ));
+}
+
+#[test]
+fn handoff_applies_the_destination_endpoints_config() {
+    let (mut state, remote_id) = state_with_remote();
+    let default_prefix = prefix_key(&state);
+    assert_ne!(default_prefix, CTRL_A, "the test needs distinct prefixes");
+    state.install_endpoint_config(&ClientEndpointId::Local, default_config());
+    state.install_endpoint_config(&remote_id, config_with_prefix("ctrl+a"));
+
+    assert!(state.activate_endpoint_projection(&remote_id));
+    assert_eq!(prefix_key(&state), CTRL_A);
+
+    assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
+    assert_eq!(prefix_key(&state), default_prefix);
 }
 
 #[test]

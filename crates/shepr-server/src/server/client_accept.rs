@@ -15,6 +15,7 @@ pub(crate) fn accept_pending_client_connections(
     clients: &mut ClientRegistry,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
+    config: &Arc<shepr_config::ValidatedConfig>,
 ) -> io::Result<()> {
     loop {
         if should_quit.is_requested() {
@@ -45,12 +46,14 @@ pub(crate) fn accept_pending_client_connections(
 
                 let should_quit = Arc::clone(should_quit);
                 let server_event_tx = server_event_tx.clone();
+                let config = Arc::clone(config);
                 std::thread::spawn(move || {
                     if let Err(err) = client_transport::handle_client_handshake(
                         stream,
                         client_id,
                         &server_event_tx,
                         &should_quit,
+                        &config,
                     ) {
                         debug!(
                             ?client_id,

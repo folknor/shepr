@@ -60,12 +60,18 @@ detect capture <pane>` prints the text the detector evaluates for a pane, and
 
 Config is read and validated once at launch. There is no reload. Any config
 problem fails the launch; no fallbacks. Directories follow the XDG spec.
-One thing qualifies that: a client validates each server's config again when
-it decodes the attach snapshot, with the checks that only mean something on
-the sending host (the new-pane cwd exists, the shell resolves) skipped. The
-server's config crosses hosts, and the client rebuilds its runtime values from
-it; the build-identity handshake is what guarantees both ends run the same
-validator.
+One thing qualifies that: each connection's handshake welcome carries the
+server's config, and the client validates it again when it decodes the welcome,
+with the checks that only mean something on the sending host (the new-pane cwd
+exists, the shell resolves) skipped. The server's config crosses hosts, and the
+client rebuilds its runtime values from it; the build-identity handshake is
+what guarantees both ends run the same validator. The config belongs to the
+accepted connection generation: it arrives once per connection (a reconnect may
+carry a different one), each endpoint keeps the one it was last given, the
+client installs it before it processes that generation's snapshots, and a
+handoff applies the destination endpoint's config at the presentation
+transition. A config that fails to decode fails that handshake and shows as
+that endpoint's Attention diagnostic; the other endpoints stay usable.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
@@ -119,8 +125,9 @@ orientation, and nothing checks them:
 - `shepr-pty`: PTY process launch and IO.
 - `shepr-test-support`: shared environment isolation and scratch directories for tests.
 - `shepr-agent`: detection manifests and agent integrations.
-- `shepr-protocol`: compact wire types and codec.
 - `shepr-config`: configuration parsing and validation.
+- `shepr-protocol`: compact wire types and codec; it depends on `shepr-config`
+  because the handshake welcome carries the server's validated config.
 - `shepr-api`: JSON API schema, client and server transport.
 - `shepr-termio`: terminal input and copy mode.
 - `shepr-remote`: configured machines and SSH connections.

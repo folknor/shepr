@@ -112,7 +112,11 @@ pub fn run_server(
     paths: &shepr_config::AppPaths,
     on_ready: impl FnOnce(&ServerReady),
 ) -> Result<(), RunServerError> {
-    let resolved_config = encode_resolved_config(config)?;
+    // The immutable config every connection's welcome carries. A config the
+    // welcome cannot carry fails the launch here, like any other config
+    // problem, rather than every handshake later.
+    ensure_config_fits_welcome(config)?;
+    let served_config = Arc::new(config.clone());
     let api_socket = shepr_api::socket_path(paths);
     let client_socket = client_socket_path(paths);
 
@@ -167,7 +171,7 @@ pub fn run_server(
 
         // Create the headless server.
         let mut server =
-            match HeadlessServer::new(app, Some(_api_server), resolved_config, stop_requested) {
+            match HeadlessServer::new(app, Some(_api_server), served_config, stop_requested) {
                 Ok(server) => server,
                 Err(err) => return Err(startup_error(ServerSocket::Client, err)),
             };
@@ -227,14 +231,25 @@ fn spawn_integration_install() {
     }
 }
 
-fn encode_resolved_config(config: &shepr_config::ValidatedConfig) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::new();
-    shepr_protocol::codec::encode_into(&mut encoded, config).map_err(|error| {
+/// Refuses a config the handshake welcome could not carry: one that does not
+/// encode, or whose welcome would exceed `MAX_MESSAGE_SIZE`, which the client
+/// refuses to read.
+fn ensure_config_fits_welcome(config: &shepr_config::ValidatedConfig) -> io::Result<()> {
+    let welcome = shepr_protocol::ServerMessage::EndpointWelcome(
+        shepr_protocol::endpoint::EndpointServerWelcome::accepted(config.clone()),
+    );
+    let size = shepr_protocol::codec::encoded_len(&welcome).map_err(|error| {
         io::Error::other(format!(
             "validated configuration could not be encoded for the client protocol: {error}"
         ))
     })?;
-    Ok(encoded)
+    if size > shepr_protocol::MAX_MESSAGE_SIZE {
+        return Err(io::Error::other(format!(
+            "the configuration is too large to send to clients ({size} bytes; the limit is {} bytes)",
+            shepr_protocol::MAX_MESSAGE_SIZE
+        )));
+    }
+    Ok(())
 }
 
 fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {

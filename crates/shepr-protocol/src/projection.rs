@@ -8,14 +8,6 @@ pub struct ClientShellSnapshot {
     pub boot_id: BootId,
     /// Monotonic replacement revision within one endpoint boot.
     pub revision: ProjectionRevision,
-    /// Positional encoding of the endpoint's resolved configuration and provenance.
-    /// Present on the first snapshot of a connection; empty later means reuse
-    /// that connection's validated config.
-    #[serde(
-        serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
-        deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
-    )]
-    pub resolved_config: Vec<u8>,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
     pub workspaces: Vec<ClientShellWorkspace>,

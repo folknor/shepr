@@ -754,7 +754,6 @@ pub(super) fn finish_client_shell_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_fixtures::*;
 
     #[test]
     fn an_interrupted_machine_switch_names_the_machine_and_reads_as_one_sentence() {
@@ -790,10 +789,6 @@ mod tests {
         Box::new(shepr_protocol::ClientShellSnapshot {
             boot_id: crate::tests::test_boot_id(boot_id),
             revision: shepr_protocol::ProjectionRevision::new(1),
-            resolved_config: shepr_test_fixtures::encode_to_vec(
-                &shepr_config::ValidatedConfig::test_default(),
-            )
-            .expect("test config encodes"),
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: Vec::new(),

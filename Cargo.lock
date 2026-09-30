@@ -1440,6 +1440,7 @@ version = "0.1.0"
 dependencies = [
  "ratatui",
  "serde",
+ "shepr-config",
  "shepr-core",
  "shepr-test-support",
  "shepr-vt",

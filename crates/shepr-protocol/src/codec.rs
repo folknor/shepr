@@ -194,84 +194,6 @@ pub fn from_slice_exact<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T,
     }
 }
 
-/// Serializes a byte vector after checking its field-specific byte limit.
-pub fn serialize_bounded_bytes<const MAX: usize, S>(
-    bytes: &[u8],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: ser::Serializer,
-{
-    if bytes.len() > MAX {
-        return Err(<S::Error as ser::Error>::custom(format!(
-            "byte buffer length {} exceeds the limit {MAX}",
-            bytes.len()
-        )));
-    }
-    serializer.serialize_bytes(bytes)
-}
-
-/// Deserializes a byte vector after checking its field-specific byte limit
-/// before copying or reserving the announced bytes.
-pub fn deserialize_bounded_bytes<'de, const MAX: usize, D>(
-    deserializer: D,
-) -> Result<Vec<u8>, D::Error>
-where
-    D: de::Deserializer<'de>,
-{
-    struct BoundedByteBufVisitor<const MAX: usize>;
-
-    impl<'de, const MAX: usize> Visitor<'de> for BoundedByteBufVisitor<MAX> {
-        type Value = Vec<u8>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(formatter, "a byte buffer with at most {MAX} bytes")
-        }
-
-        fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
-            if bytes.len() > MAX {
-                return Err(E::custom(format!(
-                    "byte buffer length {} exceeds the limit {MAX}",
-                    bytes.len()
-                )));
-            }
-            Ok(bytes.to_vec())
-        }
-
-        fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
-            if bytes.len() > MAX {
-                return Err(E::custom(format!(
-                    "byte buffer length {} exceeds the limit {MAX}",
-                    bytes.len()
-                )));
-            }
-            Ok(bytes)
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut sequence: A) -> Result<Vec<u8>, A::Error> {
-            if let Some(len) = sequence.size_hint()
-                && len > MAX
-            {
-                return Err(<A::Error as de::Error>::custom(format!(
-                    "byte buffer length {len} exceeds the limit {MAX}"
-                )));
-            }
-            let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
-            while let Some(byte) = sequence.next_element::<u8>()? {
-                if bytes.len() == MAX {
-                    return Err(<A::Error as de::Error>::custom(format!(
-                        "byte buffer length exceeds the limit {MAX}"
-                    )));
-                }
-                bytes.push(byte);
-            }
-            Ok(bytes)
-        }
-    }
-
-    deserializer.deserialize_byte_buf(BoundedByteBufVisitor::<MAX>)
-}
-
 /// Serializes a vector after checking its field-specific logical item limit.
 ///
 /// The codec applies its own general collection limit too; this adapter lets
@@ -1587,15 +1509,6 @@ mod tests {
         values: Vec<u8>,
     }
 
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct FieldBoundedBytes {
-        #[serde(
-            serialize_with = "super::serialize_bounded_bytes::<2, _>",
-            deserialize_with = "super::deserialize_bounded_bytes::<2, _>"
-        )]
-        values: Vec<u8>,
-    }
-
     #[test]
     fn codec_logical_item_limits_apply_before_sequence_and_map_allocation() -> TestResult {
         let over_limit = MAX_COLLECTION_ITEMS + 1;
@@ -1630,18 +1543,6 @@ mod tests {
         assert!(matches!(
             from_slice_exact::<FieldBounded>(&[3, 1, 2, 3]),
             Err(CodecError::Message(message)) if message.contains("item limit 2")
-        ));
-
-        let oversized_bytes = FieldBoundedBytes {
-            values: vec![1, 2, 3],
-        };
-        assert!(matches!(
-            to_vec(&oversized_bytes),
-            Err(CodecError::Message(message)) if message.contains("limit 2")
-        ));
-        assert!(matches!(
-            from_slice_exact::<FieldBoundedBytes>(&[3, 1, 2, 3]),
-            Err(CodecError::Message(message)) if message.contains("limit 2")
         ));
         Ok(())
     }

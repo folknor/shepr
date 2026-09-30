@@ -904,7 +904,7 @@ impl ClientShellState {
         &mut self,
         snapshot: Box<ClientShellSnapshot>,
         generation: Option<u64>,
-        snapshot_config: &std::sync::Arc<shepr_config::ValidatedConfig>,
+        config: Option<&std::sync::Arc<shepr_config::ValidatedConfig>>,
     ) {
         let active_boot_key = match &self.active_endpoint_id {
             ClientEndpointId::Local => snapshot.boot_id.to_string(),
@@ -921,12 +921,18 @@ impl ClientShellState {
         {
             return;
         }
-        let endpoint_keybindings_changed =
+        // The keymap follows the config of the endpoint being presented. An
+        // endpoint with no installed config (state built without a connect
+        // step) leaves the keymap as it is.
+        let endpoint_keybindings_changed = config.is_some_and(|config| {
             self.active_resolved_config.as_ref().is_none_or(|current| {
-                !std::sync::Arc::ptr_eq(current, snapshot_config)
-                    && !current.same_keybinding_resolution(snapshot_config)
-            });
-        self.active_resolved_config = Some(std::sync::Arc::clone(snapshot_config));
+                !std::sync::Arc::ptr_eq(current, config)
+                    && !current.same_keybinding_resolution(config)
+            })
+        });
+        if let Some(config) = config {
+            self.active_resolved_config = Some(std::sync::Arc::clone(config));
+        }
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.
         if generation_changed {
@@ -934,8 +940,6 @@ impl ClientShellState {
         }
         self.active_snapshot_generation = generation;
         self.active_boot_key = active_boot_key;
-        // The keymap follows the endpoint's resolved config.
-        let snapshot_keybindings_changed = endpoint_keybindings_changed;
         let boot_changed = endpoint_boot_changed
             || self
                 .snapshot
@@ -962,10 +966,9 @@ impl ClientShellState {
         {
             self.previous_pane_id = Some(previous.clone());
         }
-        if snapshot_keybindings_changed {
-            if let Err(err) = self.config.apply_snapshot_config(snapshot_config) {
-                self.set_endpoint_error(err, self.now);
-            } else if matches!(
+        if endpoint_keybindings_changed && let Some(config) = config {
+            self.config.apply_endpoint_config(config);
+            if matches!(
                 self.mode,
                 ClientShellMode::Prefix | ClientShellMode::Navigate | ClientShellMode::Resize
             ) {

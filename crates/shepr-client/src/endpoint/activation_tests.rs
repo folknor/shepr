@@ -1,6 +1,5 @@
 use super::*;
 use crate::tests::test_pane_id;
-use shepr_test_fixtures::*;
 use std::time::{Duration, Instant};
 
 impl PendingEndpointActivation {
@@ -175,10 +174,6 @@ fn test_snapshot(boot_id: &str, revision: u64) -> shepr_protocol::ClientShellSna
     shepr_protocol::ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id(boot_id),
         revision: revision.into(),
-        resolved_config: shepr_test_fixtures::encode_to_vec(
-            &shepr_config::ValidatedConfig::test_default(),
-        )
-        .expect("test config encodes"),
         focused_workspace_id: None,
         focused_pane_id: None,
         workspaces: Vec::new(),
@@ -515,10 +510,6 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
     let snapshot = shepr_protocol::ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("remote-boot"),
         revision: shepr_protocol::ProjectionRevision::new(2),
-        resolved_config: shepr_test_fixtures::encode_to_vec(
-            &shepr_config::ValidatedConfig::test_default(),
-        )
-        .expect("test config encodes"),
         focused_workspace_id: None,
         focused_pane_id: None,
         workspaces: Vec::new(),

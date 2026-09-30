@@ -64,8 +64,8 @@ pub enum UiPreferenceKey {
 pub struct ConfigProvenance {
     /// One entry per resolved config leaf, so the local config file bounds
     /// its length. It needs no field cap of its own on the wire: it travels only
-    /// inside the client snapshot's resolved config blob, which is capped at
-    /// the frame size and decoded under the codec's collection limit.
+    /// inside the welcome's config, a message capped at the protocol's message
+    /// size and decoded under the codec's collection limit.
     values: Vec<ConfigValueOrigin>,
     ui_sidebar_width: ConfigSource,
     ui_sidebar_start_collapsed: ConfigSource,

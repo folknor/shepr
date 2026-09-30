@@ -7,17 +7,12 @@ use shepr_protocol::{
     ClientShellAgent, ClientShellPane, PaneSurfacePane, PaneSurfaceSplit,
     PaneSurfaceSplitDirection, SurfaceRect,
 };
-use shepr_test_fixtures::*;
 mod text_editing;
 
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("boot-1"),
         revision: shepr_protocol::ProjectionRevision::new(1),
-        resolved_config: shepr_test_fixtures::encode_to_vec(
-            &shepr_config::ValidatedConfig::test_default(),
-        )
-        .expect("test config encodes"),
         focused_workspace_id: Some(test_workspace_id("w1")),
         focused_pane_id: Some(test_pane_id("w1:p1")),
         workspaces: vec![ClientShellWorkspace {

@@ -34,6 +34,10 @@ pub(crate) enum EndpointSupervisorEvent {
         generation: u64,
         reader: shepr_platform::ipc::LocalStream,
         writer: NativeEndpointTransport,
+        /// The config this connection's welcome carried. It belongs to this
+        /// generation: the loop installs it before it processes the
+        /// generation's snapshots.
+        config: Arc<shepr_config::ValidatedConfig>,
         connector: Option<OwnedConnector>,
     },
 }
@@ -59,12 +63,14 @@ impl EndpointSupervisorEvent {
                 generation,
                 reader,
                 writer,
+                config,
                 ..
             } => Self::Connected {
                 endpoint_id,
                 generation,
                 reader,
                 writer,
+                config,
                 connector,
             },
         }
@@ -475,7 +481,7 @@ fn establish(
         EndpointLink::Local { mismatch_guidance } => (None, Some(mismatch_guidance)),
         EndpointLink::Ssh(bridge) => (Some(bridge), None),
     };
-    super::super::do_handshake(
+    let config = super::super::do_handshake(
         &mut stream,
         options.geometry,
         options.mouse_capture,
@@ -517,6 +523,7 @@ fn establish(
         generation,
         reader,
         writer,
+        config,
         connector: None,
     })
 }
@@ -878,6 +885,22 @@ mod tests {
             None,
         );
         assert!(shepr_remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());
+    }
+
+    /// A welcome whose config does not decode surfaces as a handshake failure
+    /// that needs attention: the endpoint is marked and the others keep running.
+    #[test]
+    fn a_config_that_does_not_decode_needs_attention() {
+        let error = handshake_error(
+            crate::ClientError::Protocol(shepr_protocol::FramingError::Codec(
+                shepr_protocol::codec::CodecError::InvalidUtf8,
+            )),
+            None,
+        );
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error);
+        assert!(diagnostic.needs_attention());
+        assert!(diagnostic.to_string().contains("handshake failed"));
     }
 
     fn different_build() -> crate::ClientError {

@@ -805,15 +805,17 @@ allow = ["jsonc-parser", "libc", "regex", "serde", "serde_json", "shepr-core", "
 kinds = ["normal"]
 
 [[dependency_rule]]
-name = "shepr-protocol-layer"
-from = "shepr-protocol"
-allow = ["ratatui", "serde", "shepr-core", "shepr-vt", "tracing"]
-kinds = ["normal"]
-
-[[dependency_rule]]
 name = "shepr-config-layer"
 from = "shepr-config"
 allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "shepr-platform", "toml"]
+kinds = ["normal"]
+
+# The welcome carries the server's validated config, so protocol sits above
+# config; config never depends on protocol.
+[[dependency_rule]]
+name = "shepr-protocol-layer"
+from = "shepr-protocol"
+allow = ["ratatui", "serde", "shepr-config", "shepr-core", "shepr-vt", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]

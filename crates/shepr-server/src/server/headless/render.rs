@@ -58,7 +58,6 @@ impl HeadlessServer {
             let candidate = crate::server::client_shell::snapshot_from_session(
                 &self.app,
                 cache.session.clone(),
-                &[],
                 &self.client_shell_boot_id,
                 shell.projection_revision.get(),
                 &shell.location,
@@ -437,7 +436,6 @@ impl HeadlessServer {
                     // Focus and new-workspace cwd differ per client. Copy only
                     // when the shared source generation changed.
                     cache.session.clone(),
-                    &[],
                     &self.client_shell_boot_id,
                     client.shell_state().projection_revision.get(),
                     &client.shell_state().location,
