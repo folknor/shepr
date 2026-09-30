@@ -194,8 +194,11 @@ impl PersistedAgentSession {
 
 impl AgentResumePlan {
     fn with_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Option<Self> {
+        // A plan with nothing to run cannot be launched; refuse it here so
+        // the server never holds one.
         (session.source == AgentSource::Official(session.agent)
-            && session.session_ref.accepted_for(session.agent))
+            && session.session_ref.accepted_for(session.agent)
+            && argv.first().is_some_and(|program| !program.is_empty()))
         .then(|| Self {
             source: session.source.clone(),
             agent: session.agent,
@@ -336,6 +339,19 @@ mod tests {
         let agent = source.agent()?;
         let session = PersistedAgentSession::new(source, agent, session_ref.clone())?;
         plan(&session)
+    }
+
+    #[test]
+    fn a_plan_with_nothing_to_run_is_refused() {
+        let session = PersistedAgentSession::new(
+            AgentSource::Official(Agent::Codex),
+            Agent::Codex,
+            AgentSessionRef::id("abc").expect("test precondition"),
+        )
+        .expect("test precondition");
+        assert!(AgentResumePlan::with_argv(&session, Vec::new()).is_none());
+        assert!(AgentResumePlan::with_argv(&session, vec![String::new()]).is_none());
+        assert!(AgentResumePlan::with_argv(&session, vec!["codex".into()]).is_some());
     }
 
     fn snapshot_session_for_labels(

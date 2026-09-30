@@ -401,15 +401,10 @@ impl HeadlessServer {
             client.request_recompute();
         }
         if !start_pending_agent_resumes {
-            self.app.pending_agent_resume_deadline = None;
             return;
         }
         let now = self.app.clock.now;
-        self.app.sync_pending_agent_resume_deadline(now);
-        if self
-            .app
-            .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now))
-        {
+        if self.app.start_pending_agent_resumes(now) {
             for client in self.clients.values_mut() {
                 client.request_recompute();
             }

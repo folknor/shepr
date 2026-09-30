@@ -33,7 +33,7 @@ pub(super) fn render_mode_bar(
     keybinds: &LiveKeybindConfig,
     palette: &Palette,
 ) -> Option<Rect> {
-    // The returned bar is copied out of the composed frame by cell index, so it must lie
+    // The returned bar is the rect composition overwrites into the frame, so it must lie
     // inside the buffer: clip the area first.
     let pane_area = pane_area.intersection(buffer.area);
     if (mode == ClientShellMode::Terminal && endpoint_error.is_none()) || pane_area.is_empty() {

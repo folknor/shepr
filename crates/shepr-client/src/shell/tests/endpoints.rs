@@ -608,9 +608,8 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
             .find(|hit| hit.endpoint_id.is_local())
             .expect("test precondition")
             .rect;
-        let buffer = frame.to_ratatui_buffer().expect("test precondition");
         let local_row = (local.x..local.right())
-            .map(|x| buffer[(x, local.y)].symbol())
+            .map(|x| frame_cell(&frame, (x, local.y)).symbol.as_str())
             .collect::<String>();
         assert!(!local_row.contains("reconnecting"));
         assert!(
@@ -678,11 +677,13 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .find(|hit| !hit.endpoint_id.is_local())
         .expect("remote machine row")
         .rect;
-    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
-    assert_ne!(buffer[(local.right() - 1, local.y)].symbol(), "●");
-    assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), "●");
+    assert_ne!(frame_cell(&frame, (local.right() - 1, local.y)).symbol, "●");
     assert_eq!(
-        buffer[(remote.right() - 1, remote.y)].fg,
+        frame_cell(&frame, (remote.right() - 1, remote.y)).symbol,
+        "●"
+    );
+    assert_eq!(
+        cell_fg(&frame, (remote.right() - 1, remote.y)),
         state.config.palette.green
     );
 
@@ -702,9 +703,11 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .find(|hit| !hit.endpoint_id.is_local())
         .expect("collapsed remote machine row")
         .rect;
-    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
-    assert_ne!(buffer[(local.right() - 1, local.y)].symbol(), "●");
-    assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), "●");
+    assert_ne!(frame_cell(&frame, (local.right() - 1, local.y)).symbol, "●");
+    assert_eq!(
+        frame_cell(&frame, (remote.right() - 1, remote.y)).symbol,
+        "●"
+    );
 }
 
 #[test]
@@ -939,13 +942,12 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
         .find(|hit| hit.endpoint_id == endpoint_id)
         .expect("remote workspace hit")
         .rect;
-    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     assert_ne!(
-        buffer[(machine.x, machine.y)].bg,
+        cell_bg(&frame, (machine.x, machine.y)),
         state.config.palette.active_row_bg
     );
     assert_eq!(
-        buffer[(workspace.x + 2, workspace.y)].bg,
+        cell_bg(&frame, (workspace.x + 2, workspace.y)),
         state.config.palette.active_row_bg
     );
 
@@ -958,9 +960,8 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
         .find(|hit| hit.endpoint_id == endpoint_id)
         .expect("remote machine hit")
         .rect;
-    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     assert_eq!(
-        buffer[(machine.x, machine.y)].bg,
+        cell_bg(&frame, (machine.x, machine.y)),
         state.config.palette.active_row_bg
     );
 }
@@ -1020,14 +1021,11 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     );
     assert!(click.actions.is_empty());
 
-    let buffer = frame
-        .to_ratatui_buffer()
-        .expect("aggregate frame should reconstruct");
     assert!(
-        buffer
-            .content()
+        frame
+            .cells
             .iter()
-            .any(|cell| cell.symbol() == "×" && cell.fg == state.config.palette.red)
+            .any(|cell| cell.symbol == "×" && cell.fg.to_ratatui() == state.config.palette.red)
     );
 }
 
@@ -1252,9 +1250,8 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                     .expect("remote machine")
                     .rect;
                 let column = machine.x + u16::from(!sidebar_collapsed);
-                let buffer = frame.to_ratatui_buffer().expect("frame buffer");
                 assert_eq!(
-                    buffer[(column, machine.y)].symbol(),
+                    frame_cell(&frame, (column, machine.y)).symbol,
                     if collapsed { "▾" } else { "▸" }
                 );
                 let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -1603,13 +1600,12 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     );
     assert!(state.hits.panes.is_empty());
     assert!(frame.cursor.is_none());
-    let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
-    let stale_icon = buffer
-        .content()
+    let stale_icon = frame
+        .cells
         .iter()
-        .find(|cell| cell.symbol() == "×")
+        .find(|cell| cell.symbol == "×")
         .expect("stale blocked icon");
-    assert_eq!(stale_icon.fg, state.config.palette.overlay0);
+    assert_eq!(stale_icon.fg.to_ratatui(), state.config.palette.overlay0);
 }
 
 #[test]
@@ -1902,9 +1898,8 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
         .find(|hit| hit.endpoint_id == endpoint_id)
         .expect("remote workspace")
         .rect;
-    let buffer = frame.to_ratatui_buffer().expect("frame buffer");
     assert_eq!(
-        buffer[(workspace.x.saturating_add(2), workspace.y)].fg,
+        cell_fg(&frame, (workspace.x.saturating_add(2), workspace.y)),
         state.config.palette.red
     );
 }

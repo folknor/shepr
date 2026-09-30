@@ -4,8 +4,18 @@ use crate::limits::{
     MIN_NAVIGATOR_OVERLAY_HEIGHT, MIN_NAVIGATOR_OVERLAY_WIDTH,
 };
 
+/// What an overlay renderer painted into its scratch buffer, and the hit rects it produced.
+///
+/// Renderers draw into a fresh full-screen scratch buffer, never into the frame; composition
+/// commits only a successful render: the `backdrop` dimming first, then the scratch cells of
+/// the `opaque` rects (the union is one replacement). A renderer that gives up returns
+/// `None` and commits nothing.
 #[derive(Default)]
 pub(crate) struct OverlayRender {
+    /// Absolute rects the overlay painted opaquely: every scratch cell it drew is inside one.
+    pub(crate) opaque: Vec<Rect>,
+    /// Whether the whole frame is dimmed behind the overlay (Help, Rename, ConfirmClose).
+    pub(crate) backdrop: bool,
     pub(crate) menu_rows: Vec<(Rect, usize)>,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
@@ -31,23 +41,18 @@ pub(crate) fn render_client_overlay(
     k: &LiveKeybindConfig,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    if !matches!(
-        o,
-        ClientShellOverlay::Navigator(_)
-            | ClientShellOverlay::ContextMenu(_)
-            | ClientShellOverlay::GlobalMenu(_)
-    ) {
-        for y in b.area.y..b.area.bottom() {
-            for x in b.area.x..b.area.right() {
-                let c = &mut b[(x, y)];
-                c.set_style(c.style().add_modifier(Modifier::DIM));
-            }
-        }
-    }
+    // Help, Rename and ConfirmClose dim everything behind them; the navigator and the menus
+    // do not. The dimming is composition's to apply, and only when the render succeeds.
+    let backdrop = |rendered: Option<OverlayRender>| {
+        rendered.map(|rendered| OverlayRender {
+            backdrop: true,
+            ..rendered
+        })
+    };
     match o {
-        ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, p),
-        ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
-        ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
+        ClientShellOverlay::Rename(v) => backdrop(render_rename_overlay(b, v, p)),
+        ClientShellOverlay::ConfirmClose(v) => backdrop(render_confirm_close_overlay(b, v, p)),
+        ClientShellOverlay::Help(v) => backdrop(render_help_overlay(b, v, k, p)),
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
         }
@@ -105,6 +110,7 @@ pub(crate) fn render_global_menu(
         rows.push((row, index));
     }
     Some(OverlayRender {
+        opaque: vec![rect],
         menu_rows: rows,
         ..OverlayRender::default()
     })
@@ -163,6 +169,7 @@ pub(crate) fn render_context_menu(
         rows.push((row, index));
     }
     Some(OverlayRender {
+        opaque: vec![rect],
         menu_rows: rows,
         ..OverlayRender::default()
     })
@@ -179,8 +186,13 @@ fn panel(
     }
     let background = Style::default().bg(bg).remove_modifier(Modifier::DIM);
     let border = Style::default().fg(c).bg(bg).remove_modifier(Modifier::DIM);
+    // A panel is opaque: every cell is reset before anything is drawn, so nothing already in
+    // the buffer (pane attributes, an earlier draw) leaks into the popup.
     for y in a.y..a.bottom() {
         for x in a.x..a.right() {
+            if let Some(cell) = b.cell_mut((x, y)) {
+                cell.reset();
+            }
             set_cell(b, x, y, " ", background);
         }
     }
@@ -304,6 +316,7 @@ fn render_rename_overlay(
     button(b, *clear, " ^c clear ", n);
     button(b, *cancel, " esc cancel ", n);
     Some(OverlayRender {
+        opaque: vec![q],
         primary: *save,
         clear: *clear,
         cancel: *cancel,
@@ -662,6 +675,7 @@ fn render_navigator_overlay(
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
+        opaque: vec![q],
         primary: Rect::default(),
         clear: Rect::default(),
         cancel: Rect::default(),
@@ -877,6 +891,7 @@ fn render_help_overlay(
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
+        opaque: vec![q],
         cancel: close,
         help_popup: q,
         help_scrollbar: scrollbar.unwrap_or_default(),
@@ -935,6 +950,7 @@ fn render_confirm_close_overlay(
             .add_modifier(Modifier::BOLD),
     );
     Some(OverlayRender {
+        opaque: vec![q],
         primary: *ok,
         clear: Rect::default(),
         cancel: *cancel,
@@ -944,4 +960,51 @@ fn render_confirm_close_overlay(
         cursor: None,
         ..OverlayRender::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn panel_resets_every_cell_so_nothing_leaks_into_the_popup() {
+        let area = Rect::new(0, 0, 8, 5);
+        let mut buffer = Buffer::empty(area);
+        let attributed = Style::default()
+            .fg(Color::Red)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED | Modifier::DIM);
+        for y in 0..5 {
+            for x in 0..8 {
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    cell.set_symbol("x").set_style(attributed);
+                }
+            }
+        }
+        let inner = panel(
+            &mut buffer,
+            Rect::new(1, 1, 6, 3),
+            Color::Green,
+            Color::Black,
+        )
+        .expect("panel fits");
+        assert_eq!(inner, Rect::new(2, 2, 4, 1));
+        for y in 1..4 {
+            for x in 1..7 {
+                let cell = &buffer[(x, y)];
+                let border = x == 1 || x == 6 || y == 1 || y == 3;
+                assert_eq!(cell.bg, Color::Black, "({x}, {y})");
+                assert_eq!(cell.modifier, Modifier::empty(), "({x}, {y})");
+                if border {
+                    assert_eq!(cell.fg, Color::Green, "({x}, {y})");
+                } else {
+                    assert_eq!(cell.symbol(), " ", "({x}, {y})");
+                    assert_eq!(cell.fg, Color::Reset, "({x}, {y})");
+                }
+            }
+        }
+        // Cells outside the panel are untouched.
+        assert_eq!(buffer[(0, 0)].symbol(), "x");
+    }
 }

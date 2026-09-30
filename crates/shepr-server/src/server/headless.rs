@@ -1340,16 +1340,10 @@ impl HeadlessServer {
             }
         }
 
-        // A pending render says nothing about geometry: PTY output from any pane,
-        // hidden ones included, sets it. Geometry changes run through the client
-        // resize/claim paths, which settle the resume deadline themselves. Gating
-        // on "render pending" here used to clear the theme-wait deadline, so a
-        // pane printing at least every theme-wait interval postponed the first
-        // restored agent indefinitely.
-        self.app.sync_pending_agent_resume_deadline(now);
-        let resumed = self
-            .app
-            .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));
+        // The resume schedule derives its own wakeup and keeps its theme wait
+        // across passes, so running this on every iteration (a pane printing
+        // keeps one busy) cannot postpone the first restored agent.
+        let resumed = self.app.start_pending_agent_resumes(now);
         if resumed {
             // A resumed agent runs in a fresh runtime; one whose pane a
             // client has focused gets its focus-in report now rather than on

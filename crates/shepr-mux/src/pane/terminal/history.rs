@@ -26,22 +26,39 @@
 //! The screen itself is re-read on every save, together with the part of a
 //! logical line that starts in history and continues onto it.
 //!
-//! Chunks join exactly as one whole read would format them. A chunk is one of
-//! two kinds:
+//! Chunks join exactly as one whole read would format them. A chunk is the
+//! rows from where the cache ends to the end of the scan window
+//! (`SCAN_CHUNK_ROWS` rows at most, or the screen start), whatever those rows
+//! hold, and is one of two kinds:
 //!
-//! - A closed chunk starts on a logical line (or continues an open chunk) and
-//!   ends on a row that ends a logical line and has visible text, so the
-//!   formatter's trailing-blank-line trim removes nothing from it, and the
-//!   formatter closes all SGR and hyperlink state at every line end. It is
-//!   followed by the line separator.
+//! - A closed chunk ends on a row that ends a logical line. The formatter
+//!   closes all SGR and hyperlink state at every line end, so the chunk starts
+//!   and ends in the default state, and the next chunk follows it after a
+//!   line separator.
 //! - An open chunk ends on a soft-wrapped row, in the middle of a logical
-//!   line. It is what lets a line longer than a chunk be formatted a chunk at
-//!   a time instead of under one lock hold: the formatter emits every cell of
-//!   the last row, closes nothing and trims nothing, and the chunk keeps the
-//!   SGR and hyperlink state it stopped in ([`shepr_vt::AnsiCarry`]). The
-//!   chunk after it starts from that state, so the style changes it emits are
-//!   the ones the whole line has at that point, and the two join with no
-//!   separator. The whole line's bytes are the pieces' bytes back to back.
+//!   line. The formatter emits every cell of the last row, closes nothing and
+//!   trims nothing, and the chunk keeps the SGR and hyperlink state it
+//!   stopped in ([`shepr_vt::AnsiCarry`]). The chunk after it starts from that
+//!   state, so the style changes it emits are the ones the whole line has at
+//!   that point, and the two join with no separator. The whole line's bytes
+//!   are the pieces' bytes back to back. This is what lets a line longer than
+//!   a chunk be formatted a chunk at a time.
+//!
+//! A chunk is not cut back to its content. The formatter reports, beside its
+//! untruncated text, the byte length the text has when trailing blank lines
+//! are dropped (`content_end`): `None` when the chunk has no content (blank
+//! is what the formatter would trim: painted, underlined, inverse,
+//! struck-through or hyperlinked blank cells are content in a VT read),
+//! `Some(0)` when it only finishes a logical line that began in an earlier
+//! chunk. Only the whole read is cut back, and where depends on rows the
+//! reader has not formatted yet, so the cache keeps every chunk and the
+//! screen part ("tail") as formatted, blank runs included, with their
+//! content ends. Exposure ([`PaneHistoryCache::pieces`], `text` and
+//! `has_text`) is the whole read: the pieces up to the last one that has
+//! content, the last one cut at its content end, everything after it, and the
+//! separator in front of it, dropped. A blank chunk in front of later
+//! content is part of the text, and a cache may hold nothing but blank chunks
+//! (its exposed text is then empty).
 //!
 //! The whole read is the chunks and the screen read joined this way. Rows in
 //! history never change, so the state an open chunk stops in (the style of
@@ -52,9 +69,8 @@
 //! text was formatted from a state the whole read no longer has, so it is
 //! dropped and its rows are read again.
 //!
-//! Rows are only cut where the join is exact: at a line end with visible
-//! text, or at a soft wrap. A run of rows that is neither (thousands of
-//! blank lines in a row) is still formatted under one hold.
+//! Since chunks are cut at the window end and nowhere else, no run of rows,
+//! however blank, is formatted under one lock hold longer than a window.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,18 +86,23 @@ use super::*;
 ///
 /// The cache also keeps the screen part of the last successful read, so the
 /// pane's last primary history can be rebuilt (`pieces`) while the alternate
-/// screen hides it, and a revision that changes exactly when that text does,
-/// so a save can tell that nothing changed without comparing text.
+/// screen hides it, and a revision that changes whenever that text does, so a
+/// save can tell that nothing changed without comparing text.
 #[derive(Default)]
 pub struct PaneHistoryCache {
     terminal: Weak<PaneTerminal>,
     epoch: u64,
     cols: u16,
     chunks: VecDeque<HistoryChunk>,
-    /// The screen part of the last successful read.
+    /// The screen part of the last successful read, untrimmed.
     tail: Arc<str>,
+    /// The byte length of `tail` cut back to its content, as for a chunk.
+    tail_content_end: Option<usize>,
     /// Names the current text: taken from `next_revision` whenever a chunk or
-    /// the tail changes. Zero while the cache has never held text.
+    /// the tail changes. Equal revisions mean the exposed text is unchanged;
+    /// different ones do not mean it changed (a change past the last content,
+    /// such as one more blank line, moves the revision and not the text).
+    /// Zero while the cache has never held anything.
     revision: u64,
 }
 
@@ -92,13 +113,17 @@ fn next_revision() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The VT text of absolute rows `start..end`: whole logical lines, the last
-/// of which has visible text, or (`open`) rows that stop inside a logical
-/// line.
+/// The VT text of absolute rows `start..end`, as the formatter wrote it:
+/// trailing blank lines included. Whole logical lines, or (`open`) rows that
+/// stop inside a logical line.
 struct HistoryChunk {
     start: AbsRow,
     end: AbsRow,
     text: Arc<str>,
+    /// The byte length of `text` cut back to its content: `None` when the
+    /// chunk has none, `Some(0)` when it only finishes a line that began in
+    /// the chunk before it, the whole length when it is open.
+    content_end: Option<usize>,
     /// The text was formatted from a state carried over from the chunk before
     /// it, which ended inside the logical line this one continues.
     resumed: bool,
@@ -236,50 +261,97 @@ impl PaneHistoryCache {
         if !self.chunks.is_empty() || !self.tail.is_empty() {
             self.chunks.clear();
             self.tail = Arc::default();
+            self.tail_content_end = None;
             self.revision = next_revision();
         }
     }
 
     /// Records the screen part of a read.
-    fn set_tail(&mut self, tail: String) {
-        if *self.tail != *tail {
+    fn set_tail(&mut self, tail: String, content_end: Option<usize>) {
+        if *self.tail != *tail || self.tail_content_end != content_end {
             self.tail = tail.into();
+            self.tail_content_end = content_end;
             self.revision = next_revision();
         }
     }
 
-    /// Whether the cache holds any visible text. Every chunk has visible
-    /// text, so only the tail needs looking at when there are none.
-    pub fn has_text(&self) -> bool {
-        !self.chunks.is_empty() || !self.tail.trim().is_empty()
+    /// What the whole read is made of, oldest first: the chunks, then the
+    /// tail. Each is its text as formatted, its content end and whether it
+    /// stops inside a logical line.
+    fn parts(&self) -> impl Iterator<Item = (&Arc<str>, Option<usize>, bool)> {
+        self.chunks
+            .iter()
+            .map(|chunk| (&chunk.text, chunk.content_end, chunk.open.is_some()))
+            .chain(std::iter::once((&self.tail, self.tail_content_end, false)))
     }
 
-    /// Names the text this cache holds: it changes whenever the text does and
-    /// is never shared with another cache.
+    /// The index in [`parts`] of the last part that has content, where the
+    /// whole read ends.
+    ///
+    /// [`parts`]: Self::parts
+    fn last_content(&self) -> Option<usize> {
+        if self.tail_content_end.is_some() {
+            Some(self.chunks.len())
+        } else {
+            self.chunks
+                .iter()
+                .rposition(|chunk| chunk.content_end.is_some())
+        }
+    }
+
+    /// Whether the exposed text has anything but whitespace in it.
+    pub fn has_text(&self) -> bool {
+        let Some(last) = self.last_content() else {
+            return false;
+        };
+        self.parts()
+            .take(last + 1)
+            .enumerate()
+            .any(|(index, (text, content_end, _))| {
+                let full: &str = text;
+                let exposed = match content_end {
+                    Some(end) if index == last => full.get(..end).unwrap_or(full),
+                    _ => full,
+                };
+                !exposed.trim().is_empty()
+            })
+    }
+
+    /// Names the exposed text: equal revisions mean the same text. It is never
+    /// shared with another cache. A different revision does not prove the text
+    /// changed: blank lines past the last content move it without changing
+    /// the text.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// The cached chunks followed by the tail of the last read, as pieces
-    /// that share the cache's text: the pane's primary history as of the last
-    /// successful read, even while the alternate screen hides it now. Joined
-    /// as one read would join their lines.
+    /// The whole read as pieces that share the cache's text: the pane's
+    /// primary history as of the last successful read, even while the
+    /// alternate screen hides it now. Joined as one read would join their
+    /// lines. The read ends at its last content: the parts after the last one
+    /// that has content, and the line separator in front of them, are left
+    /// out, and that part is cut back to its content end. A blank part in
+    /// front of later content stays (an empty piece is a blank line).
     pub fn pieces(&self) -> Vec<HistoryPiece> {
-        let mut pieces = Vec::with_capacity(self.chunks.len() + 1);
+        let Some(last) = self.last_content() else {
+            return Vec::new();
+        };
+        let mut pieces = Vec::with_capacity(last + 1);
         // Whether the piece before the next one ended a logical line.
         let mut line_ended = true;
-        for chunk in &self.chunks {
+        for (index, (text, content_end, open)) in self.parts().take(last + 1).enumerate() {
+            let full: &str = text;
+            let text = match content_end {
+                Some(end) if index == last && end < full.len() => {
+                    Arc::from(full.get(..end).unwrap_or(full))
+                }
+                _ => Arc::clone(text),
+            };
             pieces.push(HistoryPiece {
-                text: Arc::clone(&chunk.text),
+                text,
                 break_before: !pieces.is_empty() && line_ended,
             });
-            line_ended = chunk.open.is_none();
-        }
-        if !self.tail.is_empty() {
-            pieces.push(HistoryPiece {
-                text: Arc::clone(&self.tail),
-                break_before: !pieces.is_empty() && line_ended,
-            });
+            line_ended = !open;
         }
         pieces
     }
@@ -299,58 +371,33 @@ impl PaneHistoryCache {
     }
 }
 
-/// The end of the last chunk that may end inside `from..to`: one past the
-/// latest row there that ends a logical line and has visible text. Rows are
-/// checked from the end, so the search usually stops at the first row.
-fn chunk_boundary(terminal: &shepr_vt::Terminal, from: AbsRow, to: AbsRow) -> Option<AbsRow> {
-    let mut scratch = String::new();
-    let mut row = to;
-    while row > from {
-        row = row.saturating_sub(1);
-        let y = terminal.screen_row_for_absolute(row)?;
-        let mut visible = false;
-        let wrap = terminal.visit_screen_row_text(y, &mut scratch, |_, _, text| {
-            visible = visible || !text.trim().is_empty();
-        })?;
-        if visible && !wrap.soft_wrapped {
-            return Some(row.saturating_add(1));
-        }
-    }
-    None
-}
-
-/// The end of the last open chunk that may end inside `from..to`: one past
-/// the latest soft-wrapped row there, whose logical line continues in the
-/// next row. Rows are checked from the end, so inside a long line the search
-/// stops at the first row.
-fn wrap_boundary(terminal: &shepr_vt::Terminal, from: AbsRow, to: AbsRow) -> Option<AbsRow> {
-    let mut row = to;
-    while row > from {
-        row = row.saturating_sub(1);
-        let y = terminal.screen_row_for_absolute(row)?;
-        if terminal.screen_row_wrap(y)?.soft_wrapped {
-            return Some(row.saturating_add(1));
-        }
-    }
-    None
+/// Absolute rows `start..end` as the formatter wrote them.
+struct Formatted {
+    /// Unwrapped VT text, trailing blank lines included.
+    text: String,
+    /// The byte length of `text` cut back to its content (see
+    /// [`HistoryChunk::content_end`]).
+    content_end: Option<usize>,
+    /// With `open_end`, the state the next rows start from.
+    open: Option<AnsiCarry>,
 }
 
 /// VT text of absolute rows `start..end`, unwrapped, read from the state
 /// `carry` holds. With `open_end` the rows stop inside a logical line (their
-/// last row is soft-wrapped) and the second value is the state the next rows
-/// start from; otherwise trailing blank lines are trimmed and it is `None`.
+/// last row is soft-wrapped) and `open` is the state the next rows start
+/// from. The text is not cut back to its content.
 fn format_chunk(
     terminal: &shepr_vt::Terminal,
     start: AbsRow,
     end: AbsRow,
     carry: &AnsiCarry,
     open_end: bool,
-) -> Option<(String, Option<AnsiCarry>)> {
+) -> Option<Formatted> {
     let cols = terminal.cols();
     let first = terminal.screen_row_for_absolute(start)?;
     let last = terminal.screen_row_for_absolute(end.saturating_sub(1))?;
     let mut carry = carry.clone();
-    let text = terminal
+    let (text, content_end) = terminal
         .read_ansi_screen_carrying(
             Point::new(first, 0),
             Point::new(last, cols.saturating_sub(1)),
@@ -358,15 +405,16 @@ fn format_chunk(
             open_end,
         )
         .ok()?;
-    Some((text, open_end.then_some(carry)))
+    Some(Formatted {
+        text,
+        content_end,
+        open: open_end.then_some(carry),
+    })
 }
 
 impl PaneTerminal {
     /// See [`PaneHistorySource::refresh`].
     pub(crate) fn read_primary_history(&self, cache: &mut PaneHistoryCache) -> Option<()> {
-        // Where the search for the next chunk boundary resumes: rows between
-        // the cache's end and here were searched without finding one.
-        let mut probe: Option<AbsRow> = None;
         loop {
             let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
             let terminal = &core.terminal;
@@ -374,9 +422,7 @@ impl PaneTerminal {
                 return None;
             }
             let bounds = HistoryBounds::of(terminal);
-            if cache.settle(core.history_epoch, &bounds) {
-                probe = None;
-            }
+            cache.settle(core.history_epoch, &bounds);
 
             // Rows evicted from the middle of the oldest chunk took that
             // chunk with them; its surviving rows come back as a chunk of
@@ -388,7 +434,7 @@ impl PaneTerminal {
             {
                 let end = front.start;
                 let open_end = front.resumed;
-                let Some((text, open)) = format_chunk(
+                let Some(formatted) = format_chunk(
                     terminal,
                     bounds.origin,
                     end,
@@ -401,9 +447,10 @@ impl PaneTerminal {
                 cache.push_front(HistoryChunk {
                     start: bounds.origin,
                     end,
-                    text: text.into(),
+                    text: formatted.text.into(),
+                    content_end: formatted.content_end,
                     resumed: false,
-                    open,
+                    open: formatted.open,
                 });
                 drop(core);
                 std::thread::yield_now();
@@ -411,50 +458,42 @@ impl PaneTerminal {
             }
 
             let next = cache.end().unwrap_or(bounds.origin);
-            let from = probe.filter(|probe| *probe > next).unwrap_or(next);
-            if from < bounds.screen_start {
-                let window_end = bounds
+            if next < bounds.screen_start {
+                // The chunk is the whole window, cut wherever it ends: open
+                // when its last row is soft-wrapped, closed otherwise.
+                let end = bounds
                     .screen_start
-                    .min(from.saturating_add(SCAN_CHUNK_ROWS));
+                    .min(next.saturating_add(SCAN_CHUNK_ROWS));
+                let Some(open_end) = terminal
+                    .screen_row_for_absolute(end.saturating_sub(1))
+                    .and_then(|y| terminal.screen_row_wrap(y))
+                    .map(|wrap| wrap.soft_wrapped)
+                else {
+                    cache.clear();
+                    return None;
+                };
                 let carry = cache.open_carry();
                 let resumed = !carry.is_fresh();
-                let chunk = match chunk_boundary(terminal, from, window_end) {
-                    Some(end) => Some((end, false)),
-                    // A whole chunk's worth of rows without a line end to cut
-                    // at: cut inside the line, at the last soft wrap.
-                    None if window_end.0.saturating_sub(next.0) >= SCAN_CHUNK_ROWS => {
-                        wrap_boundary(terminal, from, window_end).map(|end| (end, true))
-                    }
-                    None => None,
+                let Some(formatted) = format_chunk(terminal, next, end, &carry, open_end) else {
+                    cache.clear();
+                    return None;
                 };
-                match chunk {
-                    Some((end, open_end)) => {
-                        let Some((text, open)) =
-                            format_chunk(terminal, next, end, &carry, open_end)
-                        else {
-                            cache.clear();
-                            return None;
-                        };
-                        cache.push_back(HistoryChunk {
-                            start: next,
-                            end,
-                            text: text.into(),
-                            resumed,
-                            open,
-                        });
-                        probe = None;
-                    }
-                    None => probe = Some(window_end),
-                }
+                cache.push_back(HistoryChunk {
+                    start: next,
+                    end,
+                    text: formatted.text.into(),
+                    content_end: formatted.content_end,
+                    resumed,
+                    open: formatted.open,
+                });
                 drop(core);
                 // Give the PTY reader waiting on the lock a chance to take it.
                 std::thread::yield_now();
                 continue;
             }
 
-            // The cache reaches the last row it can end a chunk at; the rest
-            // is read now, under this hold, up to the last row with content
-            // or the cursor.
+            // The cache reaches the screen; the screen is read now, under
+            // this hold, up to the last row with content or the cursor.
             let Ok(range) = terminal_recent_read_range(terminal, usize::MAX) else {
                 cache.clear();
                 return None;
@@ -466,27 +505,27 @@ impl PaneTerminal {
                 return Some(());
             };
             let carry = cache.open_carry();
-            let tail = match terminal.screen_row_for_absolute(next) {
+            let (tail, content_end) = match terminal.screen_row_for_absolute(next) {
                 Some(start) if start.0 <= end => {
                     let last = terminal
                         .absolute_row_for_screen(ScreenRow(end))
                         .saturating_add(1);
-                    let Some((tail, _)) = format_chunk(terminal, next, last, &carry, false) else {
+                    let Some(formatted) = format_chunk(terminal, next, last, &carry, false) else {
                         // Chunks may have advanced past the old tail.
                         cache.clear();
                         return None;
                     };
-                    tail
+                    (formatted.text, formatted.content_end)
                 }
                 // A line the last chunk left open has no rows left to end it.
                 _ if !carry.is_fresh() => {
                     cache.clear();
                     return None;
                 }
-                _ => String::new(),
+                _ => (String::new(), None),
             };
             drop(core);
-            cache.set_tail(tail);
+            cache.set_tail(tail, content_end);
             return Some(());
         }
     }
@@ -740,5 +779,205 @@ mod tests {
             "the origin passed through the first piece: {origins:?}"
         );
         assert!(origins.last().is_some_and(|origin| *origin > 2_500));
+    }
+
+    /// Room for well over ten thousand rows of twelve columns, so runs of
+    /// several windows of blank rows stay retained.
+    const VERY_DEEP_HISTORY_BYTES: usize = 6_000_000;
+
+    /// More blank rows than one scan window holds.
+    const BLANK_RUN: usize = 3_000;
+
+    fn write_blank_lines(pane: &PaneTerminal, count: usize) {
+        write(pane, "\r\n".repeat(count).as_bytes());
+    }
+
+    /// Whether some chunk of the cache has no content.
+    fn holds_blank_chunk(cache: &PaneHistoryCache) -> bool {
+        cache.chunks.iter().any(|chunk| chunk.content_end.is_none())
+    }
+
+    #[test]
+    fn default_blank_runs_before_between_and_after_content_read_exactly() {
+        let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+
+        // Nothing but blank lines: the read is empty.
+        write_blank_lines(&pane, BLANK_RUN);
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        assert!(!cache.has_text());
+        assert!(cache.pieces().is_empty());
+
+        write(&pane, b"first\r\n");
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        assert!(cache.has_text());
+        write_blank_lines(&pane, BLANK_RUN);
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        write(&pane, b"second\r\n");
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        assert!(
+            holds_blank_chunk(&cache),
+            "the run is cached as blank chunks"
+        );
+        // Trailing blank lines are formatted and cached but not exposed.
+        write_blank_lines(&pane, BLANK_RUN);
+        let read = source.read(&mut cache);
+        assert_eq!(read, whole_read(&pane));
+        assert!(holds_blank_chunk(&cache));
+        assert!(read.is_some_and(|text| text.ends_with("second")));
+        // The pieces are the same view.
+        assert!(
+            cache
+                .pieces()
+                .last()
+                .is_some_and(|piece| !piece.text.ends_with("\r\n"))
+        );
+    }
+
+    #[test]
+    fn painted_and_hyperlinked_blank_rows_are_content() {
+        let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        write(&pane, b"top\r\n");
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+
+        // Every kind of blank the formatter keeps, in runs longer than a
+        // window, each followed by default blank lines that are not content.
+        let kinds: [&str; 5] = [
+            "\x1b[42m   \x1b[0m",
+            "\x1b[4m   \x1b[0m",
+            "\x1b[7m   \x1b[0m",
+            "\x1b[9m   \x1b[0m",
+            "\x1b]8;;https://example.test/blank\x1b\\   \x1b]8;;\x1b\\",
+        ];
+        for kind in kinds {
+            let run = format!("{kind}\r\n").repeat(BLANK_RUN);
+            write(&pane, run.as_bytes());
+            assert_eq!(source.read(&mut cache), whole_read(&pane), "{kind:?}");
+            write_blank_lines(&pane, 40);
+            assert_eq!(source.read(&mut cache), whole_read(&pane), "{kind:?}");
+        }
+        // The painted rows are content, so the read runs past the last text.
+        assert!(cache.text().contains("https://example.test/blank"));
+        assert!(
+            cache
+                .chunks
+                .iter()
+                .any(|chunk| chunk.content_end.is_some_and(|end| end > 0))
+        );
+        // A painted run at the very end, with no blank line after it.
+        write(&pane, "\x1b[42m   \x1b[0m".as_bytes());
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+    }
+
+    #[test]
+    fn blank_continuations_of_wrapped_lines_read_exactly() {
+        let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        // Fill exactly one window of rows with one line, then one character
+        // more, erased: the row that continues the line is blank, and the
+        // chunk boundary falls on the last soft-wrapped row.
+        let window = usize::try_from(SCAN_CHUNK_ROWS).expect("test precondition");
+        write(&pane, "w".repeat(12 * window + 1).as_bytes());
+        write(&pane, b"\x1b[2K\r\n");
+        write_blank_lines(&pane, 60);
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        // The line's closing fragment is the blank continuation, with the
+        // blank lines after it, and it counts as content.
+        assert!(
+            cache
+                .chunks
+                .iter()
+                .any(|chunk| chunk.resumed && chunk.content_end == Some(0)),
+            "a chunk only finishes the wrapped line"
+        );
+        // Blank lines after the line, then more text, on later saves.
+        write_blank_lines(&pane, 40);
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        write(&pane, b"later\r\n");
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        write_blank_lines(&pane, 40);
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        assert_eq!(Some(cache.text()), whole_read(&pane));
+    }
+
+    #[test]
+    fn a_wrapped_line_with_blank_rows_after_a_cut_reads_exactly() {
+        // Wrapped rows whose continuation rows are blank land on window ends
+        // in every alignment.
+        for offset in [0, 1, 5, 11] {
+            let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
+            let source = PaneHistorySource(Arc::clone(&pane));
+            let mut cache = PaneHistoryCache::default();
+            write_blank_lines(&pane, offset);
+            for round in 0..6 {
+                write(&pane, format!("\x1b[3{}m", round + 1).as_bytes());
+                write(&pane, "x".repeat(12 * 700 + 3).as_bytes());
+                write(&pane, b"\x1b[2K\x1b[0m\r\n");
+                write_blank_lines(&pane, 300);
+                assert_eq!(
+                    source.read(&mut cache),
+                    whole_read(&pane),
+                    "offset {offset} round {round}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn evicting_the_last_content_leaves_blank_chunks_and_no_text() {
+        // The smallest history keeps a thousand lines.
+        let pane = terminal(12, 4, 2048);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        write(&pane, b"only content\r\n");
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
+        assert!(cache.has_text());
+        for round in 0..30 {
+            write_blank_lines(&pane, 100);
+            assert_eq!(source.read(&mut cache), whole_read(&pane), "round {round}");
+        }
+        assert!(
+            shepr_vt::lock_terminal_core(&pane.core)
+                .expect("test precondition")
+                .terminal
+                .history_origin()
+                > AbsRow(0),
+            "the test must evict the content"
+        );
+        assert!(!cache.chunks.is_empty());
+        assert!(cache.chunks.iter().all(|chunk| chunk.content_end.is_none()));
+        assert!(!cache.has_text());
+        assert!(cache.pieces().is_empty());
+        assert_eq!(cache.text(), "");
+    }
+
+    #[test]
+    fn an_alternate_screen_save_keeps_the_trimmed_primary_read() {
+        let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        write(&pane, b"head\r\n");
+        write_blank_lines(&pane, BLANK_RUN);
+        write(&pane, b"tail\r\n");
+        write_blank_lines(&pane, BLANK_RUN);
+        let before = source.read(&mut cache);
+        assert_eq!(before, whole_read(&pane));
+        assert!(before.as_ref().is_some_and(|text| text.ends_with("tail")));
+        let revision = cache.revision();
+
+        write(&pane, b"\x1b[?1049hFULL SCREEN");
+        assert_eq!(source.read(&mut cache), None);
+        // The cache still exposes the last primary read, trimmed as before,
+        // and did not change.
+        assert_eq!(Some(cache.text()), before);
+        assert_eq!(cache.revision(), revision);
+        assert!(cache.has_text());
+
+        write(&pane, b"\x1b[?1049l");
+        assert_eq!(source.read(&mut cache), whole_read(&pane));
     }
 }

@@ -64,28 +64,19 @@ Do this the next time opencode or Kilo is in use.
 - If they are wrong, opencode/Kilo panes never show as blocked on a permission prompt; they read as working or idle while waiting on you.
 - To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
 
-## Client presentation follow-ups
-
-
 ## Composition and config encoding
 
-- Composition converts a frame with overlays to a ratatui buffer once and
-  writes it back once (`crates/shepr-client/src/shell/presentation/composition.rs`).
-  The write-back now rewrites only cells that differ from the buffer, but the
-  forward conversion (`FrameData::to_ratatui_buffer` in
-  `crates/shepr-protocol/src/ratatui_conversion.rs`) still copies every cell's
-  symbol, and underline shapes still cross the buffer as `Modifier` bits
-  (ratatui has no shape field, and touched cells still round-trip). Drawing
-  the overlay stages straight onto the frame's cells, or converting only the
-  dirty rectangles, would remove both.
 - `ClientShellSnapshot.resolved_config` is a codec-encoded blob inside a codec
   message.
+- The server renders pane surfaces into ratatui buffers and converts them to
+  wire cells, so underline shapes still cross as `Modifier` bits there
+  (`WireStyle::to_ratatui_modifier`, the `RATATUI_UNDERLINE_*` constants, used
+  from `crates/shepr-mux/src/pane/terminal/helpers.rs`). The client no longer
+  does; the server side is the same round trip.
+- The history cache pushes one chunk per save that finds new rows and never
+  merges them (`crates/shepr-mux/src/pane/terminal/history.rs`), so a slowly
+  scrolling pane collects many small chunks until eviction drops them.
 
 ## Per-client presentation state on the server
 
 - `app.state.active` doubles as a request context: a client-shell command first makes the requesting client's workspace the session's focus (`set_default_shell_target_from_client`), so app handlers that take no explicit target act on what that client views, and a new pane or workspace spawns at that workspace's area. Passing the requesting client's target and area into the app handlers would leave `active` as the saved session focus only.
-
-## Persistence leftovers
-
-- The agent resume schedule (`crates/shepr-server/src/app/agent_resume.rs`) still lives on `App`, apart from the session persister (`crates/shepr-mux/src/persist/actor.rs`). It spawns runtimes and needs each workspace's layout area, so it stays on the loop; what could move is the decision of which restored panes wait for a resume.
-- History chunks are cut only at a line end with visible text or at a soft wrap (`crates/shepr-mux/src/pane/terminal/history.rs`), so a run of thousands of blank, unwrapped lines in history is still formatted under one lock hold.

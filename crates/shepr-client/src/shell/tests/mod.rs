@@ -103,6 +103,33 @@ fn frame_rows(frame: &FrameData) -> Vec<String> {
         .collect()
 }
 
+/// The wire cell at `position` of `frame`. Composed frames are read as wire cells, never
+/// converted back to a ratatui buffer.
+fn frame_cell(frame: &FrameData, (x, y): (u16, u16)) -> &shepr_protocol::CellData {
+    assert!(
+        x < frame.width && y < frame.height,
+        "cell ({x}, {y}) is outside the {}x{} frame",
+        frame.width,
+        frame.height
+    );
+    &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
+}
+
+fn cell_fg(frame: &FrameData, position: (u16, u16)) -> ratatui::style::Color {
+    frame_cell(frame, position).fg.to_ratatui()
+}
+
+fn cell_bg(frame: &FrameData, position: (u16, u16)) -> ratatui::style::Color {
+    frame_cell(frame, position).bg.to_ratatui()
+}
+
+fn cell_is_bold(frame: &FrameData, position: (u16, u16)) -> bool {
+    frame_cell(frame, position)
+        .style
+        .flags
+        .contains(shepr_protocol::WireStyleFlags::BOLD)
+}
+
 /// Absolute cell position of `needle` inside `area`, for style assertions.
 fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u16) {
     let rows = frame_rows(frame);

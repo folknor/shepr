@@ -147,7 +147,12 @@ pub(super) fn format_range(
     end: Point,
     options: RangeOptions,
 ) -> String {
-    format_range_carrying(grid, start, end, options, &mut AnsiCarry::default(), false)
+    let (mut text, content_end) =
+        format_range_carrying(grid, start, end, options, &mut AnsiCarry::default(), false);
+    if options.trim {
+        text.truncate(content_end.unwrap_or(0));
+    }
+    text
 }
 
 /// [`format_range`] for a range that starts inside a logical line, from the
@@ -156,6 +161,15 @@ pub(super) fn format_range(
 /// range emits every cell of its last row, trims nothing, closes nothing and
 /// leaves its state in `carry` for the read of the rest of the line. Without
 /// `open_end` the range ends its line and `carry` is left fresh.
+///
+/// The text is never truncated to its content: the second value is the byte
+/// length that truncation would keep, so the caller decides where the whole
+/// read ends. Per-line trailing trimming is unchanged; only trailing blank
+/// lines (and the line breaks before them) are left in. `None` means the
+/// range has no content. `Some(0)` is real: the range finishes a logical line
+/// that began before it (`carry.started`) without emitting a cell. With
+/// `open_end` the whole text is content, because the line it stops inside
+/// has started. Without `trim` every line is content.
 pub(super) fn format_range_carrying(
     grid: &Grid<Cell>,
     start: Point,
@@ -163,7 +177,7 @@ pub(super) fn format_range_carrying(
     options: RangeOptions,
     carry: &mut AnsiCarry,
     open_end: bool,
-) -> String {
+) -> (String, Option<usize>) {
     let RangeOptions {
         rectangle,
         format,
@@ -172,7 +186,7 @@ pub(super) fn format_range_carrying(
     } = options;
     let mut out = String::new();
     if grid.columns() == 0 || start > end {
-        return out;
+        return (out, None);
     }
     let last_col = grid.columns() - 1;
     let mut vt = carry.vt.clone();
@@ -181,7 +195,7 @@ pub(super) fn format_range_carrying(
     let mut pending: Vec<&Cell> = Vec::new();
     // Byte length of `out` after the last emitted line that had content, so
     // trailing blank lines can be dropped when trimming.
-    let mut content_end = 0usize;
+    let mut content_end: Option<usize> = None;
 
     let mut line = start.line;
     while line <= end.line {
@@ -231,7 +245,8 @@ pub(super) fn format_range_carrying(
                 emit_cells(&mut out, &pending, format, &mut vt);
                 carry.vt = vt;
                 carry.started = true;
-                return out;
+                let len = out.len();
+                return (out, Some(len));
             }
             let had_content =
                 emit_line(&mut out, &pending, row_start, format, trim, &mut vt) || continuing;
@@ -241,7 +256,7 @@ pub(super) fn format_range_carrying(
                 vt.close(&mut out);
             }
             if had_content || !trim {
-                content_end = out.len();
+                content_end = Some(out.len());
             }
             if !is_last {
                 out.push_str(match format {
@@ -253,11 +268,8 @@ pub(super) fn format_range_carrying(
         line = Line(line.0 + 1);
     }
 
-    if trim {
-        out.truncate(content_end);
-    }
     *carry = AnsiCarry::default();
-    out
+    (out, content_end)
 }
 
 /// Emits one logical line whose last row's cells start at `last_row_start`;

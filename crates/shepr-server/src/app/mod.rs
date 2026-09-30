@@ -13,6 +13,7 @@ mod events;
 mod git_refresh;
 mod host_theme;
 mod ids;
+mod resume_schedule;
 mod runtime;
 mod session;
 pub mod state;
@@ -51,7 +52,7 @@ pub(crate) struct Outcome {
 
 use crate::limits::{
     GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL,
-    PENDING_AGENT_RESUME_THEME_WAIT,
+    PENDING_AGENT_RESUME_RETRY_INTERVAL, PENDING_AGENT_RESUME_THEME_WAIT,
 };
 
 use tokio::sync::{Notify, mpsc};
@@ -87,14 +88,13 @@ pub struct App {
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
-    pub(crate) pending_agent_resume_deadline: Option<Instant>,
+    /// When deferred agent resumes may be attempted; see `resume_schedule`.
+    pub(crate) resume_schedule: resume_schedule::ResumeSchedule,
     /// Panes whose runtime was replaced since the server last synced pane
     /// focus (an agent resume starting its shell). The new runtime has not
     /// been told about focus; `sync_pane_focus` drains this and re-sends the
     /// focus-in report for the ones that hold focus.
     pub(crate) runtimes_replaced_panes: Vec<shepr_core::layout::PaneId>,
-    startup_per_agent_delay: Duration,
-    next_agent_resume_at: Option<Instant>,
     pub(crate) session_saver: session::SessionSaver,
     /// Host name resolved once for the window title.
     hostname: String,
@@ -280,12 +280,12 @@ impl App {
             event_tx,
             event_rx,
             git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
-            pending_agent_resume_deadline: None,
-            runtimes_replaced_panes: Vec::new(),
-            startup_per_agent_delay: Duration::from_millis(
-                config.session().startup_per_agent_delay_ms.into(),
+            resume_schedule: resume_schedule::ResumeSchedule::new(
+                PENDING_AGENT_RESUME_THEME_WAIT,
+                Duration::from_millis(config.session().startup_per_agent_delay_ms.into()),
+                PENDING_AGENT_RESUME_RETRY_INTERVAL,
             ),
-            next_agent_resume_at: None,
+            runtimes_replaced_panes: Vec::new(),
             session_saver: session::SessionSaver::new(persister, save_finished),
             hostname,
             window_title_template: None,

@@ -65,15 +65,17 @@ fn render_notification_card(
     rect
 }
 
+/// Draws the lifecycle banner on the first row of `area`, right-aligned, and returns the rect
+/// it cleared and painted (empty when nothing is drawn).
 pub(super) fn render_lifecycle_banner(
     buffer: &mut Buffer,
     area: Rect,
     label: &str,
     status: ClientEndpointStatus,
     palette: &Palette,
-) {
+) -> Rect {
     if area.is_empty() || status == ClientEndpointStatus::Online {
-        return;
+        return Rect::default();
     }
     let (symbol, state, color) = endpoint_status_presentation(status, palette);
     let text = format!("{symbol} {label} · {state}");
@@ -91,8 +93,10 @@ pub(super) fn render_lifecycle_banner(
         &text,
         Style::default().fg(color).bg(palette.surface0),
     );
+    rect
 }
 
+/// Draws the notice card and returns the rect it cleared and painted.
 pub(super) fn render_notice(
     buffer: &mut Buffer,
     area: Rect,

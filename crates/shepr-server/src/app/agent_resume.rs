@@ -4,9 +4,8 @@ use bytes::Bytes;
 use ratatui::layout::Rect;
 
 use super::App;
+use super::resume_schedule::AttemptOutcome;
 use shepr_mux::workspace::Workspace;
-
-use crate::limits::PENDING_AGENT_RESUME_RETRY_INTERVAL;
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
@@ -25,47 +24,44 @@ impl App {
             .any(|terminal| terminal.pending_agent_resume_plan.is_some())
     }
 
-    pub(crate) fn sync_pending_agent_resume_deadline(&mut self, now: Instant) {
+    fn host_theme_available(&self) -> bool {
+        !self.state.host_terminal_theme.is_empty()
+    }
+
+    /// When the headless loop should wake to attempt a resume, `None` while
+    /// nothing is eligible or nothing holds an eligible candidate back. Derived
+    /// from the schedule on every call; see `ResumeSchedule::wakeup`.
+    pub(crate) fn pending_agent_resume_wakeup(&self) -> Option<Instant> {
         if !self.has_pending_agent_resumes() {
-            self.pending_agent_resume_deadline = None;
-            self.next_agent_resume_at = None;
-            return;
+            return None;
         }
-        if !self.has_pending_agent_resume_candidates() {
-            self.pending_agent_resume_deadline = None;
-            return;
-        }
-        if let Some(next) = self.next_agent_resume_at {
-            self.pending_agent_resume_deadline = Some(next);
-        } else {
-            self.pending_agent_resume_deadline
-                .get_or_insert(now + super::PENDING_AGENT_RESUME_THEME_WAIT);
-        }
+        self.resume_schedule.wakeup(
+            self.has_pending_agent_resume_candidates(),
+            self.host_theme_available(),
+        )
     }
 
-    pub(crate) fn pending_agent_resume_due(&self, now: Instant) -> bool {
-        self.pending_agent_resume_deadline
-            .is_some_and(|deadline| now >= deadline)
-    }
-
-    pub(crate) fn start_pending_agent_resumes(
-        &mut self,
-        now: Instant,
-        allow_empty_theme: bool,
-    ) -> bool {
+    /// Attempts every resume the schedule allows now. The one entry point for
+    /// every path that starts resumes (the loop and the geometry callbacks),
+    /// so all of them share the schedule's theme wait, spacing and backoff.
+    /// Returns whether any plan was consumed (an agent launched, or the resume
+    /// abandoned).
+    pub(crate) fn start_pending_agent_resumes(&mut self, now: Instant) -> bool {
         // The headless loop calls this on every iteration; skip the per-workspace
         // layout walk entirely once nothing is waiting to resume.
-        if !self.has_pending_agent_resumes() {
-            self.pending_agent_resume_deadline = None;
-            self.next_agent_resume_at = None;
+        let has_pending_plans = self.has_pending_agent_resumes();
+        let eligible = has_pending_plans && self.has_pending_agent_resume_candidates();
+        self.resume_schedule
+            .observe(now, has_pending_plans, eligible);
+        if !self
+            .resume_schedule
+            .is_due(now, eligible, self.host_theme_available())
+        {
             return false;
         }
-        // Geometry/theme events can also enter here; they must not bypass spacing.
-        if self.next_agent_resume_at.is_some_and(|next| now < next) {
-            return false;
-        }
+
         let pending = self.pending_agent_resume_candidates();
-        let mut changed = false;
+        let mut pass = self.resume_schedule.begin_pass(now);
         for PendingAgentResumeCandidate {
             pane_id,
             terminal_id,
@@ -78,55 +74,27 @@ impl App {
             if self.terminal_runtimes.get(terminal_id).is_some() {
                 continue;
             }
-            changed |= self.start_pending_agent_resume(
+            let outcome = self.start_pending_agent_resume(
                 *pane_id,
                 terminal_id,
                 cwd,
                 plan,
                 *rows,
                 *cols,
-                allow_empty_theme,
                 now,
             );
-            if changed && !self.startup_per_agent_delay.is_zero() {
-                self.next_agent_resume_at = Some(now + self.startup_per_agent_delay);
-                self.pending_agent_resume_deadline = self.next_agent_resume_at;
+            if !pass.record(outcome) {
                 break;
             }
         }
+        self.resume_schedule.finish(&pass);
 
+        let changed = pass.changed();
         if changed {
             self.schedule_session_save();
         }
-        // Launching a resume changes neither the layout nor the terminal area,
-        // so the remaining candidates are exactly the ones collected above
-        // whose plan is still unconsumed and that still have no runtime; no
-        // second layout walk is needed to find out.
-        let candidates_remain = pending.iter().any(|candidate| {
-            self.terminal_runtimes.get(&candidate.terminal_id).is_none()
-                && self
-                    .state
-                    .terminals
-                    .get(&candidate.terminal_id)
-                    .is_some_and(|terminal| terminal.pending_agent_resume_plan.is_some())
-        });
-        if !candidates_remain {
-            self.pending_agent_resume_deadline = None;
-        } else if self.pending_agent_resume_due(now) {
-            // Candidates remain although the wakeup that released them has
-            // passed: a launch failed without consuming its plan (no launch
-            // env, or the resume command could not be queued to the shell).
-            // Leaving the deadline in the past would make every loop deadline
-            // immediate and spin the server, respawning shells each time, so
-            // back off before retrying. Routing the backoff through
-            // `next_agent_resume_at` keeps `sync_pending_agent_resume_deadline`
-            // from restoring the stale deadline.
-            let retry_at = now + PENDING_AGENT_RESUME_RETRY_INTERVAL;
-            self.next_agent_resume_at = Some(retry_at);
-            self.pending_agent_resume_deadline = Some(retry_at);
-        }
         if !self.has_pending_agent_resumes() {
-            self.next_agent_resume_at = None;
+            self.resume_schedule.observe(now, false, false);
         }
         changed
     }
@@ -251,31 +219,39 @@ impl App {
         plan: &shepr_agent::agent::resume::AgentResumePlan,
         rows: u16,
         cols: u16,
-        allow_empty_theme: bool,
         now: Instant,
-    ) -> bool {
+    ) -> AttemptOutcome {
         let host_terminal_theme = self.state.host_terminal_theme;
-        if host_terminal_theme.is_empty() && !allow_empty_theme {
-            return false;
-        }
 
         // A restored resume runs through the shell by design. Quote each argv
         // element into shell text before sending it to the PTY; the planner's
         // metacharacter regression asserts on this resulting text.
         let Some(resume_command) = shepr_remote::interactive_shell_command(&plan.argv) else {
+            // The planner refuses to produce an empty argv, so this is a
+            // plan that should not exist; retrying cannot change it.
             tracing::warn!(
                 pane = pane_id.raw(),
                 terminal = %terminal_id,
                 agent = %plan.agent,
-                "failed to start deferred agent resume with empty argv"
+                "abandoning deferred agent resume with empty argv"
             );
-            return false;
+            self.abandon_resume(terminal_id, "the saved resume command is empty", now);
+            return AttemptOutcome::Abandoned;
         };
+        // No launch env only when the pane or its workspace is gone, which no
+        // retry fixes.
         let Some(launch_env) = self
             .find_pane(pane_id)
             .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id, Vec::new()))
         else {
-            return false;
+            tracing::warn!(
+                pane = pane_id.raw(),
+                terminal = %terminal_id,
+                agent = %plan.agent,
+                "abandoning deferred agent resume: pane or workspace is gone"
+            );
+            self.abandon_resume(terminal_id, "the pane no longer exists", now);
+            return AttemptOutcome::Abandoned;
         };
         let launch_env = launch_env.for_agent_resume();
 
@@ -306,7 +282,7 @@ impl App {
                     now,
                 );
             }
-            return true;
+            return AttemptOutcome::Abandoned;
         }
 
         let runtime = match shepr_mux::pane::PaneRuntime::spawn(
@@ -342,7 +318,7 @@ impl App {
                         now,
                     );
                 }
-                return true;
+                return AttemptOutcome::Abandoned;
             }
         };
 
@@ -357,7 +333,7 @@ impl App {
                 "failed to send deferred agent resume command to shell"
             );
             drop(runtime);
-            return false;
+            return AttemptOutcome::Retryable;
         }
 
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
@@ -365,7 +341,21 @@ impl App {
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.pending_agent_resume_plan = None;
         }
-        true
+        AttemptOutcome::Launched
+    }
+
+    fn abandon_resume(
+        &mut self,
+        terminal_id: &shepr_protocol::TerminalId,
+        reason: &str,
+        now: Instant,
+    ) {
+        if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+            terminal.abandon_agent_resume(
+                shepr_mux::terminal::RestoreFailure::resume_unavailable(reason),
+                now,
+            );
+        }
     }
 }
 
@@ -407,7 +397,6 @@ impl App {
         terminal_id: &shepr_protocol::TerminalId,
         rows: u16,
         cols: u16,
-        allow_empty_theme: bool,
     ) -> bool {
         if self.terminal_runtimes.get(terminal_id).is_some() {
             return false;
@@ -429,21 +418,19 @@ impl App {
             return false;
         };
 
-        let changed = self.start_pending_agent_resume(
+        // Runs one attempt directly, outside the schedule, to test the attempt.
+        let outcome = self.start_pending_agent_resume(
             pane_id,
             terminal_id,
             &cwd,
             &plan,
             rows,
             cols,
-            allow_empty_theme,
             self.clock.now,
         );
+        let changed = outcome != AttemptOutcome::Retryable;
         if changed {
             self.schedule_session_save();
-        }
-        if !self.has_pending_agent_resumes() {
-            self.pending_agent_resume_deadline = None;
         }
         changed
     }
@@ -452,6 +439,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::PENDING_AGENT_RESUME_THEME_WAIT;
     use crate::test_support::*;
 
     fn test_app() -> App {
@@ -464,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_agent_resume_spacing_survives_events_and_failed_restores() {
+    async fn abandoned_resumes_are_all_settled_in_one_pass_without_spacing() {
         for delay_ms in [100, 250, 0] {
             let config: shepr_config::Config = toml::from_str(&format!(
                 "[session]\nstartup_per_agent_delay_ms = {delay_ms}"
@@ -493,46 +481,16 @@ mod tests {
                 ));
             }
             let now = Instant::now();
-            app.sync_pending_agent_resume_deadline(now);
-            assert!(!app.start_pending_agent_resumes(now, false));
-            assert!(app.start_pending_agent_resumes(now, true));
-            if delay_ms != 0 {
-                let next = now + std::time::Duration::from_millis(delay_ms);
-                assert_eq!(
-                    app.state
-                        .terminals
-                        .values()
-                        .filter(|t| t.restore_error.is_some())
-                        .count(),
-                    1
-                );
-                // Geometry changes clear the wakeup, but must preserve the launch gap.
-                app.pending_agent_resume_deadline = None;
-                app.sync_pending_agent_resume_deadline(now);
-                assert_eq!(app.pending_agent_resume_deadline, Some(next));
-                assert!(
-                    !app.start_pending_agent_resumes(
-                        next - std::time::Duration::from_millis(1),
-                        true
-                    )
-                );
-                // A late wakeup must not release every overdue agent in a burst.
-                for processed in 2..=4 {
-                    let late = now + std::time::Duration::from_secs(processed * 10);
-                    assert!(app.start_pending_agent_resumes(late, true));
-                    assert_eq!(
-                        app.state
-                            .terminals
-                            .values()
-                            .filter(|t| t.restore_error.is_some())
-                            .count(),
-                        usize::try_from(processed).unwrap_or(usize::MAX)
-                    );
-                }
-            }
+            // No host theme yet: the first pass only starts the theme wait.
+            assert!(!app.start_pending_agent_resumes(now));
+            let theme_wait = now + PENDING_AGENT_RESUME_THEME_WAIT;
+            assert_eq!(app.pending_agent_resume_wakeup(), Some(theme_wait));
+            // An abandonment starts no agent, so it spaces nothing out: every
+            // overdue candidate is settled in the one pass whatever the delay.
+            assert!(app.start_pending_agent_resumes(theme_wait));
             assert!(!app.has_pending_agent_resumes());
-            assert!(app.pending_agent_resume_deadline.is_none());
-            assert!(app.next_agent_resume_at.is_none());
+            assert_eq!(app.pending_agent_resume_wakeup(), None);
+            assert!(!app.resume_schedule.is_pending());
             assert_eq!(
                 app.state
                     .terminals
@@ -544,10 +502,11 @@ mod tests {
         }
     }
 
-    /// A due launch that fails without consuming its plan must push the wakeup
-    /// forward; a deadline left in the past makes the server loop spin.
+    /// A plan with nothing to run is abandoned with a diagnostic on the pane,
+    /// not retried: retrying an empty argv can never succeed and would spin the
+    /// loop.
     #[tokio::test]
-    async fn failed_due_resume_backs_off_instead_of_leaving_deadline_in_the_past() {
+    async fn an_empty_argv_resume_is_abandoned_not_retried() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
@@ -560,8 +519,7 @@ mod tests {
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        // An empty argv cannot be turned into a shell command, so the launch
-        // fails and leaves the plan in place.
+        // An empty argv cannot be turned into a shell command.
         app.state
             .terminals
             .get_mut(&terminal_id)
@@ -572,25 +530,18 @@ mod tests {
         ));
 
         let now = Instant::now();
-        app.pending_agent_resume_deadline = Some(now - std::time::Duration::from_millis(1));
-        assert!(!app.start_pending_agent_resumes(now, app.pending_agent_resume_due(now)));
-        assert!(app.has_pending_agent_resumes());
-        let retry_at = now + PENDING_AGENT_RESUME_RETRY_INTERVAL;
-        assert_eq!(app.pending_agent_resume_deadline, Some(retry_at));
-        assert!(!app.pending_agent_resume_due(now));
-
-        // The scheduler's per-iteration sync must keep the backoff.
-        app.sync_pending_agent_resume_deadline(now);
-        assert_eq!(app.pending_agent_resume_deadline, Some(retry_at));
-        assert!(!app.start_pending_agent_resumes(now, false));
-        assert_eq!(app.pending_agent_resume_deadline, Some(retry_at));
-
-        // Once the backoff passes, the retry fails again and backs off again.
-        assert!(!app.start_pending_agent_resumes(retry_at, true));
-        assert_eq!(
-            app.pending_agent_resume_deadline,
-            Some(retry_at + PENDING_AGENT_RESUME_RETRY_INTERVAL)
-        );
+        assert!(!app.start_pending_agent_resumes(now));
+        let due = now + PENDING_AGENT_RESUME_THEME_WAIT;
+        assert!(app.start_pending_agent_resumes(due));
+        // The plan is consumed, the pane says why, and nothing is left to
+        // wake for or to hold back.
+        assert!(!app.has_pending_agent_resumes());
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.pending_agent_resume_plan.is_none());
+        assert!(terminal.restore_error.is_some());
+        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
+        assert_eq!(app.pending_agent_resume_wakeup(), None);
+        assert!(!app.start_pending_agent_resumes(due));
     }
 
     #[tokio::test]
@@ -703,7 +654,7 @@ mod tests {
                 false,
                 Instant::now(),
             );
-            app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true);
+            app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80);
             assert!(app.terminal_runtimes.get(&terminal_id).is_none());
             let terminal = &app.state.terminals[&terminal_id];
             assert!(terminal.pending_agent_resume_plan.is_none());
@@ -713,7 +664,7 @@ mod tests {
             assert_eq!(terminal.detected_agent, None);
             assert_eq!(terminal.effective_known_agent(), None);
             assert!(!app.has_pending_agent_resumes());
-            assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
+            assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80));
         }
     }
 
@@ -741,7 +692,7 @@ mod tests {
             marker_resume_test_argv(),
         ));
 
-        assert!(!app.start_pending_agent_resumes(Instant::now(), false));
+        assert!(!app.start_pending_agent_resumes(Instant::now()));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
 
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -758,7 +709,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(app.start_pending_agent_resumes(Instant::now(), false));
+        assert!(app.start_pending_agent_resumes(Instant::now()));
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
         let terminal = app
             .state
@@ -817,9 +768,9 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        app.sync_pending_agent_resume_deadline(std::time::Instant::now());
-        assert!(!app.start_pending_agent_resumes(Instant::now(), false));
-        assert!(app.start_pending_agent_resumes(Instant::now(), true));
+        let now = Instant::now();
+        assert!(!app.start_pending_agent_resumes(now));
+        assert!(app.start_pending_agent_resumes(now + PENDING_AGENT_RESUME_THEME_WAIT));
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
 
         for (_, runtime) in app.terminal_runtimes.drain() {
@@ -870,21 +821,21 @@ mod tests {
                 long_running_test_argv(),
             ));
         }
-        app.pending_agent_resume_deadline =
-            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
 
         let now = Instant::now();
-        assert!(app.start_pending_agent_resumes(now, false));
+        assert!(app.start_pending_agent_resumes(now));
         assert!(app.terminal_runtimes.get(&active_terminal).is_some());
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_none());
-        assert!(!app.start_pending_agent_resumes(now, true));
-        assert!(
-            app.start_pending_agent_resumes(now + std::time::Duration::from_millis(100), false,)
-        );
+        // The launch spaces the next one out; the wakeup is the barrier.
+        let barrier = now + std::time::Duration::from_millis(100);
+        assert!(!app.start_pending_agent_resumes(now));
+        assert_eq!(app.pending_agent_resume_wakeup(), Some(barrier));
+        assert!(app.start_pending_agent_resumes(barrier));
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
-        assert!(
-            app.pending_agent_resume_deadline.is_none(),
-            "launched pending resumes should clear the wakeup deadline"
+        assert_eq!(
+            app.pending_agent_resume_wakeup(),
+            None,
+            "launched pending resumes should leave no wakeup"
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
@@ -931,7 +882,7 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        assert!(app.start_pending_agent_resumes(Instant::now(), false));
+        assert!(app.start_pending_agent_resumes(Instant::now()));
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
         assert!(
             app.state
@@ -985,9 +936,7 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        app.sync_pending_agent_resume_deadline(std::time::Instant::now());
-        assert!(app.pending_agent_resume_deadline.is_some());
-        assert!(app.start_pending_agent_resumes(Instant::now(), false));
+        assert!(app.start_pending_agent_resumes(Instant::now()));
         assert!(app.terminal_runtimes.get(&previous_terminal).is_some());
         assert!(
             app.state
@@ -1062,7 +1011,7 @@ mod tests {
             long_running_test_argv(),
         ));
 
-        assert!(app.start_pending_agent_resumes(Instant::now(), false));
+        assert!(app.start_pending_agent_resumes(Instant::now()));
         let launched = app
             .terminal_runtimes
             .get(&terminal_id)

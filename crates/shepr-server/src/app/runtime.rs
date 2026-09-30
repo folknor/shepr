@@ -61,7 +61,7 @@ impl App {
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
                 .flatten(),
-            self.pending_agent_resume_deadline,
+            self.pending_agent_resume_wakeup(),
             self.session_saver.deadline(),
             render_deadline,
         ]

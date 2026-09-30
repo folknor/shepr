@@ -111,12 +111,30 @@ pub struct TerminalStateMutation {
 /// of formatting a message every frame.
 #[derive(Debug)]
 pub enum RestoreFailure {
-    DirectoryUnavailable { path: PathBuf },
-    DirectoryUnreadable { path: PathBuf, error: String },
-    ShellStartFailed { error: String },
+    DirectoryUnavailable {
+        path: PathBuf,
+    },
+    DirectoryUnreadable {
+        path: PathBuf,
+        error: String,
+    },
+    ShellStartFailed {
+        error: String,
+    },
+    /// The saved agent's resume cannot be issued at all (no command to run,
+    /// the pane gone from under the attempt), whatever the directory and shell.
+    ResumeUnavailable {
+        reason: String,
+    },
 }
 
 impl RestoreFailure {
+    pub fn resume_unavailable(reason: impl Into<String>) -> Self {
+        Self::ResumeUnavailable {
+            reason: reason.into(),
+        }
+    }
+
     pub fn directory_unreadable(path: PathBuf, error: &std::io::Error) -> Self {
         Self::DirectoryUnreadable {
             path,
@@ -142,6 +160,9 @@ impl RestoreFailure {
             Self::ShellStartFailed { .. } => {
                 "Could not start the saved shell. Fix the shell configuration and restart this session."
             }
+            Self::ResumeUnavailable { .. } => {
+                "Could not resume the saved agent. Restart this session."
+            }
         }
     }
 
@@ -152,6 +173,7 @@ impl RestoreFailure {
             Self::DirectoryUnreadable { error, .. } | Self::ShellStartFailed { error } => {
                 Some(error)
             }
+            Self::ResumeUnavailable { reason } => Some(reason),
         }
     }
 }
@@ -163,7 +185,7 @@ impl std::fmt::Display for RestoreFailure {
             Self::DirectoryUnavailable { path } | Self::DirectoryUnreadable { path, .. } => {
                 write!(formatter, " Directory: {}.", path.display())?;
             }
-            Self::ShellStartFailed { .. } => {}
+            Self::ShellStartFailed { .. } | Self::ResumeUnavailable { .. } => {}
         }
         if let Some(cause) = self.cause() {
             write!(formatter, " Error: {cause}")?;

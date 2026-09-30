@@ -4608,7 +4608,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_none());
     let deadline = server
         .app
-        .pending_agent_resume_deadline
+        .pending_agent_resume_wakeup()
         .expect("clientless resume should wait briefly for a host theme");
 
     assert!(server.handle_scheduled_tasks_headless(deadline));
@@ -4660,7 +4660,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
     assert!(!server.handle_scheduled_tasks_headless(now));
     let deadline = server
         .app
-        .pending_agent_resume_deadline
+        .pending_agent_resume_wakeup()
         .expect("clientless resume should arm the theme wait");
     for step in 1..5 {
         let tick = now + Duration::from_millis(step * 100);
@@ -4669,7 +4669,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
             "test ticks must stay inside the theme wait"
         );
         assert!(!server.handle_scheduled_tasks_headless(tick));
-        assert_eq!(server.app.pending_agent_resume_deadline, Some(deadline));
+        assert_eq!(server.app.pending_agent_resume_wakeup(), Some(deadline));
     }
 
     assert!(server.handle_scheduled_tasks_headless(deadline));

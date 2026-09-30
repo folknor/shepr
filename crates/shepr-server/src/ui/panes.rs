@@ -1172,6 +1172,16 @@ mod tests {
         })
     }
 
+    /// A selection-highlight sink that applies each style to `buffer`, skipping positions
+    /// the buffer does not have.
+    fn sink(buffer: &mut Buffer) -> impl FnMut(u16, u16, Style) + '_ {
+        |x, y, style| {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_style(style);
+            }
+        }
+    }
+
     #[test]
     fn selection_highlight_uses_one_uniform_style() {
         let palette = Palette::catppuccin();
@@ -1210,12 +1220,16 @@ mod tests {
                 buf[(2, 0)].set_style(Style::default().fg(Color::Blue).bg(Color::Reset));
                 render_selection_highlight(
                     selection.as_ref(),
-                    frame.buffer_mut(),
                     &shepr_test_fixtures::fixed_pane_id(1),
                     Rect::new(0, 0, 4, 1),
                     zero_origin_metrics(1),
                     &palette,
                     host_theme,
+                    &mut |x, y, style| {
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            cell.set_style(style);
+                        }
+                    },
                 );
             })
             .expect("test precondition");
@@ -1253,12 +1267,12 @@ mod tests {
 
         render_selection_highlight(
             selection.as_ref(),
-            &mut buffer,
             &shepr_test_fixtures::fixed_pane_id(1),
             Rect::new(1, 1, 4, 3),
             zero_origin_metrics(3),
             &palette,
             host_theme,
+            &mut sink(&mut buffer),
         );
 
         // Pane-relative (0, 0)..(0, 2) lands on screen row 1, columns 1..=3; the
@@ -1274,12 +1288,12 @@ mod tests {
         // A rect entirely outside the buffer paints nothing and does not panic.
         render_selection_highlight(
             selection.as_ref(),
-            &mut buffer,
             &shepr_test_fixtures::fixed_pane_id(1),
             Rect::new(10, 10, 4, 3),
             zero_origin_metrics(3),
             &palette,
             host_theme,
+            &mut sink(&mut buffer),
         );
 
         // Without scroll metrics viewport rows cannot be mapped to the
@@ -1287,12 +1301,12 @@ mod tests {
         let mut unmapped = Buffer::empty(Rect::new(0, 0, 4, 2));
         render_selection_highlight(
             selection.as_ref(),
-            &mut unmapped,
             &shepr_test_fixtures::fixed_pane_id(1),
             Rect::new(0, 0, 4, 2),
             None,
             &palette,
             host_theme,
+            &mut sink(&mut unmapped),
         );
         assert_eq!(unmapped, Buffer::empty(Rect::new(0, 0, 4, 2)));
     }

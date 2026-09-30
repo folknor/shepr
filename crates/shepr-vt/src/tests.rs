@@ -1612,7 +1612,8 @@ fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
             joined.push_str(
                 &terminal
                     .read_ansi_screen_carrying(sr(0, row), sr(cols - 1, last), &mut carry, open_end)
-                    .expect("test precondition"),
+                    .expect("test precondition")
+                    .0,
             );
             assert_eq!(carry.is_fresh(), !open_end, "step {step}, row {row}");
             row = last + 1;
@@ -1626,4 +1627,68 @@ fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
         );
         assert_eq!(joined, whole, "step {step}");
     }
+}
+
+/// The carrying read leaves trailing blank lines in its text and reports
+/// where the text ends when cut back to its content.
+#[test]
+fn a_carrying_read_reports_its_content_end_and_keeps_blank_lines() {
+    let mut terminal = Terminal::new(4, 6, 1_000);
+    terminal.write(b"abc\r\n\r\n\x1b[42m  \x1b[0m\r\n\r\n");
+    let cols = terminal.cols();
+    let read = |first: usize, last: usize, carry: &mut AnsiCarry, open_end: bool| {
+        terminal
+            .read_ansi_screen_carrying(sr(0, first), sr(cols - 1, last), carry, open_end)
+            .expect("test precondition")
+    };
+
+    // Rows: "abc", blank, painted blank, blank, blank, cursor row.
+    let (text, end) = read(0, 1, &mut AnsiCarry::default(), false);
+    assert_eq!((text.as_str(), end), ("abc\r\n", Some(3)));
+
+    // Blank rows alone have no content.
+    let (text, end) = read(3, 4, &mut AnsiCarry::default(), false);
+    assert_eq!((text.as_str(), end), ("\r\n", None));
+
+    // A painted blank row is content, and the blank lines after it stay in
+    // the text without counting.
+    let (text, end) = read(2, 4, &mut AnsiCarry::default(), false);
+    let painted = end.expect("painted blanks are content");
+    assert!(painted > 0 && text.len() > painted, "{text:?} {end:?}");
+    assert!(text[..painted].contains("\x1b[0;42m"));
+    assert!(text[painted..].chars().all(|c| c == '\r' || c == '\n'));
+}
+
+/// A blank row that continues a soft-wrapped line finishes a line that has
+/// content: its read reports `Some(0)`, an open read reports its whole text.
+#[test]
+fn a_blank_continuation_of_a_wrapped_line_reports_content() {
+    let mut terminal = Terminal::new(4, 4, 1_000);
+    // The wrapped row keeps its wrap flag when the continuation is erased.
+    terminal.write(b"abcde\x1b[2K\r\nnext");
+    let cols = terminal.cols();
+    assert!(
+        terminal
+            .screen_row_wrap(ScreenRow(0))
+            .is_some_and(|wrap| wrap.soft_wrapped)
+    );
+
+    let mut carry = AnsiCarry::default();
+    let (text, end) = terminal
+        .read_ansi_screen_carrying(sr(0, 0), sr(cols - 1, 0), &mut carry, true)
+        .expect("test precondition");
+    assert_eq!((text.as_str(), end), ("abcd", Some(4)));
+    assert!(!carry.is_fresh());
+
+    let (text, end) = terminal
+        .read_ansi_screen_carrying(sr(0, 1), sr(cols - 1, 1), &mut carry, false)
+        .expect("test precondition");
+    assert_eq!((text.as_str(), end), ("", Some(0)));
+    assert!(carry.is_fresh());
+
+    // Without the carry the same blank row has no content.
+    let (text, end) = terminal
+        .read_ansi_screen_carrying(sr(0, 1), sr(cols - 1, 1), &mut AnsiCarry::default(), false)
+        .expect("test precondition");
+    assert_eq!((text.as_str(), end), ("", None));
 }

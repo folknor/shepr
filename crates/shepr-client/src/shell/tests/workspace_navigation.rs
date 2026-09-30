@@ -75,34 +75,30 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 
             for workspace_id in ["w1", "w2"] {
                 assert_selected(&state, &ClientEndpointId::Local, workspace_id);
-                let buffer = state
-                    .compose(100, 28)
-                    .expect("test precondition")
-                    .to_ratatui_buffer()
-                    .expect("test precondition");
+                let frame = state.compose(100, 28).expect("test precondition");
                 let selected = workspace_rect(&state, &ClientEndpointId::Local, workspace_id);
                 for y in selected.y..selected.bottom() {
                     for x in selected.x..selected.right() {
                         assert_eq!(
-                            buffer[(x, y)].bg,
+                            cell_bg(&frame, (x, y)),
                             expected_bg,
                             "compact={compact}, {workspace_id}, ({x}, {y})"
                         );
                     }
                 }
                 let untouched = workspace_rect(&state, &ClientEndpointId::Local, "w3");
-                assert_ne!(buffer[(untouched.x, untouched.y)].bg, expected_bg);
+                assert_ne!(cell_bg(&frame, (untouched.x, untouched.y)), expected_bg);
                 if workspace_id != "w1" {
                     let focused = workspace_rect(&state, &ClientEndpointId::Local, "w1");
                     assert_eq!(
-                        buffer[(focused.x, focused.y)].bg,
+                        cell_bg(&frame, (focused.x, focused.y)),
                         if selection_bg == Color::Reset {
                             state.config.palette.sidebar_bg
                         } else {
                             state.config.palette.active_row_bg
                         }
                     );
-                    assert_ne!(buffer[(focused.x, focused.y)].bg, expected_bg);
+                    assert_ne!(cell_bg(&frame, (focused.x, focused.y)), expected_bg);
                 }
                 preview_key(&mut state, b"\x1b[B");
             }
@@ -116,19 +112,15 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
                 Some("w1")
             );
             preview_key(&mut state, b"\x1b");
-            let buffer = state
-                .compose(100, 28)
-                .expect("test precondition")
-                .to_ratatui_buffer()
-                .expect("test precondition");
+            let frame = state.compose(100, 28).expect("test precondition");
             let focused = workspace_rect(&state, &ClientEndpointId::Local, "w1");
             assert_eq!(
-                buffer[(focused.x, focused.y)].bg,
+                cell_bg(&frame, (focused.x, focused.y)),
                 state.config.palette.active_row_bg
             );
             let cancelled = workspace_rect(&state, &ClientEndpointId::Local, "w3");
             assert_eq!(
-                buffer[(cancelled.x, cancelled.y)].bg,
+                cell_bg(&frame, (cancelled.x, cancelled.y)),
                 state.config.palette.sidebar_bg
             );
         }
@@ -154,11 +146,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                     preview_key(&mut state, b"\x1b[B");
                 }
                 assert_selected(&state, endpoint, "w2");
-                let buffer = state
-                    .compose(cols, 28)
-                    .expect("test precondition")
-                    .to_ratatui_buffer()
-                    .expect("test precondition");
+                let frame = state.compose(cols, 28).expect("test precondition");
                 let selected = workspace_rect(&state, endpoint, "w2");
                 let other = workspace_rect(&state, collision, "w2");
                 let focused = workspace_rect(&state, &ClientEndpointId::Local, "w1");
@@ -173,10 +161,10 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                 } else {
                     color
                 };
-                assert_eq!(buffer[(selected.x + 2, selected.y)].bg, color);
-                assert_ne!(buffer[(other.x + 2, other.y)].bg, color);
+                assert_eq!(cell_bg(&frame, (selected.x + 2, selected.y)), color);
+                assert_ne!(cell_bg(&frame, (other.x + 2, other.y)), color);
                 assert_eq!(
-                    buffer[(focused.x + 2, focused.y)].bg,
+                    cell_bg(&frame, (focused.x + 2, focused.y)),
                     if terminal_theme {
                         if cols == 44 {
                             palette.panel_bg
@@ -563,16 +551,12 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
 }
 
 fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
-    let buffer = state
-        .compose(100, 28)
-        .expect("test precondition")
-        .to_ratatui_buffer()
-        .expect("test precondition");
+    let frame = state.compose(100, 28).expect("test precondition");
     for workspace_id in ["w1", "w2", "w3"] {
         let rect = workspace_rect(state, &ClientEndpointId::Local, workspace_id);
         assert_eq!(
             (rect.x..rect.right())
-                .any(|x| buffer[(x, rect.y)].bg == state.config.palette.active_row_bg),
+                .any(|x| cell_bg(&frame, (x, rect.y)) == state.config.palette.active_row_bg),
             workspace_id == selected_id,
             "expected only {selected_id} highlighted, checking {workspace_id}"
         );

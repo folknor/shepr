@@ -732,10 +732,10 @@ mod tests {
         ));
     }
 
-    // ---- FrameData ↔ ratatui Buffer conversion ----
+    // ---- FrameData from a ratatui Buffer ----
 
     #[test]
-    fn frame_data_roundtrip_through_ratatui_buffer() {
+    fn frame_data_from_ratatui_buffer_keeps_cells_and_cursor() {
         let area = ratatui::layout::Rect::new(0, 0, 5, 3);
         let mut buffer = ratatui::buffer::Buffer::filled(area, ratatui::buffer::Cell::new(" "));
 
@@ -804,56 +804,6 @@ mod tests {
             with_links.hyperlinks,
             vec!["https://example.com".to_owned()]
         );
-
-        // Convert back to ratatui buffer and compare.
-        let restored = frame.to_ratatui_buffer().expect("should reconstruct");
-        assert_eq!(restored.area, area);
-        assert_eq!(
-            restored.cell((0, 0)).expect("test precondition").symbol(),
-            "H"
-        );
-        assert_eq!(
-            restored.cell((0, 0)).expect("test precondition").fg,
-            Color::Red
-        );
-        assert_eq!(
-            restored.cell((0, 0)).expect("test precondition").modifier,
-            Modifier::BOLD
-        );
-        assert_eq!(
-            restored.cell((1, 0)).expect("test precondition").symbol(),
-            "i"
-        );
-        assert_eq!(
-            restored.cell((2, 0)).expect("test precondition").symbol(),
-            "!"
-        );
-        assert_eq!(
-            restored.cell((2, 0)).expect("test precondition").fg,
-            Color::Rgb(255, 128, 0)
-        );
-    }
-
-    #[test]
-    fn frame_data_rejects_mismatched_cell_count() {
-        let frame = FrameData {
-            cells: vec![
-                CellData {
-                    symbol: "X".into(),
-                    fg: WireColor::Reset,
-                    bg: WireColor::Reset,
-                    style: WireStyle::default(),
-                    skip: false,
-                    hyperlink: None,
-                };
-                5
-            ], // 5 cells but 3×2 = 6 expected
-            width: 3,
-            height: 2,
-            cursor: None,
-            hyperlinks: Vec::new(),
-        };
-        assert!(frame.to_ratatui_buffer().is_none());
     }
 
     // ---- Color conversion coverage ----
@@ -931,41 +881,6 @@ mod tests {
         for m in all_mods {
             let style = WireStyle::from_ratatui_modifier(m);
             assert_eq!(style.to_ratatui_modifier(), m, "roundtrip failed for {m:?}");
-        }
-    }
-
-    #[test]
-    fn underline_style_survives_ratatui_buffer_roundtrip() {
-        // The ratatui buffer has no underline-shape field, so the adapter
-        // preserves non-single underline styles in its temporary modifier.
-        for underline in [
-            shepr_vt::UnderlineStyle::Double,
-            shepr_vt::UnderlineStyle::Curly,
-            shepr_vt::UnderlineStyle::Dotted,
-            shepr_vt::UnderlineStyle::Dashed,
-        ] {
-            let style = WireStyle {
-                flags: WireStyleFlags::BOLD,
-                underline,
-            };
-            let frame = FrameData {
-                cells: vec![CellData {
-                    symbol: "u".into(),
-                    fg: WireColor::Reset,
-                    bg: WireColor::Reset,
-                    style,
-                    skip: false,
-                    hyperlink: None,
-                }],
-                width: 1,
-                height: 1,
-                cursor: None,
-                hyperlinks: Vec::new(),
-            };
-            let buffer = frame.to_ratatui_buffer().expect("test precondition");
-            let mut restored = frame.clone();
-            restored.replace_from_ratatui_buffer_preserving_effects(&buffer, None);
-            assert_eq!(restored.cells[0].style, style, "style {underline:?}");
         }
     }
 

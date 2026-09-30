@@ -240,6 +240,14 @@ impl Terminal {
     /// read, and `carry` is left at the default. `carry` is unchanged on
     /// error.
     ///
+    /// Unlike [`read_ansi_screen`] the text is not cut back to its last
+    /// content: trailing blank lines stay in it. The second value is the byte
+    /// length the text has when cut there, `None` when the range has no
+    /// content at all, `Some(0)` when it only finishes a line that began
+    /// before it (a carry that has started) without emitting a cell, and the
+    /// whole length with `open_end`. The caller that joins reads picks the
+    /// end of the whole read from the last read that has content.
+    ///
     /// [`read_ansi_screen`]: Self::read_ansi_screen
     pub fn read_ansi_screen_carrying(
         &self,
@@ -247,7 +255,7 @@ impl Terminal {
         end: Point<ScreenRow>,
         carry: &mut format::AnsiCarry,
         open_end: bool,
-    ) -> Result<String, Error> {
+    ) -> Result<(String, Option<usize>), Error> {
         let grid = self.term.grid();
         let start = self
             .screen_line(start.row)

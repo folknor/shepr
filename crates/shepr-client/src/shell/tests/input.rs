@@ -683,3 +683,104 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     let link = frame.cells[index].hyperlink.expect("linked cell") as usize;
     assert_eq!(frame.hyperlinks[link], "https://example.test");
 }
+
+fn open_help(state: &mut ClientShellState) {
+    let mut open = ClientShellInput::default();
+    state.record_binding(
+        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
+        &mut open,
+    );
+}
+
+fn last_row_text(frame: &FrameData) -> String {
+    frame_rows(frame).pop().expect("frame has rows")
+}
+
+#[test]
+fn overlay_that_gives_up_commits_nothing_but_the_hint_row() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let before = state.compose(106, 8).expect("frame without overlay");
+    open_help(&mut state);
+    let after = state.compose(106, 8).expect("frame with the overlay open");
+    let body = usize::from(before.width) * usize::from(before.height - 1);
+    // Help needs at least 10 rows: nothing it drew may reach the frame, not even its
+    // backdrop dimming; only the last row carries the hint.
+    assert_eq!(after.cells[..body], before.cells[..body]);
+    assert!(last_row_text(&after).contains("window too small"));
+    assert!(after.cursor.is_none());
+}
+
+#[test]
+fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
+    use shepr_protocol::WireStyleFlags;
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    for cell in &mut pane_surface.frame.cells {
+        cell.style.flags = WireStyleFlags::BOLD;
+        cell.style.underline = shepr_vt::UnderlineStyle::Curly;
+    }
+    state.set_pane_surface(pane_surface);
+    let plain = state.compose(106, 30).expect("frame without overlay");
+    let hit = state.hits.panes[0].clone();
+    let pane_origin = (hit.inner_rect.x, hit.inner_rect.y);
+    assert!(
+        !frame_cell(&plain, pane_origin)
+            .style
+            .flags
+            .contains(WireStyleFlags::DIM)
+    );
+
+    open_help(&mut state);
+    let frame = state.compose(106, 30).expect("help frame");
+    let popup = state.hits.help_popup;
+    assert!(!popup.is_empty());
+    // Outside the popup the backdrop adds DIM and keeps everything else, shapes included.
+    let dimmed = frame_cell(&frame, pane_origin);
+    assert!(dimmed.style.flags.contains(WireStyleFlags::DIM));
+    assert!(dimmed.style.flags.contains(WireStyleFlags::BOLD));
+    assert_eq!(dimmed.style.underline, shepr_vt::UnderlineStyle::Curly);
+    assert_eq!(dimmed.symbol, frame_cell(&plain, pane_origin).symbol);
+    // Inside it every cell is the popup's own: no DIM and no pane underline.
+    for y in popup.y..popup.bottom() {
+        for x in popup.x..popup.right() {
+            let cell = frame_cell(&frame, (x, y));
+            assert!(
+                !cell.style.flags.contains(WireStyleFlags::DIM),
+                "({x}, {y})"
+            );
+            assert_eq!(cell.style.underline, shepr_vt::UnderlineStyle::None);
+            assert_eq!(cell.hyperlink, None);
+        }
+    }
+}
+
+#[test]
+fn mode_bar_is_drawn_only_while_no_overlay_is_open() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.mode = ClientShellMode::Prefix;
+    let frame = state.compose(106, 30).expect("frame with the mode bar");
+    assert!(frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
+
+    // An overlay that fits replaces the bar's row content; one that does not fit still
+    // counts as open, so the bar's tail must not show beside the hint either.
+    open_help(&mut state);
+    state.mode = ClientShellMode::Prefix;
+    let frame = state.compose(106, 30).expect("help frame");
+    assert!(!frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
+    let frame = state
+        .compose(106, 8)
+        .expect("frame with a help that does not fit");
+    assert!(last_row_text(&frame).contains("window too small"));
+    assert!(
+        !frame_rows(&frame)
+            .iter()
+            .any(|row| row.contains("keybinds"))
+    );
+    assert!(!frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
+}

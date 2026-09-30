@@ -1,5 +1,4 @@
 use ratatui::{
-    buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
 };
@@ -13,14 +12,19 @@ fn panel_contrast_fg(p: &Palette) -> Color {
     }
 }
 
+/// Reports the style of every selected cell to `patch_cell(x, y, style)`, in screen
+/// coordinates, and does not know the surface those cells live in: `inner` can reach past
+/// it (the client composes pane surfaces produced for another layout), so the sink must
+/// ignore positions it does not have. The style is meant to be applied like
+/// `Cell::set_style`.
 pub fn render_selection_highlight<P: PartialEq>(
     selection: Option<&shepr_vt::selection::Selection<P>>,
-    buffer: &mut Buffer,
     pane_id: &P,
     inner: Rect,
     scroll_metrics: Option<crate::scroll::ScrollMetrics>,
     p: &Palette,
     host_theme: crate::host_term::theme::TerminalTheme,
+    patch_cell: &mut impl FnMut(u16, u16, Style),
 ) {
     let Some(selection) =
         selection.filter(|selection| selection.is_visible() && &selection.pane_id == pane_id)
@@ -34,24 +38,14 @@ pub fn render_selection_highlight<P: PartialEq>(
         return;
     };
     let style = automatic_selection_style(p, host_theme);
-    // `inner` can extend past the buffer: the client composes pane surfaces whose
-    // geometry was produced for a different layout (a resize or sidebar toggle racing
-    // an in-flight surface). Only the visible part of `inner` is painted; `Buffer`
-    // indexing would panic.
-    let visible = inner.intersection(buffer.area);
-    if visible.is_empty() {
-        return;
-    }
-    for screen_y in visible.top()..visible.bottom() {
+    for screen_y in inner.top()..inner.bottom() {
         let y = screen_y - inner.y;
         let row = shepr_vt::ViewportRow(y);
         let absolute_row = scroll_metrics.absolute_row_at_viewport(row);
-        for screen_x in visible.left()..visible.right() {
+        for screen_x in inner.left()..inner.right() {
             let x = screen_x - inner.x;
-            if selection.contains(shepr_vt::Point::new(absolute_row, x))
-                && let Some(cell) = buffer.cell_mut((screen_x, screen_y))
-            {
-                cell.set_style(style);
+            if selection.contains(shepr_vt::Point::new(absolute_row, x)) {
+                patch_cell(screen_x, screen_y, style);
             }
         }
     }

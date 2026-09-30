@@ -1020,11 +1020,13 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let frame = state.compose(106, 20).expect("search frame");
     let hit = state.hits.panes[0].clone();
     let viewport_top = 5u16;
-    let restored = frame.to_ratatui_buffer().expect("search frame buffer");
-    let highlighted = restored
-        .cell((hit.inner_rect.x + 2, hit.inner_rect.y + (5 - viewport_top)))
-        .expect("highlighted search cell");
-    assert_eq!(highlighted.bg, state.config.palette.accent);
+    assert_eq!(
+        cell_bg(
+            &frame,
+            (hit.inner_rect.x + 2, hit.inner_rect.y + (5 - viewport_top))
+        ),
+        state.config.palette.accent
+    );
 
     state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
@@ -1153,9 +1155,8 @@ fn navigator_workspace_headings_use_the_active_themes_primary_text() {
             .find(|(_, target)| matches!(target, ClientNavigatorTarget::Workspace { .. }))
             .expect("workspace heading");
         let position = cell_symbol_position(&frame, *rect, "client-shell");
-        let buffer = frame.to_ratatui_buffer().expect("buffer");
-        assert_eq!(buffer[position].fg, state.config.palette.text);
-        assert!(buffer[position].modifier.contains(Modifier::BOLD));
+        assert_eq!(cell_fg(&frame, position), state.config.palette.text);
+        assert!(cell_is_bold(&frame, position));
     }
 }
 
@@ -1592,10 +1593,12 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .iter()
             .all(|(rect, _)| rect.right() == track.x)
     );
-    let buffer = frame.to_ratatui_buffer().expect("buffer");
-    assert_eq!(buffer[(track.x, track.y)].fg, state.config.palette.overlay1);
     assert_eq!(
-        buffer[(track.x, track.bottom() - 1)].fg,
+        cell_fg(&frame, (track.x, track.y)),
+        state.config.palette.overlay1
+    );
+    assert_eq!(
+        cell_fg(&frame, (track.x, track.bottom() - 1)),
         state.config.palette.overlay0
     );
     let mouse = |state: &mut ClientShellState, kind, row| {

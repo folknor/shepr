@@ -525,12 +525,18 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     writer.flush()
 }
 
-/// Writes all cells in the frame (full redraw).
-fn cell_width(cell: &CellData) -> usize {
-    if shepr_vt::is_halfwidth_katakana_voiced_grapheme(&cell.symbol) {
+/// Terminal column width of one cell's symbol: the one width rule output uses to skip the
+/// cells a wide glyph covers, and client composition uses to find glyph extents.
+pub fn cell_width(cell: &CellData) -> usize {
+    symbol_width(&cell.symbol)
+}
+
+/// Terminal column width of `symbol`; see [`cell_width`].
+pub fn symbol_width(symbol: &str) -> usize {
+    if shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol) {
         return 2;
     }
-    cell.symbol.width()
+    symbol.width()
 }
 
 #[derive(Clone, Copy)]
