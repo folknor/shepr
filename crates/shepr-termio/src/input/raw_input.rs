@@ -6,8 +6,9 @@ use crate::host_term::theme::{
 };
 use crate::input::{TerminalKey, parse_terminal_key_sequence};
 use crate::limits::{
-    MAX_DISCARDED_CONTROL_TAIL_BYTES, MAX_HOST_COLOR_QUERY_REPLIES,
-    MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES, MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT,
+    DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS, MAX_DISCARDED_CONTROL_TAIL_BYTES,
+    MAX_HOST_COLOR_QUERY_REPLIES, MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES, MAX_PENDING_PASTE_BYTES,
+    PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
 };
 
 // limits-exempt: ESC is the terminal-control introducer byte used by this parser.
@@ -304,6 +305,16 @@ impl<P: HostReplyPolicy> RawInputFramer<P> {
         self.byte_framer.has_pending_incomplete_mouse_sequence()
     }
 
+    /// Whether the held input is exactly `ESC [`.
+    pub fn has_pending_csi_introducer(&self) -> bool {
+        self.byte_framer.has_pending_csi_introducer()
+    }
+
+    /// How long to keep waiting after an idle flush held input back.
+    pub fn held_input_flush_timeout_ms(&self) -> i32 {
+        self.byte_framer.held_input_flush_timeout_ms()
+    }
+
     fn framed_events_from_chunks(chunks: Vec<Vec<u8>>) -> Vec<FramedRawInputEvent> {
         chunks
             .into_iter()
@@ -317,17 +328,27 @@ impl<P: HostReplyPolicy> RawInputFramer<P> {
                         )),
                     });
                 }
-                extract_one_event(&chunk).map(|(event, _consumed)| {
-                    // Length and kind only: the bytes and the parsed key are
-                    // what the user typed, passwords included, and the log
-                    // file outlives the session.
-                    tracing::debug!(
-                        len = chunk.len(),
-                        kind = raw_input_event_kind(&event),
-                        "raw input event parsed"
-                    );
-                    FramedRawInputEvent { raw: chunk, event }
-                })
+                // A chunk the idle flush released as a key (a lone `ESC [` or
+                // `ESC O`, a held prefix whose tail never came) is not a
+                // complete escape sequence, so the escape framing cannot read
+                // it; the key parser can (Alt+[, Alt+O).
+                let event = extract_one_event(&chunk)
+                    .map(|(event, _consumed)| event)
+                    .or_else(|| {
+                        std::str::from_utf8(&chunk)
+                            .ok()
+                            .and_then(parse_terminal_key_sequence)
+                            .map(RawInputEvent::Key)
+                    })?;
+                // Length and kind only: the bytes and the parsed key are
+                // what the user typed, passwords included, and the log file
+                // outlives the session.
+                tracing::debug!(
+                    len = chunk.len(),
+                    kind = raw_input_event_kind(&event),
+                    "raw input event parsed"
+                );
+                Some(FramedRawInputEvent { raw: chunk, event })
             })
             .collect()
     }
@@ -345,6 +366,11 @@ struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
     held_pending_host_reply_esc: bool,
     split_coalesced_escape: bool,
     host_escape_disambiguation_active: bool,
+    /// Set when a mouse report prefix outlived keyboard timing while the host
+    /// sends Escape disambiguated: the prefix's length, kept for one longer
+    /// wait (`held_input_flush_timeout_ms`) in case its tail arrives late. Any
+    /// input that does not continue it releases the prefix as a key.
+    awaiting_mouse_tail_after: Option<usize>,
     /// How many bytes of a held, unterminated bracketed paste have already
     /// been searched for the terminator, so a paste arriving in many reads is
     /// not rescanned from the start on every one.
@@ -372,6 +398,13 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     fn push_at(&mut self, data: &[u8], now: std::time::Instant) -> Vec<Vec<u8>> {
         let mut chunks = self.give_up_stalled_paste(now);
         self.buffer.extend_from_slice(data);
+        if let Some(prefix_len) = self.awaiting_mouse_tail_after.take()
+            && !continues_escape_sequence(&self.buffer)
+        {
+            // The prefix already outlived keyboard timing, and what followed
+            // is not its tail: it was a key.
+            chunks.push(self.buffer.drain(..prefix_len).collect());
+        }
         chunks.extend(self.drain_available_chunks());
         self.paste_last_progress = if self.holding_paste() {
             match self.paste_last_progress {
@@ -493,6 +526,18 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         self.host_escape_disambiguation_active = active;
     }
 
+    fn held_input_flush_timeout_ms(&self) -> i32 {
+        if self.awaiting_mouse_tail_after.is_some() {
+            DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
+        } else {
+            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        }
+    }
+
+    fn has_pending_csi_introducer(&self) -> bool {
+        self.buffer.as_slice() == b"\x1b["
+    }
+
     fn has_pending_lone_escape(&self) -> bool {
         self.buffer.as_slice() == [ESC]
     }
@@ -540,13 +585,21 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             return chunks;
         }
 
-        if self.host_escape_disambiguation_active
-            && starts_with_bounded_incomplete_escape_sequence(&self.buffer)
+        // A host that disambiguates Escape sends it as `CSI 27u`, so a mouse
+        // report prefix that outlives keyboard timing may still get a delayed
+        // tail. Keep it for one longer wait; `push_at` releases it as a key if
+        // other input follows. A finished mouse wait also counts as this
+        // prefix's one-flush host reply hold, so the two holds never stack.
+        let mouse_wait_served = self.awaiting_mouse_tail_after.take().is_some();
+        if !mouse_wait_served
+            && self.host_escape_disambiguation_active
+            && could_continue_as_mouse_report(&self.buffer)
         {
             tracing::trace!(
                 len = self.buffer.len(),
-                "holding incomplete host escape sequence with disambiguation active"
+                "holding a possible mouse report prefix for its delayed tail"
             );
+            self.awaiting_mouse_tail_after = Some(self.buffer.len());
             return chunks;
         }
 
@@ -594,7 +647,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         if self.host_replies.awaiting_cell_size_or_appearance()
             && self.buffer.as_slice() == b"\x1b["
         {
-            if !self.held_pending_host_reply_esc {
+            if !self.held_pending_host_reply_esc && !mouse_wait_served {
                 self.held_pending_host_reply_esc = true;
                 tracing::trace!("holding incomplete host CSI reply one flush");
                 return chunks;
@@ -653,7 +706,10 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         }
 
         if self.buffer.as_slice() == [ESC] {
-            if self.host_replies.awaiting_reply() && !self.held_pending_host_reply_esc {
+            if self.host_replies.awaiting_reply()
+                && !self.held_pending_host_reply_esc
+                && !mouse_wait_served
+            {
                 self.held_pending_host_reply_esc = true;
                 tracing::trace!("holding lone escape one flush while awaiting host reply");
                 return chunks;
@@ -774,15 +830,6 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
 
             if self.split_coalesced_escape && self.buffer.starts_with(b"\x1b\x1b") {
                 chunks.push(vec![ESC]);
-                self.buffer.drain(..1);
-                continue;
-            }
-
-            if self.host_escape_disambiguation_active
-                && self.buffer.first() == Some(&ESC)
-                && self.buffer.len() > 1
-                && !starts_with_known_escape_introducer(&self.buffer)
-            {
                 self.buffer.drain(..1);
                 continue;
             }
@@ -1212,23 +1259,24 @@ fn starts_with_incomplete_sgr_mouse_sequence(buffer: &[u8]) -> bool {
             .all(|byte| byte.is_ascii_digit() || *byte == b';')
 }
 
-fn starts_with_known_escape_introducer(buffer: &[u8]) -> bool {
-    buffer
-        .get(1)
-        .is_some_and(|byte| matches!(*byte, b'[' | b'O' | b']' | b'P' | b'_' | b'^' | b'X' | ESC))
+/// Whether the bytes after a held `ESC` or `ESC [` still read as one escape
+/// sequence (a mouse report, a host reply, a bracketed paste) rather than a key
+/// followed by more input.
+fn continues_escape_sequence(buffer: &[u8]) -> bool {
+    match buffer {
+        // OSC, DCS and APC host replies can also split after their ESC.
+        [ESC] | [ESC, b'['] | [ESC, b']' | b'P' | b'_', ..] => true,
+        [ESC, b'[', next, ..] => *next == b'M' || matches!(*next, 0x20..=0x3f),
+        _ => false,
+    }
 }
 
-fn starts_with_bounded_incomplete_escape_sequence(buffer: &[u8]) -> bool {
-    if buffer.len() >= MAX_DISCARDED_CONTROL_TAIL_BYTES {
-        return false;
-    }
-    if buffer == [ESC] || buffer == b"\x1bO" {
-        return true;
-    }
-    let Some(body) = buffer.strip_prefix(b"\x1b[") else {
-        return false;
-    };
-    body.iter().all(|byte| matches!(*byte, 0x20..=0x3f))
+/// Whether `buffer` is a prefix of, or starts, an SGR (`ESC [ <`) or default
+/// (`ESC [ M`) mouse report.
+fn could_continue_as_mouse_report(buffer: &[u8]) -> bool {
+    [b"\x1b[<".as_slice(), b"\x1b[M"]
+        .iter()
+        .any(|prefix| buffer.starts_with(prefix) || prefix.starts_with(buffer))
 }
 
 fn starts_with_incomplete_default_mouse_sequence(buffer: &[u8]) -> bool {
@@ -2525,51 +2573,27 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_host_disambiguation_retains_split_sgr_mouse_without_escape() {
-        for (prefix, tail) in [
-            (b"\x1b".as_slice(), b"[<0;5;5M".as_slice()),
-            (b"\x1b[".as_slice(), b"<0;5;5M".as_slice()),
-            (b"\x1b[<0;".as_slice(), b"5;5M".as_slice()),
-        ] {
+    fn idle_flush_releases_a_lone_csi_or_ss3_introducer_as_its_alt_key() {
+        // A lone `ESC [` or `ESC O` is not a complete escape sequence, so the
+        // escape framing cannot read it; after the idle flush it is Alt+[ or
+        // Alt+O, not dropped.
+        for (bytes, ch) in [(b"\x1b[".as_slice(), '['), (b"\x1bO", 'O')] {
             let mut framer = RawInputFramer::default();
-            framer
-                .byte_framer
-                .set_host_escape_disambiguation_active(true);
+            assert!(framer.push(bytes).is_empty());
 
-            assert!(framer.push(prefix).is_empty());
-            assert!(framer.flush_timeout().is_empty());
-            assert!(framer.flush_timeout().is_empty());
-            let events = framer.push(tail);
-
-            assert!(matches!(
-                events.as_slice(),
-                [RawInputEvent::Mouse(MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: 4,
-                    row: 4,
-                    ..
-                })]
-            ));
+            let events = framer.flush_timeout();
+            assert_eq!(events.len(), 1, "{bytes:?}");
+            let expected = if ch.is_ascii_uppercase() {
+                KeyModifiers::ALT | KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::ALT
+            };
+            assert_raw_key(
+                events.into_iter().next().expect("test precondition"),
+                KeyCode::Char(ch),
+                expected,
+            );
         }
-    }
-
-    #[test]
-    fn confirmed_host_disambiguation_drops_stale_escape_before_plain_input() {
-        let mut framer = RawInputFramer::default();
-        framer
-            .byte_framer
-            .set_host_escape_disambiguation_active(true);
-
-        assert!(framer.push(b"\x1b").is_empty());
-        assert!(framer.flush_timeout().is_empty());
-        let events = framer.push(b"x");
-
-        assert_eq!(events.len(), 1);
-        assert_raw_key(
-            events.into_iter().next().expect("test precondition"),
-            KeyCode::Char('x'),
-            KeyModifiers::empty(),
-        );
     }
 
     #[test]

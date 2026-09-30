@@ -661,6 +661,13 @@ expect = "seal paths ok"
 match = "last-line"
 stage = "pre-clippy"
 
+[[script_check]]
+name = "upstream-watch-paths"
+command = "python3 scripts/check_upstream_watch_paths.py"
+expect = "upstream watch paths ok"
+match = "last-line"
+stage = "pre-clippy"
+
 # The agent plugins that load into a JavaScript agent (Pi, Oh My Pi, opencode,
 # Kilo) are tested with bun, a development dependency.
 [[script_check]]

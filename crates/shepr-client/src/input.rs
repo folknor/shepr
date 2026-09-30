@@ -178,11 +178,7 @@ fn flush_idle_input<R: AsRawFd>(
     {
         return false;
     }
-    if held_escape
-        && stdin_read_ready(
-            reader,
-            shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
-        ) == Some(false)
+    if held_escape && stdin_read_ready(reader, framer.held_input_flush_timeout_ms()) == Some(false)
     {
         let chunks = framer.flush_timeout_framed();
         if !framer.has_pending_input() {
@@ -283,10 +279,14 @@ fn idle_flush_timeout_ms<P: shepr_termio::input::raw_input::HostReplyPolicy>(
     framer: &shepr_termio::input::raw_input::RawInputFramer<P>,
     host_mouse_capture_active: bool,
 ) -> i32 {
-    if host_mouse_capture_active
-        && (framer.has_pending_lone_escape() || framer.has_pending_incomplete_mouse_sequence())
-    {
+    if !host_mouse_capture_active {
+        return shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS;
+    }
+    if framer.has_pending_lone_escape() || framer.has_pending_incomplete_mouse_sequence() {
         shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+    } else if framer.has_pending_csi_introducer() {
+        // A mouse report split after `ESC [` is still ambiguous with legacy Alt+[.
+        shepr_termio::limits::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS
     } else {
         shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
     }
@@ -435,8 +435,16 @@ mod tests {
             shepr_termio::input::raw_input::NoHostReplies,
         >::default();
         assert!(unrelated.push_framed(b"\x1b[49:33;2:").is_empty());
+        let mut csi = shepr_termio::input::raw_input::RawInputFramer::<
+            shepr_termio::input::raw_input::NoHostReplies,
+        >::default();
+        assert!(csi.push_framed(b"\x1b[").is_empty());
 
-        for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated] {
+        assert_eq!(
+            idle_flush_timeout_ms(&csi, true),
+            shepr_termio::limits::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS
+        );
+        for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated, &csi] {
             assert_eq!(
                 idle_flush_timeout_ms(framer, false),
                 shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
@@ -457,5 +465,277 @@ mod tests {
             shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS,
         );
         assert!(mouse_timeout_ms > 100);
+    }
+
+    type HostFramer =
+        shepr_termio::input::raw_input::RawInputFramer<shepr_termio::input::raw_input::HostReplies>;
+
+    fn raw_bytes(events: Vec<shepr_termio::input::raw_input::FramedRawInputEvent>) -> Vec<Vec<u8>> {
+        events.into_iter().map(|event| event.raw).collect()
+    }
+
+    /// Plays the stdin reader's idle waits across a `gap` between two host
+    /// writes, without sleeping, using its production timeout selector, then
+    /// pushes `next`. Returns the raw bytes of every event framed.
+    fn reader_chunks_across_gap(
+        framer: &mut HostFramer,
+        mouse_capture: bool,
+        gap: std::time::Duration,
+        next: &[u8],
+    ) -> Vec<Vec<u8>> {
+        let first_wait = std::time::Duration::from_millis(
+            u64::try_from(idle_flush_timeout_ms(framer, mouse_capture)).unwrap_or_default(),
+        );
+        let mut chunks = Vec::new();
+        if gap >= first_wait {
+            let had_pending = framer.has_pending_input();
+            let flushed = framer.flush_timeout_framed();
+            let held = had_pending && flushed.is_empty();
+            chunks.extend(raw_bytes(flushed));
+            let second_wait = std::time::Duration::from_millis(
+                u64::try_from(framer.held_input_flush_timeout_ms()).unwrap_or_default(),
+            );
+            if held && gap >= first_wait + second_wait {
+                chunks.extend(raw_bytes(framer.flush_timeout_framed()));
+            }
+        }
+        chunks.extend(raw_bytes(framer.push_framed(next)));
+        chunks
+    }
+
+    fn confirmed_disambiguation_framer() -> HostFramer {
+        let mut framer = HostFramer::for_host_input();
+        framer.set_host_escape_disambiguation_active(true);
+        framer
+    }
+
+    #[test]
+    fn confirmed_disambiguation_keeps_mouse_report_split_by_delayed_tail() {
+        // The tail of a click has been seen to arrive 350 ms after its ESC.
+        let gap = std::time::Duration::from_millis(350);
+        for (prefix, tail) in [
+            (b"\x1b".as_slice(), b"[<0;5;5M".as_slice()),
+            (b"\x1b[", b"<0;5;5M"),
+            (b"\x1b[<0;", b"5;5M"),
+        ] {
+            let mut framer = confirmed_disambiguation_framer();
+            assert!(framer.push_framed(prefix).is_empty());
+
+            assert_eq!(
+                reader_chunks_across_gap(&mut framer, true, gap, tail),
+                vec![b"\x1b[<0;5;5M".to_vec()],
+                "prefix {prefix:?} must rejoin its mouse tail"
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_disambiguation_keeps_escape_prefixed_bindings_intact() {
+        // Terminal-side bindings that send ESC-prefixed bytes: Ghostty's macOS
+        // Alt+Left/Right, Alacritty's Shift+Enter, iTerm2's Option+Backspace.
+        for binding in [b"\x1bb".as_slice(), b"\x1bf", b"\x1b\r", b"\x1b\x7f"] {
+            let mut framer = confirmed_disambiguation_framer();
+
+            assert_eq!(
+                raw_bytes(framer.push_framed(binding)),
+                vec![binding.to_vec()],
+                "binding {binding:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_disambiguation_releases_escape_prefixed_bindings_after_bounded_wait() {
+        // Terminal text bindings can send ESC, Alt+[ or Alt+O alone.
+        let gap = std::time::Duration::from_secs(1);
+        for binding in [b"\x1b".as_slice(), b"\x1b[", b"\x1bO"] {
+            let mut framer = confirmed_disambiguation_framer();
+            assert!(framer.push_framed(binding).is_empty());
+
+            assert_eq!(
+                reader_chunks_across_gap(&mut framer, true, gap, b"x"),
+                vec![binding.to_vec(), b"x".to_vec()],
+                "binding {binding:?} must not be held or dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_disambiguation_separates_escape_prefixed_binding_from_fast_next_key() {
+        // Typing right after an Alt+O, Alt+[ or ESC text binding must not glue
+        // the next key onto it while the reader watches for a delayed mouse tail.
+        for (binding, next, gap_ms) in [
+            (b"\x1bO".as_slice(), b"q".as_slice(), 80),
+            (b"\x1b[", b"A", 80),
+            (b"\x1b", b"x", 200),
+        ] {
+            let mut framer = confirmed_disambiguation_framer();
+            assert!(framer.push_framed(binding).is_empty());
+
+            assert_eq!(
+                reader_chunks_across_gap(
+                    &mut framer,
+                    true,
+                    std::time::Duration::from_millis(gap_ms),
+                    next
+                ),
+                vec![binding.to_vec(), next.to_vec()],
+                "binding {binding:?} followed by {next:?} after {gap_ms} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_disambiguation_releases_binding_while_host_reply_is_pending() {
+        for (binding, next) in [(b"\x1b[".as_slice(), b"A".as_slice()), (b"\x1b", b"x")] {
+            let mut framer = confirmed_disambiguation_framer();
+            framer.host_cell_size_query_sent();
+            framer.host_color_query_sent();
+            assert!(framer.push_framed(binding).is_empty());
+
+            assert_eq!(
+                reader_chunks_across_gap(
+                    &mut framer,
+                    true,
+                    std::time::Duration::from_secs(1),
+                    next
+                ),
+                vec![binding.to_vec(), next.to_vec()],
+                "binding {binding:?} must not stay held behind a pending host reply"
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_disambiguation_keeps_slow_host_reply_and_paste_whole() {
+        let paste = b"200~hello\n\x1b[201~";
+        for (tail, gap_ms) in [(b"6;21;10t".as_slice(), 55), (paste.as_slice(), 80)] {
+            let mut framer = confirmed_disambiguation_framer();
+            framer.host_cell_size_query_sent();
+            assert!(framer.push_framed(b"\x1b[").is_empty());
+
+            let chunks = reader_chunks_across_gap(
+                &mut framer,
+                true,
+                std::time::Duration::from_millis(gap_ms),
+                tail,
+            );
+            let mut whole = b"\x1b[".to_vec();
+            whole.extend_from_slice(tail);
+            assert_eq!(
+                chunks,
+                vec![whole],
+                "tail {tail:?} after {gap_ms} ms must stay attached to ESC["
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_disambiguation_keeps_osc_reply_split_after_escape_whole() {
+        let mut framer = confirmed_disambiguation_framer();
+        framer.host_color_query_sent();
+        assert!(framer.push_framed(b"\x1b").is_empty());
+
+        let tail = b"]11;rgb:1111/2222/3333\x07";
+        let mut whole = b"\x1b".to_vec();
+        whole.extend_from_slice(tail);
+        assert_eq!(
+            reader_chunks_across_gap(
+                &mut framer,
+                true,
+                std::time::Duration::from_millis(155),
+                tail
+            ),
+            vec![whole]
+        );
+    }
+
+    #[test]
+    fn confirmed_disambiguation_mouse_wait_does_not_consume_later_reply_hold() {
+        let mut framer = confirmed_disambiguation_framer();
+        framer.enable_host_appearance_query_on_focus();
+        assert_eq!(
+            raw_bytes(framer.push_framed(b"\x1b[I")),
+            vec![b"\x1b[I".to_vec()]
+        );
+        assert!(framer.push_framed(b"\x1b[<0;").is_empty());
+
+        assert!(
+            reader_chunks_across_gap(
+                &mut framer,
+                true,
+                std::time::Duration::from_millis(650),
+                b"\x1b[?997;"
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            reader_chunks_across_gap(
+                &mut framer,
+                true,
+                std::time::Duration::from_millis(15),
+                b"2n"
+            ),
+            vec![b"\x1b[?997;2n".to_vec()]
+        );
+    }
+
+    #[test]
+    fn confirmed_disambiguation_joins_escape_binding_split_before_wait_ends() {
+        let mut framer = confirmed_disambiguation_framer();
+        assert!(framer.push_framed(b"\x1b").is_empty());
+
+        assert_eq!(
+            reader_chunks_across_gap(
+                &mut framer,
+                true,
+                std::time::Duration::from_millis(40),
+                b"\r"
+            ),
+            vec![b"\x1b\r".to_vec()]
+        );
+    }
+
+    #[test]
+    fn legacy_alt_bracket_is_not_glued_to_following_key() {
+        let mut framer = HostFramer::for_host_input();
+        assert!(framer.push_framed(b"\x1b[").is_empty());
+
+        assert_eq!(
+            reader_chunks_across_gap(
+                &mut framer,
+                true,
+                std::time::Duration::from_millis(80),
+                b"a"
+            ),
+            vec![b"\x1b[".to_vec(), b"a".to_vec()]
+        );
+    }
+
+    #[test]
+    fn captured_mouse_report_split_after_csi_survives_idle_gap() {
+        let mut framer = HostFramer::for_host_input();
+        framer.enable_host_appearance_query_on_focus();
+        assert_eq!(
+            raw_bytes(framer.push_framed(b"\x1b[I")),
+            vec![b"\x1b[I".to_vec()]
+        );
+        assert!(framer.push_framed(b"\x1b[").is_empty());
+
+        // `ESC [` and its continuation have been seen 32.937 ms apart.
+        let chunks = reader_chunks_across_gap(
+            &mut framer,
+            true,
+            std::time::Duration::from_micros(32_937),
+            b"<35;64;37M\x1b[<35;65;36M\x1b[<35;64;36M",
+        );
+        assert_eq!(
+            chunks,
+            vec![
+                b"\x1b[<35;64;37M".to_vec(),
+                b"\x1b[<35;65;36M".to_vec(),
+                b"\x1b[<35;64;36M".to_vec(),
+            ]
+        );
     }
 }

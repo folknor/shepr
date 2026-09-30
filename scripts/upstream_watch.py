@@ -12,7 +12,10 @@ Watched: the integration assets (hooks, plugins and their bun tests), the
 detection manifests both as upstream bundles them and as it publishes them for
 over-the-air updates (a published manifest can be newer than the bundled one,
 and shepr, which has no over-the-air updates, ports it as a detection fix), the
-manifest check tooling, and the detection and hook wiring with its tests.
+manifest check tooling, the detection and hook wiring with its tests, and host
+terminal input framing. The shepr side of every mapping is also listed in
+AGENTS.md ("Upstream tracking"); `scripts/check_upstream_watch_paths.py` keeps
+the two lists equal.
 
   scripts/upstream_watch.py                report
   scripts/upstream_watch.py --diff         report with the upstream diffs
@@ -53,25 +56,37 @@ MAPPING = [
     ("distribution/agent-detection/", "crates/shepr-agent/src/detect/manifests/"),
     ("src/pane/agent_detection.rs", "crates/shepr-mux/src/pane/agent_detection.rs"),
     ("src/server/autodetect.rs", "src/autodetect.rs"),
+    # Host terminal input framing: escape disambiguation, split mouse reports,
+    # held host replies.
+    ("src/raw_input.rs", "crates/shepr-termio/src/input/raw_input.rs"),
+    ("src/client/input.rs", "crates/shepr-client/src/input.rs"),
 ]
 
-# Watched upstream paths with no fixed shepr counterpart: where the agent list,
-# resume definitions, hook wiring and the tests that exercise them live
-# upstream. A change here is reported with the shepr area to compare by hand.
+# (upstream path, shepr path or None, note). Watched upstream paths with no
+# same-named shepr counterpart: where the agent list, resume definitions, hook
+# wiring and the tests that exercise them live upstream. A change here is
+# reported with the shepr area to compare by hand; None means shepr has no
+# counterpart at all.
 LOOSE = [
-    ("distribution/agent-detection/index.toml", "(upstream's publish catalog; shepr publishes nothing)"),
-    ("scripts/agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/ (manifest validation and its tests)"),
-    ("scripts/test_agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/ (manifest validation and its tests)"),
-    ("scripts/test_hermes_integration_asset.py", "crates/shepr-agent/src/integration/ (asset tests)"),
-    ("tests/auto_detect.rs", "src/autodetect.rs and crates/shepr-agent/src/detect/ (detection tests)"),
-    ("src/detect.rs", "crates/shepr-agent/src/detect/"),
-    ("src/integration.rs", "crates/shepr-agent/src/integration/"),
-    ("src/agent", "crates/shepr-agent/src/agent/ (agent list, resume definitions)"),
-    ("src/terminal/state.rs", "crates/shepr-mux/src/terminal/state/ (hook authority, sessions)"),
-    ("src/app/actions.rs", "crates/shepr-server/src/app/ (hook-lifecycle tests)"),
+    ("distribution/agent-detection/index.toml", None, "upstream's publish catalog; shepr publishes nothing"),
+    ("scripts/agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/", "manifest validation and its tests"),
+    ("scripts/test_agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/", "manifest validation and its tests"),
+    ("scripts/test_hermes_integration_asset.py", "crates/shepr-agent/src/integration/", "asset tests"),
+    ("tests/auto_detect.rs", "crates/shepr-agent/src/detect/", "detection tests"),
+    ("src/detect.rs", "crates/shepr-agent/src/detect/", "detection entry point"),
+    ("src/integration.rs", "crates/shepr-agent/src/integration/", "integration entry point"),
+    ("src/agent", "crates/shepr-agent/src/agent/", "agent list, resume definitions"),
+    ("src/terminal/state.rs", "crates/shepr-mux/src/terminal/state/", "hook authority, sessions"),
+    ("src/app/actions.rs", "crates/shepr-server/src/app/", "hook-lifecycle tests"),
 ]
 
-WATCHED = sorted({p for p, _ in MAPPING} | {p for p, _ in LOOSE})
+WATCHED = sorted({p for p, _ in MAPPING} | {p for p, _, _ in LOOSE})
+
+
+def shepr_paths() -> list[str]:
+    """Every shepr file or directory a watched upstream path maps to: the list
+    AGENTS.md repeats."""
+    return sorted({mine for _, mine in MAPPING} | {mine for _, mine, _ in LOOSE if mine is not None})
 
 
 def git(*args: str, cwd=CLONE, check: bool = True) -> str:
@@ -115,12 +130,14 @@ def ours(path: str) -> str:
     """The shepr file or area an upstream path concerns: the longest matching
     prefix across both tables, so a LOOSE entry nested under a MAPPING prefix
     wins for its own path."""
-    candidates = [(up, mine, True) for up, mine in MAPPING] + [(up, area, False) for up, area in LOOSE]
+    candidates = [(up, mine, None) for up, mine in MAPPING] + list(LOOSE)
     best = max((c for c in candidates if path.startswith(c[0])), key=lambda c: len(c[0]), default=None)
     if best is None:
         return "(no mapping)"
-    up, target, mapped = best
-    return target + path[len(up):] if mapped else target
+    up, mine, note = best
+    if note is None:
+        return mine + path[len(up):]
+    return f"{mine} ({note})" if mine is not None else f"({note})"
 
 
 def changes(base: str, head: str) -> list[tuple[str, str]]:
