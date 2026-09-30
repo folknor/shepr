@@ -223,7 +223,7 @@ fn frame_server_message_splits_payloads_over_the_frame_cap() {
 }
 
 #[tokio::test]
-async fn default_headless_size_lays_out_tabs_without_clients() {
+async fn default_headless_size_lays_out_workspaces_without_clients() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
 
@@ -234,15 +234,15 @@ async fn default_headless_size_lays_out_tabs_without_clients() {
             shepr_config::DEFAULT_HEADLESS_ROWS
         )
     );
-    assert_eq!(server.app.state.tab_area(0, 0), None);
+    assert_eq!(server.app.state.workspace_area(0), None);
     server.render_and_stream();
     let headless = server.app.state.settings.headless_rect();
-    assert_eq!(server.app.state.tab_area(0, 0), Some(headless));
+    assert_eq!(server.app.state.workspace_area(0), Some(headless));
     assert_eq!(server.app.state.pane_geometry().area, headless);
-    let layout = crate::ui::compute_tab_surface_for(
+    let layout = crate::ui::compute_surface_for(
         &server.app.state,
         &server.app.terminal_runtimes,
-        crate::ui::TabSurfaceTarget::from_indices(&server.app.state, 0, 0),
+        server.default_shell_target(),
         headless,
     );
     let pane = layout.pane_infos.first().expect("test pane geometry");
@@ -265,9 +265,10 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
         client_id: ClientId::test_new(7),
     }));
 
-    let target = crate::ui::TabSurfaceTarget::from_indices(&server.app.state, 0, 0)
-        .expect("test tab target");
-    let layout = crate::ui::compute_tab_surface_for(
+    let target = server
+        .default_shell_target()
+        .expect("test workspace target");
+    let layout = crate::ui::compute_surface_for(
         &server.app.state,
         &server.app.terminal_runtimes,
         Some(target),
@@ -277,7 +278,7 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
     let headless_pane_size = (pane.inner_rect.height, pane.inner_rect.width);
 
     assert_eq!(
-        server.app.state.tab_area(0, 0),
+        server.app.state.workspace_area(0),
         Some(server.app.state.settings.headless_rect())
     );
     assert_ne!(client_size, headless_pane_size);
@@ -296,8 +297,8 @@ async fn headless_api_reads_latest_title() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let pane_id = server.app.state.workspaces[0].tabs()[0].root_pane();
-    let terminal_id = server.app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+    let pane_id = server.app.state.workspaces[0].root_pane();
+    let terminal_id = server.app.state.workspaces[0].panes()[&pane_id]
         .attached_terminal_id
         .clone();
     server
@@ -627,23 +628,23 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
 #[test]
 fn configured_window_title_reaches_each_client_once_per_change() {
     let (mut server, control_rx) = window_title_test_server();
-    server.app.configure_window_title("{workspace}/{tab}");
+    server.app.configure_window_title("{workspace}");
 
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("herd/1".to_string()))
+        Some(Some("herd".to_string()))
     );
 
     // An unchanged title must not re-emit an OSC on every render.
     server.sync_window_title();
     assert!(no_window_title(&control_rx));
 
-    server.app.state.workspaces[0].set_tab_custom_name(0, Some("build".into()));
+    server.app.state.workspaces[0].custom_name = Some("build".into());
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("herd/build".to_string()))
+        Some(Some("build".to_string()))
     );
 
     shutdown_test_runtimes(&mut server);
@@ -654,7 +655,7 @@ async fn focused_terminal_title_syncs_and_invalidates_shell_metadata() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{terminal_title}");
     server.app.state.ensure_test_terminals();
-    let pane_id = server.app.state.workspaces[0].tabs()[0].root_pane();
+    let pane_id = server.app.state.workspaces[0].root_pane();
     let terminal_id = server.app.state.workspaces[0]
         .terminal_id(pane_id)
         .expect("terminal")
@@ -768,16 +769,15 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
 #[tokio::test]
 async fn promoted_client_window_title_uses_its_own_view() {
     let mut server = test_headless_server();
-    let mut survivor = shepr_mux::workspace::Workspace::test_new("survivor");
-    let survivor_tab_index = survivor.test_add_tab(Some("survivor-tab"));
-    let survivor_pane = survivor.tabs()[survivor_tab_index].layout().focused();
+    let survivor = shepr_mux::workspace::Workspace::test_new("survivor");
+    let survivor_pane = survivor.focused_pane_id();
     let disconnected = shepr_mux::workspace::Workspace::test_new("disconnected");
-    let disconnected_pane = disconnected.tabs()[0].layout().focused();
+    let disconnected_pane = disconnected.focused_pane_id();
     server.app.state.workspaces = vec![survivor, disconnected];
     server.app.state.set_active_index(Some(1));
     server.app.state.set_selected_index(Some(1));
     server.app.state.ensure_test_terminals();
-    let survivor_terminal = server.app.state.workspaces[0].tabs()[survivor_tab_index]
+    let survivor_terminal = server.app.state.workspaces[0]
         .terminal_id(survivor_pane)
         .expect("survivor terminal")
         .clone();
@@ -791,15 +791,15 @@ async fn promoted_client_window_title_uses_its_own_view() {
     terminal.set_terminal_title(Some("CLIENT OSC".into()));
     server
         .app
-        .configure_window_title("{workspace}/{tab}/{pane}/{terminal_title}");
+        .configure_window_title("{workspace}/{pane}/{terminal_title}");
 
     let (survivor_control, _) = connect_matching_test_shell(&mut server, 1);
     let (disconnected_control, _) = connect_matching_test_shell(&mut server, 2);
-    let survivor_tab_id = server
+    let survivor_workspace_id = server
         .app
-        .public_tab_id(0, survivor_tab_index)
-        .expect("survivor tab id");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(1), &survivor_tab_id));
+        .public_workspace_id(0)
+        .expect("survivor workspace id");
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(1), &survivor_workspace_id));
     server.promote_client_to_foreground(ClientId::test_new(2));
     drain_window_titles(&survivor_control);
     drain_window_titles(&disconnected_control);
@@ -811,14 +811,12 @@ async fn promoted_client_window_title_uses_its_own_view() {
 
     assert_eq!(
         next_window_title(&survivor_control),
-        Some(Some("survivor/survivor-tab/client-pane/CLIENT OSC".into()))
+        Some(Some("survivor/client-pane/CLIENT OSC".into()))
     );
     assert_eq!(server.app.state.active_index(), Some(1));
     assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(1))
-            .as_deref(),
-        Some(survivor_tab_id.as_str())
+        server.shell_target_for_client(ClientId::test_new(1)),
+        Some(survivor_workspace_id)
     );
 
     let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
@@ -834,7 +832,7 @@ async fn promoted_client_window_title_uses_its_own_view() {
     );
     assert_eq!(
         next_window_title(&survivor_control),
-        Some(Some("survivor/survivor-tab/client-pane/UPDATED OSC".into()))
+        Some(Some("survivor/client-pane/UPDATED OSC".into()))
     );
     assert!(
         !server
@@ -886,7 +884,7 @@ async fn client_shell_attach_seeds_workspace() {
 async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("endpoint");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -922,10 +920,6 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let snapshot = client_shell_snapshot(&control_rx);
     assert_eq!(
         snapshot.agents[0].agent_status,
-        shepr_api::schema::AgentStatus::Idle
-    );
-    assert_eq!(
-        snapshot.tabs[0].agent_status,
         shepr_api::schema::AgentStatus::Idle
     );
     assert_eq!(
@@ -1380,7 +1374,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
 
     let pane_id = server
         .app
-        .public_pane_id(0, server.app.state.workspaces[0].tabs()[0].root_pane())
+        .public_pane_id(0, server.app.state.workspaces[0].root_pane())
         .expect("pane id");
     assert!(command_through_server(
         &mut server,
@@ -1457,7 +1451,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     server.app.state.ensure_test_terminals();
-    let pane_id = server.app.state.workspaces[0].tabs()[0].root_pane();
+    let pane_id = server.app.state.workspaces[0].root_pane();
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let _ = client_shell_snapshot(&control);
     server.render_and_stream();
@@ -1527,15 +1521,12 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
 #[tokio::test]
 async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     use shepr_protocol::command::{
-        PaneInputSetParams, PaneRenameParams, PaneRightClickTarget, PaneZoomMode, PaneZoomParams,
-        TabRenameParams,
+        PaneInputSetParams, PaneRenameParams, PaneRightClickTarget, WorkspaceRenameParams,
     };
 
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"BASE");
-    let pane_id = server.app.state.workspaces[0].tabs()[0].root_pane();
-    // A second pane so zoom has something to hide.
-    server.app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let pane_id = server.app.state.workspaces[0].root_pane();
     server.app.state.ensure_test_terminals();
     let public_pane_id = server.app.public_pane_id(0, pane_id).expect("pane id");
     let pane = |snapshot: &shepr_protocol::ClientShellSnapshot| {
@@ -1546,7 +1537,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
             .cloned()
             .expect("projected pane")
     };
-    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let workspace_id = server.app.public_workspace_id(0).expect("workspace id");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let mut previous = client_shell_snapshot(&control).revision;
     server.render_and_stream();
@@ -1566,14 +1557,14 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     assert!(command_through_server(
         &mut server,
         7,
-        EndpointCommand::TabRename(TabRenameParams {
-            tab_id: tab_id.clone().to_string(),
-            label: "named-tab".into(),
+        EndpointCommand::WorkspaceRename(WorkspaceRenameParams {
+            workspace_id: workspace_id.to_string(),
+            label: "named-workspace".into(),
         }),
     ));
-    let tab = next_projection(&mut server, &control, &mut previous);
-    assert_eq!(tab.tabs[0].label, "named-tab");
-    assert!(tab.tabs[0].custom_label);
+    let workspace = next_projection(&mut server, &control, &mut previous);
+    assert_eq!(workspace.workspaces[0].label, "named-workspace");
+    assert!(workspace.workspaces[0].custom_label);
 
     assert!(command_through_server(
         &mut server,
@@ -1635,16 +1626,6 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
             .as_deref(),
         Some("feature")
     );
-
-    assert!(command_through_server(
-        &mut server,
-        7,
-        EndpointCommand::PaneZoom(PaneZoomParams {
-            pane_id: Some(public_pane_id.clone().to_string()),
-            mode: PaneZoomMode::On,
-        }),
-    ));
-    assert!(next_projection(&mut server, &control, &mut previous).tabs[0].zoomed);
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1810,7 +1791,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
 async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("synchronized-split");
-    let first = workspace.tabs()[0].root_pane();
+    let first = workspace.root_pane();
     let second = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
@@ -1856,9 +1837,9 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
 async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed-sync");
-    let hidden = workspace.tabs()[0].root_pane();
+    let hidden = workspace.root_pane();
     let visible = workspace.test_split(shepr_core::layout::Direction::Vertical);
-    workspace.set_tab_zoomed(0, true);
+    assert!(workspace.set_zoomed(true));
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
@@ -2087,14 +2068,14 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
 }
 
 #[tokio::test]
-async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
+async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("divergent-retained");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
+    let first = shepr_mux::workspace::Workspace::test_new("divergent-retained");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("divergent-second");
+    let second_pane = second.root_pane();
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
@@ -2106,9 +2087,9 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(1)
         .expect("test precondition");
 
     let (first_control, first_render) = connect_matching_test_shell(&mut server, 7);
@@ -2117,8 +2098,8 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     let mut second_render = PaneSurfaceReceiver::new(second_render);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(8), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(8), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(8), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(8), false));
     assert!(
         server.pty_sources_visible_to_any_render_target(&HashSet::from([first_pane, second_pane,]))
     );
@@ -2314,82 +2295,15 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
 }
 
 #[tokio::test]
-async fn client_shell_tab_focus_changes_only_the_source_connection() {
-    let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("independent-tabs");
-    let second_tab = workspace.test_add_tab(Some("second"));
-    server.app.state.workspaces = vec![workspace];
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_active_index(Some(0));
-    server.app.state.set_selected_index(Some(0));
-    server.app.state.mode = crate::app::Mode::Terminal;
-    let tab_ids = server
-        .app
-        .session_snapshot()
-        .tabs
-        .into_iter()
-        .map(|tab| tab.tab_id)
-        .collect::<Vec<_>>();
-    let first_tab_id = tab_ids[0].clone();
-    let second_tab_id = tab_ids[second_tab].clone();
-
-    let (first_control, _first_render) = connect_test_shell(&mut server, 7, 100, 30);
-    let (second_control, _second_render) = connect_test_shell(&mut server, 8, 80, 24);
-    let first_initial = client_shell_snapshot(&first_control);
-    let second_initial = client_shell_snapshot(&second_control);
-    assert_eq!(
-        first_initial.focused_tab_id.as_deref(),
-        Some(first_tab_id.as_str())
-    );
-    assert_eq!(
-        second_initial.focused_tab_id.as_deref(),
-        Some(first_tab_id.as_str())
-    );
-
-    assert!(
-        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
-            client_id: ClientId::test_new(8),
-            boot_id: server.client_shell_boot_id.clone(),
-            request_id: "focus-second".into(),
-            command: Box::new(shepr_protocol::command::EndpointCommand::TabFocus(
-                shepr_api::schema::TabTarget {
-                    tab_id: second_tab_id.clone().to_string(),
-                },
-            )),
-        })
-    );
-    server.render_and_stream();
-    server.flush_endpoint_replies();
-
-    assert!(
-        first_control.try_recv().is_err(),
-        "another shell must not receive a navigation replacement"
-    );
-    let second_replacement = client_shell_snapshot(&second_control);
-    assert_eq!(
-        second_replacement.focused_tab_id.as_deref(),
-        Some(second_tab_id.as_str())
-    );
-    assert!(
-        matches!(
-            read_server_message(second_control.recv().expect("focus response")),
-            ServerMessage::ClientShellEndpointResponse { request_id, .. } if request_id == "focus-second"
-        ),
-        "the focus reply follows the projection it changed"
-    );
-    shutdown_test_runtimes(&mut server);
-}
-
-#[tokio::test]
 async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
     use shepr_protocol::command::{PaneSelectionReadParams, PaneTextPoint};
 
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("default-focus-cache");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
-    server.app.state.workspaces = vec![workspace];
+    let first = shepr_mux::workspace::Workspace::test_new("default-focus-cache");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("default-focus-second");
+    let second_pane = second.root_pane();
+    server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
@@ -2402,10 +2316,13 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server
+    let first_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(0)
+        .expect("test precondition");
+    let second_workspace_id = server
+        .app
+        .public_workspace_id(1)
         .expect("test precondition");
     let first_pane_id = server
         .app
@@ -2415,33 +2332,28 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
     let (control, _render) = connect_matching_test_shell(&mut server, 70);
     let initial = client_shell_snapshot(&control);
     assert_eq!(
-        initial.focused_tab_id.as_deref(),
-        Some(first_tab_id.as_str())
+        initial.focused_workspace_id.as_ref(),
+        Some(&first_workspace_id)
     );
 
     // A server-side focus change can leave this connection's location behind.
-    assert!(server.app.state.switch_workspace_tab(0, second_tab));
+    assert!(server.app.state.switch_workspace(1));
     server.app.state.mark_shell_projection_dirty();
     server.render_and_stream();
     assert_eq!(
         server
             .shell_session_cache
             .as_ref()
-            .and_then(|cache| cache.session.focused_tab_id.as_deref()),
-        Some(second_tab_id.as_str())
+            .and_then(|cache| cache.session.focused_workspace_id.as_ref()),
+        Some(&second_workspace_id)
     );
     assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(70))
-            .as_deref(),
-        Some(first_tab_id.as_str())
+        server.shell_target_for_client(ClientId::test_new(70)),
+        Some(first_workspace_id.clone())
     );
     assert_eq!(
-        server
-            .default_shell_target()
-            .map(|target| target.tab_id.to_string())
-            .as_deref(),
-        Some(second_tab_id.as_str())
+        server.default_shell_target(),
+        Some(second_workspace_id.clone())
     );
 
     let previous_revision = server.app.state.shell_projection_revision;
@@ -2478,8 +2390,8 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
         .expect("render should rebuild the shell session cache");
     assert_eq!(cache.revision, server.app.state.shell_projection_revision);
     assert_eq!(
-        cache.session.focused_tab_id.as_deref(),
-        Some(first_tab_id.as_str())
+        cache.session.focused_workspace_id.as_ref(),
+        Some(&first_workspace_id)
     );
     let shell = server.clients[&70].shell_state();
     assert_eq!(shell.session_generation, server.shell_session_generation);
@@ -2487,8 +2399,8 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
         shell
             .snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.focused_tab_id.as_deref()),
-        Some(first_tab_id.as_str()),
+            .and_then(|snapshot| snapshot.focused_workspace_id.as_ref()),
+        Some(&first_workspace_id),
         "the per-client projection remains on its own location"
     );
     assert!(
@@ -2501,10 +2413,10 @@ async fn client_shell_request_renders_and_refreshes_changed_default_focus() {
 #[tokio::test]
 async fn client_local_navigation_does_not_emit_global_focus_transitions() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("independent-focus");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
+    let first = shepr_mux::workspace::Workspace::test_new("independent-focus");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("independent-focus-second");
+    let second_pane = second.root_pane();
     let (first_runtime, mut first_input) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
@@ -2522,22 +2434,22 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
             4,
         );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(first_pane, first_runtime);
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(1)
         .expect("test precondition");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 61);
     let (second_control, _) = connect_matching_test_shell(&mut server, 62);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(62), &second_tab_id));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(62), &second_workspace_id));
     server
         .clients
         .get_mut(&61)
@@ -2563,9 +2475,11 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
 
     let (_, result) = server.handle_client_shell_command(
         ClientId::test_new(62),
-        shepr_protocol::command::EndpointCommand::TabFocus(shepr_protocol::command::TabTarget {
-            tab_id: second_tab_id.to_string(),
-        }),
+        shepr_protocol::command::EndpointCommand::WorkspaceFocus(
+            shepr_protocol::command::WorkspaceTarget {
+                workspace_id: second_workspace_id.to_string(),
+            },
+        ),
     );
     assert!(result.is_ok());
     assert!(first_input.try_recv().is_err());
@@ -2575,22 +2489,25 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
 
 #[tokio::test]
 async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
-    use shepr_protocol::command::{PaneTarget, TabTarget};
+    use shepr_protocol::command::{PaneTarget, WorkspaceCloseParams, WorkspaceTarget};
 
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("focus-events");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
-    server.app.state.workspaces = vec![workspace];
+    let first = shepr_mux::workspace::Workspace::test_new("focus-events");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("focus-events-second");
+    let second_pane = second.root_pane();
+    server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server
+    let first_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(0)
+        .expect("test precondition");
+    let second_workspace_id = server
+        .app
+        .public_workspace_id(1)
         .expect("test precondition");
     let first_pane_id = server
         .app
@@ -2598,7 +2515,7 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
         .expect("test precondition");
     let second_pane_id = server
         .app
-        .public_pane_id(0, second_pane)
+        .public_pane_id(1, second_pane)
         .expect("test precondition");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 61);
@@ -2606,17 +2523,17 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
 
-    let first_tab = TabTarget {
-        tab_id: first_tab_id.to_string(),
+    let first_target = WorkspaceTarget {
+        workspace_id: first_workspace_id.to_string(),
     };
-    let second_tab = TabTarget {
-        tab_id: second_tab_id.to_string(),
+    let second_target = WorkspaceTarget {
+        workspace_id: second_workspace_id.to_string(),
     };
     let cases = [
-        (61, EndpointCommand::TabFocus(second_tab.clone())),
-        (62, EndpointCommand::TabFocus(second_tab.clone())),
-        (61, EndpointCommand::TabFocus(second_tab.clone())),
-        (61, EndpointCommand::TabFocus(first_tab)),
+        (61, EndpointCommand::WorkspaceFocus(second_target.clone())),
+        (62, EndpointCommand::WorkspaceFocus(second_target.clone())),
+        (61, EndpointCommand::WorkspaceFocus(second_target.clone())),
+        (61, EndpointCommand::WorkspaceFocus(first_target)),
         (
             62,
             EndpointCommand::PaneFocus(PaneTarget {
@@ -2629,8 +2546,13 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
                 pane_id: first_pane_id.clone().to_string(),
             }),
         ),
-        (61, EndpointCommand::TabFocus(second_tab.clone())),
-        (61, EndpointCommand::TabClose(second_tab)),
+        (61, EndpointCommand::WorkspaceFocus(second_target.clone())),
+        (
+            61,
+            EndpointCommand::WorkspaceClose(WorkspaceCloseParams {
+                workspace_id: second_target.workspace_id,
+            }),
+        ),
     ];
     for (client_id, command) in cases {
         let other_client = ClientId::test_new(if client_id == 61 { 62 } else { 61 });
@@ -2648,12 +2570,12 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
 }
 
 #[tokio::test]
-async fn navigation_moves_pane_focus_between_tabs_once() {
+async fn navigation_moves_pane_focus_between_workspaces_once() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("navigation-focus-events");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
+    let first = shepr_mux::workspace::Workspace::test_new("navigation-focus-events");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("navigation-focus-second");
+    let second_pane = second.root_pane();
     let (first_runtime, mut first_input) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
@@ -2671,22 +2593,22 @@ async fn navigation_moves_pane_focus_between_tabs_once() {
             4,
         );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(first_pane, first_runtime);
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
-        .expect("second tab id");
+        .public_workspace_id(1)
+        .expect("second workspace id");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 63);
     let (second_control, _) = connect_matching_test_shell(&mut server, 64);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(64), &second_tab_id));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(64), &second_workspace_id));
     server
         .clients
         .get_mut(&63)
@@ -2707,24 +2629,26 @@ async fn navigation_moves_pane_focus_between_tabs_once() {
         );
     }
 
-    // The first viewer joins the second one's tab: its old pane loses focus,
-    // and the pane both now view, already focused, gains nothing again.
+    // The first viewer joins the second one's workspace: its old pane loses
+    // focus, and the pane both now view, already focused, gains nothing again.
     let (_, result) = server.handle_client_shell_command(
         ClientId::test_new(63),
-        shepr_protocol::command::EndpointCommand::TabFocus(shepr_protocol::command::TabTarget {
-            tab_id: second_tab_id.to_string(),
-        }),
+        shepr_protocol::command::EndpointCommand::WorkspaceFocus(
+            shepr_protocol::command::WorkspaceTarget {
+                workspace_id: second_workspace_id.to_string(),
+            },
+        ),
     );
     assert!(result.is_ok());
 
     assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(63))
-            .as_deref(),
-        Some(second_tab_id.as_str())
+        server.shell_target_for_client(ClientId::test_new(63)),
+        Some(second_workspace_id)
     );
     assert_eq!(
-        first_input.try_recv().expect("previous tab focus lost"),
+        first_input
+            .try_recv()
+            .expect("previous workspace focus lost"),
         Bytes::from_static(b"\x1b[O")
     );
     assert!(
@@ -2738,7 +2662,7 @@ async fn navigation_moves_pane_focus_between_tabs_once() {
 async fn repeated_layout_action_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("layout-geometry");
-    let first_pane = workspace.tabs()[0].root_pane();
+    let first_pane = workspace.root_pane();
     let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
 
     server.app.state.workspaces = vec![workspace];
@@ -2753,7 +2677,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let workspace_id = server.app.public_workspace_id(0).expect("workspace id");
 
     let (control, _) = connect_test_shell(&mut server, 65, 100, 30);
     let _ = control.recv().expect("snapshot");
@@ -2763,7 +2687,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
         ClientId::test_new(65),
         shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
             shepr_protocol::command::LayoutSetSplitRatioParams {
-                tab_id: Some(tab_id.to_string()),
+                workspace_id: Some(workspace_id.to_string()),
                 pane_id: None,
                 path: Vec::new(),
                 ratio: 0.8,
@@ -2782,7 +2706,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 async fn pane_close_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("public-close-geometry");
-    let first_pane = workspace.tabs()[0].root_pane();
+    let first_pane = workspace.root_pane();
     let second_pane = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
@@ -2830,15 +2754,15 @@ async fn pane_close_reapplies_controller_geometry() {
 }
 
 #[tokio::test]
-async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
+async fn geometry_reapply_replaces_a_controller_that_left_the_workspace() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("geometry-controller-viewer");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
-    let third_tab = workspace.test_add_tab(Some("third"));
-    let third_pane = workspace.tabs()[third_tab].root_pane();
-    server.app.state.workspaces = vec![workspace];
+    let first = shepr_mux::workspace::Workspace::test_new("geometry-controller-viewer");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("geometry-controller-second");
+    let second_pane = second.root_pane();
+    let third = shepr_mux::workspace::Workspace::test_new("geometry-controller-third");
+    let third_pane = third.root_pane();
+    server.app.state.workspaces = vec![first, second, third];
     for pane_id in [first_pane, second_pane, third_pane] {
         server.app.insert_test_runtime(
             pane_id,
@@ -2848,13 +2772,13 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(1)
         .expect("test precondition");
-    let third_tab_id = server
+    let third_workspace_id = server
         .app
-        .public_tab_id(0, third_tab)
+        .public_workspace_id(2)
         .expect("test precondition");
 
     let (first_control, _) = connect_test_shell(&mut server, 67, 100, 30);
@@ -2862,21 +2786,21 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
 
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(67), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(67), false));
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(67), &third_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(67), false));
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(68), &second_tab_id));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(67), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(67), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(67), &third_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(67), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(68), &second_workspace_id));
     assert_eq!(
-        server.clients.geometry_controller(&second_tab_id),
+        server.clients.geometry_controller(&second_workspace_id),
         Some(ClientId::test_new(67))
     );
     let stale_size = server.app.test_runtime(second_pane).current_size();
 
-    assert!(server.reapply_controlled_shell_tab_geometry(false));
+    assert!(server.reapply_controlled_shell_workspace_geometry(false));
 
     assert_eq!(
-        server.clients.geometry_controller(&second_tab_id),
+        server.clients.geometry_controller(&second_workspace_id),
         Some(ClientId::test_new(68))
     );
     assert_ne!(
@@ -2889,11 +2813,11 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
 #[tokio::test]
 async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("controller-disconnect");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
-    server.app.state.workspaces = vec![workspace];
+    let first = shepr_mux::workspace::Workspace::test_new("controller-disconnect");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("controller-disconnect-second");
+    let second_pane = second.root_pane();
+    server.app.state.workspaces = vec![first, second];
     for pane_id in [first_pane, second_pane] {
         server.app.insert_test_runtime(
             pane_id,
@@ -2903,9 +2827,9 @@ async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(1)
         .expect("test precondition");
 
     let (first_control, _) = connect_test_shell(&mut server, 31, 100, 30);
@@ -2915,11 +2839,11 @@ async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
     let _ = second_control.recv().expect("second snapshot");
     let _ = third_control.recv().expect("third snapshot");
 
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(32), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(32), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(32), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(32), false));
     let remaining_viewer_size = server.app.test_runtime(second_pane).current_size();
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(31), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(31), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(31), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(31), false));
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
         remaining_viewer_size
@@ -2929,7 +2853,7 @@ async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
     server.remove_client_and_resize_if_needed(ClientId::test_new(31));
 
     assert_eq!(
-        server.clients.geometry_controller(&second_tab_id),
+        server.clients.geometry_controller(&second_workspace_id),
         Some(ClientId::test_new(32))
     );
     assert_eq!(
@@ -2940,38 +2864,38 @@ async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
 }
 
 #[tokio::test]
-async fn client_shell_tabs_render_accept_input_and_resize_independently() {
+async fn client_shell_workspaces_render_accept_input_and_resize_independently() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("independent-geometry");
-    let first_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
+    let first = shepr_mux::workspace::Workspace::test_new("independent-geometry");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("independent-geometry-second");
+    let second_pane = second.root_pane();
 
     let (second_runtime, mut second_input) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
-            b"SECOND_TAB",
+            b"SECOND_WORKSPACE",
             4,
         );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(
         first_pane,
-        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_WORKSPACE"),
     );
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(1)
         .expect("test precondition");
     let second_pane_id = server
         .app
-        .public_pane_id(0, second_pane)
+        .public_pane_id(1, second_pane)
         .expect("test precondition");
     let initial_second_size = server.app.test_runtime(second_pane).current_size();
 
@@ -2985,8 +2909,8 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     let (second_control, second_render) = connect_test_shell(&mut server, 22, 70, 20);
     let _ = second_control.recv().expect("second snapshot");
 
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(22), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(22), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(22), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(22), false));
     let second_size = server.app.test_runtime(second_pane).current_size();
     assert_ne!(first_size, second_size);
     assert_eq!(
@@ -3002,7 +2926,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
         )],
     });
     assert_eq!(
-        second_input.try_recv().expect("second tab input"),
+        second_input.try_recv().expect("second workspace input"),
         Bytes::from_static(b"typed")
     );
 
@@ -3015,8 +2939,8 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
         ServerMessage::PaneSurface(surface) => surface,
         other => panic!("expected second pane surface, got {other:?}"),
     };
-    assert!(frame_text(&first_surface.frame).contains("FIRST_TAB"));
-    assert!(frame_text(&second_surface.frame).contains("SECOND_TAB"));
+    assert!(frame_text(&first_surface.frame).contains("FIRST_WORKSPACE"));
+    assert!(frame_text(&second_surface.frame).contains("SECOND_WORKSPACE"));
 
     assert!(server.handle_server_event(ServerEvent::ClientShellResize {
         client_id: ClientId::test_new(22),
@@ -3033,8 +2957,8 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
         first_size
     );
 
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(21), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(21), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(21), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(21), false));
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
         resized_second
@@ -3049,63 +2973,9 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 }
 
 #[tokio::test]
-async fn background_tab_create_preserves_client_locations() {
+async fn workspace_focus_moves_only_its_client() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("background-create");
-    let second_tab = workspace.test_add_tab(Some("second"));
-    server.app.state.workspaces = vec![workspace];
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_active_index(Some(0));
-    server.app.state.set_selected_index(Some(0));
-    server.app.state.mode = crate::app::Mode::Terminal;
-    let workspace_id = server
-        .app
-        .public_workspace_id(0)
-        .expect("test precondition");
-    let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server
-        .app
-        .public_tab_id(0, second_tab)
-        .expect("test precondition");
-
-    let (first_control, _) = connect_matching_test_shell(&mut server, 71);
-    let (second_control, _) = connect_matching_test_shell(&mut server, 72);
-    let _ = first_control.recv().expect("first snapshot");
-    let _ = second_control.recv().expect("second snapshot");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(71), &second_tab_id));
-
-    assert!(command_through_server(
-        &mut server,
-        72,
-        EndpointCommand::TabCreate(shepr_protocol::command::TabCreateParams {
-            workspace_id: Some(workspace_id.to_string()),
-            cwd: None,
-            focus: false,
-            label: Some("background".into()),
-            env: std::collections::HashMap::new(),
-        }),
-    ));
-
-    assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(71))
-            .as_deref(),
-        Some(second_tab_id.as_str())
-    );
-    assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(72))
-            .as_deref(),
-        Some(first_tab_id.as_str())
-    );
-    shutdown_test_runtimes(&mut server);
-}
-
-#[tokio::test]
-async fn workspace_focus_moves_only_its_client_and_keeps_remembered_tabs() {
-    let mut server = test_headless_server();
-    let mut first = shepr_mux::workspace::Workspace::test_new("first");
-    let second_tab = first.test_add_tab(Some("second"));
+    let first = shepr_mux::workspace::Workspace::test_new("first");
     let second = shepr_mux::workspace::Workspace::test_new("second");
     server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
@@ -3117,17 +2987,11 @@ async fn workspace_focus_moves_only_its_client_and_keeps_remembered_tabs() {
         .app
         .public_workspace_id(1)
         .expect("test precondition");
-    let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server
-        .app
-        .public_tab_id(0, second_tab)
-        .expect("test precondition");
 
     let (first_control, _) = connect_test_shell(&mut server, 41, 100, 30);
     let (second_control, _) = connect_test_shell(&mut server, 42, 80, 24);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(41), &second_tab_id));
 
     assert!(command_through_server(
         &mut server,
@@ -3155,14 +3019,6 @@ async fn workspace_focus_moves_only_its_client_and_keeps_remembered_tabs() {
         second_location.focused_workspace_id.as_deref(),
         Some(first_workspace_id.as_str())
     );
-    assert_eq!(
-        first_location.active_tab_ids[&first_workspace_id].to_string(),
-        second_tab_id
-    );
-    assert_eq!(
-        second_location.active_tab_ids[&first_workspace_id].to_string(),
-        first_tab_id
-    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -3170,10 +3026,10 @@ async fn workspace_focus_moves_only_its_client_and_keeps_remembered_tabs() {
 async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
-    let first_pane = first.tabs()[0].root_pane();
+    let first_pane = first.root_pane();
 
     let second = shepr_mux::workspace::Workspace::test_new("second");
-    let second_pane = second.tabs()[0].root_pane();
+    let second_pane = second.root_pane();
 
     server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(
@@ -3192,18 +3048,20 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
         .app
         .public_workspace_id(0)
         .expect("test precondition");
-    let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
     let first_pane_id = server
         .app
         .public_pane_id(0, first_pane)
         .expect("test precondition");
-    let second_tab_id = server.app.public_tab_id(1, 0).expect("test precondition");
+    let second_workspace_id = server
+        .app
+        .public_workspace_id(1)
+        .expect("test precondition");
 
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
     let mut render_rx = PaneSurfaceReceiver::new(render_rx);
     let _ = client_shell_snapshot(&control_rx);
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(9), &second_tab_id));
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(9), false));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(9), &second_workspace_id));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(9), false));
     server.render_and_stream();
     let diverged = client_shell_snapshot(&control_rx);
     assert_eq!(
@@ -3239,10 +3097,6 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     assert_eq!(
         location.focused_workspace_id.as_deref(),
         Some(first_workspace_id.as_str())
-    );
-    assert_eq!(
-        location.focused_tab_id().map(ToString::to_string),
-        Some(first_tab_id.clone()).map(|id| id.to_string())
     );
 
     server.render_and_stream();
@@ -3416,9 +3270,9 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
 #[tokio::test]
 async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("hidden-input");
-    let hidden_tab = workspace.test_add_tab(Some("hidden"));
-    let hidden_pane = workspace.tabs()[hidden_tab].root_pane();
+    let visible = shepr_mux::workspace::Workspace::test_new("visible-input");
+    let hidden = shepr_mux::workspace::Workspace::test_new("hidden-input");
+    let hidden_pane = hidden.root_pane();
     let (runtime, mut input_rx) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
@@ -3428,13 +3282,13 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             4,
         );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.workspaces = vec![visible, hidden];
     server.app.insert_test_runtime(hidden_pane, runtime);
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     let pane_id = server
         .app
-        .public_pane_id(0, hidden_pane)
+        .public_pane_id(1, hidden_pane)
         .expect("test precondition");
     server.clients.insert(
         11,
@@ -3478,7 +3332,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
 async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("scrolled-input");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     let (runtime, mut input_rx) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
@@ -3578,7 +3432,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(11)));
-    assert!(server.claim_unowned_shell_tab_geometry(ClientId::test_new(11), false));
+    assert!(server.claim_unowned_shell_workspace_geometry(ClientId::test_new(11), false));
 
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
@@ -3705,7 +3559,7 @@ pub(crate) fn install_focused_test_runtime(
     terminal_bytes: &[u8],
 ) -> tokio::sync::mpsc::Receiver<Bytes> {
     let workspace = shepr_mux::workspace::Workspace::test_new("focus-reporting");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     let (runtime, input_rx) = shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
         80,
         24,
@@ -3756,7 +3610,7 @@ fn retained_test_server_with_control(
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(1)));
-    assert!(server.claim_unowned_shell_tab_geometry(ClientId::test_new(1), true));
+    assert!(server.claim_unowned_shell_workspace_geometry(ClientId::test_new(1), true));
 
     (server, client_control_rx, client_rx, pane_id)
 }
@@ -3911,7 +3765,7 @@ fn with_terminal_session_test_server(
     let _runtime_guard = rt.enter();
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("test");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
     let terminal_id_string = terminal_id.to_string();
     let public_pane_id = format!("{}:p1", workspace.id);
@@ -3988,7 +3842,7 @@ fn changed_git_refresh_requests_headless_render() {
 async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on_cancel() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("host-shutdown");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -4040,7 +3894,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
 async fn a_surface_larger_than_one_frame_crosses_in_parts() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("oversized");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -4172,7 +4026,7 @@ async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
 async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("signal-quit");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -4203,10 +4057,10 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
 #[tokio::test]
 async fn pane_death_reconciles_each_client_view_and_focus() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-death-views");
-    let dead_pane = workspace.tabs()[0].root_pane();
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
+    let doomed = shepr_mux::workspace::Workspace::test_new("pane-death-views");
+    let dead_pane = doomed.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("pane-death-views-second");
+    let second_pane = second.root_pane();
     let (second_runtime, mut second_input) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
@@ -4216,22 +4070,22 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
             4,
         );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.workspaces = vec![doomed, second];
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
-        .expect("second tab id");
+        .public_workspace_id(1)
+        .expect("second workspace id");
 
     let (first_control, _) = connect_test_shell(&mut server, 71, 100, 30);
     let (second_control, _) = connect_test_shell(&mut server, 72, 70, 20);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(72), &second_tab_id));
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(72), &second_workspace_id));
     server
         .clients
         .get_mut(&71)
@@ -4253,16 +4107,12 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     );
 
     assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(71))
-            .as_deref(),
-        Some(second_tab_id.as_str())
+        server.shell_target_for_client(ClientId::test_new(71)),
+        Some(second_workspace_id.clone())
     );
     assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(72))
-            .as_deref(),
-        Some(second_tab_id.as_str())
+        server.shell_target_for_client(ClientId::test_new(72)),
+        Some(second_workspace_id.clone())
     );
     assert_eq!(
         second_input
@@ -4275,7 +4125,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         "focus gain was duplicated"
     );
     assert_eq!(
-        server.clients.geometry_controller(&second_tab_id),
+        server.clients.geometry_controller(&second_workspace_id),
         Some(ClientId::test_new(71))
     );
     let before_resize = server.app.test_runtime(second_pane).current_size();
@@ -4298,7 +4148,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
 async fn pane_death_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-death-geometry");
-    let first_pane = workspace.tabs()[0].root_pane();
+    let first_pane = workspace.root_pane();
     let dead_pane = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
     server.app.state.workspaces = vec![workspace];
@@ -4728,7 +4578,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     // default test shell, which exits at once, before the input is queued.
     server.app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     let terminal_id = workspace
         .terminal_id(pane_id)
         .cloned()
@@ -4749,7 +4599,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
 
     server.render_and_stream();
     assert_eq!(
-        server.app.state.tab_area(0, 0),
+        server.app.state.workspace_area(0),
         Some(server.app.state.settings.headless_rect())
     );
 
@@ -4786,7 +4636,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
     // default test shell, which exits at once, before the input is queued.
     server.app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-    let pane_id = workspace.tabs()[0].root_pane();
+    let pane_id = workspace.root_pane();
     let terminal_id = workspace
         .terminal_id(pane_id)
         .cloned()
@@ -5017,7 +4867,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
         server
             .clients
             .set_foreground_client_id(Some(ClientId::test_new(2)));
-        assert!(server.claim_unowned_shell_tab_geometry(ClientId::test_new(2), true));
+        assert!(server.claim_unowned_shell_workspace_geometry(ClientId::test_new(2), true));
         assert_eq!(
             server
                 .app
@@ -5068,7 +4918,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
         }));
         assert!(
             input_rx.try_recv().is_err(),
-            "remaining viewer lost tab focus"
+            "remaining viewer lost pane focus"
         );
         assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
             client_id: ClientId::test_new(2),
@@ -5097,23 +4947,23 @@ fn unviewed_clipboard_write() -> AppEvent {
 #[tokio::test]
 async fn clipboard_write_goes_to_the_clients_viewing_the_writing_pane() {
     let mut server = test_headless_server();
-    let mut workspace = shepr_mux::workspace::Workspace::test_new("clipboard-viewers");
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs()[second_tab].root_pane();
-    server.app.state.workspaces = vec![workspace];
+    let first = shepr_mux::workspace::Workspace::test_new("clipboard-viewers");
+    let second = shepr_mux::workspace::Workspace::test_new("clipboard-viewers-second");
+    let second_pane = second.root_pane();
+    server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
-    let second_tab_id = server
+    let second_workspace_id = server
         .app
-        .public_tab_id(0, second_tab)
+        .public_workspace_id(1)
         .expect("test precondition");
 
     let (first_control, _first_render) = connect_test_shell(&mut server, 7, 100, 30);
     let (second_control, _second_render) = connect_test_shell(&mut server, 8, 80, 24);
     let _ = client_shell_snapshot(&first_control);
     let _ = client_shell_snapshot(&second_control);
-    assert!(server.focus_shell_client_on_tab(ClientId::test_new(8), &second_tab_id));
-    // The client on the first tab is the foreground one, so a delivery to it
+    assert!(server.focus_shell_client_on_workspace(ClientId::test_new(8), &second_workspace_id));
+    // The client on the first workspace is the foreground one, so a delivery to it
     // would mean the write fell back instead of reaching the viewer.
     server
         .clients
@@ -5140,7 +4990,7 @@ async fn clipboard_write_goes_to_the_clients_viewing_the_writing_pane() {
     while let Ok(bytes) = first_control.recv_timeout(Duration::from_millis(50)) {
         assert!(
             !matches!(read_server_message(bytes), ServerMessage::Clipboard { .. }),
-            "a client on another tab does not receive the write"
+            "a client on another workspace does not receive the write"
         );
     }
     shutdown_test_runtimes(&mut server);

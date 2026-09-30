@@ -72,8 +72,8 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let pane_id = app.state.workspaces[0].root_pane();
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -144,7 +144,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let pane_id = app.state.workspaces[0].root_pane();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
             .expect("test precondition")

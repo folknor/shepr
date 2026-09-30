@@ -76,15 +76,13 @@ impl HeadlessServer {
         client_id: ClientId,
     ) -> Option<(&shepr_mux::pane::PaneRuntime, shepr_core::layout::PaneId)> {
         let target = self.shell_target_for_client(client_id)?;
-        let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
-        let tab = self
+        let workspace_index = self.app.state.workspace_index(&target)?;
+        let pane_id = self
             .app
             .state
             .workspaces
             .get(workspace_index)?
-            .tabs()
-            .get(tab_index)?;
-        let pane_id = tab.layout().focused();
+            .focused_pane_id();
         self.app
             .state
             .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, workspace_index, pane_id)
@@ -215,22 +213,18 @@ impl HeadlessServer {
             let Some(target) = self.shell_target_for_client(client_id) else {
                 continue;
             };
-            let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
-                continue;
-            };
-            let Some(tab) = self
+            let Some(workspace) = self
                 .app
                 .state
-                .workspaces
-                .get(workspace_index)
-                .and_then(|workspace| workspace.tabs().get(tab_index))
+                .workspace_index(&target)
+                .and_then(|workspace_index| self.app.state.workspaces.get(workspace_index))
             else {
                 continue;
             };
-            if tab.zoomed() {
-                pane_ids.insert(tab.layout().focused());
+            if workspace.zoomed() {
+                pane_ids.insert(workspace.focused_pane_id());
             } else {
-                pane_ids.extend(tab.layout().pane_ids());
+                pane_ids.extend(workspace.layout().pane_ids());
             }
         }
         self.app.render_dirty.set_immediate_pty_sources(pane_ids);
@@ -267,42 +261,27 @@ impl HeadlessServer {
             let Some(target) = self.shell_target_for_client(client_id) else {
                 return false;
             };
-            let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
-                return false;
-            };
-            let Some(tab) = self
-                .app
+            self.app
                 .state
-                .workspaces
-                .get(workspace_index)
-                .and_then(|workspace| workspace.tabs().get(tab_index))
-            else {
-                return false;
-            };
-            tab.panes().contains_key(&pane_id)
-                && (!tab.zoomed() || tab.layout().focused() == pane_id)
+                .workspace_index(&target)
+                .and_then(|workspace_index| self.app.state.workspaces.get(workspace_index))
+                .is_some_and(|workspace| workspace.shows_pane(pane_id))
         })
     }
 
-    /// Whether a visible pane of `target`'s tab is inside a synchronized
-    /// update, which a resize would tear.
-    fn tab_has_synchronized_pane(&self, target: &crate::ui::TabSurfaceTarget) -> bool {
-        let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+    /// Whether a visible pane of the workspace `target` names is inside a
+    /// synchronized update, which a resize would tear.
+    fn workspace_has_synchronized_pane(&self, target: &shepr_protocol::WorkspaceId) -> bool {
+        let Some(workspace_index) = self.app.state.workspace_index(target) else {
             return false;
         };
-        let Some(tab) = self
-            .app
-            .state
-            .workspaces
-            .get(workspace_index)
-            .and_then(|workspace| workspace.tabs().get(tab_index))
-        else {
+        let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
             return false;
         };
-        let visible = if tab.zoomed() {
-            vec![tab.layout().focused()]
+        let visible = if workspace.zoomed() {
+            vec![workspace.focused_pane_id()]
         } else {
-            tab.layout().pane_ids()
+            workspace.layout().pane_ids()
         };
         visible.into_iter().any(|pane_id| {
             self.app
@@ -320,17 +299,18 @@ impl HeadlessServer {
         let render_targets = render_targets(&self.clients);
 
         if render_targets.is_empty() {
-            // With nothing to draw, only geometry is due: a tab the server has
-            // not laid out yet (at startup, or created while no client was
-            // attached) gets its PTY size from the PTY size rule.
-            let laid_out = self.app.state.has_tab_without_area() && self.apply_all_tab_geometry();
+            // With nothing to draw, only geometry is due: a workspace the
+            // server has not laid out yet (at startup, or created while no
+            // client was attached) gets its PTY size from the PTY size rule.
+            let laid_out =
+                self.app.state.has_workspace_without_area() && self.apply_all_workspace_geometry();
             self.app.full_redraw_pending = false;
             debug!(laid_out, "updated geometry with no attached clients");
             return;
         }
         let render_target_count = render_targets.len();
 
-        // Resize a tab from its geometry source before drawing any observer.
+        // Resize a workspace from its geometry source before drawing any observer.
         // Retained updates fall back here when a pane changes alternate screens.
         for target in &render_targets {
             let client_id = target.client_id;
@@ -343,8 +323,8 @@ impl HeadlessServer {
             let Some(surface_target) = self.shell_target_for_client(client_id) else {
                 continue;
             };
-            if self.tab_geometry_source(&surface_target.tab_id)
-                != Some(super::client_views::TabGeometrySource::Client(client_id))
+            if self.workspace_geometry_source(&surface_target)
+                != Some(super::client_views::GeometrySource::Client(client_id))
             {
                 continue;
             }
@@ -370,10 +350,10 @@ impl HeadlessServer {
                             })
                     })
                 });
-            if !changed || self.tab_has_synchronized_pane(&surface_target) {
+            if !changed || self.workspace_has_synchronized_pane(&surface_target) {
                 continue;
             }
-            self.apply_tab_geometry(&surface_target);
+            self.apply_workspace_geometry(&surface_target);
         }
 
         let mut broken_clients: Vec<ClientId> = Vec::new();
@@ -450,7 +430,7 @@ impl HeadlessServer {
                 };
                 let mut candidate = crate::server::client_shell::snapshot_from_session(
                     &self.app,
-                    // Focus and active-tab cwd differ per client. Copy only
+                    // Focus and new-workspace cwd differ per client. Copy only
                     // when the shared source generation changed.
                     cache.session.clone(),
                     &[],

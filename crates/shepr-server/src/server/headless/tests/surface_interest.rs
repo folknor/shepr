@@ -51,8 +51,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     );
     let _ = client_shell_snapshot(&control_rx);
     assert_eq!(server.clients.foreground_client_id(), None);
-    // A metadata-only connection sizes no tab.
-    assert_eq!(server.app.state.tab_area(0, 0), None);
+    // A metadata-only connection sizes no workspace.
+    assert_eq!(server.app.state.workspace_area(0), None);
 
     server.render_and_stream();
     assert!(render_rx.try_recv().is_err());
@@ -130,7 +130,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     };
     assert_eq!(server.clients.foreground_client_id(), Some(client_id));
     assert_eq!(
-        server.app.state.tab_area(0, 0),
+        server.app.state.workspace_area(0),
         Some(ratatui::layout::Rect::new(0, 0, 101, 37))
     );
 
@@ -223,11 +223,11 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     }));
     let focused_size = server.app.test_runtime(pane_id).current_size();
     assert_eq!(focused_size, (17, 67));
-    let shared_tab_id = server
-        .shell_tab_id_for_client(ClientId::test_new(7))
-        .expect("focused tab");
+    let shared_workspace_id = server
+        .shell_target_for_client(ClientId::test_new(7))
+        .expect("focused workspace");
     assert_eq!(
-        server.clients.geometry_controller(&shared_tab_id),
+        server.clients.geometry_controller(&shared_workspace_id),
         Some(ClientId::test_new(7))
     );
 
@@ -254,10 +254,8 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         .recv()
         .expect("background surface activation response");
     assert_eq!(
-        server
-            .shell_tab_id_for_client(ClientId::test_new(8))
-            .as_deref(),
-        Some(shared_tab_id.as_str())
+        server.shell_target_for_client(ClientId::test_new(8)),
+        Some(shared_workspace_id.clone())
     );
     assert_eq!(
         server.clients[&7].shell_state().outer_terminal_focus,
@@ -267,10 +265,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         focused_size,
-        "surface activation must not transiently resize a focused viewer's tab"
+        "surface activation must not transiently resize a focused viewer's workspace"
     );
     assert_eq!(
-        server.clients.geometry_controller(&shared_tab_id),
+        server.clients.geometry_controller(&shared_workspace_id),
         Some(ClientId::test_new(7))
     );
 
@@ -291,7 +289,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         focused_size
     );
     assert_eq!(
-        server.clients.geometry_controller(&shared_tab_id),
+        server.clients.geometry_controller(&shared_workspace_id),
         Some(ClientId::test_new(7))
     );
 
@@ -304,14 +302,14 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         focused_size
     );
     assert_eq!(
-        server.clients.geometry_controller(&shared_tab_id),
+        server.clients.geometry_controller(&shared_workspace_id),
         Some(ClientId::test_new(7))
     );
     shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]
-async fn focused_surface_reassertion_reclaims_tab_geometry() {
+async fn focused_surface_reassertion_reclaims_workspace_geometry() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (focused_control, _) = connect_test_shell(&mut server, 8, 100, 35);
@@ -320,13 +318,13 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
         client_id: ClientId::test_new(8),
         focused: true,
     }));
-    let shared_tab_id = server
-        .shell_tab_id_for_client(ClientId::test_new(8))
-        .expect("focused tab");
+    let shared_workspace_id = server
+        .shell_target_for_client(ClientId::test_new(8))
+        .expect("focused workspace");
 
     let (other_control, _) = connect_test_shell(&mut server, 7, 68, 17);
     let _ = other_control.recv().expect("other client snapshot");
-    assert!(server.claim_shell_tab_geometry(ClientId::test_new(7), false));
+    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(7), false));
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (17, 67));
 
     request_active_surface(&mut server, 8, "reassert-focused-surface");
@@ -340,7 +338,7 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
     );
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
     assert_eq!(
-        server.clients.geometry_controller(&shared_tab_id),
+        server.clients.geometry_controller(&shared_workspace_id),
         Some(ClientId::test_new(8))
     );
     shutdown_test_runtimes(&mut server);

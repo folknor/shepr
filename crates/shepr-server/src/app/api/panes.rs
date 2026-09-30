@@ -64,7 +64,7 @@ impl App {
         let target_pane_id = context.pane_id;
         let target_pane_public_id = self.public_pane_id(ws_idx, target_pane_id);
         let extra_env = super::env::normalize_launch_env(params.env)?;
-        let geometry = self.state.pane_geometry_for_tab(ws_idx, context.tab_index);
+        let geometry = self.state.pane_geometry_for_workspace(ws_idx);
         let split_cwd = match params
             .cwd
             .as_deref()
@@ -136,7 +136,7 @@ impl App {
                 &spawn,
             ),
         };
-        let (target_tab_idx, new_pane) = match split_result {
+        let new_pane = match split_result {
             Some(Ok(result)) => result,
             Some(Err(err)) => return failure(ApiErrorCode::PaneSplitFailed, err.to_string()),
             None => {
@@ -156,7 +156,6 @@ impl App {
         let terminal_id = terminal.id.clone();
         let Some(outcome) = self.state.commit_pane_split(
             ws_idx,
-            target_tab_idx,
             pane_id,
             prepared_layout,
             terminal,
@@ -188,10 +187,6 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(Some(&target.pane_id)));
         };
-        let Some(_tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
-            return Err(pane_not_found(Some(&target.pane_id)));
-        };
-
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
         self.state.mode = crate::app::Mode::Terminal;
 
@@ -310,13 +305,12 @@ impl App {
     fn directional_pane_target(
         &self,
         ws_idx: usize,
-        tab_idx: usize,
         source_pane_id: PaneId,
         direction: PaneDirection,
     ) -> Option<PaneId> {
-        let tab = self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx)?;
-        let panes = tab.layout().panes(shepr_mux::workspace::layout_rect(
-            self.state.tab_layout_area(ws_idx, tab_idx),
+        let workspace = self.state.workspaces.get(ws_idx)?;
+        let panes = workspace.layout().panes(shepr_mux::workspace::layout_rect(
+            self.state.workspace_layout_area(ws_idx),
         ));
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, nav_direction(direction), &panes)

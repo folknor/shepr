@@ -9,7 +9,7 @@ mod model;
 mod protocol;
 use self::protocol::*;
 pub use model::{
-    ActivationBeginError, ActivationCompletion, HandoffGeometry, PendingEndpointActivation,
+    ActivationBeginError, ActivationCompletion, PendingEndpointActivation,
     SurfaceActivationProgress,
 };
 use model::{ActivationEvidence, ActivationPhase, EndpointLease};
@@ -44,7 +44,7 @@ impl PendingEndpointActivation {
         endpoints: &EndpointRegistry,
         target: &ClientEndpointId,
         focus: Option<crate::shell::ClientEndpointFocusTarget>,
-        geometry: HandoffGeometry,
+        geometry: shepr_protocol::TerminalGeometry,
         serial: u64,
         now: Instant,
     ) -> Result<Self, ActivationBeginError> {
@@ -162,47 +162,15 @@ impl PendingEndpointActivation {
         &self.target.endpoint_id
     }
 
-    pub(crate) fn source(&self) -> &ClientEndpointId {
-        &self.source.endpoint_id
-    }
-
-    /// The latest navigation target the handoff carries to its target endpoint.
-    pub(crate) fn focus(&self) -> Option<&crate::shell::ClientEndpointFocusTarget> {
-        self.focus.as_ref()
-    }
-
-    /// The geometry requested from `endpoint_id`: the target's, or the source's for a source
-    /// distinct from the target.
-    fn geometry_for(&self, endpoint_id: &ClientEndpointId) -> shepr_protocol::TerminalGeometry {
-        if *endpoint_id == self.target.endpoint_id {
-            self.geometry.target
-        } else {
-            self.geometry.source
-        }
-    }
-
-    fn resize_for(&self, endpoint_id: &ClientEndpointId) -> shepr_protocol::ClientMessage {
+    fn resize_message(&self) -> shepr_protocol::ClientMessage {
         shepr_protocol::ClientMessage::ClientShellResize {
-            geometry: self.geometry_for(endpoint_id),
+            geometry: self.geometry,
         }
     }
 
-    /// The endpoint whose surface the current phase collects: the source while restoring it,
-    /// the synchronizing endpoint once a pair is installed, and otherwise the target.
-    fn presenting_endpoint(&self) -> &ClientEndpointId {
-        match &self.phase {
-            ActivationPhase::RestoringSource { .. } => &self.source.endpoint_id,
-            ActivationPhase::SynchronizingPresentation { lease, .. }
-            | ActivationPhase::AwaitingPresentationEffects { lease, .. } => &lease.endpoint_id,
-            ActivationPhase::ReleasingSource { .. }
-            | ActivationPhase::ActivatingTarget { .. }
-            | ActivationPhase::ReleasingTargetForRollback { .. } => &self.target.endpoint_id,
-        }
-    }
-
-    /// The surface size a surface for the current phase must have.
+    /// The surface size a surface must have, the same for every endpoint the handoff presents.
     fn geometry(&self) -> shepr_protocol::ClientSurfaceSize {
-        self.geometry_for(self.presenting_endpoint()).surface_size()
+        self.geometry.surface_size()
     }
 
     pub(crate) fn presentation_sync_endpoint(&self) -> Option<&ClientEndpointId> {
@@ -583,12 +551,12 @@ impl PendingEndpointActivation {
         self.send_latest_focus(endpoints)
     }
 
-    /// Replaces the geometry the handoff requests (a host resize, or a navigation target that
-    /// changes the target's layout) and resends it to the endpoint the current phase is
-    /// collecting a surface from. An unchanged geometry changes nothing.
+    /// Replaces the geometry the handoff requests (a host resize) and resends it to the
+    /// endpoint the current phase is collecting a surface from. An unchanged geometry changes
+    /// nothing.
     pub(crate) fn update_resize_at(
         &mut self,
-        geometry: HandoffGeometry,
+        geometry: shepr_protocol::TerminalGeometry,
         endpoints: &mut EndpointRegistry,
         now: Instant,
     ) -> Result<(), String> {
@@ -603,7 +571,7 @@ impl PendingEndpointActivation {
             _ => None,
         };
         if let Some((lease, completion)) = restart_effects_fence {
-            let resize = self.resize_for(&lease.endpoint_id);
+            let resize = self.resize_message();
             if endpoints.send_to(&lease.endpoint_id, &resize) != EndpointSendOutcome::Sent {
                 return Err("pending endpoint resize could not be sent".into());
             }
@@ -624,8 +592,7 @@ impl PendingEndpointActivation {
             _ => None,
         };
         if let Some(destination) = destination
-            && endpoints.send_to(destination, &self.resize_for(destination))
-                != EndpointSendOutcome::Sent
+            && endpoints.send_to(destination, &self.resize_message()) != EndpointSendOutcome::Sent
         {
             return Err("pending endpoint resize could not be sent".into());
         }
@@ -1005,7 +972,7 @@ impl PendingEndpointActivation {
             endpoints,
             &self.target,
             &request_id,
-            &self.resize_for(&self.target.endpoint_id),
+            &self.resize_message(),
             self.host_focused,
         )?;
 
@@ -1106,7 +1073,7 @@ impl PendingEndpointActivation {
             endpoints,
             &self.source,
             &request_id,
-            &self.resize_for(&self.source.endpoint_id),
+            &self.resize_message(),
             self.host_focused,
         )
     }

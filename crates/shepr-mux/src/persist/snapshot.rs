@@ -164,11 +164,6 @@ pub struct SessionHistorySnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct WorkspaceHistorySnapshot {
-    pub tabs: Vec<TabHistorySnapshot>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct TabHistorySnapshot {
     #[serde(serialize_with = "serialize_history_panes")]
     pub panes: HashMap<u32, PaneHistorySnapshot>,
 }
@@ -204,24 +199,11 @@ pub struct WorkspaceSnapshot {
         deserialize_with = "path_bytes::deserialize_saved_cwd"
     )]
     pub identity_cwd: PathBuf,
-    /// Captured from the public numbers in each tab's pane records.
+    /// Captured from the public numbers in the workspace's pane records.
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
     pub next_public_pane_number: usize,
-    #[serde(default)]
-    pub public_tab_numbers: Vec<usize>,
-    #[serde(default)]
-    pub next_public_tab_number: usize,
-    pub tabs: Vec<TabSnapshot>,
-    #[serde(default)]
-    pub active_tab: usize,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct TabSnapshot {
-    #[serde(default)]
-    pub custom_name: Option<String>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -279,8 +261,8 @@ pub enum DirectionSnapshot {
     Vertical,
 }
 
-/// Where a pane sits in a snapshot: workspace index, tab index, pane number.
-type PaneKey = (usize, usize, u32);
+/// Where a pane sits in a snapshot: workspace index, pane number.
+type PaneKey = (usize, u32);
 
 /// The live shell cwd reads a capture left for whoever writes the snapshot.
 /// Reading a cwd is a /proc access per pane, which the event loop should not
@@ -297,18 +279,17 @@ pub struct PendingCwds {
 impl PendingCwds {
     /// Reads every probe and stores the result in `snapshot`: a pane's cwd
     /// where its shell could be read, and each affected workspace's identity
-    /// cwd, which follows its first tab's root pane.
+    /// cwd, which follows its root pane.
     pub fn resolve(self, snapshot: &mut SessionSnapshot) {
         let mut touched = Vec::new();
-        for ((workspace, tab, pane), probe) in self.probes {
+        for ((workspace, pane), probe) in self.probes {
             let Some(cwd) = probe.read() else {
                 continue;
             };
             if let Some(saved) = snapshot
                 .workspaces
                 .get_mut(workspace)
-                .and_then(|workspace| workspace.tabs.get_mut(tab))
-                .and_then(|tab| tab.panes.get_mut(&pane))
+                .and_then(|workspace| workspace.panes.get_mut(&pane))
             {
                 saved.cwd = cwd;
                 touched.push(workspace);
@@ -316,7 +297,7 @@ impl PendingCwds {
         }
         for workspace in touched {
             if let Some(workspace) = snapshot.workspaces.get_mut(workspace)
-                && let Some(cwd) = root_pane_cwd(&workspace.tabs)
+                && let Some(cwd) = root_pane_cwd(workspace)
             {
                 workspace.identity_cwd = cwd;
             }
@@ -324,10 +305,11 @@ impl PendingCwds {
     }
 }
 
-/// The cwd of the first tab's root pane, which names a workspace.
-fn root_pane_cwd(tabs: &[TabSnapshot]) -> Option<PathBuf> {
-    tabs.first()
-        .and_then(|tab| tab.root_pane.and_then(|id| tab.panes.get(&id)))
+/// The cwd of a workspace's root pane, which names the workspace.
+fn root_pane_cwd(workspace: &WorkspaceSnapshot) -> Option<PathBuf> {
+    workspace
+        .root_pane
+        .and_then(|id| workspace.panes.get(&id))
         .map(|pane| pane.cwd.clone())
 }
 
@@ -408,57 +390,9 @@ fn capture_workspace(
     fallback_cwd: &std::path::Path,
     cwds: &mut PendingCwds,
 ) -> WorkspaceSnapshot {
-    let tabs: Vec<_> = ws
-        .tabs()
-        .iter()
-        .enumerate()
-        .map(|(tab_index, tab)| {
-            capture_tab(
-                (workspace_index, tab_index),
-                tab,
-                terminals,
-                terminal_runtimes,
-                fallback_cwd,
-                cwds,
-            )
-        })
-        .collect();
-    let identity_cwd = root_pane_cwd(&tabs).unwrap_or_else(|| ws.identity_cwd.clone());
-    WorkspaceSnapshot {
-        id: Some(ws.id.to_string()),
-        custom_name: ws.custom_name.clone(),
-        identity_cwd,
-        public_pane_numbers: ws
-            .tabs()
-            .iter()
-            .flat_map(|tab| {
-                tab.panes
-                    .iter()
-                    .map(|(pane_id, pane)| (pane_id.raw(), pane.public_number))
-            })
-            .collect(),
-        next_public_pane_number: ws.next_public_pane_number,
-        public_tab_numbers: ws.tabs().iter().map(|tab| tab.number).collect(),
-        next_public_tab_number: ws.next_public_tab_number,
-        tabs,
-        active_tab: ws.active_tab_index(),
-    }
-}
-
-fn capture_tab(
-    (workspace_index, tab_index): (usize, usize),
-    tab: &crate::workspace::Tab,
-    terminals: &std::collections::HashMap<
-        shepr_protocol::TerminalId,
-        crate::terminal::TerminalState,
-    >,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    fallback_cwd: &std::path::Path,
-    cwds: &mut PendingCwds,
-) -> TabSnapshot {
     let mut panes = HashMap::new();
-    for id in tab.panes.keys() {
-        let terminal_id = tab.terminal_id(*id);
+    for id in ws.panes.keys() {
+        let terminal_id = ws.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let runtime = terminal_id.and_then(|id| terminal_runtimes.get(id));
         let cwd = runtime
@@ -467,7 +401,7 @@ fn capture_tab(
             .unwrap_or_else(|| fallback_cwd.to_path_buf());
         if let Some(runtime) = runtime {
             cwds.probes
-                .push(((workspace_index, tab_index, id.raw()), runtime.cwd_probe()));
+                .push(((workspace_index, id.raw()), runtime.cwd_probe()));
         }
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let agent_session = terminal.and_then(|terminal| {
@@ -504,13 +438,24 @@ fn capture_tab(
             },
         );
     }
-    TabSnapshot {
-        custom_name: tab.custom_name.clone(),
-        layout: capture_node(tab.layout.root()),
+    let identity_cwd = panes
+        .get(&ws.root_pane.raw())
+        .map_or_else(|| ws.identity_cwd.clone(), |pane| pane.cwd.clone());
+    WorkspaceSnapshot {
+        id: Some(ws.id.to_string()),
+        custom_name: ws.custom_name.clone(),
+        identity_cwd,
+        public_pane_numbers: ws
+            .panes
+            .iter()
+            .map(|(pane_id, pane)| (pane_id.raw(), pane.public_number))
+            .collect(),
+        next_public_pane_number: ws.next_public_pane_number,
+        layout: capture_node(ws.layout.root()),
         panes,
-        zoomed: tab.zoomed,
-        focused: Some(tab.layout.focused().raw()),
-        root_pane: Some(tab.root_pane.raw()),
+        zoomed: ws.zoomed,
+        focused: Some(ws.layout.focused().raw()),
+        root_pane: Some(ws.root_pane.raw()),
     }
 }
 
@@ -520,11 +465,6 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
 
     #[derive(Serialize)]
     struct WorkspaceLayout<'a> {
-        tabs: Vec<TabLayout<'a>>,
-    }
-
-    #[derive(Serialize)]
-    struct TabLayout<'a> {
         layout: &'a LayoutSnapshot,
         pane_ids: Vec<u32>,
     }
@@ -532,19 +472,13 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     let workspaces: Vec<_> = snapshot
         .workspaces
         .iter()
-        .map(|workspace| WorkspaceLayout {
-            tabs: workspace
-                .tabs
-                .iter()
-                .map(|tab| {
-                    let mut pane_ids: Vec<_> = tab.panes.keys().copied().collect();
-                    pane_ids.sort_unstable();
-                    TabLayout {
-                        layout: &tab.layout,
-                        pane_ids,
-                    }
-                })
-                .collect(),
+        .map(|workspace| {
+            let mut pane_ids: Vec<_> = workspace.panes.keys().copied().collect();
+            pane_ids.sort_unstable();
+            WorkspaceLayout {
+                layout: &workspace.layout,
+                pane_ids,
+            }
         })
         .collect();
     // This projection contains no maps, and pane IDs are sorted explicitly.
@@ -598,14 +532,14 @@ impl HistoryText {
 }
 
 /// What a save writes as the history file, before serializing: the pane
-/// histories of each workspace and tab, sorted by pane number, as
+/// histories of each workspace, sorted by pane number, as
 /// [`HistoryText`]. The write-side twin of [`SessionHistorySnapshot`], which
 /// is what reading the file gives; it serializes to the same JSON.
 #[derive(Clone)]
 pub struct SessionHistory {
     pub(super) version: SnapshotVersion,
     pub(super) layout_fingerprint: Option<String>,
-    pub(super) workspaces: Vec<Vec<Vec<(u32, HistoryText)>>>,
+    pub(super) workspaces: Vec<Vec<(u32, HistoryText)>>,
 }
 
 impl SessionHistory {
@@ -617,21 +551,16 @@ impl SessionHistory {
             workspaces: self
                 .workspaces
                 .into_iter()
-                .map(|tabs| WorkspaceHistorySnapshot {
-                    tabs: tabs
+                .map(|panes| WorkspaceHistorySnapshot {
+                    panes: panes
                         .into_iter()
-                        .map(|panes| TabHistorySnapshot {
-                            panes: panes
-                                .into_iter()
-                                .map(|(id, text)| {
-                                    (
-                                        id,
-                                        PaneHistorySnapshot {
-                                            ansi: text.assemble(),
-                                        },
-                                    )
-                                })
-                                .collect(),
+                        .map(|(id, text)| {
+                            (
+                                id,
+                                PaneHistorySnapshot {
+                                    ansi: text.assemble(),
+                                },
+                            )
                         })
                         .collect(),
                 })
@@ -661,11 +590,11 @@ fn next_restored_revision() -> u64 {
 type PaneStamp = Option<u64>;
 
 /// What one save's history was made of: the layout its file pairs with and
-/// the content of every pane, per workspace and tab, sorted by pane number.
+/// the content of every pane, per workspace, sorted by pane number.
 #[derive(PartialEq, Eq)]
 struct HistoryStamp {
     layout_fingerprint: String,
-    panes: Vec<Vec<Vec<(u32, PaneStamp)>>>,
+    panes: Vec<Vec<(u32, PaneStamp)>>,
 }
 
 /// What resolving a save's history produced.
@@ -806,9 +735,9 @@ enum PendingPaneHistory {
 /// Pane history captured on the event loop: which pane each history belongs
 /// to and a handle to read it through, nothing formatted. `resolve` turns it
 /// into a `SessionHistorySnapshot` off the loop. The shape mirrors the
-/// workspaces and tabs it was captured from.
+/// workspaces it was captured from.
 pub struct PendingHistory {
-    workspaces: Vec<Vec<Vec<(u32, PendingPaneHistory)>>>,
+    workspaces: Vec<Vec<(u32, PendingPaneHistory)>>,
 }
 
 impl PendingHistory {
@@ -850,7 +779,6 @@ impl PendingHistory {
                 .workspaces
                 .iter()
                 .flatten()
-                .flatten()
                 .map(|(_, pending)| match pending {
                     PendingPaneHistory::Runtimeless(terminal)
                     | PendingPaneHistory::Live(terminal, _) => terminal,
@@ -858,31 +786,27 @@ impl PendingHistory {
                 .collect(),
         );
         // Bring every pane up to date first, naming what each one holds.
-        let mut named: Vec<Vec<Vec<(u32, TerminalId, PaneStamp)>>> =
+        let mut named: Vec<Vec<(u32, TerminalId, PaneStamp)>> =
             Vec::with_capacity(self.workspaces.len());
-        for tabs in self.workspaces {
-            let mut named_tabs = Vec::with_capacity(tabs.len());
-            for panes in tabs {
-                let mut named_panes: Vec<_> = panes
-                    .into_iter()
-                    .map(|(id, pending)| {
-                        let (terminal, stamp) = match pending {
-                            PendingPaneHistory::Runtimeless(terminal) => {
-                                let stamp = carry.stamp_runtimeless(&terminal);
-                                (terminal, stamp)
-                            }
-                            PendingPaneHistory::Live(terminal, source) => {
-                                let stamp = carry.stamp_live(&terminal, &source);
-                                (terminal, stamp)
-                            }
-                        };
-                        (id, terminal, stamp)
-                    })
-                    .collect();
-                named_panes.sort_unstable_by_key(|(id, _, _)| *id);
-                named_tabs.push(named_panes);
-            }
-            named.push(named_tabs);
+        for panes in self.workspaces {
+            let mut named_panes: Vec<_> = panes
+                .into_iter()
+                .map(|(id, pending)| {
+                    let (terminal, stamp) = match pending {
+                        PendingPaneHistory::Runtimeless(terminal) => {
+                            let stamp = carry.stamp_runtimeless(&terminal);
+                            (terminal, stamp)
+                        }
+                        PendingPaneHistory::Live(terminal, source) => {
+                            let stamp = carry.stamp_live(&terminal, &source);
+                            (terminal, stamp)
+                        }
+                    };
+                    (id, terminal, stamp)
+                })
+                .collect();
+            named_panes.sort_unstable_by_key(|(id, _, _)| *id);
+            named.push(named_panes);
         }
 
         // Pair history to this saved layout here: live pane IDs are stable
@@ -895,11 +819,7 @@ impl PendingHistory {
                 layout_fingerprint,
                 panes: named
                     .iter()
-                    .map(|tabs| {
-                        tabs.iter()
-                            .map(|panes| panes.iter().map(|(id, _, stamp)| (*id, *stamp)).collect())
-                            .collect()
-                    })
+                    .map(|panes| panes.iter().map(|(id, _, stamp)| (*id, *stamp)).collect())
                     .collect(),
             });
         if allow_unchanged && carry.resolved.is_some() && carry.resolved == carry.saved {
@@ -910,16 +830,12 @@ impl PendingHistory {
             layout_fingerprint,
             workspaces: named
                 .into_iter()
-                .map(|tabs| {
-                    tabs.into_iter()
-                        .map(|panes| {
-                            panes
-                                .into_iter()
-                                .filter_map(|(id, terminal, stamp)| {
-                                    let text = carry.text(&terminal).filter(|_| stamp.is_some())?;
-                                    Some((id, text))
-                                })
-                                .collect()
+                .map(|panes| {
+                    panes
+                        .into_iter()
+                        .filter_map(|(id, terminal, stamp)| {
+                            let text = carry.text(&terminal).filter(|_| stamp.is_some())?;
+                            Some((id, text))
                         })
                         .collect()
                 })
@@ -939,22 +855,17 @@ pub fn capture_pending_history(
             .iter()
             .map(|workspace| {
                 workspace
-                    .tabs()
+                    .panes
                     .iter()
-                    .map(|tab| {
-                        tab.panes
-                            .iter()
-                            .map(|(id, pane)| {
-                                let terminal = pane.attached_terminal_id.clone();
-                                let pending = match terminal_runtimes.get(&terminal) {
-                                    Some(runtime) => {
-                                        PendingPaneHistory::Live(terminal, runtime.history_source())
-                                    }
-                                    None => PendingPaneHistory::Runtimeless(terminal),
-                                };
-                                (id.raw(), pending)
-                            })
-                            .collect()
+                    .map(|(id, pane)| {
+                        let terminal = pane.attached_terminal_id.clone();
+                        let pending = match terminal_runtimes.get(&terminal) {
+                            Some(runtime) => {
+                                PendingPaneHistory::Live(terminal, runtime.history_source())
+                            }
+                            None => PendingPaneHistory::Runtimeless(terminal),
+                        };
+                        (id.raw(), pending)
                     })
                     .collect()
             })
@@ -983,7 +894,7 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
 }
 
 /// Deserializes the saved shape only. Semantic checks stay in `restore`, so
-/// one invalid tab can be dropped while healthy tabs survive and the caller
+/// one invalid workspace can be dropped while healthy ones survive and the caller
 /// can back up the original session file before its next save.
 pub fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
     serde_json::from_str(content).map_err(|e| e.to_string())
@@ -1046,7 +957,7 @@ mod tests {
 
     #[test]
     fn history_panes_serialize_in_numeric_id_order() {
-        let snapshot = super::TabHistorySnapshot {
+        let snapshot = super::WorkspaceHistorySnapshot {
             panes: HashMap::from([
                 (
                     12,
@@ -1096,9 +1007,11 @@ mod tests {
     #[tokio::test]
     async fn history_with_the_saved_content_is_recognised_without_assembling() {
         let workspaces = [Workspace::test_new("history-unchanged")];
-        let tab = workspaces[0].tabs().first().expect("test tab");
-        let pane_id = *tab.panes.keys().next().expect("test pane");
-        let terminal_id = tab.terminal_id(pane_id).expect("test terminal").clone();
+        let pane_id = workspaces[0].root_pane();
+        let terminal_id = workspaces[0]
+            .terminal_id(pane_id)
+            .expect("test terminal")
+            .clone();
         let mut runtimes = PaneRuntimeRegistry::new();
         runtimes.insert(
             terminal_id.clone(),
@@ -1158,9 +1071,11 @@ mod tests {
     #[test]
     fn invalid_live_hook_authority_falls_back_to_persisted_agent_session() {
         let workspace = Workspace::test_new("snapshot-session-fallback");
-        let tab = workspace.tabs().first().expect("test tab");
-        let pane_id = *tab.panes.keys().next().expect("test pane");
-        let terminal_id = tab.terminal_id(pane_id).expect("test terminal").clone();
+        let pane_id = workspace.root_pane();
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .expect("test terminal")
+            .clone();
         let saved_ref = shepr_agent::agent::resume::AgentSessionRef::id("saved-session")
             .expect("test session ref");
         let mut terminal = TerminalState::new(terminal_id.clone(), PathBuf::from("/"));
@@ -1195,7 +1110,7 @@ mod tests {
             Default::default(),
         );
 
-        let saved = snapshot.workspaces[0].tabs[0]
+        let saved = snapshot.workspaces[0]
             .panes
             .values()
             .next()

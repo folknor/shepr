@@ -25,7 +25,6 @@ shepr-pty = { path = "../shepr-pty" }
 shepr-remote = { path = "../shepr-remote" }
 shepr-termio = { path = "../shepr-termio" }
 shepr-vt = { path = "../shepr-vt" }
-time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }

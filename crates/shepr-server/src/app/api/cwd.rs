@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use shepr_api::error::{ApiError, ApiErrorCode};
 
-/// The launch cwd named by a client-shell command (`workspace.create`,
-/// `tab.create` and `pane.split`), or the directory `workspace.checkout_root`
+/// The launch cwd named by a client-shell command (`workspace.create` and
+/// `pane.split`), or the directory `workspace.checkout_root`
 /// asks about.
 ///
 /// A relative path is refused, not resolved: the server's own working
@@ -30,8 +30,7 @@ mod tests {
     use crate::test_support::*;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::command::{
-        PaneRightClickTarget, PaneSplitParams, SplitDirection, TabCreateParams,
-        WorkspaceCreateParams,
+        PaneRightClickTarget, PaneSplitParams, SplitDirection, WorkspaceCreateParams,
     };
 
     #[test]
@@ -89,15 +88,6 @@ mod tests {
         });
         assert_refused(response, &ApiErrorCode::InvalidCwd);
 
-        let response = app.handle_tab_create(TabCreateParams {
-            workspace_id: None,
-            cwd: Some(".".into()),
-            focus: false,
-            label: None,
-            env: Default::default(),
-        });
-        assert_refused(response, &ApiErrorCode::InvalidCwd);
-
         let response = app.handle_pane_split(PaneSplitParams {
             workspace_id: None,
             target_pane_id: None,
@@ -111,7 +101,6 @@ mod tests {
         assert_refused(response, &ApiErrorCode::InvalidCwd);
 
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs().len(), 1);
         assert_eq!(app.state.workspaces[0].pane_count(), 1);
         assert_eq!(app.state.terminals.len(), terminal_count);
         shutdown_test_runtimes(&mut app);

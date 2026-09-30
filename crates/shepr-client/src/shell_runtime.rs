@@ -95,20 +95,9 @@ pub(super) fn client_shell_resize_message(
     }
 }
 
-/// The geometry `endpoint_id` is asked to render once its cached projection commits focused on
-/// `focus`: the host size under that projection's own layout, not the active one's.
-///
-/// `incoming` is a snapshot that has arrived for an endpoint but is not cached yet; it stands in
-/// for that endpoint's cached projection.
-fn endpoint_terminal_geometry(
-    state: &ClientState,
-    endpoint_id: &endpoint::ClientEndpointId,
-    focus: Option<&shell::ClientEndpointFocusTarget>,
-    incoming: Option<(
-        &endpoint::ClientEndpointId,
-        &shepr_protocol::ClientShellSnapshot,
-    )>,
-) -> shepr_protocol::TerminalGeometry {
+/// The geometry every endpoint is asked to render: the host size under the client's own layout.
+/// Shell chrome belongs to the client, so all endpoints lay out the same surface.
+fn handoff_geometry(state: &ClientState) -> shepr_protocol::TerminalGeometry {
     let geometry = &state.reported_geometry;
     let (cell_width_px, cell_height_px, pixel_mouse) =
         super::terminal_geometry::bounded_cell_geometry(
@@ -116,16 +105,7 @@ fn endpoint_terminal_geometry(
             geometry.cell_height(),
             geometry.exact,
         );
-    let size = match incoming {
-        Some((incoming_id, snapshot)) if incoming_id == endpoint_id => state
-            .shell
-            .snapshot_surface_size(snapshot, focus, geometry.cols(), geometry.rows()),
-        _ => {
-            state
-                .shell
-                .endpoint_surface_size(endpoint_id, focus, geometry.cols(), geometry.rows())
-        }
-    };
+    let size = state.shell.surface_size(geometry.cols(), geometry.rows());
     shepr_protocol::TerminalGeometry::new(
         size.cols,
         size.rows,
@@ -135,68 +115,17 @@ fn endpoint_terminal_geometry(
     )
 }
 
-/// The geometry a handoff from `source` to `target` (navigating to `focus`) requests from each
-/// side, each sized by the layout it commits with.
-fn handoff_geometry(
-    state: &ClientState,
-    source: &endpoint::ClientEndpointId,
-    target: &endpoint::ClientEndpointId,
-    focus: Option<&shell::ClientEndpointFocusTarget>,
-    incoming: Option<(
-        &endpoint::ClientEndpointId,
-        &shepr_protocol::ClientShellSnapshot,
-    )>,
-) -> endpoint::HandoffGeometry {
-    endpoint::HandoffGeometry {
-        source: endpoint_terminal_geometry(state, source, None, incoming),
-        target: endpoint_terminal_geometry(state, target, focus, incoming),
-    }
-}
-
-/// Brings the handoff in flight to the current host size and navigation target, rolling it back
-/// when the resize cannot be sent. Returns false when no handoff is in flight.
+/// Brings the handoff in flight to the current host size, rolling it back when the resize cannot
+/// be sent. Returns false when no handoff is in flight.
 pub(super) fn resize_handoff(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     now: std::time::Instant,
 ) -> bool {
-    resize_handoff_with(state, endpoints, None, now)
-}
-
-/// `resize_handoff` for a snapshot that has arrived for `endpoint_id` but is not cached yet: a
-/// tab added or closed elsewhere changes that endpoint's layout (the tab bar), so the size the
-/// handoff requested from it is stale. The client loop calls this before handing the snapshot to
-/// `receive_snapshot`, so the resize drops only surface evidence gathered at the old size and
-/// never evidence the snapshot itself completes. An unchanged geometry changes nothing.
-pub(super) fn resize_handoff_for_snapshot(
-    state: &mut ClientState,
-    endpoints: &mut endpoint::EndpointRegistry,
-    endpoint_id: &endpoint::ClientEndpointId,
-    snapshot: &shepr_protocol::ClientShellSnapshot,
-    now: std::time::Instant,
-) {
-    resize_handoff_with(state, endpoints, Some((endpoint_id, snapshot)), now);
-}
-
-fn resize_handoff_with(
-    state: &mut ClientState,
-    endpoints: &mut endpoint::EndpointRegistry,
-    incoming: Option<(
-        &endpoint::ClientEndpointId,
-        &shepr_protocol::ClientShellSnapshot,
-    )>,
-    now: std::time::Instant,
-) -> bool {
-    let Some(activation) = state.presentation.handoff() else {
+    if state.presentation.handoff().is_none() {
         return false;
-    };
-    let geometry = handoff_geometry(
-        state,
-        activation.source(),
-        activation.target(),
-        activation.focus(),
-        incoming,
-    );
+    }
+    let geometry = handoff_geometry(state);
     let resized = state
         .presentation
         .handoff_mut()
@@ -327,9 +256,6 @@ pub(super) fn begin_endpoint_activation(
             let retarget_error = activation.retarget(target, endpoints).err();
             if let Some(error) = retarget_error {
                 rollback_endpoint_activation(state, endpoints, &error, false, now);
-            } else {
-                // The new navigation target can lay the target out differently.
-                resize_handoff(state, endpoints, now);
             }
         } else {
             // Once rollback starts, even a request for the original target is a new intent.
@@ -376,13 +302,7 @@ pub(super) fn begin_endpoint_activation(
         }
         return Ok(());
     }
-    let geometry = handoff_geometry(
-        state,
-        endpoints.active_id(),
-        &endpoint_id,
-        target.as_ref(),
-        None,
-    );
+    let geometry = handoff_geometry(state);
     match endpoint::PendingEndpointActivation::prepare(
         &state.shell,
         endpoints,
@@ -875,12 +795,8 @@ mod tests {
             )
             .expect("test config encodes"),
             focused_workspace_id: None,
-            focused_tab_id: None,
             focused_pane_id: None,
-            tab_bar_right: Vec::new(),
-            tab_bar_right_separator: String::new(),
             workspaces: Vec::new(),
-            tabs: Vec::new(),
             panes: Vec::new(),
             agents: Vec::new(),
         })

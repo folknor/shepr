@@ -281,33 +281,33 @@ impl PreparedRender {
     }
 }
 
-pub(crate) type RenderedTabSurface = (
+pub(crate) type RenderedSurface = (
     ratatui::buffer::Buffer,
     Option<CursorState>,
     Vec<((u16, u16), String, String)>,
-    crate::ui::TabSurfaceLayout,
+    crate::ui::SurfaceLayout,
 );
 
-/// Renders only the active tab's pane surface at an origin-relative client viewport.
-pub(crate) fn render_tab_surface_virtual(
+/// Renders only the focused workspace's pane surface at an origin-relative client viewport.
+pub(crate) fn render_surface_virtual(
     app_state: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
-    layout: crate::ui::TabSurfaceLayout,
+    layout: crate::ui::SurfaceLayout,
     area: Rect,
-) -> RenderedTabSurface {
-    let surface = crate::ui::TabSurfaceView {
+) -> RenderedSurface {
+    let surface = crate::ui::SurfaceView {
         target: layout.target.as_ref(),
         pane_infos: &layout.pane_infos,
         split_borders: &layout.split_borders,
     };
-    let cursor = crate::ui::tab_surface_cursor(app_state, terminal_runtimes, surface);
-    let hyperlinks = crate::ui::tab_surface_hyperlinks(app_state, terminal_runtimes, surface);
+    let cursor = crate::ui::surface_cursor(app_state, terminal_runtimes, surface);
+    let hyperlinks = crate::ui::surface_hyperlinks(app_state, terminal_runtimes, surface);
 
     let backend = TestBackend::new(area.width, area.height);
     // The backend's error type is `Infallible`, so these patterns are irrefutable.
     let Ok(mut terminal) = ratatui::Terminal::new(backend);
     let Ok(_) = terminal.draw(|frame| {
-        crate::ui::render_tab_surface(app_state, terminal_runtimes, surface, frame);
+        crate::ui::render_surface(app_state, terminal_runtimes, surface, frame);
     });
 
     (

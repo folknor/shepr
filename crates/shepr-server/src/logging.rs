@@ -62,39 +62,6 @@ pub(crate) fn workspace_renamed(workspace_id: &str) {
     );
 }
 
-pub(crate) fn tab_focused(workspace_id: &str, tab_id: &str) {
-    tracing::info!(
-        event = "tab.focus",
-        subsystem = "tab",
-        outcome = "ok",
-        workspace_id,
-        tab_id,
-        "tab focused"
-    );
-}
-
-pub(crate) fn tab_closed(workspace_id: &str, tab_id: &str) {
-    tracing::info!(
-        event = "tab.close",
-        subsystem = "tab",
-        outcome = "ok",
-        workspace_id,
-        tab_id,
-        "tab closed"
-    );
-}
-
-pub(crate) fn tab_renamed(workspace_id: &str, tab_id: &str) {
-    tracing::info!(
-        event = "tab.rename",
-        subsystem = "tab",
-        outcome = "ok",
-        workspace_id,
-        tab_id,
-        "tab renamed"
-    );
-}
-
 pub(crate) fn session_restored(path: &Path, workspaces: usize, outcome: &'static str) {
     tracing::info!(
         event = "persist.restore",

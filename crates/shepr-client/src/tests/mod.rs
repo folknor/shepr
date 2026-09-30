@@ -12,12 +12,6 @@ pub(crate) fn test_pane_id(id: &str) -> shepr_protocol::PublicPaneId {
         .unwrap_or_else(|_| panic!("{id:?} is not a canonical public pane id"))
 }
 
-/// A public tab id from its canonical spelling (`<workspace>:t<number>`).
-pub(crate) fn test_tab_id(id: &str) -> shepr_protocol::PublicTabId {
-    id.parse()
-        .unwrap_or_else(|_| panic!("{id:?} is not a canonical public tab id"))
-}
-
 /// A workspace id from its canonical spelling (`w<number>`).
 pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
     id.parse()

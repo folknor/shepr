@@ -82,12 +82,9 @@ impl ClientShellState {
             collapsed_endpoints: &self.collapsed_endpoints,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
-            tab_scroll: &mut self.tab_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
-            reveal_focused_tab: &mut self.reveal_focused_tab,
             sidebar_collapsed: false,
             sidebar_section_split: self.sidebar_section_split,
-            tab_drag_insert_index: None,
             selected_workspace_id: self
                 .navigate_workspace_id
                 .as_ref()
@@ -189,14 +186,6 @@ impl ClientShellState {
             return None;
         }
         let layout = self.layout(cols, rows);
-        if self.last_tab_bar_width != Some(layout.tab_bar.width) {
-            self.last_tab_bar_width = Some(layout.tab_bar.width);
-            self.reveal_focused_tab = true;
-        }
-        let tab_drag_insert_index = match &self.chrome_drag {
-            Some(ClientChromeDrag::Tab { insert_index, .. }) => *insert_index,
-            _ => None,
-        };
         let (dragged_workspace_id, workspace_drop_indicator_row) = match &self.chrome_drag {
             Some(ClientChromeDrag::Workspace {
                 source_workspace_id,
@@ -220,12 +209,9 @@ impl ClientShellState {
                 collapsed_endpoints: &self.collapsed_endpoints,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
-                tab_scroll: &mut self.tab_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
-                reveal_focused_tab: &mut self.reveal_focused_tab,
                 sidebar_collapsed: self.sidebar_collapsed,
                 sidebar_section_split: self.sidebar_section_split,
-                tab_drag_insert_index,
                 selected_workspace_id: self
                     .navigate_workspace_id
                     .as_ref()
@@ -238,9 +224,8 @@ impl ClientShellState {
         );
         // The surface may have been produced for another layout: a resize or sidebar toggle
         // keeps the retained surface until the resized one arrives, a resize can race a surface
-        // already in flight, and the tab bar appears (shrinking the pane area by a row) when a
-        // second tab opens. `compose_pane_surface` clips the cells; the hits are clipped to match
-        // (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
+        // already in flight. `compose_pane_surface` clips the cells; the hits are clipped to
+        // match (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
         // columns that are not on screen. Later draws that use these rects still go through
         // `Buffer::cell_mut`, never `buffer[(x, y)]`.
         let surface_overflows = surface_overflows_area(surface, layout.pane_surface);
@@ -326,14 +311,10 @@ impl ClientShellState {
         if !self.config.mouse_capture {
             self.hits.pane_splits.clear();
         }
-        let mode_bar_area = if self.config.tab_bar_position == TabBarPositionConfig::Bottom
-            && !layout.tab_bar.is_empty()
-        {
-            layout.tab_bar
-        } else {
-            // The bar normally covers the pane area's bottom row. When the copy cursor sits on
-            // that row (the last line of history, which scrolling cannot lift, or a pane too
-            // short to reserve it) the bar moves to the top row so the cursor stays visible.
+        // The bar normally covers the pane area's bottom row. When the copy cursor sits on
+        // that row (the last line of history, which scrolling cannot lift, or a pane too
+        // short to reserve it) the bar moves to the top row so the cursor stays visible.
+        let mode_bar_area = {
             let bottom_row = layout.pane_surface.bottom().saturating_sub(1);
             let copy_cursor_row = (self.mode == ClientShellMode::Copy)
                 .then(|| {
@@ -367,12 +348,6 @@ impl ClientShellState {
                 &self.config.palette,
             )
         };
-        if mode_bar == Some(layout.tab_bar) {
-            self.hits.tabs.clear();
-            self.hits.new_tab = Rect::default();
-            self.hits.tab_scroll_left = Rect::default();
-            self.hits.tab_scroll_right = Rect::default();
-        }
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
         let mode_bar_cells = mode_bar
             .and_then(|bar| mode_bar_range(&frame, bar))
@@ -756,7 +731,7 @@ mod tests {
 
     #[test]
     fn copy_search_highlights_clip_surface_taller_than_frame() {
-        // A pane surface produced for another layout (e.g. before the tab bar appeared)
+        // A pane surface produced for another layout (e.g. before a resize took effect)
         // is one row taller than the frame. Matches on its bottom row are off-buffer
         // and must be skipped instead of panicking on `Buffer` indexing.
         let hit = PaneHit {

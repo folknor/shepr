@@ -98,28 +98,6 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == shepr_termio::input::KeybindAction::CloseTab {
-                    if let Some(tab_id) = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| snapshot.focused_tab_id.clone())
-                    {
-                        self.request_tab_close(&tab_id, outcome);
-                    }
-                    return;
-                }
-                if action == shepr_termio::input::KeybindAction::NewTab
-                    && self.config.prompt_new_tab_name
-                {
-                    self.open_new_tab_overlay();
-                    outcome.repaint = true;
-                    return;
-                }
-                if action == shepr_termio::input::KeybindAction::RenameTab {
-                    self.open_rename_tab_overlay();
-                    outcome.repaint = true;
-                    return;
-                }
                 if action == shepr_termio::input::KeybindAction::RenamePane {
                     self.open_rename_pane_overlay();
                     outcome.repaint = true;
@@ -231,11 +209,9 @@ impl ClientShellState {
     ) -> bool {
         let changes_focus = match &command {
             EndpointCommand::WorkspaceFocus(_)
-            | EndpointCommand::TabFocus(_)
             | EndpointCommand::PaneFocus(_)
             | EndpointCommand::PaneFocusDirection(_) => true,
             EndpointCommand::WorkspaceCreate(params) => params.focus,
-            EndpointCommand::TabCreate(params) => params.focus,
             EndpointCommand::PaneSplit(params) => params.focus,
             _ => false,
         };
@@ -570,7 +546,7 @@ impl ClientShellState {
         use shepr_protocol::command::{
             PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
             PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
-            TabCreateParams, TabMoveParams, TabTarget, WorkspaceTarget,
+            WorkspaceTarget,
         };
         use shepr_termio::input::KeybindAction;
 
@@ -579,7 +555,6 @@ impl ClientShellState {
             .focused_workspace_id
             .as_ref()
             .map(ToString::to_string)?;
-        let focused_tab = snapshot.focused_tab_id.clone();
         let focused_pane = snapshot.focused_pane_id.clone();
         let direction = |action| match action {
             KeybindAction::FocusPaneLeft
@@ -675,72 +650,6 @@ impl ClientShellState {
                     workspace_id: workspace_id.into(),
                 }))
             }
-            KeybindAction::SwitchTab(index) => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                Some(EndpointCommand::TabFocus(TabTarget {
-                    tab_id: tabs.get(index)?.tab_id.to_string(),
-                }))
-            }
-            KeybindAction::PreviousTab | KeybindAction::NextTab => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                let focused_tab = focused_tab?;
-                let current = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
-                let delta = if action == KeybindAction::PreviousTab {
-                    -1
-                } else {
-                    1
-                };
-                let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
-                let len_isize = isize::try_from(tabs.len()).unwrap_or(isize::MAX);
-                let next = (current_isize + delta).rem_euclid(len_isize) as usize;
-                Some(EndpointCommand::TabFocus(TabTarget {
-                    tab_id: tabs[next].tab_id.to_string(),
-                }))
-            }
-            KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                if tabs.len() <= 1 {
-                    return None;
-                }
-                let focused_tab = focused_tab?;
-                let source = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
-                let insert_index = if action == KeybindAction::MoveTabNext {
-                    if source + 1 >= tabs.len() {
-                        0
-                    } else {
-                        source + 2
-                    }
-                } else if source == 0 {
-                    tabs.len()
-                } else {
-                    source - 1
-                };
-                Some(EndpointCommand::TabMove(TabMoveParams {
-                    tab_id: focused_tab.to_string(),
-                    insert_index,
-                }))
-            }
-            KeybindAction::NewTab if !self.config.prompt_new_tab_name => {
-                Some(EndpointCommand::TabCreate(TabCreateParams {
-                    workspace_id: Some(focused_workspace),
-                    cwd: None,
-                    focus: true,
-                    label: None,
-                    env: Default::default(),
-                }))
-            }
             KeybindAction::FocusPaneLeft
             | KeybindAction::FocusPaneDown
             | KeybindAction::FocusPaneUp
@@ -779,11 +688,10 @@ impl ClientShellState {
                 pane_id: focused_pane.clone()?.to_string(),
             })),
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
-                let focused_tab = focused_tab?;
                 let panes = snapshot
                     .panes
                     .iter()
-                    .filter(|pane| pane.tab_id == focused_tab)
+                    .filter(|pane| pane.workspace_id == focused_workspace)
                     .collect::<Vec<_>>();
                 if panes.is_empty() {
                     return None;

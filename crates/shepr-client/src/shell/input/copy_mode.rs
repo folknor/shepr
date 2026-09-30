@@ -650,19 +650,14 @@ impl ClientShellState {
         }
     }
 
-    /// Whether the copy-mode bar is drawn over the copy pane's bottom row: true with the tab
-    /// bar on top or hidden (the bar then takes the pane area's bottom row) when the pane
-    /// reaches that row. Unknown geometry counts as covered.
+    /// Whether the copy-mode bar is drawn over the copy pane's bottom row: true when the pane
+    /// reaches the pane area's bottom row, which the bar takes. Unknown geometry counts as
+    /// covered.
     fn mode_bar_covers_copy_pane(&self) -> bool {
         let (Some(hit), Some((cols, rows))) = (self.copy_hit(), self.last_composed_size) else {
             return true;
         };
         let layout = self.layout(cols, rows);
-        if self.config.tab_bar_position == TabBarPositionConfig::Bottom
-            && !layout.tab_bar.is_empty()
-        {
-            return false;
-        }
         hit.inner_rect.bottom() >= layout.pane_surface.bottom()
     }
 

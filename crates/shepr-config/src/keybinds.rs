@@ -1325,13 +1325,13 @@ prefix = "ö"
         let config: Config = toml::from_str(
             r#"
 [keys]
-next_tab = "prefix+n"
+next_workspace = "prefix+n"
 "#,
         )
         .expect("test precondition");
         let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
         assert_eq!(
-            binding_triggers(&kb.next_tab),
+            binding_triggers(&kb.next_workspace),
             vec![BindingTrigger::Prefix((
                 KeyCode::Char('n'),
                 KeyModifiers::empty()
@@ -1374,13 +1374,13 @@ next_tab = "prefix+n"
         let config: Config = toml::from_str(
             r#"
 [keys]
-next_tab = ["prefix+n", "ctrl+alt+]"]
+next_workspace = ["prefix+n", "ctrl+alt+]"]
 "#,
         )
         .expect("test precondition");
         let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
         assert_eq!(
-            binding_triggers(&kb.next_tab),
+            binding_triggers(&kb.next_workspace),
             vec![
                 BindingTrigger::Prefix((KeyCode::Char('n'), KeyModifiers::empty())),
                 BindingTrigger::Direct((
@@ -1389,7 +1389,7 @@ next_tab = ["prefix+n", "ctrl+alt+]"]
                 )),
             ]
         );
-        assert_eq!(kb.next_tab.prefix_rhs_label().as_deref(), Some("n"));
+        assert_eq!(kb.next_workspace.prefix_rhs_label().as_deref(), Some("n"));
     }
 
     #[test]
@@ -1397,8 +1397,8 @@ next_tab = ["prefix+n", "ctrl+alt+]"]
         let config: Config = toml::from_str(
             r#"
 [keys]
-new_tab = "c"
-close_tab = "X"
+new_workspace = "c"
+close_workspace = "X"
 "#,
         )
         .expect("test precondition");
@@ -1408,11 +1408,11 @@ close_tab = "X"
             diagnostics
                 .iter()
                 .any(|diag| diag.contains("unsafe direct keybinding")
-                    && diag.contains("keys.new_tab"))
+                    && diag.contains("keys.new_workspace"))
         );
-        assert!(diagnostics.iter().any(
-            |diag| diag.contains("unsafe direct keybinding") && diag.contains("keys.close_tab")
-        ));
+        assert!(diagnostics.iter().any(|diag| {
+            diag.contains("unsafe direct keybinding") && diag.contains("keys.close_workspace")
+        }));
     }
 
     #[test]
@@ -1661,7 +1661,7 @@ navigate_workspace_down = ["n", "f"]
         assert!(
             !diagnostics
                 .iter()
-                .any(|diag| diag.contains("keys.next_tab"))
+                .any(|diag| diag.contains("keys.next_workspace"))
         );
     }
 
@@ -1733,7 +1733,7 @@ switch_workspace = "prefix+shift+1..9"
         let config: Config = toml::from_str(
             r#"
 [keys]
-switch_tab = "prefix+?"
+switch_workspace = "prefix+?"
 "#,
         )
         .expect("test precondition");
@@ -1743,40 +1743,41 @@ switch_tab = "prefix+?"
 
         assert!(kb.is_none());
         assert!(diagnostics.iter().any(|diag| {
-            diag.contains("indexed keybinding must use 1..9") && diag.contains("keys.switch_tab")
+            diag.contains("indexed keybinding must use 1..9")
+                && diag.contains("keys.switch_workspace")
         }));
         assert!(!diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
-                && diag.contains("keys.switch_tab")
+                && diag.contains("keys.switch_workspace")
                 && diag.contains("keys.help")
         }));
     }
 
     #[test]
-    fn default_keymap_is_prefix_first_and_tab_centered() {
+    fn default_keymap_is_prefix_first_and_workspace_centered() {
         let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
         assert_eq!(
-            binding_triggers(&kb.next_tab),
+            binding_triggers(&kb.next_workspace),
             vec![BindingTrigger::Prefix((
                 KeyCode::Char('n'),
                 KeyModifiers::empty()
             ))]
         );
         assert_eq!(
-            binding_triggers(&kb.previous_tab),
+            binding_triggers(&kb.previous_workspace),
             vec![BindingTrigger::Prefix((
                 KeyCode::Char('p'),
                 KeyModifiers::empty()
             ))]
         );
-        assert_eq!(kb.switch_tab.len(), 9);
+        assert_eq!(kb.switch_workspace.len(), 9);
         assert!(
-            kb.switch_tab
+            kb.switch_workspace
                 .iter()
                 .all(|binding| binding.trigger.is_prefix())
         );
         assert!(
-            kb.new_tab
+            kb.new_workspace
                 .bindings
                 .iter()
                 .all(|binding| binding.trigger.is_prefix())
@@ -1816,7 +1817,7 @@ switch_tab = "prefix+?"
         let config: Config = toml::from_str(
             r#"
 [keys]
-next_tab = "prefix+n"
+next_workspace = "prefix+n"
 new_workspace = "prefix+n"
 "#,
         )
@@ -1827,7 +1828,7 @@ new_workspace = "prefix+n"
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
                 && diag.contains("keys.new_workspace")
-                && diag.contains("keys.next_tab")
+                && diag.contains("keys.next_workspace")
         }));
     }
 
@@ -1836,16 +1837,16 @@ new_workspace = "prefix+n"
         let config: Config = toml::from_str(
             r#"
 [keys]
-new_tab = "prefix+z"
+new_workspace = "prefix+z"
 "#,
         )
         .expect("test precondition");
 
-        let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_tab"]);
+        let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_workspace"]);
 
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
-                && diag.contains("keys.new_tab")
+                && diag.contains("keys.new_workspace")
                 && diag.contains("keys.zoom")
         }));
         assert!(keybinds.is_none());
@@ -1854,16 +1855,18 @@ new_tab = "prefix+z"
     #[test]
     fn rebinding_the_displaced_action_too_resolves_the_conflict() {
         for zoom in ["\"prefix+shift+z\"", "\"\"", "[]"] {
-            let config: Config =
-                toml::from_str(&format!("[keys]\nnew_tab = \"prefix+z\"\nzoom = {zoom}\n"))
-                    .expect("test precondition");
+            let config: Config = toml::from_str(&format!(
+                "[keys]\nnew_workspace = \"prefix+z\"\nzoom = {zoom}\n"
+            ))
+            .expect("test precondition");
 
-            let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_tab", "zoom"]);
+            let (diagnostics, keybinds) =
+                diagnostics_and_keybinds(&config, &["new_workspace", "zoom"]);
 
             assert!(diagnostics.is_empty(), "zoom = {zoom}: {diagnostics:?}");
             let kb = keybinds.expect("all bindings valid");
             assert_eq!(
-                binding_triggers(&kb.new_tab),
+                binding_triggers(&kb.new_workspace),
                 vec![BindingTrigger::Prefix((
                     KeyCode::Char('z'),
                     KeyModifiers::empty()
@@ -1876,7 +1879,7 @@ new_tab = "prefix+z"
     fn user_prefix_conflicting_with_a_default_binding_is_reported() {
         for (prefix, field, diagnostic) in [
             ("h", "keys.navigate_pane_left", "keybinding conflict"),
-            ("n", "keys.next_tab", "reserved keybinding"),
+            ("n", "keys.next_workspace", "reserved keybinding"),
         ] {
             let config: Config = toml::from_str(&format!("[keys]\nprefix = {prefix:?}\n"))
                 .expect("test precondition");

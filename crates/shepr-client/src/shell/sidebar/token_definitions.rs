@@ -15,7 +15,6 @@ pub(crate) enum ResolvedTokenKind {
     StateText(String),
     Machine(String),
     Workspace(String),
-    Tab(String),
     Pane(String),
     Agent(String),
     TerminalTitle(String),
@@ -29,7 +28,6 @@ impl ResolvedTokenKind {
             Self::StateText(value)
             | Self::Machine(value)
             | Self::Workspace(value)
-            | Self::Tab(value)
             | Self::Pane(value)
             | Self::Agent(value)
             | Self::TerminalTitle(value)
@@ -48,7 +46,6 @@ impl ResolvedToken {
 pub(crate) struct AgentTokenContext<'a> {
     pub(crate) machine: Option<&'a str>,
     pub(crate) workspace: &'a str,
-    pub(crate) tab: Option<&'a str>,
     pub(crate) pane: Option<&'a str>,
     pub(crate) agent_label: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
@@ -84,9 +81,6 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::Workspace => {
                             Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
                         }
-                        AgentSidebarToken::Tab => context
-                            .tab
-                            .map(|value| ResolvedTokenKind::Tab(value.to_string())),
                         AgentSidebarToken::Pane => context
                             .pane
                             .map(|value| ResolvedTokenKind::Pane(value.to_string())),
@@ -183,7 +177,6 @@ mod tests {
 
     struct Entry {
         workspace: String,
-        tab: Option<String>,
         pane: Option<String>,
         agent_label: Option<String>,
         terminal_title: Option<String>,
@@ -194,7 +187,6 @@ mod tests {
     fn entry() -> Entry {
         Entry {
             workspace: "repo".into(),
-            tab: None,
             pane: None,
             agent_label: Some("pi".into()),
             terminal_title: None,
@@ -207,7 +199,6 @@ mod tests {
         AgentTokenContext {
             machine: None,
             workspace: &entry.workspace,
-            tab: entry.tab.as_deref(),
             pane: entry.pane.as_deref(),
             agent_label: entry.agent_label.as_deref(),
             terminal_title: entry.terminal_title.as_deref(),
@@ -219,7 +210,7 @@ mod tests {
     #[test]
     fn conditional_styles_merge_first_match_and_keep_missing_values_absent() {
         let config: AgentsSidebarConfig = toml::from_str(r##"
-rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true, rules = [{ equals = "Local", fg = "#f00", bold = false }, { contains = "Loc", fg = "#0f0", dim = false }] }], [{ token = "tab", rules = [{ equals = "", bold = true }] }]]
+rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true, rules = [{ equals = "Local", fg = "#f00", bold = false }, { contains = "Loc", fg = "#0f0", dim = false }] }], [{ token = "pane", rules = [{ equals = "", bold = true }] }]]
 "##).expect("test precondition");
         let entry = entry();
         for (machine, color, bold, dim) in [

@@ -36,13 +36,11 @@ impl AppState {
                 self.workspaces.get(workspace_index)?.focused_pane_id(),
             )
         };
-        let tab_index = self
-            .workspaces
-            .get(workspace_index)?
-            .find_tab_index_for_pane(pane_id)?;
+        if !self.workspaces.get(workspace_index)?.contains_pane(pane_id) {
+            return None;
+        }
         Some(PaneContext {
             workspace_index,
-            tab_index,
             pane_id,
         })
     }
@@ -64,9 +62,7 @@ impl AppState {
         focus: bool,
     ) -> WorkspaceCreationOutcome {
         let workspace_id = workspace.id.clone();
-        // A workspace being created holds exactly its first tab, which is
-        // also its focused tab; `active_tab` has no empty case to index past.
-        let root_pane = workspace.active_tab().root_pane();
+        let root_pane = workspace.root_pane();
         self.terminals.insert(terminal.id.clone(), terminal);
         self.workspaces.push(workspace);
         let workspace_index = self.workspaces.len() - 1;
@@ -84,28 +80,9 @@ impl AppState {
         }
     }
 
-    pub(crate) fn commit_tab_creation(
-        &mut self,
-        workspace_index: usize,
-        tab: shepr_mux::workspace::Tab,
-        terminal: shepr_mux::terminal::TerminalState,
-        focus: bool,
-    ) -> Option<shepr_mux::workspace::TabCreationOutcome> {
-        let workspace = self.workspaces.get_mut(workspace_index)?;
-        let outcome = workspace.commit_new_tab(tab)?;
-        self.terminals.insert(terminal.id.clone(), terminal);
-        if focus {
-            self.switch_workspace_tab(workspace_index, outcome.tab_index);
-            self.mode = Mode::Terminal;
-        }
-        self.mark_session_dirty();
-        Some(outcome)
-    }
-
     pub(crate) fn commit_pane_split(
         &mut self,
         workspace_index: usize,
-        tab_index: usize,
         pane_id: PaneId,
         prepared_layout: shepr_core::layout::TileLayout,
         terminal: shepr_mux::terminal::TerminalState,
@@ -115,7 +92,6 @@ impl AppState {
     ) -> Option<PaneCreationOutcome> {
         let terminal_id = terminal.id.clone();
         self.workspaces.get_mut(workspace_index)?.commit_new_pane(
-            tab_index,
             pane_id,
             prepared_layout,
             terminal_id.clone(),
@@ -130,14 +106,13 @@ impl AppState {
             pane.right_click_passthrough = right_click_passthrough;
         }
         if focus {
-            self.switch_workspace_tab(workspace_index, tab_index);
+            self.switch_workspace(workspace_index);
             self.record_pane_focus_change(previous_focus, workspace_index, pane_id);
             self.mode = Mode::Terminal;
         }
         self.mark_session_dirty();
         Some(PaneCreationOutcome {
             workspace_index,
-            tab_index,
             pane_id,
             terminal_id,
         })
@@ -172,9 +147,9 @@ impl AppState {
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return false;
         };
-        let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) else {
+        if !ws.contains_pane(pane_id) {
             return false;
-        };
+        }
         let previous = self.current_pane_focus_target();
         let target = PaneFocusTarget {
             workspace_id: ws.id.clone(),
@@ -184,11 +159,11 @@ impl AppState {
             return false;
         }
 
-        self.switch_workspace_tab(ws_idx, tab_idx);
+        self.switch_workspace(ws_idx);
         if self
             .workspaces
             .get_mut(ws_idx)
-            .is_some_and(|ws| ws.focus_pane_in_tab(tab_idx, pane_id))
+            .is_some_and(|ws| ws.focus_pane(pane_id))
         {
             self.previous_pane_focus = previous;
             self.mark_session_dirty();

@@ -22,8 +22,6 @@ pub enum WindowTitleToken {
     Hostname,
     /// Active workspace display name.
     Workspace,
-    /// Active tab display name.
-    Tab,
     /// Manual name of the focused pane.
     Pane,
     /// Focused pane's terminal title, with spinner frames stripped.
@@ -35,7 +33,6 @@ impl WindowTitleToken {
         match name {
             "hostname" => Some(Self::Hostname),
             "workspace" => Some(Self::Workspace),
-            "tab" => Some(Self::Tab),
             "pane" => Some(Self::Pane),
             "terminal_title" => Some(Self::TerminalTitle),
             _ => None,
@@ -181,6 +178,11 @@ mod tests {
                 .expect("diagnostic")
                 .contains("unknown token '{session}'")
         );
+        assert!(
+            window_title_diagnostics("{tab}")
+                .expect("diagnostic")
+                .contains("unknown token '{tab}'")
+        );
     }
 
     #[test]
@@ -201,13 +203,13 @@ mod tests {
 
     #[test]
     fn token_names_tolerate_surrounding_whitespace() {
-        let template = WindowTitleTemplate::parse("{ tab }")
+        let template = WindowTitleTemplate::parse("{ pane }")
             .expect("parse")
             .expect("template");
 
         assert_eq!(
             template.parts(),
-            [WindowTitlePart::Token(WindowTitleToken::Tab)]
+            [WindowTitlePart::Token(WindowTitleToken::Pane)]
         );
     }
 }

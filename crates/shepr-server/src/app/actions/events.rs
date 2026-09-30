@@ -147,11 +147,11 @@ impl AppState {
             }),
             // Handled before this state-only handler, which keeps them for
             // AppEvent exhaustiveness: a clipboard write is a host-local effect
-            // the HeadlessServer forwards to the foreground client, and git and
-            // tab-bar results are applied by the App's internal-event handler.
-            AppEvent::ClipboardWrite { .. }
-            | AppEvent::GitStatusRefreshed { .. }
-            | AppEvent::TabBarCommandFinished { .. } => StateUpdate::Unchanged,
+            // the HeadlessServer forwards to the foreground client, and git
+            // results are applied by the App's internal-event handler.
+            AppEvent::ClipboardWrite { .. } | AppEvent::GitStatusRefreshed { .. } => {
+                StateUpdate::Unchanged
+            }
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
                     ws.pane_state(pane_id)
@@ -263,7 +263,7 @@ impl AppState {
         let ws_idx = self
             .workspaces
             .iter()
-            .position(|ws| ws.find_tab_index_for_pane(pane_id).is_some());
+            .position(|ws| ws.contains_pane(pane_id));
 
         let Some(ws_idx) = ws_idx else {
             // Expected, not a fault: a pane already removed because its PTY

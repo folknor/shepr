@@ -262,20 +262,9 @@ env_vocabulary! {
         Shell => "SHELL",
         /// `PATH`: the child's executable search path.
         Path => "PATH",
-        /// `SHEPR_BIN_PATH`: the shepr executable, for tab-bar status commands
-        /// to call back.
+        /// `SHEPR_BIN_PATH`: the shepr executable, set for every pane so
+        /// programs in it can call back into shepr.
         SheprBinPath => "SHEPR_BIN_PATH",
-        /// `SHEPR_ACTIVE_WORKSPACE_ID`: the focused workspace, for tab-bar
-        /// status commands.
-        SheprActiveWorkspaceId => "SHEPR_ACTIVE_WORKSPACE_ID",
-        /// `SHEPR_ACTIVE_TAB_ID`: the focused tab, for tab-bar status commands.
-        SheprActiveTabId => "SHEPR_ACTIVE_TAB_ID",
-        /// `SHEPR_ACTIVE_PANE_ID`: the focused pane, for tab-bar status
-        /// commands.
-        SheprActivePaneId => "SHEPR_ACTIVE_PANE_ID",
-        /// `SHEPR_ACTIVE_PANE_CWD`: the focused pane's directory, for tab-bar
-        /// status commands.
-        SheprActivePaneCwd => "SHEPR_ACTIVE_PANE_CWD",
         /// `SSH_ASKPASS`: removed so interactive SSH authentication prompts on
         /// the terminal.
         SshAskpass => "SSH_ASKPASS",
@@ -1124,10 +1113,6 @@ mod tests {
                 "SHELL",
                 "PATH",
                 "SHEPR_BIN_PATH",
-                "SHEPR_ACTIVE_WORKSPACE_ID",
-                "SHEPR_ACTIVE_TAB_ID",
-                "SHEPR_ACTIVE_PANE_ID",
-                "SHEPR_ACTIVE_PANE_CWD",
                 "SSH_ASKPASS",
                 "SSH_ASKPASS_REQUIRE",
                 "ITERM_SESSION_ID",

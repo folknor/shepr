@@ -28,7 +28,7 @@
 # Start new interactive pane shells as login shells.
 # login_shell = false
 
-# CWD policy for new panes, tabs, and workspaces when no explicit --cwd is provided.
+# CWD policy for new panes and workspaces when no explicit --cwd is provided.
 # Use "follow" to inherit the source pane/workspace, "home" for $HOME,
 # "current" for the directory Shepr was launched from, or a fixed path such as
 # "~/Projects". Fixed paths must name an existing directory. Relative paths
@@ -59,20 +59,12 @@
 # new_workspace = "prefix+shift+n"
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
-# previous_workspace = "" # optional, unset by default
-# next_workspace = ""     # optional, unset by default
+# previous_workspace = "prefix+p"
+# next_workspace = "prefix+n"
 # previous_agent = ""     # optional, unset by default
 # next_agent = ""         # optional, unset by default
 # focus_agent = ""        # optional indexed binding, e.g. "prefix+alt+1..9"
-# new_tab = "prefix+c"
-# rename_tab = "prefix+shift+t"
-# previous_tab = "prefix+p"
-# next_tab = "prefix+n"
-# move_tab_previous = ""   # optional, e.g. "alt+shift+left" moves the tab toward the front
-# move_tab_next = ""       # optional, e.g. "alt+shift+right" moves the tab toward the back
-# switch_tab = "prefix+1..9"
-# switch_workspace = ""   # optional indexed binding, e.g. "prefix+shift+1..9"
-# close_tab = "prefix+shift+x"
+# switch_workspace = "prefix+1..9"   # indexed binding, e.g. "prefix+shift+1..9"
 # rename_pane = "prefix+shift+p"
 # clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
 # copy_mode = "prefix+["
@@ -170,12 +162,9 @@
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 
-# Ask for a tab name before creating a new tab.
-# Set false to create tabs immediately with generated names.
-# prompt_new_tab_name = true
-
 # Ask for a workspace name before interactive creation.
-# prompt_new_workspace_name = false
+# Set false to create workspaces immediately with generated names.
+# prompt_new_workspace_name = true
 
 # Draw borders around split panes.
 # "auto" draws them only for split panes, "always" also frames a lone pane
@@ -196,24 +185,8 @@
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
 
-# Hide the tab row when a workspace has exactly one tab.
-# New tabs can still be created with the configured keybinding.
-# hide_tab_bar_when_single_tab = false
-
-# Desktop tab row placement: "top" or "bottom".
-# tab_bar_position = "top"
-
-# Ordered status entries at the right edge of the desktop tab bar.
-# Supported types: zoom, hostname, datetime, text, and command.
-# Hostname, datetime, and command entries resolve on the Shepr server.
-# Up to 16 entries are accepted. Command intervals must be 1 second through
-# 365 days; command timeouts must be 1 second through 1 hour.
-# Command defaults are a 5-second interval and a 2-second timeout.
-# tab_bar_right = []
-# tab_bar_right_separator = " "
-
 # Title Shepr writes to the terminal it runs in, which is what window managers
-# show in title, tab, and group bars. Tokens are {hostname}, {workspace}, {tab},
+# show in title, tab, and group bars. Tokens are {hostname}, {workspace},
 # {pane}, and {terminal_title}; {{ and }} are literal braces.
 # The title renders on the Shepr server, so {hostname} names the host the panes
 # run on even when attaching from a remote client.
@@ -236,7 +209,7 @@
 # This is an example override; theme.custom.accent takes precedence.
 # accent = "#89b4fa"
 
-# Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
+# Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace,
 # pane, agent, terminal_title, and terminal_title_stripped.
 # Each layout accepts up to 16 rows, 16 tokens per row, and 16 rules per styled token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
@@ -244,10 +217,10 @@
 # [ui.sidebar.agents]
 # Blank rows between agent entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "machine", "workspace", "tab"], ["agent"]]
+# rows = [["state_icon", "machine", "workspace"], ["agent"]]
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
-# claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
+# claude = [["state_icon", "machine", "workspace"], ["terminal_title_stripped"], ["agent"]]
 
 # Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
 # Inline token styles accept strict #rgb/#rrggbb hex foregrounds plus bold and dim booleans.

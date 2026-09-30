@@ -14,8 +14,8 @@ impl App {
         if !params.ratio.is_finite() {
             return failure(ApiErrorCode::InvalidRatio, "ratio must be finite");
         }
-        let Some((ws_idx, tab_idx)) =
-            self.resolve_layout_target(params.tab_id.as_deref(), params.pane_id.as_deref())
+        let Some(ws_idx) =
+            self.resolve_layout_target(params.workspace_id.as_deref(), params.pane_id.as_deref())
         else {
             return failure(ApiErrorCode::LayoutNotFound, "layout target not found");
         };
@@ -37,7 +37,7 @@ impl App {
             .state
             .workspaces
             .get_mut(ws_idx)
-            .is_some_and(|ws| ws.set_tab_split_ratio_at(tab_idx, &path, params.ratio));
+            .is_some_and(|ws| ws.set_split_ratio_at(&path, params.ratio));
         if !changed {
             return failure(ApiErrorCode::SplitNotFound, "split path not found");
         }
@@ -46,31 +46,22 @@ impl App {
         Ok(EndpointReply::Done)
     }
 
-    /// The tab a layout request addresses: the tab named by `tab_id`, the tab
-    /// holding `pane_id`, or the active tab when neither is given. Naming both
-    /// resolves to nothing.
+    /// The workspace a layout request addresses: the workspace named by
+    /// `workspace_id`, the workspace holding `pane_id`, or the active
+    /// workspace when neither is given. Naming both resolves to nothing.
     fn resolve_layout_target(
         &self,
-        tab_id: Option<&str>,
+        workspace_id: Option<&str>,
         pane_id: Option<&str>,
-    ) -> Option<(usize, usize)> {
-        match (tab_id, pane_id) {
+    ) -> Option<usize> {
+        match (workspace_id, pane_id) {
             (Some(_), Some(_)) => None,
-            (Some(tab_id), None) => self.parse_tab_id(tab_id),
+            (Some(workspace_id), None) => self.parse_workspace_id(workspace_id),
             (None, Some(pane_id)) => {
-                let (ws_idx, pane_id) = self.parse_pane_id(pane_id)?;
-                let tab_idx = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)?
-                    .find_tab_index_for_pane(pane_id)?;
-                Some((ws_idx, tab_idx))
+                let (ws_idx, _) = self.parse_pane_id(pane_id)?;
+                Some(ws_idx)
             }
-            (None, None) => {
-                let ws_idx = self.state.active_index()?;
-                let tab_idx = self.state.workspaces.get(ws_idx)?.active_tab_index();
-                Some((ws_idx, tab_idx))
-            }
+            (None, None) => self.state.active_index(),
         }
     }
 }
@@ -96,25 +87,25 @@ mod tests {
     #[test]
     fn layout_set_split_ratio_updates_existing_split() {
         let mut app = app_with_workspace();
-        let root = app.state.workspaces[0].tabs()[0].root_pane();
+        let root = app.state.workspaces[0].root_pane();
         app.state.workspaces[0].test_split(Direction::Horizontal);
         app.state.ensure_test_terminals();
-        assert!(app.state.workspaces[0].focus_pane_in_tab(0, root));
+        assert!(app.state.workspaces[0].focus_pane(root));
 
         let response = app.handle_layout_set_split_ratio(&LayoutSetSplitRatioParams {
-            tab_id: None,
+            workspace_id: None,
             pane_id: None,
             path: vec![],
             ratio: 0.72,
         });
 
         assert_eq!(response, Ok(EndpointReply::Done));
-        let splits = app.state.workspaces[0].tabs()[0]
+        let splits = app.state.workspaces[0]
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio - 0.72).abs() < f32::EPSILON);
-        assert_eq!(app.state.workspaces[0].tabs()[0].layout().focused(), root);
+        assert_eq!(app.state.workspaces[0].layout().focused(), root);
     }
 
     #[test]
@@ -122,14 +113,16 @@ mod tests {
         let mut app = app_with_workspace();
 
         let response = app.handle_layout_set_split_ratio(&LayoutSetSplitRatioParams {
-            tab_id: None,
+            workspace_id: None,
             pane_id: None,
             path: vec![],
             ratio: 0.72,
         });
 
         assert_eq!(
-            response.expect_err("a one-pane tab has no split").code,
+            response
+                .expect_err("a one-pane workspace has no split")
+                .code,
             ApiErrorCode::SplitNotFound
         );
     }

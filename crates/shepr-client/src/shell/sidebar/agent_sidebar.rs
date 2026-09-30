@@ -7,7 +7,7 @@ use ratatui::{
     text::Line,
     widgets::{Paragraph, Widget},
 };
-use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId, PublicTabId};
+use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId};
 
 use super::*;
 
@@ -208,18 +208,14 @@ struct AgentRowIndex<'a> {
     items: Vec<AgentRowIndexItem<'a>>,
     agents: Range<usize>,
     workspaces: Range<usize>,
-    tabs: Range<usize>,
     panes: Range<usize>,
-    tab_workspaces: Range<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AgentRowIndexKind {
     Agent,
     Workspace,
-    Tab,
     Pane,
-    TabWorkspace,
 }
 
 enum AgentRowIndexItem<'a> {
@@ -228,9 +224,7 @@ enum AgentRowIndexItem<'a> {
         order: usize,
     },
     Workspace(&'a ClientShellWorkspace),
-    Tab(&'a ClientShellTab),
     Pane(&'a ClientShellPane),
-    TabWorkspace(&'a str),
 }
 
 impl AgentRowIndexItem<'_> {
@@ -238,9 +232,7 @@ impl AgentRowIndexItem<'_> {
         match self {
             Self::Agent { .. } => AgentRowIndexKind::Agent,
             Self::Workspace(_) => AgentRowIndexKind::Workspace,
-            Self::Tab(_) => AgentRowIndexKind::Tab,
             Self::Pane(_) => AgentRowIndexKind::Pane,
-            Self::TabWorkspace(_) => AgentRowIndexKind::TabWorkspace,
         }
     }
 }
@@ -251,17 +243,12 @@ impl<'a> AgentRowIndex<'a> {
             .agents
             .len()
             .saturating_add(snapshot.workspaces.len())
-            .saturating_add(snapshot.tabs.len().saturating_mul(2))
             .saturating_add(snapshot.panes.len());
         let mut items = Vec::with_capacity(capacity);
         for (order, agent) in snapshot.agents.iter().enumerate() {
             items.push(AgentRowIndexItem::Agent { agent, order });
         }
         items.extend(snapshot.workspaces.iter().map(AgentRowIndexItem::Workspace));
-        for tab in &snapshot.tabs {
-            items.push(AgentRowIndexItem::Tab(tab));
-            items.push(AgentRowIndexItem::TabWorkspace(&tab.workspace_id));
-        }
         items.extend(snapshot.panes.iter().map(AgentRowIndexItem::Pane));
         items.sort_unstable_by(|left, right| {
             left.kind()
@@ -297,30 +284,19 @@ impl<'a> AgentRowIndex<'a> {
                     (AgentRowIndexItem::Workspace(left), AgentRowIndexItem::Workspace(right)) => {
                         left.workspace_id.cmp(&right.workspace_id)
                     }
-                    (AgentRowIndexItem::Tab(left), AgentRowIndexItem::Tab(right)) => {
-                        left.tab_id.cmp(&right.tab_id)
-                    }
                     (AgentRowIndexItem::Pane(left), AgentRowIndexItem::Pane(right)) => {
                         left.pane_id.cmp(&right.pane_id)
                     }
-                    (
-                        AgentRowIndexItem::TabWorkspace(left),
-                        AgentRowIndexItem::TabWorkspace(right),
-                    ) => left.cmp(right),
                     _ => std::cmp::Ordering::Equal,
                 })
         });
         let agents = Self::kind_range(&items, AgentRowIndexKind::Agent);
         let workspaces = Self::kind_range(&items, AgentRowIndexKind::Workspace);
-        let tabs = Self::kind_range(&items, AgentRowIndexKind::Tab);
         let panes = Self::kind_range(&items, AgentRowIndexKind::Pane);
-        let tab_workspaces = Self::kind_range(&items, AgentRowIndexKind::TabWorkspace);
         Self {
             agents,
             workspaces,
-            tabs,
             panes,
-            tab_workspaces,
             items,
         }
     }
@@ -347,20 +323,6 @@ impl<'a> AgentRowIndex<'a> {
         }
     }
 
-    fn tab(&self, tab_id: &PublicTabId) -> Option<&'a ClientShellTab> {
-        let items = &self.items[self.tabs.clone()];
-        let index = items
-            .binary_search_by(|item| match item {
-                AgentRowIndexItem::Tab(tab) => tab.tab_id.cmp(tab_id),
-                _ => std::cmp::Ordering::Equal,
-            })
-            .ok()?;
-        match items[index] {
-            AgentRowIndexItem::Tab(tab) => Some(tab),
-            _ => None,
-        }
-    }
-
     fn pane(&self, pane_id: &PublicPaneId) -> Option<&'a ClientShellPane> {
         let items = &self.items[self.panes.clone()];
         let index = items
@@ -375,19 +337,6 @@ impl<'a> AgentRowIndex<'a> {
         }
     }
 
-    fn tab_count(&self, workspace_id: &str) -> usize {
-        let items = &self.items[self.tab_workspaces.clone()];
-        let start = items.partition_point(|item| match item {
-            AgentRowIndexItem::TabWorkspace(candidate) => *candidate < workspace_id,
-            _ => false,
-        });
-        let end = items.partition_point(|item| match item {
-            AgentRowIndexItem::TabWorkspace(candidate) => *candidate <= workspace_id,
-            _ => false,
-        });
-        end - start
-    }
-
     fn agent_row(
         &self,
         agent: &'a ClientShellAgent,
@@ -395,12 +344,7 @@ impl<'a> AgentRowIndex<'a> {
         machine: Option<&str>,
     ) -> Option<AgentRow> {
         let workspace = self.workspace(&agent.workspace_id)?;
-        let tab = self.tab(&agent.tab_id);
         let pane = self.pane(&agent.pane_id);
-        let tab_count = self.tab_count(&agent.workspace_id);
-        let tab_label = tab
-            .filter(|tab| tab_count > 1 || tab.custom_label)
-            .map(|tab| tab.label.as_str());
         let agent_label = agent.agent.as_deref();
         let state_text = status_text(agent.agent_status);
         let canonical_agent = agent
@@ -412,7 +356,6 @@ impl<'a> AgentRowIndex<'a> {
             &AgentTokenContext {
                 machine,
                 workspace: &workspace.label,
-                tab: tab_label,
                 pane: pane.and_then(|pane| pane.label.as_deref()),
                 agent_label,
                 terminal_title: agent.terminal_title.as_deref(),

@@ -74,7 +74,7 @@ impl HeadlessServer {
 
     /// Runs one client-shell command for `client_id`: moves that client's own
     /// location for a focus command, runs the command in the app, and then
-    /// reconciles shell locations, the tab geometry and the pane focus reports
+    /// reconciles shell locations, the workspace geometry and the pane focus reports
     /// the command may have changed. Returns whether a render is needed, and
     /// the command's answer.
     pub(super) fn handle_client_shell_command(
@@ -93,10 +93,10 @@ impl HeadlessServer {
         }
         let geometry_changed = traits.claims_shell_geometry
             && if reconcile {
-                self.reapply_controlled_shell_tab_geometry(false)
+                self.reapply_controlled_shell_workspace_geometry(false)
             } else {
-                self.claim_shell_tab_geometry(client_id, false)
-                    || self.resize_shell_tabs_sized_for(client_id, false)
+                self.claim_shell_workspace_geometry(client_id, false)
+                    || self.resize_shell_workspaces_sized_for(client_id, false)
             };
         self.sync_pane_focus();
         (
@@ -136,19 +136,13 @@ impl HeadlessServer {
                 location.focus_workspace(workspace_id);
                 true
             }
-            EndpointCommand::TabFocus(target) => target
-                .tab_id
-                .parse()
-                .is_ok_and(|tab_id| self.focus_shell_client_on_tab(client_id, &tab_id)),
             EndpointCommand::PaneFocus(target) => self
                 .app
                 .parse_pane_id(&target.pane_id)
-                .and_then(|(workspace_index, pane_id)| {
-                    let tab_index = self.app.state.workspaces[workspace_index]
-                        .find_tab_index_for_pane(pane_id)?;
-                    self.app.public_tab_id(workspace_index, tab_index)
-                })
-                .is_some_and(|tab_id| self.focus_shell_client_on_tab(client_id, &tab_id)),
+                .and_then(|(workspace_index, _)| self.app.public_workspace_id(workspace_index))
+                .is_some_and(|workspace_id| {
+                    self.focus_shell_client_on_workspace(client_id, &workspace_id)
+                }),
             _ => false,
         }
     }
@@ -170,7 +164,7 @@ impl HeadlessServer {
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
 
-        // Command handlers read each tab's recorded layout area for
+        // Command handlers read each workspace's recorded layout area for
         // directional focus, resize steps and spawn sizes; the geometry paths
         // keep it current, so there is nothing to project first.
         let outcome = self.app.handle_endpoint_command_with_render(command);

@@ -32,10 +32,7 @@ pub use frame::*;
 pub use framing::*;
 pub use geometry::*;
 pub use identity::*;
-pub use ids::{
-    PublicChildId, PublicIdParseError, PublicPaneId, PublicTabId, decode_public_number,
-    encode_public_number,
-};
+pub use ids::{PublicIdParseError, PublicPaneId, decode_public_number, encode_public_number};
 pub use ids::{TerminalId, TerminalIdParseError, WorkspaceId, WorkspaceIdParseError};
 pub use input::*;
 pub use message::*;

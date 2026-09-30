@@ -24,7 +24,7 @@ fn state_with_workspaces(names: &[&str]) -> AppState {
 }
 
 fn refresh_test_view(state: &mut AppState, area: Rect) {
-    state.test_record_all_tab_areas(area);
+    state.test_record_all_workspace_areas(area);
 }
 
 fn capture_from_state(state: &AppState) -> SessionSnapshot {
@@ -66,8 +66,8 @@ fn capture_history_with_carry(
         .resolve(&snapshot, carry)
 }
 
-fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
-    match &tab.layout {
+fn root_split_ratio(workspace: &WorkspaceSnapshot) -> Option<f32> {
+    match &workspace.layout {
         LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
         LayoutSnapshot::Pane(_) => None,
     }
@@ -169,22 +169,16 @@ fn round_trip_full_workspace_snapshot() {
             identity_cwd: PathBuf::from("/home/can/Projects/shepr"),
             public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
             next_public_pane_number: 3,
-            public_tab_numbers: vec![1],
-            next_public_tab_number: 2,
-            tabs: vec![TabSnapshot {
-                custom_name: Some("api".to_string()),
-                layout: LayoutSnapshot::Split {
-                    direction: DirectionSnapshot::Horizontal,
-                    ratio: 0.5,
-                    first: Box::new(LayoutSnapshot::Pane(0)),
-                    second: Box::new(LayoutSnapshot::Pane(1)),
-                },
-                panes,
-                zoomed: false,
-                focused: Some(0),
-                root_pane: Some(0),
-            }],
-            active_tab: 0,
+            layout: LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(0)),
+                second: Box::new(LayoutSnapshot::Pane(1)),
+            },
+            panes,
+            zoomed: false,
+            focused: Some(0),
+            root_pane: Some(0),
         }],
         active: Some(0),
         selected: 0,
@@ -200,14 +194,13 @@ fn round_trip_full_workspace_snapshot() {
         restored.workspaces[0].custom_name.as_deref(),
         Some("pi-mono")
     );
-    assert_eq!(restored.workspaces[0].tabs.len(), 1);
-    assert_eq!(restored.workspaces[0].tabs[0].panes.len(), 2);
+    assert_eq!(restored.workspaces[0].panes.len(), 2);
     assert_eq!(
-        restored.workspaces[0].tabs[0].panes[&0].cwd,
+        restored.workspaces[0].panes[&0].cwd,
         PathBuf::from("/home/can/Projects/shepr")
     );
     assert_eq!(
-        restored.workspaces[0].tabs[0].panes[&1].label.as_deref(),
+        restored.workspaces[0].panes[&1].label.as_deref(),
         Some("website")
     );
 }
@@ -233,19 +226,13 @@ fn capture_contract_tracks_workspace_order_active_and_selected() {
 }
 
 #[test]
-fn capture_contract_tracks_workspace_and_tab_names_and_active_tab() {
+fn capture_contract_tracks_workspace_names() {
     let mut state = state_with_workspaces(&["one"]);
     state.workspaces[0].set_custom_name("renamed-workspace".into());
-    let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-    state.workspaces[0].switch_tab(second_tab);
-    state.workspaces[0].set_tab_custom_name(0, Some("main".into()));
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
     assert_eq!(workspace.custom_name.as_deref(), Some("renamed-workspace"));
-    assert_eq!(workspace.active_tab, second_tab);
-    assert_eq!(workspace.tabs[0].custom_name.as_deref(), Some("main"));
-    assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("logs"));
 }
 
 #[test]
@@ -266,69 +253,51 @@ fn capture_contract_tracks_workspace_closure() {
 #[test]
 fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
+    let root = state.workspaces[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].focus_pane_in_tab(0, second);
+    state.workspaces[0].focus_pane(second);
     state
         .apply_pane_zoom(0, second, crate::app::actions::PaneZoomCommand::Toggle)
         .expect("test precondition");
 
     let snapshot = capture_from_state(&state);
-    let tab = &snapshot.workspaces[0].tabs[0];
-    assert!(matches!(tab.layout, LayoutSnapshot::Split { .. }));
-    assert_eq!(tab.focused, Some(second.raw()));
-    assert_eq!(tab.root_pane, Some(root.raw()));
-    assert!(tab.zoomed);
-    assert_eq!(tab.panes.len(), 2);
+    let workspace = &snapshot.workspaces[0];
+    assert!(matches!(workspace.layout, LayoutSnapshot::Split { .. }));
+    assert_eq!(workspace.focused, Some(second.raw()));
+    assert_eq!(workspace.root_pane, Some(root.raw()));
+    assert!(workspace.zoomed);
+    assert_eq!(workspace.panes.len(), 2);
 }
 
 #[test]
 fn capture_contract_tracks_focus_navigation() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
+    let root = state.workspaces[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
 
     state.navigate_pane(NavDirection::Right);
 
     let snapshot = capture_from_state(&state);
-    assert_eq!(snapshot.workspaces[0].tabs[0].focused, Some(second.raw()));
-    assert_ne!(snapshot.workspaces[0].tabs[0].focused, Some(root.raw()));
+    assert_eq!(snapshot.workspaces[0].focused, Some(second.raw()));
+    assert_ne!(snapshot.workspaces[0].focused, Some(root.raw()));
 }
 
 #[test]
 fn capture_contract_tracks_resize_ratio_changes() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
+    let root = state.workspaces[0].root_pane();
     state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].focus_pane_in_tab(0, root);
+    state.workspaces[0].focus_pane(root);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let before = capture_from_state(&state);
 
     state.resize_pane(NavDirection::Right);
 
     let after = capture_from_state(&state);
-    let before_ratio = root_split_ratio(&before.workspaces[0].tabs[0]).expect("test precondition");
-    let after_ratio = root_split_ratio(&after.workspaces[0].tabs[0]).expect("test precondition");
+    let before_ratio = root_split_ratio(&before.workspaces[0]).expect("test precondition");
+    let after_ratio = root_split_ratio(&after.workspaces[0]).expect("test precondition");
     assert_ne!(before_ratio, after_ratio);
-}
-
-#[test]
-fn capture_contract_tracks_tab_closure() {
-    let mut state = state_with_workspaces(&["one"]);
-    let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-    state.switch_tab(second_tab);
-
-    assert!(matches!(
-        state.remove_active_tab(),
-        crate::app::actions::TabRemovalCommit::Removed(_)
-    ));
-
-    let snapshot = capture_from_state(&state);
-    let workspace = &snapshot.workspaces[0];
-    assert_eq!(workspace.tabs.len(), 1);
-    assert_eq!(workspace.active_tab, 0);
-    assert!(workspace.tabs[0].custom_name.is_none());
 }
 
 #[test]
@@ -343,10 +312,10 @@ fn capture_contract_tracks_pane_closure() {
     ));
 
     let snapshot = capture_from_state(&state);
-    let tab = &snapshot.workspaces[0].tabs[0];
-    assert_eq!(tab.panes.len(), 1);
-    assert!(matches!(tab.layout, LayoutSnapshot::Pane(_)));
-    assert!(!tab.zoomed);
+    let workspace = &snapshot.workspaces[0];
+    assert_eq!(workspace.panes.len(), 1);
+    assert!(matches!(workspace.layout, LayoutSnapshot::Pane(_)));
+    assert!(!workspace.zoomed);
 }
 
 #[test]
@@ -354,7 +323,7 @@ fn capture_contract_tracks_public_id_counters() {
     let mut state = state_with_workspaces(&["one"]);
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     let third = state.workspaces[0].test_split(Direction::Vertical);
-    let second_tab = state.workspaces[0].test_add_tab(None);
+    let fourth = state.workspaces[0].test_split(Direction::Horizontal);
 
     state.workspaces[0]
         .close_pane(second)
@@ -365,14 +334,12 @@ fn capture_contract_tracks_public_id_counters() {
     assert_eq!(
         workspace.public_pane_numbers,
         HashMap::from([
-            (state.workspaces[0].tabs()[0].root_pane().raw(), 1),
+            (state.workspaces[0].root_pane().raw(), 1),
             (third.raw(), 3),
-            (state.workspaces[0].tabs()[second_tab].root_pane().raw(), 4),
+            (fourth.raw(), 4),
         ])
     );
     assert_eq!(workspace.next_public_pane_number, 5);
-    assert_eq!(workspace.public_tab_numbers, vec![1, 2]);
-    assert_eq!(workspace.next_public_tab_number, 3);
 }
 
 #[tokio::test]
@@ -386,7 +353,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     state.workspaces[0].identity_cwd = old.clone();
     state.set_active_index(Some(0));
     state.ensure_test_terminals();
-    let pane_id = state.workspaces[0].tabs()[0].root_pane();
+    let pane_id = state.workspaces[0].root_pane();
     let terminal_id = state.workspaces[0]
         .terminal_id(pane_id)
         .expect("test precondition")
@@ -444,7 +411,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     runtimes.insert(terminal_id, runtime);
     let before = capture_from_state_with_runtimes(&state, &runtimes);
     assert_eq!(
-        before.workspaces[0].tabs[0]
+        before.workspaces[0]
             .panes
             .values()
             .next()
@@ -471,7 +438,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
     assert!(shepr_agent::detect::process_cwd(pid).is_none());
     let after = capture_from_state_with_runtimes(&state, &runtimes);
     assert_eq!(
-        after.workspaces[0].tabs[0]
+        after.workspaces[0]
             .panes
             .values()
             .next()
@@ -494,18 +461,18 @@ fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
     let mut state = state_with_workspaces(&["one"]);
     let pion_cwd = ScratchDir::new("snapshot-pion-cwd").to_path_buf();
     let shepr_cwd = ScratchDir::new("snapshot-shepr-cwd").to_path_buf();
-    let root = state.workspaces[0].tabs()[0].root_pane();
+    let root = state.workspaces[0].root_pane();
     state.workspaces[0].identity_cwd = pion_cwd.clone();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     state.ensure_test_terminals();
-    let root_terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
+    let root_terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
         .clone();
     state.terminals.insert(
         root_terminal_id.clone(),
         TerminalState::new(root_terminal_id.clone(), pion_cwd.clone()),
     );
-    let second_terminal_id = state.workspaces[0].tabs()[0].panes()[&second]
+    let second_terminal_id = state.workspaces[0].panes()[&second]
         .attached_terminal_id
         .clone();
     state.terminals.insert(
@@ -515,17 +482,16 @@ fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
-    let tab = &workspace.tabs[0];
     assert_eq!(workspace.identity_cwd, pion_cwd);
-    assert_eq!(tab.panes[&root.raw()].cwd, pion_cwd);
-    assert_eq!(tab.panes[&second.raw()].cwd, shepr_cwd);
+    assert_eq!(workspace.panes[&root.raw()].cwd, pion_cwd);
+    assert_eq!(workspace.panes[&second.raw()].cwd, shepr_cwd);
 }
 
 #[tokio::test]
 async fn capture_contract_tracks_pane_history_from_runtime() {
     let state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
-    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
+    let root = state.workspaces[0].root_pane();
+    let terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
@@ -545,7 +511,7 @@ async fn capture_contract_tracks_pane_history_from_runtime() {
     assert!(!encoded.contains("\"history\""));
 
     let history_snapshot = capture_history_from_state_with_runtimes(&state, &terminal_runtimes);
-    let history = &history_snapshot.workspaces[0].tabs[0].panes[&root.raw()];
+    let history = &history_snapshot.workspaces[0].panes[&root.raw()];
 
     assert!(history.ansi.contains("alpha"));
     assert!(history.ansi.contains("gamma"));
@@ -554,12 +520,12 @@ async fn capture_contract_tracks_pane_history_from_runtime() {
 #[tokio::test]
 async fn capture_contract_tracks_history_for_each_pane() {
     let mut state = state_with_workspaces(&["one"]);
-    let first = state.workspaces[0].tabs()[0].root_pane();
+    let first = state.workspaces[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
-    let first_terminal_id = state.workspaces[0].tabs()[0].panes()[&first]
+    let first_terminal_id = state.workspaces[0].panes()[&first]
         .attached_terminal_id
         .clone();
-    let second_terminal_id = state.workspaces[0].tabs()[0].panes()[&second]
+    let second_terminal_id = state.workspaces[0].panes()[&second]
         .attached_terminal_id
         .clone();
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
@@ -588,9 +554,9 @@ async fn capture_contract_tracks_history_for_each_pane() {
     assert!(!encoded.contains("second-pane-history"));
 
     let history_snapshot = capture_history_from_state_with_runtimes(&state, &terminal_runtimes);
-    let tab = &history_snapshot.workspaces[0].tabs[0];
-    let first_history = &tab.panes[&first.raw()];
-    let second_history = &tab.panes[&second.raw()];
+    let workspace = &history_snapshot.workspaces[0];
+    let first_history = &workspace.panes[&first.raw()];
+    let second_history = &workspace.panes[&second.raw()];
 
     assert!(first_history.ansi.contains("first-pane-history"));
     assert!(second_history.ansi.contains("second-pane-history"));
@@ -600,7 +566,7 @@ fn root_history(
     history: &SessionHistorySnapshot,
     root: shepr_core::layout::PaneId,
 ) -> Option<&str> {
-    history.workspaces[0].tabs[0]
+    history.workspaces[0]
         .panes
         .get(&root.raw())
         .map(|pane| pane.ansi.as_str())
@@ -613,8 +579,8 @@ fn root_history(
 #[tokio::test]
 async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
     let state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
-    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
+    let root = state.workspaces[0].root_pane();
+    let terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let mut terminal_runtimes = PaneRuntimeRegistry::new();
@@ -653,10 +619,7 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
     // Closing the pane drops its fallback.
     let other = state_with_workspaces(&["other"]);
     let saved = capture_history_with_carry(&other, &PaneRuntimeRegistry::new(), &mut carry);
-    assert_eq!(
-        root_history(&saved, other.workspaces[0].tabs()[0].root_pane()),
-        None
-    );
+    assert_eq!(root_history(&saved, other.workspaces[0].root_pane()), None);
     for (_, runtime) in terminal_runtimes.drain() {
         drop(runtime);
     }
@@ -669,8 +632,8 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
 #[tokio::test]
 async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     let state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
-    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
+    let root = state.workspaces[0].root_pane();
+    let terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let mut carry = HistoryCarry::default();
@@ -723,9 +686,9 @@ fn capture_contract_tracks_hook_authority_agent_session() {
     let mut state = state_with_workspaces(&["one"]);
     let session_dir = ScratchDir::new("pi-session");
     let session_path = session_dir.join("pi-session.jsonl").display().to_string();
-    let root = state.workspaces[0].tabs()[0].root_pane();
+    let root = state.workspaces[0].root_pane();
     state.ensure_test_terminals();
-    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
+    let terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
         .clone();
     let terminal = state
@@ -753,7 +716,7 @@ fn capture_contract_tracks_hook_authority_agent_session() {
     );
 
     let snapshot = capture_from_state(&state);
-    let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+    let agent_session = snapshot.workspaces[0].panes[&root.raw()]
         .agent_session
         .as_ref()
         .expect("agent session should be captured");
@@ -770,9 +733,9 @@ fn capture_contract_tracks_hook_authority_agent_session() {
 #[test]
 fn capture_contract_preserves_restored_agent_session() {
     let mut state = state_with_workspaces(&["one"]);
-    let root = state.workspaces[0].tabs()[0].root_pane();
+    let root = state.workspaces[0].root_pane();
     state.ensure_test_terminals();
-    let terminal_id = state.workspaces[0].tabs()[0].panes()[&root]
+    let terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
         .clone();
     state
@@ -787,7 +750,7 @@ fn capture_contract_preserves_restored_agent_session() {
         });
 
     let snapshot = capture_from_state(&state);
-    let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+    let agent_session = snapshot.workspaces[0].panes[&root.raw()]
         .agent_session
         .as_ref()
         .expect("persisted agent session should be captured");
@@ -807,13 +770,6 @@ fn other_or_missing_version_is_rejected() {
     assert!(parse_snapshot(json).is_err());
     let json = r#"{"version":999,"workspaces":[],"active":null,"selected":0}"#;
     assert!(parse_snapshot(json).is_err());
-}
-
-#[test]
-fn active_tab_default_is_zero() {
-    let json = r#"{"custom_name":"test","identity_cwd":"/nonexistent/fixture-cwd","tabs":[]}"#;
-    let ws: WorkspaceSnapshot = serde_json::from_str(json).expect("test precondition");
-    assert_eq!(ws.active_tab, 0);
 }
 
 #[test]
@@ -860,22 +816,16 @@ fn snapshot_parsing_preserves_missing_cwd() {
             identity_cwd: existing_cwd,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
-            public_tab_numbers: Vec::new(),
-            next_public_tab_number: 0,
-            tabs: vec![TabSnapshot {
-                custom_name: None,
-                layout: LayoutSnapshot::Split {
-                    direction: DirectionSnapshot::Horizontal,
-                    ratio: 0.5,
-                    first: Box::new(LayoutSnapshot::Pane(0)),
-                    second: Box::new(LayoutSnapshot::Pane(1)),
-                },
-                panes,
-                zoomed: false,
-                focused: Some(0),
-                root_pane: Some(0),
-            }],
-            active_tab: 0,
+            layout: LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(0)),
+                second: Box::new(LayoutSnapshot::Pane(1)),
+            },
+            panes,
+            zoomed: false,
+            focused: Some(0),
+            root_pane: Some(0),
         }],
         active: Some(0),
         selected: 0,
@@ -884,5 +834,5 @@ fn snapshot_parsing_preserves_missing_cwd() {
     let json = serde_json::to_string(&snap).expect("test precondition");
     let restored = parse_snapshot(&json).expect("test precondition");
     assert_eq!(restored.workspaces.len(), 1);
-    assert_eq!(restored.workspaces[0].tabs[0].panes[&0].cwd, missing_cwd);
+    assert_eq!(restored.workspaces[0].panes[&0].cwd, missing_cwd);
 }

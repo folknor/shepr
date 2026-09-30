@@ -40,18 +40,6 @@ impl App {
             return Self::render_demand_if(changed);
         }
 
-        if let AppEvent::TabBarCommandFinished {
-            segment_index,
-            result,
-        } = ev
-        {
-            let changed = self.handle_tab_bar_command_finished(segment_index, result);
-            if changed {
-                self.state.mark_shell_projection_dirty();
-            }
-            return Self::render_demand_if(changed);
-        }
-
         if let AppEvent::PaneDied { pane_id, .. } = &ev
             && self.state.publish_pane_process_exit_if_agent(*pane_id)
         {
@@ -124,20 +112,16 @@ impl App {
 
     pub(crate) fn sync_full_lifecycle_authority_detection_pauses(&self) {
         for workspace in &self.state.workspaces {
-            for tab in workspace.tabs() {
-                for pane in tab.panes().values() {
-                    let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
-                    else {
-                        continue;
-                    };
-                    let Some(runtime) = self.terminal_runtimes.get(&pane.attached_terminal_id)
-                    else {
-                        continue;
-                    };
-                    runtime.set_full_lifecycle_authority_active(
-                        terminal.full_lifecycle_hook_authority_active(),
-                    );
-                }
+            for pane in workspace.panes().values() {
+                let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id) else {
+                    continue;
+                };
+                let Some(runtime) = self.terminal_runtimes.get(&pane.attached_terminal_id) else {
+                    continue;
+                };
+                runtime.set_full_lifecycle_authority_active(
+                    terminal.full_lifecycle_hook_authority_active(),
+                );
             }
         }
     }

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentStatus, PublicPaneId, PublicTabId, WorkspaceId};
+use crate::{AgentStatus, PublicPaneId, WorkspaceId};
 
 /// Updates whether the requesting client shell receives and controls pane presentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,11 +29,6 @@ pub struct WorkspaceTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTarget {
     pub pane_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabTarget {
-    pub tab_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,35 +84,7 @@ pub struct WorkspaceInfo {
     pub label: String,
     pub focused: bool,
     pub pane_count: usize,
-    pub tab_count: usize,
-    pub active_tab_id: PublicTabId,
     pub agent_status: AgentStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabCreateParams {
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub focus: bool,
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabRenameParams {
-    pub tab_id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TabMoveParams {
-    pub tab_id: String,
-    pub insert_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -194,7 +161,7 @@ pub enum PaneZoomMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
     #[serde(default)]
-    pub tab_id: Option<String>,
+    pub workspace_id: Option<String>,
     #[serde(default)]
     pub pane_id: Option<String>,
     pub path: Vec<bool>,
@@ -320,11 +287,6 @@ pub enum EndpointCommand {
     WorkspaceCheckoutRoot(WorkspaceCheckoutRootParams),
     WorkspaceMove(WorkspaceMoveParams),
     WorkspaceClose(WorkspaceCloseParams),
-    TabCreate(TabCreateParams),
-    TabFocus(TabTarget),
-    TabRename(TabRenameParams),
-    TabMove(TabMoveParams),
-    TabClose(TabTarget),
     PaneSplit(PaneSplitParams),
     PaneSwap(PaneSwapParams),
     PaneZoom(PaneZoomParams),
@@ -351,11 +313,11 @@ pub struct EndpointCommandTraits {
     /// The command can change what a shell shows, so the server renders after
     /// it.
     pub mutates_ui: bool,
-    /// The command creates or removes a workspace, tab or pane, so every shell
+    /// The command creates or removes a workspace or pane, so every shell
     /// client's location is reconciled after it.
     pub changes_topology: bool,
-    /// The requesting shell claims the geometry of the tab the command acted
-    /// on.
+    /// The requesting shell claims the geometry of the workspace the command
+    /// acted on.
     pub claims_shell_geometry: bool,
 }
 
@@ -369,11 +331,6 @@ impl EndpointCommand {
             Self::WorkspaceCheckoutRoot(_) => ("workspace.checkout_root", false, false, false),
             Self::WorkspaceMove(_) => ("workspace.move", true, false, true),
             Self::WorkspaceClose(_) => ("workspace.close", true, true, true),
-            Self::TabCreate(_) => ("tab.create", true, true, true),
-            Self::TabFocus(_) => ("tab.focus", true, false, true),
-            Self::TabRename(_) => ("tab.rename", true, false, true),
-            Self::TabMove(_) => ("tab.move", true, false, true),
-            Self::TabClose(_) => ("tab.close", true, true, true),
             Self::PaneSplit(_) => ("pane.split", true, true, true),
             Self::PaneSwap(_) => ("pane.swap", true, false, true),
             Self::PaneZoom(_) => ("pane.zoom", true, false, true),
@@ -405,7 +362,7 @@ impl EndpointCommand {
 }
 
 /// The successful result of an [`EndpointCommand`], carrying what the client
-/// shell reads. A command the client shell only acknowledges (a created tab, a
+/// shell reads. A command the client shell only acknowledges (a moved workspace, a
 /// swapped pane, a new split ratio) answers `Done`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndpointReply {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::{
     BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig,
-    TabBarRightEntryConfig, ThemeConfig,
+    ThemeConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -206,7 +206,7 @@ pub struct TerminalConfig {
     pub default_shell: String,
     /// Start new interactive pane shells as login shells. Default: false.
     pub login_shell: bool,
-    /// CWD policy for new interactive panes, tabs, and workspaces.
+    /// CWD policy for new interactive panes and workspaces.
     pub new_cwd: NewTerminalCwdConfig,
 }
 
@@ -343,14 +343,6 @@ macro_rules! define_keys_config {
 
 crate::keybinding_table!(define_keys_config);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TabBarPositionConfig {
-    #[default]
-    Top,
-    Bottom,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PaneBordersConfig {
@@ -401,9 +393,7 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Ask for a tab name before creating a new tab. Default: true.
-    pub prompt_new_tab_name: bool,
-    /// Ask for a workspace name before interactive creation. Default: false.
+    /// Ask for a workspace name before interactive creation. Default: true.
     pub prompt_new_workspace_name: bool,
     /// Draw borders around split panes. auto draws them only for split panes,
     /// always also frames a lone pane (only while pane_outer_borders is
@@ -418,14 +408,6 @@ pub struct UiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-    /// Hide the tab row when the workspace has one tab. Default: false.
-    pub hide_tab_bar_when_single_tab: bool,
-    /// Desktop tab row placement. Default: top.
-    pub tab_bar_position: TabBarPositionConfig,
-    /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
-    pub tab_bar_right: Vec<TabBarRightEntryConfig>,
-    /// Text inserted between visible right-side tab bar entries. Default: one space.
-    pub tab_bar_right_separator: String,
     /// Format for the outer terminal window title. Empty leaves the title alone.
     /// Default: "{hostname}: {workspace}".
     pub window_title: String,
@@ -586,17 +568,12 @@ impl Default for UiConfig {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
-            prompt_new_tab_name: true,
-            prompt_new_workspace_name: false,
+            prompt_new_workspace_name: true,
             pane_borders: PaneBordersConfig::Auto,
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
-            hide_tab_bar_when_single_tab: false,
-            tab_bar_position: TabBarPositionConfig::Top,
-            tab_bar_right: Vec::new(),
-            tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             status_indicators: StatusIndicatorStyle::Dots,
@@ -768,13 +745,6 @@ status_indicators = "symbols"
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
-        assert!(!default_config.ui.hide_tab_bar_when_single_tab);
-        assert_eq!(
-            default_config.ui.tab_bar_position,
-            TabBarPositionConfig::Top
-        );
-        assert!(default_config.ui.tab_bar_right.is_empty());
-        assert_eq!(default_config.ui.tab_bar_right_separator, " ");
 
         let toml = r#"
 [ui]
@@ -783,16 +753,6 @@ pane_outer_borders = false
 pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
-hide_tab_bar_when_single_tab = true
-tab_bar_position = "bottom"
-tab_bar_right = [
-  { type = "zoom" },
-  { type = "hostname" },
-  { type = "datetime", format = "%H:%M" },
-  { type = "text", text = "prod" },
-  { type = "command", command = "status.sh", interval_seconds = 10, timeout_seconds = 3 },
-]
-tab_bar_right_separator = " · "
 "#;
         let config: Config = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.ui.pane_borders, PaneBordersConfig::Always);
@@ -800,40 +760,19 @@ tab_bar_right_separator = " · "
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
-        assert!(config.ui.hide_tab_bar_when_single_tab);
-        assert_eq!(config.ui.tab_bar_position, TabBarPositionConfig::Bottom);
-        assert_eq!(config.ui.tab_bar_right.len(), 5);
-        assert!(matches!(
-            config.ui.tab_bar_right[1],
-            TabBarRightEntryConfig::Hostname
-        ));
-        assert_eq!(config.ui.tab_bar_right_separator, " · ");
     }
 
     #[test]
-    fn prompt_new_tab_name_defaults_on_and_parses() {
+    fn prompt_new_workspace_name_defaults_on_and_parses() {
         let default_config = Config::default();
-        assert!(default_config.ui.prompt_new_tab_name);
+        assert!(default_config.ui.prompt_new_workspace_name);
 
         let toml = r#"
 [ui]
-prompt_new_tab_name = false
+prompt_new_workspace_name = false
 "#;
         let config: Config = toml::from_str(toml).expect("test precondition");
-        assert!(!config.ui.prompt_new_tab_name);
-    }
-
-    #[test]
-    fn prompt_new_workspace_name_defaults_off_and_parses() {
-        let default_config = Config::default();
-        assert!(!default_config.ui.prompt_new_workspace_name);
-
-        let toml = r#"
-[ui]
-prompt_new_workspace_name = true
-"#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
-        assert!(config.ui.prompt_new_workspace_name);
+        assert!(!config.ui.prompt_new_workspace_name);
     }
 
     #[test]

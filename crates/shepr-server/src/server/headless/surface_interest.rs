@@ -78,29 +78,29 @@ impl HeadlessServer {
 
         if active {
             self.promote_client_to_foreground(client_id);
-            // A surface that already sizes some tab settles it now, starting
-            // any resume the geometry was holding back.
-            self.resize_shell_tabs_sized_for(client_id, true);
-            let focused_viewer_already_owns_tab = self
-                .shell_tab_id_for_client(client_id)
-                .is_some_and(|tab_id| {
+            // A surface that already sizes some workspace settles it now,
+            // starting any resume the geometry was holding back.
+            self.resize_shell_workspaces_sized_for(client_id, true);
+            let focused_viewer_already_owns_workspace = self
+                .shell_target_for_client(client_id)
+                .is_some_and(|workspace_id| {
                     self.clients.iter().any(|(&other_id, client)| {
                         other_id != client_id
                             && client.is_active_shell_client()
                             && client.shell_state().outer_terminal_focus == Some(true)
-                            && self.shell_tab_id_for_client(other_id).as_deref()
-                                == Some(tab_id.as_str())
+                            && self.shell_target_for_client(other_id).as_ref()
+                                == Some(&workspace_id)
                     })
                 });
-            if !focused_viewer_already_owns_tab {
-                self.claim_shell_tab_geometry(client_id, true);
+            if !focused_viewer_already_owns_workspace {
+                self.claim_shell_workspace_geometry(client_id, true);
             }
         } else {
             self.clients.remove_geometry_controllers_for(client_id);
             if self.clients.foreground_client_id() == Some(client_id) {
                 self.promote_latest_remaining_client();
             }
-            self.reapply_controlled_shell_tab_geometry(true);
+            self.reapply_controlled_shell_workspace_geometry(true);
         }
         // An inactive surface holds no pane focus; an active one does again.
         self.sync_pane_focus();

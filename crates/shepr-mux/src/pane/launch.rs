@@ -65,8 +65,7 @@ fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
 
 /// Scrubbed: the outer terminal's or multiplexer's host handles, which never
 /// name this pane; an outer agent session's markers, since a new pane is not a
-/// child agent of the process that started the server; and the focus values
-/// handed only to tab-bar status commands.
+/// child agent of the process that started the server.
 ///
 /// Allowed: the terminal identity and `SHEPR_BIN_PATH`, which the terminal and
 /// launch layers below replace for every pane; the inherited shell inputs
@@ -89,11 +88,7 @@ fn pane_child_env_policy(variable: ChildEnv) -> PaneEnvPolicy {
         | ChildEnv::ClaudeCodeSessionId
         | ChildEnv::ClaudeCodeMessagingToken
         | ChildEnv::CodexThreadId
-        | ChildEnv::Ompcode
-        | ChildEnv::SheprActiveWorkspaceId
-        | ChildEnv::SheprActiveTabId
-        | ChildEnv::SheprActivePaneId
-        | ChildEnv::SheprActivePaneCwd => PaneEnvPolicy::Scrubbed,
+        | ChildEnv::Ompcode => PaneEnvPolicy::Scrubbed,
         ChildEnv::Term
         | ChildEnv::Colorterm
         | ChildEnv::TermProgramVersion

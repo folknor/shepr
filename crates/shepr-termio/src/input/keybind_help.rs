@@ -70,7 +70,7 @@ pub fn keybind_help_groups(
             vec![entry(shepr_config::format_key_combo(prefix), "prefix mode")],
         ),
         ("navigation", Vec::new()),
-        ("workspaces / tabs", Vec::new()),
+        ("workspaces", Vec::new()),
         ("panes", Vec::new()),
     ];
 
@@ -205,8 +205,11 @@ mod tests {
     fn groups() -> Vec<KeybindHelpGroup> {
         vec![
             (
-                "workspaces / tabs",
-                vec![entry("w", "workspace navigation"), entry("c", "new tab")],
+                "workspaces",
+                vec![
+                    entry("w", "workspace navigation"),
+                    entry("n", "new workspace"),
+                ],
             ),
             (
                 "panes",
@@ -266,27 +269,19 @@ mod tests {
                 ],
             ),
             (
-                "workspaces / tabs",
+                "workspaces",
                 vec![
                     ("prefix+w", "workspace navigation"),
                     ("prefix+g", "session navigator"),
                     ("prefix+shift+n", "new workspace"),
                     ("prefix+shift+w", "rename workspace"),
                     ("prefix+shift+d", "close workspace"),
-                    ("unset", "previous workspace"),
-                    ("unset", "next workspace"),
-                    ("unset", "switch workspace 1-9"),
+                    ("prefix+p", "previous workspace"),
+                    ("prefix+n", "next workspace"),
+                    ("prefix+1..9", "switch workspace 1-9"),
                     ("unset", "previous agent"),
                     ("unset", "next agent"),
                     ("unset", "focus agent 1-9"),
-                    ("prefix+c", "new tab"),
-                    ("prefix+shift+t", "rename tab"),
-                    ("prefix+p", "previous tab"),
-                    ("prefix+n", "next tab"),
-                    ("unset", "move tab left"),
-                    ("unset", "move tab right"),
-                    ("prefix+1..9", "switch tab 1-9"),
-                    ("prefix+shift+x", "close tab"),
                 ],
             ),
             (

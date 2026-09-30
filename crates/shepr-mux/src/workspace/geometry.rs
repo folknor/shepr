@@ -3,7 +3,7 @@
 //! A child reads its window size at startup (argv panes and agents often only
 //! once), so a new pane must be spawned at the size view computation will give
 //! it, not at some other pane's size. The view computes its pane rects through
-//! the same `PaneGeometry::tab_panes` (BSP split, chrome, the zoomed case), and
+//! the same `PaneGeometry::visible_panes` (BSP split, chrome, the zoomed case), and
 //! the same `pane_inner_rect` and scrollbar gutter.
 
 use ratatui::{
@@ -192,7 +192,7 @@ pub fn apply_pane_chrome(
 /// Everything besides the layout tree that decides a pane's content size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneGeometry {
-    /// Area the tab's panes are laid out in.
+    /// Area the workspace's panes are laid out in.
     pub area: Rect,
     pub pane_borders: shepr_config::PaneBordersConfig,
     pub pane_gaps: bool,
@@ -220,16 +220,17 @@ pub fn terminal_content_rect(
 }
 
 impl PaneGeometry {
-    /// The visible panes of a tab with their chrome applied: outer rect and
+    /// The visible panes of a workspace with their chrome applied: outer rect and
     /// borders. `inner_rect` and `scrollbar_rect` are not settled here;
     /// callers derive the content rect from `rect` and `borders`.
     ///
-    /// A zoomed tab shows only its focused pane, filling `area`. Every edge of
-    /// that pane is an outer edge, so it is framed on all sides exactly when
-    /// borders show for the tab's real pane count and outer borders are on.
+    /// A zoomed workspace shows only its focused pane, filling `area`. Every
+    /// edge of that pane is an outer edge, so it is framed on all sides exactly
+    /// when borders show for the workspace's real pane count and outer borders
+    /// are on.
     /// View computation, background resizing and spawn sizing all go through
     /// here, so the zoomed rule exists once.
-    pub fn tab_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChromeInfo> {
+    pub fn visible_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChromeInfo> {
         if !zoomed {
             return apply_pane_chrome(
                 &layout.panes(layout_rect(self.area)),
@@ -266,7 +267,7 @@ impl PaneGeometry {
         pane_id: PaneId,
     ) -> Option<(u16, u16)> {
         let info = self
-            .tab_panes(layout, zoomed)
+            .visible_panes(layout, zoomed)
             .into_iter()
             .find(|info| info.id == pane_id)?;
         let pane_inner = pane_inner_rect(info.rect, info.borders);
@@ -274,7 +275,7 @@ impl PaneGeometry {
         Some((content.height.max(1), content.width.max(1)))
     }
 
-    /// `(rows, cols)` for the only pane of a new tab or workspace.
+    /// `(rows, cols)` for the only pane of a new workspace.
     pub fn sole_pane_size(&self) -> (u16, u16) {
         let (layout, pane_id) = TileLayout::new();
         self.pane_size(&layout, false, pane_id)
@@ -351,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn zoomed_tab_shows_only_the_focused_pane_over_the_whole_area() {
+    fn zoomed_workspace_shows_only_the_focused_pane_over_the_whole_area() {
         let geometry = geometry(shepr_config::PaneBordersConfig::Always, false);
         let (mut layout, root) = TileLayout::new();
         let right = layout
@@ -359,7 +360,7 @@ mod tests {
             .expect("test precondition");
         layout.focus_pane(right);
 
-        let panes = geometry.tab_panes(&layout, true);
+        let panes = geometry.visible_panes(&layout, true);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].id, right);
         assert_eq!(panes[0].rect, geometry.area);
@@ -380,28 +381,31 @@ mod tests {
         // A lone pane is never zoomed in practice, but the rule must still
         // agree with the tiled chrome: `Always` frames it, `Auto` does not.
         assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Always, true).tab_panes(&layout, true)[0]
+            chrome(shepr_config::PaneBordersConfig::Always, true).visible_panes(&layout, true)[0]
                 .borders,
             Borders::ALL
         );
         assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Auto, true).tab_panes(&layout, true)[0].borders,
+            chrome(shepr_config::PaneBordersConfig::Auto, true).visible_panes(&layout, true)[0]
+                .borders,
             Borders::NONE
         );
         layout
             .split_pane(root, Direction::Vertical, 0.5)
             .expect("test precondition");
         assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Auto, true).tab_panes(&layout, true)[0].borders,
+            chrome(shepr_config::PaneBordersConfig::Auto, true).visible_panes(&layout, true)[0]
+                .borders,
             Borders::ALL
         );
         assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Always, false).tab_panes(&layout, true)[0]
+            chrome(shepr_config::PaneBordersConfig::Always, false).visible_panes(&layout, true)[0]
                 .borders,
             Borders::NONE
         );
         assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Off, true).tab_panes(&layout, true)[0].borders,
+            chrome(shepr_config::PaneBordersConfig::Off, true).visible_panes(&layout, true)[0]
+                .borders,
             Borders::NONE
         );
     }

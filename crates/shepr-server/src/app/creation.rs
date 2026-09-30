@@ -60,11 +60,8 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<PathBuf> {
         let workspace = self.state.workspaces.get(ws_idx)?;
-        let tab = workspace
-            .tabs()
-            .get(workspace.find_tab_index_for_pane(pane_id)?)?;
         launch_cwd_for_terminal(
-            tab.terminal_id(pane_id)?,
+            workspace.terminal_id(pane_id)?,
             &self.state.terminals,
             &self.terminal_runtimes,
         )
@@ -84,15 +81,12 @@ impl App {
         )
     }
 
-    pub(crate) fn resolved_new_workspace_cwd_from_tab(
-        &self,
-        ws_idx: usize,
-        tab_idx: Option<usize>,
-    ) -> PathBuf {
-        let follow_cwd = tab_idx
-            .and_then(|tab_idx| self.state.workspaces.get(ws_idx)?.tabs().get(tab_idx))
-            .map(|tab| tab.layout().focused())
-            .and_then(|pane_id| self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id))
+    /// Where a new workspace starts when spawned from workspace `ws_idx`: the
+    /// focused pane's launch cwd, else the workspace's identity cwd, resolved
+    /// through the new-terminal cwd policy.
+    pub(crate) fn resolved_new_workspace_cwd(&self, ws_idx: usize) -> PathBuf {
+        let follow_cwd = self
+            .focused_pane_cwd_in_workspace(ws_idx)
             .or_else(|| self.seed_cwd_from_workspace(ws_idx));
         self.resolve_new_terminal_cwd(follow_cwd)
     }
@@ -143,8 +137,9 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<shepr_protocol::command::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        ws.pane_state(pane_id)?;
-        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        if !ws.contains_pane(pane_id) {
+            return None;
+        }
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
@@ -154,9 +149,7 @@ impl App {
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                 viewport_rows: metrics.viewport_rows as u64,
             });
-        let focused = self.state.active_index() == Some(ws_idx)
-            && ws.active_tab_index() == tab_idx
-            && ws.focused_pane_id() == pane_id;
+        let focused = self.state.active_index() == Some(ws_idx) && ws.focused_pane_id() == pane_id;
         Some(shepr_protocol::command::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             focused,
@@ -175,9 +168,9 @@ impl App {
         Some((runtime, self.public_workspace_id(ws_idx)?))
     }
 
-    /// `None` when `index` names no workspace, like `tab_info` and
-    /// `pane_info`: every caller either resolved the index a moment ago or
-    /// carries it across an event, and a stale index must not panic the server.
+    /// `None` when `index` names no workspace, like `pane_info`: every caller
+    /// either resolved the index a moment ago or carries it across an event,
+    /// and a stale index must not panic the server.
     pub(super) fn workspace_info(
         &self,
         index: usize,
@@ -190,8 +183,6 @@ impl App {
             label: ws.display_name(),
             focused: self.state.active_index() == Some(index),
             pane_count: ws.pane_count(),
-            tab_count: ws.tabs().len(),
-            active_tab_id: self.public_tab_id(index, ws.active_tab_index())?,
             agent_status: pane_agent_status(agg_state),
         })
     }

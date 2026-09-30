@@ -781,18 +781,17 @@ mod tests {
             .collect()
     }
 
-    /// A restore that drops a saved tab leaves that tab only in the session
-    /// file, so the first save copies the file to `session-backups` before
+    /// A restore that drops a saved workspace leaves that workspace only in the
+    /// session file, so the first save copies the file to `session-backups` before
     /// replacing it. The copy is made once, not on every save.
     #[test]
-    fn a_restore_that_drops_a_tab_backs_up_the_saved_session_before_the_first_save() {
+    fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, TabSnapshot,
-            WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
         };
 
-        let scratch = crate::test_support::ScratchDir::new("dropped-tab-backup");
+        let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
             shepr_config::Config::default(),
@@ -810,40 +809,36 @@ mod tests {
             label: None,
             agent_session: None,
         };
-        let tab = |name: &str, layout: LayoutSnapshot, ids: &[u32]| TabSnapshot {
-            custom_name: Some(name.into()),
-            layout,
-            panes: ids.iter().map(|id| (*id, pane())).collect(),
-            zoomed: false,
-            focused: None,
-            root_pane: None,
-        };
-        let snapshot = SessionSnapshot {
-            version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
-            host_theme: Default::default(),
-            workspaces: vec![WorkspaceSnapshot {
-                id: Some("w1".into()),
-                custom_name: Some("mixed".into()),
+        let workspace =
+            |id: &str, name: &str, layout: LayoutSnapshot, ids: &[u32]| WorkspaceSnapshot {
+                id: Some(id.into()),
+                custom_name: Some(name.into()),
                 identity_cwd: scratch.path().to_path_buf(),
                 public_pane_numbers: std::collections::HashMap::new(),
                 next_public_pane_number: 0,
-                public_tab_numbers: Vec::new(),
-                next_public_tab_number: 0,
-                tabs: vec![
-                    tab("healthy", LayoutSnapshot::Pane(1), &[1]),
-                    tab(
-                        "invalid ratio",
-                        LayoutSnapshot::Split {
-                            direction: DirectionSnapshot::Horizontal,
-                            ratio: 1.0,
-                            first: Box::new(LayoutSnapshot::Pane(2)),
-                            second: Box::new(LayoutSnapshot::Pane(3)),
-                        },
-                        &[2, 3],
-                    ),
-                ],
-                active_tab: 0,
-            }],
+                layout,
+                panes: ids.iter().map(|id| (*id, pane())).collect(),
+                zoomed: false,
+                focused: None,
+                root_pane: None,
+            };
+        let snapshot = SessionSnapshot {
+            version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
+            workspaces: vec![
+                workspace("w1", "healthy", LayoutSnapshot::Pane(1), &[1]),
+                workspace(
+                    "w2",
+                    "invalid ratio",
+                    LayoutSnapshot::Split {
+                        direction: DirectionSnapshot::Horizontal,
+                        ratio: 1.0,
+                        first: Box::new(LayoutSnapshot::Pane(2)),
+                        second: Box::new(LayoutSnapshot::Pane(3)),
+                    },
+                    &[2, 3],
+                ),
+            ],
             active: Some(0),
             selected: 0,
         };
@@ -861,23 +856,14 @@ mod tests {
             api_rx,
             super::super::tests::test_clock(),
         );
-        let tab_names = |workspaces: Vec<Vec<Option<String>>>| workspaces.concat();
         assert_eq!(
-            tab_names(
-                app.state
-                    .workspaces
-                    .iter()
-                    .map(|workspace| {
-                        workspace
-                            .tabs()
-                            .iter()
-                            .map(|tab| tab.custom_name().map(str::to_owned))
-                            .collect()
-                    })
-                    .collect()
-            ),
+            app.state
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.custom_name.clone())
+                .collect::<Vec<_>>(),
             vec![Some("healthy".to_owned())],
-            "the saved session loaded and only the invalid tab was dropped"
+            "the saved session loaded and only the invalid workspace was dropped"
         );
 
         assert!(app.save_session_now(), "first save");
@@ -888,17 +874,11 @@ mod tests {
         )
         .expect("parse the new session");
         assert_eq!(
-            tab_names(
-                saved
-                    .workspaces
-                    .iter()
-                    .map(|workspace| workspace
-                        .tabs
-                        .iter()
-                        .map(|tab| tab.custom_name.clone())
-                        .collect())
-                    .collect()
-            ),
+            saved
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.custom_name.clone())
+                .collect::<Vec<_>>(),
             vec![Some("healthy".to_owned())]
         );
 

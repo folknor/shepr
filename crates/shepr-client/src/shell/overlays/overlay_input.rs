@@ -267,51 +267,6 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn open_new_tab_overlay(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(workspace_id) = snapshot.focused_workspace_id.clone() else {
-            return;
-        };
-        let default_name = (snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == workspace_id)
-            .count()
-            + 1)
-        .to_string();
-        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-            title: "new tab",
-            input: TextEditor::new(&default_name, true),
-            target: ClientRenameTarget::NewTab {
-                workspace_id,
-                default_name,
-            },
-        }));
-    }
-
-    pub(super) fn open_rename_tab_overlay(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(tab_id) = snapshot.focused_tab_id.as_deref() else {
-            return;
-        };
-        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id) else {
-            return;
-        };
-        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-            title: "rename tab",
-            input: TextEditor::new(&tab.label, false),
-            target: ClientRenameTarget::Tab {
-                tab_id: tab.tab_id.clone(),
-                auto_name: !tab.custom_label,
-                original_name: tab.label.clone(),
-            },
-        }));
-    }
-
     pub(super) fn open_rename_pane_overlay(&mut self) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
@@ -748,31 +703,6 @@ impl ClientShellState {
                     },
                 )
             }),
-            ClientRenameTarget::NewTab {
-                workspace_id,
-                default_name,
-            } => Some(shepr_protocol::command::EndpointCommand::TabCreate(
-                shepr_protocol::command::TabCreateParams {
-                    workspace_id: Some(workspace_id.into()),
-                    cwd: None,
-                    focus: true,
-                    label: (!trimmed.is_empty() && trimmed != default_name)
-                        .then(|| trimmed.to_owned()),
-                    env: Default::default(),
-                },
-            )),
-            ClientRenameTarget::Tab {
-                tab_id,
-                auto_name,
-                original_name,
-            } => (!(trimmed.is_empty() || auto_name && trimmed == original_name)).then(|| {
-                shepr_protocol::command::EndpointCommand::TabRename(
-                    shepr_protocol::command::TabRenameParams {
-                        tab_id: tab_id.to_string(),
-                        label: trimmed.to_owned(),
-                    },
-                )
-            }),
             ClientRenameTarget::Pane { pane_id } => {
                 Some(shepr_protocol::command::EndpointCommand::PaneRename(
                     shepr_protocol::command::PaneRenameParams {
@@ -788,96 +718,31 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn request_tab_close(
-        &mut self,
-        tab_id: &shepr_protocol::PublicTabId,
-        outcome: &mut ClientShellInput,
-    ) {
-        let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
-            let target = snapshot.tabs.iter().find(|tab| &tab.tab_id == tab_id)?;
-            (self.config.confirm_close
-                && !snapshot
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.workspace_id == target.workspace_id && &tab.tab_id != tab_id))
-            .then(|| target.workspace_id.clone())
-        });
-        if let Some(workspace_id) = workspace_id
-            && self.open_close_confirmation(workspace_id, Some(tab_id.clone()))
-        {
-            outcome.repaint = true;
+    pub(super) fn accept_close_confirmation(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.take() else {
             return;
-        }
+        };
+        outcome.repaint = true;
         self.push_endpoint_command(
-            shepr_protocol::command::EndpointCommand::TabClose(
-                shepr_protocol::command::TabTarget {
-                    tab_id: tab_id.to_string(),
+            shepr_protocol::command::EndpointCommand::WorkspaceClose(
+                shepr_protocol::command::WorkspaceCloseParams {
+                    workspace_id: confirm.workspace_id.into(),
                 },
             ),
             outcome,
         );
     }
 
-    pub(super) fn accept_close_confirmation(&mut self, outcome: &mut ClientShellInput) {
-        let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.take() else {
-            return;
-        };
-        outcome.repaint = true;
-        let command = if let Some(target) = confirm.tab_target {
-            if target.workspace.endpoint_id != self.active_endpoint_id
-                || !self.navigation_target_valid(&target.workspace)
-                || !self.snapshot.as_deref().is_some_and(|snapshot| {
-                    snapshot.tabs.iter().any(|tab| {
-                        tab.tab_id == target.tab_id
-                            && tab.workspace_id == target.workspace.workspace_id
-                    })
-                })
-            {
-                self.receive_endpoint_unavailable(
-                    "Close target changed; try closing the tab again".into(),
-                );
-                return;
-            }
-            shepr_protocol::command::EndpointCommand::TabClose(shepr_protocol::command::TabTarget {
-                tab_id: target.tab_id.to_string(),
-            })
-        } else {
-            shepr_protocol::command::EndpointCommand::WorkspaceClose(
-                shepr_protocol::command::WorkspaceCloseParams {
-                    workspace_id: confirm.workspace_id.into(),
-                },
-            )
-        };
-        self.push_endpoint_command(command, outcome);
-    }
-
     pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: shepr_protocol::WorkspaceId) {
-        self.open_close_confirmation(workspace_id, None);
-    }
-
-    fn open_close_confirmation(
-        &mut self,
-        workspace_id: shepr_protocol::WorkspaceId,
-        tab_id: Option<shepr_protocol::PublicTabId>,
-    ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
-            return false;
+            return;
         };
         let Some(workspace) = snapshot
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == workspace_id)
         else {
-            return false;
-        };
-        let tab_target = if let Some(tab_id) = tab_id {
-            let Some(workspace) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
-            else {
-                return false;
-            };
-            Some(ClientTabCloseConfirmation { tab_id, workspace })
-        } else {
-            None
+            return;
         };
         let pane_count = snapshot
             .panes
@@ -892,12 +757,10 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
-                tab_target,
                 title: "Close workspace?".to_owned(),
                 detail: format!("{} \u{2014} {scope}", workspace.label),
                 return_to_navigate: self.mode == ClientShellMode::Navigate,
             },
         ));
-        true
     }
 }

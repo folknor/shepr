@@ -45,12 +45,7 @@ impl App {
         let cwd = explicit_cwd.unwrap_or_else(|| {
             source_context.map_or_else(
                 || self.resolve_new_terminal_cwd(None),
-                |context| {
-                    self.resolved_new_workspace_cwd_from_tab(
-                        context.workspace_index,
-                        Some(context.tab_index),
-                    )
-                },
+                |context| self.resolved_new_workspace_cwd(context.workspace_index),
             )
         });
         let extra_env = super::env::normalize_launch_env(params.env)?;
@@ -155,10 +150,10 @@ mod tests {
     use shepr_mux::workspace::Workspace;
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
-    // surface. Splits and tabs already do; a new workspace must follow the
-    // focused pane too, not the source workspace's first-tab root pane.
+    // surface. Splits already do; a new workspace must follow the focused
+    // pane too, not the source workspace's root pane.
     #[tokio::test]
-    async fn workspace_create_follows_focused_pane_cwd_not_first_tab_root() {
+    async fn workspace_create_follows_focused_pane_cwd_not_root_pane() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
 
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -170,15 +165,18 @@ mod tests {
         app.state.set_selected_index(Some(0));
         app.state.ensure_test_terminals();
 
-        // Second tab becomes the focused pane, away from tab 1's root pane.
-        app.handle_tab_create(shepr_protocol::command::TabCreateParams {
+        // The split pane becomes the focused pane, away from the root pane.
+        app.handle_pane_split(shepr_protocol::command::PaneSplitParams {
             workspace_id: None,
+            target_pane_id: None,
+            direction: shepr_protocol::command::SplitDirection::Right,
+            ratio: None,
             cwd: None,
             focus: true,
-            label: None,
+            right_click: Default::default(),
             env: Default::default(),
         })
-        .expect("the tab is created");
+        .expect("the pane is split");
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
 
@@ -187,7 +185,7 @@ mod tests {
         let ws = &app.state.workspaces[0];
         let root_cwd = ws.identity_cwd.clone();
         let focused_pane = ws.focused_pane_id();
-        assert_ne!(focused_pane, ws.tabs()[0].root_pane());
+        assert_ne!(focused_pane, ws.root_pane());
         let terminal_id = ws
             .terminal_id(focused_pane)
             .cloned()
@@ -333,11 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn api_workspace_close_removes_the_workspace_with_all_its_tabs() {
+    fn api_workspace_close_removes_the_workspace_with_all_its_panes() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
         let mut closing = Workspace::test_new("closing");
-        closing.test_add_tab(Some("second"));
+        closing.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![closing, Workspace::test_new("survivor")];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));

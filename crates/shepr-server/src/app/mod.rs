@@ -16,7 +16,6 @@ mod ids;
 mod runtime;
 mod session;
 pub mod state;
-mod tab_bar_status;
 mod terminal_titles;
 mod window_title;
 
@@ -97,8 +96,7 @@ pub struct App {
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_saver: session::SessionSaver,
-    tab_bar_status: tab_bar_status::TabBarStatus,
-    /// Host name resolved once for the title and tab bar.
+    /// Host name resolved once for the window title.
     hostname: String,
     /// Parsed `ui.window_title`.
     window_title_template: Option<shepr_config::WindowTitleTemplate>,
@@ -148,7 +146,7 @@ impl App {
             .map_or_default(|snapshot| snapshot.host_theme.to_theme());
         // Whether the first save must copy the on-disk session into
         // `session-backups` before replacing it: the file either could not be
-        // loaded, or restore dropped saved tabs that are still only in it.
+        // loaded, or restore dropped saved workspaces that are still only in it.
         let mut protect_unloaded = policy.persists_session() && snapshot.is_none();
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
             let history = config
@@ -156,7 +154,7 @@ impl App {
                 .pane_history
                 .then(|| shepr_mux::persist::load_history(&lease))
                 .flatten();
-            // No view exists yet, so each tab is laid out in the headless
+            // No view exists yet, so each workspace is laid out in the headless
             // area (what the server lays out against until a client
             // attaches), and each restored pane starts at its own size in
             // it. The saved host theme supplies colours until a live client
@@ -182,14 +180,14 @@ impl App {
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
             pane_history_carry = restored.history_carry;
-            if restored.dropped_tabs > 0 {
+            if restored.dropped_workspaces > 0 {
                 protect_unloaded = true;
                 warn!(
-                    dropped_tabs = restored.dropped_tabs,
-                    "session restore dropped saved tabs; the saved session is backed up to session-backups before the first save"
+                    dropped_workspaces = restored.dropped_workspaces,
+                    "session restore dropped saved workspaces; the saved session is backed up to session-backups before the first save"
                 );
             }
-            let outcome = if restored.dropped_tabs > 0 {
+            let outcome = if restored.dropped_workspaces > 0 {
                 "partial"
             } else if restored.workspaces.is_empty() {
                 "empty"
@@ -254,16 +252,13 @@ impl App {
             terminals: std::collections::HashMap::new(),
             workspaces,
             active: active_id,
-            active_tab_id: None,
             previous_pane_focus: None,
             selected: selected_id,
             mode,
             should_quit: false,
-            tab_areas: std::collections::HashMap::new(),
+            workspace_areas: std::collections::HashMap::new(),
             settings,
             next_agent_state_change_seq: 0,
-            tab_bar_right: Vec::new(),
-            tab_bar_right_separator: String::new(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             host_terminal_theme: restored_host_theme,
@@ -271,7 +266,6 @@ impl App {
             shell_projection_revision: 0,
         };
 
-        state.refresh_active_tab_id();
         state.terminals = restored_terminals;
         // Restored workspaces get their Git identity (label, branch, space)
         // from the first background Git refresh, not from a synchronous walk
@@ -293,7 +287,6 @@ impl App {
             ),
             next_agent_resume_at: None,
             session_saver: session::SessionSaver::new(persister, save_finished),
-            tab_bar_status: tab_bar_status::TabBarStatus::default(),
             hostname,
             window_title_template: None,
             persist_pane_history: config.experimental().pane_history,
@@ -307,10 +300,6 @@ impl App {
             full_redraw_pending: false,
             paths,
         };
-        app.configure_tab_bar_status(
-            &config.ui().tab_bar_right,
-            &config.ui().tab_bar_right_separator,
-        );
         app.configure_validated_window_title(config.ui().window_title.as_ref());
         app
     }
@@ -322,7 +311,7 @@ impl App {
     }
 
     /// The channels a newly spawned pane runtime reports through. Every call
-    /// that spawns a pane (workspace, tab or split creation) takes these;
+    /// that spawns a pane (workspace or split creation) takes these;
     /// the workspace tree does not keep them.
     pub(crate) fn pane_spawn_handles(&self) -> shepr_mux::workspace::PaneSpawnHandles {
         shepr_mux::workspace::PaneSpawnHandles {
@@ -497,28 +486,6 @@ mod tests {
 
         assert!(!changed);
         assert!(!app.git_refresh.git_refresh_in_flight);
-    }
-
-    #[test]
-    fn tab_bar_command_events_render_only_when_visible_output_changes() {
-        let mut app = test_app();
-        app.configure_tab_bar_status_config(
-            &[shepr_config::TabBarRightEntryConfig::Command {
-                command: "status".into(),
-                interval_seconds: 5,
-                timeout_seconds: 2,
-            }],
-            " ",
-        );
-        let event = |segment_index, output: Option<&str>| AppEvent::TabBarCommandFinished {
-            segment_index,
-            result: Ok(output.map(str::to_string)),
-        };
-
-        assert!(!app.handle_internal_event_with_render_impact(event(0, None)));
-        assert!(app.handle_internal_event_with_render_impact(event(0, Some("ready"))));
-        assert!(!app.handle_internal_event_with_render_impact(event(0, Some("ready"))));
-        assert!(!app.handle_internal_event_with_render_impact(event(7, Some("unknown"))));
     }
 
     #[test]
@@ -698,64 +665,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_info_number_uses_stable_public_tab_number() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("api-tab-public-number");
-        let removed_tab = workspace.test_add_tab(None);
-        let survivor_tab = workspace.test_add_tab(None);
-        let survivor_pane = workspace.tabs()[survivor_tab].root_pane();
-        assert!(workspace.close_tab(removed_tab).is_some());
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.set_active_index(Some(0));
-        app.state.set_selected_index(Some(0));
-        let survivor_idx = app.state.workspaces[0]
-            .find_tab_index_for_pane(survivor_pane)
-            .expect("test precondition");
-
-        let tab = app.tab_info(0, survivor_idx).expect("test precondition");
-
-        assert_eq!(tab.tab_id, format!("{}:t3", app.state.workspaces[0].id));
-        assert_eq!(tab.number, 3);
-        assert_eq!(tab.label, "2");
-    }
-
-    #[test]
-    fn bare_tab_position_is_rejected_even_when_public_numbers_differ() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("legacy-tab-id");
-        let removed_tab = workspace.test_add_tab(None);
-        workspace.test_add_tab(None);
-        let public_four_tab = workspace.test_add_tab(None);
-        let fourth_position_tab = workspace.test_add_tab(None);
-        let public_four_pane = workspace.tabs()[public_four_tab].root_pane();
-        let fourth_position_pane = workspace.tabs()[fourth_position_tab].root_pane();
-        assert!(workspace.close_tab(removed_tab).is_some());
-        app.state.workspaces = vec![workspace];
-
-        let public_four_idx = app.state.workspaces[0]
-            .find_tab_index_for_pane(public_four_pane)
-            .expect("test precondition");
-        let fourth_position_idx = app.state.workspaces[0]
-            .find_tab_index_for_pane(fourth_position_pane)
-            .expect("test precondition");
-
-        assert_eq!(app.state.workspaces[0].tabs()[public_four_idx].number(), 4);
-        assert_eq!(
-            app.state.workspaces[0].tabs()[fourth_position_idx].number(),
-            5
-        );
-        assert_eq!(
-            app.parse_tab_id(&format!("{}:t4", app.state.workspaces[0].id)),
-            Some((0, public_four_idx))
-        );
-        assert_eq!(
-            app.parse_tab_id(&format!("{}:4", app.state.workspaces[0].id)),
-            None
-        );
-    }
-
-    #[test]
     fn workspace_creation_in_navigate_mode_uses_selected_workspace_seed_cwd() {
         let mut app = test_app();
         let mut first = Workspace::test_new("shepr");
@@ -777,7 +686,6 @@ mod tests {
             .expect("test precondition");
 
         assert_eq!(context.workspace_index, 1);
-        assert_eq!(context.tab_index, 0);
         assert_eq!(seed_cwd, std::path::PathBuf::from("/shepr-test/pion"));
     }
 
@@ -826,17 +734,17 @@ mod tests {
         env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
-        let mut workspace = Workspace::test_new("api-pane-split-focus-background-tab");
-        let background_tab = workspace.test_add_tab(Some("worker"));
-        workspace.switch_tab(0);
-        app.state.workspaces = vec![workspace];
+        app.state.workspaces = vec![
+            Workspace::test_new("api-pane-split-focused"),
+            Workspace::test_new("api-pane-split-background"),
+        ];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let target_pane = app.state.workspaces[0].tabs()[background_tab].root_pane();
+        let target_pane = app.state.workspaces[1].root_pane();
         let target_pane_id = app
-            .pane_info(0, target_pane)
+            .pane_info(1, target_pane)
             .expect("test precondition")
             .pane_id;
 
@@ -857,13 +765,11 @@ mod tests {
         let (reply_workspace, reply_pane) = app
             .parse_pane_id(pane.pane_id.as_str())
             .expect("test precondition");
-        assert_eq!(
-            app.state.workspaces[reply_workspace].find_tab_index_for_pane(reply_pane),
-            Some(background_tab)
-        );
+        assert_eq!(reply_workspace, 1);
+        assert!(app.state.workspaces[reply_workspace].contains_pane(reply_pane));
         assert!(pane.focused);
-        assert_eq!(app.state.active_index(), Some(0));
-        assert_eq!(app.state.workspaces[0].active_tab_index(), background_tab);
+        assert_eq!(app.state.active_index(), Some(1));
+        assert_eq!(app.state.workspaces[1].focused_pane_id(), reply_pane);
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
@@ -878,7 +784,7 @@ mod tests {
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-ratio");
-        let target_pane = workspace.tabs()[0].root_pane();
+        let target_pane = workspace.root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
@@ -903,7 +809,7 @@ mod tests {
             panic!("expected pane info");
         };
 
-        let splits = app.state.workspaces[0].tabs()[0]
+        let splits = app.state.workspaces[0]
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
@@ -931,7 +837,7 @@ mod tests {
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-current");
-        let target_pane = workspace.tabs()[0].root_pane();
+        let target_pane = workspace.root_pane();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
@@ -950,11 +856,8 @@ mod tests {
         }));
 
         assert!(matches!(result, Ok(EndpointReply::PaneInfo { .. })));
-        assert_eq!(app.state.workspaces[0].tabs()[0].layout().pane_count(), 2);
-        assert_eq!(
-            app.state.workspaces[0].tabs()[0].layout().focused(),
-            target_pane
-        );
+        assert_eq!(app.state.workspaces[0].pane_count(), 2);
+        assert_eq!(app.state.workspaces[0].layout().focused(), target_pane);
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
@@ -963,17 +866,16 @@ mod tests {
     }
 
     #[test]
-    fn pane_close_request_closes_only_the_target_tab_when_other_tabs_exist() {
+    fn pane_close_request_closes_only_the_target_pane_when_others_remain() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("api-pane-close");
-        let second_tab = workspace.test_add_tab(Some("logs"));
-        workspace.switch_tab(second_tab);
+        let target_pane = workspace.root_pane();
+        workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let target_pane = app.state.workspaces[0].tabs()[second_tab].root_pane();
         let target_pane_id = app
             .pane_info(0, target_pane)
             .expect("test precondition")
@@ -985,7 +887,7 @@ mod tests {
 
         assert!(matches!(result, Ok(EndpointReply::Done)));
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs().len(), 1);
+        assert_eq!(app.state.workspaces[0].pane_count(), 1);
         assert_eq!(app.state.workspaces[0].display_name(), "api-pane-close");
     }
 
@@ -998,7 +900,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.set_selected_index(Some(0));
 
-        let target_pane = app.state.workspaces[0].tabs()[0].root_pane();
+        let target_pane = app.state.workspaces[0].root_pane();
         let target_pane_id = app
             .pane_info(0, target_pane)
             .expect("test precondition")
@@ -1152,7 +1054,7 @@ mod tests {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let mut workspace = Workspace::test_new("preserved");
-        let first_pane = workspace.tabs()[0].root_pane();
+        let first_pane = workspace.root_pane();
         let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
@@ -1177,7 +1079,7 @@ mod tests {
         let snapshot =
             shepr_mux::persist::load(&lease).expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
-        assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
+        assert_eq!(snapshot.workspaces[0].panes.len(), 2);
     }
 
     #[test]
@@ -1185,7 +1087,7 @@ mod tests {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let workspace = Workspace::test_new("closed");
-        let pane_id = workspace.tabs()[0].root_pane();
+        let pane_id = workspace.root_pane();
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
@@ -1233,7 +1135,7 @@ mod tests {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let workspace = Workspace::test_new("broken");
-        let pane_id = workspace.tabs()[0].root_pane();
+        let pane_id = workspace.root_pane();
         app.state.workspaces = vec![workspace];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
@@ -1259,7 +1161,7 @@ mod tests {
             let mut app = test_app();
             app.policy = AppPolicy::Production;
             let workspace = Workspace::test_new("old");
-            let pane_id = workspace.tabs()[0].root_pane();
+            let pane_id = workspace.root_pane();
             app.state.workspaces = vec![workspace];
             app.state.set_active_index(Some(0));
             app.state.ensure_test_terminals();
@@ -1274,7 +1176,7 @@ mod tests {
             app.state.mark_session_dirty();
             if another_interrupted_exit {
                 app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-                    pane_id: app.state.workspaces[0].tabs()[0].root_pane(),
+                    pane_id: app.state.workspaces[0].root_pane(),
                     exit_reason: shepr_platform::ChildExitReason::Interrupted,
                 });
             }
@@ -1293,7 +1195,7 @@ mod tests {
     async fn full_internal_event_queue_eventually_applies_working_to_idle_transition() {
         let mut app = test_app();
         let ws = Workspace::test_new("test");
-        let pane_id = ws.tabs()[0].root_pane();
+        let pane_id = ws.root_pane();
 
         app.state.workspaces = vec![ws];
         app.state.ensure_test_terminals();

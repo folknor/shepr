@@ -73,7 +73,7 @@ pub(crate) struct ParsedThemeColors {
 pub struct Palette {
     /// Primary accent (highlight, active borders).
     pub accent: Color,
-    /// Background for the tab bar, floating panels, overlays, and modals.
+    /// Background for floating panels, overlays, and modals.
     pub panel_bg: Color,
     /// Optional desktop sidebar background. Reset preserves the terminal background.
     pub sidebar_bg: Color,

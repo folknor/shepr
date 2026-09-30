@@ -107,7 +107,7 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
 }
 
 #[test]
-fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
+fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -147,12 +147,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
     ));
     let mut replacement = snapshot();
     replacement.revision = shepr_protocol::ProjectionRevision::new(2);
-    replacement
-        .tab_bar_right
-        .push(shepr_protocol::ClientShellTabStatusSegment {
-            text: "updated".into(),
-            accent: false,
-        });
+    replacement.workspaces[0].label = "updated".into();
     let mut replacement_surface = surface();
     replacement_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     replacement_surface.splits.push(PaneSurfaceSplit {
@@ -189,7 +184,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
     assert!(matches!(
         &request.command,
         EndpointCommand::LayoutSetSplitRatio(params)
-            if params.tab_id.as_deref() == Some("w1:t1")
+            if params.workspace_id.as_deref() == Some("w1")
                 && params.path == vec![false, true]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
     ));
@@ -205,16 +200,10 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
 }
 
 #[test]
-fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
+fn disabled_mouse_chrome_removes_split_drag_hits() {
     let mut config = Config::default();
     config.ui.mouse_capture = false;
-    let mut projected = snapshot();
-    let mut second_tab = projected.tabs[0].clone();
-    second_tab.tab_id = test_tab_id("w1:t2");
-    second_tab.number = 2;
-    second_tab.label = "2".into();
-    second_tab.focused = false;
-    projected.tabs.push(second_tab);
+    let projected = snapshot();
     let mut pane_surface = surface();
     pane_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
@@ -238,21 +227,6 @@ fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("mouse-disabled shell");
     assert!(state.hits.pane_splits.is_empty());
-    let first_tab = state.hits.tabs[0].0;
-    let wheel = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: first_tab.x,
-        row: first_tab.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(matches!(
-        &wheel.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(
-                &request.command,
-                EndpointCommand::TabFocus(target) if target.tab_id == "w1:t2"
-            )
-    ));
 }
 
 #[test]
@@ -1116,187 +1090,19 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
 }
 
 #[test]
-fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
-    let mut projected = snapshot();
-    for index in 2..=3 {
-        let mut tab = projected.tabs[0].clone();
-        tab.tab_id =
-            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), index);
-        tab.number = index;
-        tab.label = index.to_string();
-        tab.focused = false;
-        projected.tabs.push(tab);
-    }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
-    state.compose(106, 20).expect("three tabs");
-    let first = state.hits.tabs[0].0;
-    let third = state.hits.tabs[2].0;
-
-    let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: first.x + 1,
-        row: first.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(down.actions.is_empty());
-    let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: third.right().saturating_sub(1),
-        row: third.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(drag.repaint);
-    assert!(matches!(
-        state.chrome_drag,
-        Some(ClientChromeDrag::Tab {
-            ref tab_id,
-            insert_index: Some(3),
-            ..
-        }) if tab_id == "w1:t1"
-    ));
-    let frame = state.compose(106, 20).expect("tab drop indicator");
-    assert!(
-        frame
-            .cells
-            .iter()
-            .take(frame.width as usize)
-            .any(|cell| cell.symbol == "│")
-    );
-
-    let release =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: third.right().saturating_sub(1),
-            row: third.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
-        panic!("tab drag should use endpoint API");
-    };
-    assert!(matches!(
-        &request.command,
-        EndpointCommand::TabMove(params)
-            if params.tab_id == "w1:t1" && params.insert_index == 3
-    ));
-
-    state.compose(106, 20).expect("tabs after drag");
-    let second = state.hits.tabs[1].0;
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: second.x + 1,
-        row: second.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: second.x + 1,
-        row: second.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(matches!(
-        &click.actions[0],
-        ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.command, EndpointCommand::TabFocus(target) if target.tab_id == "w1:t2")
-    ));
-}
-
-#[test]
-fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
-    let mut projected = snapshot();
-    for index in 2..=3 {
-        let mut tab = projected.tabs[0].clone();
-        tab.tab_id =
-            shepr_protocol::PublicTabId::new(&crate::tests::test_workspace_id("w1"), index);
-        tab.number = index;
-        tab.label = index.to_string();
-        tab.focused = false;
-        projected.tabs.push(tab);
-    }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
-    state.compose(106, 20).expect("three tabs");
-    let first = state.hits.tabs[0].0;
-    let third = state.hits.tabs[2].0;
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: first.x + 1,
-        row: first.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: third.x,
-        row: third.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: third.x,
-        row: third.y + 1,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(matches!(
-        state.chrome_drag,
-        Some(ClientChromeDrag::Tab {
-            insert_index: None,
-            ..
-        })
-    ));
-    let release =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: third.x,
-            row: third.y + 1,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    assert!(release.actions.is_empty());
-}
-
-#[test]
-fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
-    state.compose(106, 20).expect("tab bar");
-    let tab = state.hits.tabs[0].0;
-
-    let outcome =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::ScrollDown,
-            column: tab.x,
-            row: tab.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    assert!(matches!(
-        &outcome.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(
-                &request.command,
-                EndpointCommand::TabFocus(target) if target.tab_id == "w1:t1"
-            )
-    ));
-    assert_eq!(state.tab_scroll, 0);
-    state.compose(106, 20).expect("tab bar after wheel");
-    assert!(state.hits.tabs.iter().any(|(_, tab_id)| tab_id == "w1:t1"));
-}
-
-#[test]
 fn context_menu_keyboard_and_outside_click_are_client_owned() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
-    let tab = state.hits.tabs[0].0;
+    let workspace = state.hits.workspaces[0].rect;
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
-        column: tab.x + 1,
-        row: tab.y,
+        column: workspace.x + 1,
+        row: workspace.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    state.compose(106, 20).expect("tab context menu");
+    state.compose(106, 20).expect("workspace context menu");
     let moved = state.handle_input_bytes(b"\x1b[B");
     assert!(moved.repaint);
     assert!(matches!(

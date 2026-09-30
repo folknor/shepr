@@ -76,7 +76,7 @@ impl From<shepr_core::layout::Direction> for PaneSurfaceSplitDirection {
     }
 }
 
-/// One server-rendered active-tab surface without sidebar, tab bar, or overlays.
+/// One server-rendered workspace surface without sidebar or overlays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfaceFrame {
     /// Endpoint process identity that produced this surface.

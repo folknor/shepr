@@ -1,8 +1,8 @@
 # shepr
 
 A personal, Linux-only fork of [herdr](https://github.com/herdrdev/herdr): a
-terminal multiplexer for AI coding agents. Workspaces, tabs and panes run in a
-headless server; the TUI is a client. An agent sidebar shows every agent's
+terminal multiplexer for AI coding agents. Workspaces and panes run in a
+headless server; a workspace is one pane layout (there are no tabs); the TUI is a client. An agent sidebar shows every agent's
 state (idle, working, blocked) across all panes, including panes on
 other hosts reached over SSH.
 
@@ -23,7 +23,7 @@ Kept:
   host never has more than one `shepr` installed)
 - Terminal core: `alacritty_terminal` for emulation, a small libc PTY layer
   (`crates/shepr-pty/src/`), PTY hosting
-- Workspaces, tabs, panes, layout, the tab bar, the agent sidebar
+- Workspaces, panes, layout, the agent sidebar
 - Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
   compiled into the binary
 - Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
@@ -34,8 +34,8 @@ Kept:
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)
 - Mouse selection, copy mode, keybinding help, window title templating
-- The JSON API over the server socket. The TUI does not act on workspaces,
-  tabs or panes through it: it sends typed client-socket commands
+- The JSON API over the server socket. The TUI does not act on workspaces
+  or panes through it: it sends typed client-socket commands
   (`shepr_protocol::command::EndpointCommand`), none of which is an API
   method. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
@@ -53,7 +53,7 @@ Nor are local detection manifest overrides and their reload: a detection
 change ships as a new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
-the subcommands are `status`, `server` and `detect`. Workspaces, tabs and panes are managed from the TUI only; there
+the subcommands are `status`, `server` and `detect`. Workspaces and panes are managed from the TUI only; there
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the text the detector evaluates for a pane, and
 `shepr detect explain <pane>` says which rule decided its state.
@@ -205,17 +205,17 @@ directory.
   `PaneRuntime` (held by `App`, outside `AppState`)
   owns the PTY, its tasks and the state shared with them. `PaneState` is only
   the pane's link to its terminal plus per-pane input flags.
-- **Render is pure.** `compute_tab_surface_for()` in
-  `crates/shepr-server/src/ui/tab_surface.rs` reads `AppState` by shared
-  reference and returns one tab laid out for one client's surface; pane
+- **Render is pure.** `compute_surface_for()` in
+  `crates/shepr-server/src/ui/surface.rs` reads `AppState` by shared
+  reference and returns one workspace laid out for one client's surface; pane
   runtimes are resized by explicit geometry paths (the ones taking a
   `PaneResizer`), and surface drawing takes shared references and only draws.
 - **Presentation is per client.** Each connection on the server keeps its
   own surface size, outer focus, location and window title; nothing projects
   one client's view into `AppState`. What panes have one of is decided from
   all the views in one place each: PTY size by the PTY size rule
-  (`tab_geometry_source` in `crates/shepr-server/src/server/headless/client_views.rs`,
-  which records each tab's applied area in `AppState`), pane focus reports by
+  (`workspace_geometry_source` in `crates/shepr-server/src/server/headless/client_views.rs`,
+  which records each workspace's applied area in `AppState`), pane focus reports by
   `sync_pane_focus`, and the host theme by the foreground client (the one
   last active).
 - **No god objects.** `AppState` lives in `crates/shepr-server/src/app/state.rs`;

@@ -1,10 +1,10 @@
 use super::*;
-use crate::tests::{test_pane_id, test_tab_id, test_workspace_id};
+use crate::tests::{test_pane_id, test_workspace_id};
 use crossterm::event::MouseEvent;
 use shepr_protocol::AgentStatus;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{
-    ClientShellAgent, ClientShellPane, ClientShellTab, PaneSurfacePane, PaneSurfaceSplit,
+    ClientShellAgent, ClientShellPane, PaneSurfacePane, PaneSurfaceSplit,
     PaneSurfaceSplitDirection, SurfaceRect,
 };
 use shepr_test_fixtures::*;
@@ -19,13 +19,9 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         )
         .expect("test config encodes"),
         focused_workspace_id: Some(test_workspace_id("w1")),
-        focused_tab_id: Some(test_tab_id("w1:t1")),
         focused_pane_id: Some(test_pane_id("w1:p1")),
-        tab_bar_right: Vec::new(),
-        tab_bar_right_separator: " ".into(),
         workspaces: vec![ClientShellWorkspace {
             workspace_id: test_workspace_id("w1"),
-            active_tab_id: test_tab_id("w1:t1"),
             new_workspace_cwd: "/repo".into(),
             number: 1,
             label: "client-shell".into(),
@@ -35,20 +31,9 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             focused: true,
             agent_status: AgentStatus::Idle,
         }],
-        tabs: vec![ClientShellTab {
-            tab_id: test_tab_id("w1:t1"),
-            workspace_id: test_workspace_id("w1"),
-            number: 1,
-            label: "1".into(),
-            custom_label: false,
-            zoomed: false,
-            focused: true,
-            agent_status: AgentStatus::Idle,
-        }],
         panes: vec![ClientShellPane {
             pane_id: test_pane_id("w1:p1"),
             workspace_id: test_workspace_id("w1"),
-            tab_id: test_tab_id("w1:t1"),
             label: None,
             cwd: Some("/repo".into()),
             foreground_cwd: Some("/repo".into()),
@@ -178,7 +163,6 @@ fn copy_search_result(
 }
 
 mod chrome_context;
-mod close_tab;
 mod copy;
 mod endpoint_requests;
 mod endpoints;

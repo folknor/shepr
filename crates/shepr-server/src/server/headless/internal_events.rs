@@ -30,7 +30,7 @@ impl HeadlessServer {
             AppEvent::ClipboardWrite { pane_id, content } => {
                 // Clipboard writes are client-local side effects. They go to
                 // the clients viewing the writing pane, or, when none views
-                // it (a hidden tab, a background program), to the foreground
+                // it (a hidden workspace, a background program), to the foreground
                 // client so the write is not lost.
                 let data = base64::engine::general_purpose::STANDARD.encode(content.as_slice());
                 let message = ServerMessage::Clipboard { data };
@@ -76,7 +76,7 @@ impl HeadlessServer {
                 self.app.handle_internal_event(ev);
                 self.reconcile_client_shell_locations();
                 self.sync_pane_focus();
-                self.reapply_controlled_shell_tab_geometry(false);
+                self.reapply_controlled_shell_workspace_geometry(false);
 
                 true
             }

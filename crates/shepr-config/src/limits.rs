@@ -57,48 +57,6 @@ pub(crate) const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 /// bounding the control string sent to the terminal.
 pub(crate) const MAX_WINDOW_TITLE_CHARS: usize = 200;
 
-/// Maximum number of entries accepted in the right side of the tab bar.
-///
-/// The cap leaves room for useful context while keeping one
-/// config value from overwhelming the tab row.
-pub(crate) const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
-
-/// Default refresh interval in seconds for a tab-bar command entry.
-///
-/// This refreshes status often enough to feel current without
-/// needlessly launching a command every render.
-pub(crate) const DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 5;
-
-/// Default timeout in seconds for a tab-bar command entry.
-///
-/// This allows ordinary status commands to finish while bounding how
-/// long one command can hold its refresh slot.
-pub(crate) const DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 2;
-
-/// Minimum accepted refresh interval in seconds for a tab-bar command.
-///
-/// Intervals are whole seconds and must be positive so a command cannot be
-/// configured to refresh continuously.
-pub(crate) const MIN_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 1;
-
-/// Maximum accepted refresh interval in seconds for a tab-bar command.
-///
-/// The limit permits infrequent refreshes while placing a finite bound on the
-/// interval value.
-pub(crate) const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 365 * 24 * 60 * 60;
-
-/// Minimum accepted timeout in seconds for a tab-bar command.
-///
-/// Timeouts are whole seconds and must be positive so each command has a
-/// usable execution window.
-pub(crate) const MIN_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 1;
-
-/// Maximum accepted timeout in seconds for a tab-bar command.
-///
-/// The ceiling allows a long status command while bounding a
-/// stalled child process.
-pub(crate) const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 60 * 60;
-
 /// Maximum supported mouse-wheel scroll step.
 ///
 /// The validated runtime setting is stored as `NonZeroU16`, so this limit is
@@ -110,13 +68,13 @@ pub(crate) const MAX_MOUSE_SCROLL_LINES: u16 = u16::MAX;
 /// A zero-line step has no effect, so the setting requires a positive step.
 pub(crate) const MIN_MOUSE_SCROLL_LINES: u16 = 1;
 
-/// Lowest digit accepted for indexed workspace, tab, and agent bindings.
+/// Lowest digit accepted for indexed workspace and agent bindings.
 ///
 /// The first indexed shortcut matches the first visible item, keeping keys and
 /// labels aligned.
 pub(crate) const FIRST_INDEXED_BINDING_KEY: char = '1';
 
-/// Highest digit accepted for indexed workspace, tab, and agent bindings.
+/// Highest digit accepted for indexed workspace and agent bindings.
 ///
 /// The upper key keeps indexed shortcuts within the single-digit syntax.
 pub(crate) const LAST_INDEXED_BINDING_KEY: char = '9';

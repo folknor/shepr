@@ -1117,9 +1117,6 @@ impl ClientLoop {
             }
             ServerMessage::EndpointSnapshot(snapshot) => {
                 let projection_pending = activation_message;
-                if activation_message {
-                    resize_handoff_for_snapshot(state, write_stream, endpoint_id, &snapshot, now);
-                }
                 let activation_progress = activation_message
                     .then(|| {
                         state.presentation.handoff_mut().map(|pending| {

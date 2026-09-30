@@ -55,30 +55,19 @@ right_click_passthrough_modifier = "__RIGHT_CLICK__"
 redraw_on_focus_gained = false
 mouse_scroll_lines = 7
 confirm_close = false
-prompt_new_tab_name = false
 prompt_new_workspace_name = true
 pane_borders = "__PANE_BORDERS__"
 pane_outer_borders = false
 pane_scrollbars = false
 pane_gaps = false
 show_agent_labels_on_pane_borders = true
-hide_tab_bar_when_single_tab = true
-tab_bar_position = "__TAB_BAR_POSITION__"
-tab_bar_right = [
-    { type = "zoom" },
-    { type = "hostname" },
-    { type = "datetime", format = "%Y-%m-%d" },
-    { type = "text", text = "builder" },
-    { type = "command", command = "printf ready", interval_seconds = 7, timeout_seconds = 3 },
-]
-tab_bar_right_separator = " | "
-window_title = "{hostname}: {workspace} {tab} {pane} {terminal_title}"
+window_title = "{hostname}: {workspace} {pane} {terminal_title}"
 agent_panel_sort = "__AGENT_SORT__"
 status_indicators = "__STATUS_INDICATORS__"
 accent = "#f5c2e7"
 
 [ui.sidebar.agents]
-rows = [["state_icon", "state_text", "machine", "workspace", "tab", "pane", "agent", "terminal_title", "terminal_title_stripped"], [{ token = "workspace", fg = "#112233", bold = false, dim = true, rules = [{ equals = "main", fg = "#abcdef", bold = true }, { contains = "dev", ignore_case = true, hide = false }, { starts_with = "prod", fg = "#123456" }, { gt = 2.5, dim = true }, { lt = 10.0, hide = true }] }]]
+rows = [["state_icon", "state_text", "machine", "workspace", "pane", "agent", "terminal_title", "terminal_title_stripped"], [{ token = "workspace", fg = "#112233", bold = false, dim = true, rules = [{ equals = "main", fg = "#abcdef", bold = true }, { contains = "dev", ignore_case = true, hide = false }, { starts_with = "prod", fg = "#123456" }, { gt = 2.5, dim = true }, { lt = 10.0, hide = true }] }]]
 row_gap = 2
 
 [ui.sidebar.agents.rows_by_agent]
@@ -115,7 +104,6 @@ fn maximal_validated_config_codec_round_trips_wire_variants() {
     let host_cursor_modes = ["native", "drawn"];
     let collapsed_modes = ["compact", "hidden"];
     let pane_border_modes = ["auto", "always", "off"];
-    let tab_bar_positions = ["top", "bottom"];
     let agent_sorts = ["spaces", "priority"];
     let status_indicators = ["dots", "symbols"];
     let default_paths = shepr_config::AppPaths::resolve().expect("isolated default paths resolve");
@@ -159,10 +147,6 @@ fn maximal_validated_config_codec_round_trips_wire_variants() {
             .replace(
                 "__PANE_BORDERS__",
                 pane_border_modes[index % pane_border_modes.len()],
-            )
-            .replace(
-                "__TAB_BAR_POSITION__",
-                tab_bar_positions[index % tab_bar_positions.len()],
             )
             .replace("__AGENT_SORT__", agent_sorts[index % agent_sorts.len()])
             .replace(

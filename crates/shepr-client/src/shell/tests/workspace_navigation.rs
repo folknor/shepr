@@ -311,10 +311,8 @@ fn navigate_back_matches_its_configured_modifiers_exactly() {
 fn empty_workspace_navigation_enter_exits_without_focusing() {
     let (mut state, _) = state_with_remote();
     let mut empty = workspaces(0);
-    empty.tabs.clear();
     empty.panes.clear();
     empty.focused_workspace_id = None;
-    empty.focused_tab_id = None;
     empty.focused_pane_id = None;
     state.set_snapshot(Box::new(empty));
     enter_navigation(&mut state);
@@ -906,11 +904,14 @@ fn navigation_highlight_ends_for_noop_focus_and_focused_creation() {
                 label: None,
                 env: Default::default(),
             }),
-            EndpointCommand::TabCreate(shepr_protocol::command::TabCreateParams {
+            EndpointCommand::PaneSplit(shepr_protocol::command::PaneSplitParams {
                 workspace_id: Some("w1".into()),
+                target_pane_id: None,
+                direction: shepr_protocol::command::SplitDirection::Right,
+                ratio: None,
                 cwd: None,
                 focus,
-                label: None,
+                right_click: Default::default(),
                 env: Default::default(),
             }),
         ] {

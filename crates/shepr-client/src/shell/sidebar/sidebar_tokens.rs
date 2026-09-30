@@ -174,7 +174,6 @@ pub(super) fn resolved_token_spans(
             ResolvedTokenKind::StateText(text)
             | ResolvedTokenKind::Machine(text)
             | ResolvedTokenKind::Workspace(text)
-            | ResolvedTokenKind::Tab(text)
             | ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::TerminalTitle(text)
@@ -278,7 +277,6 @@ pub(super) fn resolved_token_spans(
                 apply_token_style(styles.primary, token.style),
             )),
             ResolvedTokenKind::Machine(text)
-            | ResolvedTokenKind::Tab(text)
             | ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(

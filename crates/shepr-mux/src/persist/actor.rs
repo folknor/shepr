@@ -338,14 +338,11 @@ mod tests {
             "workspaces": [{
                 "id": "w1",
                 "identity_cwd": "/shepr-persister-test",
-                "tabs": [{
-                    "layout": { "Pane": 0 },
-                    "panes": { "0": { "cwd": "/shepr-persister-test" } },
-                    "zoomed": false,
-                    "focused": 0,
-                    "root_pane": 0
-                }],
-                "active_tab": 0
+                "layout": { "Pane": 0 },
+                "panes": { "0": { "cwd": "/shepr-persister-test" } },
+                "zoomed": false,
+                "focused": 0,
+                "root_pane": 0
             }],
             "active": 0,
             "selected": 0

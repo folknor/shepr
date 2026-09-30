@@ -17,26 +17,15 @@ pub struct ClientShellSnapshot {
     )]
     pub resolved_config: Vec<u8>,
     pub focused_workspace_id: Option<WorkspaceId>,
-    pub focused_tab_id: Option<PublicTabId>,
     pub focused_pane_id: Option<PublicPaneId>,
-    pub tab_bar_right: Vec<ClientShellTabStatusSegment>,
-    pub tab_bar_right_separator: String,
     pub workspaces: Vec<ClientShellWorkspace>,
-    pub tabs: Vec<ClientShellTab>,
     pub panes: Vec<ClientShellPane>,
     pub agents: Vec<ClientShellAgent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientShellTabStatusSegment {
-    pub text: String,
-    pub accent: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellWorkspace {
     pub workspace_id: WorkspaceId,
-    pub active_tab_id: PublicTabId,
     pub new_workspace_cwd: String,
     pub number: usize,
     pub label: String,
@@ -48,22 +37,9 @@ pub struct ClientShellWorkspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientShellTab {
-    pub tab_id: PublicTabId,
-    pub workspace_id: WorkspaceId,
-    pub number: usize,
-    pub label: String,
-    pub custom_label: bool,
-    pub zoomed: bool,
-    pub focused: bool,
-    pub agent_status: AgentStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellPane {
     pub pane_id: PublicPaneId,
     pub workspace_id: WorkspaceId,
-    pub tab_id: PublicTabId,
     pub label: Option<String>,
     pub cwd: Option<String>,
     pub foreground_cwd: Option<String>,
@@ -75,7 +51,6 @@ pub struct ClientShellPane {
 pub struct ClientShellAgent {
     pub pane_id: PublicPaneId,
     pub workspace_id: WorkspaceId,
-    pub tab_id: PublicTabId,
     pub agent: Option<String>,
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,

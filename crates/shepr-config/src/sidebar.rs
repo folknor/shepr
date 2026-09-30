@@ -158,7 +158,6 @@ define_sidebar_token!(
         StateText => "state_text",
         Machine => "machine",
         Workspace => "workspace",
-        Tab => "tab",
         Pane => "pane",
         Agent => "agent",
         TerminalTitle => "terminal_title",
@@ -186,7 +185,6 @@ impl AgentSidebarToken {
             Self::StateText
             | Self::Machine
             | Self::Workspace
-            | Self::Tab
             | Self::Pane
             | Self::Agent
             | Self::TerminalTitle
@@ -475,7 +473,6 @@ impl Default for AgentsSidebarConfig {
                     AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
-                    AgentSidebarToken::Tab,
                 ],
                 vec![AgentSidebarToken::Agent],
             ],
@@ -526,10 +523,12 @@ mod tests {
                     AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
-                    AgentSidebarToken::Tab,
                 ],
                 vec![AgentSidebarToken::Agent],
             ]
+        );
+        assert!(
+            toml::from_str::<crate::Config>("[ui.sidebar.agents]\nrows = [[\"tab\"]]\n").is_err()
         );
         assert!(config.agents.rows_by_agent.is_empty());
         assert_eq!(config.agents.row_gap, 0);
@@ -548,7 +547,7 @@ mod tests {
         let config: crate::Config = toml::from_str(
             r#"
 [ui.sidebar.agents]
-rows = [["state_icon", "workspace"], ["state_text", "agent", "tab"], ["terminal_title", "terminal_title_stripped", "pane"]]
+rows = [["state_icon", "workspace"], ["state_text", "agent", "pane"], ["terminal_title", "terminal_title_stripped", "pane"]]
 row_gap = 1
 
 [ui.sidebar.agents.rows_by_agent]
@@ -566,7 +565,7 @@ row_gap = 3
             vec![
                 AgentSidebarToken::StateText,
                 AgentSidebarToken::Agent,
-                AgentSidebarToken::Tab,
+                AgentSidebarToken::Pane,
             ]
         );
         assert_eq!(
@@ -597,7 +596,7 @@ row_gap = 3
         let config: crate::Config = toml::from_str(
             r##"
 [ui.sidebar.agents]
-rows = [[{ token = "workspace", fg = "#abc", bold = false }, "workspace"], [{ token = "tab", dim = false }]]
+rows = [[{ token = "workspace", fg = "#abc", bold = false }, "workspace"], [{ token = "pane", dim = false }]]
 
 [ui.sidebar.agents.rows_by_agent]
 claude = [[{ token = "agent", fg = "#112233", bold = true, dim = false }]]

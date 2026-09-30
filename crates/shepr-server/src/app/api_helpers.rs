@@ -21,14 +21,6 @@ pub(crate) fn workspace_not_found(workspace_id: &str) -> ApiError {
     )
 }
 
-pub(crate) fn active_workspace_not_found() -> ApiError {
-    ApiError::new(ApiErrorCode::WorkspaceNotFound, "no active workspace")
-}
-
-pub(crate) fn tab_not_found(tab_id: &str) -> ApiError {
-    ApiError::new(ApiErrorCode::TabNotFound, format!("tab {tab_id} not found"))
-}
-
 pub(super) fn detect_state_from_api(
     state: shepr_api::schema::PaneAgentState,
 ) -> shepr_agent::detect::AgentState {
@@ -79,10 +71,7 @@ mod agent_status_tests {
 
 #[cfg(test)]
 mod not_found_tests {
-    use super::{
-        active_workspace_not_found, pane_in_workspace_not_found, pane_not_found, tab_not_found,
-        workspace_not_found,
-    };
+    use super::{pane_in_workspace_not_found, pane_not_found, workspace_not_found};
     use shepr_api::error::ApiErrorCode;
 
     #[test]
@@ -102,13 +91,5 @@ mod not_found_tests {
         let error = workspace_not_found("w9");
         assert_eq!(error.code, ApiErrorCode::WorkspaceNotFound);
         assert_eq!(error.into_message(), "workspace w9 not found");
-
-        let error = active_workspace_not_found();
-        assert_eq!(error.code, ApiErrorCode::WorkspaceNotFound);
-        assert_eq!(error.into_message(), "no active workspace");
-
-        let error = tab_not_found("w1:t4");
-        assert_eq!(error.code, ApiErrorCode::TabNotFound);
-        assert_eq!(error.into_message(), "tab w1:t4 not found");
     }
 }

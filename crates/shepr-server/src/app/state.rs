@@ -8,24 +8,6 @@ use shepr_termio::host_term::theme::{HostAppearance, TerminalTheme};
 
 pub use shepr_config::theme::Palette;
 
-/// Identity of a tab for the per-tab layout area: its workspace's public
-/// number and its own. Both are stable for the tab's lifetime, and neither
-/// lookup allocates, which `PublicTabId` would.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TabAreaKey {
-    workspace_number: usize,
-    tab_number: usize,
-}
-
-impl TabAreaKey {
-    pub(crate) fn new(workspace_id: &shepr_protocol::WorkspaceId, tab_number: usize) -> Self {
-        Self {
-            workspace_number: workspace_id.number(),
-            tab_number,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Navigate,
@@ -36,13 +18,6 @@ pub enum Mode {
 pub(crate) struct PaneFocusTarget {
     pub workspace_id: shepr_protocol::WorkspaceId,
     pub pane_id: PaneId,
-}
-
-/// One right-hand tab bar segment as last rendered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TabBarStatusSegment {
-    Zoom,
-    Text(Option<String>),
 }
 
 /// All application state - pure data, no channels or async runtime.
@@ -60,23 +35,22 @@ pub struct AppState {
     /// on. Each client keeps its own location on the server; this is not a
     /// mirror of any client's view.
     pub active: Option<shepr_protocol::WorkspaceId>,
-    pub(crate) active_tab_id: Option<shepr_protocol::PublicTabId>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
     pub selected: Option<shepr_protocol::WorkspaceId>,
     pub mode: Mode,
     pub should_quit: bool,
-    /// The area each tab was last laid out in: where the server last applied
-    /// that tab's PTY geometry. A pane has one PTY size whichever client set
-    /// it, so this is session data, not any client's view. Spawn sizing and
-    /// API geometry (directional focus, resize steps, layout snapshots) read
-    /// it, so they agree with the sizes the panes actually have. Only the
-    /// server's geometry path writes it (`record_tab_area`).
-    pub(crate) tab_areas: std::collections::HashMap<TabAreaKey, Rect>,
+    /// The area each workspace was last laid out in, keyed by
+    /// `WorkspaceId::number()` (no allocation on lookup): where the server
+    /// last applied that workspace's PTY geometry. A pane has one PTY size
+    /// whichever client set it, so this is session data, not any client's
+    /// view. Spawn sizing and API geometry (directional focus, resize steps,
+    /// layout snapshots) read it, so they agree with the sizes the panes
+    /// actually have. Only the server's geometry path writes it
+    /// (`record_workspace_area`).
+    pub(crate) workspace_areas: std::collections::HashMap<usize, Rect>,
     /// Immutable settings resolved from the launch configuration.
     pub(crate) settings: AppSettings,
     pub next_agent_state_change_seq: u64,
-    pub tab_bar_right: Vec<TabBarStatusSegment>,
-    pub tab_bar_right_separator: String,
     /// Last known foreground host terminal appearance.
     pub host_terminal_appearance: Option<HostAppearance>,
     /// True when the foreground host explicitly reported appearance via Mode 2031.
@@ -183,17 +157,13 @@ impl AppState {
         if self.selected.is_none() {
             self.selected = self.active.clone();
         }
-        self.refresh_active_tab_id();
     }
 
-    pub(crate) fn refresh_active_tab_id(&mut self) {
-        self.active_tab_id = self.active_index().and_then(|index| {
-            let workspace = self.workspaces.get(index)?;
-            Some(shepr_protocol::PublicTabId::new(
-                &workspace.id,
-                workspace.active_tab().number(),
-            ))
-        });
+    /// Position of the workspace with `id`.
+    pub(crate) fn workspace_index(&self, id: &shepr_protocol::WorkspaceId) -> Option<usize> {
+        self.workspaces
+            .iter()
+            .position(|workspace| &workspace.id == id)
     }
 
     pub(crate) fn set_selected_index(&mut self, index: Option<usize>) {
@@ -211,85 +181,72 @@ impl AppState {
         self.shell_projection_revision = self.shell_projection_revision.saturating_add(1);
     }
 
-    /// Geometry a pane with no laid-out tab yet (a new workspace or tab) is
-    /// spawned against: the area of the tab the session is focused on, or the
-    /// headless area before geometry has been applied to it. A client-shell
-    /// request makes its own tab the session's focus before it runs, so a
-    /// client's new tab starts at that client's size.
+    /// Geometry a pane with no laid-out workspace yet (a new workspace) is
+    /// spawned against: the area of the workspace the session is focused on,
+    /// or the headless area before geometry has been applied to it. A
+    /// client-shell request makes its own workspace the session's focus
+    /// before it runs, so a client's new workspace starts at that client's
+    /// size.
     pub(crate) fn pane_geometry(&self) -> shepr_mux::workspace::PaneGeometry {
         self.pane_geometry_in(self.default_layout_area())
     }
 
-    /// Geometry of tab `tab_idx` in workspace `ws_idx`: its recorded layout
-    /// area, or the default one when geometry has not been applied to it yet.
-    pub(crate) fn pane_geometry_for_tab(
+    /// Geometry of workspace `ws_idx`: its recorded layout area, or the
+    /// default one when geometry has not been applied to it yet.
+    pub(crate) fn pane_geometry_for_workspace(
         &self,
         ws_idx: usize,
-        tab_idx: usize,
     ) -> shepr_mux::workspace::PaneGeometry {
-        self.pane_geometry_in(self.tab_layout_area(ws_idx, tab_idx))
+        self.pane_geometry_in(self.workspace_layout_area(ws_idx))
     }
 
-    /// The area tab `tab_idx` of workspace `ws_idx` is laid out in: where the
-    /// server last applied its PTY geometry, or the default layout area when
-    /// it has not yet.
-    pub(crate) fn tab_layout_area(&self, ws_idx: usize, tab_idx: usize) -> Rect {
-        self.tab_area(ws_idx, tab_idx)
+    /// The area workspace `ws_idx` is laid out in: where the server last
+    /// applied its PTY geometry, or the default layout area when it has not
+    /// yet.
+    pub(crate) fn workspace_layout_area(&self, ws_idx: usize) -> Rect {
+        self.workspace_area(ws_idx)
             .unwrap_or_else(|| self.default_layout_area())
     }
 
-    /// The recorded layout area of tab `tab_idx` in workspace `ws_idx`, if the
-    /// server has applied geometry to it.
-    pub(crate) fn tab_area(&self, ws_idx: usize, tab_idx: usize) -> Option<Rect> {
+    /// The recorded layout area of workspace `ws_idx`, if the server has
+    /// applied geometry to it.
+    pub(crate) fn workspace_area(&self, ws_idx: usize) -> Option<Rect> {
         let workspace = self.workspaces.get(ws_idx)?;
-        let tab = workspace.tabs().get(tab_idx)?;
-        self.tab_areas
-            .get(&TabAreaKey::new(&workspace.id, tab.number()))
-            .copied()
+        self.workspace_areas.get(&workspace.id.number()).copied()
     }
 
-    /// Records the area the server just applied a tab's PTY geometry in.
-    pub(crate) fn record_tab_area(&mut self, key: TabAreaKey, area: Rect) {
-        self.tab_areas.insert(key, area);
+    /// Records the area the server just applied a workspace's PTY geometry in.
+    pub(crate) fn record_workspace_area(&mut self, id: &shepr_protocol::WorkspaceId, area: Rect) {
+        self.workspace_areas.insert(id.number(), area);
     }
 
-    /// Whether some tab has had no geometry applied yet.
-    pub(crate) fn has_tab_without_area(&self) -> bool {
-        self.workspaces.iter().any(|workspace| {
-            workspace.tabs().iter().any(|tab| {
-                !self
-                    .tab_areas
-                    .contains_key(&TabAreaKey::new(&workspace.id, tab.number()))
-            })
-        })
+    /// Whether some workspace has had no geometry applied yet.
+    pub(crate) fn has_workspace_without_area(&self) -> bool {
+        self.workspaces
+            .iter()
+            .any(|workspace| !self.workspace_areas.contains_key(&workspace.id.number()))
     }
 
-    /// Drops the recorded areas of tabs that no longer exist.
-    pub(crate) fn retain_live_tab_areas(&mut self) {
+    /// Drops the recorded areas of workspaces that no longer exist.
+    pub(crate) fn retain_live_workspace_areas(&mut self) {
         let live = self
             .workspaces
             .iter()
-            .flat_map(|workspace| {
-                workspace
-                    .tabs()
-                    .iter()
-                    .map(|tab| TabAreaKey::new(&workspace.id, tab.number()))
-            })
+            .map(|workspace| workspace.id.number())
             .collect::<std::collections::HashSet<_>>();
-        self.tab_areas.retain(|key, _| live.contains(key));
+        self.workspace_areas
+            .retain(|number, _| live.contains(number));
     }
 
-    /// The area of the tab the session is focused on, or the headless area.
+    /// The area of the workspace the session is focused on, or the headless
+    /// area.
     fn default_layout_area(&self) -> Rect {
         self.active_index()
-            .and_then(|ws_idx| {
-                let workspace = self.workspaces.get(ws_idx)?;
-                self.tab_area(ws_idx, workspace.active_tab_index())
-            })
+            .and_then(|ws_idx| self.workspace_area(ws_idx))
             .unwrap_or_else(|| self.settings.headless_rect())
     }
 
-    /// The configured pane chrome applied to a tab laid out in `area`.
+    /// The configured pane chrome applied to a workspace laid out in `area`.
     pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::PaneGeometry {
         self.settings.pane_geometry_in(area)
     }
@@ -340,16 +297,13 @@ impl AppState {
             terminals: std::collections::HashMap::new(),
             workspaces: Vec::new(),
             active: None,
-            active_tab_id: None,
             previous_pane_focus: None,
             selected: None,
             mode: Mode::Navigate,
             should_quit: false,
-            tab_areas: std::collections::HashMap::new(),
+            workspace_areas: std::collections::HashMap::new(),
             settings: AppSettings::from_config(&shepr_config::ValidatedConfig::test_default()),
             next_agent_state_change_seq: 0,
-            tab_bar_right: Vec::new(),
-            tab_bar_right_separator: " ".into(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             host_terminal_theme: TerminalTheme::default(),
@@ -358,21 +312,16 @@ impl AppState {
         }
     }
 
-    /// Records `area` as the layout area of every tab, as if the server had
-    /// applied geometry to each of them in it.
-    pub fn test_record_all_tab_areas(&mut self, area: Rect) {
-        let keys = self
+    /// Records `area` as the layout area of every workspace, as if the server
+    /// had applied geometry to each of them in it.
+    pub fn test_record_all_workspace_areas(&mut self, area: Rect) {
+        let ids = self
             .workspaces
             .iter()
-            .flat_map(|workspace| {
-                workspace
-                    .tabs()
-                    .iter()
-                    .map(|tab| TabAreaKey::new(&workspace.id, tab.number()))
-            })
+            .map(|workspace| workspace.id.clone())
             .collect::<Vec<_>>();
-        for key in keys {
-            self.record_tab_area(key, area);
+        for id in ids {
+            self.record_workspace_area(&id, area);
         }
     }
 
@@ -381,15 +330,13 @@ impl AppState {
     pub fn ensure_test_terminals(&mut self) {
         use shepr_mux::terminal::TerminalState;
         for ws in &self.workspaces {
-            for tab in ws.tabs() {
-                for pane in tab.panes().values() {
-                    if !self.terminals.contains_key(&pane.attached_terminal_id) {
-                        let cwd = ws.identity_cwd.clone();
-                        self.terminals.insert(
-                            pane.attached_terminal_id.clone(),
-                            TerminalState::new(pane.attached_terminal_id.clone(), cwd),
-                        );
-                    }
+            for pane in ws.panes().values() {
+                if !self.terminals.contains_key(&pane.attached_terminal_id) {
+                    let cwd = ws.identity_cwd.clone();
+                    self.terminals.insert(
+                        pane.attached_terminal_id.clone(),
+                        TerminalState::new(pane.attached_terminal_id.clone(), cwd),
+                    );
                 }
             }
         }
@@ -411,10 +358,6 @@ impl AppState {
                 "empty app state must not have an active workspace"
             );
             assert!(
-                self.active_tab_id.is_none(),
-                "empty app state must not have an active tab"
-            );
-            assert!(
                 self.selected.is_none(),
                 "empty app state must not have a selected workspace"
             );
@@ -432,16 +375,6 @@ impl AppState {
         let active = self
             .active_index()
             .expect("non-empty app state must have active workspace");
-        let active_workspace = &self.workspaces[active];
-        let active_tab = active_workspace.active_tab();
-        assert_eq!(
-            self.active_tab_id.as_ref(),
-            Some(&shepr_protocol::PublicTabId::new(
-                &active_workspace.id,
-                active_tab.number()
-            )),
-            "active tab id must follow the active workspace tab"
-        );
         assert!(
             active < self.workspaces.len(),
             "active workspace {} out of bounds for {} workspaces",
@@ -463,24 +396,22 @@ impl AppState {
             workspace_id_to_idx.insert(ws.id.clone(), ws_idx);
             ws.assert_invariants_for_test();
 
-            for tab in ws.tabs() {
-                for (pane_id, pane) in tab.panes() {
-                    assert!(
-                        pane_ids.insert(*pane_id),
-                        "pane {pane_id:?} appears in more than one workspace"
-                    );
-                    assert!(
-                        attached_terminal_ids.insert(pane.attached_terminal_id.clone()),
-                        "terminal {} is attached to more than one app pane",
-                        pane.attached_terminal_id
-                    );
-                    assert!(
-                        self.terminals.contains_key(&pane.attached_terminal_id),
-                        "pane {:?} is attached to missing terminal {}",
-                        pane_id,
-                        pane.attached_terminal_id
-                    );
-                }
+            for (pane_id, pane) in ws.panes() {
+                assert!(
+                    pane_ids.insert(*pane_id),
+                    "pane {pane_id:?} appears in more than one workspace"
+                );
+                assert!(
+                    attached_terminal_ids.insert(pane.attached_terminal_id.clone()),
+                    "terminal {} is attached to more than one app pane",
+                    pane.attached_terminal_id
+                );
+                assert!(
+                    self.terminals.contains_key(&pane.attached_terminal_id),
+                    "pane {:?} is attached to missing terminal {}",
+                    pane_id,
+                    pane.attached_terminal_id
+                );
             }
         }
 
@@ -519,45 +450,42 @@ mod tests {
     }
 
     #[test]
-    fn pane_geometry_follows_the_focused_tabs_recorded_area() {
+    fn pane_geometry_follows_the_focused_workspaces_recorded_area() {
         let mut state = AppState::test_with_adversarial_identity_state();
-        let mut second = shepr_mux::workspace::Workspace::test_new("second");
-        second.test_add_tab(Some("other"));
-        state.workspaces.push(second);
+        state
+            .workspaces
+            .push(shepr_mux::workspace::Workspace::test_new("second"));
         state.ensure_test_terminals();
         let focused_area = Rect::new(0, 0, 97, 33);
         let background_area = Rect::new(0, 0, 61, 17);
-        state.test_record_all_tab_areas(background_area);
-        let focused_key = TabAreaKey::new(
-            &state.workspaces[0].id,
-            state.workspaces[0].active_tab().number(),
-        );
-        state.record_tab_area(focused_key, focused_area);
+        state.test_record_all_workspace_areas(background_area);
+        let focused_id = state.workspaces[0].id.clone();
+        state.record_workspace_area(&focused_id, focused_area);
 
         assert_eq!(state.pane_geometry().area, focused_area);
-        assert_eq!(state.tab_layout_area(1, 1), background_area);
-        assert_eq!(state.pane_geometry_for_tab(1, 1).area, background_area);
+        assert_eq!(state.workspace_layout_area(1), background_area);
+        assert_eq!(state.pane_geometry_for_workspace(1).area, background_area);
 
-        // A tab the server has not laid out yet starts at the focused area.
-        state.tab_areas.clear();
-        state.record_tab_area(focused_key, focused_area);
-        assert!(state.has_tab_without_area());
-        assert_eq!(state.tab_area(1, 1), None);
-        assert_eq!(state.tab_layout_area(1, 1), focused_area);
+        // A workspace the server has not laid out yet starts at the focused
+        // area.
+        state.workspace_areas.clear();
+        state.record_workspace_area(&focused_id, focused_area);
+        assert!(state.has_workspace_without_area());
+        assert_eq!(state.workspace_area(1), None);
+        assert_eq!(state.workspace_layout_area(1), focused_area);
 
-        // Closed tabs drop their areas.
+        // Closed workspaces drop their areas.
         state.workspaces.truncate(1);
-        state.test_record_all_tab_areas(focused_area);
-        state.tab_areas.insert(
-            TabAreaKey {
-                workspace_number: usize::MAX,
-                tab_number: 1,
-            },
-            background_area,
+        state.test_record_all_workspace_areas(focused_area);
+        state.workspace_areas.insert(usize::MAX, background_area);
+        state.retain_live_workspace_areas();
+        assert!(!state.has_workspace_without_area());
+        assert!(
+            state
+                .workspace_areas
+                .values()
+                .all(|area| *area == focused_area)
         );
-        state.retain_live_tab_areas();
-        assert!(!state.has_tab_without_area());
-        assert!(state.tab_areas.values().all(|area| *area == focused_area));
     }
 
     #[test]
@@ -583,8 +511,8 @@ mod tests {
     async fn runtime_lookup_goes_through_the_registry_by_terminal_id() {
         let mut state = AppState::test_new();
         let ws = shepr_mux::workspace::Workspace::test_new("test");
-        let pane_id = ws.tabs()[0].root_pane();
-        let terminal_id = ws.tabs()[0].panes()[&pane_id].attached_terminal_id.clone();
+        let pane_id = ws.root_pane();
+        let terminal_id = ws.panes()[&pane_id].attached_terminal_id.clone();
         state.workspaces = vec![ws];
         let mut registry = shepr_mux::pane::PaneRuntimeRegistry::new();
 
@@ -619,9 +547,6 @@ mod tests {
         state.assert_invariants_for_test();
 
         let ws = &mut state.workspaces[0];
-        let active_index = ws.active_tab_index();
-        let active_public = ws.tabs()[active_index].number();
-        assert_ne!(active_index + 1, active_public);
         let new_pane = ws.test_split(shepr_core::layout::Direction::Horizontal);
         assert!(ws.public_pane_number(new_pane).is_some());
         state.ensure_test_terminals();

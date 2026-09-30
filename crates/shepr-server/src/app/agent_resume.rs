@@ -4,6 +4,7 @@ use bytes::Bytes;
 use ratatui::layout::Rect;
 
 use super::App;
+use shepr_mux::workspace::Workspace;
 
 use crate::limits::PENDING_AGENT_RESUME_RETRY_INTERVAL;
 
@@ -52,7 +53,7 @@ impl App {
         now: Instant,
         allow_empty_theme: bool,
     ) -> bool {
-        // The headless loop calls this on every iteration; skip the per-tab
+        // The headless loop calls this on every iteration; skip the per-workspace
         // layout walk entirely once nothing is waiting to resume.
         if !self.has_pending_agent_resumes() {
             self.pending_agent_resume_deadline = None;
@@ -132,8 +133,8 @@ impl App {
 
     /// Whether any pane would be a resume candidate right now, without cloning
     /// plans or collecting them. Same rules as
-    /// `pending_agent_resume_candidates`: a candidate needs its tab laid out
-    /// (`resume_layout_area`), a pane in the layout, no runtime yet and an
+    /// `pending_agent_resume_candidates`: a candidate needs its workspace laid
+    /// out (`resume_layout_area`), a pane in the layout, no runtime yet and an
     /// unconsumed plan.
     fn has_pending_agent_resume_candidates(&self) -> bool {
         self.state
@@ -141,43 +142,41 @@ impl App {
             .iter()
             .enumerate()
             .any(|(ws_idx, ws)| {
-                ws.tabs().iter().enumerate().any(|(tab_idx, tab)| {
-                    self.tab_has_pending_agent_resume(tab)
-                        && self
-                            .resume_layout_area(ws_idx, tab_idx)
-                            .is_some_and(|area| {
-                                self.pending_agent_resume_pane_infos(tab, area)
-                                    .iter()
-                                    .any(|info| self.pane_awaits_agent_resume(tab, info.id))
-                            })
-                })
+                self.workspace_has_pending_agent_resume(ws)
+                    && self.resume_layout_area(ws_idx).is_some_and(|area| {
+                        self.pending_agent_resume_pane_infos(ws, area)
+                            .iter()
+                            .any(|info| self.pane_awaits_agent_resume(ws, info.id))
+                    })
             })
     }
 
-    /// The area a tab's pending resumes are sized in: the area the server
-    /// applied the tab's PTY geometry in. A tab it has not laid out yet has no
-    /// size to launch with, so its resumes wait for the first geometry pass.
-    fn resume_layout_area(&self, ws_idx: usize, tab_idx: usize) -> Option<Rect> {
+    /// The area a workspace's pending resumes are sized in: the area the
+    /// server applied the workspace's PTY geometry in. A workspace it has not
+    /// laid out yet has no size to launch with, so its resumes wait for the
+    /// first geometry pass.
+    fn resume_layout_area(&self, ws_idx: usize) -> Option<Rect> {
         self.state
-            .tab_area(ws_idx, tab_idx)
+            .workspace_area(ws_idx)
             .filter(|area| area.width > 0 && area.height > 0)
     }
 
-    /// Cheap pre-filter: whether any pane of `tab` awaits a resume. Lets the
-    /// candidate walks skip the layout computation for every tab with nothing
-    /// pending, which is almost all of them.
-    fn tab_has_pending_agent_resume(&self, tab: &shepr_mux::workspace::Tab) -> bool {
-        tab.panes()
+    /// Cheap pre-filter: whether any pane of `workspace` awaits a resume. Lets
+    /// the candidate walks skip the layout computation for every workspace
+    /// with nothing pending, which is almost all of them.
+    fn workspace_has_pending_agent_resume(&self, workspace: &Workspace) -> bool {
+        workspace
+            .panes()
             .keys()
-            .any(|pane_id| self.pane_awaits_agent_resume(tab, *pane_id))
+            .any(|pane_id| self.pane_awaits_agent_resume(workspace, *pane_id))
     }
 
     fn pane_awaits_agent_resume(
         &self,
-        tab: &shepr_mux::workspace::Tab,
+        workspace: &Workspace,
         pane_id: shepr_core::layout::PaneId,
     ) -> bool {
-        tab.panes().get(&pane_id).is_some_and(|pane| {
+        workspace.panes().get(&pane_id).is_some_and(|pane| {
             self.terminal_runtimes
                 .get(&pane.attached_terminal_id)
                 .is_none()
@@ -192,56 +191,56 @@ impl App {
     fn pending_agent_resume_candidates(&self) -> Vec<PendingAgentResumeCandidate> {
         let mut pending = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-            for (tab_idx, tab) in ws.tabs().iter().enumerate() {
-                if !self.tab_has_pending_agent_resume(tab) {
-                    continue;
-                }
-                let Some(area) = self.resume_layout_area(ws_idx, tab_idx) else {
+            if !self.workspace_has_pending_agent_resume(ws) {
+                continue;
+            }
+            let Some(area) = self.resume_layout_area(ws_idx) else {
+                continue;
+            };
+            for info in self.pending_agent_resume_pane_infos(ws, area) {
+                let Some(pane) = ws.panes().get(&info.id) else {
                     continue;
                 };
-                for info in self.pending_agent_resume_pane_infos(tab, area) {
-                    let Some(pane) = tab.panes().get(&info.id) else {
-                        continue;
-                    };
-                    if self
-                        .terminal_runtimes
-                        .get(&pane.attached_terminal_id)
-                        .is_some()
-                    {
-                        continue;
-                    }
-                    let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
-                    else {
-                        continue;
-                    };
-                    let Some(plan) = terminal.pending_agent_resume_plan.clone() else {
-                        continue;
-                    };
-                    pending.push(PendingAgentResumeCandidate {
-                        pane_id: info.id,
-                        terminal_id: pane.attached_terminal_id.clone(),
-                        cwd: terminal.cwd().to_path_buf(),
-                        plan,
-                        rows: info.inner_rect.height,
-                        cols: info.inner_rect.width,
-                    });
+                if self
+                    .terminal_runtimes
+                    .get(&pane.attached_terminal_id)
+                    .is_some()
+                {
+                    continue;
                 }
+                let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id) else {
+                    continue;
+                };
+                let Some(plan) = terminal.pending_agent_resume_plan.clone() else {
+                    continue;
+                };
+                pending.push(PendingAgentResumeCandidate {
+                    pane_id: info.id,
+                    terminal_id: pane.attached_terminal_id.clone(),
+                    cwd: terminal.cwd().to_path_buf(),
+                    plan,
+                    rows: info.inner_rect.height,
+                    cols: info.inner_rect.width,
+                });
             }
         }
         pending
     }
 
-    /// Every pane of `tab` laid out in `area`, at the content rect a fresh
-    /// shell gets there. For a visible pane that is the rect the tab's next
-    /// geometry pass gives it (a runtimeless pane is laid out as a primary
-    /// screen with its gutter reserved), so a resumed pane is not resized
-    /// again as soon as it starts.
+    /// Every pane of `workspace` laid out in `area`, at the content rect a
+    /// fresh shell gets there. For a visible pane that is the rect the
+    /// workspace's next geometry pass gives it (a runtimeless pane is laid out
+    /// as a primary screen with its gutter reserved), so a resumed pane is not
+    /// resized again as soon as it starts.
     fn pending_agent_resume_pane_infos(
         &self,
-        tab: &shepr_mux::workspace::Tab,
+        workspace: &Workspace,
         area: Rect,
     ) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
-        derived_pending_agent_resume_pane_infos(tab, self.state.settings.pane_geometry_in(area))
+        derived_pending_agent_resume_pane_infos(
+            workspace,
+            self.state.settings.pane_geometry_in(area),
+        )
     }
 
     fn start_pending_agent_resume(
@@ -371,14 +370,14 @@ impl App {
 }
 
 fn derived_pending_agent_resume_pane_infos(
-    tab: &shepr_mux::workspace::Tab,
+    workspace: &Workspace,
     geometry: shepr_mux::workspace::PaneGeometry,
 ) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
     // Hidden panes still need their restored agent resumed. Give them their
     // tiled size, while the visible zoomed pane starts at its full screen size.
-    let mut panes = geometry.tab_panes(tab.layout(), false);
-    if tab.zoomed() {
-        for zoomed in geometry.tab_panes(tab.layout(), true) {
+    let mut panes = geometry.visible_panes(workspace.layout(), false);
+    if workspace.zoomed() {
+        for zoomed in geometry.visible_panes(workspace.layout(), true) {
             if let Some(info) = panes.iter_mut().find(|info| info.id == zoomed.id) {
                 *info = zoomed;
             }
@@ -389,7 +388,7 @@ fn derived_pending_agent_resume_pane_infos(
         .map(|mut info| {
             let pane_inner = shepr_mux::workspace::pane_inner_rect(info.rect, info.borders);
             // The resume starts in a fresh shell, on the primary screen, so
-            // the content rect is the one a tab surface gives a primary
+            // the content rect is the one a workspace surface gives a primary
             // screen, and the one it gives a pane that has no runtime yet.
             info.inner_rect = shepr_mux::workspace::terminal_content_rect(
                 pane_inner,
@@ -414,19 +413,17 @@ impl App {
             return false;
         }
         let Some((pane_id, cwd, plan)) = self.state.workspaces.iter().find_map(|ws| {
-            ws.tabs().iter().find_map(|tab| {
-                tab.layout().pane_ids().into_iter().find_map(|pane_id| {
-                    let pane = tab.panes().get(&pane_id)?;
-                    if &pane.attached_terminal_id != terminal_id {
-                        return None;
-                    }
-                    let terminal = self.state.terminals.get(terminal_id)?;
-                    Some((
-                        pane_id,
-                        terminal.cwd().to_path_buf(),
-                        terminal.pending_agent_resume_plan.clone()?,
-                    ))
-                })
+            ws.layout().pane_ids().into_iter().find_map(|pane_id| {
+                let pane = ws.panes().get(&pane_id)?;
+                if &pane.attached_terminal_id != terminal_id {
+                    return None;
+                }
+                let terminal = self.state.terminals.get(terminal_id)?;
+                Some((
+                    pane_id,
+                    terminal.cwd().to_path_buf(),
+                    terminal.pending_agent_resume_plan.clone()?,
+                ))
             })
         }) else {
             return false;
@@ -480,7 +477,7 @@ mod tests {
                 .collect();
             app.state.set_active_index(Some(0));
             app.state
-                .test_record_all_tab_areas(Rect::new(0, 0, 100, 30));
+                .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
             app.state.ensure_test_terminals();
             let missing =
                 crate::test_support::ScratchDir::new("resume-cwd").join("__missing_resume_cwd__");
@@ -553,14 +550,14 @@ mod tests {
     async fn failed_due_resume_backs_off_instead_of_leaving_deadline_in_the_past() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs()[0].root_pane();
+        let pane_id = workspace.root_pane();
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
         app.state.workspaces = vec![workspace];
         app.state
-            .test_record_all_tab_areas(Rect::new(0, 0, 100, 30));
+            .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         // An empty argv cannot be turned into a shell command, so the launch
@@ -600,7 +597,7 @@ mod tests {
     async fn candidate_probe_agrees_with_the_collected_candidates() {
         let mut app = test_app();
         let pending_workspace = shepr_mux::workspace::Workspace::test_new("pending");
-        let pending_pane = pending_workspace.tabs()[0].root_pane();
+        let pending_pane = pending_workspace.root_pane();
         let pending_terminal = pending_workspace
             .terminal_id(pending_pane)
             .cloned()
@@ -614,7 +611,7 @@ mod tests {
 
         // Nothing pending anywhere.
         app.state
-            .test_record_all_tab_areas(Rect::new(0, 0, 100, 30));
+            .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
 
@@ -632,12 +629,13 @@ mod tests {
         assert_eq!(candidates[0].terminal_id, pending_terminal);
         assert_eq!(candidates[0].pane_id, pending_pane);
 
-        // A tab the server has not laid out has no geometry to launch with,
+        // A workspace the server has not laid out has no geometry to launch with,
         // and neither has one laid out in an empty area.
-        app.state.tab_areas.clear();
+        app.state.workspace_areas.clear();
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
-        app.state.test_record_all_tab_areas(Rect::new(0, 0, 0, 0));
+        app.state
+            .test_record_all_workspace_areas(Rect::new(0, 0, 0, 0));
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
     }
@@ -662,7 +660,7 @@ mod tests {
         for missing_shell in [false, true] {
             let mut app = test_app();
             let workspace = shepr_mux::workspace::Workspace::test_new("unavailable");
-            let pane_id = workspace.tabs()[0].root_pane();
+            let pane_id = workspace.root_pane();
             let terminal_id = workspace
                 .terminal_id(pane_id)
                 .expect("test precondition")
@@ -723,7 +721,7 @@ mod tests {
     async fn pending_agent_resume_waits_for_host_theme_before_launch() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs()[0].root_pane();
+        let pane_id = workspace.root_pane();
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
@@ -732,7 +730,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         let terminal = app
             .state
             .terminals
@@ -800,14 +798,14 @@ mod tests {
     async fn pending_agent_resume_can_launch_after_theme_wait_expires() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.tabs()[0].root_pane();
+        let pane_id = workspace.root_pane();
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
         app.state.workspaces = vec![workspace];
         app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state
@@ -833,20 +831,20 @@ mod tests {
     async fn pending_agent_resume_launches_hidden_panes_with_current_terminal_area() {
         let mut app = test_app();
         let active_workspace = shepr_mux::workspace::Workspace::test_new("active");
-        let active_pane = active_workspace.tabs()[0].root_pane();
+        let active_pane = active_workspace.root_pane();
         let active_terminal = active_workspace
             .terminal_id(active_pane)
             .cloned()
             .expect("test precondition");
         let hidden_workspace = shepr_mux::workspace::Workspace::test_new("hidden");
-        let hidden_pane = hidden_workspace.tabs()[0].root_pane();
+        let hidden_pane = hidden_workspace.root_pane();
         let hidden_terminal = hidden_workspace
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
         app.state.workspaces = vec![active_workspace, hidden_workspace];
         app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -895,82 +893,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_agent_resume_launches_inactive_tab_panes_with_current_terminal_area() {
-        let mut app = test_app();
-        let mut workspace = shepr_mux::workspace::Workspace::test_new("tabs");
-        let active_pane = workspace.tabs()[0].root_pane();
-        let inactive_tab = workspace.test_add_tab(Some("agents"));
-        let inactive_pane = workspace.tabs()[inactive_tab].root_pane();
-        let inactive_terminal = workspace.tabs()[inactive_tab]
-            .terminal_id(inactive_pane)
-            .cloned()
-            .expect("test precondition");
-        app.state.workspaces = vec![workspace];
-        app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_active_index(Some(0));
-        app.state.ensure_test_terminals();
-        assert!(
-            app.state
-                .workspaces
-                .first()
-                .and_then(|ws| ws.tabs()[0].terminal_id(active_pane))
-                .is_some()
-        );
-        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
-        app.state
-            .terminals
-            .get_mut(&inactive_terminal)
-            .expect("inactive tab terminal should exist")
-            .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
-            "shepr:codex\0codex\0Id\0inactive-tab-session",
-            long_running_test_argv(),
-        ));
-
-        assert!(app.start_pending_agent_resumes(Instant::now(), false));
-        assert!(app.terminal_runtimes.get(&inactive_terminal).is_some());
-        assert!(
-            app.state
-                .terminals
-                .get(&inactive_terminal)
-                .expect("inactive tab terminal should still exist")
-                .pending_agent_resume_plan
-                .is_none(),
-            "inactive tab restored panes should not wait for tab focus"
-        );
-
-        for (_, runtime) in app.terminal_runtimes.drain() {
-            drop(runtime);
-        }
-    }
-
-    #[tokio::test]
-    async fn pending_agent_resume_launches_zoom_hidden_active_tab_panes() {
+    async fn pending_agent_resume_launches_zoom_hidden_panes() {
         let mut app = test_app();
         let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed");
-        let hidden_pane = workspace.tabs()[0].root_pane();
+        let hidden_pane = workspace.root_pane();
         // The split pane is focused, so it is the one the zoom shows.
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        workspace.set_tab_zoomed(0, true);
+        workspace.set_zoomed(true);
         let hidden_terminal = workspace
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
         app.state.workspaces = vec![workspace];
         app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -1016,7 +952,7 @@ mod tests {
     async fn pending_agent_resume_uses_current_terminal_area_for_background_panes() {
         let mut app = test_app();
         let previous_workspace = shepr_mux::workspace::Workspace::test_new("previous");
-        let previous_pane = previous_workspace.tabs()[0].root_pane();
+        let previous_pane = previous_workspace.root_pane();
         let previous_terminal = previous_workspace
             .terminal_id(previous_pane)
             .cloned()
@@ -1024,7 +960,7 @@ mod tests {
         let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
         app.state.workspaces = vec![previous_workspace, current_workspace];
         app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
+            .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
         app.state.set_active_index(Some(1));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -1068,7 +1004,7 @@ mod tests {
         }
     }
 
-    /// A visible pane resumes at the size its tab's next geometry pass gives
+    /// A visible pane resumes at the size its workspace's next geometry pass gives
     /// it: a runtimeless pane is laid out with the scrollbar gutter a fresh
     /// shell has, so the resumed shell is not one column wider than its first
     /// resize.
@@ -1085,15 +1021,15 @@ mod tests {
             .expect("test precondition");
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.test_record_all_tab_areas(area);
+        app.state.test_record_all_workspace_areas(area);
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        let target = crate::ui::TabSurfaceTarget::from_indices(&app.state, 0, 0);
+        let target = app.state.workspaces[0].id.clone();
         let content_rect = |app: &App| {
-            let layout = crate::ui::compute_tab_surface_for(
+            let layout = crate::ui::compute_surface_for(
                 &app.state,
                 &app.terminal_runtimes,
-                target.clone(),
+                Some(target.clone()),
                 area,
             );
             let info = layout

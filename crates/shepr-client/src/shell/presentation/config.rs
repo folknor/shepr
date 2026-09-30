@@ -49,8 +49,6 @@ impl ClientShellConfig {
             sidebar_bounds: config.sidebar_bounds(),
             sidebar_start_collapsed: config.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.sidebar_collapsed_mode,
-            tab_bar_position: config.tab_bar_position,
-            hide_tab_bar_when_single_tab: config.hide_tab_bar_when_single_tab,
             spaces: config.sidebar.spaces.clone(),
             agents: config.sidebar.agents.clone(),
             agent_panel_sort: config.agent_panel_sort,
@@ -59,7 +57,6 @@ impl ClientShellConfig {
             palette,
             // One validation pass; the launch already rejected invalid bindings.
             keybinds,
-            prompt_new_tab_name: config.prompt_new_tab_name,
             prompt_new_workspace_name: config.prompt_new_workspace_name,
             confirm_close: config.confirm_close,
             mouse_capture: config.mouse_capture,
@@ -104,7 +101,6 @@ impl ClientShellConfig {
         cols: u16,
         rows: u16,
         sidebar_collapsed: bool,
-        tab_count: usize,
         sidebar_width: u16,
     ) -> ClientShellLayout {
         // Expanded widths already come from the validated config or an input
@@ -119,33 +115,10 @@ impl ClientShellConfig {
         }
         .min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
-        let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
-        let tab_height = u16::from(show_tab_bar);
-        let (tab_bar, pane_surface) = match self.tab_bar_position {
-            TabBarPositionConfig::Top => (
-                Rect::new(main.x, 0, main.width, tab_height),
-                Rect::new(
-                    main.x,
-                    tab_height,
-                    main.width,
-                    rows.saturating_sub(tab_height),
-                ),
-            ),
-            TabBarPositionConfig::Bottom => (
-                Rect::new(
-                    main.x,
-                    rows.saturating_sub(tab_height),
-                    main.width,
-                    tab_height,
-                ),
-                Rect::new(main.x, 0, main.width, rows.saturating_sub(tab_height)),
-            ),
-        };
 
         ClientShellLayout {
             sidebar: Rect::new(0, 0, sidebar_width, rows),
-            tab_bar,
-            pane_surface,
+            pane_surface: main,
         }
     }
 
@@ -159,7 +132,7 @@ impl ClientShellConfig {
             None => self.sidebar_width,
         };
         let surface = self
-            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width)
+            .layout(cols, rows, sidebar_collapsed, sidebar_width)
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),
@@ -210,8 +183,8 @@ mod tests {
             )
         );
         assert_eq!(
-            endpoint.keybinds.keybinds.new_tab.label().as_deref(),
-            Some("prefix+c")
+            endpoint.keybinds.keybinds.next_workspace.label().as_deref(),
+            Some("prefix+n")
         );
     }
 

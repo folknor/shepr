@@ -9,11 +9,6 @@ impl ClientContextMenuOverlay {
             ClientContextMenuTarget::Workspace { .. } => {
                 vec![item("Rename", Action::Rename), item("Close", Action::Close)]
             }
-            ClientContextMenuTarget::Tab { .. } => vec![
-                item("New tab", Action::NewTab),
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-            ],
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -66,30 +61,6 @@ impl ClientShellState {
         }
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace { workspace_id },
-            x,
-            y,
-            highlighted: 0,
-        }));
-    }
-
-    pub(super) fn open_tab_context_menu(
-        &mut self,
-        tab_id: shepr_protocol::PublicTabId,
-        x: u16,
-        y: u16,
-    ) {
-        let Some(tab) = self
-            .snapshot
-            .as_deref()
-            .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
-        else {
-            return;
-        };
-        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target: ClientContextMenuTarget::Tab {
-                tab_id,
-                workspace_id: tab.workspace_id.clone(),
-            },
             x,
             y,
             highlighted: 0,
@@ -158,10 +129,6 @@ impl ClientShellState {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {
                 self.activate_workspace_context_action(workspace_id, action, outcome);
             }
-            ClientContextMenuTarget::Tab {
-                tab_id,
-                workspace_id,
-            } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
             ClientContextMenuTarget::Pane {
                 pane_id,
                 workspace_id,
@@ -219,77 +186,6 @@ impl ClientShellState {
                         outcome,
                     );
                 }
-            }
-            _ => {}
-        }
-    }
-
-    fn activate_tab_context_action(
-        &mut self,
-        tab_id: shepr_protocol::PublicTabId,
-        workspace_id: shepr_protocol::WorkspaceId,
-        action: ClientContextMenuAction,
-        outcome: &mut ClientShellInput,
-    ) {
-        use shepr_protocol::command::{EndpointCommand, TabTarget};
-
-        self.push_endpoint_command(
-            EndpointCommand::TabFocus(TabTarget {
-                tab_id: tab_id.to_string(),
-            }),
-            outcome,
-        );
-        match action {
-            ClientContextMenuAction::NewTab => {
-                if self.config.prompt_new_tab_name {
-                    let existing_tabs = self.snapshot.as_deref().map_or(0, |snapshot| {
-                        snapshot
-                            .tabs
-                            .iter()
-                            .filter(|tab| tab.workspace_id == workspace_id)
-                            .count()
-                    });
-                    let default_name = (existing_tabs + 1).to_string();
-                    self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                        title: "new tab",
-                        input: TextEditor::new(&default_name, true),
-                        target: ClientRenameTarget::NewTab {
-                            workspace_id,
-                            default_name,
-                        },
-                    }));
-                } else {
-                    self.push_endpoint_command(
-                        EndpointCommand::TabCreate(shepr_protocol::command::TabCreateParams {
-                            workspace_id: Some(workspace_id.into()),
-                            cwd: None,
-                            focus: true,
-                            label: None,
-                            env: Default::default(),
-                        }),
-                        outcome,
-                    );
-                }
-            }
-            ClientContextMenuAction::Rename => {
-                let tab = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id));
-                if let Some(tab) = tab {
-                    self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                        title: "rename tab",
-                        input: TextEditor::new(&tab.label, false),
-                        target: ClientRenameTarget::Tab {
-                            tab_id,
-                            auto_name: !tab.custom_label,
-                            original_name: tab.label.clone(),
-                        },
-                    }));
-                }
-            }
-            ClientContextMenuAction::Close => {
-                self.request_tab_close(&tab_id, outcome);
             }
             _ => {}
         }

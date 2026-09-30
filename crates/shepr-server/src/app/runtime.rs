@@ -63,7 +63,6 @@ impl App {
                 .flatten(),
             self.pending_agent_resume_deadline,
             self.session_saver.deadline(),
-            self.next_tab_bar_status_deadline(),
             render_deadline,
         ]
         .into_iter()
@@ -136,11 +135,11 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel().1,
         );
         let ws = Workspace::test_new("test");
-        let pane_id = ws.tabs()[0].root_pane();
+        let pane_id = ws.root_pane();
         app.state.workspaces.push(ws);
         app.state.set_active_index(Some(0));
         app.state
-            .test_record_all_tab_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
+            .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
         (app, pane_id)
     }
 }

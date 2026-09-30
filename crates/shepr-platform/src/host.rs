@@ -157,40 +157,6 @@ pub fn hostname() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-pub fn local_datetime() -> Option<time::PrimitiveDateTime> {
-    let mut timestamp: libc::time_t = 0;
-    // SAFETY: time(2) writes one time_t into a live local.
-    if unsafe { libc::time(&mut timestamp) } == -1 {
-        return None;
-    }
-    // SAFETY: tm is a plain C struct of integers and a pointer; all-zero
-    // (a null zone name) is a valid value, and localtime_r overwrites it.
-    let mut local: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers are live locals; localtime_r is the reentrant
-    // form and keeps no reference to either.
-    if unsafe { libc::localtime_r(&timestamp, &mut local) }.is_null() {
-        return None;
-    }
-    datetime_from_tm(&local)
-}
-
-fn datetime_from_tm(value: &libc::tm) -> Option<time::PrimitiveDateTime> {
-    let month = time::Month::try_from(u8::try_from(value.tm_mon + 1).ok()?).ok()?;
-    let date = time::Date::from_calendar_date(
-        value.tm_year + 1900,
-        month,
-        u8::try_from(value.tm_mday).ok()?,
-    )
-    .ok()?;
-    let time = time::Time::from_hms(
-        u8::try_from(value.tm_hour).ok()?,
-        u8::try_from(value.tm_min).ok()?,
-        u8::try_from(value.tm_sec).ok()?,
-    )
-    .ok()?;
-    Some(time::PrimitiveDateTime::new(date, time))
-}
-
 pub(super) fn effective_uid() -> libc::uid_t {
     // SAFETY: geteuid(2) takes no arguments, cannot fail and touches no memory.
     unsafe { libc::geteuid() }

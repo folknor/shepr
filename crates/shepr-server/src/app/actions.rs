@@ -7,18 +7,10 @@ use shepr_mux::events::AppEvent;
 use shepr_mux::git::WorkspaceGitStatus;
 use shepr_mux::terminal::{EffectiveStateChange, TerminalStateMutation};
 use shepr_mux::workspace::{
-    PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
+    PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope,
 };
 
 use super::state::{AppState, Mode, PaneFocusTarget};
-
-fn public_tab_id_for_index(
-    ws: &shepr_mux::workspace::Workspace,
-    tab_idx: usize,
-) -> Option<shepr_protocol::PublicTabId> {
-    let tab_number = ws.public_tab_number(tab_idx)?;
-    Some(shepr_protocol::PublicTabId::new(&ws.id, tab_number))
-}
 
 /// What applying an event did to a terminal's effective agent state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,40 +55,6 @@ pub(crate) struct WorkspaceRemovalOutcome {
     pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TabRemovalScope {
-    Tab,
-    Workspace,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TabRemovalPlan {
-    pub(crate) workspace_index: usize,
-    pub(crate) tab_index: usize,
-    pub(crate) scope: TabRemovalScope,
-    workspace_id: shepr_protocol::WorkspaceId,
-    tab_number: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TabRemovalOutcome {
-    pub(crate) workspace_index: usize,
-    pub(crate) scope: TabRemovalScope,
-    pub(crate) pane_ids: Vec<PaneId>,
-    pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
-    /// Terminals the removal detached from state; the caller shuts down
-    /// their runtimes.
-    pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
-    pub(crate) tab: Option<TabRemoval>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "a stale plan removed nothing; the caller must report it"]
-pub(crate) enum TabRemovalCommit {
-    Removed(TabRemovalOutcome),
-    Stale,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceCreationOutcome {
     pub(crate) workspace_index: usize,
@@ -108,7 +66,6 @@ pub(crate) struct WorkspaceCreationOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneCreationOutcome {
     pub(crate) workspace_index: usize,
-    pub(crate) tab_index: usize,
     pub(crate) pane_id: PaneId,
     pub(crate) terminal_id: shepr_protocol::TerminalId,
 }
@@ -123,7 +80,6 @@ pub(crate) enum PaneContextFallback {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PaneContext {
     pub(crate) workspace_index: usize,
-    pub(crate) tab_index: usize,
     pub(crate) pane_id: PaneId,
 }
 
@@ -134,7 +90,7 @@ pub(crate) enum PaneZoomCommand {
     Off,
 }
 
-/// What a zoom command did: whether the tab's zoom and the pane focus moved.
+/// What a zoom command did: whether the workspace's zoom and the pane focus moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PaneZoomOutcome {
     pub changed: bool,

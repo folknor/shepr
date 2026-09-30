@@ -722,7 +722,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-platform-layer"
 from = "shepr-platform"
-allow = ["crossterm", "futures-util", "interprocess", "libc", "sha2", "shepr-core", "time", "tokio", "tracing", "tracing-subscriber", "zbus"]
+allow = ["crossterm", "futures-util", "interprocess", "libc", "sha2", "shepr-core", "tokio", "tracing", "tracing-subscriber", "zbus"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -804,7 +804,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-config-layer"
 from = "shepr-config"
-allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "shepr-platform", "time", "toml"]
+allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "shepr-platform", "toml"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -855,5 +855,5 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "interprocess", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-remote", "shepr-termio", "shepr-vt", "time", "tokio", "tracing", "unicode-width"]
+allow = ["base64", "bytes", "crossterm", "ctrlc", "interprocess", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]

@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 
 use crate::app::RenderDemand;
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
-use shepr_protocol::PublicTabId;
+use shepr_protocol::WorkspaceId;
 use shepr_protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
 };
@@ -42,7 +42,7 @@ pub(crate) struct ClientShellState {
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Presses forwarded by this shell that need release on abrupt teardown.
     held_inputs: HashMap<ClientShellPressId, ClientShellHeldInput>,
-    /// Connection-local workspace and tab projection.
+    /// Connection-local workspace projection.
     pub(crate) location: Option<ClientShellLocation>,
     /// Last coherent shell replacement sent to this client.
     pub(crate) snapshot: Option<shepr_protocol::ClientShellSnapshot>,
@@ -130,7 +130,7 @@ pub(crate) struct RenderTarget {
 /// Presentation (surface size, outer focus, location, window title, input
 /// modes) lives on each connection; nothing here or in the app mirrors one
 /// client's view as a session-wide one. The registry holds two arbitrations
-/// between clients: which one controls each tab's PTY geometry, and which one
+/// between clients: which one controls each workspace's PTY geometry, and which one
 /// was active most recently (the foreground client). The foreground client
 /// supplies the host theme panes are coloured with, the one effect a pane has
 /// one of whichever client views it, and receives clipboard writes from panes
@@ -139,7 +139,7 @@ pub(crate) struct ClientRegistry {
     connections: HashMap<ClientId, ClientConnection>,
     next_client_id: u64,
     foreground_client_id: Option<ClientId>,
-    geometry_controllers: HashMap<PublicTabId, ClientId>,
+    geometry_controllers: HashMap<WorkspaceId, ClientId>,
     next_activity_stamp: u64,
 }
 
@@ -288,32 +288,21 @@ impl ClientRegistry {
         self.geometry_controllers.clear();
     }
 
-    pub(crate) fn geometry_controller(&self, tab_id: &PublicTabId) -> Option<ClientId> {
-        self.geometry_controllers.get(tab_id).copied()
+    pub(crate) fn geometry_controller(&self, workspace_id: &WorkspaceId) -> Option<ClientId> {
+        self.geometry_controllers.get(workspace_id).copied()
     }
 
     pub(crate) fn set_geometry_controller(
         &mut self,
-        tab_id: PublicTabId,
+        workspace_id: WorkspaceId,
         client_id: ClientId,
     ) -> Option<ClientId> {
-        self.geometry_controllers.insert(tab_id, client_id)
+        self.geometry_controllers.insert(workspace_id, client_id)
     }
 
-    pub(crate) fn claim_geometry(&mut self, tab_id: PublicTabId, client_id: ClientId) -> bool {
-        if !self
-            .connections
-            .get(&client_id)
-            .is_some_and(ClientConnection::is_active_shell_client)
-        {
-            return false;
-        }
-        self.geometry_controllers.insert(tab_id, client_id) != Some(client_id)
-    }
-
-    pub(crate) fn claim_unowned_geometry(
+    pub(crate) fn claim_geometry(
         &mut self,
-        tab_id: PublicTabId,
+        workspace_id: WorkspaceId,
         client_id: ClientId,
     ) -> bool {
         if !self
@@ -323,19 +312,34 @@ impl ClientRegistry {
         {
             return false;
         }
-        if self.geometry_controllers.contains_key(&tab_id) {
+        self.geometry_controllers.insert(workspace_id, client_id) != Some(client_id)
+    }
+
+    pub(crate) fn claim_unowned_geometry(
+        &mut self,
+        workspace_id: WorkspaceId,
+        client_id: ClientId,
+    ) -> bool {
+        if !self
+            .connections
+            .get(&client_id)
+            .is_some_and(ClientConnection::is_active_shell_client)
+        {
             return false;
         }
-        self.geometry_controllers.insert(tab_id, client_id);
+        if self.geometry_controllers.contains_key(&workspace_id) {
+            return false;
+        }
+        self.geometry_controllers.insert(workspace_id, client_id);
         true
     }
 
     pub(crate) fn retain_geometry_controllers(
         &mut self,
-        mut keep: impl FnMut(&PublicTabId, ClientId) -> bool,
+        mut keep: impl FnMut(&WorkspaceId, ClientId) -> bool,
     ) {
         self.geometry_controllers
-            .retain(|tab_id, client_id| keep(tab_id, *client_id));
+            .retain(|workspace_id, client_id| keep(workspace_id, *client_id));
     }
 
     pub(crate) fn remove_geometry_controllers_for(&mut self, client_id: ClientId) {
@@ -360,67 +364,31 @@ pub(crate) struct ClientShellHeldInput {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
-    pub(crate) focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
-    pub(crate) active_tab_ids: HashMap<shepr_protocol::WorkspaceId, PublicTabId>,
+    pub(crate) focused_workspace_id: Option<WorkspaceId>,
 }
 
 pub(crate) struct ClientShellTopology {
-    pub(crate) focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
-    pub(crate) fallback_workspace_id: Option<shepr_protocol::WorkspaceId>,
-    pub(crate) active_tab_ids: HashMap<shepr_protocol::WorkspaceId, PublicTabId>,
-    pub(crate) tab_workspace_ids: HashMap<PublicTabId, shepr_protocol::WorkspaceId>,
+    pub(crate) focused_workspace_id: Option<WorkspaceId>,
+    pub(crate) fallback_workspace_id: Option<WorkspaceId>,
+    pub(crate) live_workspace_ids: HashSet<WorkspaceId>,
 }
 
 impl ClientShellLocation {
     pub(crate) fn from_snapshot(snapshot: &shepr_protocol::ClientShellSnapshot) -> Self {
         Self {
             focused_workspace_id: snapshot.focused_workspace_id.clone(),
-            active_tab_ids: snapshot
-                .workspaces
-                .iter()
-                .map(|workspace| {
-                    (
-                        workspace.workspace_id.clone(),
-                        workspace.active_tab_id.clone(),
-                    )
-                })
-                .collect(),
         }
     }
 
-    pub(crate) fn focused_tab_id(&self) -> Option<&PublicTabId> {
-        self.focused_workspace_id
-            .as_ref()
-            .and_then(|workspace_id| self.active_tab_ids.get(workspace_id))
-    }
-
-    pub(crate) fn focus_workspace(&mut self, workspace_id: shepr_protocol::WorkspaceId) {
+    pub(crate) fn focus_workspace(&mut self, workspace_id: WorkspaceId) {
         self.focused_workspace_id = Some(workspace_id);
     }
 
-    pub(crate) fn focus_tab(
-        &mut self,
-        workspace_id: shepr_protocol::WorkspaceId,
-        tab_id: PublicTabId,
-    ) {
-        self.focused_workspace_id = Some(workspace_id.clone());
-        self.active_tab_ids.insert(workspace_id, tab_id);
-    }
-
     pub(crate) fn reconcile(&mut self, topology: &ClientShellTopology) {
-        self.active_tab_ids.retain(|workspace_id, tab_id| {
-            topology.active_tab_ids.contains_key(workspace_id)
-                && topology.tab_workspace_ids.get(tab_id) == Some(workspace_id)
-        });
-        for (workspace_id, tab_id) in &topology.active_tab_ids {
-            self.active_tab_ids
-                .entry(workspace_id.clone())
-                .or_insert_with(|| tab_id.clone());
-        }
         if self
             .focused_workspace_id
             .as_ref()
-            .is_none_or(|workspace_id| !topology.active_tab_ids.contains_key(workspace_id))
+            .is_none_or(|workspace_id| !topology.live_workspace_ids.contains(workspace_id))
         {
             self.focused_workspace_id = topology
                 .focused_workspace_id
@@ -788,14 +756,14 @@ mod tests {
         assert!(registry.promote_to_foreground(first_id));
         assert_eq!(registry.foreground_client_id(), Some(first_id));
         assert!(!registry.promote_to_foreground(second_id));
-        let tab_id: PublicTabId = shepr_test_fixtures::id("w1:t1");
-        assert!(registry.claim_geometry(tab_id.clone(), first_id));
-        assert!(!registry.claim_unowned_geometry(tab_id.clone(), first_id));
-        assert_eq!(registry.geometry_controller(&tab_id), Some(first_id));
+        let workspace_id: WorkspaceId = shepr_test_fixtures::id("w1");
+        assert!(registry.claim_geometry(workspace_id.clone(), first_id));
+        assert!(!registry.claim_unowned_geometry(workspace_id.clone(), first_id));
+        assert_eq!(registry.geometry_controller(&workspace_id), Some(first_id));
 
         let (_, was_foreground) = registry.remove_client(first_id);
         assert!(was_foreground);
-        assert_eq!(registry.geometry_controller(&tab_id), None);
+        assert_eq!(registry.geometry_controller(&workspace_id), None);
         assert!(!registry.promote_latest_remaining());
         assert_eq!(registry.foreground_client_id(), None);
         let (removed, was_foreground) = registry.remove_client(second_id);

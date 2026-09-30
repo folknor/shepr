@@ -4,7 +4,7 @@ use crate::terminal::TerminalState;
 use shepr_agent::detect::AgentState;
 use shepr_protocol::TerminalId;
 
-use super::{Tab, Workspace};
+use super::Workspace;
 
 fn aggregate_attention(panes: impl Iterator<Item = AgentState>) -> AgentState {
     panes
@@ -12,29 +12,15 @@ fn aggregate_attention(panes: impl Iterator<Item = AgentState>) -> AgentState {
         .unwrap_or(AgentState::Unknown)
 }
 
-fn pane_states<'a>(
-    tab: &'a Tab,
-    terminals: &'a HashMap<TerminalId, TerminalState>,
-) -> impl Iterator<Item = AgentState> + 'a {
-    tab.panes.values().filter_map(|pane| {
-        terminals
-            .get(&pane.attached_terminal_id)
-            .map(|terminal| terminal.state)
-    })
-}
-
-impl Tab {
-    /// Aggregate agent state of this tab's panes; see `Workspace::aggregate_state`.
-    pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> AgentState {
-        aggregate_attention(pane_states(self, terminals))
-    }
-}
-
 impl Workspace {
-    /// Aggregate agent state over every pane in every tab, preferring Blocked,
-    /// then Working, then Idle.
+    /// Aggregate agent state over every pane, preferring Blocked, then
+    /// Working, then Idle.
     pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> AgentState {
-        aggregate_attention(self.tabs.iter().flat_map(|tab| pane_states(tab, terminals)))
+        aggregate_attention(self.panes.values().filter_map(|pane| {
+            terminals
+                .get(&pane.attached_terminal_id)
+                .map(|terminal| terminal.state)
+        }))
     }
 }
 
@@ -55,7 +41,7 @@ mod tests {
     fn aggregate_state_all_unknown() {
         let ws = Workspace::test_new("test");
         let mut terminals = HashMap::new();
-        let root = ws.tabs[0].root_pane;
+        let root = ws.root_pane;
         let terminal = terminal_for_pane(&ws, root);
         terminals.insert(terminal.id.clone(), terminal);
 
@@ -73,31 +59,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_aggregate_state_covers_only_its_own_panes() {
-        let mut ws = Workspace::test_new("test");
-        let first_root = ws.tabs[0].root_pane;
-        let second_tab = ws.test_add_tab(None);
-        let second_root = ws.tabs[second_tab].root_pane;
-        let mut terminals = HashMap::new();
-        let mut blocked = terminal_for_pane(&ws, first_root);
-        blocked.state = AgentState::Blocked;
-        terminals.insert(blocked.id.clone(), blocked);
-        let mut working = terminal_for_pane(&ws, second_root);
-        working.state = AgentState::Working;
-        terminals.insert(working.id.clone(), working);
-
-        assert_eq!(
-            ws.tabs[second_tab].aggregate_state(&terminals),
-            AgentState::Working
-        );
-        assert_eq!(ws.aggregate_state(&terminals), AgentState::Blocked);
-    }
-
-    #[test]
     fn blocked_state_beats_other_panes_in_a_split() {
         let mut ws = Workspace::test_new("test");
         let second = ws.test_split(Direction::Horizontal);
-        let first = ws.tabs[0]
+        let first = ws
             .panes
             .keys()
             .find(|id| **id != second)
@@ -111,6 +76,6 @@ mod tests {
         blocked.state = AgentState::Blocked;
         terminals.insert(blocked.id.clone(), blocked);
 
-        assert_eq!(ws.tabs[0].aggregate_state(&terminals), AgentState::Blocked);
+        assert_eq!(ws.aggregate_state(&terminals), AgentState::Blocked);
     }
 }

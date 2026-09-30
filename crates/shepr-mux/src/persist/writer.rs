@@ -683,16 +683,13 @@ mod tests {
             "workspaces": [{
                 "id": "w1",
                 "identity_cwd": "/shepr-writer-test",
-                "tabs": [{
-                    "layout": { "Pane": 0 },
-                    "panes": {
-                        "0": { "cwd": "/shepr-writer-test" }
-                    },
-                    "zoomed": false,
-                    "focused": 0,
-                    "root_pane": 0
-                }],
-                "active_tab": 0
+                "layout": { "Pane": 0 },
+                "panes": {
+                    "0": { "cwd": "/shepr-writer-test" }
+                },
+                "zoomed": false,
+                "focused": 0,
+                "root_pane": 0
             }],
             "active": 0,
             "selected": 0
@@ -835,12 +832,12 @@ mod tests {
             .expect("session mtime");
         let rolled_back = saved_at - std::time::Duration::from_secs(86400);
         let mut changed = snapshot();
-        let tab = &mut changed.workspaces[0].tabs[0];
-        let pane = tab.panes.remove(&0).expect("test precondition");
-        tab.panes.insert(1, pane);
-        tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
-        tab.focused = Some(1);
-        tab.root_pane = Some(1);
+        let workspace = &mut changed.workspaces[0];
+        let pane = workspace.panes.remove(&0).expect("test precondition");
+        workspace.panes.insert(1, pane);
+        workspace.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
+        workspace.focused = Some(1);
+        workspace.root_pane = Some(1);
         writer.save(&changed, None, rolled_back).expect("save");
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();
@@ -873,12 +870,12 @@ mod tests {
             .modified()
             .expect("snapshot mtime");
         let mut changed = snapshot();
-        let tab = &mut changed.workspaces[0].tabs[0];
-        let pane = tab.panes.remove(&0).expect("test precondition");
-        tab.panes.insert(1, pane);
-        tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
-        tab.focused = Some(1);
-        tab.root_pane = Some(1);
+        let workspace = &mut changed.workspaces[0];
+        let pane = workspace.panes.remove(&0).expect("test precondition");
+        workspace.panes.insert(1, pane);
+        workspace.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
+        workspace.focused = Some(1);
+        workspace.root_pane = Some(1);
         writer
             .save(
                 &changed,

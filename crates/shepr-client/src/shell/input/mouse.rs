@@ -514,14 +514,14 @@ impl ClientShellState {
         outcome
     }
 
-    fn pane_split_target_is_current(&self, hit: &PaneSplitHit, tab_id: &str) -> Option<bool> {
+    fn pane_split_target_is_current(&self, hit: &PaneSplitHit, workspace_id: &str) -> Option<bool> {
         let snapshot = self.snapshot.as_deref()?;
         let surface = self.pane_surface.as_ref()?;
         if snapshot.revision != surface.projection_revision {
             return None;
         }
         Some(
-            snapshot.focused_tab_id.as_deref() == Some(tab_id)
+            snapshot.focused_workspace_id.as_deref() == Some(workspace_id)
                 && pane_surface_topology_signature(surface) == hit.topology_signature,
         )
     }
@@ -539,64 +539,6 @@ impl ClientShellState {
             shepr_core::layout::MIN_SPLIT_RATIO,
             shepr_core::layout::MAX_SPLIT_RATIO,
         )
-    }
-
-    fn tab_drop_index_at(&self, point: (u16, u16)) -> Option<usize> {
-        let snapshot = self.snapshot.as_deref()?;
-        let workspace_id = snapshot.focused_workspace_id.as_deref()?;
-        let tabs = snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == workspace_id)
-            .collect::<Vec<_>>();
-        let visible = self
-            .hits
-            .tabs
-            .iter()
-            .filter_map(|(rect, tab_id)| {
-                tabs.iter()
-                    .position(|tab| tab.tab_id == *tab_id)
-                    .map(|index| (index, *rect))
-            })
-            .collect::<Vec<_>>();
-        let (first_index, first_rect) = *visible.first()?;
-        let (last_index, last_rect) = *visible.last()?;
-        let on_tab_row = point.1 == first_rect.y;
-        if !on_tab_row {
-            return None;
-        }
-        if super::contains(self.hits.tab_scroll_left, point) {
-            return Some(0);
-        }
-        if super::contains(self.hits.tab_scroll_right, point) {
-            return Some(tabs.len());
-        }
-        let left_edge = if first_index == 0 {
-            first_rect.x
-        } else {
-            self.hits.tab_scroll_left.right()
-        };
-        let right_edge = if last_index + 1 >= tabs.len() {
-            last_rect.right()
-        } else {
-            self.hits.tab_scroll_right.x.saturating_sub(1)
-        };
-        if point.0 <= left_edge {
-            return Some(first_index);
-        }
-        if point.0 >= right_edge {
-            return Some(last_index + 1);
-        }
-        for (index, rect) in visible {
-            let midpoint = rect.x + rect.width / 2;
-            if point.0 < midpoint {
-                return Some(index);
-            }
-            if point.0 < rect.right() {
-                return Some(index + 1);
-            }
-        }
-        Some(last_index + 1)
     }
 
     fn workspace_drop_target_at(
@@ -873,16 +815,16 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::PaneSplit {
                     hit,
-                    tab_id,
+                    workspace_id,
                     grab_offset,
                     throttle,
                     ..
                 }) => {
                     let hit = hit.clone();
-                    let tab_id = tab_id.clone();
+                    let workspace_id = workspace_id.clone();
                     let grab_offset = *grab_offset;
                     let mut next_throttle = *throttle;
-                    match self.pane_split_target_is_current(&hit, &tab_id) {
+                    match self.pane_split_target_is_current(&hit, &workspace_id) {
                         Some(true) => {}
                         Some(false) => {
                             self.chrome_drag = None;
@@ -906,7 +848,7 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                 shepr_protocol::command::LayoutSetSplitRatioParams {
-                                    tab_id: Some(tab_id.to_string()),
+                                    workspace_id: Some(workspace_id.to_string()),
                                     pane_id: None,
                                     path: hit
                                         .path
@@ -921,18 +863,6 @@ impl ClientShellState {
                             outcome,
                         );
                     }
-                    return;
-                }
-                Some(ClientChromeDrag::Tab { .. }) => {
-                    let insert_index = self.tab_drop_index_at(point);
-                    if let Some(ClientChromeDrag::Tab {
-                        insert_index: current,
-                        ..
-                    }) = self.chrome_drag.as_mut()
-                    {
-                        *current = insert_index;
-                    }
-                    outcome.repaint = true;
                     return;
                 }
                 Some(ClientChromeDrag::Workspace { .. }) => {
@@ -966,62 +896,11 @@ impl ClientShellState {
                 }
                 return;
             }
-            if let Some(press) = self.tab_press.as_ref() {
-                let delta = mouse
-                    .column
-                    .abs_diff(press.start_column)
-                    .max(mouse.row.abs_diff(press.start_row));
-                if delta >= 1
-                    && let Some(insert_index) = self.tab_drop_index_at(point)
-                {
-                    self.chrome_drag = Some(ClientChromeDrag::Tab {
-                        tab_id: press.tab_id.clone(),
-                        workspace_id: press.workspace_id.clone(),
-                        insert_index: Some(insert_index),
-                    });
-                    outcome.repaint = true;
-                }
-                return;
-            }
         }
         if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
             if let Some(drag) = self.chrome_drag.take() {
                 self.workspace_press = None;
-                self.tab_press = None;
                 match drag {
-                    ClientChromeDrag::Tab {
-                        tab_id,
-                        workspace_id,
-                        ..
-                    } => {
-                        let insert_index = self.tab_drop_index_at(point);
-                        let valid_drop = self.snapshot.as_deref().is_some_and(|snapshot| {
-                            snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())
-                                && snapshot.tabs.iter().any(|tab| {
-                                    tab.tab_id == tab_id && tab.workspace_id == workspace_id
-                                })
-                                && insert_index.is_some_and(|index| {
-                                    index
-                                        <= snapshot
-                                            .tabs
-                                            .iter()
-                                            .filter(|tab| tab.workspace_id == workspace_id)
-                                            .count()
-                                })
-                        });
-                        if valid_drop {
-                            self.push_endpoint_command(
-                                shepr_protocol::command::EndpointCommand::TabMove(
-                                    shepr_protocol::command::TabMoveParams {
-                                        tab_id: tab_id.to_string(),
-                                        insert_index: insert_index.unwrap_or_default(),
-                                    },
-                                ),
-                                outcome,
-                            );
-                        }
-                        outcome.repaint = true;
-                    }
                     ClientChromeDrag::Workspace {
                         source_workspace_id,
                         target,
@@ -1060,13 +939,13 @@ impl ClientShellState {
                     }
                     ClientChromeDrag::PaneSplit {
                         hit,
-                        tab_id,
+                        workspace_id,
                         grab_offset,
                         last_sent_ratio,
                         ..
                     } => {
                         let target_is_current =
-                            self.pane_split_target_is_current(&hit, &tab_id) == Some(true);
+                            self.pane_split_target_is_current(&hit, &workspace_id) == Some(true);
                         let ratio = Self::pane_split_ratio(&hit, grab_offset, point);
                         if target_is_current
                             && last_sent_ratio
@@ -1075,7 +954,7 @@ impl ClientShellState {
                             self.push_endpoint_command(
                                 shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                     shepr_protocol::command::LayoutSetSplitRatioParams {
-                                        tab_id: Some(tab_id.to_string()),
+                                        workspace_id: Some(workspace_id.to_string()),
                                         pane_id: None,
                                         path: hit
                                             .path
@@ -1107,17 +986,6 @@ impl ClientShellState {
             }
             if let Some(press) = self.workspace_press.take() {
                 self.finish_endpoint_workspace_press(press, outcome);
-                return;
-            }
-            if let Some(press) = self.tab_press.take() {
-                self.push_endpoint_command(
-                    shepr_protocol::command::EndpointCommand::TabFocus(
-                        shepr_protocol::command::TabTarget {
-                            tab_id: press.tab_id.to_string(),
-                        },
-                    ),
-                    outcome,
-                );
                 return;
             }
         }
@@ -1459,17 +1327,6 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                let tab_id = self
-                    .hits
-                    .tabs
-                    .iter()
-                    .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, tab_id)| tab_id.clone());
-                if let Some(tab_id) = tab_id {
-                    self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
-                    outcome.repaint = true;
-                    return;
-                }
                 let pane_id = self
                     .hits
                     .panes
@@ -1480,40 +1337,6 @@ impl ClientShellState {
                     self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
                     outcome.repaint = true;
                 }
-            }
-            MouseEventKind::ScrollUp
-                if self
-                    .hits
-                    .tabs
-                    .iter()
-                    .any(|(rect, _)| super::contains(*rect, point))
-                    || super::contains(self.hits.tab_scroll_left, point)
-                    || super::contains(self.hits.tab_scroll_right, point)
-                    || super::contains(self.hits.new_tab, point) =>
-            {
-                self.record_binding(
-                    &shepr_termio::input::KeybindMatch::Action(
-                        shepr_termio::input::KeybindAction::PreviousTab,
-                    ),
-                    outcome,
-                );
-            }
-            MouseEventKind::ScrollDown
-                if self
-                    .hits
-                    .tabs
-                    .iter()
-                    .any(|(rect, _)| super::contains(*rect, point))
-                    || super::contains(self.hits.tab_scroll_left, point)
-                    || super::contains(self.hits.tab_scroll_right, point)
-                    || super::contains(self.hits.new_tab, point) =>
-            {
-                self.record_binding(
-                    &shepr_termio::input::KeybindMatch::Action(
-                        shepr_termio::input::KeybindAction::NextTab,
-                    ),
-                    outcome,
-                );
             }
             MouseEventKind::ScrollUp if super::contains(self.hits.agent_body, point) => {
                 let next = self.agent_scroll.saturating_sub(1);
@@ -1559,7 +1382,6 @@ impl ClientShellState {
                 self.word_selection_gesture = None;
                 let previous_pane_click = self.last_pane_click.take();
                 self.workspace_press = None;
-                self.tab_press = None;
                 // A width drag whose release never arrived (the button went up outside the
                 // terminal) still owes the endpoint its resize.
                 if let Some(ClientChromeDrag::SidebarWidth {
@@ -1679,41 +1501,6 @@ impl ClientShellState {
                     );
                     return;
                 }
-                if super::contains(self.hits.new_tab, point) {
-                    self.record_binding(
-                        &shepr_termio::input::KeybindMatch::Action(
-                            shepr_termio::input::KeybindAction::NewTab,
-                        ),
-                        outcome,
-                    );
-                    return;
-                }
-                if super::contains(self.hits.tab_scroll_left, point) {
-                    self.tab_scroll = self.tab_scroll.saturating_sub(1);
-                    outcome.repaint = true;
-                    return;
-                }
-                if super::contains(self.hits.tab_scroll_right, point) {
-                    let tab_count = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| {
-                            snapshot.focused_workspace_id.as_deref().map(|id| {
-                                snapshot
-                                    .tabs
-                                    .iter()
-                                    .filter(|tab| tab.workspace_id == id)
-                                    .count()
-                            })
-                        })
-                        .unwrap_or(0);
-                    self.tab_scroll = self
-                        .tab_scroll
-                        .saturating_add(1)
-                        .min(tab_count.saturating_sub(1));
-                    outcome.repaint = true;
-                    return;
-                }
                 if super::contains(self.hits.sidebar_toggle, point) {
                     self.sidebar_collapsed = !self.sidebar_collapsed;
                     self.sidebar_collapsed_manual = true;
@@ -1735,34 +1522,6 @@ impl ClientShellState {
                     });
                 if let Some(workspace_press) = workspace_press {
                     self.workspace_press = Some(workspace_press);
-                    return;
-                }
-                let tab_press = self
-                    .config
-                    .mouse_capture
-                    .then(|| {
-                        self.hits
-                            .tabs
-                            .iter()
-                            .find(|(rect, _)| super::contains(*rect, point))
-                            .and_then(|(_, tab_id)| {
-                                let tab = self
-                                    .snapshot
-                                    .as_deref()?
-                                    .tabs
-                                    .iter()
-                                    .find(|tab| tab.tab_id == *tab_id)?;
-                                Some(ClientTabPress {
-                                    tab_id: tab.tab_id.clone(),
-                                    workspace_id: tab.workspace_id.clone(),
-                                    start_column: mouse.column,
-                                    start_row: mouse.row,
-                                })
-                            })
-                    })
-                    .flatten();
-                if let Some(tab_press) = tab_press {
-                    self.tab_press = Some(tab_press);
                     return;
                 }
                 if self.handle_endpoint_agent_click(point, outcome) {
@@ -1832,10 +1591,10 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.hit_rect, point))
                     .cloned();
                 if let Some(hit) = split_hit {
-                    let Some(tab_id) = self
+                    let Some(workspace_id) = self
                         .snapshot
                         .as_deref()
-                        .and_then(|snapshot| snapshot.focused_tab_id.clone())
+                        .and_then(|snapshot| snapshot.focused_workspace_id.clone())
                     else {
                         return;
                     };
@@ -1848,7 +1607,7 @@ impl ClientShellState {
                         last_sent_ratio: None,
                         throttle: Throttle::new(crate::limits::MOUSE_DRAG_SEND_INTERVAL),
                         hit,
-                        tab_id,
+                        workspace_id,
                     });
                     return;
                 }

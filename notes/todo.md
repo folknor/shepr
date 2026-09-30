@@ -24,11 +24,11 @@ Parked until the situation comes up.
   opencode `*.test.ts` next to its assets are not run by any gate. Running them
   would bring node or bun into the gate; the alternative is deleting them, with
   any coverage that matters moved to Rust tests over the installed asset.
-- **A visible notice for a partially restored session.** A tab or workspace
+- **A visible notice for a partially restored session.** A workspace
   dropped during restore leaves only a server log line and a backup of the
   original `session.json`; pane-level restore errors draw inside the pane, but
-  there is no session-level warning channel from server to client to say a tab
-  was dropped. Build it the first time a tab actually goes missing.
+  there is no session-level warning channel from server to client to say a
+  workspace was dropped. Build it the first time one actually goes missing.
 
 ## Residuals from the CLI reduction
 
@@ -40,8 +40,6 @@ none blocks anything.
   `XDG_*`) from the server process, which a client- or SSH-spawned server may
   not share with the user's interactive shells; an agent with a non-default
   config directory then reads as absent.
-- **Flatten workspaces and tabs.** Decided: drop tabs. A workspace is one pane
-  layout; the tab bar goes. Spec in `notes/flatten-spec.md`.
 - **A stopped server whose lease outlives its sockets.** `server stop` now waits
   for the data-directory lease, so the launcher no longer does. A server stopped
   another way (a signal) can still drop its sockets before its lease, and a
@@ -91,9 +89,9 @@ Do this the next time opencode or Kilo is in use.
 
 ## Per-client presentation state on the server
 
-- `app.state.active` doubles as a request context: a client-shell command first makes the requesting client's tab the session's focus (`set_default_shell_target_from_client`), so app handlers that take no explicit target act on what that client views, and a new tab or workspace spawns at that tab's area. Passing the requesting client's target and area into the app handlers would leave `active` as the saved session focus only.
+- `app.state.active` doubles as a request context: a client-shell command first makes the requesting client's workspace the session's focus (`set_default_shell_target_from_client`), so app handlers that take no explicit target act on what that client views, and a new pane or workspace spawns at that workspace's area. Passing the requesting client's target and area into the app handlers would leave `active` as the saved session focus only.
 
 ## Persistence leftovers
 
-- The agent resume schedule (`crates/shepr-server/src/app/agent_resume.rs`) still lives on `App`, apart from the session persister (`crates/shepr-mux/src/persist/actor.rs`). It spawns runtimes and needs each tab's layout area, so it stays on the loop; what could move is the decision of which restored panes wait for a resume.
+- The agent resume schedule (`crates/shepr-server/src/app/agent_resume.rs`) still lives on `App`, apart from the session persister (`crates/shepr-mux/src/persist/actor.rs`). It spawns runtimes and needs each workspace's layout area, so it stays on the loop; what could move is the decision of which restored panes wait for a resume.
 - History chunks are cut only at a line end with visible text or at a soft wrap (`crates/shepr-mux/src/pane/terminal/history.rs`), so a run of thousands of blank, unwrapped lines in history is still formatted under one lock hold.

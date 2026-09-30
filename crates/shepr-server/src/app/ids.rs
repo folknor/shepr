@@ -18,16 +18,6 @@ impl App {
         self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone())
     }
 
-    pub(crate) fn public_tab_id(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Option<shepr_protocol::PublicTabId> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab_number = ws.public_tab_number(tab_idx)?;
-        Some(shepr_protocol::PublicTabId::new(&ws.id, tab_number))
-    }
-
     pub(crate) fn public_pane_id(
         &self,
         ws_idx: usize,
@@ -36,21 +26,6 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_number = ws.public_pane_number(pane_id)?;
         Some(shepr_protocol::PublicPaneId::new(&ws.id, pane_number))
-    }
-
-    /// The tab holding `pane_id` in workspace `ws_idx`, or `None` when either
-    /// is gone. API handlers hold an index parsed from a public id earlier in
-    /// the same request; looking it up rather than indexing keeps a stale
-    /// index a not-found answer instead of a server panic.
-    pub(crate) fn tab_index_for_pane(
-        &self,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<usize> {
-        self.state
-            .workspaces
-            .get(ws_idx)?
-            .find_tab_index_for_pane(pane_id)
     }
 
     pub(super) fn pane_launch_env(
@@ -90,30 +65,6 @@ impl App {
             .workspaces
             .iter()
             .position(|workspace| workspace.id == *public_id)
-    }
-
-    /// Resolves a public tab id (`<workspace_id>:t<n>`) to (workspace, tab)
-    /// indexes. Positional forms (`<workspace_id>:N`, `t_…`) are rejected for
-    /// the same reason as in `parse_workspace_id`: tab numbers are stable and
-    /// independent of tab order, positions are not.
-    pub(crate) fn parse_tab_id(&self, id: &str) -> Option<(usize, usize)> {
-        let public_id = id.parse::<shepr_protocol::PublicTabId>().ok()?;
-        self.resolve_tab_id(&public_id)
-    }
-
-    pub(crate) fn resolve_tab_id(
-        &self,
-        public_id: &shepr_protocol::PublicTabId,
-    ) -> Option<(usize, usize)> {
-        let ws_idx = self.resolve_workspace_id(public_id.workspace_id())?;
-        let tab_idx = self
-            .state
-            .workspaces
-            .get(ws_idx)?
-            .tabs()
-            .iter()
-            .position(|tab| tab.number() == public_id.number())?;
-        Some((ws_idx, tab_idx))
     }
 
     /// Resolves a public pane id (`<workspace_id>:p<n>`) to (workspace index,
@@ -164,8 +115,6 @@ mod tests {
         let ws_id = app.state.workspaces[1].id.clone();
 
         assert_eq!(app.parse_workspace_id(&ws_id), Some(1));
-        let tab_id = app.public_tab_id(1, 0).expect("public tab id");
-        assert_eq!(app.parse_tab_id(&tab_id), Some((1, 0)));
         let pane_id = app.public_pane_id(1, second).expect("public pane id");
         assert_eq!(app.parse_pane_id(&pane_id), Some((1, second)));
     }
@@ -189,17 +138,10 @@ mod tests {
     fn positional_and_raw_ids_are_rejected() {
         let app = test_app_with_workspaces(&["a", "b"]);
         let ws_id = app.state.workspaces[0].id.clone();
-        let root = app.state.workspaces[0].tabs()[0].root_pane();
+        let root = app.state.workspaces[0].root_pane();
 
         for id in ["1", "2", "w_1", "w_2"] {
             assert_eq!(app.parse_workspace_id(id), None, "workspace id {id:?}");
-        }
-        for id in [
-            format!("{ws_id}:1"),
-            "t_1_1".to_string(),
-            "1:t1".to_string(),
-        ] {
-            assert_eq!(app.parse_tab_id(&id), None, "tab id {id:?}");
         }
         for id in [
             format!("p_{}", root.raw()),

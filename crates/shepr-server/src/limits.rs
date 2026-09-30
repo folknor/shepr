@@ -75,21 +75,6 @@ pub(crate) const SHELL_CWD_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// even if a task is stuck.
 pub(crate) const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Refresh the tab bar clock periodically so it displays the current time.
-pub(crate) const DATETIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-/// Bound captured status-command bytes to prevent unbounded buffers.
-pub(crate) const MAX_COMMAND_LINE_BYTES: usize = 4096;
-/// Bound status text so a segment cannot fill the tab bar.
-pub(crate) const MAX_TAB_BAR_TEXT_CHARS: usize = 80;
-/// Read status output in chunks smaller than its capture cap.
-pub(crate) const TAB_BAR_STATUS_READ_BUFFER_BYTES: usize = 1024;
-/// Tab bar status commands use the system POSIX shell, independently of the
-/// interactive pane shell, so command syntax is stable across panes.
-pub(crate) const TAB_BAR_COMMAND_SHELL: &str = "/bin/sh";
-/// Run the status command as a login shell (`-l`) so the user's login profile
-/// supplies its command environment, and execute the configured text (`-c`).
-pub(crate) const TAB_BAR_COMMAND_SHELL_ARGS: &str = "-lc";
-
 /// Resize by a small visible step when the caller omits an amount.
 pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: f32 = 0.05;
 /// Bound the requested resize fraction to avoid extreme pane jumps.

@@ -36,7 +36,7 @@ pub fn decode_public_number(value: &str) -> Option<usize> {
 const WORKSPACE_ID_PREFIX: char = 'w';
 
 /// Stable public workspace identity. Its spelling is only needed at process
-/// and API boundaries; a launch must not mix it with tab or pane identities.
+/// and API boundaries; a launch must not mix it with pane identities.
 ///
 /// The only spelling is `w` followed by a one-based public number
 /// ([`encode_public_number`]). A value is built from that number or parsed
@@ -168,37 +168,36 @@ impl PartialEq<&str> for WorkspaceId {
     }
 }
 
-/// Public identity for a child of a workspace: `<workspace>:<KIND><number>`.
-/// Use the [`PublicTabId`] and [`PublicPaneId`] aliases; `KIND` is the
-/// letter that tells the two apart in the canonical text.
+const PANE_ID_KIND: char = 'p';
+
+/// Public identity for a pane in a workspace: `<workspace>:p<number>`.
 ///
 /// The workspace segment is a [`WorkspaceId`], so a value is built from one
 /// or parsed from text whose workspace segment is canonical, deserialization
-/// included: no child ID names a workspace the server's allocator could not
+/// included: no pane ID names a workspace the server's allocator could not
 /// have issued.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PublicChildId<const KIND: char> {
+pub struct PublicPaneId {
     workspace_id: WorkspaceId,
     number: usize,
     encoded: String,
 }
 
-/// Public identity for a tab in a workspace.
-pub type PublicTabId = PublicChildId<'t'>;
-
-/// Public identity for a pane in a workspace.
-pub type PublicPaneId = PublicChildId<'p'>;
-
-impl<const KIND: char> PublicChildId<KIND> {
-    /// Builds a child ID from its workspace and a one-based number.
+impl PublicPaneId {
+    /// Builds a pane ID from its workspace and a one-based number.
     ///
     /// # Panics
     ///
-    /// Panics if `number` is zero, which no canonical public child ID spells.
+    /// Panics if `number` is zero, which no canonical public pane ID spells.
     pub fn new(workspace_id: &WorkspaceId, number: usize) -> Self {
-        assert!(number > 0, "public child IDs use one-based numbers");
+        assert!(number > 0, "public pane IDs use one-based numbers");
         Self {
-            encoded: format!("{}:{}{}", workspace_id, KIND, encode_public_number(number)),
+            encoded: format!(
+                "{}:{}{}",
+                workspace_id,
+                PANE_ID_KIND,
+                encode_public_number(number)
+            ),
             workspace_id: workspace_id.clone(),
             number,
         }
@@ -217,32 +216,32 @@ impl<const KIND: char> PublicChildId<KIND> {
     }
 }
 
-impl<const KIND: char> fmt::Display for PublicChildId<KIND> {
+impl fmt::Display for PublicPaneId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl<const KIND: char> FromStr for PublicChildId<KIND> {
+impl FromStr for PublicPaneId {
     type Err = PublicIdParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        parse_public_child_id(value, KIND)
+        parse_public_pane_id(value)
             .map(|(workspace_id, number)| Self::new(&workspace_id, number))
             // As for `WorkspaceId`: the round trip keeps alternative spellings
             // out if the alphabet or decoder ever loosens.
             .filter(|id| id.encoded == value)
-            .ok_or(PublicIdParseError { kind: KIND })
+            .ok_or(PublicIdParseError)
     }
 }
 
-impl<const KIND: char> serde::Serialize for PublicChildId<KIND> {
+impl serde::Serialize for PublicPaneId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
     }
 }
 
-impl<'de, const KIND: char> serde::Deserialize<'de> for PublicChildId<KIND> {
+impl<'de> serde::Deserialize<'de> for PublicPaneId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let id = <String as serde::Deserialize>::deserialize(deserializer)?;
         id.parse()
@@ -250,7 +249,7 @@ impl<'de, const KIND: char> serde::Deserialize<'de> for PublicChildId<KIND> {
     }
 }
 
-impl<const KIND: char> std::ops::Deref for PublicChildId<KIND> {
+impl std::ops::Deref for PublicPaneId {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -258,44 +257,37 @@ impl<const KIND: char> std::ops::Deref for PublicChildId<KIND> {
     }
 }
 
-impl<const KIND: char> PartialEq<str> for PublicChildId<KIND> {
+impl PartialEq<str> for PublicPaneId {
     fn eq(&self, other: &str) -> bool {
         self.as_str() == other
     }
 }
 
-impl<const KIND: char> PartialEq<&str> for PublicChildId<KIND> {
+impl PartialEq<&str> for PublicPaneId {
     fn eq(&self, other: &&str) -> bool {
         self.as_str() == *other
     }
 }
 
-impl<const KIND: char> PartialEq<String> for PublicChildId<KIND> {
+impl PartialEq<String> for PublicPaneId {
     fn eq(&self, other: &String) -> bool {
         self.as_str() == other
     }
 }
 
-impl<const KIND: char> PartialEq<PublicChildId<KIND>> for String {
-    fn eq(&self, other: &PublicChildId<KIND>) -> bool {
+impl PartialEq<PublicPaneId> for String {
+    fn eq(&self, other: &PublicPaneId) -> bool {
         self == other.as_str()
     }
 }
 
-/// Text that is not a canonical public tab or pane ID of the requested kind.
+/// Text that is not a canonical public pane ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublicIdParseError {
-    kind: char,
-}
+pub struct PublicIdParseError;
 
 impl fmt::Display for PublicIdParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let noun = match self.kind {
-            't' => "tab",
-            'p' => "pane",
-            _ => "child",
-        };
-        write!(f, "invalid public {noun} id")
+        f.write_str("invalid public pane id")
     }
 }
 
@@ -308,11 +300,11 @@ fn parse_public_number(encoded: &str) -> Option<usize> {
     decode_public_number(encoded).filter(|number| *number > 0)
 }
 
-/// Splits canonical child text into its workspace and number. Both parts must
+/// Splits canonical pane text into its workspace and number. Both parts must
 /// be canonical, so re-encoding the result reproduces `value` exactly.
-fn parse_public_child_id(value: &str, kind: char) -> Option<(WorkspaceId, usize)> {
+fn parse_public_pane_id(value: &str) -> Option<(WorkspaceId, usize)> {
     let (workspace_id, encoded_id) = value.split_once(':')?;
-    let encoded_number = encoded_id.strip_prefix(kind)?;
+    let encoded_number = encoded_id.strip_prefix(PANE_ID_KIND)?;
     Some((
         workspace_id.parse().ok()?,
         parse_public_number(encoded_number)?,
@@ -442,10 +434,10 @@ impl From<&str> for WorkspaceId {
 }
 
 /// This crate's own tests spell IDs as literals; the text must be canonical.
-/// Other crates build IDs with the public aliases' `new` methods or parse
-/// them, so no ID exists that a server would not issue.
+/// Other crates build IDs with `PublicPaneId::new` or parse them, so no ID
+/// exists that a server would not issue.
 #[cfg(test)]
-impl<const KIND: char> From<&str> for PublicChildId<KIND> {
+impl From<&str> for PublicPaneId {
     fn from(value: &str) -> Self {
         value
             .parse()
@@ -454,46 +446,31 @@ impl<const KIND: char> From<&str> for PublicChildId<KIND> {
 }
 
 #[cfg(test)]
-impl<const KIND: char> From<String> for PublicChildId<KIND> {
+impl From<String> for PublicPaneId {
     fn from(value: String) -> Self {
         value.as_str().into()
     }
 }
 
 #[cfg(test)]
-mod public_child_id_tests {
-    use super::{PublicPaneId, PublicTabId, WorkspaceId};
+mod public_pane_id_tests {
+    use super::{PublicPaneId, WorkspaceId};
 
     #[test]
-    fn public_child_id_aliases_keep_their_canonical_text_and_wire_encoding() {
+    fn public_pane_ids_keep_their_canonical_text_and_wire_encoding() {
         let workspace_id = WorkspaceId::from("wA");
-        let tab_id = PublicTabId::new(&workspace_id, 32);
         let pane_id = PublicPaneId::new(&workspace_id, 33);
 
-        assert_eq!(tab_id.as_str(), "wA:t0");
-        assert_eq!(tab_id.workspace_id(), "wA");
-        assert_eq!(tab_id.number(), 32);
         assert_eq!(pane_id.as_str(), "wA:p11");
         assert_eq!(pane_id.workspace_id(), "wA");
         assert_eq!(pane_id.number(), 33);
-        assert_eq!("wA:t0".parse::<PublicTabId>(), Ok(tab_id.clone()));
         assert_eq!("wA:p11".parse::<PublicPaneId>(), Ok(pane_id.clone()));
-        assert!("wA:p11".parse::<PublicTabId>().is_err());
         assert!("wA:t0".parse::<PublicPaneId>().is_err());
 
-        let tab_wire = crate::codec::to_vec(&tab_id).expect("tab id encoding");
         let pane_wire = crate::codec::to_vec(&pane_id).expect("pane id encoding");
-        assert_eq!(
-            tab_wire,
-            crate::codec::to_vec("wA:t0").expect("tab string encoding")
-        );
         assert_eq!(
             pane_wire,
             crate::codec::to_vec("wA:p11").expect("pane string encoding")
-        );
-        assert_eq!(
-            crate::codec::from_slice_exact::<PublicTabId>(&tab_wire).expect("tab id decoding"),
-            tab_id
         );
         assert_eq!(
             crate::codec::from_slice_exact::<PublicPaneId>(&pane_wire).expect("pane id decoding"),
@@ -502,7 +479,7 @@ mod public_child_id_tests {
     }
 
     #[test]
-    fn public_child_ids_refuse_a_workspace_segment_the_allocator_never_writes() {
+    fn public_pane_ids_refuse_a_workspace_segment_the_allocator_never_writes() {
         for invalid in [
             "",
             ":p1",
@@ -518,8 +495,6 @@ mod public_child_id_tests {
             "a:b:p1",
         ] {
             assert!(invalid.parse::<PublicPaneId>().is_err(), "{invalid:?}");
-            let tab = invalid.replacen(":p", ":t", 1);
-            assert!(tab.parse::<PublicTabId>().is_err(), "{tab:?}");
         }
         let wire = crate::codec::to_vec("wOLD:p1").expect("string encoding");
         assert!(crate::codec::from_slice_exact::<PublicPaneId>(&wire).is_err());

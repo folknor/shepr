@@ -7,8 +7,7 @@ use crate::limits::KEY_BINDING_COUNT;
 use super::{
     AgentPanelSortConfig, BindingConfig, HostCursorModeConfig, MachineConfig, MachineLabel,
     NewTerminalCwdConfig, PaneBordersConfig, RightClickPassthroughModifierConfig,
-    SidebarCollapsedModeConfig, SidebarTokenRule, SshTarget, StatusIndicatorStyle,
-    TabBarPositionConfig, TabBarRightEntryConfig, ThemeConfig,
+    SidebarCollapsedModeConfig, SidebarTokenRule, SshTarget, StatusIndicatorStyle, ThemeConfig,
     model::{
         AdvancedConfig, Config, ExperimentalConfig, KeysConfig, ServerConfig, SessionConfig,
         TerminalConfig, UiConfig,
@@ -17,7 +16,6 @@ use super::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpaceSidebarToken,
         SpacesSidebarConfig, WireSidebarTokenRule, WireSidebarTokenStyle,
     },
-    tab_bar::TabBarRightEntryConfig as ConfigTabBarEntry,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,17 +334,12 @@ struct WireUiConfig {
     redraw_on_focus_gained: bool,
     mouse_scroll_lines: Option<std::num::NonZeroUsize>,
     confirm_close: bool,
-    prompt_new_tab_name: bool,
     prompt_new_workspace_name: bool,
     pane_borders: PaneBordersConfig,
     pane_outer_borders: bool,
     pane_scrollbars: bool,
     pane_gaps: bool,
     show_agent_labels_on_pane_borders: bool,
-    hide_tab_bar_when_single_tab: bool,
-    tab_bar_position: TabBarPositionConfig,
-    tab_bar_right: Vec<WireTabBarRightEntry>,
-    tab_bar_right_separator: String,
     window_title: String,
     agent_panel_sort: AgentPanelSortConfig,
     status_indicators: StatusIndicatorStyle,
@@ -369,17 +362,12 @@ impl WireUiConfig {
             redraw_on_focus_gained: ui.redraw_on_focus_gained,
             mouse_scroll_lines: ui.mouse_scroll_lines,
             confirm_close: ui.confirm_close,
-            prompt_new_tab_name: ui.prompt_new_tab_name,
             prompt_new_workspace_name: ui.prompt_new_workspace_name,
             pane_borders: ui.pane_borders,
             pane_outer_borders: ui.pane_outer_borders,
             pane_scrollbars: ui.pane_scrollbars,
             pane_gaps: ui.pane_gaps,
             show_agent_labels_on_pane_borders: ui.show_agent_labels_on_pane_borders,
-            hide_tab_bar_when_single_tab: ui.hide_tab_bar_when_single_tab,
-            tab_bar_position: ui.tab_bar_position,
-            tab_bar_right: ui.tab_bar_right.iter().map(Into::into).collect(),
-            tab_bar_right_separator: ui.tab_bar_right_separator.clone(),
             window_title: ui.window_title.clone(),
             agent_panel_sort: ui.agent_panel_sort,
             status_indicators: ui.status_indicators,
@@ -402,81 +390,17 @@ impl WireUiConfig {
             redraw_on_focus_gained: self.redraw_on_focus_gained,
             mouse_scroll_lines: self.mouse_scroll_lines,
             confirm_close: self.confirm_close,
-            prompt_new_tab_name: self.prompt_new_tab_name,
             prompt_new_workspace_name: self.prompt_new_workspace_name,
             pane_borders: self.pane_borders,
             pane_outer_borders: self.pane_outer_borders,
             pane_scrollbars: self.pane_scrollbars,
             pane_gaps: self.pane_gaps,
             show_agent_labels_on_pane_borders: self.show_agent_labels_on_pane_borders,
-            hide_tab_bar_when_single_tab: self.hide_tab_bar_when_single_tab,
-            tab_bar_position: self.tab_bar_position,
-            tab_bar_right: self.tab_bar_right.into_iter().map(Into::into).collect(),
-            tab_bar_right_separator: self.tab_bar_right_separator,
             window_title: self.window_title,
             agent_panel_sort: self.agent_panel_sort,
             status_indicators: self.status_indicators,
             sidebar: self.sidebar.into_config(),
             accent: self.accent,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum WireTabBarRightEntry {
-    Zoom,
-    Hostname,
-    Datetime {
-        format: String,
-    },
-    Text {
-        text: String,
-    },
-    Command {
-        command: String,
-        interval_seconds: u64,
-        timeout_seconds: u64,
-    },
-}
-
-impl From<&TabBarRightEntryConfig> for WireTabBarRightEntry {
-    fn from(entry: &TabBarRightEntryConfig) -> Self {
-        match entry {
-            ConfigTabBarEntry::Zoom => Self::Zoom,
-            ConfigTabBarEntry::Hostname => Self::Hostname,
-            ConfigTabBarEntry::Datetime { format } => Self::Datetime {
-                format: format.clone(),
-            },
-            ConfigTabBarEntry::Text { text } => Self::Text { text: text.clone() },
-            ConfigTabBarEntry::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => Self::Command {
-                command: command.clone(),
-                interval_seconds: *interval_seconds,
-                timeout_seconds: *timeout_seconds,
-            },
-        }
-    }
-}
-
-impl From<WireTabBarRightEntry> for TabBarRightEntryConfig {
-    fn from(entry: WireTabBarRightEntry) -> Self {
-        match entry {
-            WireTabBarRightEntry::Zoom => Self::Zoom,
-            WireTabBarRightEntry::Hostname => Self::Hostname,
-            WireTabBarRightEntry::Datetime { format } => Self::Datetime { format },
-            WireTabBarRightEntry::Text { text } => Self::Text { text },
-            WireTabBarRightEntry::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => Self::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            },
         }
     }
 }
@@ -564,7 +488,6 @@ enum WireAgentSidebarToken {
     StateText,
     Machine,
     Workspace,
-    Tab,
     Pane,
     Agent,
     TerminalTitle,
@@ -621,7 +544,6 @@ impl From<&AgentSidebarToken> for WireAgentSidebarToken {
             AgentSidebarToken::StateText => Self::StateText,
             AgentSidebarToken::Machine => Self::Machine,
             AgentSidebarToken::Workspace => Self::Workspace,
-            AgentSidebarToken::Tab => Self::Tab,
             AgentSidebarToken::Pane => Self::Pane,
             AgentSidebarToken::Agent => Self::Agent,
             AgentSidebarToken::TerminalTitle => Self::TerminalTitle,
@@ -646,7 +568,6 @@ impl From<WireAgentSidebarToken> for AgentSidebarToken {
             WireAgentSidebarToken::StateText => Self::StateText,
             WireAgentSidebarToken::Machine => Self::Machine,
             WireAgentSidebarToken::Workspace => Self::Workspace,
-            WireAgentSidebarToken::Tab => Self::Tab,
             WireAgentSidebarToken::Pane => Self::Pane,
             WireAgentSidebarToken::Agent => Self::Agent,
             WireAgentSidebarToken::TerminalTitle => Self::TerminalTitle,
@@ -734,7 +655,7 @@ mod tests {
         }
         crate::keybinding_table!(distinct_values);
         assert_eq!(count, KEY_BINDING_COUNT);
-        assert_eq!(KEY_BINDING_COUNT, 56);
+        assert_eq!(KEY_BINDING_COUNT, 48);
 
         let wire = WireKeysConfig::from_config(&keys);
         assert_eq!(wire.bindings.len(), KEY_BINDING_COUNT);

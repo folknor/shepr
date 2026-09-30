@@ -1,31 +1,33 @@
+//! A workspace's pane tree: the layout, the pane records and the operations
+//! that keep the two in agreement.
+
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use super::PaneSpawnHandles;
-use crate::pane::{PaneLaunchEnv, PaneState};
-use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
+use super::{PaneGeometry, PaneSpawnHandles, Workspace};
+use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::terminal::TerminalState;
-use shepr_core::layout::{Direction, PaneId, TileLayout};
+use shepr_core::layout::{Direction, NavDirection, PaneId, TileLayout};
 use shepr_protocol::TerminalId;
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
-/// A pane built outside a tab, for constructors that start a tab or workspace
+/// A pane built outside a workspace, for constructors that start a workspace
 /// from one pane without spawning anything.
 pub struct ExistingPane {
     pub pane_id: PaneId,
-    pub pane: TabPane,
+    pub pane: WorkspacePane,
 }
 
-/// One pane's state and stable public number. Keeping both in the tab record
-/// makes the tab's pane map the source of pane identity metadata.
-pub struct TabPane {
+/// One pane's state and stable public number. Keeping both in the workspace
+/// record makes its pane map the source of pane identity metadata.
+pub struct WorkspacePane {
     pub pane_state: PaneState,
     pub public_number: usize,
 }
 
-impl Deref for TabPane {
+impl Deref for WorkspacePane {
     type Target = PaneState;
 
     fn deref(&self) -> &Self::Target {
@@ -33,13 +35,13 @@ impl Deref for TabPane {
     }
 }
 
-impl DerefMut for TabPane {
+impl DerefMut for WorkspacePane {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.pane_state
     }
 }
 
-impl TabPane {
+impl WorkspacePane {
     pub fn new(pane_state: PaneState) -> Self {
         Self {
             pane_state,
@@ -55,44 +57,7 @@ pub struct NewPane {
     pub prepared_layout: TileLayout,
 }
 
-pub struct Tab {
-    // Persistence reads tabs for snapshots and fills detached tabs during
-    // restore; other crates use these accessors and workspace mutators.
-    pub(crate) custom_name: Option<String>,
-    pub(crate) number: usize,
-    /// Identity source for this tab's pane tree.
-    pub(crate) root_pane: PaneId,
-    pub(crate) layout: TileLayout,
-    /// Runtime-independent pane records, keyed by internal ID.
-    pub(crate) panes: HashMap<PaneId, TabPane>,
-    pub(crate) zoomed: bool,
-}
-
-impl Tab {
-    /// A detached one-pane tab around `root`, with no runtime behind it. The
-    /// layout is built here, so its pane set and the record always agree;
-    /// admitting the tab (`Workspace::commit_new_tab`) still checks its number
-    /// and pane identities against the workspace.
-    pub fn single_pane(custom_name: Option<String>, number: usize, root: TabPane) -> Self {
-        let (layout, root_pane) = TileLayout::new();
-        Self {
-            custom_name,
-            number,
-            root_pane,
-            layout,
-            panes: HashMap::from([(root_pane, root)]),
-            zoomed: false,
-        }
-    }
-
-    pub fn custom_name(&self) -> Option<&str> {
-        self.custom_name.as_deref()
-    }
-
-    pub fn number(&self) -> usize {
-        self.number
-    }
-
+impl Workspace {
     pub fn root_pane(&self) -> PaneId {
         self.root_pane
     }
@@ -101,7 +66,7 @@ impl Tab {
         &self.layout
     }
 
-    pub fn panes(&self) -> &HashMap<PaneId, TabPane> {
+    pub fn panes(&self) -> &HashMap<PaneId, WorkspacePane> {
         &self.panes
     }
 
@@ -109,6 +74,8 @@ impl Tab {
         self.zoomed
     }
 
+    /// Whether the layout and the pane records name exactly the same panes,
+    /// with the root and the focused pane among them.
     pub(super) fn has_consistent_panes(&self) -> bool {
         let layout_ids = self.layout.pane_ids();
         let layout_set: HashSet<_> = layout_ids.iter().copied().collect();
@@ -119,71 +86,62 @@ impl Tab {
             && self.panes.keys().all(|id| layout_set.contains(id))
     }
 
-    pub fn new(
-        number: usize,
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-        spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
-        let (layout, root_id) = TileLayout::new();
-        let runtime = PaneRuntime::spawn(
-            root_id,
-            rows,
-            cols,
-            &initial_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            launch_env,
-            &spawn.events,
-            &spawn.render_notify,
-            &spawn.render_dirty,
-            &spawn.pane_teardowns,
-        )?;
-
-        let terminal_id = TerminalId::alloc();
-        let terminal = TerminalState::new(terminal_id.clone(), initial_cwd);
-        let mut panes = HashMap::new();
-        panes.insert(root_id, TabPane::new(PaneState::new(terminal_id)));
-
-        Ok((
-            Self {
-                custom_name: None,
-                number,
-                root_pane: root_id,
-                layout,
-                panes,
-                zoomed: false,
-            },
-            terminal,
-            runtime,
-        ))
+    pub fn contains_pane(&self, pane_id: PaneId) -> bool {
+        self.panes.contains_key(&pane_id)
     }
 
-    pub fn is_auto_named(&self) -> bool {
-        self.custom_name.is_none()
+    /// Whether `pane_id` is on screen: in the layout, and the focused pane
+    /// when the workspace is zoomed.
+    pub fn shows_pane(&self, pane_id: PaneId) -> bool {
+        self.panes.contains_key(&pane_id) && (!self.zoomed || self.layout.focused() == pane_id)
     }
 
-    pub fn set_custom_name(&mut self, name: String) {
-        self.custom_name = Some(name);
+    pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
+        self.panes.get(&pane_id).map(|pane| &pane.pane_state)
     }
 
-    pub(super) fn clear_custom_name(&mut self) {
-        self.custom_name = None;
+    pub fn pane_state_mut(&mut self, pane_id: PaneId) -> Option<&mut PaneState> {
+        self.panes
+            .get_mut(&pane_id)
+            .map(|pane| &mut pane.pane_state)
     }
 
-    pub(super) fn set_zoomed(&mut self, zoomed: bool) {
+    pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
+        self.panes
+            .get(&pane_id)
+            .map(|pane| &pane.attached_terminal_id)
+    }
+
+    pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
+        self.panes.get(&pane_id).map(|pane| pane.public_number)
+    }
+
+    pub fn pane_id_for_public_number(&self, number: usize) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find_map(|(pane_id, pane)| (pane.public_number == number).then_some(*pane_id))
+    }
+
+    pub fn pane_count(&self) -> usize {
+        self.panes.len()
+    }
+
+    pub fn focused_pane_id(&self) -> PaneId {
+        self.layout.focused()
+    }
+
+    /// Zooms or unzooms the workspace. A zoom needs a second pane to hide:
+    /// `false`, with the workspace unchanged, when asked to zoom a workspace
+    /// of one pane. Unzooming always succeeds.
+    pub fn set_zoomed(&mut self, zoomed: bool) -> bool {
+        if zoomed && self.panes.len() < 2 {
+            return false;
+        }
         self.zoomed = zoomed;
+        true
     }
 
-    pub(super) fn focus_pane(&mut self, pane_id: PaneId) -> bool {
+    pub fn focus_pane(&mut self, pane_id: PaneId) -> bool {
         if !self.has_consistent_panes() || !self.panes.contains_key(&pane_id) {
             return false;
         }
@@ -191,13 +149,13 @@ impl Tab {
         true
     }
 
-    pub(super) fn swap_panes(&mut self, first: PaneId, second: PaneId) -> bool {
+    pub fn swap_panes(&mut self, first: PaneId, second: PaneId) -> bool {
         self.has_consistent_panes() && self.layout.swap_panes(first, second)
     }
 
-    pub(super) fn resize_focused_pane(
+    pub fn resize_focused_pane(
         &mut self,
-        direction: shepr_core::layout::NavDirection,
+        direction: NavDirection,
         delta: f32,
         area: shepr_core::geometry::Rect,
     ) -> bool {
@@ -208,17 +166,17 @@ impl Tab {
         true
     }
 
-    pub(super) fn resize_pane(
+    pub fn resize_pane(
         &mut self,
         pane_id: PaneId,
-        direction: shepr_core::layout::NavDirection,
+        direction: NavDirection,
         delta: f32,
         area: shepr_core::geometry::Rect,
     ) -> bool {
         self.has_consistent_panes() && self.layout.resize_pane(pane_id, direction, delta, area)
     }
 
-    pub(super) fn set_split_ratio_at(
+    pub fn set_split_ratio_at(
         &mut self,
         path: &[shepr_core::geometry::SplitBranch],
         ratio: f32,
@@ -233,13 +191,13 @@ impl Tab {
         clippy::too_many_arguments,
         reason = "a split threads target, geometry, host context, launch policy, and render hooks"
     )]
-    pub fn split_pane_shell(
+    pub(super) fn split_pane_shell(
         &self,
         target: PaneId,
         focus_new_pane: bool,
         direction: Direction,
         ratio: Option<f32>,
-        geometry: &super::PaneGeometry,
+        geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
         default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
@@ -257,7 +215,8 @@ impl Tab {
                 "split target pane is not in the layout",
             ));
         };
-        // The split un-zooms the tab (below), so size against the tiled layout.
+        // The split un-zooms the workspace (below), so size against the tiled
+        // layout.
         let (rows, cols) = geometry
             .pane_size(&prepared_layout, false, new_id)
             .unwrap_or_else(|| geometry.sole_pane_size());
@@ -290,7 +249,10 @@ impl Tab {
         })
     }
 
-    pub fn commit_prepared_split(
+    /// Installs a prepared split: the new layout, an unzoomed workspace and a
+    /// record for the new pane. `false`, with the workspace unchanged, when the
+    /// prepared layout is not this layout plus exactly `pane_id`.
+    pub(super) fn commit_prepared_split(
         &mut self,
         pane_id: PaneId,
         prepared_layout: TileLayout,
@@ -311,16 +273,16 @@ impl Tab {
 
         self.layout = prepared_layout;
         self.zoomed = false;
-        let mut pane = TabPane::new(PaneState::new(terminal_id));
+        let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
         pane.public_number = public_number;
         self.panes.insert(pane_id, pane);
         true
     }
 
     /// Detaches `pane_id` from the layout and returns it with its terminal id.
-    /// The runtime is left to the caller. `None` when the pane is the tab's
-    /// last one (the tab itself must go) or is not in this tab.
-    pub fn close_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
+    /// The runtime is left to the caller. `None` when the pane is the
+    /// workspace's last one (the workspace itself must go) or is not in it.
+    pub(super) fn detach_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
         if self.panes.len() <= 1
             || !self.has_consistent_panes()
             || !self.panes.contains_key(&pane_id)
@@ -343,35 +305,11 @@ impl Tab {
         Some((pane_id, terminal_id))
     }
 
-    pub fn from_existing_pane(
-        number: usize,
-        custom_name: Option<String>,
-        existing: ExistingPane,
-    ) -> Self {
-        let mut panes = HashMap::new();
-        let pane_id = existing.pane_id;
-        panes.insert(pane_id, existing.pane);
-        Self {
-            custom_name,
-            number,
-            root_pane: pane_id,
-            layout: TileLayout::from_live_pane(pane_id),
-            panes,
-            zoomed: false,
-        }
-    }
-
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {
         if self.root_pane != closing {
             return None;
         }
         self.layout.pane_ids().into_iter().find(|id| *id != closing)
-    }
-
-    pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
-        self.panes
-            .get(&pane_id)
-            .map(|pane| &pane.attached_terminal_id)
     }
 
     pub fn cwd_for_pane(

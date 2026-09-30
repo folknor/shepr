@@ -66,7 +66,7 @@ fn fast_path_blocker(
     {
         // A surface produced for a larger pane area (before a resize or sidebar toggle took
         // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
-        // land on the tab bar, the mode bar or past the frame, so they go through compose too.
+        // land on the mode bar or past the frame, so they go through compose too.
         Some("client_surface_patch.fallback.geometry")
     } else if state.pending_pane_surface.is_some()
         || state.snapshot.as_deref().map(|snapshot| snapshot.revision)

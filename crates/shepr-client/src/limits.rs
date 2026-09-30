@@ -223,17 +223,8 @@ pub(super) const DEFAULT_CELL_WIDTH_PX: u32 = 8;
 ///
 /// The conventional fallback height maps cell coordinates when the host omits pixel geometry.
 pub(super) const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
-/// Smallest tab width that still leaves room for its label.
-pub(super) const MIN_TAB_WIDTH: u16 = 8;
-/// Columns the new-tab button occupies in the tab strip.
-pub(super) const NEW_TAB_WIDTH: u16 = 3;
 /// Rows the workspace section header occupies above the workspace entries.
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
-/// Columns each tab-strip scroll button occupies.
-pub(super) const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
-/// Minimum tab-strip width with a new-tab button and both scroll buttons.
-pub(super) const MIN_TAB_STRIP_WIDTH: u16 =
-    MIN_TAB_WIDTH + NEW_TAB_WIDTH + TAB_SCROLL_BUTTON_WIDTH.saturating_mul(2);
 
 /// Minimum height retained by each section of the expanded sidebar.
 pub(super) const MIN_EXPANDED_SIDEBAR_SECTION_ROWS: u16 = 3;

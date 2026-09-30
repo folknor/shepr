@@ -38,29 +38,19 @@ pub(super) fn snapshot_from_session(
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
         .or(snapshot.focused_workspace_id);
-    let focused_tab_id = location
-        .and_then(|location| location.focused_tab_id().cloned())
-        .or(snapshot.focused_tab_id);
-    let focused_pane_id = focused_tab_id
+    let focused_pane_id = focused_workspace_id
         .as_ref()
-        .and_then(|tab_id| app.resolve_tab_id(tab_id))
-        .and_then(|(workspace_index, tab_index)| {
-            let pane_id = app
-                .state
-                .workspaces
-                .get(workspace_index)?
-                .tabs()
-                .get(tab_index)?
-                .layout()
-                .focused();
+        .and_then(|workspace_id| app.resolve_workspace_id(workspace_id))
+        .and_then(|workspace_index| {
+            let pane_id = app.state.workspaces.get(workspace_index)?.focused_pane_id();
             app.public_pane_id(workspace_index, pane_id)
         })
         .or(snapshot.focused_pane_id);
     // Snapshot entries are joined to live state by their public ids, never by
     // position: a snapshot that filtered or reordered entries would otherwise
-    // hand one workspace's or tab's labels, branch and zoom to another. The
-    // snapshot is built from this same `app`, so the positional slot is tried
-    // first and the id lookup only runs when it does not match.
+    // hand one workspace's labels and branch to another. The snapshot is built
+    // from this same `app`, so the positional slot is tried first and the id
+    // lookup only runs when it does not match.
     let workspaces = snapshot
         .workspaces
         .into_iter()
@@ -75,24 +65,14 @@ pub(super) fn snapshot_from_session(
                 .then_some(position)
                 .or_else(|| app.resolve_workspace_id(&workspace_id));
             let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
-            let active_tab_id = location
-                .and_then(|location| location.active_tab_ids.get(&workspace_id))
-                .cloned()
-                .unwrap_or(workspace.active_tab_id);
             let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
-                let active_tab_index = app.resolve_tab_id(&active_tab_id).and_then(
-                    |(tab_workspace_index, tab_index)| {
-                        (tab_workspace_index == workspace_index).then_some(tab_index)
-                    },
-                );
-                app.resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
+                app.resolved_new_workspace_cwd(workspace_index)
                     .display()
                     .to_string()
             });
             shepr_protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_ref() == Some(&workspace_id),
                 workspace_id,
-                active_tab_id,
                 new_workspace_cwd,
                 number: workspace.number,
                 label: workspace.label,
@@ -102,32 +82,6 @@ pub(super) fn snapshot_from_session(
                     .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
                     .map(|counts| (counts.ahead, counts.behind)),
                 agent_status: workspace.agent_status,
-            }
-        })
-        .collect();
-    let tabs = snapshot
-        .tabs
-        .into_iter()
-        .map(|tab| {
-            let tab_id = tab.tab_id;
-            let state = app
-                .resolve_tab_id(&tab_id)
-                .and_then(|(workspace_index, tab_index)| {
-                    app.state
-                        .workspaces
-                        .get(workspace_index)?
-                        .tabs()
-                        .get(tab_index)
-                });
-            shepr_protocol::ClientShellTab {
-                focused: focused_tab_id.as_ref() == Some(&tab_id),
-                tab_id,
-                workspace_id: tab.workspace_id,
-                number: tab.number,
-                label: tab.label,
-                custom_label: state.is_some_and(|state| !state.is_auto_named()),
-                zoomed: state.is_some_and(shepr_mux::workspace::Tab::zoomed),
-                agent_status: tab.agent_status,
             }
         })
         .collect();
@@ -149,7 +103,6 @@ pub(super) fn snapshot_from_session(
             shepr_protocol::ClientShellPane {
                 pane_id,
                 workspace_id: pane.workspace_id,
-                tab_id: pane.tab_id,
                 label: pane.label,
                 cwd: pane.cwd,
                 foreground_cwd: pane.foreground_cwd,
@@ -166,7 +119,6 @@ pub(super) fn snapshot_from_session(
             shepr_protocol::ClientShellAgent {
                 pane_id: agent.pane_id,
                 workspace_id: agent.workspace_id,
-                tab_id: agent.tab_id,
                 agent: agent.agent,
                 terminal_title: agent.terminal_title,
                 terminal_title_stripped: agent.terminal_title_stripped,
@@ -177,50 +129,13 @@ pub(super) fn snapshot_from_session(
         })
         .collect();
 
-    let zoomed = focused_tab_id
-        .as_ref()
-        .and_then(|tab_id| app.resolve_tab_id(tab_id))
-        .and_then(|(workspace_index, tab_index)| {
-            app.state
-                .workspaces
-                .get(workspace_index)?
-                .tabs()
-                .get(tab_index)
-        })
-        .is_some_and(shepr_mux::workspace::Tab::zoomed);
-    let tab_bar_right = app
-        .state
-        .tab_bar_right
-        .iter()
-        .filter_map(|segment| match segment {
-            crate::app::state::TabBarStatusSegment::Zoom if zoomed => {
-                Some(shepr_protocol::ClientShellTabStatusSegment {
-                    text: "ZOOM".to_owned(),
-                    accent: true,
-                })
-            }
-            crate::app::state::TabBarStatusSegment::Text(Some(text)) if !text.is_empty() => {
-                Some(shepr_protocol::ClientShellTabStatusSegment {
-                    text: text.clone(),
-                    accent: false,
-                })
-            }
-            crate::app::state::TabBarStatusSegment::Zoom
-            | crate::app::state::TabBarStatusSegment::Text(_) => None,
-        })
-        .collect();
-
     shepr_protocol::ClientShellSnapshot {
         boot_id: boot_id.clone(),
         revision: revision.into(),
         resolved_config: resolved_config.to_vec(),
         focused_workspace_id,
-        focused_tab_id,
         focused_pane_id,
-        tab_bar_right,
-        tab_bar_right_separator: app.state.tab_bar_right_separator.clone(),
         workspaces,
-        tabs,
         panes,
         agents,
     }
@@ -243,19 +158,15 @@ pub(super) enum SurfaceRenderDeferred {
 
 pub(super) fn render_pane_surface(
     app: &app::App,
-    target: Option<&crate::ui::TabSurfaceTarget>,
+    target: Option<&shepr_protocol::WorkspaceId>,
     area: Rect,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
-    let layout = crate::ui::compute_tab_surface_for(
-        &app.state,
-        &app.terminal_runtimes,
-        target.cloned(),
-        area,
-    );
+    let layout =
+        crate::ui::compute_surface_for(&app.state, &app.terminal_runtimes, target.cloned(), area);
     let mut content_revisions_before = std::collections::HashMap::new();
     if let Some(target) = &target {
-        let Some((workspace_index, _)) = target.resolve(&app.state) else {
+        let Some(workspace_index) = app.state.workspace_index(target) else {
             return Err(SurfaceRenderDeferred::Changed);
         };
         for pane in &layout.pane_infos {
@@ -275,17 +186,15 @@ pub(super) fn render_pane_surface(
             }
         }
     }
-    let (buffer, cursor, hyperlinks, layout) =
-        crate::server::render_stream::render_tab_surface_virtual(
-            &app.state,
-            &app.terminal_runtimes,
-            layout,
-            area,
-        );
+    let (buffer, cursor, hyperlinks, layout) = crate::server::render_stream::render_surface_virtual(
+        &app.state,
+        &app.terminal_runtimes,
+        layout,
+        area,
+    );
     let panes = target
-        .as_ref()
-        .and_then(|target| target.resolve(&app.state))
-        .map_or_default(|(workspace_index, _)| {
+        .and_then(|target| app.state.workspace_index(target))
+        .map_or_default(|workspace_index| {
             layout
                 .pane_infos
                 .iter()
@@ -371,7 +280,7 @@ pub(super) fn render_pane_surface(
         })
         .collect();
     if let Some(target) = &target {
-        let Some((workspace_index, _)) = target.resolve(&app.state) else {
+        let Some(workspace_index) = app.state.workspace_index(target) else {
             return Err(SurfaceRenderDeferred::Changed);
         };
         for (&pane_id, &(epoch, _)) in &content_revisions_before {
@@ -471,16 +380,13 @@ mod tests {
         // so only `second` below is actually custom-named, which is what
         // this test's `custom_label` assertions check.
         first.custom_name = None;
-        first.test_add_tab(Some("second-tab"));
         let mut second = shepr_mux::workspace::Workspace::test_new("second");
         second.custom_name = Some("named".into());
-        second.set_tab_zoomed(0, true);
         app.state.workspaces = vec![first, second];
         app.state.ensure_test_terminals();
         app.state.set_active_index(Some(0));
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
-        let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");
         let resolved_config =
             shepr_test_fixtures::encode_to_vec(&shepr_config::ValidatedConfig::test_default())
                 .expect("encode test config");
@@ -500,15 +406,7 @@ mod tests {
                 workspace.workspace_id
             );
         }
-        assert_eq!(snapshot.tabs.len(), 3);
-        for tab in &snapshot.tabs {
-            assert_eq!(
-                tab.zoomed,
-                tab.tab_id == zoomed_tab_id,
-                "tab {}",
-                tab.tab_id
-            );
-        }
+        assert_eq!(snapshot.workspaces.len(), 2);
     }
 
     #[test]

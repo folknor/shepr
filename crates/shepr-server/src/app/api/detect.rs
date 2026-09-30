@@ -108,7 +108,7 @@ mod tests {
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(name)];
         app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
+        let pane_id = app.state.workspaces[0].root_pane();
         (app, pane_id)
     }
 
@@ -123,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn explain_evaluates_with_server_manifest_cache() {
         let (mut app, pane_id) = app_with_pane("detect-explain");
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         app.state
@@ -159,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn capture_reads_the_snapshot_that_explain_evaluates() {
         let (mut app, pane_id) = app_with_pane("detect-capture");
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         app.state
@@ -208,7 +208,7 @@ mod tests {
     #[tokio::test]
     async fn capture_works_on_a_pane_with_no_detected_agent() {
         let (mut app, pane_id) = app_with_pane("detect-capture-plain");
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let runtime =
@@ -244,7 +244,7 @@ mod tests {
     #[tokio::test]
     async fn detect_rejects_an_unknown_pane_and_resolves_no_agent_labels() {
         let (mut app, pane_id) = app_with_pane("detect-unknown");
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app
@@ -276,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn explain_reports_the_hook_authority_skip_for_a_hook_owned_pane() {
         let (mut app, pane_id) = app_with_pane("detect-explain-omp");
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app

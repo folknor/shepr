@@ -9,7 +9,6 @@ use super::{
         AdvancedConfig, ExperimentalConfig, NewTerminalCwdConfig, SessionConfig, TerminalConfig,
         UiConfig,
     },
-    tab_bar::ValidatedTabBarRightEntry,
     window_title::WindowTitleTemplate,
     wire::WireConfig,
 };
@@ -58,7 +57,7 @@ pub enum UiPreferenceKey {
 /// for settings where persisted runtime preferences yield to config.
 ///
 /// Every value is stringified and shipped to each attached client for
-/// display, paths and `tab_bar_right` command lines included. That is fine
+/// display, paths and machine ssh targets included. That is fine
 /// while no config key holds a credential; a key that does must be left out
 /// of `values`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,17 +270,12 @@ pub struct ValidatedUiConfig {
     pub redraw_on_focus_gained: bool,
     pub mouse_scroll_lines: std::num::NonZeroU16,
     pub confirm_close: bool,
-    pub prompt_new_tab_name: bool,
     pub prompt_new_workspace_name: bool,
     pub pane_borders: super::PaneBordersConfig,
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
-    pub hide_tab_bar_when_single_tab: bool,
-    pub tab_bar_position: super::TabBarPositionConfig,
-    pub tab_bar_right: Vec<ValidatedTabBarRightEntry>,
-    pub tab_bar_right_separator: String,
     pub window_title: Option<WindowTitleTemplate>,
     pub agent_panel_sort: super::AgentPanelSortConfig,
     pub status_indicators: super::StatusIndicatorStyle,
@@ -560,7 +554,6 @@ impl ValidatedUiConfig {
         config: &UiConfig,
         bounds: SidebarBounds,
         mouse_scroll_lines: std::num::NonZeroU16,
-        tab_bar_right: Vec<ValidatedTabBarRightEntry>,
         window_title: Option<WindowTitleTemplate>,
     ) -> Self {
         Self {
@@ -575,17 +568,12 @@ impl ValidatedUiConfig {
             redraw_on_focus_gained: config.redraw_on_focus_gained,
             mouse_scroll_lines,
             confirm_close: config.confirm_close,
-            prompt_new_tab_name: config.prompt_new_tab_name,
             prompt_new_workspace_name: config.prompt_new_workspace_name,
             pane_borders: config.pane_borders,
             pane_outer_borders: config.pane_outer_borders,
             pane_scrollbars: config.pane_scrollbars,
             pane_gaps: config.pane_gaps,
             show_agent_labels_on_pane_borders: config.show_agent_labels_on_pane_borders,
-            hide_tab_bar_when_single_tab: config.hide_tab_bar_when_single_tab,
-            tab_bar_position: config.tab_bar_position,
-            tab_bar_right,
-            tab_bar_right_separator: config.tab_bar_right_separator.clone(),
             window_title,
             agent_panel_sort: config.agent_panel_sort,
             status_indicators: config.status_indicators,
@@ -652,7 +640,6 @@ impl ConfigResolution {
             config.ui.sidebar_min_width,
             config.ui.sidebar_max_width,
         );
-        let tab_bar_right = super::tab_bar::parse_tab_bar_right_entries(&config.ui.tab_bar_right);
         let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
         let terminal =
             ValidatedTerminalConfig::parse(&config.terminal, paths, cwd_check, shell_check);
@@ -663,9 +650,6 @@ impl ConfigResolution {
 
         let mut diagnostics = keybind_validation.diagnostics.clone();
         if let Err(errors) = &palette {
-            diagnostics.extend(errors.iter().cloned());
-        }
-        if let Err(errors) = &tab_bar_right {
             diagnostics.extend(errors.iter().cloned());
         }
         if let Err(error) = &window_title {
@@ -702,7 +686,6 @@ impl ConfigResolution {
                 headless_size,
                 sidebar_bounds,
                 mouse_scroll_lines,
-                tab_bar_right,
                 window_title,
                 terminal,
             ) {
@@ -712,7 +695,6 @@ impl ConfigResolution {
                     Some(headless_size),
                     Some(sidebar_bounds),
                     Some(mouse_scroll_lines),
-                    Ok(tab_bar_right),
                     Ok(window_title),
                     Ok(terminal),
                 ) => Some(ValidatedValues {
@@ -723,7 +705,6 @@ impl ConfigResolution {
                         &config.ui,
                         sidebar_bounds,
                         mouse_scroll_lines,
-                        tab_bar_right,
                         window_title,
                     ),
                     terminal,
@@ -1045,9 +1026,6 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         config.ui.sidebar_max_width = 30;
         config.ui.sidebar_width = 80;
         config.ui.window_title = "{hostname}: {workspace}".to_owned();
-        config.ui.tab_bar_right = vec![super::super::TabBarRightEntryConfig::Datetime {
-            format: "%H:%M".to_owned(),
-        }];
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
         let provenance = ConfigProvenance::defaults(&config);
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
@@ -1063,10 +1041,6 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         assert_eq!(validated.ui().sidebar_bounds().min(), 12);
         assert_eq!(validated.ui().sidebar_bounds().max(), 30);
         assert!(validated.ui().window_title.is_some());
-        assert!(matches!(
-            validated.ui().tab_bar_right.as_slice(),
-            [ValidatedTabBarRightEntry::Datetime { .. }]
-        ));
         assert_eq!(
             validated.terminal().new_cwd,
             NewTerminalCwd::Path(configured_cwd)

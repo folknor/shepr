@@ -5,54 +5,20 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 impl AppState {
-    pub fn switch_workspace(&mut self, idx: usize) {
-        if idx < self.workspaces.len() {
-            let previous_focus = self.current_pane_focus_target();
-            self.set_active_index(Some(idx));
-            self.set_selected_index(Some(idx));
-            let workspace_id = self.workspaces[idx].id.clone();
-            crate::logging::workspace_focused(&workspace_id);
-            self.mark_session_dirty();
-            if let Some(ws) = self.workspaces.get_mut(idx) {
-                let active_tab = ws.active_tab_index();
-                ws.switch_tab(active_tab);
-                let tab_id = public_tab_id_for_index(ws, active_tab);
-                crate::logging::tab_focused(
-                    &workspace_id,
-                    tab_id.as_deref().unwrap_or(&workspace_id),
-                );
-            }
-            self.record_pane_focus_after_navigation(previous_focus);
-        }
-    }
-
-    pub(crate) fn switch_workspace_tab(&mut self, ws_idx: usize, tab_idx: usize) -> bool {
-        if ws_idx >= self.workspaces.len() {
+    /// Focuses workspace `idx` and moves the sidebar cursor to it. False when
+    /// `idx` is not a workspace.
+    pub fn switch_workspace(&mut self, idx: usize) -> bool {
+        if idx >= self.workspaces.len() {
             return false;
         }
-        if self
-            .workspaces
-            .get(ws_idx)
-            .is_none_or(|ws| tab_idx >= ws.tabs().len())
-        {
-            return false;
-        }
-
         let previous_focus = self.current_pane_focus_target();
-        let workspace_changed = self.active_index() != Some(ws_idx);
-        self.set_active_index(Some(ws_idx));
-        self.set_selected_index(Some(ws_idx));
-        let workspace_id = self.workspaces[ws_idx].id.clone();
+        let workspace_changed = self.active_index() != Some(idx);
+        self.set_active_index(Some(idx));
+        self.set_selected_index(Some(idx));
         if workspace_changed {
-            crate::logging::workspace_focused(&workspace_id);
+            crate::logging::workspace_focused(&self.workspaces[idx].id);
         }
         self.mark_session_dirty();
-        if let Some(ws) = self.workspaces.get_mut(ws_idx) {
-            ws.switch_tab(tab_idx);
-            let tab_id = public_tab_id_for_index(ws, tab_idx);
-            crate::logging::tab_focused(&workspace_id, tab_id.as_deref().unwrap_or(&workspace_id));
-        }
-        self.refresh_active_tab_id();
         self.record_pane_focus_after_navigation(previous_focus);
         true
     }
@@ -85,8 +51,7 @@ impl AppState {
         self.workspaces
             .get(ws_idx)
             .into_iter()
-            .flat_map(shepr_mux::workspace::Workspace::tabs)
-            .flat_map(|tab| tab.panes().values())
+            .flat_map(|workspace| workspace.panes().values())
             .map(|pane| pane.attached_terminal_id.clone())
             .collect()
     }
@@ -95,8 +60,7 @@ impl AppState {
         self.workspaces
             .get(ws_idx)
             .into_iter()
-            .flat_map(shepr_mux::workspace::Workspace::tabs)
-            .flat_map(|tab| tab.layout().pane_ids())
+            .flat_map(|workspace| workspace.layout().pane_ids())
             .collect()
     }
 
@@ -110,11 +74,9 @@ impl AppState {
         let mut detached = Vec::new();
         for terminal_id in terminal_ids {
             let still_attached = self.workspaces.iter().any(|ws| {
-                ws.tabs().iter().any(|tab| {
-                    tab.panes()
-                        .values()
-                        .any(|pane| pane.attached_terminal_id == terminal_id)
-                })
+                ws.panes()
+                    .values()
+                    .any(|pane| pane.attached_terminal_id == terminal_id)
             });
             if still_attached {
                 continue;
@@ -145,7 +107,7 @@ impl AppState {
         let workspace_index = self
             .workspaces
             .iter()
-            .position(|workspace| workspace.find_tab_index_for_pane(pane_id).is_some())?;
+            .position(|workspace| workspace.contains_pane(pane_id))?;
         self.prepare_pane_removal(workspace_index, pane_id)
     }
 
@@ -166,7 +128,6 @@ impl AppState {
                 removal: PaneRemoval {
                     workspace_id: closed.workspace_id,
                     pane_id: removal.pane_id,
-                    tab_index: removal.tab_index,
                     scope: removal.scope,
                     pane_ids: closed.pane_ids,
                     terminal_ids: closed.terminal_ids,
@@ -178,92 +139,11 @@ impl AppState {
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
-        if self.active_index() == Some(plan.workspace_index) {
-            self.refresh_active_tab_id();
-        }
         self.mark_session_dirty();
         PaneRemovalCommit::Removed(PaneRemovalOutcome {
             workspace_index: plan.workspace_index,
             removal,
             detached_terminal_ids,
-        })
-    }
-
-    pub(crate) fn prepare_tab_removal(
-        &self,
-        workspace_index: usize,
-        tab_index: usize,
-    ) -> Option<TabRemovalPlan> {
-        let workspace = self.workspaces.get(workspace_index)?;
-        let tab_number = workspace.tabs().get(tab_index)?.number();
-        Some(TabRemovalPlan {
-            workspace_index,
-            tab_index,
-            scope: if workspace.tabs().len() <= 1 {
-                TabRemovalScope::Workspace
-            } else {
-                TabRemovalScope::Tab
-            },
-            workspace_id: workspace.id.clone(),
-            tab_number,
-        })
-    }
-
-    pub(crate) fn commit_tab_removal(&mut self, plan: &TabRemovalPlan) -> TabRemovalCommit {
-        let Some(workspace) = self.workspaces.get(plan.workspace_index) else {
-            return TabRemovalCommit::Stale;
-        };
-        let Some(tab) = workspace.tabs().get(plan.tab_index) else {
-            return TabRemovalCommit::Stale;
-        };
-        let expected_scope = if workspace.tabs().len() <= 1 {
-            TabRemovalScope::Workspace
-        } else {
-            TabRemovalScope::Tab
-        };
-        if workspace.id != plan.workspace_id
-            || tab.number() != plan.tab_number
-            || expected_scope != plan.scope
-        {
-            return TabRemovalCommit::Stale;
-        }
-        if plan.scope == TabRemovalScope::Workspace {
-            let Some(closed) = self.close_workspace_at(plan.workspace_index) else {
-                return TabRemovalCommit::Stale;
-            };
-            return TabRemovalCommit::Removed(TabRemovalOutcome {
-                workspace_index: plan.workspace_index,
-                scope: plan.scope,
-                pane_ids: closed.pane_ids,
-                terminal_ids: closed.terminal_ids,
-                detached_terminal_ids: closed.detached_terminal_ids,
-                tab: None,
-            });
-        }
-
-        let Some(removal) = self
-            .workspaces
-            .get_mut(plan.workspace_index)
-            .and_then(|workspace| workspace.close_tab(plan.tab_index))
-        else {
-            return TabRemovalCommit::Stale;
-        };
-        if self.active_index() == Some(plan.workspace_index) {
-            self.refresh_active_tab_id();
-        }
-        self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
-        let detached_terminal_ids =
-            self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
-        self.mark_session_dirty();
-        let tab_id = shepr_protocol::PublicTabId::new(&removal.workspace_id, removal.tab_number);
-        crate::logging::tab_closed(&removal.workspace_id, &tab_id);
-        TabRemovalCommit::Removed(TabRemovalOutcome {
-            workspace_index: plan.workspace_index,
-            scope: plan.scope,
-            pane_ids: removal.pane_ids.clone(),
-            terminal_ids: removal.terminal_ids.clone(),
-            detached_terminal_ids,
-            tab: Some(removal),
         })
     }
 
@@ -337,21 +217,6 @@ impl AppState {
 
 #[cfg(test)]
 impl AppState {
-    pub fn switch_tab(&mut self, idx: usize) {
-        if let Some(ws_idx) = self.active_index() {
-            let previous_focus = self.current_pane_focus_target();
-            let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-                return;
-            };
-            ws.switch_tab(idx);
-            let tab_id = public_tab_id_for_index(ws, idx);
-            crate::logging::tab_focused(&ws.id, tab_id.as_deref().unwrap_or(&ws.id));
-            self.refresh_active_tab_id();
-            self.mark_session_dirty();
-            self.record_pane_focus_after_navigation(previous_focus);
-        }
-    }
-
     pub(crate) fn terminal_id_for_pane(
         &self,
         ws_idx: usize,
@@ -372,23 +237,6 @@ impl AppState {
             return PaneRemovalCommit::Stale;
         };
         self.commit_pane_removal(&plan)
-    }
-
-    pub(crate) fn remove_active_tab(&mut self) -> TabRemovalCommit {
-        let Some(workspace_index) = self.active_index() else {
-            return TabRemovalCommit::Stale;
-        };
-        let Some(tab_index) = self
-            .workspaces
-            .get(workspace_index)
-            .map(shepr_mux::workspace::Workspace::active_tab_index)
-        else {
-            return TabRemovalCommit::Stale;
-        };
-        let Some(plan) = self.prepare_tab_removal(workspace_index, tab_index) else {
-            return TabRemovalCommit::Stale;
-        };
-        self.commit_tab_removal(&plan)
     }
 
     pub fn close_selected_workspace(&mut self) {

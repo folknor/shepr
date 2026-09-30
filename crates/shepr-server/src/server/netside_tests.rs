@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use shepr_client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, HandoffGeometry,
+    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
     PendingEndpointActivation, SurfaceActivationProgress,
 };
 use shepr_protocol::ServerMessage;
@@ -97,8 +97,8 @@ impl EndpointTransport for CapturingEndpointTransport {
     }
 }
 
-fn lifecycle_geometry() -> HandoffGeometry {
-    HandoffGeometry::uniform(shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false))
+fn lifecycle_geometry() -> shepr_protocol::TerminalGeometry {
+    shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false)
 }
 
 fn begin_activation(

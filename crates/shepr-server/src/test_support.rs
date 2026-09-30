@@ -11,7 +11,7 @@ use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::{Direction, PaneId};
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
-use shepr_mux::workspace::{ExistingPane, PaneRemoval, PaneRemovalScope, Tab, TabPane, Workspace};
+use shepr_mux::workspace::{ExistingPane, PaneRemoval, PaneRemovalScope, Workspace, WorkspacePane};
 use shepr_protocol::TerminalId;
 use tokio::sync::{Notify, mpsc};
 
@@ -136,16 +136,14 @@ impl PaneRuntimeRegistryFixture for PaneRuntimeRegistry {
 
 /// Workspaces built without spawning a pane.
 pub(crate) trait WorkspaceFixture: Sized {
-    /// One tab with one pane, named `name`, rooted at `/`: a directory that
+    /// One pane, named `name`, rooted at `/`: a directory that
     /// exists on every host, so tests that launch the pane can, and that is
     /// neither the runner's cwd nor a git repository.
     fn test_new(name: &str) -> Self;
-    /// Split the active tab's focused pane; returns the new pane.
+    /// Split the focused pane; returns the new pane.
     fn test_split(&mut self, direction: Direction) -> PaneId;
-    /// Append a one-pane tab; returns its index.
-    fn test_add_tab(&mut self, name: Option<&str>) -> usize;
-    /// A workspace whose tab positions, public tab numbers, raw pane ids and
-    /// public pane numbers all differ, so code that confuses them is caught.
+    /// A workspace whose raw pane ids and public pane numbers differ, so code
+    /// that confuses them is caught.
     fn test_adversarial_identity_state() -> Self;
     fn assert_invariants_for_test(&self);
     fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval>;
@@ -157,27 +155,17 @@ impl WorkspaceFixture for Workspace {
         let identity_cwd = PathBuf::from("/");
         let existing = ExistingPane {
             pane_id: PaneId::alloc(),
-            pane: TabPane::new(PaneState::new(TerminalId::alloc())),
+            pane: WorkspacePane::new(PaneState::new(TerminalId::alloc())),
         };
-        Self::from_existing_pane(Some(name.to_string()), None, &identity_cwd, existing)
+        Self::from_existing_pane(Some(name.to_string()), &identity_cwd, existing)
     }
 
     fn test_split(&mut self, direction: Direction) -> PaneId {
-        let tab_index = self.active_tab_index();
-        let mut layout = self.active_tab().layout().clone();
+        let mut layout = self.layout().clone();
         let new_id = layout.split_focused(direction);
-        self.commit_new_pane(tab_index, new_id, layout, TerminalId::alloc(), false)
+        self.commit_new_pane(new_id, layout, TerminalId::alloc(), false)
             .expect("test split commits");
         new_id
-    }
-
-    fn test_add_tab(&mut self, name: Option<&str>) -> usize {
-        let mut pane = TabPane::new(PaneState::new(TerminalId::alloc()));
-        pane.public_number = self.next_public_pane_number;
-        let tab = Tab::single_pane(name.map(str::to_string), self.next_public_tab_number, pane);
-        self.commit_new_tab(tab)
-            .expect("a test tab takes the workspace's next identities")
-            .tab_index
     }
 
     fn test_adversarial_identity_state() -> Self {
@@ -191,129 +179,74 @@ impl WorkspaceFixture for Workspace {
         let _unused_raw_id = PaneId::alloc();
         let later_pane = ws.test_split(Direction::Horizontal);
 
-        let removed_tab = ws.test_add_tab(Some("removed"));
-        let survivor_tab = ws.test_add_tab(None);
-        let final_tab = ws.test_add_tab(None);
-        let survivor_root = ws.tabs()[survivor_tab].root_pane();
-        let final_root = ws.tabs()[final_tab].root_pane();
-        assert!(ws.close_tab(removed_tab).is_some());
-        assert!(ws.move_tab(0, ws.tabs().len()));
-        ws.switch_tab(
-            ws.find_tab_index_for_pane(survivor_root)
-                .expect("survivor tab should still exist"),
-        );
-
-        assert_ne!(
-            ws.active_tab_index() + 1,
-            ws.active_tab().number(),
-            "adversarial active tab must distinguish position from public tab number"
-        );
         assert_ne!(
             later_pane.raw() as usize,
             ws.public_pane_number(later_pane)
                 .expect("test pane has a public pane number"),
             "adversarial pane must distinguish raw pane id from public pane number"
         );
-        assert_eq!(ws.find_tab_index_for_pane(final_root), Some(1));
         ws
     }
 
     fn assert_invariants_for_test(&self) {
-        let tabs = self.tabs();
-        let mut tab_numbers = std::collections::HashSet::new();
-        let mut max_tab_number = 0usize;
-        let mut live_panes = std::collections::HashSet::new();
         let mut terminal_ids = std::collections::HashSet::new();
         let mut pane_numbers = std::collections::HashSet::new();
         let mut max_pane_number = 0usize;
 
-        for (tab_idx, tab) in tabs.iter().enumerate() {
-            assert!(
-                tab.number() > 0,
-                "workspace {} tab {} has invalid public tab number 0",
-                self.id,
-                tab_idx
-            );
-            assert!(
-                tab_numbers.insert(tab.number()),
-                "workspace {} has duplicate public tab number {}",
-                self.id,
-                tab.number()
-            );
-            max_tab_number = max_tab_number.max(tab.number());
-            assert!(
-                tab.panes().contains_key(&tab.root_pane()),
-                "workspace {} tab {} root pane {:?} is missing from tab panes",
-                self.id,
-                tab_idx,
-                tab.root_pane()
-            );
-
-            let layout_panes = tab.layout().pane_ids();
-            let layout_set: std::collections::HashSet<_> = layout_panes.iter().copied().collect();
-            assert_eq!(
-                layout_panes.len(),
-                layout_set.len(),
-                "workspace {} tab {} layout contains duplicate pane ids",
-                self.id,
-                tab_idx
-            );
-            assert!(
-                layout_set.contains(&tab.layout().focused()),
-                "workspace {} tab {} focused pane {:?} is not in layout",
-                self.id,
-                tab_idx,
-                tab.layout().focused()
-            );
-            let pane_set: std::collections::HashSet<_> = tab.panes().keys().copied().collect();
-            assert_eq!(
-                layout_set, pane_set,
-                "workspace {} tab {} layout panes must exactly match pane records",
-                self.id, tab_idx
-            );
-
-            for (pane_id, pane) in tab.panes() {
-                assert!(
-                    live_panes.insert(*pane_id),
-                    "workspace {} pane {:?} appears in more than one tab",
-                    self.id,
-                    pane_id
-                );
-                assert!(
-                    pane.public_number > 0,
-                    "workspace {} pane {:?} has invalid public pane number 0",
-                    self.id,
-                    pane_id
-                );
-                assert!(
-                    pane_numbers.insert(pane.public_number),
-                    "workspace {} duplicate public pane number {} for pane {:?}",
-                    self.id,
-                    pane.public_number,
-                    pane_id
-                );
-                max_pane_number = max_pane_number.max(pane.public_number);
-                assert!(
-                    terminal_ids.insert(pane.attached_terminal_id.clone()),
-                    "workspace {} terminal {} is attached to multiple panes",
-                    self.id,
-                    pane.attached_terminal_id
-                );
-            }
-        }
-
         assert!(
-            self.next_public_tab_number > 0,
-            "workspace {} next_public_tab_number must be greater than 0",
+            self.panes().contains_key(&self.root_pane()),
+            "workspace {} root pane {:?} is missing from its panes",
+            self.id,
+            self.root_pane()
+        );
+        let layout_panes = self.layout().pane_ids();
+        let layout_set: std::collections::HashSet<_> = layout_panes.iter().copied().collect();
+        assert_eq!(
+            layout_panes.len(),
+            layout_set.len(),
+            "workspace {} layout contains duplicate pane ids",
             self.id
         );
         assert!(
-            self.next_public_tab_number > max_tab_number,
-            "workspace {} next_public_tab_number {} must be greater than max live public tab number {}",
+            layout_set.contains(&self.layout().focused()),
+            "workspace {} focused pane {:?} is not in layout",
             self.id,
-            self.next_public_tab_number,
-            max_tab_number
+            self.layout().focused()
         );
+        let pane_set: std::collections::HashSet<_> = self.panes().keys().copied().collect();
+        assert_eq!(
+            layout_set, pane_set,
+            "workspace {} layout panes must exactly match pane records",
+            self.id
+        );
+        assert!(
+            !self.zoomed() || self.pane_count() > 1,
+            "workspace {} is zoomed with a single pane",
+            self.id
+        );
+
+        for (pane_id, pane) in self.panes() {
+            assert!(
+                pane.public_number > 0,
+                "workspace {} pane {:?} has invalid public pane number 0",
+                self.id,
+                pane_id
+            );
+            assert!(
+                pane_numbers.insert(pane.public_number),
+                "workspace {} duplicate public pane number {} for pane {:?}",
+                self.id,
+                pane.public_number,
+                pane_id
+            );
+            max_pane_number = max_pane_number.max(pane.public_number);
+            assert!(
+                terminal_ids.insert(pane.attached_terminal_id.clone()),
+                "workspace {} terminal {} is attached to multiple panes",
+                self.id,
+                pane.attached_terminal_id
+            );
+        }
 
         assert!(
             self.next_public_pane_number > 0,

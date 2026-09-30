@@ -3,7 +3,7 @@
 //! Shepr is a terminal emulator, so `OSC 0`/`OSC 2` written by a pane stops at
 //! Shepr and never reaches the terminal Shepr itself runs in. Without this the
 //! host window title keeps whatever the shell or `ssh` left behind, which is
-//! what window managers show in tab and group bars.
+//! what window managers show in their title and group bars.
 //!
 //! The title is rendered on the server so `{hostname}` names the host the panes
 //! actually live on, not the machine a thin remote client runs on. The server
@@ -38,36 +38,19 @@ impl App {
     /// Renders the configured outer window title, or `None` when window titles
     /// are disabled or every token resolved empty.
     pub(crate) fn window_title(&self) -> Option<String> {
-        let target = self.state.active_index().and_then(|workspace_index| {
-            self.state
-                .workspaces
-                .get(workspace_index)
-                .map(|workspace| (workspace_index, workspace.active_tab_index()))
-        });
-        self.window_title_for_target(target)
+        self.window_title_for_target(self.state.active_index())
     }
 
-    pub(crate) fn window_title_for(
-        &self,
-        workspace_index: usize,
-        tab_index: usize,
-    ) -> Option<String> {
-        self.window_title_for_target(Some((workspace_index, tab_index)))
+    pub(crate) fn window_title_for(&self, workspace_index: usize) -> Option<String> {
+        self.window_title_for_target(Some(workspace_index))
     }
 
-    fn window_title_for_target(&self, target: Option<(usize, usize)>) -> Option<String> {
+    fn window_title_for_target(&self, target: Option<usize>) -> Option<String> {
         let template = self.window_title_template.as_ref()?;
         let workspace =
-            target.and_then(|(workspace_index, _)| self.state.workspaces.get(workspace_index));
-        let tab = target.and_then(|(workspace_index, tab_index)| {
-            self.state
-                .workspaces
-                .get(workspace_index)?
-                .tabs()
-                .get(tab_index)
-        });
-        let terminal = tab
-            .and_then(|tab| tab.terminal_id(tab.layout().focused()))
+            target.and_then(|workspace_index| self.state.workspaces.get(workspace_index));
+        let terminal = workspace
+            .and_then(|workspace| workspace.terminal_id(workspace.layout().focused()))
             .and_then(|terminal_id| self.state.terminals.get(terminal_id));
 
         let mut title = String::new();
@@ -80,16 +63,6 @@ impl App {
                 WindowTitlePart::Token(WindowTitleToken::Workspace) => {
                     if let Some(workspace) = workspace {
                         title.push_str(&workspace.display_name());
-                    }
-                }
-                WindowTitlePart::Token(WindowTitleToken::Tab) => {
-                    if let Some(name) = target.and_then(|(workspace_index, tab_index)| {
-                        self.state
-                            .workspaces
-                            .get(workspace_index)?
-                            .tab_display_name(tab_index)
-                    }) {
-                        title.push_str(&name);
                     }
                 }
                 WindowTitlePart::Token(WindowTitleToken::Pane) => {
@@ -141,14 +114,14 @@ mod tests {
     }
 
     #[test]
-    fn renders_workspace_and_tab_names() {
+    fn renders_the_workspace_name() {
         let mut app = test_app();
-        app.configure_window_title("{workspace}/{tab}");
+        app.configure_window_title("{workspace}");
 
-        assert_eq!(app.window_title().as_deref(), Some("herd/1"));
+        assert_eq!(app.window_title().as_deref(), Some("herd"));
 
-        app.state.workspaces[0].set_tab_custom_name(0, Some("build".into()));
-        assert_eq!(app.window_title().as_deref(), Some("herd/build"));
+        app.state.workspaces[0].set_custom_name("build".into());
+        assert_eq!(app.window_title().as_deref(), Some("build"));
     }
 
     #[test]
@@ -156,8 +129,8 @@ mod tests {
         let mut app = test_app();
         app.configure_window_title("{pane}|{terminal_title}");
 
-        let pane_id = app.state.workspaces[0].tabs()[0].root_pane();
-        let terminal_id = app.state.workspaces[0].tabs()[0].panes()[&pane_id]
+        let pane_id = app.state.workspaces[0].root_pane();
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
             .attached_terminal_id
             .clone();
         let terminal = app

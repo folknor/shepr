@@ -8,7 +8,6 @@ mod limits;
 mod machine;
 mod model;
 mod sidebar;
-mod tab_bar;
 pub mod theme;
 mod theme_config;
 mod validated;
@@ -40,13 +39,12 @@ pub use self::{
     model::{
         AgentPanelSortConfig, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
         RightClickPassthroughModifierConfig, SidebarBounds, SidebarCollapsedModeConfig,
-        StatusIndicatorStyle, TabBarPositionConfig, validated_sidebar_bounds,
+        StatusIndicatorStyle, validated_sidebar_bounds,
     },
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenRule, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
     },
-    tab_bar::TabBarRightEntryConfig,
     theme_config::ThemeConfig,
     validated::{
         ConfigProvenance, ConfigSource, NewTerminalCwd, UiPreferenceKey, ValidatedConfig,
@@ -56,7 +54,7 @@ pub use self::{
 };
 
 pub use self::keybinds::parse_key_combo;
-pub use self::{tab_bar::ValidatedTabBarRightEntry, window_title::sanitize_window_title_text};
+pub use self::window_title::sanitize_window_title_text;
 
 pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
@@ -239,7 +237,7 @@ mod tests {
         let config: Config = toml::from_str(&uncommented).expect("template keys parse");
         assert_eq!(config.keys, KeysConfig::default());
         // The prefix plus every binding in the keybinding table.
-        assert_eq!(listed, 57, "{uncommented}");
+        assert_eq!(listed, 49, "{uncommented}");
     }
 
     #[test]
@@ -254,20 +252,12 @@ mod tests {
             (&keys.new_workspace, "prefix+shift+n"),
             (&keys.rename_workspace, "prefix+shift+w"),
             (&keys.close_workspace, "prefix+shift+d"),
-            (&keys.previous_workspace, ""),
-            (&keys.next_workspace, ""),
+            (&keys.previous_workspace, "prefix+p"),
+            (&keys.next_workspace, "prefix+n"),
             (&keys.previous_agent, ""),
             (&keys.next_agent, ""),
             (&keys.focus_agent, ""),
-            (&keys.new_tab, "prefix+c"),
-            (&keys.rename_tab, "prefix+shift+t"),
-            (&keys.previous_tab, "prefix+p"),
-            (&keys.next_tab, "prefix+n"),
-            (&keys.move_tab_previous, ""),
-            (&keys.move_tab_next, ""),
-            (&keys.switch_tab, "prefix+1..9"),
-            (&keys.switch_workspace, ""),
-            (&keys.close_tab, "prefix+shift+x"),
+            (&keys.switch_workspace, "prefix+1..9"),
             (&keys.rename_pane, "prefix+shift+p"),
             (&keys.clear_pane, ""),
             (&keys.copy_mode, "prefix+["),

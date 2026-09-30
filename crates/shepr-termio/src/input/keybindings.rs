@@ -179,14 +179,14 @@ mod tests {
 
     #[test]
     fn one_shared_resolver_handles_direct_prefix_and_indexed_bindings() {
-        let keybinds = crate::test_config::validated("[keys]\nnext_tab = \"ctrl+n\"\n")
+        let keybinds = crate::test_config::validated("[keys]\nnext_workspace = \"ctrl+n\"\n")
             .live_keybinds()
             .keybinds;
 
         let direct = TerminalKey::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
         assert!(matches!(
             resolve_direct_binding(&keybinds, &direct),
-            Some(KeybindMatch::Action(KeybindAction::NextTab))
+            Some(KeybindMatch::Action(KeybindAction::NextWorkspace))
         ));
 
         let help = TerminalKey::new(KeyCode::Char('?'), KeyModifiers::empty());
@@ -198,7 +198,7 @@ mod tests {
         let one = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::empty());
         assert!(matches!(
             resolve_prefix_binding(&keybinds, &one),
-            Some(KeybindMatch::Action(KeybindAction::SwitchTab(0)))
+            Some(KeybindMatch::Action(KeybindAction::SwitchWorkspace(0)))
         ));
     }
 

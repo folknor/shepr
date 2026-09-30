@@ -36,8 +36,8 @@ pub fn render_selection_highlight<P: PartialEq>(
     let style = automatic_selection_style(p, host_theme);
     // `inner` can extend past the buffer: the client composes pane surfaces whose
     // geometry was produced for a different layout (a resize or sidebar toggle racing
-    // an in-flight surface, or the tab bar appearing when a second tab opens). Only
-    // the visible part of `inner` is painted; `Buffer` indexing would panic.
+    // an in-flight surface). Only the visible part of `inner` is painted; `Buffer`
+    // indexing would panic.
     let visible = inner.intersection(buffer.area);
     if visible.is_empty() {
         return;

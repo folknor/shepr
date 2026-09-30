@@ -124,7 +124,7 @@ pub(crate) const BACKUP_LIMIT: usize = 3;
 /// concurrent writer that picked the same timestamp moves on to the next one.
 pub(crate) const RECOVERY_SEQUENCE_LIMIT: usize = 128;
 /// This is the session-history writer's file budget and restore uses the same
-/// bound. `serialize_history` trims pane text to it; if the workspace/tab shape
+/// bound. `serialize_history` trims pane text to it; if the workspace shape
 /// alone is larger, it writes a compact history with no pane entries. The
 /// fingerprint in that compact form is a fixed SHA-256 digest.
 pub(crate) const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;

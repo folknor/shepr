@@ -21,7 +21,7 @@ pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::restore::restore;
 pub use self::snapshot::{
     DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
-    TabSnapshot, WorkspaceSnapshot, capture,
+    WorkspaceSnapshot, capture,
 };
 pub use self::snapshot::{PendingCwds, capture_deferred};
 pub use self::snapshot::{PendingHistory, capture_pending_history};

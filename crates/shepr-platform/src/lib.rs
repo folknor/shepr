@@ -33,7 +33,7 @@ pub use daemon::{SpawnedDaemon, create_private_directory_all, open_boot_log, rea
 pub use executable::has_execute_access;
 pub use host::{
     begin_cli_output, child_command, detach_server_daemon_command, hostname, launch_executable,
-    local_datetime, take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
+    take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
 };
 pub use private_file::{create_private_file, sync_directory};
 pub use process::{

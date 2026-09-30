@@ -22,7 +22,6 @@ fn agent(status: shepr_protocol::AgentStatus, state_change_seq: u64) -> ClientSh
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
         workspace_id: test_workspace_id("w1"),
-        tab_id: test_tab_id("w1:t1"),
         agent: Some("pi".into()),
         terminal_title: None,
         terminal_title_stripped: None,
@@ -83,57 +82,24 @@ fn repeated_endpoint_snapshots_reuse_the_validated_config() {
 }
 
 #[test]
-fn endpoint_surface_size_follows_the_cached_projection_and_navigation_target() {
-    let mut config = Config::default();
-    config.ui.hide_tab_bar_when_single_tab = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    let machine = remote_machine();
-    let remote_id = ClientEndpointId::Ssh(machine.label.clone());
-    state.set_machines(&[machine]);
-    state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
-    // Local focuses a single-tab workspace, so it shows no tab bar.
-    state.set_snapshot(Box::new(snapshot()));
-    // The remote focuses a two-tab workspace and also has a single-tab one.
-    let mut remote = snapshot();
-    remote.boot_id = crate::tests::test_boot_id("remote-boot");
-    let mut second_tab = remote.tabs[0].clone();
-    second_tab.tab_id = test_tab_id("w1:t2");
-    second_tab.number = 2;
-    second_tab.focused = false;
-    let mut other_workspace_tab = remote.tabs[0].clone();
-    other_workspace_tab.tab_id = test_tab_id("w2:t1");
-    other_workspace_tab.workspace_id = test_workspace_id("w2");
-    other_workspace_tab.focused = false;
-    remote.tabs.extend([second_tab, other_workspace_tab]);
-    state.cache_endpoint_snapshot(&remote_id, Box::new(remote));
+fn every_endpoint_gets_the_same_pane_surface() {
+    let (mut state, remote_id) = state_with_remote();
 
+    // The pane surface is the whole main area, whatever the projection shows.
+    let layout = state.layout(100, 30);
+    assert_eq!(layout.pane_surface.y, 0);
+    assert_eq!(layout.pane_surface.height, 30);
+    assert_eq!(layout.pane_surface.x, layout.sidebar.width);
+    assert_eq!(layout.pane_surface.width, 100 - layout.sidebar.width);
     let local = state.surface_size(100, 30);
-    assert_eq!(
-        state.endpoint_surface_size(&ClientEndpointId::Local, None, 100, 30),
-        local
-    );
-    let remote = state.endpoint_surface_size(&remote_id, None, 100, 30);
-    assert_eq!(
-        remote.rows + 1,
-        local.rows,
-        "the remote's focused workspace shows a tab bar"
-    );
+    assert_eq!(local.rows, layout.pane_surface.height);
+    assert_eq!(local.cols, layout.pane_surface.width);
+
+    assert!(state.activate_endpoint_projection(&remote_id));
     assert_eq!(
         state.surface_size(100, 30),
         local,
-        "sizing a cached projection leaves the active layout alone"
-    );
-    let single_tab = state.endpoint_surface_size(
-        &remote_id,
-        Some(&ClientEndpointFocusTarget::Workspace(test_workspace_id(
-            "w2",
-        ))),
-        100,
-        30,
-    );
-    assert_eq!(
-        single_tab, local,
-        "the navigation target decides the layout"
+        "activating another endpoint's projection leaves the layout alone"
     );
 }
 
@@ -488,11 +454,9 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
         ));
 
         state.workspace_scroll = 3;
-        state.tab_scroll = 2;
         assert!(state.activate_endpoint_projection(&endpoint_id));
         assert_eq!(state.agent_scroll, 6);
         assert_eq!(state.workspace_scroll, 0);
-        assert_eq!(state.tab_scroll, 0);
         assert!(state.pane_surface.is_none());
 
         let mut next_surface = surface();
@@ -859,7 +823,6 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();
         workspace.workspace_id = test_workspace_id("w2");
-        workspace.active_tab_id = test_tab_id("w2:t1");
         workspace.number = 2;
         workspace.label = "second-workspace".into();
         workspace.focused = false;

@@ -1,13 +1,13 @@
 mod panes;
 mod scrollbar;
-mod tab_surface;
+mod surface;
 mod text;
 
 pub(crate) use self::panes::pane_is_scrolled_back;
 pub(crate) use self::scrollbar::render_pane_scrollbar_buffer;
-pub(crate) use self::tab_surface::{
-    TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView, compute_tab_surface_for,
-    render_tab_surface, resize_tab_surface, tab_surface_cursor, tab_surface_hyperlinks,
+pub(crate) use self::surface::{
+    SurfaceLayout, SurfaceView, compute_surface_for, render_surface, resize_surface,
+    surface_cursor, surface_hyperlinks,
 };
 
 use shepr_mux::pane::PaneRuntimeRegistry;

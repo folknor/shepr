@@ -8,12 +8,10 @@ impl App {
             .iter()
             .enumerate()
             .flat_map(|(ws_idx, ws)| {
-                ws.tabs().iter().flat_map(move |tab| {
-                    tab.layout()
-                        .pane_ids()
-                        .into_iter()
-                        .filter_map(move |pane_id| self.agent_info(ws_idx, pane_id))
-                })
+                ws.layout()
+                    .pane_ids()
+                    .into_iter()
+                    .filter_map(move |pane_id| self.agent_info(ws_idx, pane_id))
             })
             .collect()
     }
@@ -29,11 +27,9 @@ impl App {
         if !terminal.is_agent_terminal() {
             return None;
         }
-        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
         Some(SnapshotAgent {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             workspace_id: self.public_workspace_id(ws_idx)?,
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             agent: terminal.effective_agent_label().map(str::to_string),
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),

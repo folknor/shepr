@@ -15,12 +15,10 @@ use shepr_core::layout::{Direction, InvalidSavedLayout, Node, PaneId, SplitRatio
 use shepr_protocol::{TerminalId, WorkspaceId};
 
 use super::snapshot::{
-    HistoryCarry, PaneAgentSessionSnapshot, PaneHistorySnapshot, TabHistorySnapshot,
-    WorkspaceHistorySnapshot,
+    HistoryCarry, PaneAgentSessionSnapshot, PaneHistorySnapshot, WorkspaceHistorySnapshot,
 };
 use super::{
-    DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, TabSnapshot,
-    WorkspaceSnapshot,
+    DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, WorkspaceSnapshot,
 };
 
 struct AgentRestoreState<'a> {
@@ -35,7 +33,7 @@ struct PaneRestoreStartup<'a> {
 }
 
 struct RestoreRuntimeContext<'a> {
-    /// The area each tab is laid out in, with the pane chrome that decides
+    /// The area each workspace is laid out in, with the pane chrome that decides
     /// every pane's size.
     geometry: crate::workspace::PaneGeometry,
     scrollback_limit_bytes: usize,
@@ -50,10 +48,10 @@ struct RestoreRuntimeContext<'a> {
     pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
 }
 
-/// Everything a restore produces. Restore can drop saved workspaces (no tab
-/// survived) and tabs (no pane survived), so saved indices into those lists
-/// no longer name the same item; `active` and `selected` are already remapped
-/// onto `workspaces` and must be used as they are, not re-derived from the
+/// Everything a restore produces. Restore can drop saved workspaces (invalid
+/// layout, or no pane survived), so saved indices into that list no longer
+/// name the same item; `active` and `selected` are already remapped onto
+/// `workspaces` and must be used as they are, not re-derived from the
 /// snapshot by clamping.
 pub struct RestoredSession {
     pub workspaces: Vec<Workspace>,
@@ -70,10 +68,11 @@ pub struct RestoredSession {
     /// session's persister takes it; every later history capture of this
     /// session is resolved against it.
     pub history_carry: HistoryCarry,
-    /// Saved tabs restore dropped (invalid layout, or no pane survived). The
-    /// first save of this session overwrites the file those tabs are still
-    /// in, so a nonzero count tells the caller to back the file up first.
-    pub dropped_tabs: usize,
+    /// Saved workspaces restore dropped (invalid layout, or no pane
+    /// survived). The first save of this session overwrites the file those
+    /// workspaces are still in, so a nonzero count tells the caller to back
+    /// the file up first.
+    pub dropped_workspaces: usize,
 }
 
 /// How a restored pane comes back. Every saved field is carried forward the
@@ -97,14 +96,9 @@ type RestoredWorkspace = (
     Vec<TerminalState>,
     HashMap<TerminalId, PaneRuntime>,
 );
-type RestoredTab = (
-    crate::workspace::Tab,
-    Vec<TerminalState>,
-    HashMap<TerminalId, PaneRuntime>,
-    HashMap<PaneId, u32>,
-);
+
 /// Restore workspaces from a snapshot. Each pane gets a fresh shell in its
-/// saved cwd, started at its own size in its tab laid out by `geometry`.
+/// saved cwd, started at its own size in its workspace laid out by `geometry`.
 #[expect(
     clippy::too_many_arguments,
     reason = "restore threads geometry, launch policy and every handle a spawned pane reports through"
@@ -152,7 +146,7 @@ pub fn restore(
     // workspace owns.
     crate::workspace::reserve_workspace_ids(saved_ids.iter().flatten());
     let mut used_ids = HashSet::new();
-    let mut dropped_tabs = 0;
+    let mut dropped_workspaces = 0;
     for ((idx, ws_snap), saved_id) in snapshot.workspaces.iter().enumerate().zip(saved_ids) {
         let workspace_id = restored_workspace_id(saved_id, &mut used_ids);
         let runtime_context = RestoreRuntimeContext {
@@ -175,7 +169,6 @@ pub fn restore(
             &runtime_context,
             &mut history_carry,
             &mut resumed_agent_sessions,
-            &mut dropped_tabs,
         );
         if let Some((workspace, restored_terminals, restored_runtimes)) = restored {
             for terminal in restored_terminals {
@@ -185,6 +178,7 @@ pub fn restore(
             restored_index.push(Some(workspaces.len()));
             workspaces.push(workspace);
         } else {
+            dropped_workspaces += 1;
             restored_index.push(None);
         }
     }
@@ -199,7 +193,7 @@ pub fn restore(
         active,
         selected,
         history_carry,
-        dropped_tabs,
+        dropped_workspaces,
     }
 }
 
@@ -220,56 +214,6 @@ fn remap_saved_index(saved: usize, restored: &[Option<usize>]) -> Option<usize> 
         .copied()
 }
 
-/// Keep unique saved tab numbers and give every missing, zero, or duplicate
-/// number the next unused public number. The allocator starts beyond every
-/// saved number so an early missing entry cannot take an ID saved for a later
-/// tab.
-fn assign_public_tab_numbers(
-    saved_numbers: &[usize],
-    tab_count: usize,
-    saved_next_public_tab_number: usize,
-) -> (Vec<usize>, usize) {
-    let max_saved = saved_numbers
-        .iter()
-        .copied()
-        .filter(|number| *number > 0)
-        .max();
-    let mut next_public_tab_number = max_saved
-        .and_then(|number| number.checked_add(1))
-        .unwrap_or(1)
-        .max(saved_next_public_tab_number)
-        .max(1);
-    let mut used = HashSet::new();
-    let mut numbers = Vec::with_capacity(tab_count);
-
-    for saved_number in saved_numbers
-        .iter()
-        .copied()
-        .map(Some)
-        .chain(std::iter::repeat(None))
-        .take(tab_count)
-    {
-        let saved_number = saved_number
-            .filter(|number| *number > 0)
-            .filter(|number| used.insert(*number));
-        let number = saved_number
-            .unwrap_or_else(|| next_free_public_tab_number(&mut next_public_tab_number, &used));
-        used.insert(number);
-        numbers.push(number);
-    }
-
-    (numbers, next_public_tab_number)
-}
-
-fn next_free_public_tab_number(next: &mut usize, used: &HashSet<usize>) -> usize {
-    while *next == 0 || used.contains(next) {
-        *next = (*next).checked_add(1).unwrap_or(1);
-    }
-    let number = *next;
-    *next = number.checked_add(1).unwrap_or(1);
-    number
-}
-
 /// The ID a restored workspace gets. A saved ID is kept if it is canonical
 /// (`saved` is `None` otherwise) and no earlier workspace of the same file
 /// already took it (a hand-edited or damaged file can break either). A
@@ -285,99 +229,6 @@ fn restored_workspace_id(
         return id;
     }
     crate::workspace::generate_workspace_id()
-}
-
-fn restore_workspace(
-    snap: &WorkspaceSnapshot,
-    workspace_id: WorkspaceId,
-    history: Option<&WorkspaceHistorySnapshot>,
-    runtime_context: &RestoreRuntimeContext<'_>,
-    history_carry: &mut HistoryCarry,
-    resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
-    dropped_tabs: &mut usize,
-) -> Option<RestoredWorkspace> {
-    let mut tabs = Vec::new();
-    // Where each saved tab ended up, `None` for a dropped one.
-    let mut restored_tab_index = Vec::with_capacity(snap.tabs.len());
-    let mut terminals = Vec::new();
-    let mut terminal_runtimes = HashMap::new();
-    let mut next_public_pane_number = snap
-        .public_pane_numbers
-        .values()
-        .copied()
-        .max()
-        .and_then(|max| max.checked_add(1))
-        .unwrap_or(1)
-        .max(snap.next_public_pane_number);
-    let public_pane_numbers_by_old_raw =
-        &assign_public_pane_numbers(snap, &mut next_public_pane_number);
-    let public_pane_ids_by_old_raw: HashMap<u32, String> = public_pane_numbers_by_old_raw
-        .iter()
-        .map(|(old_raw, public_number)| {
-            (
-                *old_raw,
-                shepr_protocol::PublicPaneId::new(&workspace_id, *public_number).to_string(),
-            )
-        })
-        .collect();
-    let (public_tab_numbers, next_public_tab_number) = assign_public_tab_numbers(
-        &snap.public_tab_numbers,
-        snap.tabs.len(),
-        snap.next_public_tab_number,
-    );
-
-    for (idx, (tab_snap, tab_number)) in snap.tabs.iter().zip(public_tab_numbers).enumerate() {
-        let restored_tab = restore_tab(
-            tab_snap,
-            history.and_then(|history| history.tabs.get(idx)),
-            tab_number,
-            runtime_context,
-            history_carry,
-            resumed_agent_sessions,
-            &public_pane_ids_by_old_raw,
-        );
-        let Some((mut tab, restored_terminals, restored_runtimes, reverse_id_map)) = restored_tab
-        else {
-            *dropped_tabs += 1;
-            restored_tab_index.push(None);
-            continue;
-        };
-        restored_tab_index.push(Some(tabs.len()));
-        for (pane_id, pane) in &mut tab.panes {
-            let public_number = public_pane_numbers_by_old_raw
-                .get(
-                    &reverse_id_map
-                        .get(pane_id)
-                        .copied()
-                        .unwrap_or(pane_id.raw()),
-                )
-                .copied()
-                .unwrap_or_else(|| {
-                    let number = next_public_pane_number;
-                    next_public_pane_number += 1;
-                    number
-                });
-            pane.public_number = public_number;
-            next_public_pane_number = next_public_pane_number.max(public_number + 1);
-        }
-        terminals.extend(restored_terminals);
-        terminal_runtimes.extend(restored_runtimes);
-        tabs.push(tab);
-    }
-
-    // `None` exactly when no tab survived; the workspace is dropped then.
-    let active_tab = remap_saved_index(snap.active_tab, &restored_tab_index)?;
-
-    let workspace = Workspace::from_restored_tabs(
-        workspace_id,
-        snap.custom_name.clone(),
-        snap.identity_cwd.clone(),
-        tabs,
-        active_tab,
-        next_public_pane_number,
-        next_public_tab_number,
-    )?;
-    Some((workspace, terminals, terminal_runtimes))
 }
 
 /// The terminal state of one restored pane. Every saved `PaneSnapshot` field
@@ -443,10 +294,11 @@ fn restored_terminal(
 }
 
 /// The `(rows, cols)` a restored pane's shell starts at: its own rect in the
-/// tab's layout, which is what the first view computation gives it. A child
-/// reads its window size at startup, so any other size would reach it first
-/// and be corrected only by the first resize. A pane hidden behind a zoomed
-/// one gets its tiled size, which it has again once the tab is unzoomed.
+/// workspace's layout, which is what the first view computation gives it. A
+/// child reads its window size at startup, so any other size would reach it
+/// first and be corrected only by the first resize. A pane hidden behind a
+/// zoomed one gets its tiled size, which it has again once the workspace is
+/// unzoomed.
 fn restored_pane_size(
     geometry: &crate::workspace::PaneGeometry,
     layout: &TileLayout,
@@ -460,28 +312,49 @@ fn restored_pane_size(
         .unwrap_or_else(|| geometry.sole_pane_size())
 }
 
-fn restore_tab(
-    snap: &TabSnapshot,
-    history: Option<&TabHistorySnapshot>,
-    number: usize,
+/// One saved workspace, or `None` when a layout defect or a missing pane
+/// leaves nothing usable to restore.
+fn restore_workspace(
+    snap: &WorkspaceSnapshot,
+    workspace_id: WorkspaceId,
+    history: Option<&WorkspaceHistorySnapshot>,
     runtime_context: &RestoreRuntimeContext<'_>,
     history_carry: &mut HistoryCarry,
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
-    public_pane_ids_by_old_raw: &HashMap<u32, String>,
-) -> Option<RestoredTab> {
-    // An invalid saved split ratio drops this one tab, like every other
-    // per-tab restore defect below, rather than refusing the whole session
-    // (which would lose every healthy tab for one bad number) or clamping it
-    // (which silently repairs a corrupt file). The tab is not lost on disk:
-    // a nonzero `RestoredSession::dropped_tabs` makes the first save back the
-    // original file up before overwriting it.
+) -> Option<RestoredWorkspace> {
+    let mut next_public_pane_number = snap
+        .public_pane_numbers
+        .values()
+        .copied()
+        .max()
+        .and_then(|max| max.checked_add(1))
+        .unwrap_or(1)
+        .max(snap.next_public_pane_number);
+    let public_pane_numbers_by_old_raw =
+        &assign_public_pane_numbers(snap, &mut next_public_pane_number);
+    let public_pane_ids_by_old_raw: HashMap<u32, String> = public_pane_numbers_by_old_raw
+        .iter()
+        .map(|(old_raw, public_number)| {
+            (
+                *old_raw,
+                shepr_protocol::PublicPaneId::new(&workspace_id, *public_number).to_string(),
+            )
+        })
+        .collect();
+
+    // An invalid saved split ratio drops this one workspace, like every other
+    // per-workspace restore defect below, rather than refusing the whole
+    // session (which would lose every healthy workspace for one bad number) or
+    // clamping it (which silently repairs a corrupt file). The workspace is
+    // not lost on disk: a nonzero `RestoredSession::dropped_workspaces` makes
+    // the first save back the original file up before overwriting it.
     let (node, id_map) = match restore_node_remapped(&snap.layout) {
         Ok(restored) => restored,
         Err(error) => {
             error!(
-                tab = ?snap.custom_name,
+                workspace = %workspace_id,
                 ?error,
-                "saved tab layout is invalid; dropping tab"
+                "saved workspace layout is invalid; dropping workspace"
             );
             return None;
         }
@@ -496,7 +369,7 @@ fn restore_tab(
     // in the server's own working directory and then save that directory as
     // if it had been the user's; the leaf is dropped and pruning collapses
     // its split. That happens before any pane starts, so every shell starts
-    // at its size in the layout the tab ends up with.
+    // at its size in the layout the workspace ends up with.
     let mut surviving = HashSet::new();
     for id in collect_pane_ids(&node) {
         let old_id = reverse_id_map.get(&id);
@@ -504,7 +377,7 @@ fn restore_tab(
             surviving.insert(id);
         } else {
             warn!(
-                tab = ?snap.custom_name,
+                workspace = %workspace_id,
                 pane_id = ?old_id,
                 "saved layout names a pane with no saved state; dropping it"
             );
@@ -512,8 +385,8 @@ fn restore_tab(
     }
     let Some(node) = prune_restored_node(node, &surviving) else {
         warn!(
-            tab = ?snap.custom_name,
-            "no panes could be restored for tab, dropping it"
+            workspace = %workspace_id,
+            "no panes could be restored for workspace, dropping it"
         );
         return None;
     };
@@ -529,15 +402,15 @@ fn restore_tab(
     // Every leaf got a fresh `PaneId::alloc` in `restore_node_remapped` and
     // focus was just resolved to a surviving leaf, so the saved-file defects
     // `from_saved` checks for cannot reach it; a rejection here means an
-    // internal invariant broke. The tab is dropped like the other unusable
-    // tabs above, loudly, rather than guessed back into shape.
+    // internal invariant broke. The workspace is dropped like the other
+    // unusable ones above, loudly, rather than guessed back into shape.
     let layout = match TileLayout::from_saved(node, focus) {
         Ok(layout) => layout,
         Err(error) => {
             error!(
-                tab = ?snap.custom_name,
+                workspace = %workspace_id,
                 ?error,
-                "restored tab failed layout validation after remapping; dropping it"
+                "restored workspace failed layout validation after remapping; dropping it"
             );
             return None;
         }
@@ -591,7 +464,7 @@ fn restore_tab(
             history_carry.carry_restored(&terminal.id, saved_history);
             panes.insert(
                 *id,
-                crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+                crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
             );
             terminals.push(terminal);
             continue;
@@ -639,7 +512,7 @@ fn restore_tab(
             history_carry.carry_restored(&terminal.id, saved_history);
             panes.insert(
                 *id,
-                crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+                crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
             );
             terminals.push(terminal);
             continue;
@@ -677,7 +550,7 @@ fn restore_tab(
                 );
                 panes.insert(
                     *id,
-                    crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+                    crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
                 );
                 terminal_runtimes.insert(terminal.id.clone(), runtime);
                 terminals.push(terminal);
@@ -687,7 +560,7 @@ fn restore_tab(
                 // with a resume plan reserves its session, and such a pane
                 // took the deferred branch above without spawning anything.
                 error!(
-                    tab = ?snap.custom_name,
+                    workspace = %workspace_id,
                     pane_id = id.raw(),
                     error = %e,
                     "failed to restore pane"
@@ -700,26 +573,42 @@ fn restore_tab(
                 history_carry.carry_restored(&terminal.id, saved_history);
                 panes.insert(
                     *id,
-                    crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+                    crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
                 );
                 terminals.push(terminal);
             }
         }
     }
 
-    Some((
-        crate::workspace::Tab {
-            custom_name: snap.custom_name.clone(),
-            number,
-            root_pane,
-            layout,
-            panes,
-            zoomed,
-        },
-        terminals,
-        terminal_runtimes,
-        reverse_id_map,
-    ))
+    for (pane_id, pane) in &mut panes {
+        let public_number = public_pane_numbers_by_old_raw
+            .get(
+                &reverse_id_map
+                    .get(pane_id)
+                    .copied()
+                    .unwrap_or(pane_id.raw()),
+            )
+            .copied()
+            .unwrap_or_else(|| {
+                let number = next_public_pane_number;
+                next_public_pane_number += 1;
+                number
+            });
+        pane.public_number = public_number;
+        next_public_pane_number = next_public_pane_number.max(public_number + 1);
+    }
+
+    let workspace = Workspace::from_restored(
+        workspace_id,
+        snap.custom_name.clone(),
+        snap.identity_cwd.clone(),
+        root_pane,
+        layout,
+        panes,
+        zoomed,
+        next_public_pane_number,
+    )?;
+    Some((workspace, terminals, terminal_runtimes))
 }
 
 fn pane_restore_startup<'a>(
@@ -838,7 +727,7 @@ pub(super) fn resolve_restored_pane(
 /// Invalid split ratios reject the saved layout rather than being clamped.
 /// A saved pane ID that appears more than once maps only its first leaf.
 /// Later copies get a fresh ID with
-/// no saved pane behind it, and `restore_tab` drops such leaves instead of
+/// no saved pane behind it, and `restore_workspace` drops such leaves instead of
 /// inventing a pane for them.
 pub(super) fn restore_node_remapped(
     snap: &LayoutSnapshot,
@@ -904,14 +793,12 @@ fn assign_public_pane_numbers(
         .filter(|(_, number)| **number > 0)
         .map(|(old_raw, number)| (*old_raw, *number))
         .collect();
-    for tab_snap in &snap.tabs {
-        let mut layout_panes = Vec::new();
-        collect_snapshot_pane_ids(&tab_snap.layout, &mut layout_panes);
-        for old_raw in layout_panes {
-            if tab_snap.panes.contains_key(&old_raw) && !numbers.contains_key(&old_raw) {
-                numbers.insert(old_raw, *next_public_pane_number);
-                *next_public_pane_number += 1;
-            }
+    let mut layout_panes = Vec::new();
+    collect_snapshot_pane_ids(&snap.layout, &mut layout_panes);
+    for old_raw in layout_panes {
+        if snap.panes.contains_key(&old_raw) && !numbers.contains_key(&old_raw) {
+            numbers.insert(old_raw, *next_public_pane_number);
+            *next_public_pane_number += 1;
         }
     }
     numbers
@@ -984,8 +871,8 @@ mod tests {
         shepr_test_support::fixture::idle_shell()
     }
 
-    /// Tabs laid out in `rows` by `cols` cells with no pane chrome, so a
-    /// tab's only pane is exactly that size.
+    /// Workspaces laid out in `rows` by `cols` cells with no pane chrome, so a
+    /// workspace's only pane is exactly that size.
     fn test_geometry(rows: u16, cols: u16) -> crate::workspace::PaneGeometry {
         crate::workspace::PaneGeometry {
             area: ratatui::layout::Rect::new(0, 0, cols, rows),
@@ -1070,9 +957,9 @@ mod tests {
     async fn restore_drops_layout_leaves_without_saved_state() {
         let scratch = crate::test_support::ScratchDir::new("restore-drop-layout-leaves");
         let (mut snapshot, _) = snapshot_with_saved_pane_history(scratch.path());
-        let cwd = snapshot.workspaces[0].tabs[0].panes[&0].cwd.clone();
+        let cwd = snapshot.workspaces[0].panes[&0].cwd.clone();
         // Pane 0 appears twice and pane 7 has no entry in `panes`.
-        snapshot.workspaces[0].tabs[0].layout = LayoutSnapshot::Split {
+        snapshot.workspaces[0].layout = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
             ratio: 0.5,
             first: Box::new(LayoutSnapshot::Pane(0)),
@@ -1103,9 +990,9 @@ mod tests {
             &Arc::default(),
             test_restore_now(),
         );
-        let tab = &workspaces[0].tabs()[0];
-        assert_eq!(tab.layout.pane_ids(), vec![tab.root_pane]);
-        assert_eq!(tab.panes.len(), 1);
+        let workspace = &workspaces[0];
+        assert_eq!(workspace.layout().pane_ids(), vec![workspace.root_pane()]);
+        assert_eq!(workspace.pane_count(), 1);
         assert_eq!(terminals.len(), 1);
         let mut runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
         let captured = crate::persist::capture(
@@ -1117,7 +1004,7 @@ mod tests {
             0,
             Default::default(),
         );
-        let panes = &captured.workspaces[0].tabs[0].panes;
+        let panes = &captured.workspaces[0].panes;
         assert_eq!(panes.len(), 1);
         assert!(panes.values().all(|pane| pane.cwd == cwd));
         for (_, runtime) in runtimes.drain() {
@@ -1139,7 +1026,7 @@ mod tests {
         ] {
             let scratch = crate::test_support::ScratchDir::new("restore-runtime-history");
             let (mut snapshot, mut history) = snapshot_with_saved_pane_history(scratch.path());
-            let pane = snapshot.workspaces[0].tabs[0]
+            let pane = snapshot.workspaces[0]
                 .panes
                 .get_mut(&0)
                 .expect("test precondition");
@@ -1198,7 +1085,7 @@ mod tests {
                 0,
                 Default::default(),
             );
-            let pane = captured.workspaces[0].tabs[0]
+            let pane = captured.workspaces[0]
                 .panes
                 .values()
                 .next()
@@ -1220,7 +1107,7 @@ mod tests {
                     &runtimes,
                     &mut history_carry,
                 );
-                let pane_history = saved.workspaces[0].tabs[0]
+                let pane_history = saved.workspaces[0]
                     .panes
                     .values()
                     .next()
@@ -1229,8 +1116,10 @@ mod tests {
 
                 // Once the pane runs, its live screen supersedes the carried one
                 // for good.
-                let tab = &workspaces[0].tabs()[0];
-                let terminal_id = tab.terminal_id(tab.root_pane).expect("test precondition");
+                let root_pane = workspaces[0].root_pane();
+                let terminal_id = workspaces[0]
+                    .terminal_id(root_pane)
+                    .expect("test precondition");
                 runtimes.insert(
                     terminal_id.clone(),
                     crate::pane::PaneRuntime::test_with_scrollback_bytes(
@@ -1246,7 +1135,7 @@ mod tests {
                     &runtimes,
                     &mut history_carry,
                 );
-                let live = &saved.workspaces[0].tabs[0].panes[&tab.root_pane.raw()];
+                let live = &saved.workspaces[0].panes[&root_pane.raw()];
                 assert!(live.ansi.contains("LIVE_SCREEN"));
                 assert!(!live.ansi.contains("RESTORED_HISTORY"));
                 // Should the pane lose its runtime again, what it keeps is its
@@ -1258,7 +1147,7 @@ mod tests {
                     &runtimes,
                     &mut history_carry,
                 );
-                let kept = &saved.workspaces[0].tabs[0].panes[&tab.root_pane.raw()];
+                let kept = &saved.workspaces[0].panes[&root_pane.raw()];
                 assert!(kept.ansi.contains("LIVE_SCREEN"));
                 assert!(!kept.ansi.contains("RESTORED_HISTORY"));
             }
@@ -1296,24 +1185,13 @@ mod tests {
         }
     }
 
-    /// A tab with one kept pane per ID in `panes`; `layout` may name IDs
+    /// A workspace with one kept pane per ID in `panes`; `layout` may name IDs
     /// without a saved pane, which restore drops.
-    fn tab_snapshot(name: &str, layout: LayoutSnapshot, panes: &[u32]) -> TabSnapshot {
-        TabSnapshot {
-            custom_name: Some(name.into()),
-            layout,
-            panes: panes.iter().map(|id| (*id, runtimeless_pane())).collect(),
-            zoomed: false,
-            focused: None,
-            root_pane: None,
-        }
-    }
-
     fn workspace_snapshot(
         id: Option<&str>,
         name: &str,
-        tabs: Vec<TabSnapshot>,
-        active_tab: usize,
+        layout: LayoutSnapshot,
+        panes: &[u32],
     ) -> WorkspaceSnapshot {
         WorkspaceSnapshot {
             id: id.map(str::to_string),
@@ -1321,10 +1199,11 @@ mod tests {
             identity_cwd: PathBuf::from("/"),
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
-            public_tab_numbers: Vec::new(),
-            next_public_tab_number: 0,
-            tabs,
-            active_tab,
+            layout,
+            panes: panes.iter().map(|id| (*id, runtimeless_pane())).collect(),
+            zoomed: false,
+            focused: None,
+            root_pane: None,
         }
     }
 
@@ -1348,13 +1227,15 @@ mod tests {
         restored
     }
 
-    /// An invalid saved ratio drops only its own tab: the rest of the session
-    /// restores, the saved active tab still resolves, and the drop is counted
-    /// so the caller backs the saved file up before the first save.
+    /// An invalid saved ratio drops only its own workspace: the rest of the
+    /// session restores, the saved active workspace still resolves, and the
+    /// drop is counted so the caller backs the saved file up before the first
+    /// save.
     #[test]
-    fn restore_drops_only_the_tab_with_an_invalid_split_ratio() {
-        let invalid_tab = |name: &str, ratio: f32| {
-            tab_snapshot(
+    fn restore_drops_only_the_workspace_with_an_invalid_split_ratio() {
+        let invalid_workspace = |id: &str, name: &str, ratio: f32| {
+            workspace_snapshot(
+                Some(id),
                 name,
                 LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
@@ -1369,74 +1250,38 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                workspace_snapshot(
-                    Some("w1"),
-                    "invalid layout",
-                    vec![invalid_tab("out of range", 1.0)],
-                    0,
-                ),
-                workspace_snapshot(
-                    Some("w2"),
-                    "mixed",
-                    vec![
-                        tab_snapshot("healthy", LayoutSnapshot::Pane(3), &[3]),
-                        invalid_tab("not finite", f32::NAN),
-                    ],
-                    1,
-                ),
+                invalid_workspace("w1", "out of range", 1.0),
+                workspace_snapshot(Some("w2"), "healthy", LayoutSnapshot::Pane(3), &[3]),
+                invalid_workspace("w3", "not finite", f32::NAN),
             ],
-            active: Some(1),
-            selected: 1,
+            active: Some(2),
+            selected: 2,
         };
 
         let restored = restore_runtimeless(&snapshot);
 
-        assert_eq!(restored.dropped_tabs, 2);
+        assert_eq!(restored.dropped_workspaces, 2);
         assert_eq!(restored.workspaces.len(), 1);
         let workspace = &restored.workspaces[0];
-        assert_eq!(workspace.custom_name.as_deref(), Some("mixed"));
-        let tab_names: Vec<_> = workspace
-            .tabs()
-            .iter()
-            .map(|tab| tab.custom_name.as_deref())
-            .collect();
-        assert_eq!(tab_names, vec![Some("healthy")]);
-        assert_eq!(workspace.active_tab_index(), 0);
+        assert_eq!(workspace.custom_name.as_deref(), Some("healthy"));
         assert_eq!(restored.active, Some(0));
+        assert_eq!(restored.selected, 0);
         assert_eq!(restored.terminals.len(), 1);
     }
 
     #[test]
-    fn dropped_workspaces_and_tabs_do_not_shift_the_saved_selection() {
+    fn dropped_workspaces_do_not_shift_the_saved_selection() {
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                // No tab survives: the layout names a pane with no saved state.
-                workspace_snapshot(
-                    Some("w1"),
-                    "dropped",
-                    vec![tab_snapshot("gone", LayoutSnapshot::Pane(1), &[])],
-                    0,
-                ),
-                workspace_snapshot(
-                    Some("w2"),
-                    "selected",
-                    vec![tab_snapshot("only", LayoutSnapshot::Pane(2), &[2])],
-                    0,
-                ),
-                workspace_snapshot(
-                    Some("w3"),
-                    "active",
-                    vec![
-                        tab_snapshot("first", LayoutSnapshot::Pane(3), &[3]),
-                        tab_snapshot("gone", LayoutSnapshot::Pane(4), &[]),
-                        tab_snapshot("wanted", LayoutSnapshot::Pane(5), &[5]),
-                    ],
-                    2,
-                ),
+                // Nothing survives: the layout names a pane with no saved state.
+                workspace_snapshot(Some("w1"), "dropped", LayoutSnapshot::Pane(1), &[]),
+                workspace_snapshot(Some("w2"), "selected", LayoutSnapshot::Pane(2), &[2]),
+                workspace_snapshot(Some("w3"), "gone", LayoutSnapshot::Pane(4), &[]),
+                workspace_snapshot(Some("w4"), "active", LayoutSnapshot::Pane(5), &[5]),
             ],
-            active: Some(2),
+            active: Some(3),
             selected: 1,
         };
 
@@ -1448,16 +1293,9 @@ mod tests {
             .map(|ws| ws.custom_name.as_deref())
             .collect();
         assert_eq!(names, vec![Some("selected"), Some("active")]);
+        assert_eq!(restored.dropped_workspaces, 2);
         assert_eq!(restored.active, Some(1));
         assert_eq!(restored.selected, 0);
-        let active = &restored.workspaces[1];
-        assert_eq!(active.tabs().len(), 2);
-        assert_eq!(
-            active.tabs()[active.active_tab_index()]
-                .custom_name
-                .as_deref(),
-            Some("wanted")
-        );
     }
 
     #[test]
@@ -1466,18 +1304,8 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                workspace_snapshot(
-                    Some("w1"),
-                    "before",
-                    vec![tab_snapshot("t", LayoutSnapshot::Pane(1), &[1])],
-                    0,
-                ),
-                workspace_snapshot(
-                    Some("w2"),
-                    "dropped",
-                    vec![tab_snapshot("gone", LayoutSnapshot::Pane(2), &[])],
-                    0,
-                ),
+                workspace_snapshot(Some("w1"), "before", LayoutSnapshot::Pane(1), &[1]),
+                workspace_snapshot(Some("w2"), "dropped", LayoutSnapshot::Pane(2), &[]),
             ],
             active: Some(1),
             selected: 1,
@@ -1513,21 +1341,26 @@ mod tests {
             // Another pane is gone; the zoomed one stays zoomed.
             (&[1, 2][..], 2, true),
         ] {
-            let mut tab = tab_snapshot("t", split(1, 2, 3), panes);
-            tab.zoomed = true;
-            tab.focused = Some(focused);
+            let mut workspace = workspace_snapshot(Some("w1"), "ws", split(1, 2, 3), panes);
+            workspace.zoomed = true;
+            workspace.focused = Some(focused);
             let snapshot = SessionSnapshot {
                 version: super::super::snapshot::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
-                workspaces: vec![workspace_snapshot(Some("w1"), "ws", vec![tab], 0)],
+                workspaces: vec![workspace],
                 active: Some(0),
                 selected: 0,
             };
 
             let restored = restore_runtimeless(&snapshot);
 
-            let tab = &restored.workspaces[0].tabs()[0];
-            assert_eq!(tab.zoomed, zoomed, "panes={panes:?} focused={focused}");
+            let workspace = &restored.workspaces[0];
+            assert_eq!(
+                workspace.zoomed(),
+                zoomed,
+                "panes={panes:?} focused={focused}"
+            );
+            workspace.assert_invariants_for_test();
         }
     }
 
@@ -1539,16 +1372,18 @@ mod tests {
         let taken = WorkspaceId::from_number(probe.number() + 1)
             .expect("test precondition")
             .to_string();
-        let tab = |id: u32| vec![tab_snapshot("t", LayoutSnapshot::Pane(id), &[id])];
+        let workspace = |id: Option<&str>, name: &str, pane: u32| {
+            workspace_snapshot(id, name, LayoutSnapshot::Pane(pane), &[pane])
+        };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                workspace_snapshot(None, "unsaved id", tab(1), 0),
-                workspace_snapshot(Some(&taken), "owner", tab(2), 0),
-                workspace_snapshot(Some(&taken), "repeat", tab(3), 0),
-                workspace_snapshot(Some(""), "empty id", tab(4), 0),
-                workspace_snapshot(Some("ws_1"), "non-canonical id", tab(5), 0),
+                workspace(None, "unsaved id", 1),
+                workspace(Some(&taken), "owner", 2),
+                workspace(Some(&taken), "repeat", 3),
+                workspace(Some(""), "empty id", 4),
+                workspace(Some("ws_1"), "non-canonical id", 5),
             ],
             active: Some(0),
             selected: 0,
@@ -1778,37 +1613,20 @@ mod tests {
                     {
                         "id": "workspace-a",
                         "identity_cwd": "/tmp/shepr-restore-test-a",
-                        "tabs": [
-                            {
-                                "layout": { "Pane": 1 },
-                                "panes": { "1": { "cwd": "/tmp/shepr-restore-test-a" } },
-                                "zoomed": false,
-                                "focused": 1,
-                                "root_pane": 1
-                            },
-                            {
-                                "layout": { "Pane": 2 },
-                                "panes": { "2": { "cwd": "/tmp/shepr-restore-test-a" } },
-                                "zoomed": false,
-                                "focused": 2,
-                                "root_pane": 2
-                            }
-                        ],
-                        "active_tab": 0
+                        "layout": { "Pane": 1 },
+                        "panes": { "1": { "cwd": "/tmp/shepr-restore-test-a" } },
+                        "zoomed": false,
+                        "focused": 1,
+                        "root_pane": 1
                     },
                     {
                         "id": "workspace-b",
                         "identity_cwd": "/tmp/shepr-restore-test-b",
-                        "tabs": [
-                            {
-                                "layout": { "Pane": 3 },
-                                "panes": { "3": { "cwd": "/tmp/shepr-restore-test-b" } },
-                                "zoomed": false,
-                                "focused": 3,
-                                "root_pane": 3
-                            }
-                        ],
-                        "active_tab": 0
+                        "layout": { "Pane": 3 },
+                        "panes": { "3": { "cwd": "/tmp/shepr-restore-test-b" } },
+                        "zoomed": false,
+                        "focused": 3,
+                        "root_pane": 3
                     }
                 ],
                 "active": 0,
@@ -1821,13 +1639,11 @@ mod tests {
             assert!(!missing.try_exists().expect("test stat"));
             for workspace in &mut snapshot.workspaces {
                 workspace.identity_cwd = cwd.clone();
-                for tab in &mut workspace.tabs {
-                    for pane in tab.panes.values_mut() {
-                        pane.cwd = cwd.clone();
-                    }
+                for pane in workspace.panes.values_mut() {
+                    pane.cwd = cwd.clone();
                 }
             }
-            let failed = snapshot.workspaces[0].tabs[0]
+            let failed = snapshot.workspaces[0]
                 .panes
                 .get_mut(&1)
                 .expect("test precondition");
@@ -1881,8 +1697,7 @@ mod tests {
                 2,
                 "a launch failure must not delete a workspace"
             );
-            assert_eq!(captured.workspaces[0].tabs.len(), 2);
-            let pane = captured.workspaces[0].tabs[0]
+            let pane = captured.workspaces[0]
                 .panes
                 .values()
                 .next()
@@ -1900,16 +1715,14 @@ mod tests {
                     .value_str(),
                 "keep-my-session"
             );
-            let root = workspaces[0].tabs()[0].root_pane;
-            let terminal_id = workspaces[0].tabs()[0]
-                .terminal_id(root)
-                .expect("test precondition");
+            let root = workspaces[0].root_pane();
+            let terminal_id = workspaces[0].terminal_id(root).expect("test precondition");
             assert!(
                 runtimes.get(terminal_id).is_none(),
                 "do not open a replacement shell elsewhere"
             );
-            let healthy = workspaces[1].tabs()[0]
-                .terminal_id(workspaces[1].tabs()[0].root_pane)
+            let healthy = workspaces[1]
+                .terminal_id(workspaces[1].root_pane())
                 .expect("test precondition");
             assert_eq!(runtimes.get(healthy).is_some(), !missing_shell);
             assert!(terminals[terminal_id].restore_error.is_some());
@@ -1929,31 +1742,25 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
-                public_tab_numbers: Vec::new(),
-                next_public_tab_number: 0,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    layout: LayoutSnapshot::Pane(0),
-                    panes: HashMap::from([(
-                        0,
-                        super::super::snapshot::PaneSnapshot {
-                            cwd,
-                            label: Some("reviewer".into()),
-                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                                source: "shepr:opencode".into(),
-                                agent: shepr_agent::agent::Agent::OpenCode,
-                                session_ref: shepr_agent::agent::resume::AgentSessionRef::id(
-                                    "opencode-session",
-                                )
-                                .expect("test precondition"),
-                            }),
-                        },
-                    )]),
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
-                active_tab: 0,
+                layout: LayoutSnapshot::Pane(0),
+                panes: HashMap::from([(
+                    0,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd,
+                        label: Some("reviewer".into()),
+                        agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                            source: "shepr:opencode".into(),
+                            agent: shepr_agent::agent::Agent::OpenCode,
+                            session_ref: shepr_agent::agent::resume::AgentSessionRef::id(
+                                "opencode-session",
+                            )
+                            .expect("test precondition"),
+                        }),
+                    },
+                )]),
+                zoomed: false,
+                focused: Some(0),
+                root_pane: Some(0),
             }],
             active: Some(0),
             selected: 0,
@@ -2007,39 +1814,33 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
-                public_tab_numbers: vec![5],
-                next_public_tab_number: 6,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    layout: LayoutSnapshot::Split {
-                        direction: super::super::snapshot::DirectionSnapshot::Horizontal,
-                        ratio: 0.5,
-                        first: Box::new(LayoutSnapshot::Pane(10)),
-                        second: Box::new(LayoutSnapshot::Pane(20)),
-                    },
-                    panes: HashMap::from([
-                        (
-                            10,
-                            super::super::snapshot::PaneSnapshot {
-                                cwd: cwd.clone(),
-                                label: None,
-                                agent_session: None,
-                            },
-                        ),
-                        (
-                            20,
-                            super::super::snapshot::PaneSnapshot {
-                                cwd: cwd.clone(),
-                                label: None,
-                                agent_session: None,
-                            },
-                        ),
-                    ]),
-                    zoomed: false,
-                    focused: Some(10),
-                    root_pane: Some(10),
-                }],
-                active_tab: 0,
+                layout: LayoutSnapshot::Split {
+                    direction: super::super::snapshot::DirectionSnapshot::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(LayoutSnapshot::Pane(10)),
+                    second: Box::new(LayoutSnapshot::Pane(20)),
+                },
+                panes: HashMap::from([
+                    (
+                        10,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd: cwd.clone(),
+                            label: None,
+                            agent_session: None,
+                        },
+                    ),
+                    (
+                        20,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd: cwd.clone(),
+                            label: None,
+                            agent_session: None,
+                        },
+                    ),
+                ]),
+                zoomed: false,
+                focused: Some(10),
+                root_pane: Some(10),
             }],
             active: Some(0),
             selected: 0,
@@ -2068,15 +1869,13 @@ mod tests {
 
         let workspace = workspaces.first().expect("workspace should restore");
         let mut public_numbers: Vec<_> = workspace
-            .tabs()
-            .iter()
-            .flat_map(|tab| tab.panes.values().map(|pane| pane.public_number))
+            .panes()
+            .values()
+            .map(|pane| pane.public_number)
             .collect();
         public_numbers.sort_unstable();
         assert_eq!(public_numbers, vec![1, 3]);
         assert_eq!(workspace.next_public_pane_number, 4);
-        assert_eq!(workspace.tabs()[0].number, 5);
-        assert_eq!(workspace.next_public_tab_number, 6);
     }
 
     #[test]
@@ -2086,14 +1885,6 @@ mod tests {
             label: None,
             agent_session: None,
         };
-        let tab = |layout: LayoutSnapshot, panes: &[u32]| TabSnapshot {
-            custom_name: None,
-            layout,
-            panes: panes.iter().map(|id| (*id, pane())).collect(),
-            zoomed: false,
-            focused: None,
-            root_pane: None,
-        };
         let snap = WorkspaceSnapshot {
             id: Some("w1".into()),
             custom_name: None,
@@ -2101,28 +1892,28 @@ mod tests {
             // Only pane 10 kept its number; 30 and 20 lost theirs.
             public_pane_numbers: HashMap::from([(10, 4)]),
             next_public_pane_number: 5,
-            public_tab_numbers: Vec::new(),
-            next_public_tab_number: 0,
-            tabs: vec![
-                tab(
-                    LayoutSnapshot::Split {
-                        direction: DirectionSnapshot::Horizontal,
+            layout: LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(30)),
+                second: Box::new(LayoutSnapshot::Split {
+                    direction: DirectionSnapshot::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(LayoutSnapshot::Pane(10)),
+                    second: Box::new(LayoutSnapshot::Split {
+                        direction: DirectionSnapshot::Vertical,
                         ratio: 0.5,
-                        first: Box::new(LayoutSnapshot::Pane(30)),
-                        second: Box::new(LayoutSnapshot::Split {
-                            direction: DirectionSnapshot::Vertical,
-                            ratio: 0.5,
-                            first: Box::new(LayoutSnapshot::Pane(10)),
-                            // A leaf with no saved pane is dropped by restore
-                            // and needs no number.
-                            second: Box::new(LayoutSnapshot::Pane(99)),
-                        }),
-                    },
-                    &[10, 30],
-                ),
-                tab(LayoutSnapshot::Pane(20), &[20]),
-            ],
-            active_tab: 0,
+                        // A leaf with no saved pane is dropped by restore
+                        // and needs no number.
+                        first: Box::new(LayoutSnapshot::Pane(99)),
+                        second: Box::new(LayoutSnapshot::Pane(20)),
+                    }),
+                }),
+            },
+            panes: [10, 30, 20].iter().map(|id| (*id, pane())).collect(),
+            zoomed: false,
+            focused: None,
+            root_pane: None,
         };
         let mut next = 5;
 
@@ -2140,24 +1931,18 @@ mod tests {
             identity_cwd: PathBuf::from("/"),
             public_pane_numbers: HashMap::from([(10, 0)]),
             next_public_pane_number: 1,
-            public_tab_numbers: vec![0],
-            next_public_tab_number: 0,
-            tabs: vec![TabSnapshot {
-                custom_name: None,
-                layout: LayoutSnapshot::Pane(10),
-                panes: HashMap::from([(
-                    10,
-                    super::super::snapshot::PaneSnapshot {
-                        cwd: PathBuf::from("/"),
-                        label: None,
-                        agent_session: None,
-                    },
-                )]),
-                zoomed: false,
-                focused: None,
-                root_pane: None,
-            }],
-            active_tab: 0,
+            layout: LayoutSnapshot::Pane(10),
+            panes: HashMap::from([(
+                10,
+                super::super::snapshot::PaneSnapshot {
+                    cwd: PathBuf::from("/"),
+                    label: None,
+                    agent_session: None,
+                },
+            )]),
+            zoomed: false,
+            focused: None,
+            root_pane: None,
         };
         let mut next = 1;
 
@@ -2167,23 +1952,13 @@ mod tests {
         assert_eq!(next, 2);
     }
 
-    #[test]
-    fn missing_zero_and_duplicate_tab_numbers_get_unique_free_numbers() {
-        assert_eq!(
-            assign_public_tab_numbers(&[0, 1, 4, 4], 5, 0),
-            (vec![5, 1, 4, 6, 7], 8)
-        );
-        assert_eq!(assign_public_tab_numbers(&[1], 3, 0), (vec![1, 2, 3], 4));
-        assert_eq!(assign_public_tab_numbers(&[2], 2, 0), (vec![2, 3], 4));
-    }
-
     #[tokio::test]
-    async fn cold_restore_with_gapped_public_tab_numbers_starts_a_plain_shell_without_an_agent() {
-        let scratch = crate::test_support::ScratchDir::new("restore-public-tab-cwd");
+    async fn cold_restore_with_gapped_public_pane_numbers_starts_a_plain_shell_without_an_agent() {
+        let scratch = crate::test_support::ScratchDir::new("restore-public-pane-cwd");
         let cwd = scratch.to_path_buf();
-        let pane_snap = |id: &str| {
+        let pane_snap = |id: u32| {
             (
-                id.parse::<u32>().expect("test precondition"),
+                id,
                 super::super::snapshot::PaneSnapshot {
                     cwd: cwd.clone(),
                     label: None,
@@ -2208,45 +1983,19 @@ mod tests {
                 id: Some("w1".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
-                next_public_pane_number: 5,
-                public_tab_numbers: vec![1, 3, 4, 5],
-                next_public_tab_number: 6,
-                tabs: vec![
-                    TabSnapshot {
-                        custom_name: None,
-                        layout: LayoutSnapshot::Pane(10),
-                        panes: HashMap::from([pane_snap("10")]),
-                        zoomed: false,
-                        focused: Some(10),
-                        root_pane: Some(10),
-                    },
-                    TabSnapshot {
-                        custom_name: None,
-                        layout: LayoutSnapshot::Pane(11),
-                        panes: HashMap::from([pane_snap("11")]),
-                        zoomed: false,
-                        focused: Some(11),
-                        root_pane: Some(11),
-                    },
-                    TabSnapshot {
-                        custom_name: None,
-                        layout: LayoutSnapshot::Pane(12),
-                        panes: HashMap::from([pane_snap("12")]),
-                        zoomed: false,
-                        focused: Some(12),
-                        root_pane: Some(12),
-                    },
-                    TabSnapshot {
-                        custom_name: None,
-                        layout: LayoutSnapshot::Pane(13),
-                        panes: HashMap::from([(13, final_pane)]),
-                        zoomed: false,
-                        focused: Some(13),
-                        root_pane: Some(13),
-                    },
-                ],
-                active_tab: 3,
+                // Numbers 1 to 3 were public panes that are gone.
+                public_pane_numbers: HashMap::from([(10, 4), (13, 7)]),
+                next_public_pane_number: 8,
+                layout: LayoutSnapshot::Split {
+                    direction: DirectionSnapshot::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(LayoutSnapshot::Pane(10)),
+                    second: Box::new(LayoutSnapshot::Pane(13)),
+                },
+                panes: HashMap::from([pane_snap(10), (13, final_pane)]),
+                zoomed: false,
+                focused: Some(13),
+                root_pane: Some(10),
             }],
             active: Some(0),
             selected: 0,
@@ -2274,10 +2023,11 @@ mod tests {
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
-        assert_eq!(workspace.active_tab_index(), 3);
-        assert_eq!(workspace.tabs()[3].number, 5);
-        let agent_pane = workspace.tabs()[3].root_pane;
-        let terminal_id = &workspace.tabs()[3].panes[&agent_pane].attached_terminal_id;
+        let agent_pane = workspace.focused_pane_id();
+        assert_eq!(workspace.public_pane_number(agent_pane), Some(7));
+        let terminal_id = workspace
+            .terminal_id(agent_pane)
+            .expect("restored agent pane");
         assert!(terminals[terminal_id].effective_agent_label().is_none());
     }
 
@@ -2294,31 +2044,25 @@ mod tests {
                 identity_cwd: cwd.clone(),
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
-                public_tab_numbers: Vec::new(),
-                next_public_tab_number: 0,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    layout: LayoutSnapshot::Pane(0),
-                    panes: HashMap::from([(
-                        0,
-                        super::super::snapshot::PaneSnapshot {
-                            cwd,
-                            label: None,
-                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                                source: "shepr:codex".into(),
-                                agent: shepr_agent::agent::Agent::Codex,
-                                session_ref: shepr_agent::agent::resume::AgentSessionRef::id(
-                                    "codex-session",
-                                )
-                                .expect("test precondition"),
-                            }),
-                        },
-                    )]),
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
-                active_tab: 0,
+                layout: LayoutSnapshot::Pane(0),
+                panes: HashMap::from([(
+                    0,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd,
+                        label: None,
+                        agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                            source: "shepr:codex".into(),
+                            agent: shepr_agent::agent::Agent::Codex,
+                            session_ref: shepr_agent::agent::resume::AgentSessionRef::id(
+                                "codex-session",
+                            )
+                            .expect("test precondition"),
+                        }),
+                    },
+                )]),
+                zoomed: false,
+                focused: Some(0),
+                root_pane: Some(0),
             }],
             active: Some(0),
             selected: 0,
@@ -2363,7 +2107,7 @@ mod tests {
         );
     }
 
-    /// Each restored shell starts at its own size in its tab's layout, not
+    /// Each restored shell starts at its own size in its workspace's layout, not
     /// at one size shared by every pane; a pane hidden behind a zoomed one
     /// starts at its tiled size.
     #[tokio::test]
@@ -2378,24 +2122,19 @@ mod tests {
             let snapshot = SessionSnapshot {
                 version: super::super::snapshot::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
-                workspaces: vec![workspace_snapshot(
-                    Some("w1"),
-                    "split",
-                    vec![TabSnapshot {
-                        custom_name: None,
-                        layout: LayoutSnapshot::Split {
-                            direction: DirectionSnapshot::Horizontal,
-                            ratio: 0.25,
-                            first: Box::new(LayoutSnapshot::Pane(0)),
-                            second: Box::new(LayoutSnapshot::Pane(1)),
-                        },
-                        panes: HashMap::from([(0, pane()), (1, pane())]),
-                        zoomed,
-                        focused: Some(1),
-                        root_pane: Some(0),
-                    }],
-                    0,
-                )],
+                workspaces: vec![WorkspaceSnapshot {
+                    layout: LayoutSnapshot::Split {
+                        direction: DirectionSnapshot::Horizontal,
+                        ratio: 0.25,
+                        first: Box::new(LayoutSnapshot::Pane(0)),
+                        second: Box::new(LayoutSnapshot::Pane(1)),
+                    },
+                    panes: HashMap::from([(0, pane()), (1, pane())]),
+                    zoomed,
+                    focused: Some(1),
+                    root_pane: Some(0),
+                    ..workspace_snapshot(Some("w1"), "split", LayoutSnapshot::Pane(0), &[])
+                }],
                 active: Some(0),
                 selected: 0,
             };
@@ -2418,17 +2157,17 @@ mod tests {
                 &Arc::default(),
                 test_restore_now(),
             );
-            let tab = &workspaces[0].tabs()[0];
-            assert_eq!(tab.zoomed, zoomed);
+            let workspace = &workspaces[0];
+            assert_eq!(workspace.zoomed(), zoomed);
             let size = |pane_id| {
-                let terminal = tab.terminal_id(pane_id).expect("test precondition");
+                let terminal = workspace.terminal_id(pane_id).expect("test precondition");
                 runtimes
                     .get(terminal)
                     .expect("restored runtime")
                     .current_size()
             };
-            let focused = tab.layout.focused();
-            let other = tab.root_pane;
+            let focused = workspace.layout().focused();
+            let other = workspace.root_pane();
             assert_ne!(focused, other);
             let (other_rows, other_cols) = size(other);
             let (focused_rows, focused_cols) = size(focused);
@@ -2590,18 +2329,16 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             layout_fingerprint: None,
             workspaces: vec![WorkspaceHistorySnapshot {
-                tabs: vec![super::super::snapshot::TabHistorySnapshot {
-                    panes: HashMap::from([(
-                        0,
-                        super::super::snapshot::PaneHistorySnapshot {
-                            ansi: concat!(
-                                "\x1b[31mRESTORED_HISTORY \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\x1b[0m ",
-                                "\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\"
-                            )
-                            .to_string(),
-                        },
-                    )]),
-                }],
+                panes: HashMap::from([(
+                    0,
+                    super::super::snapshot::PaneHistorySnapshot {
+                        ansi: concat!(
+                            "\x1b[31mRESTORED_HISTORY \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\x1b[0m ",
+                            "\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\"
+                        )
+                        .to_string(),
+                    },
+                )]),
             }],
         };
         let snapshot = SessionSnapshot {
@@ -2613,17 +2350,11 @@ mod tests {
                 identity_cwd: cwd,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
-                public_tab_numbers: Vec::new(),
-                next_public_tab_number: 0,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    layout: LayoutSnapshot::Pane(0),
-                    panes,
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
-                active_tab: 0,
+                layout: LayoutSnapshot::Pane(0),
+                panes,
+                zoomed: false,
+                focused: Some(0),
+                root_pane: Some(0),
             }],
             active: Some(0),
             selected: 0,

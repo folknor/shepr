@@ -127,7 +127,7 @@ pub struct HeadlessServer {
     focused_panes: HashSet<(shepr_protocol::WorkspaceId, shepr_core::layout::PaneId)>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
-    /// the clients and on workspace/tab/pane topology, which change only while
+    /// the clients and on workspace/pane topology, which change only while
     /// handling an internal event, an API request, a server event or a client
     /// removal; a PTY render wake changes neither. Recomputing it on every loop
     /// wake walked every pane per PTY notify. A missed mark would only delay a
@@ -693,10 +693,10 @@ impl HeadlessServer {
     fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) {
         self.remove_client(client_id);
         // Removing the client dropped its geometry controller mappings. Each
-        // tab it controlled goes to a remaining viewer, or every tab to the
-        // headless size when no surface remains, so no pane keeps the
-        // departed client's size.
-        self.reapply_controlled_shell_tab_geometry(true);
+        // workspace it controlled goes to a remaining viewer, or every
+        // workspace to the headless size when no surface remains, so no pane
+        // keeps the departed client's size.
+        self.reapply_controlled_shell_workspace_geometry(true);
     }
 
     /// Accepts pending client connections from the non-blocking listener.
@@ -806,11 +806,10 @@ impl HeadlessServer {
             .map_or_else(
                 || self.app.window_title(),
                 |target| {
-                    target
-                        .resolve(&self.app.state)
-                        .and_then(|(workspace_index, tab_index)| {
-                            self.app.window_title_for(workspace_index, tab_index)
-                        })
+                    self.app
+                        .state
+                        .workspace_index(&target)
+                        .and_then(|workspace_index| self.app.window_title_for(workspace_index))
                 },
             )
             .and_then(|title| shepr_config::sanitize_window_title_text(&title))
@@ -1047,9 +1046,10 @@ impl HeadlessServer {
                 if first_app_client {
                     self.app.mark_git_status_refresh_due(self.app.clock.now);
                 }
-                // A second surface changes no tab's size: controlled tabs
-                // keep their controller and uncontrolled ones keep theirs.
-                self.claim_unowned_shell_tab_geometry(client_id, true);
+                // A second surface changes no workspace's size: controlled
+                // workspaces keep their controller and uncontrolled ones keep
+                // theirs.
+                self.claim_unowned_shell_workspace_geometry(client_id, true);
                 true
             }
             ServerEvent::ClientPasteRejected {
@@ -1093,7 +1093,7 @@ impl HeadlessServer {
                 }
                 client.request_repaint();
                 self.promote_client_to_foreground(client_id);
-                self.resize_shell_tabs_sized_for(client_id, true);
+                self.resize_shell_workspaces_sized_for(client_id, true);
                 true
             }
             ServerEvent::ClientShellHostTheme { client_id, update } => {
@@ -1130,7 +1130,7 @@ impl HeadlessServer {
                 client.shell_state_mut().outer_terminal_focus = Some(focused);
                 if focused {
                     self.promote_client_to_foreground(client_id);
-                    self.claim_shell_tab_geometry(client_id, false);
+                    self.claim_shell_workspace_geometry(client_id, false);
                 }
                 true
             }
@@ -1216,7 +1216,7 @@ impl HeadlessServer {
                 let foreground_changed =
                     interaction && self.promote_client_to_foreground(client_id);
                 let geometry_changed =
-                    interaction && self.claim_shell_tab_geometry(client_id, false);
+                    interaction && self.claim_shell_workspace_geometry(client_id, false);
                 let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                     &self.app.terminal_runtimes,
                     workspace_index,
@@ -1293,7 +1293,7 @@ impl HeadlessServer {
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
 
-        // API handlers read each tab's recorded layout area for directional
+        // API handlers read each workspace's recorded layout area for directional
         // focus, resize steps, layout snapshots and spawn sizes; the geometry
         // paths keep it current, so there is nothing to project first.
         let outcome = self.app.handle_api_request_with_render(msg.request);
@@ -1339,8 +1339,6 @@ impl HeadlessServer {
                 }
             }
         }
-
-        changed |= self.app.handle_tab_bar_status_tasks(now);
 
         // A pending render says nothing about geometry: PTY output from any pane,
         // hidden ones included, sets it. Geometry changes run through the client

@@ -265,7 +265,7 @@ pub(super) struct HistoryTrim {
     pub(super) panes: usize,
     /// Serialized bytes of pane history left out.
     pub(super) dropped_bytes: usize,
-    /// Whether oversized workspace/tab structure had to be omitted.
+    /// Whether oversized workspace structure had to be omitted.
     pub(super) structure_dropped: bool,
 }
 
@@ -315,7 +315,6 @@ fn serialize_history_within(
     let texts: Vec<&HistoryText> = history
         .workspaces
         .iter()
-        .flatten()
         .flatten()
         .map(|(_, text)| text)
         .collect();
@@ -376,7 +375,6 @@ fn compact_history_without_workspace_shape(
             .workspaces
             .iter()
             .flatten()
-            .flatten()
             .filter(|(_, text)| text.pieces.iter().any(|piece| !piece.text.is_empty()))
             .count(),
         dropped_bytes,
@@ -430,7 +428,7 @@ impl Write for CappedBuf {
 enum Shape<'a> {
     /// Every pane whole.
     Whole,
-    /// Each pane from a cut, in workspace, tab and pane order; `None` leaves
+    /// Each pane from a cut, in workspace and pane order; `None` leaves
     /// the pane out.
     Cut(&'a [Option<Cut>]),
     /// No workspaces, only the layout fingerprint the history pairs with.
@@ -457,53 +455,43 @@ fn write_history_json<W: Write>(
     }
     write_key(out, &mut fmt, false, "workspaces")?;
     fmt.begin_array(out)?;
-    let workspaces: &[Vec<Vec<(u32, HistoryText)>>] = match shape {
+    let workspaces: &[Vec<(u32, HistoryText)>] = match shape {
         Shape::Compact => &[],
         Shape::Whole | Shape::Cut(_) => &history.workspaces,
     };
     // Which pane, across the whole history, `Shape::Cut` speaks of next.
     let mut pane_index = 0usize;
-    for (workspace_index, tabs) in workspaces.iter().enumerate() {
+    for (workspace_index, panes) in workspaces.iter().enumerate() {
         fmt.begin_array_value(out, workspace_index == 0)?;
         fmt.begin_object(out)?;
-        write_key(out, &mut fmt, true, "tabs")?;
-        fmt.begin_array(out)?;
-        for (tab_index, panes) in tabs.iter().enumerate() {
-            fmt.begin_array_value(out, tab_index == 0)?;
+        write_key(out, &mut fmt, true, "panes")?;
+        fmt.begin_object(out)?;
+        let mut first = true;
+        for (id, text) in panes {
+            let cut = match shape {
+                Shape::Cut(cuts) => {
+                    let cut = cuts.get(pane_index).copied().flatten();
+                    pane_index += 1;
+                    cut
+                }
+                Shape::Whole | Shape::Compact => Some(Cut::START),
+            };
+            let Some(cut) = cut else {
+                continue;
+            };
+            fmt.begin_object_key(out, first)?;
+            write!(out, "\"{id}\"")?;
+            fmt.end_object_key(out)?;
+            fmt.begin_object_value(out)?;
             fmt.begin_object(out)?;
-            write_key(out, &mut fmt, true, "panes")?;
-            fmt.begin_object(out)?;
-            let mut first = true;
-            for (id, text) in panes {
-                let cut = match shape {
-                    Shape::Cut(cuts) => {
-                        let cut = cuts.get(pane_index).copied().flatten();
-                        pane_index += 1;
-                        cut
-                    }
-                    Shape::Whole | Shape::Compact => Some(Cut::START),
-                };
-                let Some(cut) = cut else {
-                    continue;
-                };
-                fmt.begin_object_key(out, first)?;
-                write!(out, "\"{id}\"")?;
-                fmt.end_object_key(out)?;
-                fmt.begin_object_value(out)?;
-                fmt.begin_object(out)?;
-                write_key(out, &mut fmt, true, "ansi")?;
-                write_text_from(out, text, cut)?;
-                fmt.end_object_value(out)?;
-                fmt.end_object(out)?;
-                fmt.end_object_value(out)?;
-                first = false;
-            }
-            fmt.end_object(out)?;
+            write_key(out, &mut fmt, true, "ansi")?;
+            write_text_from(out, text, cut)?;
             fmt.end_object_value(out)?;
             fmt.end_object(out)?;
-            fmt.end_array_value(out)?;
+            fmt.end_object_value(out)?;
+            first = false;
         }
-        fmt.end_array(out)?;
+        fmt.end_object(out)?;
         fmt.end_object_value(out)?;
         fmt.end_object(out)?;
         fmt.end_array_value(out)?;
@@ -877,7 +865,7 @@ mod tests {
         let mut history = history_with_panes(&[(0, "kept only when the shape fits\r\n")]);
         history
             .workspaces
-            .extend((0..40).map(|_| Vec::<Vec<(u32, HistoryText)>>::new()));
+            .extend((0..40).map(|_| Vec::<(u32, HistoryText)>::new()));
         let compact = SessionHistorySnapshot {
             version: history.version,
             layout_fingerprint: history.layout_fingerprint.clone(),
@@ -911,7 +899,7 @@ mod tests {
         SessionHistory {
             version: SNAPSHOT_VERSION,
             layout_fingerprint: None,
-            workspaces: vec![vec![vec![(0, single(secret))]]],
+            workspaces: vec![vec![(0, single(secret))]],
         }
     }
 
@@ -923,7 +911,7 @@ mod tests {
         SessionHistory {
             version: SNAPSHOT_VERSION,
             layout_fingerprint: Some("layout".into()),
-            workspaces: vec![vec![panes]],
+            workspaces: vec![panes],
         }
     }
 
@@ -942,7 +930,7 @@ mod tests {
     }
 
     /// Texts with everything JSON escapes, in pieces of every kind (a line
-    /// break before, a continued line), across several workspaces, tabs and
+    /// break before, a continued line), across several workspaces and
     /// panes (one empty), serialize to the bytes `serde_json` gives the same
     /// history as one string per pane.
     #[test]
@@ -964,13 +952,10 @@ mod tests {
             version: SNAPSHOT_VERSION,
             layout_fingerprint: Some("fp \"x\"".into()),
             workspaces: vec![
-                vec![
-                    vec![(3, single("three")), (12, mixed.clone())],
-                    vec![],
-                    vec![(1, single("")), (2, mixed)],
-                ],
+                vec![(3, single("three")), (12, mixed.clone())],
                 vec![],
-                vec![vec![(0, single("solo\r\n"))]],
+                vec![(1, single("")), (2, mixed)],
+                vec![(0, single("solo\r\n"))],
             ],
         };
         let serialized = serialize_history(&history).expect("serialize");
@@ -1025,7 +1010,7 @@ mod tests {
 
         let restored = parse_history_snapshot(json_text(&serialized)).expect("trimmed parses");
         assert_eq!(restored.layout_fingerprint.as_deref(), Some("layout"));
-        let panes = &restored.workspaces[0].tabs[0].panes;
+        let panes = &restored.workspaces[0].panes;
         assert_eq!(panes[&1].ansi, small);
         for (id, prefix, full) in [(2, "a", &big_a), (3, "b", &big_b)] {
             let kept = &panes[&id].ansi;

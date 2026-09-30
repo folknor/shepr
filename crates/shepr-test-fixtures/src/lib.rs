@@ -49,7 +49,7 @@ pub fn fixed_pane_id(raw: u32) -> shepr_core::layout::PaneId {
 }
 
 /// A typed id parsed from its canonical text, for tests that spell workspace,
-/// tab, pane or terminal ids as literals.
+/// pane or terminal ids as literals.
 ///
 /// # Panics
 ///

@@ -72,11 +72,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus};
 use shepr_config::theme::Palette;
-use shepr_config::{
-    LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig, TabBarPositionConfig,
-};
+use shepr_config::{LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig};
 use shepr_protocol::{
-    ClientMessage, ClientMousePosition, ClientPaneInputEvent, ClientShellSnapshot, ClientShellTab,
+    ClientMessage, ClientMousePosition, ClientPaneInputEvent, ClientShellSnapshot,
     ClientShellWorkspace, ClientSurfaceSize, FrameData, PaneSurfaceFrame,
 };
 

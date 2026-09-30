@@ -101,7 +101,7 @@ pub enum ServerMessage {
         sgr_pixels: bool,
     },
 
-    /// Active-tab pane content rendered at a client-requested origin-relative size.
+    /// Focused-workspace pane content rendered at a client-requested origin-relative size.
     PaneSurface(PaneSurfaceFrame),
 
     /// Immediate endpoint error that the client-rendered shell must show.

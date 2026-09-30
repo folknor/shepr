@@ -4,14 +4,12 @@ pub mod common;
 pub mod panes;
 pub mod response;
 pub mod server;
-pub mod tabs;
 pub mod workspaces;
 
 pub use common::*;
 pub use panes::*;
 pub use response::*;
 pub use server::*;
-pub use tabs::*;
 pub use workspaces::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

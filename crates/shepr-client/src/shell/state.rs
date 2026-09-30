@@ -10,8 +10,6 @@ pub struct ClientShellConfig {
     pub(super) sidebar_bounds: shepr_config::SidebarBounds,
     pub(super) sidebar_start_collapsed: bool,
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
-    pub(super) tab_bar_position: TabBarPositionConfig,
-    pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: shepr_config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: shepr_config::AgentPanelSortConfig,
@@ -19,7 +17,6 @@ pub struct ClientShellConfig {
     pub(super) copy_on_select: bool,
     pub(super) palette: Palette,
     pub(super) keybinds: LiveKeybindConfig,
-    pub(super) prompt_new_tab_name: bool,
     pub(super) prompt_new_workspace_name: bool,
     pub(super) confirm_close: bool,
     pub(super) mouse_capture: bool,
@@ -33,7 +30,6 @@ pub struct ClientShellConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ClientShellLayout {
     pub sidebar: Rect,
-    pub tab_bar: Rect,
     pub pane_surface: Rect,
 }
 
@@ -45,7 +41,6 @@ pub(super) struct ShellHitMap {
     pub(super) workspace_scrollbar: Rect,
     pub(super) workspace_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
     pub(super) workspace_max_scroll: usize,
-    pub(super) tabs: Vec<(Rect, shepr_protocol::PublicTabId)>,
     pub(super) panes: Vec<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, shepr_protocol::PublicPaneId)>,
@@ -59,9 +54,6 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_section_divider: Rect,
     pub(super) sidebar_toggle: Rect,
     pub(super) new_workspace: Rect,
-    pub(super) new_tab: Rect,
-    pub(super) tab_scroll_left: Rect,
-    pub(super) tab_scroll_right: Rect,
     pub(super) global_launcher: Rect,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
@@ -118,13 +110,6 @@ pub(super) struct ClientWorkspacePress {
     pub(super) start_row: u16,
 }
 
-pub(super) struct ClientTabPress {
-    pub(super) tab_id: shepr_protocol::PublicTabId,
-    pub(super) workspace_id: shepr_protocol::WorkspaceId,
-    pub(super) start_column: u16,
-    pub(super) start_row: u16,
-}
-
 pub(super) enum ClientChromeDrag {
     /// Dragging the sidebar edge. The width follows the pointer, but the endpoint is resized
     /// once, on release: each resize reflows every PTY, and one per column crossed would make
@@ -145,18 +130,13 @@ pub(super) enum ClientChromeDrag {
     NavigatorScrollbar {
         grab_row_offset: u16,
     },
-    Tab {
-        tab_id: shepr_protocol::PublicTabId,
-        workspace_id: shepr_protocol::WorkspaceId,
-        insert_index: Option<usize>,
-    },
     Workspace {
         source_workspace_id: shepr_protocol::WorkspaceId,
         target: Option<(Option<shepr_protocol::WorkspaceId>, u16)>,
     },
     PaneSplit {
         hit: PaneSplitHit,
-        tab_id: shepr_protocol::PublicTabId,
+        workspace_id: shepr_protocol::WorkspaceId,
         grab_offset: i32,
         last_sent_ratio: Option<f32>,
         throttle: super::mouse::Throttle,
@@ -255,15 +235,6 @@ pub(super) enum ClientRenameTarget {
     Workspace {
         workspace_id: shepr_protocol::WorkspaceId,
     },
-    NewTab {
-        workspace_id: shepr_protocol::WorkspaceId,
-        default_name: String,
-    },
-    Tab {
-        tab_id: shepr_protocol::PublicTabId,
-        auto_name: bool,
-        original_name: String,
-    },
     Pane {
         pane_id: shepr_protocol::PublicPaneId,
     },
@@ -336,7 +307,6 @@ pub(super) struct ClientGlobalMenuOverlay {
 pub(super) enum ClientContextMenuAction {
     Rename,
     Close,
-    NewTab,
     RenamePane,
     ClearPaneName,
     SwapWithFocusedPane,
@@ -350,10 +320,6 @@ pub(super) enum ClientContextMenuAction {
 #[derive(Debug)]
 pub(super) enum ClientContextMenuTarget {
     Workspace {
-        workspace_id: shepr_protocol::WorkspaceId,
-    },
-    Tab {
-        tab_id: shepr_protocol::PublicTabId,
         workspace_id: shepr_protocol::WorkspaceId,
     },
     Pane {
@@ -379,15 +345,8 @@ pub(super) struct ClientContextMenuItem {
 }
 
 #[derive(Debug)]
-pub(super) struct ClientTabCloseConfirmation {
-    pub(super) tab_id: shepr_protocol::PublicTabId,
-    pub(super) workspace: WorkspaceNavigationTarget,
-}
-
-#[derive(Debug)]
 pub(super) struct ClientConfirmCloseOverlay {
     pub(super) workspace_id: shepr_protocol::WorkspaceId,
-    pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
     /// Cancelling returns to Navigate mode only when the dialog came from it;
@@ -619,14 +578,10 @@ pub struct ClientShellState {
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
-    pub(super) tab_press: Option<ClientTabPress>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, shepr_protocol::PublicPaneId)>,
-    pub(super) tab_scroll: usize,
     pub(super) reveal_focused_workspace: bool,
-    pub(super) reveal_focused_tab: bool,
-    pub(super) last_tab_bar_width: Option<u16>,
     pub(super) last_composed_size: Option<(u16, u16)>,
     pub(super) last_composed_at: Option<std::time::Instant>,
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
@@ -753,14 +708,10 @@ impl ClientShellState {
             last_sidebar_divider_click: None,
             chrome_drag: None,
             workspace_press: None,
-            tab_press: None,
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
-            tab_scroll: 0,
             reveal_focused_workspace: true,
-            reveal_focused_tab: true,
-            last_tab_bar_width: None,
             last_composed_size: None,
             last_composed_at: None,
             selection_repaint_deadline: None,
@@ -872,33 +823,13 @@ impl ClientShellState {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
-        self.layout_with_tab_count(cols, rows, self.focused_tab_count())
+        self.config
+            .layout(cols, rows, self.sidebar_collapsed, self.sidebar_width)
     }
 
-    fn layout_with_tab_count(&self, cols: u16, rows: u16, tab_count: usize) -> ClientShellLayout {
-        self.config.layout(
-            cols,
-            rows,
-            self.sidebar_collapsed,
-            tab_count,
-            self.sidebar_width,
-        )
-    }
-
-    /// The pane surface size under the active projection's layout.
+    /// The pane surface size under the client's layout.
     pub(crate) fn surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {
-        self.surface_size_with_tab_count(cols, rows, self.focused_tab_count())
-    }
-
-    pub(super) fn surface_size_with_tab_count(
-        &self,
-        cols: u16,
-        rows: u16,
-        tab_count: usize,
-    ) -> ClientSurfaceSize {
-        let surface = self
-            .layout_with_tab_count(cols, rows, tab_count)
-            .pane_surface;
+        let surface = self.layout(cols, rows).pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),
             rows: surface.height.max(1),
@@ -913,13 +844,9 @@ impl ClientShellState {
         self.input_leases = ClientInputLeases::default();
         self.chrome_drag = None;
         self.workspace_press = None;
-        self.tab_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
-        self.tab_scroll = 0;
         self.reveal_focused_workspace = true;
-        self.reveal_focused_tab = true;
-        self.last_tab_bar_width = None;
         self.last_composed_size = None;
         self.last_composed_at = None;
         self.selection_repaint_deadline = None;
@@ -1023,20 +950,6 @@ impl ClientShellState {
                 self.mode = ClientShellMode::Terminal;
             }
         }
-        let tab_layout_changed = self.snapshot.as_deref().is_none_or(|current| {
-            current.tabs.len() != snapshot.tabs.len()
-                || current
-                    .tabs
-                    .iter()
-                    .zip(&snapshot.tabs)
-                    .any(|(left, right)| {
-                        left.tab_id != right.tab_id
-                            || left.workspace_id != right.workspace_id
-                            || left.label != right.label
-                            || left.zoomed != right.zoomed
-                    })
-                || render::tab_bar_status_width(current) != render::tab_bar_status_width(&snapshot)
-        });
         if self
             .snapshot
             .as_deref()
@@ -1044,15 +957,6 @@ impl ClientShellState {
             != snapshot.focused_workspace_id.as_deref()
         {
             self.reveal_focused_workspace = true;
-        }
-        if tab_layout_changed
-            || self
-                .snapshot
-                .as_deref()
-                .and_then(|current| current.focused_tab_id.as_deref())
-                != snapshot.focused_tab_id.as_deref()
-        {
-            self.reveal_focused_tab = true;
         }
         let selection_focus_lost = if let Some(gesture) = self.word_selection_gesture.as_mut() {
             let focused_pane = snapshot.focused_pane_id.as_deref();

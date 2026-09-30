@@ -6,7 +6,6 @@ mod layouts;
 mod panes;
 pub(super) mod responses;
 pub(super) mod session;
-mod tabs;
 mod workspaces;
 
 use super::{App, Outcome, RenderDemand};
@@ -108,11 +107,6 @@ impl App {
             }
             EndpointCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
             EndpointCommand::WorkspaceClose(target) => self.handle_workspace_close(&target),
-            EndpointCommand::TabCreate(params) => self.handle_tab_create(params),
-            EndpointCommand::TabFocus(target) => self.handle_tab_focus(&target),
-            EndpointCommand::TabRename(params) => self.handle_tab_rename(params),
-            EndpointCommand::TabMove(params) => self.handle_tab_move(&params),
-            EndpointCommand::TabClose(target) => self.handle_tab_close(&target),
             EndpointCommand::PaneSplit(params) => self.handle_pane_split(params),
             EndpointCommand::PaneSwap(params) => self.handle_pane_swap(&params),
             EndpointCommand::PaneZoom(params) => self.handle_pane_zoom(&params),
@@ -234,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_exit_keeps_the_tab_when_other_panes_remain() {
+    fn pane_exit_keeps_the_workspace_when_other_panes_remain() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
@@ -252,32 +246,31 @@ mod tests {
         });
 
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs().len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs()[0].layout().pane_count(), 1);
+        assert_eq!(app.state.workspaces[0].pane_count(), 1);
     }
 
     #[test]
-    fn pane_exit_removes_the_tab_and_workspace_it_empties() {
+    fn pane_exit_removes_the_workspace_it_empties() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
-        let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-exit-tab");
-        workspace.test_add_tab(Some("second"));
-        app.state.workspaces = vec![workspace];
+        app.state.workspaces = vec![
+            shepr_mux::workspace::Workspace::test_new("pane-exit-first"),
+            shepr_mux::workspace::Workspace::test_new("pane-exit-second"),
+        ];
         app.state.ensure_test_terminals();
-        let first_root = app.state.workspaces[0].tabs()[0].root_pane();
-        let second_root = app.state.workspaces[0].tabs()[1].root_pane();
+        let first_root = app.state.workspaces[0].root_pane();
+        let second_root = app.state.workspaces[1].root_pane();
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: first_root,
             exit_reason: shepr_platform::ChildExitReason::Exited,
         });
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs().len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs()[0].root_pane(), second_root);
+        assert_eq!(app.state.workspaces[0].root_pane(), second_root);
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: second_root,
@@ -295,7 +288,7 @@ mod tests {
             api_rx,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("stale-agent-exit");
-        let pane_id = workspace.tabs()[0].root_pane();
+        let pane_id = workspace.root_pane();
         let terminal_id = workspace
             .terminal_id(pane_id)
             .cloned()

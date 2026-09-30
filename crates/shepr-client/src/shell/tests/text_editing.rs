@@ -16,21 +16,19 @@ fn shell(field: usize) -> ClientShellState {
     match field {
         0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
         1 => state.open_rename_workspace_overlay(),
-        2 => state.open_new_tab_overlay(),
-        3 => state.open_rename_tab_overlay(),
-        4 => state.open_rename_pane_overlay(),
-        5 => {
+        2 => state.open_rename_pane_overlay(),
+        3 => {
             state.open_navigator_overlay();
             state.handle_input_bytes(b"/");
         }
-        6 => {
+        4 => {
             state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                 query: TextEditor::default(),
                 search_focused: true,
                 scroll: 0,
             }));
         }
-        7 => {
+        5 => {
             state.record_binding(
                 &KeybindMatch::Action(KeybindAction::CopyMode),
                 &mut ClientShellInput::default(),
@@ -65,8 +63,8 @@ fn press(state: &mut ClientShellState, code: KeyCode, modifiers: KeyModifiers) -
 }
 
 #[test]
-fn all_eight_fields_route_shared_text_editing() {
-    for field in 0..8 {
+fn all_six_fields_route_shared_text_editing() {
+    for field in 0..6 {
         let mut state = shell(field);
         *editor(&mut state) = TextEditor::from("ab");
         press(&mut state, KeyCode::Left, KeyModifiers::NONE);
@@ -196,7 +194,7 @@ fn text_delivery_paths_insert_at_the_cursor() {
 
 #[test]
 fn rename_clear_exceptions_remain_local() {
-    for field in 0..5 {
+    for field in 0..3 {
         for (code, modifiers) in [
             (KeyCode::Char('c'), KeyModifiers::CONTROL),
             (KeyCode::Backspace, KeyModifiers::SUPER),
@@ -212,7 +210,7 @@ fn rename_clear_exceptions_remain_local() {
 
 #[test]
 fn cursor_movement_preserves_filter_selection_and_scroll() {
-    for field in [5, 6] {
+    for field in [3, 4] {
         let mut state = shell(field);
         *editor(&mut state) = TextEditor::from("ab");
         match state.overlay.as_mut().expect("overlay") {
@@ -247,7 +245,7 @@ fn cursor_movement_preserves_filter_selection_and_scroll() {
 
 #[test]
 fn escape_preserves_help_overlay_with_generated_text() {
-    let mut state = shell(6);
+    let mut state = shell(4);
     *editor(&mut state) = TextEditor::from("feature");
     let result = state.handle_raw_events(vec![RawInputEvent::Key(
         TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE)
@@ -266,7 +264,7 @@ fn escape_preserves_help_overlay_with_generated_text() {
 
 #[test]
 fn focused_filters_keep_ctrl_n_p_navigation_and_literal_commands() {
-    for field in [5, 6] {
+    for field in [3, 4] {
         let mut state = shell(field);
         if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
             navigator.selected = None;
@@ -281,7 +279,7 @@ fn focused_filters_keep_ctrl_n_p_navigation_and_literal_commands() {
 
 #[test]
 fn all_naming_targets_preserve_submission_and_empty_semantics() {
-    for field in 0..5 {
+    for field in 0..3 {
         for empty in [false, true] {
             let mut state = shell(field);
             *editor(&mut state) = TextEditor::from(if empty { "  " } else { "  ab " });
@@ -291,7 +289,7 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
             }
             let result = press(&mut state, KeyCode::Enter, KeyModifiers::NONE);
             assert!(state.overlay.is_none());
-            if empty && matches!(field, 1 | 3) {
+            if empty && field == 1 {
                 assert!(result.actions.is_empty());
                 continue;
             }
@@ -304,10 +302,6 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
                     assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
                 }
                 EndpointCommand::WorkspaceRename(v) => assert_eq!(v.label, expected),
-                EndpointCommand::TabCreate(v) => {
-                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
-                }
-                EndpointCommand::TabRename(v) => assert_eq!(v.label, expected),
                 EndpointCommand::PaneRename(v) => assert_eq!(v.label.as_deref(), Some(expected)),
                 _ => panic!("wrong command"),
             }
@@ -317,7 +311,7 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
 
 #[test]
 fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
-    let mut state = shell(7);
+    let mut state = shell(5);
     *editor(&mut state) = TextEditor::from("ab");
     press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -344,7 +338,7 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
 
 #[test]
 fn every_field_renders_long_unicode_across_resize_without_mutation() {
-    for field in 0..8 {
+    for field in 0..6 {
         let mut state = shell(field);
         *editor(&mut state) =
             TextEditor::new(&"e\u{301}中\u{1F469}\u{200D}\u{1F4BB}".repeat(40), false);

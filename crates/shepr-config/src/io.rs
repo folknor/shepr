@@ -947,9 +947,14 @@ mod tests {
             ),
             ("[server]\nheadless_cols = 0\n", "headless_cols"),
             (
-                "[ui]\ntab_bar_right = [{ type = \"datetime\", format = \"%Q\" }]\n",
-                "ui.tab_bar_right[0]",
+                "[ui]\ntab_bar_right = []\n",
+                "unknown config key ui.tab_bar_right",
             ),
+            (
+                "[keys]\nnext_tab = \"prefix+n\"\n",
+                "unknown config key keys.next_tab",
+            ),
+            ("[ui]\nwindow_title = \"{tab}\"\n", "unknown token '{tab}'"),
             (
                 "[ui]\nmouse_captur = true\n",
                 "unknown config key ui.mouse_captur",
@@ -1069,10 +1074,6 @@ sidebar_width = 80
 sidebar_min_width = 50
 sidebar_max_width = 30
 window_title = "{unknown}"
-tab_bar_right = [
-  { type = "datetime", format = "%Q" },
-  { type = "command", command = "", interval_seconds = 0, timeout_seconds = 0 },
-]
 "#,
         )
         .expect("write invalid config fixture");
@@ -1090,10 +1091,6 @@ tab_bar_right = [
             "keys.zoom",
             "sidebar_min_width",
             "ui.window_title",
-            "ui.tab_bar_right[0]",
-            "ui.tab_bar_right[1] command",
-            "ui.tab_bar_right[1] interval_seconds",
-            "ui.tab_bar_right[1] timeout_seconds",
         ] {
             assert!(
                 messages.iter().any(|message| message.contains(expected)),
@@ -1450,7 +1447,7 @@ scrollback_limit_bytes = 42
 
 [keys]
 zoom = "prefix+z"
-new_tabb = "prefix+t"
+new_workspacee = "prefix+t"
 
 [ui]
 mouse_capture = false
@@ -1466,7 +1463,7 @@ mouse_captur = true
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             vec![
-                "unknown config key keys.new_tabb",
+                "unknown config key keys.new_workspacee",
                 "unknown config key plugin",
                 "unknown config key theme.custom.accentt",
                 "unknown config key ui.\"foo.bar\"",

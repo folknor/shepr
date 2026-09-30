@@ -49,7 +49,7 @@ pub struct PaneId(u32);
 /// within one: panes move between workspaces keeping their id, and server
 /// maps keyed by pane id span workspaces. An owned allocator would therefore
 /// live in the server's app state and be passed into every layout split,
-/// tab and workspace constructor, restore and pane move, for no change in
+/// workspace constructor, restore and pane move, for no change in
 /// behaviour. Tests that want fixed ids build them with `from_raw`, and the
 /// exhaustion rule is tested through `alloc_from`.
 static NEXT_PANE_ID: std::sync::atomic::AtomicU32 =
@@ -158,8 +158,8 @@ pub enum NavDirection {
     Down,
 }
 
-/// A node in the BSP tree. Pane leaves connect layout order to `Tab.panes`;
-/// pane state and public numbers live in those tab records.
+/// A node in the BSP tree. Pane leaves connect layout order to `Workspace.panes`;
+/// pane state and public numbers live in those workspace records.
 #[derive(Clone)]
 #[expect(
     variant_size_differences,
@@ -420,7 +420,7 @@ impl TileLayout {
         split_ratios(&self.root) != before
     }
 
-    /// Pane record keys in layout order. `Tab.panes` owns the live records.
+    /// Pane record keys in layout order. `Workspace.panes` owns the live records.
     pub fn pane_ids(&self) -> Vec<PaneId> {
         let mut ids = Vec::new();
         collect_ids(&self.root, &mut ids);
