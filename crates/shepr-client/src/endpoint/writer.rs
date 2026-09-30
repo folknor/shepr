@@ -1,7 +1,7 @@
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
 
@@ -12,6 +12,48 @@ use crate::limits::{
 };
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ClientMessage;
+
+/// When the reader thread last took a complete frame off one connection, and whether one of
+/// them was an endpoint snapshot. Endpoint health reads this instead of the time the client
+/// loop processed the frame, so a stalled loop is not mistaken for a silent transport.
+pub(crate) struct EndpointReadActivity {
+    started_at: Instant,
+    /// Nanoseconds after `started_at` of the last frame, shifted left one bit; the low bit is
+    /// set once a snapshot has arrived. Zero means no frame yet. One word keeps both readable
+    /// together without a lock.
+    stamp: AtomicU64,
+}
+
+impl EndpointReadActivity {
+    pub(super) fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            stamp: AtomicU64::new(0),
+        }
+    }
+
+    /// Records a frame that arrived at `now`.
+    pub(crate) fn record(&self, now: Instant, snapshot: bool) {
+        let elapsed = u64::try_from(now.saturating_duration_since(self.started_at).as_nanos())
+            .unwrap_or(u64::MAX)
+            .clamp(1, u64::MAX >> 1);
+        let snapshot_seen = snapshot || self.stamp.load(Ordering::Acquire) & 1 == 1;
+        self.stamp
+            .store((elapsed << 1) | u64::from(snapshot_seen), Ordering::Release);
+    }
+
+    /// When the last frame arrived, if any has, and whether a snapshot has.
+    pub(crate) fn observed(&self) -> (Option<Instant>, bool) {
+        let stamp = self.stamp.load(Ordering::Acquire);
+        let received_at = (stamp >> 1 > 0)
+            .then(|| {
+                self.started_at
+                    .checked_add(Duration::from_nanos(stamp >> 1))
+            })
+            .flatten();
+        (received_at, stamp & 1 == 1)
+    }
+}
 
 #[derive(Default)]
 struct FrameBatch {
@@ -34,6 +76,7 @@ pub(crate) struct NativeEndpointTransport {
     queued_bytes: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
     error: Arc<Mutex<Option<io::Error>>>,
+    read_activity: Arc<EndpointReadActivity>,
 }
 
 impl NativeEndpointTransport {
@@ -46,6 +89,8 @@ impl NativeEndpointTransport {
         let queued_bytes = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
+        // clock-io-ok: the origin the reader thread stamps frame arrivals against.
+        let read_activity = Arc::new(EndpointReadActivity::new(Instant::now()));
         let worker_bytes = Arc::clone(&queued_bytes);
         let worker_stop = Arc::clone(&stopped);
         let worker_error = Arc::clone(&error);
@@ -82,6 +127,7 @@ impl NativeEndpointTransport {
             queued_bytes,
             stopped,
             error,
+            read_activity,
         })
     }
 
@@ -117,6 +163,10 @@ impl NativeEndpointTransport {
 
     pub(crate) fn stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stopped)
+    }
+
+    pub(crate) fn read_activity(&self) -> Arc<EndpointReadActivity> {
+        Arc::clone(&self.read_activity)
     }
 }
 
@@ -479,6 +529,7 @@ mod tests {
                 queued_bytes: Arc::new(AtomicUsize::new(0)),
                 stopped: Arc::new(AtomicBool::new(false)),
                 error: Arc::new(Mutex::new(None)),
+                read_activity: Arc::new(EndpointReadActivity::new(Instant::now())),
             },
             receiver,
         )

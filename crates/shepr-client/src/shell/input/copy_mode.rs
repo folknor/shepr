@@ -42,6 +42,31 @@ impl ClientCopyModeState {
 }
 
 impl ClientShellState {
+    pub(super) fn copy_mode_owns_input(&self) -> bool {
+        self.mode == ClientShellMode::Copy
+            && self.overlay.is_none()
+            && self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
+            })
+    }
+
+    pub(super) fn copy_mode_interrupt_key(&self, key: &shepr_termio::input::TerminalKey) -> bool {
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            return false;
+        }
+        if key.code == KeyCode::Esc {
+            return true;
+        }
+        let Some(copy_mode) = self.copy_mode.as_ref() else {
+            return false;
+        };
+        if copy_mode.search_prompt.is_some() {
+            return false;
+        }
+        shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+            || shepr_termio::copy_mode::copy_mode_command_char(key) == Some('q')
+    }
+
     pub(super) fn reset_copy_pipeline(&mut self) {
         self.copy_session_generation = self.copy_session_generation.saturating_add(1);
         self.copy_operation_in_flight = false;
@@ -544,13 +569,22 @@ impl ClientShellState {
             return;
         }
         self.copy_operation_in_flight = false;
-        if continue_queue && self.copy_mode.is_some() {
+        if continue_queue && self.copy_mode_owns_input() {
             self.dispatch_next_copy_operation(outcome);
             let mut accounting = PaneInputBatchAccounting::default();
             self.dispatch_queued_copy_input(outcome, &mut accounting);
         } else {
             self.copy_operation_queue.clear();
-            self.copy_input_queue.clear();
+            if self.copy_mode_owns_input() {
+                // Failed copy requests still release the buffered input. Replaying it here
+                // keeps local copy actions and later remote motions in order.
+                let mut accounting = PaneInputBatchAccounting::default();
+                self.dispatch_queued_copy_input(outcome, &mut accounting);
+            } else {
+                // These keys belonged to the copy pane. Do not send them into a pane that
+                // gained focus while the request was outstanding.
+                self.copy_input_queue.clear();
+            }
         }
     }
 

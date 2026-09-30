@@ -3,20 +3,18 @@ use tracing::debug;
 
 pub(super) fn start_endpoint_transport(
     stream: LocalStream,
-    lifetime: impl Send + 'static,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
     surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) -> Result<endpoint::NativeEndpointTransport, ClientError> {
     let reader = stream.try_clone().map_err(ClientError::ConnectionFailed)?;
-    let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, lifetime)
+    let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, ())
         .map_err(ClientError::ConnectionFailed)?;
-    let stopped = transport.stop_handle();
     spawn_endpoint_reader(
         reader,
         event_tx,
-        &stopped,
+        &transport,
         endpoint_id,
         generation,
         surface_decoder,
@@ -27,13 +25,14 @@ pub(super) fn start_endpoint_transport(
 pub(super) fn spawn_endpoint_reader(
     reader: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    stopped: &Arc<AtomicBool>,
+    transport: &endpoint::NativeEndpointTransport,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
     surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) -> Result<(), ClientError> {
     let event_tx = event_tx.clone();
-    let stopped = Arc::clone(stopped);
+    let stopped = transport.stop_handle();
+    let read_activity = transport.read_activity();
     std::thread::Builder::new()
         .name("endpoint-reader".into())
         .spawn(move || {
@@ -41,6 +40,7 @@ pub(super) fn spawn_endpoint_reader(
                 reader,
                 &event_tx,
                 &stopped,
+                &read_activity,
                 endpoint_id,
                 generation,
                 surface_decoder,
@@ -55,6 +55,7 @@ pub(super) fn server_reader_thread(
     mut stream: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
+    read_activity: &endpoint::EndpointReadActivity,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
     mut surface_decoder: shepr_protocol::surface_reuse::Decoder,
@@ -80,11 +81,17 @@ pub(super) fn server_reader_thread(
             break;
         }
 
-        let message = shepr_protocol::read_message(&mut stream).and_then(|message| {
-            surface_decoder
-                .decode(message)
-                .map_err(shepr_protocol::FramingError::SurfaceDecode)
-        });
+        let message =
+            shepr_protocol::read_message::<_, ServerMessage>(&mut stream).and_then(|message| {
+                // clock-io-ok: stamps when this frame came off the transport, for health.
+                read_activity.record(
+                    std::time::Instant::now(),
+                    matches!(message, ServerMessage::EndpointSnapshot(_)),
+                );
+                surface_decoder
+                    .decode(message)
+                    .map_err(shepr_protocol::FramingError::SurfaceDecode)
+            });
         match message {
             Ok(msg) => {
                 if event_tx
@@ -207,43 +214,6 @@ impl io::Read for EndpointReader<'_> {
             }
         }
     }
-}
-
-/// Writes one client message, which crosses in one frame: the server reads
-/// client messages with a one-frame cap, so a larger one fails here.
-pub(crate) fn write_to_local_server(
-    stream: &mut LocalStream,
-    msg: &ClientMessage,
-) -> io::Result<()> {
-    let frame = shepr_protocol::encode_frame(msg).map_err(io::Error::other)?;
-    io::Write::write_all(stream, &frame)?;
-    io::Write::flush(stream)
-}
-
-pub(super) trait ClientMessageSink {
-    fn send_client_message(&mut self, message: &ClientMessage) -> io::Result<()>;
-}
-
-impl ClientMessageSink for LocalStream {
-    fn send_client_message(&mut self, message: &ClientMessage) -> io::Result<()> {
-        write_to_local_server(self, message)
-    }
-}
-
-impl ClientMessageSink for endpoint::EndpointRegistry {
-    fn send_client_message(&mut self, message: &ClientMessage) -> io::Result<()> {
-        // The lifecycle loop consumes failures for every endpoint, including Local. A send
-        // failure must not bypass that transition or tear down unrelated connections.
-        self.send(message);
-        Ok(())
-    }
-}
-
-pub(super) fn write_to_server(
-    stream: &mut impl ClientMessageSink,
-    msg: &ClientMessage,
-) -> io::Result<()> {
-    stream.send_client_message(msg)
 }
 
 #[cfg(test)]

@@ -36,6 +36,29 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
 }
 
 #[test]
+fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    state.sidebar_collapsed = true;
+    state.set_snapshot(Box::new(snapshot()));
+
+    let frame = state.compose(100, 28).expect("unavailable view");
+    let rows = frame_rows(&frame);
+    let text = rows.join("\n");
+
+    assert!(text.contains("Local: online."));
+    assert!(!text.contains("Select a connected machine."));
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "w1")
+    );
+    assert!(state.hits.machines.is_empty());
+}
+
+#[test]
 fn client_presentation_regression_removed_navigator_target_accepts_visible_fallback() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

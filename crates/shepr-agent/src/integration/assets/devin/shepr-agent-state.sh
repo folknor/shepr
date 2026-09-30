@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import subprocess
 import time
 
 SOURCE = "shepr:devin"
@@ -52,47 +51,6 @@ def load_hook_input(path: str | None) -> dict:
         return {}
 
 
-def load_session_list(project_dir: str | None):
-    injected = os.environ.get("SHEPR_DEVIN_LIST_JSON")
-    if injected is not None:
-        try:
-            parsed = json.loads(injected)
-            return parsed if isinstance(parsed, list) else []
-        except Exception:
-            return []
-
-    cmd = ["devin", "list", "--format", "json"]
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project_dir or None,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except Exception:
-        return []
-
-    if result.returncode != 0:
-        return []
-
-    try:
-        parsed = json.loads(result.stdout)
-        return parsed if isinstance(parsed, list) else []
-    except Exception:
-        return []
-
-
-def normalize_path(path: str | None) -> str | None:
-    if not isinstance(path, str) or not path:
-        return None
-    try:
-        return os.path.realpath(path)
-    except Exception:
-        return path
-
-
 def hook_session_id(hook_input: dict) -> str | None:
     for key in ("session_id", "sessionId"):
         value = hook_input.get(key)
@@ -106,48 +64,23 @@ def hook_event_name(hook_input: dict) -> str:
     return value if isinstance(value, str) else ""
 
 
-def allow_session_list_fallback(hook_input: dict) -> bool:
-    event = hook_event_name(hook_input)
-    if event == "UserPromptSubmit":
-        return False
-    if event == "SessionStart" and hook_input.get("source") == "startup":
-        return False
-    return True
-
-
-def resolve_session_id(project_dir: str, hook_input: dict) -> str | None:
-    direct = hook_session_id(hook_input)
-    if direct:
-        return direct
-    if not allow_session_list_fallback(hook_input):
-        return None
-
-    entries = load_session_list(project_dir)
-    project_dir = normalize_path(project_dir)
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        session_id = entry.get("id")
-        if not isinstance(session_id, str) or not session_id:
-            continue
-        working_directory = normalize_path(entry.get("working_directory"))
-        if working_directory == project_dir:
-            return session_id
-    return None
-
-
 pane_id = os.environ.get("SHEPR_PANE_ID")
 socket_path = os.environ.get("SHEPR_SOCKET_PATH")
-project_dir = os.environ.get("DEVIN_PROJECT_DIR") or os.getcwd()
 hook_input = load_hook_input(os.environ.get("SHEPR_HOOK_INPUT_FILE"))
 
 if not pane_id or not socket_path:
     raise SystemExit(0)
 
+# Tool hooks can repeat the same identity for every call. Devin's installed
+# hook also receives those events, but session identity only changes at these
+# lifecycle boundaries, so ignore the others without querying global sessions.
+if hook_event_name(hook_input) not in ("SessionStart", "UserPromptSubmit"):
+    raise SystemExit(0)
+
 report_seq = time.time_ns()
 request_id = f"{SOURCE}:{report_seq}"
 
-session_id = resolve_session_id(project_dir, hook_input)
+session_id = hook_session_id(hook_input)
 if not session_id:
     raise SystemExit(0)
 request = {

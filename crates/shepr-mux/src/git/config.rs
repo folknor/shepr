@@ -55,10 +55,8 @@ fn config_deps(info: &GitWorktreeInfo) -> io::Result<Vec<FileDep>> {
         info.git_dir.join("config.worktree"),
     ]);
     let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
-    let output = config_output(
-        &info.repo_root,
-        &["config", "--includes", "--null", "--show-origin", "--list"],
-    )?;
+    let query = ["config", "--includes", "--null", "--show-origin", "--list"];
+    let output = config_output(&info.repo_root, &query)?;
     let mut fields = output.split(|byte| *byte == 0);
     while let Some(origin) = fields.next().filter(|field| !field.is_empty()) {
         let Some(entry) = fields.next() else {
@@ -114,8 +112,14 @@ fn config_deps(info: &GitWorktreeInfo) -> io::Result<Vec<FileDep>> {
             deps.push(stamp(included, Some(target)));
         }
     }
-    // Keep the before-query stamps for roots, so changes during the query
-    // cannot make a stale answer reusable.
+    // Includes can only be discovered by asking Git. Query again after their
+    // stamps are captured: if a config changed between the first query and
+    // those stamps, the changed output keeps this answer out of the cache.
+    if config_output(&info.repo_root, &query)? != output {
+        for dep in &mut deps {
+            dep.2 = false;
+        }
+    }
     Ok(deps)
 }
 

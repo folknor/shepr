@@ -5042,3 +5042,107 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
         "failed targeted send should remove the broken foreground client"
     );
 }
+
+#[tokio::test]
+async fn unchanged_internal_events_leave_projection_and_sources_clean() {
+    let mut server = test_headless_server();
+    let workspace = shepr_mux::workspace::Workspace::test_new("event-effects");
+    let pane_id = workspace.root_pane();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(pane_id)
+        .expect("terminal")
+        .clone();
+    let cwd = server.app.state.terminals[&terminal_id].cwd().to_path_buf();
+    server.immediate_pty_sources_dirty = false;
+    server.host_input_modes_dirty = false;
+    let before = server.app.state.shell_projection_revision;
+    assert!(
+        !server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+            pane_id,
+            cwd: shepr_mux::UsableCwd::new(cwd).expect("absolute cwd"),
+        })
+    );
+    assert_eq!(server.app.state.shell_projection_revision, before);
+    assert!(!server.immediate_pty_sources_dirty);
+    assert!(!server.host_input_modes_dirty);
+
+    // The same events do invalidate once they change what a client sees.
+    let moved = shepr_test_support::ScratchDir::new("event-effects-cwd");
+    assert!(
+        server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+            pane_id,
+            cwd: shepr_mux::UsableCwd::new(moved.path().to_path_buf()).expect("absolute cwd"),
+        })
+    );
+    assert_ne!(server.app.state.shell_projection_revision, before);
+    let before = server.app.state.shell_projection_revision;
+    assert!(
+        server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(shepr_agent::detect::Agent::Codex),
+            state: shepr_agent::detect::AgentState::Working,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: server.app.clock.now,
+        })
+    );
+    assert_ne!(server.app.state.shell_projection_revision, before);
+    let before = server.app.state.shell_projection_revision;
+    assert!(
+        !server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(shepr_agent::detect::Agent::Codex),
+            state: shepr_agent::detect::AgentState::Working,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: server.app.clock.now,
+        })
+    );
+    assert_eq!(server.app.state.shell_projection_revision, before);
+    assert!(!server.immediate_pty_sources_dirty);
+    assert!(!server.host_input_modes_dirty);
+}
+
+#[tokio::test]
+async fn writer_readiness_does_not_invalidate_application_or_input_sources() {
+    let mut server = test_headless_server();
+    install_shared_view_test_runtime(&mut server);
+    let (_control, _render) = connect_matching_test_shell(&mut server, 7);
+    server
+        .clients
+        .get_mut(&ClientId::test_new(7))
+        .expect("client")
+        .defer_full_render();
+    server.immediate_pty_sources_dirty = false;
+    server.host_input_modes_dirty = false;
+    let before = server.app.state.shell_projection_revision;
+    assert_eq!(
+        server.handle_server_event_with_render_impact(ServerEvent::ClientWriterDrained {
+            client_id: ClientId::test_new(7)
+        },),
+        RenderDemand::Full
+    );
+    assert_eq!(server.app.state.shell_projection_revision, before);
+    assert!(!server.immediate_pty_sources_dirty);
+    assert!(!server.host_input_modes_dirty);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn missing_pane_exit_has_no_invalidation() {
+    let mut server = test_headless_server();
+    server.immediate_pty_sources_dirty = false;
+    server.host_input_modes_dirty = false;
+    let before = server.app.state.shell_projection_revision;
+    assert!(
+        !server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
+            pane_id: shepr_core::layout::PaneId::alloc(),
+            exit_reason: shepr_platform::ChildExitReason::Exited,
+        })
+    );
+    assert_eq!(server.app.state.shell_projection_revision, before);
+    assert!(!server.immediate_pty_sources_dirty);
+    assert!(!server.host_input_modes_dirty);
+}

@@ -249,16 +249,14 @@ fn client_error_display_connection_failed() {
     ));
     let msg = err.to_string();
     assert!(
-        msg.contains("failed to connect to server"),
-        "should mention connection failure: {msg}"
+        msg.contains("connection") && msg.contains("connection refused"),
+        "should mention the connection failure and its cause: {msg}"
     );
+    // The variant also wraps setup failures after a connect succeeded (a
+    // stream clone, a thread spawn), so it must not claim no server runs.
     assert!(
-        msg.contains("Running `shepr` starts one"),
-        "should suggest starting server: {msg}"
-    );
-    assert!(
-        !msg.contains("`shepr server`"),
-        "there is no shepr server command: {msg}"
+        !msg.contains("starts one") && !msg.contains("server running"),
+        "should not guess at a missing server: {msg}"
     );
 }
 

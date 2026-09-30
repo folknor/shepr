@@ -33,6 +33,21 @@ impl EndpointHealth {
         self.ping_sent_at = None;
     }
 
+    pub(super) fn sync_reader_activity(
+        &mut self,
+        received_at: Option<Instant>,
+        initial_snapshot_received: bool,
+    ) {
+        if let Some(received_at) = received_at
+            && received_at > self.last_received
+        {
+            self.received(received_at);
+        }
+        if initial_snapshot_received {
+            self.ready = true;
+        }
+    }
+
     pub(super) fn ready(&mut self) {
         self.ready = true;
     }

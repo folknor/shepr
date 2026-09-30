@@ -815,7 +815,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
 }
 
 #[test]
-fn keys_replayed_after_a_copy_motion_reach_the_pane() {
+fn keys_after_an_exit_key_reach_the_pane_while_a_copy_motion_is_in_flight() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -845,25 +845,13 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
         panic!("word motion should use endpoint semantics");
     };
     let request_id = request.id.clone();
-    // `q` leaves copy mode, and `x` is meant for the pane; both arrive while the
-    // motion is in flight and are queued.
-    let queued = state.handle_raw_events(vec![key(KeyCode::Char('q')), key(KeyCode::Char('x'))]);
-    assert!(queued.requests.is_empty());
-
-    let outcome = state.handle_endpoint_result(
-        &crate::tests::test_boot_id("boot-1"),
-        &request_id,
-        Ok(EndpointReply::PaneCopyMotion {
-            pane_id: shepr_test_fixtures::id("w1:p1"),
-            cursor: shepr_protocol::command::PaneTextPoint {
-                row: origin.row,
-                col: 3,
-            },
-        }),
-    );
+    // `q` leaves copy mode at once, although the motion is still in flight,
+    // so `x` right behind it is meant for the pane and goes there without
+    // waiting for the motion's reply.
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('q')), key(KeyCode::Char('x'))]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(
-        outcome.requests.iter().any(|request| matches!(
+        typed.requests.iter().any(|request| matches!(
             request,
             ClientMessage::ClientShellPaneInput { pane_id, events }
                 if pane_id == "w1:p1"
@@ -875,8 +863,25 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
                         }
                     ))
         )),
-        "the replayed keystroke must reach the pane"
+        "the keystroke after the exit key must reach the pane"
     );
+
+    // The late reply belongs to a copy session that has ended: it neither
+    // brings copy mode back nor sends anything.
+    let late = state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &request_id,
+        Ok(EndpointReply::PaneCopyMotion {
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            cursor: shepr_protocol::command::PaneTextPoint {
+                row: origin.row,
+                col: 3,
+            },
+        }),
+    );
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.copy_mode.is_none());
+    assert!(late.requests.is_empty());
 }
 
 #[test]
@@ -2078,6 +2083,42 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
 }
 
 #[test]
+fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    pane_surface.panes[0].scrollbar_rect = Some(SurfaceRect {
+        x: 3,
+        y: 0,
+        width: 1,
+        height: 2,
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut enter));
+    let track = state.hits.panes[0]
+        .scrollbar_rect
+        .expect("pane scrollbar hit");
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: track.x,
+        row: track.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert!(state.copy_mode.is_some());
+}
+
+#[test]
 fn retained_selection_copy_suppresses_key_repeats() {
     let mut config = Config::default();
     config.ui.copy_on_select = false;
@@ -2166,7 +2207,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
 }
 
 #[test]
-fn queued_copy_keys_preserve_prefix_order() {
+fn copy_prefix_and_detach_pass_an_in_flight_copy_operation() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -2190,6 +2231,11 @@ fn queued_copy_keys_preserve_prefix_order() {
     state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers),
     )]);
+    assert_eq!(state.mode, ClientShellMode::Prefix);
+
+    let detach = state.handle_input_bytes(b"q");
+    assert!(detach.detach);
+
     let motion_id = match &motion.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
@@ -2202,7 +2248,69 @@ fn queued_copy_keys_preserve_prefix_order() {
             cursor: origin,
         }),
     );
-    assert_eq!(state.mode, ClientShellMode::Prefix);
+    assert!(state.copy_input_queue.is_empty());
+}
+
+#[test]
+fn copy_mode_exit_keys_pass_an_in_flight_copy_operation() {
+    for key in [
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('q'), KeyModifiers::empty()),
+        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+    ] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        let mut pane_surface = surface();
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 10,
+            viewport_rows: 2,
+            history_origin: shepr_vt::AbsRow(0),
+        });
+        state.set_pane_surface(pane_surface);
+        state.compose(106, 20).expect("composed frame");
+        let mut enter = ClientShellInput::default();
+        assert!(state.enter_copy_mode(&mut enter));
+        state.handle_input_bytes(b"w");
+        state.handle_input_bytes(b"l");
+
+        state.handle_raw_events(vec![RawInputEvent::Key(key)]);
+
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert!(state.copy_mode.is_none());
+        assert!(!state.copy_operation_in_flight);
+        assert!(state.copy_input_queue.is_empty());
+    }
+}
+
+#[test]
+fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut enter));
+    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+
+    let motion = state.handle_input_bytes(b"w");
+    state.handle_input_bytes(b"l");
+    let request_id = match &motion.actions[0] {
+        ClientShellAction::Endpoint { request, .. } => request.id.clone(),
+        _ => unreachable!(),
+    };
+    state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &request_id,
+        Err(ClientShellEndpointError::Timeout),
+    );
+
     assert_eq!(
         state
             .copy_mode
@@ -2210,6 +2318,91 @@ fn queued_copy_keys_preserve_prefix_order() {
             .map(|copy_mode| copy_mode.cursor.col),
         Some(origin.col.saturating_add(1))
     );
+    assert!(state.copy_input_queue.is_empty());
+}
+
+#[test]
+fn deferred_copy_input_is_bounded() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut enter));
+    state.handle_input_bytes(b"w");
+
+    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE + 8 {
+        state.handle_input_bytes(b"j");
+    }
+
+    assert_eq!(
+        state.copy_input_queue.len(),
+        crate::limits::MAX_COPY_INPUT_QUEUE
+    );
+    assert!(state.endpoint_error.is_some());
+}
+
+#[test]
+fn copy_operation_does_not_capture_input_after_focus_moves() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut enter));
+    let motion = state.handle_input_bytes(b"w");
+    let request_id = match &motion.actions[0] {
+        ClientShellAction::Endpoint { request, .. } => request.id.clone(),
+        _ => unreachable!(),
+    };
+    state.handle_input_bytes(b"l");
+
+    let mut unfocused = snapshot();
+    unfocused.focused_pane_id = Some(test_pane_id("w1:p2"));
+    unfocused.panes[0].focused = false;
+    unfocused.panes.push(ClientShellPane {
+        pane_id: test_pane_id("w1:p2"),
+        workspace_id: test_workspace_id("w1"),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: true,
+        right_click_passthrough: false,
+    });
+    state.set_snapshot(Box::new(unfocused));
+    let input = state.handle_input_bytes(b"x");
+
+    assert!(input.requests.iter().any(|request| matches!(
+        request,
+        ClientMessage::ClientShellPaneInput { pane_id, .. } if pane_id == "w1:p2"
+    )));
+
+    let failed = state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &request_id,
+        Err(ClientShellEndpointError::Timeout),
+    );
+    assert!(
+        !failed
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
+    );
+    assert!(state.copy_input_queue.is_empty());
 }
 
 #[test]

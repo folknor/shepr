@@ -247,7 +247,9 @@
 # ~/.ssh/config first and adds ServerAliveInterval/ServerAliveCountMax as
 # fallbacks (values you set yourself win), and reuses the first authenticated
 # connection through a private OpenSSH control socket. Linux's Unix socket path
-# limit leaves 32 bytes for XDG_RUNTIME_DIR; longer paths fail the machine's setup.
+# limit leaves 26 path bytes for XDG_RUNTIME_DIR in a release build or 22 in a dev
+# build, after the profile runtime directory and OpenSSH staging suffix; longer
+# paths fail the machine's setup.
 # [[machines]]
 # label = "build"
 # ssh = "dev@build"

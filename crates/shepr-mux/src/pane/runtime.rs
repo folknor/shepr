@@ -225,18 +225,17 @@ fn write_terminal_response(io: &dyn ChildIo, response: impl FnOnce() -> Option<B
     io.write_terminal_response(&mut || response.take().and_then(|response| response()));
 }
 
-/// Writes the child's output into the pane terminal. Each write is announced
-/// through the content revision, odd while it is in progress and even once it
-/// has landed, under the content write lock that a render also holds while it
-/// pairs a snapshot with its revision (`collect_dirty_patch_snapshot`). The
-/// PTY reader writes through one; so does anything else that feeds a pane its
-/// child's output.
+/// Feeds bytes to the pane terminal parser and advances its content and
+/// detection revisions. This parser seam does not dispatch the read effects
+/// that the PTY reader routes, such as terminal replies, render requests,
+/// clipboard writes, cwd reports or synchronized-output timers.
 #[derive(Clone)]
 pub struct PaneOutputWriter {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
+    detection_content_seq: Arc<AtomicU64>,
 }
 
 /// A write that holds the content write lock and has announced itself.
@@ -308,9 +307,15 @@ impl PaneOutputWriter {
 }
 
 impl PaneOutputWrite<'_> {
-    /// Process `bytes` as the child's output and land the write.
+    /// Process `bytes` in the terminal parser and advance content revisions.
+    /// Effects produced by the parser are intentionally not dispatched here;
+    /// this seam is for tests that need to seed or mutate terminal contents.
     pub fn write(self, bytes: &[u8]) {
-        let _ = self.process(bytes, std::time::Instant::now());
+        let detection_content_seq = Arc::clone(&self.writer.detection_content_seq);
+        let result = self.process(bytes, std::time::Instant::now());
+        if !result.core_poisoned {
+            observe_detection_content_change(bytes, &detection_content_seq);
+        }
     }
 
     fn process(self, bytes: &[u8], now: std::time::Instant) -> ProcessBytesResult {
@@ -552,6 +557,19 @@ fn has_deferred_effects(result: &ProcessBytesResult) -> bool {
     result.default_color_owner_pending || result.reported_cwd.is_some()
 }
 
+/// The initial screen for a child-I/O fixture is state, not output from a
+/// live child. Clear every queued parser effect before later writes can collect
+/// it as though the child had just produced it.
+fn discard_initial_terminal_effects(terminal: &mut shepr_vt::Terminal) {
+    let _ = terminal.take_pty_responses();
+    let _ = terminal.take_clipboard_writes();
+    let _ = terminal.take_dropped_clipboard_store_bytes();
+    let _ = terminal.take_pwd_changes();
+    let _ = terminal.take_title_update();
+    let _ = terminal.take_progress_update();
+    let _ = terminal.take_default_color_set();
+}
+
 impl PaneReadEffects {
     /// Applies the effects that never block (render and title requests,
     /// clipboard writes) and returns the ones that may, if any. A read with
@@ -598,6 +616,13 @@ impl PaneReadEffects {
     }
 
     fn apply_deferred(&self, deferred: DeferredEffects) {
+        // This still blocks the PTY actor after the reply-order lock is
+        // released. Moving it off-thread needs a bounded queue ordered by
+        // ticket reservation, including timer flushes. OSC 10/11 scans /proc,
+        // and OSC 7 validates its path with stat, which can block on a remote
+        // mount. An unbounded queue behind one blocked operation could grow
+        // without limit; a bounded nonblocking queue needs a policy for
+        // coalescing or dropping cwd reports while retaining their order.
         deferred.ticket.apply(|| {
             if let Some(generation) = deferred.default_color_generation {
                 self.terminal.resolve_default_color_owner(
@@ -848,6 +873,7 @@ impl PaneRuntime {
                 terminal: Arc::clone(&terminal),
                 content_seq: Arc::clone(&content_seq),
                 content_write_lock: Arc::clone(&content_write_lock),
+                detection_content_seq: Arc::clone(&detection_content_seq),
             };
             let on_read = Box::new(move |bytes: &[u8]| {
                 let write = output.begin();
@@ -1304,6 +1330,7 @@ impl PaneRuntime {
     ) -> Self {
         let mut terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         terminal.write(screen);
+        discard_initial_terminal_effects(&mut terminal);
         Self {
             // Not installed under any layout pane, so it takes an id of its
             // own rather than one some real pane may hold.
@@ -1325,14 +1352,15 @@ impl PaneRuntime {
         }
     }
 
-    /// A writer that feeds this pane its child's output, as the PTY reader
-    /// does.
+    /// A parser-only writer for tests that feed bytes into the terminal.
+    /// The PTY reader uses the same parser but also dispatches its read effects.
     pub fn output_writer(&self) -> PaneOutputWriter {
         PaneOutputWriter {
             pane_id: self.pane_id,
             terminal: Arc::clone(&self.terminal),
             content_seq: Arc::clone(&self.content_seq),
             content_write_lock: Arc::clone(&self.content_write_lock),
+            detection_content_seq: Arc::clone(&self.detection_content_seq),
         }
     }
 

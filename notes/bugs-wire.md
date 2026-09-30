@@ -327,18 +327,3 @@ Scope: protocol-api (structural and lateral).
   already passed (`send_stop_request`'s first check); the following wait then
   reports `TimedOut` for a stop never sent. Unreachable with a 15 s budget;
   returning a timeout error there would be clearer.
-
-## WIRE-025 - Canonical key matching drops shifted-digit bindings on non-US layouts
-
-Scope: config keybindings (regression from the canonical key identity).
-
-Keybindings now share one `CanonicalKey` for conflict detection and matching,
-which folds shift plus a symbol through a US-layout table. A kitty host on a
-non-US layout reports a shifted digit by its own shifted codepoint: on a German
-layout `shift+7` arrives as code `7`, Shift, shifted codepoint `/`. The key
-canonicalizes to `/`, while the configured combo `shift+7` canonicalizes through
-the US table to `&`, so the binding no longer matches; before, the exact code and
-modifiers matched. No default binding uses a shifted digit, so only user config
-reaches it. Canonicalize the key from its reported shifted codepoint and the
-combo so both sides fold the same way, or match on the unshifted code plus
-modifiers first and fall back to the canonical form.

@@ -9,7 +9,7 @@ use crate::limits::{
 
 pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
 
-/// The single identity used for configured bindings, conflict checks and
+/// The identity used for configured bindings, conflict checks and fallback
 /// matching parsed terminal keys. Printable shifted punctuation is identified
 /// by the character it produces; letters retain Shift as part of the chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1052,7 +1052,9 @@ pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
 }
 
 pub fn terminal_key_matches_combo(key: &impl BindingKey, combo: KeyCombo) -> bool {
-    key.canonical_key() == CanonicalKey::from_combo(combo).combo()
+    let combo = normalize_key_combo(combo);
+    let reported = normalize_key_combo((key.code(), key.modifiers()));
+    reported == combo || key.canonical_key() == CanonicalKey::from_combo(combo).combo()
 }
 
 fn is_unmodified_printable(combo: KeyCombo) -> bool {

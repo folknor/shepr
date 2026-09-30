@@ -173,7 +173,7 @@ fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
     io::Error::other(format!(
         "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
         paths.server_address().client_socket().display(),
-        paths.server_address().build_mismatch_guidance()
+        build_mismatch_guidance(paths)
     ))
 }
 
@@ -199,8 +199,14 @@ fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus
         status.build_id,
         shepr_protocol::build_version(),
         shepr_protocol::BUILD_ID,
-        paths.server_address().build_mismatch_guidance()
+        build_mismatch_guidance(paths)
     ))
+}
+
+fn build_mismatch_guidance(paths: &shepr_config::AppPaths) -> String {
+    paths
+        .server_address()
+        .build_mismatch_guidance(&shepr_config::operator_entrypoint())
 }
 
 /// A client starts a server only for its profile's own runtime address. A

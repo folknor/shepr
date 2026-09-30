@@ -58,6 +58,22 @@ pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 /// Maximum time a client stream writer may make no progress before disconnecting it.
 pub(crate) const CLIENT_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// First retry after automatic workspace creation fails, such as when the
+/// configured shell stops resolving after server launch.
+pub(crate) const DEFAULT_WORKSPACE_RETRY_MIN: Duration = Duration::from_millis(250);
+/// Cap on the doubling retry delay of automatic workspace creation, so it
+/// still recovers soon after the shell or working directory becomes usable.
+pub(crate) const DEFAULT_WORKSPACE_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Bound each client's outstanding control messages, including the message
+/// currently being written to its socket. Control messages do not coalesce, and
+/// a healthy client can see bursts of them (a snapshot per changed projection
+/// while a pane animates its title, a run of clipboard writes, mode updates on
+/// reconnect), so the count sits well above a burst; the byte bound below is
+/// what holds memory.
+pub(crate) const CLIENT_CONTROL_QUEUE_MAX_ITEMS: usize = 1024;
+/// Bound control memory per client even when a peer reads slowly but continues
+/// to make enough progress to stay inside the socket stall timeout.
+pub(crate) const CLIENT_CONTROL_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// How long a transport thread waits for a client it could not register to
 /// receive its shutdown frame.
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);

@@ -1,5 +1,19 @@
 use super::*;
 
+fn cancel_endpoint_commands(
+    shell: &mut shell::ClientShellState,
+    cancelled: endpoint::commands::EndpointCommandCancellation,
+) -> bool {
+    let mut repaint = false;
+    for request_id in cancelled.unsent {
+        repaint |= shell.cancel_unsent_endpoint_request(&request_id);
+    }
+    for request_id in cancelled.possibly_sent {
+        repaint |= shell.cancel_endpoint_request(&request_id);
+    }
+    repaint
+}
+
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
@@ -54,11 +68,18 @@ pub(super) fn dispatch_client_shell_actions(
                 endpoint_id,
                 target,
             } => {
-                *scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
-                    endpoint_id,
-                    target,
-                    force: false,
-                });
+                // Selection and handoff state lives in the client loop. Finish dispatching the
+                // current shell input batch before the loop handles this activation.
+                let already_owned = target.is_none()
+                    && endpoints.active_id() == &endpoint_id
+                    && active_endpoint_owns_presentation(presentation, endpoints);
+                if !already_owned {
+                    *scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
+                        endpoint_id,
+                        target,
+                        force: false,
+                    });
+                }
             }
         }
     }
@@ -68,9 +89,7 @@ pub(super) fn dispatch_client_shell_actions(
     if active_endpoint_owns_presentation(presentation, endpoints) {
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
-        for request_id in cancelled {
-            repaint |= shell.cancel_endpoint_request(&request_id);
-        }
+        repaint |= cancel_endpoint_commands(shell, cancelled);
     }
     repaint
 }
@@ -185,9 +204,7 @@ fn install_pending_activation(
     let retired = activation
         .source_command_lane()
         .map_or_default(|source| endpoint_commands.retire_lane(source));
-    for request_id in retired {
-        state.shell.cancel_endpoint_request(&request_id);
-    }
+    cancel_endpoint_commands(&mut state.shell, retired);
     *next_surface_serial = next_surface_serial.saturating_add(1);
     state.presentation = Presentation::Handoff(activation);
 }
@@ -413,9 +430,7 @@ pub(super) fn complete_endpoint_activation(
     if successor.is_none() {
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints, now);
-        for request_id in cancelled {
-            state.shell.cancel_endpoint_request(&request_id);
-        }
+        cancel_endpoint_commands(&mut state.shell, cancelled);
     }
     let frame = state.shell.compose(
         state.reported_geometry.cols(),
@@ -508,9 +523,7 @@ pub(super) fn handle_endpoint_disconnect(
     }
     let endpoint_was_active = endpoints.active_id() == endpoint_id;
     let cancelled = endpoint_commands.disconnect(endpoint_id);
-    for request_id in cancelled {
-        state.shell.cancel_endpoint_request(&request_id);
-    }
+    cancel_endpoint_commands(&mut state.shell, cancelled);
     state.shell.mark_endpoint_disconnected(endpoint_id);
     let unavailable = endpoint_was_active
         .then(|| format!("{} {notice}", state.shell.endpoint_label(endpoint_id)));
@@ -645,8 +658,8 @@ pub(super) fn finish_client_shell_input(
     now: std::time::Instant,
 ) -> Result<bool, ClientError> {
     if outcome.detach {
-        // A failed send is recorded against the endpoint, and the registry's Drop sends
-        // Detach again on the way out.
+        // A failed send is recorded against the endpoint. The registry remembers a sent
+        // Detach, so its Drop on the way out only flushes this connection.
         endpoints.send(&ClientMessage::Detach);
         return Ok(true);
     }
@@ -719,15 +732,16 @@ pub(super) fn finish_client_shell_input(
                 continue;
             }
             if active_endpoint_online {
-                write_to_server(endpoints, &ClientMessage::ClientShellFocus { focused })
-                    .map_err(ClientError::ConnectionLost)?;
+                // A failed send is recorded against the endpoint, and the client loop
+                // settles it with that endpoint's other failures.
+                endpoints.send(&ClientMessage::ClientShellFocus { focused });
             }
             continue;
         }
         if !active_endpoint_online {
             continue;
         }
-        write_to_server(endpoints, &request).map_err(ClientError::ConnectionLost)?;
+        endpoints.send(&request);
     }
     if let Some(frame) = frame {
         // While nothing owns the presentation, input frames pass the freeze so mode changes,

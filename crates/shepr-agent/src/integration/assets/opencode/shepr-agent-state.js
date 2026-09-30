@@ -106,7 +106,7 @@ function requestOnce(method, params) {
 
     // A plain timer, not socket.setTimeout (an idle timeout), so a connection
     // that never finishes connecting still settles within 500 ms.
-    timer = setTimeout(() => settle(false), 500);
+    timer = setTimeout(settle, 500);
     timer.unref?.();
     client.on("data", settle);
     client.on("error", settle);
@@ -223,8 +223,13 @@ export const SheprAgentStatePlugin = async () => {
           break;
         case "permission.asked":
         case "question.asked":
-        case "session.error":
           await reportState("blocked", sessionID);
+          break;
+        case "session.error":
+          // Escape aborts a request without leaving the session blocked.
+          if (properties.error?.name !== "MessageAbortedError") {
+            await reportState("blocked", sessionID);
+          }
           break;
         case "session.idle":
           await reportState("idle", sessionID);

@@ -74,8 +74,6 @@ pub const SHEPR_ASSET_INTERNAL_NAMES: &[&str] = &[
     // Tunables only the omp extension reads.
     "SHEPR_OMP_IDLE_DEBOUNCE_MS",
     "SHEPR_OMP_RETRY_GRACE_MS",
-    // The devin hook's injection seam for its own tests.
-    "SHEPR_DEVIN_LIST_JSON",
 ];
 
 /// Declares a closed vocabulary of environment variable names: the enum, its

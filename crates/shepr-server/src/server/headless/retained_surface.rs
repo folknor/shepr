@@ -1,5 +1,6 @@
 use super::*;
 use crate::server::ClientId;
+use tracing::trace;
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
     rect.x.saturating_add(rect.width) <= frame.width
@@ -151,23 +152,22 @@ fn retained_scrollbar_patch(
 
 fn retained_cursor(
     app: &app::App,
-    panes: &[shepr_protocol::PaneSurfacePane],
+    panes: &[ResolvedRetainedPane<'_>],
 ) -> Option<shepr_protocol::CursorState> {
-    let pane = panes.iter().find(|pane| pane.focused)?;
-    let (workspace_index, pane_id) = app.parse_pane_id(&pane.pane_id)?;
+    let pane = panes.iter().find(|pane| pane.pane.focused)?;
     let runtime = app.state.runtime_for_pane_in_workspace(
         &app.terminal_runtimes,
-        workspace_index,
-        pane_id,
+        pane.workspace_index,
+        pane.pane_id,
     )?;
     if runtime.synchronized_output_active() {
         return None;
     }
     let area = Rect::new(
-        pane.inner_rect.x,
-        pane.inner_rect.y,
-        pane.inner_rect.width,
-        pane.inner_rect.height,
+        pane.pane.inner_rect.x,
+        pane.pane.inner_rect.y,
+        pane.pane.inner_rect.width,
+        pane.pane.inner_rect.height,
     );
     runtime
         .cursor_state(area, true)
@@ -182,6 +182,15 @@ fn retained_cursor(
 struct RetainedRecipient<'a> {
     client_id: ClientId,
     surface: &'a shepr_protocol::PaneSurfaceFrame,
+    // Resolve public ids once per surface and reuse their typed identities for
+    // source matching, synchronized-output checks, and cursor lookup.
+    panes: Vec<ResolvedRetainedPane<'a>>,
+}
+
+struct ResolvedRetainedPane<'a> {
+    pane: &'a shepr_protocol::PaneSurfacePane,
+    workspace_index: usize,
+    pane_id: shepr_core::layout::PaneId,
 }
 
 struct CollectedPanePatch {
@@ -199,30 +208,48 @@ struct RetainedRecipientUpdate {
     patch: shepr_protocol::PaneSurfacePatch,
 }
 
-fn has_synchronized_pane(app: &app::App, surface: &shepr_protocol::PaneSurfaceFrame) -> bool {
-    surface.panes.iter().any(|pane| {
-        app.parse_pane_id(&pane.pane_id)
-            .and_then(|(workspace_index, pane_id)| {
-                app.state.runtime_for_pane_in_workspace(
-                    &app.terminal_runtimes,
-                    workspace_index,
-                    pane_id,
-                )
+fn resolve_retained_panes<'a>(
+    app: &app::App,
+    surface: &'a shepr_protocol::PaneSurfaceFrame,
+) -> Vec<ResolvedRetainedPane<'a>> {
+    surface
+        .panes
+        .iter()
+        .filter_map(|pane| {
+            let (workspace_index, pane_id) = app.parse_pane_id(&pane.pane_id)?;
+            Some(ResolvedRetainedPane {
+                pane,
+                workspace_index,
+                pane_id,
             })
+        })
+        .collect()
+}
+
+fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> bool {
+    panes.iter().any(|pane| {
+        app.state
+            .runtime_for_pane_in_workspace(
+                &app.terminal_runtimes,
+                pane.workspace_index,
+                pane.pane_id,
+            )
             .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
     })
 }
 
 impl HeadlessServer {
-    /// Reports retained-render fallback reasons after the full renderer has
-    /// recovered the surface. Each reason is emitted once per server lifetime.
+    /// Reports each retained-render fallback after the full renderer has
+    /// recovered the surface, including recurring reasons.
     pub(super) fn report_retained_surface_fallback(&mut self) {
         let Some(reason) = self.retained_surface_fallback_reason.take() else {
             return;
         };
-        if self.retained_surface_fallbacks_reported.insert(reason) {
-            debug!(reason, "retained pane surface fell back to a full render");
-        }
+        let repeated = !self.retained_surface_fallbacks_reported.insert(reason);
+        debug!(
+            reason,
+            repeated, "retained pane surface fell back to a full render"
+        );
     }
 
     /// Applies terminal dirty rows to the committed origin-relative pane surface.
@@ -239,6 +266,7 @@ impl HeadlessServer {
         }
         macro_rules! success {
             ($reason:literal) => {{
+                trace!(reason = $reason, "retained pane surface update succeeded");
                 return true;
             }};
         }
@@ -280,12 +308,14 @@ impl HeadlessServer {
             {
                 fallback!("baseline_mismatch");
             }
-            if has_synchronized_pane(&self.app, surface) {
+            let panes = resolve_retained_panes(&self.app, surface);
+            if has_synchronized_pane(&self.app, &panes) {
                 fallback!("synchronized_visible");
             }
             recipients.push(RetainedRecipient {
                 client_id: target.client_id,
                 surface,
+                panes,
             });
         }
         if recipients.is_empty() {
@@ -294,26 +324,23 @@ impl HeadlessServer {
 
         let mut collected = Vec::with_capacity(pty_sources.len());
         for source in pty_sources {
-            let mut public_pane_id = None;
+            let mut source_pane = None;
             let mut width = 0u16;
             let mut height = 0u16;
             for recipient in &recipients {
-                let Some(pane) = recipient.surface.panes.iter().find(|pane| {
-                    self.app
-                        .parse_pane_id(&pane.pane_id)
-                        .is_some_and(|(_, pane_id)| pane_id == *source)
-                }) else {
+                let Some(pane) = recipient.panes.iter().find(|pane| pane.pane_id == *source) else {
                     continue;
                 };
-                public_pane_id.get_or_insert_with(|| pane.pane_id.clone());
-                width = width.max(pane.inner_rect.width);
-                height = height.max(pane.inner_rect.height);
+                source_pane.get_or_insert((
+                    pane.pane.pane_id.clone(),
+                    pane.workspace_index,
+                    pane.pane_id,
+                ));
+                width = width.max(pane.pane.inner_rect.width);
+                height = height.max(pane.pane.inner_rect.height);
             }
-            let Some(public_pane_id) = public_pane_id else {
+            let Some((public_pane_id, workspace_index, pane_id)) = source_pane else {
                 continue;
-            };
-            let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {
-                fallback!("pane_missing");
             };
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                 &self.app.terminal_runtimes,
@@ -421,7 +448,7 @@ impl HeadlessServer {
             {
                 fallback!("invalid_patch");
             }
-            let cursor = retained_cursor(&self.app, &panes);
+            let cursor = retained_cursor(&self.app, &recipient.panes);
             let cursor_changed = cursor != surface.frame.cursor;
             let patch = shepr_protocol::PaneSurfacePatch {
                 boot_id: self.client_shell_boot_id.clone(),
@@ -442,7 +469,7 @@ impl HeadlessServer {
         }
         if recipients
             .iter()
-            .any(|recipient| has_synchronized_pane(&self.app, recipient.surface))
+            .any(|recipient| has_synchronized_pane(&self.app, &recipient.panes))
         {
             fallback!("synchronized_during_patch");
         }

@@ -250,21 +250,6 @@ pub(super) fn terminal_collect_dirty_patch(
     }));
 }
 
-pub(super) fn terminal_visible_text(core: &mut PaneTerminalCore) -> String {
-    let PaneTerminalCore {
-        terminal,
-        render_state,
-        ..
-    } = core;
-    render_state.update(terminal);
-    let mut lines: Vec<_> = render_state
-        .iter_rows()
-        .map(|row| terminal_line_from_cells(row.cells()))
-        .collect();
-    trim_trailing_blank_rows(&mut lines);
-    lines_to_text(&lines)
-}
-
 /// The detector's snapshot: the active screen's rows up to the last content
 /// (or cursor) row, never anything above the screen. After ED2, Ctrl-L or an
 /// agent redrawing from the top, alacritty has pushed the previous frame into
@@ -404,27 +389,6 @@ pub(super) fn terminal_screen_row_into(
         }
     });
     line.truncate(line.trim_end().len());
-}
-
-pub(super) fn terminal_line_from_cells<'a>(
-    cells: impl Iterator<Item = shepr_vt::CellView<'a>>,
-) -> String {
-    let mut line = String::new();
-    for cell in cells {
-        line.push_str(&terminal_cell_symbol(&cell));
-    }
-    line.trim_end().to_string()
-}
-
-pub(super) fn terminal_cell_symbol(cells: &shepr_vt::CellView<'_>) -> String {
-    if cells.wide() == shepr_vt::CellWide::SpacerTail {
-        return String::new();
-    }
-    let text = cells.grapheme_text();
-    if text.is_empty() {
-        return " ".to_string();
-    }
-    text
 }
 
 pub(super) fn terminal_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {
@@ -667,15 +631,6 @@ pub(super) fn terminal_color(color: shepr_vt::RgbColor) -> WireColor {
     WireColor::Rgb(color.r, color.g, color.b)
 }
 
-pub(super) fn lines_to_text(lines: &[String]) -> String {
-    let text = lines.join("\n");
-    if text.is_empty() {
-        text
-    } else {
-        format!("{text}\n")
-    }
-}
-
 pub(super) fn trim_trailing_blank_rows(rows: &mut Vec<String>) {
     while rows.last().is_some_and(|row| row.trim().is_empty()) {
         rows.pop();
@@ -797,4 +752,53 @@ pub(super) fn terminal_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::Cel
     }
 
     terminal_blank_symbol_for_width(wide).to_string()
+}
+
+#[cfg(test)]
+pub(super) fn terminal_visible_text(core: &mut PaneTerminalCore) -> String {
+    let PaneTerminalCore {
+        terminal,
+        render_state,
+        ..
+    } = core;
+    render_state.update(terminal);
+    let mut lines: Vec<_> = render_state
+        .iter_rows()
+        .map(|row| terminal_line_from_cells(row.cells()))
+        .collect();
+    trim_trailing_blank_rows(&mut lines);
+    lines_to_text(&lines)
+}
+
+#[cfg(test)]
+pub(super) fn terminal_line_from_cells<'a>(
+    cells: impl Iterator<Item = shepr_vt::CellView<'a>>,
+) -> String {
+    let mut line = String::new();
+    for cell in cells {
+        line.push_str(&terminal_cell_symbol(&cell));
+    }
+    line.trim_end().to_string()
+}
+
+#[cfg(test)]
+pub(super) fn terminal_cell_symbol(cells: &shepr_vt::CellView<'_>) -> String {
+    if cells.wide() == shepr_vt::CellWide::SpacerTail {
+        return String::new();
+    }
+    let text = cells.grapheme_text();
+    if text.is_empty() {
+        return " ".to_string();
+    }
+    text
+}
+
+#[cfg(test)]
+pub(super) fn lines_to_text(lines: &[String]) -> String {
+    let text = lines.join("\n");
+    if text.is_empty() {
+        text
+    } else {
+        format!("{text}\n")
+    }
 }

@@ -121,6 +121,8 @@ pub(super) enum ForegroundShellAgentAction {
     ReportProcessExit,
     ReportReplacementProcess,
     ClearAgent,
+    /// A stopped descendant still owns the agent identity and session.
+    Suspended,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -131,12 +133,16 @@ pub(super) struct ForegroundShellProbe {
     pub(super) process_exit_reported: bool,
 }
 
-pub(super) fn foreground_shell_agent_action(
+fn foreground_shell_agent_action_with_suspended_agent(
     probe: ForegroundShellProbe,
+    suspended_agent_is_present: bool,
 ) -> ForegroundShellAgentAction {
     let Some(previous_agent) = probe.previous_agent else {
         return ForegroundShellAgentAction::ObserveProbe;
     };
+    if probe.foreground_is_pane_shell && suspended_agent_is_present {
+        return ForegroundShellAgentAction::Suspended;
+    }
     if probe.process_exit_reported {
         return if probe.identified_agent == Some(previous_agent) {
             ForegroundShellAgentAction::ReportReplacementProcess
@@ -275,17 +281,6 @@ impl ProcessProbeScheduler {
             .acquisition_started_at
             .map(|started| input.now.duration_since(started));
 
-        let lifecycle_authority_can_skip = input.lifecycle_authority_active
-            && input.observed_foreground_group.is_some()
-            && !input.shell_clear_pending
-            && self.has_probe
-            && !group_changed;
-        if lifecycle_authority_can_skip {
-            return ProbeScheduleDecision::Skip {
-                foreground_group_changed: group_changed,
-            };
-        }
-
         let acquisition_due = acquisition_age.is_some_and(|acquisition_age| {
             let acquisition_interval = if acquisition_age <= PROCESS_ACQUISITION_FAST_WINDOW {
                 PROCESS_ACQUISITION_FAST_RECHECK
@@ -307,11 +302,15 @@ impl ProcessProbeScheduler {
             };
         }
 
+        // Hook authority decides state arbitration, not process liveness. Keep
+        // the safety cadence while an agent is identified or being reacquired.
         let should_probe = if input.shell_clear_pending || acquisition_due {
             true
         } else if input.agent.is_none() {
             !self.has_probe
                 || group_changed
+                || (input.lifecycle_authority_active
+                    && elapsed_since_check >= PROCESS_RECHECK_IDENTIFIED)
                 || (input.observed_foreground_group.is_none()
                     && elapsed_since_check >= PROCESS_RECHECK_MISSING_FOREGROUND_GROUP)
         } else {
@@ -396,6 +395,7 @@ impl ProcessProbeScheduler {
 pub(super) struct ProcessProbeResult {
     process_group_id: Option<u32>,
     foreground_is_pane_shell: bool,
+    suspended_agents: Vec<Agent>,
     identity: ProcessProbeIdentity,
 }
 
@@ -495,6 +495,9 @@ pub(super) struct DetectorState {
     transient_color_recheck_until: Option<std::time::Instant>,
     pending_foreground_shell_clear: bool,
     foreground_shell_exit_reported: bool,
+    // Keep the confirmed-missing identity available for the required exit
+    // report after the presence counter has already cleared it.
+    pending_confirmed_process_exit: Option<Agent>,
     last_screen_scan_detection_content_seq: Option<u64>,
     last_screen_detection: Option<ScreenDetectionCacheEntry>,
     has_detection_baseline: bool,
@@ -536,6 +539,7 @@ impl DetectorState {
             transient_color_recheck_until: None,
             pending_foreground_shell_clear: false,
             foreground_shell_exit_reported: false,
+            pending_confirmed_process_exit: None,
             last_screen_scan_detection_content_seq: None,
             last_screen_detection: None,
             has_detection_baseline: false,
@@ -546,7 +550,10 @@ impl DetectorState {
     }
 
     pub(super) fn current_agent(&self) -> Option<Agent> {
-        self.agent_presence.current_agent()
+        // The server must receive the exit against the identity that just
+        // passed miss confirmation, before the detector withdraws it.
+        self.pending_confirmed_process_exit
+            .or_else(|| self.agent_presence.current_agent())
     }
 
     pub(super) fn tick_interval(
@@ -583,13 +590,17 @@ impl DetectorState {
     }
 
     pub(super) fn reset(&mut self) {
-        self.agent_presence = AgentDetectionPresence::from_agent(None);
+        // Lifecycle authority resets screen evidence, not the process identity
+        // that ties a later confirmed exit back to that hook generation.
+        let retained_agent = self.current_agent();
+        self.agent_presence = AgentDetectionPresence::from_agent(retained_agent);
         self.state = AgentState::Unknown;
         self.last_visible_idle = false;
         self.scheduler.reset();
         self.transient_color_recheck_until = None;
         self.pending_foreground_shell_clear = false;
         self.foreground_shell_exit_reported = false;
+        self.pending_confirmed_process_exit = None;
         self.last_visible_blocker = false;
         self.last_visible_working = false;
         self.last_visible_signal_refresh = None;
@@ -632,16 +643,23 @@ impl DetectorState {
         let identified_agent = probe.agent();
 
         let previous_agent = self.current_agent();
-        let action = foreground_shell_agent_action(ForegroundShellProbe {
+        let shell_probe = ForegroundShellProbe {
             previous_agent,
             identified_agent,
             foreground_is_pane_shell,
             process_exit_reported: self.foreground_shell_exit_reported,
-        });
+        };
+        let suspended_agent_is_present = foreground_is_pane_shell
+            && previous_agent.is_some_and(|agent| probe.suspended_agents.contains(&agent));
+        let action = foreground_shell_agent_action_with_suspended_agent(
+            shell_probe,
+            suspended_agent_is_present,
+        );
         let agent_changed = match action {
             ForegroundShellAgentAction::ReportReplacementProcess => {
                 self.pending_foreground_shell_clear = false;
                 self.foreground_shell_exit_reported = false;
+                self.pending_confirmed_process_exit = None;
                 self.agent_presence.observe_process_probe(previous_agent);
                 true
             }
@@ -652,12 +670,32 @@ impl DetectorState {
             ForegroundShellAgentAction::ClearAgent => {
                 self.pending_foreground_shell_clear = false;
                 self.foreground_shell_exit_reported = false;
-                self.agent_presence.clear_current_agent()
+                let had_confirmed_exit = self.pending_confirmed_process_exit.take().is_some();
+                self.agent_presence.clear_current_agent() || had_confirmed_exit
             }
             ForegroundShellAgentAction::ObserveProbe => {
                 self.pending_foreground_shell_clear = false;
                 self.foreground_shell_exit_reported = false;
-                self.agent_presence.observe_process_probe(identified_agent)
+                let changed = self.agent_presence.observe_process_probe(identified_agent);
+                if changed && identified_agent.is_none() {
+                    self.pending_confirmed_process_exit = previous_agent;
+                    self.pending_foreground_shell_clear = previous_agent.is_some();
+                    false
+                } else {
+                    if identified_agent.is_some() {
+                        self.pending_confirmed_process_exit = None;
+                    }
+                    changed
+                }
+            }
+            ForegroundShellAgentAction::Suspended => {
+                self.pending_foreground_shell_clear = false;
+                self.foreground_shell_exit_reported = false;
+                self.pending_confirmed_process_exit = None;
+                if let Some(agent) = previous_agent {
+                    self.agent_presence.observe_process_probe(Some(agent));
+                }
+                false
             }
         };
         let agent = self.current_agent();
@@ -899,6 +937,7 @@ fn process_probe_result(
     ProcessProbeResult {
         process_group_id: Some(job.process_group_id),
         foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
+        suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Agent {
             agent,
             process_name,
@@ -924,6 +963,7 @@ pub(super) fn probe_foreground_process_from_jobs(
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
             foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
+            suspended_agents: Vec::new(),
             identity: identified.map_or(
                 ProcessProbeIdentity::Unidentified,
                 |(agent, process_name)| ProcessProbeIdentity::Agent {
@@ -937,6 +977,7 @@ pub(super) fn probe_foreground_process_from_jobs(
     ProcessProbeResult {
         process_group_id: foreground_pgid,
         foreground_is_pane_shell: false,
+        suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Unidentified,
     }
 }
@@ -945,14 +986,18 @@ pub(super) fn probe_foreground_process(
     pid: u32,
     foreground_pgid: Option<u32>,
 ) -> ProcessProbeResult {
-    probe_foreground_process_from_jobs(
+    let mut probe = probe_foreground_process_from_jobs(
         pid,
         foreground_pgid,
         foreground_pgid
             .and_then(shepr_agent::detect::foreground_group_leader_job)
             .as_ref(),
         || shepr_agent::detect::foreground_job(pid),
-    )
+    );
+    if probe.foreground_is_pane_shell() {
+        probe.suspended_agents = shepr_agent::detect::suspended_agent_processes(pid);
+    }
+    probe
 }
 
 impl AgentDetectionPresence {
@@ -1002,6 +1047,15 @@ impl AgentDetectionPresence {
             }
         }
     }
+}
+
+/// The action for a probe with no suspended agent, as the runtime tests
+/// exercise the foreground-shell rules on their own.
+#[cfg(test)]
+pub(super) fn foreground_shell_agent_action(
+    probe: ForegroundShellProbe,
+) -> ForegroundShellAgentAction {
+    foreground_shell_agent_action_with_suspended_agent(probe, false)
 }
 
 #[cfg(test)]
@@ -1136,6 +1190,63 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_authority_rechecks_identified_and_unidentified_processes_on_a_timer() {
+        let now = std::time::Instant::now();
+        let mut scheduler = ProcessProbeScheduler::new(now);
+        scheduler.probe_started(now);
+        scheduler.last_foreground_group = Some(42);
+
+        assert!(
+            !scheduler
+                .schedule(schedule_input(
+                    now + PROCESS_RECHECK_IDENTIFIED - std::time::Duration::from_millis(1),
+                    Some(Agent::Pi),
+                    Some(42),
+                    true,
+                    false,
+                ))
+                .should_probe()
+        );
+        assert!(
+            scheduler
+                .schedule(schedule_input(
+                    now + PROCESS_RECHECK_IDENTIFIED,
+                    Some(Agent::Pi),
+                    Some(42),
+                    true,
+                    false,
+                ))
+                .should_probe()
+        );
+
+        let reacquisition_started = now + PROCESS_RECHECK_IDENTIFIED;
+        scheduler.probe_started(reacquisition_started);
+        assert!(
+            !scheduler
+                .schedule(schedule_input(
+                    reacquisition_started + PROCESS_RECHECK_IDENTIFIED
+                        - std::time::Duration::from_millis(1),
+                    None,
+                    Some(42),
+                    true,
+                    false,
+                ))
+                .should_probe()
+        );
+        assert!(
+            scheduler
+                .schedule(schedule_input(
+                    reacquisition_started + PROCESS_RECHECK_IDENTIFIED,
+                    None,
+                    Some(42),
+                    true,
+                    false,
+                ))
+                .should_probe()
+        );
+    }
+
+    #[test]
     fn scheduler_rechecks_acquisition_quickly_and_resets_after_quiet() {
         let now = std::time::Instant::now();
         let mut scheduler = ProcessProbeScheduler::new(now);
@@ -1246,6 +1357,7 @@ mod tests {
         let probe = ProcessProbeResult {
             process_group_id: Some(25),
             foreground_is_pane_shell: false,
+            suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Agent {
                 agent: Agent::Claude,
                 process_name: "claude".to_string(),
@@ -1256,6 +1368,114 @@ mod tests {
         assert_eq!(change.agent, Some(Agent::Claude));
         assert_eq!(change.process_detected, Some(Agent::Claude));
         assert!(!change.should_clear_osc_evidence);
+    }
+
+    #[test]
+    fn reset_keeps_process_identity_for_the_next_lifecycle_probe() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
+        detector.pending_foreground_shell_clear = true;
+
+        detector.reset();
+
+        assert_eq!(detector.current_agent(), Some(Agent::Claude));
+        assert!(!detector.process_exited(detector.current_agent()));
+        assert_eq!(detector.state, AgentState::Unknown);
+        assert!(
+            detector
+                .schedule_process_probe(&ProcessProbeRequest {
+                    now,
+                    observed_foreground_group: Some(42),
+                    lifecycle_authority_active: true,
+                })
+                .should_probe()
+        );
+    }
+
+    #[test]
+    fn confirmed_process_misses_publish_exit_before_clearing_identity() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
+        let probe = ProcessProbeResult {
+            process_group_id: Some(25),
+            foreground_is_pane_shell: false,
+            suspended_agents: Vec::new(),
+            identity: ProcessProbeIdentity::Unidentified,
+        };
+
+        for attempt in 1..=AGENT_MISS_CONFIRMATION_ATTEMPTS {
+            let change = detector.observe_process_probe(
+                &probe,
+                now + std::time::Duration::from_secs(u64::from(attempt)),
+                Some(25),
+                ProbeScheduleDecision::Probe {
+                    foreground_group_changed: false,
+                    had_previous_probe: true,
+                },
+            );
+            if attempt < AGENT_MISS_CONFIRMATION_ATTEMPTS {
+                assert!(!detector.process_exited(detector.current_agent()));
+                assert!(!change.agent_changed);
+                assert_eq!(detector.current_agent(), Some(Agent::Pi));
+            } else {
+                assert!(detector.process_exited(detector.current_agent()));
+                assert!(!change.agent_changed);
+                assert_eq!(detector.current_agent(), Some(Agent::Pi));
+            }
+        }
+    }
+
+    #[test]
+    fn suspended_agent_is_not_reported_as_a_process_exit_or_replacement() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
+        let suspended_probe = ProcessProbeResult {
+            process_group_id: Some(25),
+            foreground_is_pane_shell: true,
+            suspended_agents: vec![Agent::Claude],
+            identity: ProcessProbeIdentity::Unidentified,
+        };
+
+        let change = detector.observe_process_probe(
+            &suspended_probe,
+            now,
+            Some(25),
+            ProbeScheduleDecision::Probe {
+                foreground_group_changed: true,
+                had_previous_probe: true,
+            },
+        );
+
+        assert_eq!(detector.current_agent(), Some(Agent::Claude));
+        assert!(!detector.process_exited(detector.current_agent()));
+        assert!(!change.agent_changed);
+        assert_eq!(change.process_detected, None);
+
+        let resumed_probe = ProcessProbeResult {
+            process_group_id: Some(27),
+            foreground_is_pane_shell: false,
+            suspended_agents: Vec::new(),
+            identity: ProcessProbeIdentity::Agent {
+                agent: Agent::Claude,
+                process_name: "claude".to_string(),
+            },
+        };
+        let resumed = detector.observe_process_probe(
+            &resumed_probe,
+            now + std::time::Duration::from_secs(1),
+            Some(27),
+            ProbeScheduleDecision::Probe {
+                foreground_group_changed: true,
+                had_previous_probe: true,
+            },
+        );
+
+        assert_eq!(detector.current_agent(), Some(Agent::Claude));
+        assert!(!resumed.agent_changed);
+        assert_eq!(resumed.process_detected, None);
     }
 
     #[test]
@@ -1283,6 +1503,7 @@ mod tests {
         let result = ProcessProbeResult {
             process_group_id: Some(17),
             foreground_is_pane_shell: false,
+            suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Unidentified,
         };
         assert_eq!(result.agent(), None);

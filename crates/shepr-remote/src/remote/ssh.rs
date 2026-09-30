@@ -91,7 +91,7 @@ fn remove_managed_config_directory(path: &Path) {
     }
 }
 
-/// Files the SSH machinery leaves in the XDG runtime directory while it runs:
+/// Files the SSH machinery leaves in the private profile runtime directory while it runs:
 /// bridge sockets with their lock sidecars, and temporary ssh config
 /// directories.
 pub(super) enum TeardownResource {
@@ -476,9 +476,9 @@ pub(super) fn ssh_command() -> Command {
 /// The directory a managed config names the shared OpenSSH control socket
 /// under.
 ///
-/// Production uses the XDG runtime directory, checked private before any
-/// socket is named under it, so an isolated environment never reaches a
-/// user's live master. Tests that only render config text name a short
+/// Production uses the private profile runtime directory under the validated
+/// XDG runtime root, so an isolated environment never reaches a user's live
+/// master. Tests that only render config text name a short
 /// directory nothing binds in: OpenSSH's staging name leaves room only for a
 /// directory as short as a real `/run/user/<uid>`, which no test scratch
 /// directory is.
@@ -488,12 +488,22 @@ pub(super) struct SshControlDir<'a> {
 }
 
 impl<'a> SshControlDir<'a> {
-    /// The XDG runtime directory, refused unless it is private to this user.
+    /// The private profile runtime directory under the XDG runtime root.
     pub(super) fn runtime(app_paths: &'a shepr_config::AppPaths) -> io::Result<Self> {
-        let path = app_paths.xdg_runtime_dir();
-        shepr_platform::validate_ssh_runtime_dir(path)?;
+        let path = ensure_ssh_runtime_dir(app_paths)?;
         Ok(Self { path })
     }
+}
+
+/// Creates shepr's per-profile runtime directory below the validated XDG root,
+/// then checks the resulting directory before SSH names sockets or config files
+/// under it.
+pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_config::AppPaths) -> io::Result<&Path> {
+    shepr_platform::validate_ssh_runtime_dir(app_paths.xdg_runtime_dir())?;
+    let runtime_dir = app_paths.runtime_dir();
+    shepr_platform::create_private_directory_all(runtime_dir)?;
+    shepr_platform::validate_ssh_runtime_dir(runtime_dir)?;
+    Ok(runtime_dir)
 }
 
 /// Builds a temporary ssh config that includes the user's settings first, so
@@ -504,7 +514,7 @@ pub(super) fn write_managed_ssh_config(
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
-    let runtime_dir = app_paths.xdg_runtime_dir();
+    let runtime_dir = ensure_ssh_runtime_dir(app_paths)?;
     let paths: shepr_platform::RemoteSshConfigPaths =
         shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(shepr_platform::ssh_control_path_under(

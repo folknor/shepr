@@ -14,7 +14,8 @@ fn aggregate_attention(panes: impl Iterator<Item = AgentState>) -> AgentState {
 
 impl Workspace {
     /// Aggregate agent state over every pane, preferring Blocked, then
-    /// Working, then Idle.
+    /// Working, then Idle. This keeps the raw detector state; its consumer
+    /// maps Unknown to Idle at the presentation boundary.
     pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> AgentState {
         aggregate_attention(self.panes.values().filter_map(|pane| {
             terminals

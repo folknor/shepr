@@ -56,7 +56,8 @@ impl ClientShellState {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
             outcome.repaint = true;
-            if !collapse_toggle {
+            if !collapse_toggle && (endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id))
+            {
                 self.activate_endpoint(endpoint_id, outcome);
             }
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
@@ -169,32 +170,17 @@ impl ClientShellState {
             if agents.is_empty() {
                 return true;
             }
-            let next = match action {
-                KeybindAction::FocusAgent(index) => {
-                    if index >= agents.len() {
-                        return true;
-                    }
-                    index
-                }
-                KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                    let focused = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
-                    let current = agents.iter().position(|target| {
-                        target.endpoint_id == self.active_endpoint_id
-                            && Some(target.pane_id.as_str()) == focused
-                    });
-                    match (current, action) {
-                        (Some(index), KeybindAction::PreviousAgent) => {
-                            (index + agents.len() - 1) % agents.len()
-                        }
-                        (Some(index), KeybindAction::NextAgent) => (index + 1) % agents.len(),
-                        (None, KeybindAction::PreviousAgent) => agents.len() - 1,
-                        _ => 0,
-                    }
-                }
-                _ => unreachable!("endpoint agent navigation"),
+            let focused = self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
+            let Some(next) = super::aggregate_navigation::agent_target_index(
+                &agents,
+                &self.active_endpoint_id,
+                focused,
+                action,
+            ) else {
+                return true;
             };
             let target = &agents[next];
             if self.focus_or_activate(
@@ -228,9 +214,11 @@ impl ClientShellState {
         self.pending_agent_reveal = None;
         let online = self.endpoint_is_online(&endpoint_id);
         if !online && !endpoint_id.is_local() {
-            let label = self.endpoint_label(&endpoint_id).to_owned();
-            self.receive_endpoint_unavailable(format!("{label} is not ready"));
-            outcome.repaint = true;
+            if endpoint_id != self.active_endpoint_id {
+                let label = self.endpoint_label(&endpoint_id).to_owned();
+                self.receive_endpoint_unavailable(format!("{label} is not ready"));
+                outcome.repaint = true;
+            }
             return false;
         }
         outcome.actions.push(ClientShellAction::ActivateEndpoint {

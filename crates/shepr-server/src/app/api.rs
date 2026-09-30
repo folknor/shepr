@@ -39,14 +39,13 @@ impl App {
         &mut self,
         request: shepr_api::schema::AppRequest,
     ) -> Outcome {
-        let mutates_ui = request.method.traits().mutates_ui;
-        let render = if mutates_ui {
-            self.state.mark_shell_projection_dirty();
+        let projection_before = self.state.shell_projection_revision;
+        let response = self.handle_api_request_after_internal_events_drained(request);
+        let render = if self.state.shell_projection_revision != projection_before {
             RenderDemand::Full
         } else {
             RenderDemand::None
         };
-        let response = self.handle_api_request_after_internal_events_drained(request);
         Outcome { response, render }
     }
 
@@ -93,18 +92,25 @@ impl App {
                     | EndpointCommand::LayoutSetSplitRatio(_)
                     | EndpointCommand::WorkspaceFocus(_)
             );
-        let render = if mutates_ui {
-            if changes_shell_projection {
+        // HandlerResult currently carries replies and navigation only. Until
+        // handlers return their mutation effects, successful mutating commands
+        // conservatively render; rejected commands must not invalidate views.
+        // Some handlers can commit before a later reply lookup fails, so retain
+        // any projection revision they published even when the reply is an error.
+        let projection_before = self.state.shell_projection_revision;
+        self.sync_pending_terminal_titles();
+        let (result, navigate) = match self.dispatch_endpoint_command(command, ctx) {
+            Ok(handled) => (Ok(handled.reply), handled.navigate),
+            Err(error) => (Err(error), None),
+        };
+        let changed = self.state.shell_projection_revision != projection_before;
+        let render = if changed || (mutates_ui && result.is_ok()) {
+            if changes_shell_projection && !changed {
                 self.state.mark_shell_projection_dirty();
             }
             RenderDemand::Full
         } else {
             RenderDemand::None
-        };
-        self.sync_pending_terminal_titles();
-        let (result, navigate) = match self.dispatch_endpoint_command(command, ctx) {
-            Ok(handled) => (Ok(handled.reply), handled.navigate),
-            Err(error) => (Err(error), None),
         };
         EndpointOutcome {
             result,
@@ -276,7 +282,37 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert_eq!(rename.render, RenderDemand::Full);
+        assert_eq!(rename.render, RenderDemand::None);
+        assert!(rename.result.is_err());
+    }
+
+    #[test]
+    fn workspace_rename_trims_and_clears_and_renders_what_it_changed() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::Config::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
+        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("rename")];
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let mut rename = |label: &str| {
+            let before = app.state.shell_projection_revision;
+            let outcome = app.handle_endpoint_command_with_render(
+                EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
+                    workspace_id: workspace_id.clone(),
+                    label: label.into(),
+                }),
+                &EndpointContext::without_geometry(),
+            );
+            assert!(outcome.result.is_ok(), "{label:?}");
+            assert_eq!(outcome.render, RenderDemand::Full, "{label:?}");
+            assert_ne!(app.state.shell_projection_revision, before, "{label:?}");
+            app.state.workspaces[0].custom_name.clone()
+        };
+
+        assert_eq!(rename("  logs  "), Some("logs".to_owned()));
+        assert_eq!(rename("   "), None);
     }
 
     #[test]

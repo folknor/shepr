@@ -15,54 +15,6 @@ detection and hook reports).
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## AGENT-002 - Under full-lifecycle hook authority, agent loss is only seen if the foreground group changes
-
-Scope: agent-detection.
-
-**Claims broken.** `PROCESS_RECHECK_IDENTIFIED` ("Recheck cadence for an already
-identified process") and `AGENT_MISS_CONFIRMATION_ATTEMPTS` (misses are
-confirmed, then the agent is dropped); the sidebar's promise to show every
-agent's state.
-
-**What happens.**
-
-- `ProcessProbeScheduler::schedule` returns `Skip` via
-  `lifecycle_authority_can_skip` whenever authority is active, a foreground group
-  is observed, a probe has happened and the group has not changed. That return
-  comes before the `elapsed_since_check >= PROCESS_RECHECK_IDENTIFIED` safety
-  check, so an identified agent is never rechecked on a timer. The only test of
-  the safety probe under authority
-  (`scheduler_keeps_identified_safety_probes_without_a_foreground_group`) covers
-  the no-foreground-group case.
-- `may_scan_screen` refuses screen scans under authority unless
-  `process_exited`.
-- `set_detected_state_with_screen_signals_at`: while a live full-lifecycle
-  authority holds and the report is not `process_exited`, a detector report of
-  `agent: None` is ignored, because
-  `hook_authority_conflicts_with_detected_agent(None)` is false. `detected_agent`
-  stays set and authority stays live.
-
-An agent that exits without the foreground group changing is never noticed: pi
-under a wrapper script or `bash -c 'pi; ...'` that outlives it (both share the
-script's pgid). An agent replaced by a non-shell program changes the group once,
-one miss is counted, and every later probe is skipped, so the 6-miss
-confirmation never completes. The pane keeps the last hook state indefinitely; if
-the agent crashed mid-turn that is `Working`, and nothing withdraws it.
-
-Related path: `set_full_lifecycle_authority_active(true)` triggers
-`DetectorState::reset()`, which drops the detector's agent. If the single
-re-probe right after fails to identify the agent (argv unreadable because the
-leader is in `D` state and the agent is only identifiable from argv),
-`has_probe` is now true and authority skips every later probe, so the detector
-holds `agent = None` for good. When the agent later exits to the shell,
-`foreground_shell_agent_action` sees `previous_agent = None` and never reports a
-process exit.
-
-**Fix direction.** Keep the `PROCESS_RECHECK_IDENTIFIED` probe under authority
-(one probe per 5 s, the only safety net). Do not let the app ignore an
-agent-absent report that has passed miss confirmation. Do not clear the
-detector's agent on an authority reset, or re-probe until it is reacquired.
-
 ## AGENT-009 - Restored history is read as live agent chrome
 
 Scope: agent-detection. The hunter flags this as a risk, not reproduced.
@@ -165,52 +117,6 @@ Depends on Kimi switching sessions in-process (`/clear`, `/new`, a resume
 picker), which the hunter could not verify. Then either add an arm or have the
 server release authority on a refused replacement.
 
-## AGENT-016 - "Installs or updates" means updates only when a version constant is bumped
-
-Scope: agent-integration.
-
-**Claim broken.** AGENTS.md: the server "installs or updates them at launch".
-
-- `integration_state_for_path` compares the `SHEPR_INTEGRATION_VERSION` marker in
-  the installed file against the spec's constant with `>=`; the asset bytes are
-  never compared. An asset edited without bumping its constant (nothing enforces
-  the bump: `bundled_integration_assets_match_expected_versions` only checks that
-  the marker equals the constant) stays old on every host forever. Same for a
-  config registration whose shape changed without a bump where the status check
-  does not look at the changed part (for example hook timeout values in the
-  Codex, Devin, Droid or MastraCode entries).
-- Because of `>=`, a file written by a build with a higher constant is "Current"
-  for a build with a lower one. Dev and release builds share agent config dirs
-  (only runtime and data dirs are per-profile), so whichever build bumped last
-  owns the hook files for both.
-- The assets are `include_str!` constants, so comparing installed bytes with
-  bundled bytes is cheap, and it lets the per-target version constants and
-  markers go entirely.
-
-## AGENT-018 - The Devin hook can attribute another pane's session, and runs a subprocess on every tool call
-
-Scope: agent-integration.
-
-**Claim broken.** The report is for this pane (`SHEPR_PANE_ID`), and the resume
-that follows should target this pane's conversation.
-
-- `resolve_session_id` in `assets/devin/shepr-agent-state.sh` falls back to
-  `devin list --format json` whenever the payload has no session id (every event
-  except UserPromptSubmit and a `startup` SessionStart) and takes the first entry
-  whose `working_directory` equals the project dir. With two Devin panes in one
-  repository it reports whichever session the list shows first. Devin is not
-  full-lifecycle, and the first accepted session for a pane is kept
-  (`conflicting_same_owner_session_ref`), so a pane can hold another pane's
-  conversation, and restore resumes the wrong one, or it is deduplicated away
-  against the other pane.
-- Every Devin event is registered, PreToolUse and PostToolUse included, and each
-  starts python and possibly a `devin list` (2 s timeout) inside a synchronous
-  hook: latency on every tool call for a session-identity-only report that
-  changes nothing after the first.
-
-Register SessionStart (and maybe UserPromptSubmit) only, and drop the
-cwd-matching fallback or restrict it to a unique match.
-
 ## AGENT-020 - Hook seq ordering and the arbitration's clocks rest on assumptions that do not hold
 
 Scopes: agent-integration, mux-terminal (its finding 12, filed there as a note
@@ -242,28 +148,6 @@ rather than a proven defect), agent-detection (structural note).
   events before API requests, which removes the worst ordering; it is still an
   implicit, undocumented contract.
 
-## AGENT-023 - Smaller integration contract drift
-
-Scope: agent-integration.
-
-- `AgentIntegrationPaths` doc: "Install and status code ... never consults the
-  process environment while it is choosing files to read or write".
-  `config_update_lock_path` reads `XDG_STATE_HOME` / `HOME` live, which the
-  comment on `absolute_xdg_home` concedes. Capture them in
-  `AgentIntegrationPaths` or reword the doc.
-- The opencode server plugin and the kilo plugin map every `session.error` to
-  `blocked`, including `MessageAbortedError` (the user pressing Esc). The V1 TUI
-  plugin, reporting under the same `shepr:opencode` source, excludes aborts: one
-  source, two meanings.
-- The codex hook refuses a session report without `transcript_path` but never
-  sends the path; the requirement gates nothing the server uses.
-- `settle(false)` in the opencode and kilo `requestOnce` passes an argument
-  `settle` ignores (copied from the TUI plugin, where it matters).
-- `action_label` is a second spelling of the target label used only in log lines
-  ("antigravity-cli" vs "agy"). `integration_target_label`,
-  `mastracode_hook_command` and `antigravity_cli_hook_command` are pass-through
-  wrappers.
-
 ## AGENT-024 - Nothing checks the integration assets against the server's acceptance contract
 
 Scope: agent-integration (the hunter's main structural finding).
@@ -293,40 +177,6 @@ event spelling (`SessionStart` here, camelCase in Copilot's own hooks format) an
 settings file name; whether Codex has an `Interrupt` hook event; OpenCode's
 global plugin directory name (`plugins/` for OpenCode vs `plugin/` for Kilo).
 
-## AGENT-026 - A suspended agent (Ctrl-Z) is treated as exited and loses its resume session for good
-
-Scope: mux-terminal. Hunter's confidence: high on the TerminalState side; the
-pane side is traced through `foreground_shell_agent_action`, which returns
-`ReportProcessExit` whenever the pane shell is back in the foreground.
-
-**Claims broken.** "Session restore ... and agent resume on restore" (AGENTS.md
-Scope) and the hook-authority claim in AGENT-025.
-
-When the agent is suspended the shell becomes the foreground job, so the detector
-publishes `StateChanged { process_exited: true }`, and
-`set_detected_state_with_screen_signals_at` (`detection.rs`) sets
-`persisted_agent_session = None` for that agent, clears hook authority, and
-inserts a `ProcessExit` suppression holding the session ref. On `fg` the probe
-reports `ReportReplacementProcess` and `AgentProcessDetected` arrives;
-`clear_full_lifecycle_hook_suppression_for_detected_agent` keeps the
-`ProcessExit` entry because it has no `replacement_session_ref`. Same process,
-same session, no new SessionStart:
-
-- Claude: resume is gone. Claude's hook only sends SessionStart, so the pane has
-  no persisted session until `/clear` or a restart; a server restart brings back
-  a bare shell.
-- Codex: comes back on its next turn report, which carries the session id.
-- pi, omp, kimi, kilo, mastracode: every report for the old session falls to the
-  pending tail (AGENT-025; nothing is anchored any more) and is ignored. Hook
-  authority and the resumable session do not come back. omp and mastracode have
-  `screen_manifest: false`, so there is no screen fallback either; they show the
-  process-exit fallback (Idle) for the rest of the process's life.
-
-TerminalState cannot tell a suspend from an exit because `process_exited` is a
-bool. Either the probe tells them apart (the job's processes in state `T` in
-`/proc/<pid>/stat`), or TerminalState gets a third outcome ("suspended": drop
-live authority but keep the session and generation).
-
 ## AGENT-027 - Idle and Unknown flips reorder the sidebar although both present as Idle
 
 Scope: mux-terminal. Hunter's confidence: high. Related: AGENT-003.
@@ -344,29 +194,6 @@ under Priority sort (`agent_sidebar.rs`) and as the recency change trigger
 with no visible state change; so does process re-detection
 (`set_detected_agent_process_at` resets the fallback to Unknown). Compare
 `presentation_state()` instead.
-
-## AGENT-028 - `detect explain` credits the screen for a state that a hook decided
-
-Scope: mux-terminal. Hunter's confidence: high.
-
-**Claim broken.** AGENTS.md: "`shepr detect explain <pane>` says which rule
-decided its state".
-
-`handle_detect_explain` (`app/api/detect.rs`) special-cases only
-`full_lifecycle_hook_authority_active()`. For any other effective hook authority
-it evaluates the screen rules and returns them as the explanation, although
-`terminal.state` comes from `hook_authority.state` (`recompute_effective_state`)
-unless a visible blocker overrides it. That covers shepr's own Codex turn hooks
-(`shepr:codex` is neither full-lifecycle nor reserved) and any custom source.
-With Codex the output routinely contradicts the sidebar: the hook says Working,
-the screen rule says Idle. The explain should name the hook source when
-`hook_authority` is effective and no visible blocker applies.
-
-Related, same handler: the runtime lookup runs before the full-lifecycle
-hook-authority branch, which does not use the runtime. A pane with no running
-terminal but under hook authority now gets `pane_terminal_unavailable`, although
-the hook-authority answer could still be given. Order the branch before the
-runtime lookup when fixing the above.
 
 ## AGENT-030 - Mutating TerminalState paths that return `None` leave the caller unaware
 
@@ -467,3 +294,25 @@ current predicate web. The cost is upstream tracking: `terminal/state/` is on th
 upstream-watch list, and a rewrite turns future herdr fixes into manual
 re-derivations; the mux-terminal hunter leaves that trade to the owner and notes
 AGENT-025 through AGENT-029 can be fixed in place without it.
+
+## AGENT-018 - Devin is still registered for every hook event
+
+Scope: agent-integration.
+
+The Devin hook now reports only a session id present in the payload, on
+SessionStart and UserPromptSubmit, and no longer guesses from `devin list`. Its
+registration list in `crates/shepr-agent/src/agent/mod.rs` still names six
+events, PreToolUse and PostToolUse included, so python starts inside a
+synchronous hook on every tool call only to exit without reporting. Register
+SessionStart and UserPromptSubmit only.
+
+## AGENT-035 - Integration status turns a config read or parse error into "outdated"
+
+Scope: agent-integration (lateral).
+
+The status readers in `crates/shepr-agent/src/integration/registry.rs` collapse
+a config file read or parse failure into an outdated status through `.ok()`, so
+install at launch tries to rewrite a file it could not read, and the real error
+(permissions, a broken user config) is never reported. Distinguish a missing
+file (not installed) from a read or parse error (report it, and do not attempt a
+rewrite that would clobber or fail on the user's file).

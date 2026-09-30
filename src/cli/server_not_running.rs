@@ -10,9 +10,9 @@ pub(super) fn response(
     paths: &shepr_config::AppPaths,
 ) -> ErrorResponse {
     // The local API client's socket is `paths.server_address().api_socket()`,
-    // so the address's own attach command names the server that was not
-    // found, whatever socket override selected it.
-    let attach_command = paths.server_address().attach_command();
+    // so this command names the server that was not found, including the
+    // current profile's executable and any socket override.
+    let attach_command = super::target::attach_command(paths);
     let message = shepr_api::guidance::operator_guidance(
         shepr_api::guidance::OperatorGuidance::ServerNotRunning {
             socket_path,

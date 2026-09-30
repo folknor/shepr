@@ -133,9 +133,10 @@ pub(super) const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
 pub(super) const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Endpoint heartbeat interval shared with the server's core timing policy.
 pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_core::limits::HEARTBEAT_INTERVAL;
-/// Expire an endpoint that has not returned a heartbeat within this interval.
+/// Expire an endpoint after this much transport silence, measured when the reader receives a
+/// complete frame rather than when the client loop processes it.
 ///
-/// The timeout permits missed scheduling and transport jitter before marking the endpoint offline.
+/// The timeout allows ordinary network delay before marking a machine endpoint offline.
 pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Initial reconnect delay before exponential backoff.
@@ -259,7 +260,13 @@ pub(super) const MIN_SELECTION_EDGE_SCROLL_LINES: usize = 3;
 /// The cap prevents a small pointer movement from skipping too far.
 pub(super) const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
 
-/// Event queue capacity shared by the resize and server-reader threads.
+/// Keys held for copy mode while one of its requests is in flight.
+///
+/// Copy-mode keys wait for the request ahead of them so motions stay in order; past this many,
+/// later keys are dropped with a notice instead of growing the queue without bound.
+pub(super) const MAX_COPY_INPUT_QUEUE: usize = 256;
+
+/// Event queue capacity shared by the stdin, resize and server-reader threads.
 ///
 /// The capacity absorbs short bursts without allowing unlimited event accumulation.
 pub(super) const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;

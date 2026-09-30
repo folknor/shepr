@@ -40,9 +40,9 @@ impl App {
     }
 
     /// Explains what the detector concludes for one pane from the same input
-    /// the live detector reads. A pane whose agent state is owned by full
-    /// lifecycle hooks skips screen detection, so it answers with that skip
-    /// instead of rule evidence.
+    /// the live detector reads. A pane whose effective state comes from hook
+    /// authority skips screen detection unless a visible blocker overrides the
+    /// hook report, so it answers with that source instead of rule evidence.
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(&target.pane_id));
@@ -56,24 +56,37 @@ impl App {
         else {
             return Err(pane_not_found(&target.pane_id));
         };
+        // Keep detect explain's runtime requirement even when hook authority
+        // can describe the state; failed restores keep the same
+        // pane_terminal_unavailable response as detect capture.
         let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
-        if terminal.full_lifecycle_hook_authority_active() {
-            let explain = serde_json::json!({
-                "agent": terminal.effective_agent_label().unwrap_or("unknown"),
-                "state": shepr_agent::detect::manifest::agent_state_label(terminal.state),
-                "matched_rule": null,
-                "visible_idle": false,
-                "visible_blocker": false,
-                "visible_working": false,
-                "screen_detection_skipped": true,
-                "screen_detection_skip_reason": "full_lifecycle_hook_authority",
-                "skip_state_update": false,
-                "skipped_update_reason": null,
-                "fallback_reason": null,
-                "evaluated_rules": [],
-            });
+        if let Some(authority) = terminal.hook_authority.as_ref().filter(|authority| {
+            let full_lifecycle = shepr_agent::detect::full_lifecycle_hook_authority(
+                &authority.source,
+                &authority.agent_label,
+            );
+            (!full_lifecycle || terminal.full_lifecycle_hook_authority_active())
+                // A visible blocker can override a non-blocked hook report.
+                // In that case the screen rules are the explanation we need.
+                && terminal.state == authority.state
+        }) {
+            let full_lifecycle = shepr_agent::detect::full_lifecycle_hook_authority(
+                &authority.source,
+                &authority.agent_label,
+            );
+            let skip_reason = if full_lifecycle {
+                "full_lifecycle_hook_authority"
+            } else {
+                "hook_authority"
+            };
+            let explain = shepr_agent::detect::manifest::hook_authority_explain_to_json_value(
+                &authority.agent_label,
+                terminal.state,
+                &authority.source,
+                skip_reason,
+            );
             return success(ResponseResult::DetectExplain { explain });
         }
         let Some(agent) = terminal.effective_known_agent().or(terminal.detected_agent) else {

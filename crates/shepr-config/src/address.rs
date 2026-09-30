@@ -60,23 +60,26 @@ impl ServerAddress {
         client_socket_override: Option<&Path>,
     ) -> Self {
         let runtime_api = runtime_dir.join(API_SOCKET_FILE_NAME);
+        // Panes export both resolved socket paths. When the server was
+        // selected only by a client-socket override, that also exports the
+        // profile's ordinary API socket. Keep the client override paired with
+        // it, while allowing a non-runtime SHEPR_SOCKET_PATH to select a
+        // different server even when both variables are set.
+        if let Some(client_socket) = client_socket_override
+            && (api_socket_override.is_none() || api_socket_override == Some(runtime_api.as_path()))
+        {
+            return Self {
+                api_socket: runtime_api,
+                client_socket: client_socket.to_path_buf(),
+                source: AddressSource::ClientOverride,
+            };
+        }
         if let Some(api_socket) = api_socket_override {
-            // SHEPR_SOCKET_PATH selects the server API socket. The client
-            // socket override is an alternate target only when that server
-            // override is absent, so an API override keeps its derived socket
-            // pair even if both variables are set.
             let api_socket = api_socket.to_path_buf();
             return Self {
                 client_socket: derive_client_socket_from_api_socket(&api_socket),
                 api_socket,
                 source: AddressSource::ApiOverride,
-            };
-        }
-        if let Some(client_socket) = client_socket_override {
-            return Self {
-                api_socket: runtime_api,
-                client_socket: client_socket.to_path_buf(),
-                source: AddressSource::ClientOverride,
             };
         }
         let client_socket = derive_client_socket_from_api_socket(&runtime_api);
@@ -111,16 +114,17 @@ impl ServerAddress {
         }
     }
 
-    /// The command that attaches to this server: plain `shepr` for the
-    /// build's own runtime directory, prefixed with the socket override that
-    /// selected it otherwise.
-    pub fn attach_command(&self) -> String {
-        self.command("shepr")
+    /// The command that attaches to this server: `entrypoint` (normally
+    /// [`operator_entrypoint`]), prefixed with the socket override that
+    /// selected the server, if one did. Socket resolution cannot tell which
+    /// executable the operator must run, so the caller names it.
+    pub fn attach_command(&self, entrypoint: &str) -> String {
+        self.command(entrypoint)
     }
 
     /// The command that stops this server, as [`attach_command`](Self::attach_command).
-    pub fn stop_command(&self) -> String {
-        self.command("shepr server stop")
+    pub fn stop_command(&self, entrypoint: &str) -> String {
+        self.command(&format!("{entrypoint} server stop"))
     }
 
     /// What to tell an operator whose build met a running server of another
@@ -128,9 +132,9 @@ impl ServerAddress {
     /// directories, so the way forward is to stop that server, which exits its
     /// panes, with the plain `server stop` command: it stops whatever server
     /// answers, whatever its build.
-    pub fn build_mismatch_guidance(&self) -> String {
-        let stop_command = self.stop_command();
-        let attach_command = self.attach_command();
+    pub fn build_mismatch_guidance(&self, entrypoint: &str) -> String {
+        let stop_command = self.stop_command(entrypoint);
+        let attach_command = self.attach_command(entrypoint);
         format!(
             "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. Run `{stop_command}`, then run `{attach_command}` again."
         )
@@ -186,6 +190,20 @@ pub fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> PathBuf {
     parent.join(format!("{stem}-client.sock"))
 }
 
+/// The command an operator runs to reach this build, for the attach and stop
+/// guidance above: `shepr` for a release build, which is the one installed on
+/// the path. A dev build is not, so its guidance names the running executable,
+/// or `brokkr run --` when that cannot be resolved.
+pub fn operator_entrypoint() -> String {
+    match crate::BuildProfile::current() {
+        crate::BuildProfile::Release => "shepr".to_owned(),
+        crate::BuildProfile::Dev => shepr_platform::launch_executable().map_or_else(
+            |_| "brokkr run --".to_owned(),
+            |path| shell_quote(&path.to_string_lossy()),
+        ),
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value.chars().all(|ch| {
@@ -216,8 +234,8 @@ mod tests {
             address.client_socket(),
             Path::new("/run/user/1/shepr/shepr-client.sock")
         );
-        assert_eq!(address.attach_command(), "shepr");
-        assert_eq!(address.stop_command(), "shepr server stop");
+        assert_eq!(address.attach_command("shepr"), "shepr");
+        assert_eq!(address.stop_command("shepr"), "shepr server stop");
         assert!(address.is_runtime_address());
         assert_eq!(address.override_variable(), None);
     }
@@ -249,12 +267,35 @@ mod tests {
         assert_eq!(address.override_variable(), Some(EnvVar::SheprSocketPath));
     }
 
+    #[test]
+    fn a_pane_of_a_client_socket_server_keeps_its_client_socket() {
+        // A server started with only a client socket override exports the
+        // profile's ordinary API path beside it into every pane.
+        let runtime = Path::new("/run/user/1/shepr");
+        let address = ServerAddress::resolve_paths(
+            runtime,
+            Some(Path::new("/run/user/1/shepr/shepr.sock")),
+            Some(Path::new("/x/work-client.sock")),
+        );
+
+        assert_eq!(
+            address.api_socket(),
+            Path::new("/run/user/1/shepr/shepr.sock")
+        );
+        assert_eq!(address.client_socket(), Path::new("/x/work-client.sock"));
+        assert_eq!(
+            address.override_variable(),
+            Some(EnvVar::SheprClientSocketPath)
+        );
+    }
+
     const KEEP_GUIDANCE: &str = "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes.";
 
     #[test]
     fn build_mismatch_guidance_names_the_stop_and_attach_commands() {
         let runtime = Path::new("/run/user/1/shepr");
-        let plain = ServerAddress::resolve_paths(runtime, None, None).build_mismatch_guidance();
+        let plain =
+            ServerAddress::resolve_paths(runtime, None, None).build_mismatch_guidance("shepr");
         assert_eq!(
             plain,
             format!("{KEEP_GUIDANCE} Run `shepr server stop`, then run `shepr` again.")
@@ -270,7 +311,7 @@ mod tests {
         let api =
             ServerAddress::resolve_paths(runtime, Some(Path::new("/tmp/custom-shepr.sock")), None);
         assert_eq!(
-            api.build_mismatch_guidance(),
+            api.build_mismatch_guidance("shepr"),
             format!(
                 "{KEEP_GUIDANCE} Run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
             )
@@ -278,7 +319,7 @@ mod tests {
         let client =
             ServerAddress::resolve_paths(runtime, None, Some(Path::new("/tmp/work-client.sock")));
         assert_eq!(
-            client.build_mismatch_guidance(),
+            client.build_mismatch_guidance("shepr"),
             format!(
                 "{KEEP_GUIDANCE} Run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
             )
@@ -290,12 +331,12 @@ mod tests {
         let runtime = Path::new("/run/user/1/shepr");
         let api = ServerAddress::resolve_paths(runtime, Some(Path::new("/x/a b.sock")), None);
         assert_eq!(
-            api.stop_command(),
+            api.stop_command("shepr"),
             "SHEPR_SOCKET_PATH='/x/a b.sock' shepr server stop"
         );
         let client = ServerAddress::resolve_paths(runtime, None, Some(Path::new("/x/c.sock")));
         assert_eq!(
-            client.attach_command(),
+            client.attach_command("shepr"),
             "SHEPR_CLIENT_SOCKET_PATH=/x/c.sock shepr"
         );
         assert_eq!(

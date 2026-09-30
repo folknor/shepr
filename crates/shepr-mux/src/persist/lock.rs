@@ -18,7 +18,7 @@ pub struct DataDirLease {
 
 impl DataDirLease {
     pub fn acquire(directory: &Path) -> io::Result<Self> {
-        std::fs::create_dir_all(directory)?;
+        shepr_platform::create_private_directory_all(directory)?;
         let directory = std::fs::canonicalize(directory)?;
         let file = OpenOptions::new()
             .read(true)

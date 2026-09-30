@@ -83,6 +83,40 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
 }
 
 #[test]
+fn current_owned_targetless_pick_is_a_noop_but_unowned_pick_reproves() {
+    use crate::endpoint::commands::EndpointCommands;
+    use crate::{ClientLoopEvent, Presentation, endpoint::EndpointRegistry};
+
+    for (presentation, should_schedule) in [
+        (Presentation::Owned, false),
+        (Presentation::Unavailable, true),
+    ] {
+        let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
+        let mut commands = EndpointCommands::default();
+        let mut scheduled = None;
+        let mut shell = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        crate::shell_runtime::dispatch_client_shell_actions(
+            vec![ClientShellAction::ActivateEndpoint {
+                endpoint_id: ClientEndpointId::Local,
+                target: None,
+            }],
+            &mut commands,
+            &mut endpoints,
+            &presentation,
+            &mut std::io::sink(),
+            false,
+            &mut shell,
+            &mut scheduled,
+            std::time::Instant::now(),
+        );
+        assert_eq!(
+            matches!(scheduled, Some(ClientLoopEvent::ActivateEndpoint { .. })),
+            should_schedule
+        );
+    }
+}
+
+#[test]
 fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
     use crate::endpoint::EndpointRegistry;
     use crate::endpoint::commands::EndpointCommands;
@@ -116,7 +150,10 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
                 .is_some_and(|notice| { notice.title == "Action interrupted" }),
             fail_send
         );
-        assert!(commands.disconnect(&ClientEndpointId::Local).is_empty());
+        assert_eq!(
+            commands.disconnect(&ClientEndpointId::Local),
+            crate::endpoint::commands::EndpointCommandCancellation::default()
+        );
     }
 }
 
@@ -151,8 +188,10 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
         &mut endpoints,
         std::time::Instant::now(),
     );
-    assert_eq!(cancelled, vec![stale_id.clone()]);
-    state.cancel_endpoint_request(&stale_id);
+    assert_eq!(cancelled.unsent, vec![stale_id.clone()]);
+    assert!(cancelled.possibly_sent.is_empty());
+    state.cancel_unsent_endpoint_request(&stale_id);
+    assert!(state.visible_endpoint_notice.is_none());
     assert!(!commands.accepts_response(
         &ClientEndpointId::Local,
         1,

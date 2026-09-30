@@ -665,43 +665,37 @@ impl ClientShellState {
         };
 
         match action {
-            KeybindAction::FocusAgent(index) => {
-                let agents = super::agent_sidebar::ordered_agent_pane_ids(
-                    snapshot,
+            KeybindAction::FocusAgent(_)
+            | KeybindAction::PreviousAgent
+            | KeybindAction::NextAgent => {
+                let agents = super::aggregate_navigation::online_agent_targets(
+                    &self.endpoints,
+                    &self.active_endpoint_id,
                     self.config.agent_panel_sort,
                 );
-                Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: agents.get(index)?.clone(),
-                }))
-            }
-            KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                let agents = super::agent_sidebar::ordered_agent_pane_ids(
-                    snapshot,
-                    self.config.agent_panel_sort,
-                );
-                if agents.is_empty() {
+                let index = super::aggregate_navigation::agent_target_index(
+                    &agents,
+                    &self.active_endpoint_id,
+                    snapshot.focused_pane_id.as_deref(),
+                    action,
+                )?;
+                let target = agents.get(index)?;
+                if target.endpoint_id != self.active_endpoint_id {
                     return None;
                 }
-                let current = agents
-                    .iter()
-                    .position(|pane_id| Some(pane_id) == snapshot.focused_pane_id.as_ref());
-                let next = match (current, action) {
-                    (Some(current), KeybindAction::PreviousAgent) => {
-                        (current + agents.len() - 1) % agents.len()
-                    }
-                    (Some(current), KeybindAction::NextAgent) => (current + 1) % agents.len(),
-                    (None, KeybindAction::PreviousAgent) => agents.len() - 1,
-                    (None, KeybindAction::NextAgent) => 0,
-                    _ => unreachable!("relative agent action"),
-                };
-                let pane_id = agents[next].clone();
-                if !self
+                let pane_id = target.pane_id.clone();
+                // Relative moves can land on a row scrolled out of the sidebar;
+                // bring it into view, as a numbered pick already names a shown one.
+                if matches!(
+                    action,
+                    KeybindAction::PreviousAgent | KeybindAction::NextAgent
+                ) && !self
                     .hits
                     .agents
                     .iter()
                     .any(|(_, visible_pane_id)| *visible_pane_id == pane_id)
                 {
-                    self.agent_scroll = next.min(self.hits.agent_max_scroll);
+                    self.agent_scroll = index.min(self.hits.agent_max_scroll);
                 }
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }

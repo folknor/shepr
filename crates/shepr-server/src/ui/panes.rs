@@ -31,7 +31,7 @@ fn restore_failure_text(failure: &RestoreFailure) -> Text<'_> {
     Text::from(lines)
 }
 
-fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
+fn pane_border_title(label: &str, pane_width: u16) -> Option<String> {
     let label = label.trim();
     if label.is_empty() || pane_width <= 4 {
         return None;
@@ -189,11 +189,86 @@ pub(super) fn render_panes(
 }
 
 #[derive(Clone, Copy, Default)]
-struct LineCell {
-    up: bool,
-    down: bool,
-    left: bool,
-    right: bool,
+struct LineCell(u8);
+
+impl LineCell {
+    // limits-exempt: each value is a bit position in the border cell's flag byte.
+    const PRESENT: u8 = 1 << 0;
+    // limits-exempt: each value is a bit position in the border cell's flag byte.
+    const UP: u8 = 1 << 1;
+    // limits-exempt: each value is a bit position in the border cell's flag byte.
+    const DOWN: u8 = 1 << 2;
+    // limits-exempt: each value is a bit position in the border cell's flag byte.
+    const LEFT: u8 = 1 << 3;
+    // limits-exempt: each value is a bit position in the border cell's flag byte.
+    const RIGHT: u8 = 1 << 4;
+    // limits-exempt: each value is a bit position in the border cell's flag byte.
+    const FOCUSED: u8 = 1 << 5;
+
+    fn has_any(self, flags: u8) -> bool {
+        self.0 & flags != 0
+    }
+
+    fn set(&mut self, flag: u8) {
+        self.0 |= flag;
+    }
+
+    fn set_if(&mut self, flag: u8, condition: bool) {
+        if condition {
+            self.set(flag);
+        }
+    }
+}
+
+struct BorderGrid {
+    width: u16,
+    height: u16,
+    cells: Vec<LineCell>,
+}
+
+impl BorderGrid {
+    fn new(frame: &FrameData) -> Self {
+        Self {
+            width: frame.width,
+            height: frame.height,
+            cells: vec![LineCell::default(); frame.cells.len()],
+        }
+    }
+
+    fn index(&self, x: u16, y: u16) -> Option<usize> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let index = usize::from(y)
+            .checked_mul(usize::from(self.width))?
+            .checked_add(usize::from(x))?;
+        (index < self.cells.len()).then_some(index)
+    }
+
+    fn contains(&self, x: u16, y: u16) -> bool {
+        self.get(x, y)
+            .is_some_and(|cell| cell.has_any(LineCell::PRESENT))
+    }
+
+    fn get(&self, x: u16, y: u16) -> Option<LineCell> {
+        self.index(x, y).map(|index| self.cells[index])
+    }
+
+    fn entry(&mut self, x: u16, y: u16) -> Option<&mut LineCell> {
+        let index = self.index(x, y)?;
+        let cell = &mut self.cells[index];
+        cell.set(LineCell::PRESENT);
+        Some(cell)
+    }
+
+    fn mark_focused(&mut self, x: u16, y: u16) {
+        if let Some(index) = self.index(x, y) {
+            let cell = &mut self.cells[index];
+            if cell.has_any(LineCell::PRESENT) {
+                cell.set(LineCell::FOCUSED);
+            }
+        }
+    }
 }
 
 fn render_pane_borders(
@@ -209,34 +284,44 @@ fn render_pane_borders(
         return;
     }
 
-    let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
+    let mut cells = BorderGrid::new(frame);
     for info in pane_infos {
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.settings.pane_gaps, split_borders, &mut cells);
+    for info in pane_infos.iter().filter(|info| info.is_focused) {
+        mark_focused_pane_cells(&mut cells, info, app.settings.pane_gaps);
+    }
 
-    for ((x, y), line) in cells {
-        if x >= frame.width || y >= frame.height {
-            continue;
+    let width = usize::from(frame.width);
+    if width > 0 {
+        for (index, line) in cells.cells.iter().copied().enumerate() {
+            if !line.has_any(LineCell::PRESENT) {
+                continue;
+            }
+            let (Ok(x), Ok(y)) = (u16::try_from(index % width), u16::try_from(index / width))
+            else {
+                continue;
+            };
+            if y >= frame.height {
+                continue;
+            }
+            let symbol = line_cell_symbol(line);
+            if symbol.is_empty() {
+                continue;
+            }
+            let color = if line.has_any(LineCell::FOCUSED) {
+                app.settings.palette.accent
+            } else {
+                app.settings.palette.overlay0
+            };
+            let cell = CellData {
+                symbol: symbol.to_owned(),
+                fg: WireColor::from_ratatui(color),
+                ..CellData::blank()
+            };
+            put_run(frame, x, y, &[cell]);
         }
-        let focused = pane_infos
-            .iter()
-            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.settings.pane_gaps));
-        let symbol = line_cell_symbol(line);
-        if symbol.is_empty() {
-            continue;
-        }
-        let color = if focused {
-            app.settings.palette.accent
-        } else {
-            app.settings.palette.overlay0
-        };
-        let cell = CellData {
-            symbol: symbol.to_owned(),
-            fg: WireColor::from_ratatui(color),
-            ..CellData::blank()
-        };
-        put_run(frame, x, y, &[cell]);
     }
 
     render_pane_border_titles(app, ws, pane_infos, frame);
@@ -245,7 +330,7 @@ fn render_pane_borders(
 fn add_split_border_cells(
     pane_gaps: bool,
     split_borders: &[shepr_core::layout::SplitBorder],
-    cells: &mut std::collections::HashMap<(u16, u16), LineCell>,
+    cells: &mut BorderGrid,
 ) {
     if pane_gaps {
         return;
@@ -257,52 +342,53 @@ fn add_split_border_cells(
                 let x = split.pos;
                 let end = split.area.y.saturating_add(split.area.height);
                 for y in split.area.y..=end {
-                    if !cells.contains_key(&(x, y)) {
+                    if !cells.contains(x, y) {
                         continue;
                     }
                     let left = x
                         .checked_sub(1)
-                        .and_then(|left_x| cells.get(&(left_x, y)))
-                        .is_some_and(|cell| cell.left || cell.right);
+                        .and_then(|left_x| cells.get(left_x, y))
+                        .is_some_and(|cell| cell.has_any(LineCell::LEFT | LineCell::RIGHT));
                     let right = cells
-                        .get(&(x.saturating_add(1), y))
-                        .is_some_and(|cell| cell.left || cell.right);
-                    let cell = cells.entry((x, y)).or_default();
-                    cell.up |= y > split.area.y;
-                    cell.down |= y + 1 < end;
-                    cell.left |= left;
-                    cell.right |= right;
+                        .get(x.saturating_add(1), y)
+                        .is_some_and(|cell| cell.has_any(LineCell::LEFT | LineCell::RIGHT));
+                    let Some(cell) = cells.entry(x, y) else {
+                        continue;
+                    };
+                    cell.set_if(LineCell::UP, y > split.area.y);
+                    cell.set_if(LineCell::DOWN, y + 1 < end);
+                    cell.set_if(LineCell::LEFT, left);
+                    cell.set_if(LineCell::RIGHT, right);
                 }
             }
             shepr_core::layout::Direction::Vertical => {
                 let y = split.pos;
                 let end = split.area.x.saturating_add(split.area.width);
                 for x in split.area.x..=end {
-                    if !cells.contains_key(&(x, y)) {
+                    if !cells.contains(x, y) {
                         continue;
                     }
                     let up = y
                         .checked_sub(1)
-                        .and_then(|up_y| cells.get(&(x, up_y)))
-                        .is_some_and(|cell| cell.up || cell.down);
+                        .and_then(|up_y| cells.get(x, up_y))
+                        .is_some_and(|cell| cell.has_any(LineCell::UP | LineCell::DOWN));
                     let down = cells
-                        .get(&(x, y.saturating_add(1)))
-                        .is_some_and(|cell| cell.up || cell.down);
-                    let cell = cells.entry((x, y)).or_default();
-                    cell.left |= x > split.area.x;
-                    cell.right |= x + 1 < end;
-                    cell.up |= up;
-                    cell.down |= down;
+                        .get(x, y.saturating_add(1))
+                        .is_some_and(|cell| cell.has_any(LineCell::UP | LineCell::DOWN));
+                    let Some(cell) = cells.entry(x, y) else {
+                        continue;
+                    };
+                    cell.set_if(LineCell::LEFT, x > split.area.x);
+                    cell.set_if(LineCell::RIGHT, x + 1 < end);
+                    cell.set_if(LineCell::UP, up);
+                    cell.set_if(LineCell::DOWN, down);
                 }
             }
         }
     }
 }
 
-fn add_pane_border_cells(
-    cells: &mut std::collections::HashMap<(u16, u16), LineCell>,
-    info: &PaneInfo,
-) {
+fn add_pane_border_cells(cells: &mut BorderGrid, info: &PaneInfo) {
     let rect = info.rect;
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -312,56 +398,68 @@ fn add_pane_border_cells(
 
     if info.borders.contains(Borders::TOP) {
         for x in rect.x..=right {
-            let cell = cells.entry((x, rect.y)).or_default();
-            cell.left |= x > rect.x;
-            cell.right |= x < right;
+            let Some(cell) = cells.entry(x, rect.y) else {
+                continue;
+            };
+            cell.set_if(LineCell::LEFT, x > rect.x);
+            cell.set_if(LineCell::RIGHT, x < right);
         }
     }
     if info.borders.contains(Borders::BOTTOM) {
         for x in rect.x..=right {
-            let cell = cells.entry((x, bottom)).or_default();
-            cell.left |= x > rect.x;
-            cell.right |= x < right;
+            let Some(cell) = cells.entry(x, bottom) else {
+                continue;
+            };
+            cell.set_if(LineCell::LEFT, x > rect.x);
+            cell.set_if(LineCell::RIGHT, x < right);
         }
     }
     if info.borders.contains(Borders::LEFT) {
         for y in rect.y..=bottom {
-            let cell = cells.entry((rect.x, y)).or_default();
-            cell.up |= y > rect.y;
-            cell.down |= y < bottom;
+            let Some(cell) = cells.entry(rect.x, y) else {
+                continue;
+            };
+            cell.set_if(LineCell::UP, y > rect.y);
+            cell.set_if(LineCell::DOWN, y < bottom);
         }
     }
     if info.borders.contains(Borders::RIGHT) {
         for y in rect.y..=bottom {
-            let cell = cells.entry((right, y)).or_default();
-            cell.up |= y > rect.y;
-            cell.down |= y < bottom;
+            let Some(cell) = cells.entry(right, y) else {
+                continue;
+            };
+            cell.set_if(LineCell::UP, y > rect.y);
+            cell.set_if(LineCell::DOWN, y < bottom);
         }
     }
 }
 
-fn line_touches_pane(x: u16, y: u16, info: &PaneInfo, pane_gaps: bool) -> bool {
+fn mark_focused_pane_cells(cells: &mut BorderGrid, info: &PaneInfo, pane_gaps: bool) {
     let rect = info.rect;
     if rect.width == 0 || rect.height == 0 {
-        return false;
+        return;
     }
     let right = rect.x.saturating_add(rect.width).saturating_sub(1);
     let bottom = rect.y.saturating_add(rect.height).saturating_sub(1);
-    let in_rows = y >= rect.y && y <= bottom;
-    let in_cols = x >= rect.x && x <= right;
-    let own_border =
-        (in_rows && (x == rect.x || x == right)) || (in_cols && (y == rect.y || y == bottom));
-
-    if pane_gaps {
-        return own_border;
-    }
-
     let shared_right = rect.x.saturating_add(rect.width);
     let shared_bottom = rect.y.saturating_add(rect.height);
-    own_border
-        || (in_rows && x == shared_right)
-        || (in_cols && y == shared_bottom)
-        || (x == shared_right && y == shared_bottom)
+    for y in rect.y..=bottom {
+        cells.mark_focused(rect.x, y);
+        cells.mark_focused(right, y);
+        if !pane_gaps {
+            cells.mark_focused(shared_right, y);
+        }
+    }
+    for x in rect.x..=right {
+        cells.mark_focused(x, rect.y);
+        cells.mark_focused(x, bottom);
+        if !pane_gaps {
+            cells.mark_focused(x, shared_bottom);
+        }
+    }
+    if !pane_gaps {
+        cells.mark_focused(shared_right, shared_bottom);
+    }
 }
 
 fn render_pane_border_titles(
@@ -381,7 +479,7 @@ fn render_pane_border_titles(
             .and_then(|terminal| {
                 terminal.border_label(app.settings.show_agent_labels_on_pane_borders)
             })
-            .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
+            .and_then(|label| pane_border_title(&label, info.rect.width))
         else {
             continue;
         };
@@ -422,7 +520,12 @@ fn render_pane_border_titles(
 }
 
 fn line_cell_symbol(line: LineCell) -> &'static str {
-    match (line.up, line.down, line.left, line.right) {
+    match (
+        line.has_any(LineCell::UP),
+        line.has_any(LineCell::DOWN),
+        line.has_any(LineCell::LEFT),
+        line.has_any(LineCell::RIGHT),
+    ) {
         (true, true, true, true) => "┼",
         (true, true, true, false) => "┤",
         (true, true, false, true) => "├",
@@ -457,17 +560,6 @@ fn compute_pane_infos(
 }
 
 #[cfg(test)]
-use ratatui::style::Color;
-#[cfg(test)]
-use shepr_config::theme::Palette;
-#[cfg(test)]
-use shepr_termio::selection_render::render_selection_highlight;
-#[cfg(test)]
-use shepr_termio::selection_render::{
-    automatic_selection_bg, automatic_selection_style, relative_luminance,
-};
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::*;
@@ -476,7 +568,6 @@ mod tests {
     use shepr_mux::pane::PaneRuntime;
     use shepr_mux::terminal::TerminalState;
     use shepr_mux::workspace::Workspace;
-    use shepr_vt::selection::Selection;
 
     /// A registry holding `runtime` as the live runtime of `pane_id`, keyed
     /// by the pane's terminal id the way production registers runtimes.
@@ -584,28 +675,17 @@ mod tests {
     #[test]
     fn pane_border_title_trims_and_truncates() {
         assert_eq!(
-            pane_border_title(" claude ", 20, false).as_deref(),
+            pane_border_title(" claude ", 20).as_deref(),
             Some(" claude ")
         );
-        assert_eq!(
-            pane_border_title(" claude ", 20, true).as_deref(),
-            Some(" claude ")
-        );
-        assert_eq!(pane_border_title("", 20, false), None);
-        assert_eq!(
-            pane_border_title("abcdef", 8, false).as_deref(),
-            Some(" abc… ")
-        );
-        assert_eq!(
-            pane_border_title("abcdef", 8, true).as_deref(),
-            Some(" abc… ")
-        );
-        assert_eq!(pane_border_title("abcdef", 4, false), None);
+        assert_eq!(pane_border_title("", 20), None);
+        assert_eq!(pane_border_title("abcdef", 8).as_deref(), Some(" abc… "));
+        assert_eq!(pane_border_title("abcdef", 4), None);
     }
 
     #[test]
     fn pane_border_title_truncates_cjk_by_display_width() {
-        let title = pane_border_title("1 模块组织（已定）", 12, false).expect("test precondition");
+        let title = pane_border_title("1 模块组织（已定）", 12).expect("test precondition");
 
         assert_eq!(title, " 1 模块… ");
         assert!(display_width(title.as_str()) <= 10);
@@ -1150,227 +1230,5 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, area);
-    }
-
-    /// Scroll metrics for a live view with no scrollback: viewport row N is
-    /// absolute row N.
-    fn zero_origin_metrics(viewport_rows: usize) -> Option<shepr_termio::ScrollMetrics> {
-        Some(shepr_termio::ScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
-            viewport_rows,
-            history_origin: shepr_vt::AbsRow(0),
-        })
-    }
-
-    /// A selection-highlight sink that applies each style to `buffer`, skipping positions
-    /// the buffer does not have.
-    fn sink(buffer: &mut Buffer) -> impl FnMut(u16, u16, Style) + '_ {
-        |x, y, style| {
-            if let Some(cell) = buffer.cell_mut((x, y)) {
-                cell.set_style(style);
-            }
-        }
-    }
-
-    #[test]
-    fn selection_highlight_uses_one_uniform_style() {
-        let palette = Palette::catppuccin();
-        let host_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: None,
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 12,
-                g: 14,
-                b: 16,
-            }),
-            ..Default::default()
-        };
-        let expected_style = automatic_selection_style(&palette, host_theme);
-        let selection = Some(Selection::range(
-            shepr_test_fixtures::fixed_pane_id(1),
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
-        ));
-        let backend = ratatui::backend::TestBackend::new(4, 1);
-        let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-
-        terminal
-            .draw(|frame| {
-                let buf = frame.buffer_mut();
-                buf[(0, 0)].set_style(
-                    Style::default()
-                        .fg(Color::Rgb(10, 220, 120))
-                        .bg(Color::Black),
-                );
-                buf[(1, 0)].set_style(
-                    Style::default()
-                        .fg(Color::Rgb(220, 180, 40))
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                );
-                buf[(2, 0)].set_style(Style::default().fg(Color::Blue).bg(Color::Reset));
-                render_selection_highlight(
-                    selection.as_ref(),
-                    &shepr_test_fixtures::fixed_pane_id(1),
-                    Rect::new(0, 0, 4, 1),
-                    zero_origin_metrics(1),
-                    &palette,
-                    host_theme,
-                    &mut |x, y, style| {
-                        if let Some(cell) = buf.cell_mut((x, y)) {
-                            cell.set_style(style);
-                        }
-                    },
-                );
-            })
-            .expect("test precondition");
-
-        let buffer = terminal.backend().buffer();
-        let first = buffer[(0, 0)].style();
-        let second = buffer[(1, 0)].style();
-        let third = buffer[(2, 0)].style();
-
-        assert_eq!(first.fg, expected_style.fg);
-        assert_eq!(second.fg, expected_style.fg);
-        assert_eq!(third.fg, expected_style.fg);
-        assert_eq!(first.bg, expected_style.bg);
-        assert_eq!(second.bg, expected_style.bg);
-        assert_eq!(third.bg, expected_style.bg);
-        assert_eq!(first.add_modifier, expected_style.add_modifier);
-        assert_eq!(second.add_modifier, expected_style.add_modifier);
-        assert_eq!(third.add_modifier, expected_style.add_modifier);
-        assert!(!second.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn selection_highlight_clips_pane_rect_larger_than_buffer() {
-        // The client can compose a pane surface produced for another layout, so the
-        // pane's inner rect may reach past the frame. Painting must clip, not panic.
-        let palette = Palette::catppuccin();
-        let host_theme = shepr_termio::host_term::theme::TerminalTheme::default();
-        let expected = automatic_selection_style(&palette, host_theme);
-        let selection = Some(Selection::range(
-            shepr_test_fixtures::fixed_pane_id(1),
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-            shepr_vt::Point::new(shepr_vt::AbsRow(2), 3),
-        ));
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
-
-        render_selection_highlight(
-            selection.as_ref(),
-            &shepr_test_fixtures::fixed_pane_id(1),
-            Rect::new(1, 1, 4, 3),
-            zero_origin_metrics(3),
-            &palette,
-            host_theme,
-            &mut sink(&mut buffer),
-        );
-
-        // Pane-relative (0, 0)..(0, 2) lands on screen row 1, columns 1..=3; the
-        // rest of the pane is off-buffer and silently skipped.
-        for x in 1..4 {
-            assert_eq!(buffer[(x, 1)].style().bg, expected.bg, "column {x}");
-        }
-        assert_ne!(buffer[(0, 1)].style().bg, expected.bg);
-        for x in 0..4 {
-            assert_ne!(buffer[(x, 0)].style().bg, expected.bg, "row 0 column {x}");
-        }
-
-        // A rect entirely outside the buffer paints nothing and does not panic.
-        render_selection_highlight(
-            selection.as_ref(),
-            &shepr_test_fixtures::fixed_pane_id(1),
-            Rect::new(10, 10, 4, 3),
-            zero_origin_metrics(3),
-            &palette,
-            host_theme,
-            &mut sink(&mut buffer),
-        );
-
-        // Without scroll metrics viewport rows cannot be mapped to the
-        // selection's absolute rows, so nothing is painted.
-        let mut unmapped = Buffer::empty(Rect::new(0, 0, 4, 2));
-        render_selection_highlight(
-            selection.as_ref(),
-            &shepr_test_fixtures::fixed_pane_id(1),
-            Rect::new(0, 0, 4, 2),
-            None,
-            &palette,
-            host_theme,
-            &mut sink(&mut unmapped),
-        );
-        assert_eq!(unmapped, Buffer::empty(Rect::new(0, 0, 4, 2)));
-    }
-
-    #[test]
-    fn automatic_selection_background_uses_host_background() {
-        let bg = automatic_selection_bg(
-            &Palette::terminal(),
-            shepr_termio::host_term::theme::TerminalTheme {
-                foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                    r: 230,
-                    g: 230,
-                    b: 230,
-                }),
-                background: Some(shepr_termio::host_term::theme::RgbColor {
-                    r: 12,
-                    g: 14,
-                    b: 16,
-                }),
-                ..Default::default()
-            },
-        );
-
-        let Color::Rgb(r, g, b) = bg else {
-            panic!("selection background should resolve to rgb");
-        };
-        assert!(relative_luminance((r, g, b)) > relative_luminance((12, 14, 16)));
-    }
-
-    #[test]
-    fn automatic_selection_rgb_style_is_readable_with_or_without_host_background() {
-        for (background, selected_bg, selected_fg) in [
-            ((239, 241, 245), (172, 174, 176), (0, 0, 0)),
-            ((26, 27, 38), (90, 91, 99), (255, 255, 255)),
-            ((45, 53, 59), (104, 110, 114), (255, 255, 255)),
-        ] {
-            let mut palette = Palette::catppuccin();
-            let (r, g, b) = background;
-            palette.panel_bg = Color::Rgb(r, g, b);
-            let expected = Style::reset()
-                .bg(Color::Rgb(selected_bg.0, selected_bg.1, selected_bg.2))
-                .fg(Color::Rgb(selected_fg.0, selected_fg.1, selected_fg.2));
-
-            assert_eq!(
-                automatic_selection_style(&palette, Default::default()),
-                expected
-            );
-            assert_eq!(
-                automatic_selection_style(
-                    &Palette::terminal(),
-                    shepr_termio::host_term::theme::TerminalTheme {
-                        background: Some(shepr_termio::host_term::theme::RgbColor { r, g, b }),
-                        ..Default::default()
-                    },
-                ),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn automatic_selection_preserves_symbolic_palette_fallbacks() {
-        let mut palette = Palette::terminal();
-        assert_eq!(
-            automatic_selection_style(&palette, Default::default()),
-            Style::reset().fg(Color::White).bg(Color::DarkGray)
-        );
-        for fallback in [Color::Blue, Color::White, Color::Indexed(42), Color::Reset] {
-            palette.surface_dim = fallback;
-            assert_eq!(
-                automatic_selection_bg(&palette, Default::default()),
-                fallback
-            );
-        }
     }
 }

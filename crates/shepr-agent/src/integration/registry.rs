@@ -10,10 +10,6 @@ use super::config_edit::{direct_command_field, is_matching_command_hook};
 use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::types::InstallOutcome;
 
-pub(crate) fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
-    target.label()
-}
-
 #[derive(Clone, Copy)]
 struct IntegrationSpec {
     target: Target,
@@ -26,8 +22,9 @@ struct IntegrationSpec {
     /// How status confirms the agent's own config still runs the hook.
     registration: RegistrationCheck,
     path: &'static [&'static str],
-    version: u32,
     hook_timeout: Option<Duration>,
+    // Operator-facing label for install messages. For Antigravity this names
+    // the CLI integration while the agent's internal label is `agy`.
     action_label: &'static str,
     install: fn(&AgentIntegrationPaths) -> io::Result<InstallOutcome>,
 }
@@ -62,7 +59,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::PI_EXTENSION_ASSET],
         directory: DirectoryKey::PiExtension,
         path: &[super::PI_EXTENSION_INSTALL_NAME],
-        version: super::PI_INTEGRATION_VERSION,
         hook_timeout: None,
     },
     IntegrationSpec {
@@ -74,7 +70,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::OMP_EXTENSION_ASSET],
         directory: DirectoryKey::OmpExtension,
         path: &[super::OMP_EXTENSION_INSTALL_NAME],
-        version: super::OMP_INTEGRATION_VERSION,
         hook_timeout: None,
     },
     IntegrationSpec {
@@ -89,7 +84,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::CLAUDE_HOOK_ASSET],
         directory: DirectoryKey::Claude,
         path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
-        version: super::CLAUDE_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -101,7 +95,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::CODEX_HOOK_ASSET],
         directory: DirectoryKey::Codex,
         path: &[super::CODEX_HOOK_INSTALL_NAME],
-        version: super::CODEX_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -116,7 +109,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::COPILOT_HOOK_ASSET],
         directory: DirectoryKey::Copilot,
         path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
-        version: super::COPILOT_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -131,7 +123,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::DEVIN_HOOK_ASSET],
         directory: DirectoryKey::Devin,
         path: &[super::DEVIN_HOOK_INSTALL_NAME],
-        version: super::DEVIN_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -146,7 +137,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::DROID_HOOK_ASSET],
         directory: DirectoryKey::Droid,
         path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
-        version: super::DROID_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -158,7 +148,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::KIMI_HOOK_ASSET],
         directory: DirectoryKey::Kimi,
         path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
-        version: super::KIMI_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -178,7 +167,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         ],
         directory: DirectoryKey::Opencode,
         path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
-        version: super::OPENCODE_INTEGRATION_VERSION,
         hook_timeout: None,
     },
     IntegrationSpec {
@@ -190,7 +178,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::KILO_PLUGIN_ASSET],
         directory: DirectoryKey::Kilo,
         path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
-        version: super::KILO_INTEGRATION_VERSION,
         hook_timeout: None,
     },
     IntegrationSpec {
@@ -205,7 +192,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::CURSOR_HOOK_ASSET],
         directory: DirectoryKey::Cursor,
         path: &[super::CURSOR_HOOK_INSTALL_NAME],
-        version: super::CURSOR_INTEGRATION_VERSION,
         hook_timeout: None,
     },
     IntegrationSpec {
@@ -220,7 +206,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::MASTRACODE_HOOK_ASSET],
         directory: DirectoryKey::Mastracode,
         path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
-        version: super::MASTRACODE_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -232,7 +217,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::ANTIGRAVITY_CLI_HOOK_ASSET],
         directory: DirectoryKey::AntigravityCli,
         path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
-        version: super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
     IntegrationSpec {
@@ -244,7 +228,6 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
         assets: &[super::GROK_HOOK_ASSET],
         directory: DirectoryKey::Grok,
         path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
-        version: super::GROK_INTEGRATION_VERSION,
         hook_timeout: Some(super::HOOK_TIMEOUT),
     },
 ];
@@ -306,8 +289,7 @@ pub(crate) fn integration_hook_events(
         .map_or(&[], |spec| spec.target.hook_events())
 }
 
-/// The file `spec`'s integration installs, whose version marker the status
-/// check reads.
+/// The primary managed file `spec` installs, whose bundled bytes status checks.
 fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> io::Result<PathBuf> {
     let mut path = paths.directory(spec.directory)?;
     for part in spec.path {
@@ -324,7 +306,7 @@ pub(crate) fn integration_status(
     target: Target,
 ) -> io::Result<super::IntegrationStatus> {
     let spec = spec_for(target)?;
-    integration_status_at(target, installed_path(paths, spec)?, spec.version)
+    integration_status_at(target, installed_path(paths, spec)?)
 }
 
 /// Whether `target`'s agent is present on this host: its own config
@@ -366,18 +348,13 @@ fn grok_hook_config_is_valid(hook_path: &Path) -> bool {
         .is_some_and(|config| config == expected_config)
 }
 
-fn opencode_tui_integration_is_valid(
-    plugin_path: &Path,
-    expected_version: u32,
-) -> io::Result<bool> {
+fn opencode_tui_integration_is_valid(plugin_path: &Path) -> io::Result<bool> {
     let Some(config_dir) = plugin_path.parent().and_then(Path::parent) else {
         return Ok(false);
     };
     let tui_plugin_path = config_dir.join(super::OPENCODE_TUI_PLUGIN_INSTALL_NAME);
-    let tui_plugin_current = fs::read_to_string(tui_plugin_path)
-        .ok()
-        .and_then(|content| parse_integration_version(&content))
-        .is_some_and(|version| version >= expected_version);
+    let tui_plugin_current =
+        file_matches_asset(&tui_plugin_path, super::OPENCODE_TUI_PLUGIN_ASSET)?;
     let cli_config_path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
     let cli_config_exists = cli_config_path.try_exists().map_err(|error| {
         io::Error::new(
@@ -385,23 +362,22 @@ fn opencode_tui_integration_is_valid(
             format!("cannot stat {}: {error}", cli_config_path.display()),
         )
     })?;
+    let v2_plugin_path = config_dir
+        .join(super::OPENCODE_V2_TUI_PLUGIN_DIR)
+        .join("tui.js");
+    let v2_plugin_current =
+        file_matches_asset(&v2_plugin_path, super::OPENCODE_V2_TUI_PLUGIN_ASSET)?;
     Ok(tui_plugin_current
+        && v2_plugin_current
         && super::opencode_config::tui_plugin_is_configured(
             config_dir,
             super::OPENCODE_TUI_PLUGIN_SPEC,
         )
         && (!cli_config_exists
-            || (super::opencode_config::cli_plugin_is_configured(
+            || super::opencode_config::cli_plugin_is_configured(
                 config_dir,
                 super::OPENCODE_V2_TUI_PLUGIN_SPEC,
-            ) && fs::read_to_string(
-                config_dir
-                    .join(super::OPENCODE_V2_TUI_PLUGIN_DIR)
-                    .join("tui.js"),
-            )
-            .ok()
-            .and_then(|content| parse_integration_version(&content))
-            .is_some_and(|version| version >= expected_version))))
+            )))
 }
 
 /// `levels` directories up from `path` (1 is the parent).
@@ -423,9 +399,16 @@ enum HooksRoot {
 
 enum JsonHookShape {
     // `None` means the installer wrote no matcher field on the event group.
-    Nested { matcher: Option<String> },
-    Flat,
-    Direct,
+    Nested {
+        matcher: Option<String>,
+        timeout_seconds: u64,
+    },
+    Flat {
+        timeout_millis: u64,
+    },
+    Direct {
+        timeout_seconds: u64,
+    },
     Simple,
 }
 
@@ -447,7 +430,10 @@ fn json_event_has_command(
         return false;
     };
     match shape {
-        JsonHookShape::Nested { matcher } => entries.iter().any(|group| {
+        JsonHookShape::Nested {
+            matcher,
+            timeout_seconds,
+        } => entries.iter().any(|group| {
             let matcher_matches = match matcher {
                 Some(matcher) => {
                     group.get("matcher").and_then(serde_json::Value::as_str)
@@ -460,21 +446,29 @@ fn json_event_has_command(
                     .get("hooks")
                     .and_then(serde_json::Value::as_array)
                     .is_some_and(|hooks| {
-                        hooks
-                            .iter()
-                            .any(|hook| is_matching_command_hook(hook, command))
+                        hooks.iter().any(|hook| {
+                            is_matching_command_hook(hook, command)
+                                && hook.get("timeout").and_then(serde_json::Value::as_u64)
+                                    == Some(*timeout_seconds)
+                        })
                     })
         }),
-        JsonHookShape::Flat => entries
-            .iter()
-            .any(|hook| hook.get("matcher").is_none() && is_matching_command_hook(hook, command)),
-        JsonHookShape::Direct => entries.iter().any(|hook| {
+        JsonHookShape::Flat { timeout_millis } => entries.iter().any(|hook| {
+            hook.get("matcher").is_none()
+                && is_matching_command_hook(hook, command)
+                && hook.get("timeout").and_then(serde_json::Value::as_u64) == Some(*timeout_millis)
+                && hook.get("description").and_then(serde_json::Value::as_str)
+                    == Some(super::config_edit::MASTRACODE_HOOK_DESCRIPTION)
+        }),
+        JsonHookShape::Direct { timeout_seconds } => entries.iter().any(|hook| {
             hook.get("matcher").is_none()
                 && hook.get("type").and_then(serde_json::Value::as_str) == Some("command")
                 && hook
                     .get(direct_command_field())
                     .and_then(serde_json::Value::as_str)
                     == Some(command)
+                && hook.get("timeoutSec").and_then(serde_json::Value::as_u64)
+                    == Some(*timeout_seconds)
         }),
         JsonHookShape::Simple => entries.iter().any(|hook| {
             hook.get("matcher").is_none()
@@ -558,17 +552,13 @@ fn hook_event_commands(
 }
 
 /// Whether the agent's own config still registers the installed hook, the
-/// way install wrote it. The hook file's version marker alone cannot tell: an
+/// way install wrote it. The hook file alone cannot tell: an
 /// install whose config edit failed, or a user who deleted the settings entry,
 /// leaves a current hook script the agent never runs.
 ///
 /// The config files are read from the directory the spec row's `path` is
 /// installed under, so the depth follows the row instead of a hand-kept count.
-fn hook_registration_is_current(
-    spec: &IntegrationSpec,
-    hook_path: &Path,
-    expected_version: u32,
-) -> io::Result<bool> {
+fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io::Result<bool> {
     let Some(dir) = ancestor(hook_path, spec.path.len()) else {
         return Ok(false);
     };
@@ -586,9 +576,7 @@ fn hook_registration_is_current(
     let registered = match spec.registration {
         RegistrationCheck::DirectoryLoaded => true,
         RegistrationCheck::Grok => grok_hook_config_is_valid(hook_path),
-        RegistrationCheck::Opencode => {
-            return opencode_tui_integration_is_valid(hook_path, expected_version);
-        }
+        RegistrationCheck::Opencode => return opencode_tui_integration_is_valid(hook_path),
         RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path),
         RegistrationCheck::AntigravityCli => {
             let expected_block = super::targets::antigravity_cli_hook_block(hook_path)?;
@@ -601,7 +589,10 @@ fn hook_registration_is_current(
                 &config(0)?,
                 HooksRoot::HooksKey,
                 &hook_event_commands(hook_path, spec.target.hook_events()),
-                &JsonHookShape::Nested { matcher: None },
+                &JsonHookShape::Nested {
+                    matcher: None,
+                    timeout_seconds: hook_timeout_seconds(spec)?,
+                },
             ) && codex_hooks_feature_enabled(&config(1)?)
         }
         RegistrationCheck::Json { root, shape } => {
@@ -625,12 +616,20 @@ fn hook_registration_is_current(
                 _ => hook_event_commands(hook_path, spec.target.hook_events()),
             };
             let shape = match shape {
-                JsonShape::Nested => JsonHookShape::Nested { matcher: None },
+                JsonShape::Nested => JsonHookShape::Nested {
+                    matcher: None,
+                    timeout_seconds: hook_timeout_seconds(spec)?,
+                },
                 JsonShape::NestedClaude => JsonHookShape::Nested {
                     matcher: Some(super::claude_settings::claude_session_start_matcher()),
+                    timeout_seconds: hook_timeout_seconds(spec)?,
                 },
-                JsonShape::Flat => JsonHookShape::Flat,
-                JsonShape::Direct => JsonHookShape::Direct,
+                JsonShape::Flat => JsonHookShape::Flat {
+                    timeout_millis: hook_timeout_millis(spec)?,
+                },
+                JsonShape::Direct => JsonHookShape::Direct {
+                    timeout_seconds: hook_timeout_seconds(spec)?,
+                },
                 JsonShape::Simple => JsonHookShape::Simple,
             };
             json_hook_commands_registered(&config(0)?, root, &expected, &shape)
@@ -639,9 +638,46 @@ fn hook_registration_is_current(
     Ok(registered)
 }
 
+fn hook_timeout(spec: &IntegrationSpec) -> io::Result<Duration> {
+    spec.hook_timeout.ok_or_else(|| {
+        io::Error::other(format!(
+            "integration spec for {:?} has no hook timeout",
+            spec.target
+        ))
+    })
+}
+
+fn hook_timeout_seconds(spec: &IntegrationSpec) -> io::Result<u64> {
+    Ok(hook_timeout(spec)?.as_secs())
+}
+
+fn hook_timeout_millis(spec: &IntegrationSpec) -> io::Result<u64> {
+    u64::try_from(hook_timeout(spec)?.as_millis())
+        .map_err(|_| io::Error::other("hook timeout exceeds millisecond configuration range"))
+}
+
+fn file_matches_asset(path: &Path, asset: &str) -> io::Result<bool> {
+    let installed = super::file_ops::is_file(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot stat {}: {error}", path.display()),
+        )
+    })?;
+    if !installed {
+        return Ok(false);
+    }
+    let content = fs::read(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot read {}: {error}", path.display()),
+        )
+    })?;
+    Ok(content.as_slice() == asset.as_bytes())
+}
+
 fn integration_state_for_path(
     path: &Path,
-    expected_version: u32,
+    expected_asset: &str,
 ) -> io::Result<(super::IntegrationStatusKind, Option<u32>)> {
     let installed = super::file_ops::is_file(path).map_err(|error| {
         io::Error::new(
@@ -653,10 +689,19 @@ fn integration_state_for_path(
         return Ok((super::IntegrationStatusKind::NotInstalled, None));
     }
 
-    let installed_version = fs::read_to_string(path)
+    let content = fs::read(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot read {}: {error}", path.display()),
+        )
+    })?;
+    let installed_version = std::str::from_utf8(&content)
         .ok()
-        .and_then(|content| parse_integration_version(&content));
-    let state = if installed_version.is_some_and(|version| version >= expected_version) {
+        .and_then(parse_integration_version);
+    // The marker is useful for diagnostics only. Exact bytes make dev and
+    // release builds share configs safely without one build trusting another's
+    // larger version number or relying on a manual bump after an asset edit.
+    let state = if content.as_slice() == expected_asset.as_bytes() {
         super::IntegrationStatusKind::Current
     } else {
         super::IntegrationStatusKind::Outdated
@@ -673,12 +718,15 @@ fn integration_state_for_path(
 pub(crate) fn integration_status_at(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
-    expected_version: u32,
 ) -> io::Result<super::IntegrationStatus> {
-    let (mut state, installed_version) = integration_state_for_path(&path, expected_version)?;
+    let spec = spec_for(target)?;
+    let expected_asset =
+        spec.assets.first().copied().ok_or_else(|| {
+            io::Error::other(format!("integration spec for {target:?} has no asset"))
+        })?;
+    let (mut state, installed_version) = integration_state_for_path(&path, expected_asset)?;
 
-    if state == super::IntegrationStatusKind::Current
-        && !hook_registration_is_current(spec_for(target)?, &path, expected_version)?
+    if state == super::IntegrationStatusKind::Current && !hook_registration_is_current(spec, &path)?
     {
         state = super::IntegrationStatusKind::Outdated;
     }
@@ -688,11 +736,12 @@ pub(crate) fn integration_status_at(
         path,
         state,
         installed_version,
-        expected_version,
     })
 }
 
-pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
+/// Parses the optional marker for logs. It does not determine whether an
+/// installed integration is current.
+fn parse_integration_version(content: &str) -> Option<u32> {
     content.lines().find_map(|line| {
         let marker_line = line
             .trim()
@@ -727,13 +776,39 @@ mod registration_tests {
     #[test]
     fn antigravity_integration_uses_the_canonical_agent_label() {
         assert_eq!(
-            integration_target_label(IntegrationTarget::AntigravityCli),
+            IntegrationTarget::AntigravityCli.label(),
             crate::agent::Agent::Antigravity.label()
         );
     }
 
+    /// Status compares the installed files with the bundled bytes and the
+    /// agent config with what install writes, so every target must read
+    /// Current straight after its own install.
     #[test]
-    fn bundled_integration_assets_match_expected_versions() {
+    fn every_target_reads_current_right_after_install() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        for spec in INTEGRATION_SPECS {
+            let label = spec.target.label();
+            let directory = paths.directory(spec.directory).expect("test precondition");
+            let agent_directory = match spec.directory {
+                DirectoryKey::PiExtension | DirectoryKey::OmpExtension => directory
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .expect("test precondition"),
+                _ => directory,
+            };
+            fs::create_dir_all(&agent_directory).expect("test precondition");
+            install_operation(&paths, spec.target)
+                .unwrap_or_else(|error| panic!("{label} install failed: {error}"));
+            let status = integration_status(&paths, spec.target)
+                .unwrap_or_else(|error| panic!("{label} status failed: {error}"));
+            assert_eq!(status.state, IntegrationStatusKind::Current, "{label}");
+        }
+    }
+
+    #[test]
+    fn bundled_integration_specs_register_their_assets() {
         for spec in INTEGRATION_SPECS {
             assert!(
                 !spec.assets.is_empty(),
@@ -741,10 +816,9 @@ mod registration_tests {
                 spec.target.label()
             );
             for (index, asset) in spec.assets.iter().enumerate() {
-                assert_eq!(
-                    parse_integration_version(asset),
-                    Some(spec.version),
-                    "{} bundled asset {index} must match its integration version",
+                assert!(
+                    parse_integration_version(asset).is_some(),
+                    "{} bundled asset {index} must carry diagnostic version metadata",
                     spec.target.label()
                 );
             }
@@ -801,17 +875,14 @@ mod registration_tests {
         shepr_test_support::ScratchDir::new(name).to_path_buf()
     }
 
-    fn write_current_hook(path: &Path) {
+    fn write_current_hook(target: IntegrationTarget, path: &Path) {
         fs::create_dir_all(path.parent().expect("test precondition")).expect("test precondition");
-        fs::write(
-            path,
-            format!("# {}1\n", super::super::INTEGRATION_VERSION_MARKER),
-        )
-        .expect("test precondition");
+        let asset = integration_asset(target).expect("integration asset");
+        fs::write(path, asset).expect("test precondition");
     }
 
     fn state(target: IntegrationTarget, hook: &Path) -> IntegrationStatusKind {
-        integration_status_at(target, hook.to_path_buf(), 1)
+        integration_status_at(target, hook.to_path_buf())
             .expect("stat hook")
             .state
     }
@@ -820,7 +891,7 @@ mod registration_tests {
     fn claude_hook_without_settings_entry_is_outdated() {
         let dir = base("claude");
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
-        write_current_hook(&hook);
+        write_current_hook(IntegrationTarget::Claude, &hook);
         assert_eq!(
             state(IntegrationTarget::Claude, &hook),
             IntegrationStatusKind::Outdated
@@ -859,7 +930,7 @@ mod registration_tests {
     fn claude_command_outside_the_installed_shape_is_outdated() {
         let dir = base("claude-shape");
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
-        write_current_hook(&hook);
+        write_current_hook(IntegrationTarget::Claude, &hook);
         let settings_path = dir.join("settings.json");
         let command = hook_command(&hook, Some("session"));
         let matcher = super::super::claude_settings::claude_session_start_matcher();
@@ -869,7 +940,7 @@ mod registration_tests {
         };
 
         write(serde_json::json!([
-            { "matcher": matcher, "hooks": [{ "type": "command", "command": command }] }
+            { "matcher": matcher, "hooks": [{ "type": "command", "command": command, "timeout": crate::limits::HOOK_TIMEOUT.as_secs() }] }
         ]));
         assert_eq!(
             state(IntegrationTarget::Claude, &hook),
@@ -879,7 +950,7 @@ mod registration_tests {
         // Claude has no per-hook disable switch, so an unknown `disabled` field
         // does not stop the hook running and does not unregister it.
         write(serde_json::json!([{ "matcher": matcher, "hooks": [
-            { "type": "command", "command": command, "disabled": true }
+            { "type": "command", "command": command, "timeout": crate::limits::HOOK_TIMEOUT.as_secs(), "disabled": true }
         ] }]));
         assert_eq!(
             state(IntegrationTarget::Claude, &hook),
@@ -909,7 +980,7 @@ mod registration_tests {
     fn codex_needs_the_hooks_entry_and_the_feature_flag() {
         let dir = base("codex");
         let hook = dir.join("shepr-agent-state.sh");
-        write_current_hook(&hook);
+        write_current_hook(IntegrationTarget::Codex, &hook);
         let entry = |action| {
             serde_json::json!([
                 { "hooks": [{ "type": "command", "command": hook_command(&hook, Some(action)), "timeout": 10 }] }
@@ -948,7 +1019,7 @@ mod registration_tests {
     fn kimi_needs_every_hook_table() {
         let dir = base("kimi");
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
-        write_current_hook(&hook);
+        write_current_hook(IntegrationTarget::Kimi, &hook);
         let config_path = dir.join("config.toml");
         let config = super::super::config_edit::build_kimi_config_with_hooks("", &hook)
             .expect("test precondition");
@@ -973,15 +1044,19 @@ mod registration_tests {
     fn mastracode_checks_flat_top_level_events() {
         let dir = base("mastracode");
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
-        write_current_hook(&hook);
+        write_current_hook(IntegrationTarget::Mastracode, &hook);
         let mut document = serde_json::Map::new();
+        let timeout_millis = hook_timeout_millis(
+            spec_for(IntegrationTarget::Mastracode).expect("test precondition"),
+        )
+        .expect("test precondition");
         for event_spec in integration_hook_events(IntegrationTarget::Mastracode) {
             let Some(action) = event_spec.action else {
                 continue;
             };
             document.insert(
                 event_spec.event.to_string(),
-                serde_json::json!([{ "type": "command", "command": hook_command(&hook, Some(action.as_str())) }]),
+                serde_json::json!([{ "type": "command", "command": hook_command(&hook, Some(action.as_str())), "timeout": timeout_millis, "description": super::super::config_edit::MASTRACODE_HOOK_DESCRIPTION }]),
             );
         }
         fs::write(
@@ -1213,7 +1288,7 @@ mod registration_tests {
     fn plugin_directory_targets_need_only_the_file() {
         let dir = base("pi");
         let plugin = dir.join("extensions").join("shepr-agent-state.ts");
-        write_current_hook(&plugin);
+        write_current_hook(IntegrationTarget::Pi, &plugin);
         assert_eq!(
             state(IntegrationTarget::Pi, &plugin),
             IntegrationStatusKind::Current

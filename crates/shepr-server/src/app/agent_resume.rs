@@ -103,12 +103,16 @@ impl App {
             .iter()
             .enumerate()
             .any(|(ws_idx, ws)| {
-                self.workspace_has_pending_agent_resume(ws)
-                    && self.resume_layout_area(ws_idx).is_some_and(|area| {
-                        self.pending_agent_resume_pane_infos(ws, area)
+                // A restored pane without usable geometry cannot be launched
+                // yet. Check this first so repeated loop passes do not walk its
+                // pane tree before the first layout or a nonzero resize.
+                self.resume_layout_area(ws_idx).is_some_and(|area| {
+                    self.workspace_has_pending_agent_resume(ws)
+                        && self
+                            .pending_agent_resume_pane_infos(ws, area)
                             .iter()
                             .any(|info| self.pane_awaits_agent_resume(ws, info.id))
-                    })
+                })
             })
     }
 

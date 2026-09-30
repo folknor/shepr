@@ -71,6 +71,48 @@ fn host_appearance_switch_requeries_the_host_theme() {
 }
 
 #[test]
+fn passive_host_events_do_not_dismiss_endpoint_errors() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let now = std::time::Instant::now();
+    state.set_endpoint_error("action failed", now);
+    let deadline = state.endpoint_error_deadline;
+
+    for event in [
+        RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        }),
+        RawInputEvent::OuterFocusGained,
+        RawInputEvent::HostDefaultColor {
+            kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
+            color: shepr_termio::host_term::theme::RgbColor {
+                r: 12,
+                g: 34,
+                b: 56,
+            },
+        },
+    ] {
+        state.handle_raw_events(vec![event]);
+        assert_eq!(state.endpoint_error.as_deref(), Some("action failed"));
+        assert_eq!(state.endpoint_error_deadline, deadline);
+    }
+
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+            .with_kind(crossterm::event::KeyEventKind::Release),
+    )]);
+    assert_eq!(state.endpoint_error.as_deref(), Some("action failed"));
+
+    let key = state.handle_raw_events(vec![RawInputEvent::Key(
+        shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty()),
+    )]);
+    assert!(state.endpoint_error.is_none());
+    assert!(key.repaint);
+}
+
+#[test]
 fn focus_gained_forces_a_full_redraw_only_when_configured() {
     for redraw in [false, true] {
         let mut config = Config::default();

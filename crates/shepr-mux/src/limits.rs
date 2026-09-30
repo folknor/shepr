@@ -146,6 +146,9 @@ pub(crate) const RECOVERY_SEQUENCE_LIMIT: usize = 128;
 /// alone is larger, it writes a compact history with no pane entries. The
 /// fingerprint in that compact form is a fixed SHA-256 digest.
 pub(crate) const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
+/// The session layout file's size bound, for saves and for the reads restore
+/// and snapshot recovery make, so a damaged file cannot allocate without limit.
+pub(crate) const MAX_SESSION_FILE_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum symlink hops when finding a writable session path; bounds cycles
 /// while allowing an ordinary chain of user-managed links.
 pub(crate) const MAX_SESSION_PATH_SYMLINK_HOPS: usize = 16;

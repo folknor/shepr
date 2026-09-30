@@ -356,6 +356,10 @@ impl SessionPersister {
 impl Drop for SessionPersister {
     /// Dropping without retiring still drains the queue and releases the
     /// lease before returning, so the directory is free for the next owner.
+    /// This can block until a queued save finishes. Callers that need to keep
+    /// a runtime worker responsive must move retirement itself to a blocking
+    /// thread; detaching here would release the lease while a write could
+    /// still be changing the files.
     fn drop(&mut self) {
         self.retire();
     }

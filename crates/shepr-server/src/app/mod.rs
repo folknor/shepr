@@ -51,8 +51,9 @@ pub(crate) struct Outcome {
 }
 
 use crate::limits::{
-    GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL,
-    PENDING_AGENT_RESUME_RETRY_INTERVAL, PENDING_AGENT_RESUME_THEME_WAIT,
+    DEFAULT_WORKSPACE_RETRY_MAX, DEFAULT_WORKSPACE_RETRY_MIN, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+    GIT_REPO_DISCOVERY_REFRESH_INTERVAL, PENDING_AGENT_RESUME_RETRY_INTERVAL,
+    PENDING_AGENT_RESUME_THEME_WAIT,
 };
 
 use tokio::sync::{Notify, mpsc};
@@ -92,6 +93,12 @@ pub struct App {
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     /// When deferred agent resumes may be attempted; see `resume_schedule`.
     pub(crate) resume_schedule: resume_schedule::ResumeSchedule,
+    /// The next time automatic workspace creation may retry after a failure;
+    /// the loop's deadline wakes it then.
+    default_workspace_retry_at: Option<Instant>,
+    /// The delay the last failed automatic creation waited out, doubled on
+    /// each consecutive failure up to its cap; `None` after a success.
+    default_workspace_retry_delay: Option<Duration>,
     /// Panes whose runtime was replaced since the server last synced pane
     /// focus (an agent resume starting its shell). The new runtime has not
     /// been told about focus; `sync_pane_focus` drains this and re-sends the
@@ -277,6 +284,8 @@ impl App {
                 Duration::from_millis(config.session().startup_per_agent_delay_ms.into()),
                 PENDING_AGENT_RESUME_RETRY_INTERVAL,
             ),
+            default_workspace_retry_at: None,
+            default_workspace_retry_delay: None,
             runtimes_replaced_panes: Vec::new(),
             session_saver: session::SessionSaver::new(persister, save_finished),
             hostname,
@@ -323,13 +332,23 @@ impl App {
     }
 
     /// Creates the workspace an empty session gets, sized for `geometry`.
-    /// False when the session already has a workspace or the creation failed.
+    /// False when the session already has a workspace, creation failed, or a
+    /// retry is still held by backoff.
     /// The caller chooses the geometry and settles the clients' locations and
     /// geometry controllers (`create_automatic_workspace` on the server loop).
     pub(crate) fn create_default_workspace(&mut self, geometry: SpawnGeometry) -> bool {
         if !self.state.workspaces.is_empty() {
+            self.default_workspace_retry_at = None;
+            self.default_workspace_retry_delay = None;
             return false;
         }
+        if self
+            .default_workspace_retry_at
+            .is_some_and(|retry_at| self.clock.now < retry_at)
+        {
+            return false;
+        }
+        self.default_workspace_retry_at = None;
 
         let cwd = self.resolve_new_terminal_cwd(None);
         let preserve_checkpoint =
@@ -337,6 +356,7 @@ impl App {
 
         match self.create_workspace(&cwd, geometry) {
             Ok(_index) => {
+                self.default_workspace_retry_delay = None;
                 // Callers include non-mutating API requests and client
                 // connects, so the shell projection is invalidated here.
                 self.state.mark_shell_projection_dirty();
@@ -349,6 +369,13 @@ impl App {
             }
             Err(err) => {
                 tracing::error!(error = %err, "failed to create default workspace");
+                let retry_delay = self
+                    .default_workspace_retry_delay
+                    .map_or(DEFAULT_WORKSPACE_RETRY_MIN, |delay| {
+                        delay.saturating_mul(2).min(DEFAULT_WORKSPACE_RETRY_MAX)
+                    });
+                self.default_workspace_retry_delay = Some(retry_delay);
+                self.default_workspace_retry_at = Some(self.clock.now + retry_delay);
                 false
             }
         }

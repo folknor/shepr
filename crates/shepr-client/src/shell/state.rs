@@ -826,12 +826,24 @@ impl ClientShellState {
     }
 
     pub(super) fn reveal_workspace(&mut self, workspace_id: &shepr_protocol::WorkspaceId) {
-        if self
-            .hits
-            .workspaces
-            .iter()
-            .any(|hit| hit.workspace_id == *workspace_id)
-        {
+        if self.endpoints.len() > 1 {
+            // The multi-endpoint sidebar scrolls a flattened row list with endpoint headers
+            // and workspace row gaps. An index in this endpoint's snapshot is not that list
+            // offset, so let the sidebar reveal the focused workspace from the next snapshot.
+            self.collapsed_endpoints.remove(&self.active_endpoint_id);
+            if self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_workspace_id.as_deref())
+                == Some(workspace_id.as_str())
+            {
+                self.reveal_focused_workspace = true;
+            }
+            return;
+        }
+        if self.hits.workspaces.iter().any(|hit| {
+            hit.endpoint_id == self.active_endpoint_id && hit.workspace_id == *workspace_id
+        }) {
             return;
         }
         let target = self.snapshot.as_deref().and_then(|snapshot| {

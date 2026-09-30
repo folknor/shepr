@@ -2,8 +2,8 @@ use super::*;
 use shepr_core::socket_path::fits_unix_socket_path;
 use std::thread;
 
-/// Paths whose root doubles as the XDG runtime directory the managed
-/// config directories are created in.
+/// Paths whose root doubles as the XDG runtime root; the managed config
+/// directories are created in the profile runtime directory under it.
 fn test_app_paths() -> shepr_config::AppPaths {
     let root = shepr_test_support::ScratchDir::new("remote-ssh");
     shepr_config::AppPaths::rooted_at(&root, Some(&root), None)
@@ -123,8 +123,12 @@ fn shared_ssh_transport_survives_helper_config_drop() {
     // Dropping one helper's config removes only its own directory: the
     // runtime directory the configs live in, and the other helper's
     // config, stay.
+    assert_eq!(
+        config_path.parent().and_then(Path::parent),
+        Some(paths.runtime_dir())
+    );
     assert!(
-        std::fs::metadata(paths.xdg_runtime_dir())
+        std::fs::metadata(paths.runtime_dir())
             .expect("stat runtime directory")
             .is_dir()
     );

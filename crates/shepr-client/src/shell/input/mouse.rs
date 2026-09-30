@@ -545,9 +545,14 @@ impl ClientShellState {
         &self,
         point: (u16, u16),
     ) -> Option<(Option<shepr_protocol::WorkspaceId>, u16)> {
+        let drop_bottom = if self.hits.new_workspace.height > 0 {
+            self.hits.new_workspace.y
+        } else {
+            self.hits.workspace_body.bottom()
+        };
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
-            || point.1 >= self.hits.new_workspace.y
+            || point.1 >= drop_bottom
             || self.hits.workspaces.iter().any(|hit| {
                 hit.endpoint_id != self.active_endpoint_id && super::contains(hit.rect, point)
             })
@@ -582,7 +587,7 @@ impl ClientShellState {
                 .map(|workspace| workspace.workspace_id.clone())
         });
         let row = last_hit.rect.bottom();
-        if row < self.hits.new_workspace.y {
+        if row < drop_bottom {
             slots.push((before, row));
         }
         slots
@@ -1557,7 +1562,14 @@ impl ClientShellState {
                     })
                     .cloned();
                 if let Some(hit) = scrollbar_hit {
-                    self.mode = ClientShellMode::Terminal;
+                    self.mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                        copy_mode.pane_id == hit.pane_id
+                            && self.focused_pane_id().as_deref() == Some(hit.pane_id.as_str())
+                    }) {
+                        ClientShellMode::Copy
+                    } else {
+                        ClientShellMode::Terminal
+                    };
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {

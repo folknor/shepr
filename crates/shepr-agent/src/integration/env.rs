@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
 use shepr_core::env::EnvVar;
-pub(crate) use shepr_core::pathutil::home_dir;
 
 #[derive(Clone, Debug)]
 struct DirectoryError {
@@ -94,6 +93,7 @@ pub(crate) enum DirectoryKey {
 #[derive(Clone, Debug)]
 pub struct AgentIntegrationPaths {
     directories: HashMap<DirectoryKey, CapturedDirectory>,
+    config_update_lock_dir: CapturedDirectory,
 }
 
 impl AgentIntegrationPaths {
@@ -103,6 +103,11 @@ impl AgentIntegrationPaths {
 
     fn resolve_with(read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>) -> Self {
         let environment = IntegrationEnvironment::capture(read_path);
+        let config_update_lock_dir =
+            resolve_config_update_lock_dir(&environment).map_err(|error| DirectoryError {
+                kind: error.kind(),
+                message: error.to_string(),
+            });
         let directories = [
             (DirectoryKey::PiExtension, pi_extension_dir(&environment)),
             (DirectoryKey::OmpExtension, omp_extension_dir(&environment)),
@@ -135,7 +140,10 @@ impl AgentIntegrationPaths {
             (key, result)
         })
         .collect();
-        Self { directories }
+        Self {
+            directories,
+            config_update_lock_dir,
+        }
     }
 
     pub(crate) fn directory(&self, key: DirectoryKey) -> io::Result<PathBuf> {
@@ -148,12 +156,24 @@ impl AgentIntegrationPaths {
             )),
         }
     }
+
+    pub(crate) fn config_update_lock_dir(&self) -> io::Result<PathBuf> {
+        match &self.config_update_lock_dir {
+            Ok(path) => Ok(path.clone()),
+            Err(error) => Err(io::Error::new(error.kind, error.message.clone())),
+        }
+    }
 }
 
-/// The config lock path shares these helpers; its environment input is read
-/// through the registry at that operation's boundary.
-pub(super) fn absolute_xdg_home(variable: EnvVar) -> io::Result<Option<PathBuf>> {
-    shepr_core::env::read_path(variable).map_err(io::Error::from)
+fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+    // Agent configs are shared by dev and release builds. Capture the same
+    // lock root as the agent paths so every operation in this launch uses one
+    // stable environment snapshot.
+    let state_home = match environment.path(EnvVar::XdgStateHome)? {
+        Some(path) => path,
+        None => environment.home_dir()?.join(".local/state"),
+    };
+    Ok(state_home.join("shepr").join("integration-locks"))
 }
 
 fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {

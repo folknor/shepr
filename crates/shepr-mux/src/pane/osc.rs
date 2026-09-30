@@ -239,7 +239,8 @@ impl Default for OscDebugTracker {
 
 /// `SHEPR_DEBUG_OSC_EVIDENCE`, read once per process under the environment
 /// policy (exactly `1`, `0`, `true` or `false`). Pane construction has no
-/// error path, so a refused value is logged and leaves the capture off.
+/// error path, so this optional debug-only capture flag warns and fails closed
+/// when refused; it cannot affect pane behavior.
 /// Pane runtime construction takes no launch-resolved settings from the
 /// server, so this is read at the first pane rather than at server startup.
 /// Pane children never see the variable (`pane::launch` scrubs it).
@@ -271,14 +272,11 @@ fn parse_osc_debug_event(body: &[u8]) -> Option<OscDebugEvent> {
 fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     let text = String::from_utf8_lossy(payload);
     let mut sanitized = String::new();
-    for ch in text
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .take(MAX_OSC_DEBUG_CHARS)
-    {
+    let mut visible_chars = text.chars().filter(|ch| !ch.is_control());
+    for ch in visible_chars.by_ref().take(MAX_OSC_DEBUG_CHARS) {
         sanitized.push(ch);
     }
-    if text.chars().count() > MAX_OSC_DEBUG_CHARS {
+    if visible_chars.next().is_some() {
         sanitized.push_str("...");
     }
     sanitized

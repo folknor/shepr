@@ -108,10 +108,7 @@ impl Scanner {
         while index < bytes.len() {
             if self.state == State::Ground {
                 // Fast path: only ESC leaves ground state.
-                // Keep this as a standard-library search: `memchr` is only a
-                // transitive vte dependency here, and calling it would add a
-                // direct, lockfile-tracked edge for one search per span.
-                match bytes[index..].iter().position(|&byte| byte == 0x1b) {
+                match bytes[index..].iter().position(|&b| b == 0x1b) {
                     Some(offset) => index += offset,
                     None => break,
                 }

@@ -9,12 +9,14 @@ pub(crate) enum Command {
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
-        Some((COMMAND_STOP, command)) => Some(Command::Stop {
-            expected_boot: super::matches::string(
+        Some((COMMAND_STOP, command)) => {
+            let expected_boot = super::matches::try_string(
                 command,
                 shepr_remote::option_name_from_flag(shepr_remote::FLAG_EXPECT_BOOT),
-            ),
-        }),
+            )
+            .ok()?;
+            Some(Command::Stop { expected_boot })
+        }
         _ => None,
     }
 }

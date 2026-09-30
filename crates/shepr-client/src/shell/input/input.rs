@@ -8,6 +8,21 @@ use shepr_termio::input::raw_input::RawInputEvent;
 // limits-exempt: this fixed tag identifies the local input source in the lease table.
 const LOCAL_INPUT_SOURCE: u8 = 0;
 
+fn is_user_input(event: &RawInputEvent) -> bool {
+    match event {
+        RawInputEvent::Key(key) => key.kind != KeyEventKind::Release,
+        RawInputEvent::Paste(_) => true,
+        RawInputEvent::Mouse(mouse) => mouse.kind != crossterm::event::MouseEventKind::Moved,
+        RawInputEvent::OuterFocusGained
+        | RawInputEvent::OuterFocusLost
+        | RawInputEvent::HostDefaultColor { .. }
+        | RawInputEvent::HostPaletteColors { .. }
+        | RawInputEvent::HostColorSchemeChanged(_)
+        | RawInputEvent::HostCellSizeReport { .. }
+        | RawInputEvent::Unsupported => false,
+    }
+}
+
 fn is_retained_selection_copy_key(key: &shepr_termio::input::TerminalKey) -> bool {
     matches!(key.code, KeyCode::Char('c' | 'C'))
         && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER)
@@ -227,7 +242,6 @@ impl ClientShellState {
         self.now = now;
         self.host_reports_all_keys = host_reports_all_keys;
         let mut outcome = ClientShellInput::default();
-        self.begin_input_batch(!inputs.is_empty(), &mut outcome);
         let mut accounting = PaneInputBatchAccounting::default();
         for input in inputs {
             if let Some(pixels) = input.pixel_mouse {
@@ -254,8 +268,12 @@ impl ClientShellState {
         outcome
     }
 
-    fn begin_input_batch(&mut self, has_events: bool, outcome: &mut ClientShellInput) {
-        if has_events && self.endpoint_error.take().is_some() {
+    fn dismiss_endpoint_error_for_input(
+        &mut self,
+        event: &RawInputEvent,
+        outcome: &mut ClientShellInput,
+    ) {
+        if is_user_input(event) && self.endpoint_error.take().is_some() {
             self.endpoint_error_deadline = None;
             outcome.repaint = true;
         }
@@ -268,6 +286,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
+        self.dismiss_endpoint_error_for_input(&event, outcome);
         if self.handle_machine_badge_event(&event, outcome) {
             return;
         }
@@ -353,7 +372,18 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
-        if self.copy_operation_in_flight {
+        if self.copy_operation_in_flight
+            && self.copy_mode_owns_input()
+            && !self.copy_mode_interrupt_key(&key)
+        {
+            if self.copy_input_queue.len() >= crate::limits::MAX_COPY_INPUT_QUEUE {
+                self.set_endpoint_error(
+                    "copy-mode input queue is full; later keys were ignored",
+                    self.now,
+                );
+                outcome.repaint = true;
+                return;
+            }
             self.copy_input_queue.push_back(key);
             return;
         }
@@ -1020,7 +1050,6 @@ impl ClientShellState {
         mouse.column = column;
         mouse.row = row;
         let mut outcome = ClientShellInput::default();
-        self.begin_input_batch(true, &mut outcome);
         let mut accounting = PaneInputBatchAccounting::default();
         let previous = self.host_mouse_pixels.replace(pixels);
         // clock-io-ok: this test-only entry stands in for the client loop.
@@ -1062,7 +1091,6 @@ impl ClientShellState {
         let now = std::time::Instant::now();
         self.now = now;
         let mut outcome = ClientShellInput::default();
-        self.begin_input_batch(!events.is_empty(), &mut outcome);
         let mut accounting = PaneInputBatchAccounting::default();
         for event in events {
             self.handle_raw_event(event, now, &mut outcome, &mut accounting);

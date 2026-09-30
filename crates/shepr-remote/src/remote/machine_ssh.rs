@@ -220,12 +220,13 @@ impl MachineSshConnector {
     }
 
     fn validate_local_setup(&self) -> io::Result<()> {
-        // Validate both paths at launch so an XDG_RUNTIME_DIR that can never hold the
+        // Validate both paths at launch so a runtime directory that can never hold the
         // local bridge socket or the shared control socket fails before the
         // endpoint's first scheduled connection attempt.
-        machine_bridge_path(self.paths.xdg_runtime_dir(), &self.label)?;
+        let runtime_dir = super::ssh::ensure_ssh_runtime_dir(&self.paths)?;
+        validate_machine_bridge_path(runtime_dir, &self.label)?;
         shepr_platform::shared_ssh_control_path(
-            self.paths.xdg_runtime_dir(),
+            runtime_dir,
             self.paths.config_file(),
             self.target.as_str(),
         )?;
@@ -261,8 +262,7 @@ impl MachineSshConnector {
         // while the client stayed open. Rebuild it as local setup rather than retrying
         // ssh forever with a path that no longer exists.
         // This repairs a removed Shepr config directory while its XDG runtime root
-        // still exists. Runtime-root recreation belongs to the login manager;
-        // RemoteSsh::new validates that root and returns a setup error if it is gone.
+        // still exists. The private profile runtime directory and config can be rebuilt.
         ensure_managed_ssh_config(state, &self.target, &self.paths)?;
         let ConnectorState {
             ssh,
@@ -364,14 +364,19 @@ impl MachineSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = machine_bridge_path(paths.xdg_runtime_dir(), label)?;
+        let path = machine_bridge_path(paths.runtime_dir(), label)?;
         let bridge = SshStdioBridge::start(
             target.clone(),
             remote_shepr,
             path.clone(),
             Some(ssh.options()),
         )?;
-        let stream = shepr_platform::ipc::connect_trusted_local_stream(&path)?;
+        // clock-io-ok: starting the bridge spent real time; what is left bounds the connect.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(super::attempt_deadline_passed());
+        }
+        let stream = shepr_platform::ipc::connect_trusted_local_stream_within(&path, remaining)?;
         establish(MachineSshStream {
             stream,
             bridge: MachineSshBridge { bridge },
@@ -427,8 +432,23 @@ fn bridge_name_fragment(label: &MachineLabel) -> String {
 /// distinct from the `shepr-ssh-` SSH config directories, whose sweep matches
 /// on that prefix.
 fn machine_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
-    let readable = format!("shepr-bridge-{}.sock", bridge_name_fragment(label));
-    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, "shepr-b.sock")
+    let (readable, short) = machine_bridge_names(label);
+    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, short)
+}
+
+fn validate_machine_bridge_path(
+    runtime_dir: &std::path::Path,
+    label: &MachineLabel,
+) -> io::Result<()> {
+    let (readable, short) = machine_bridge_names(label);
+    shepr_platform::validate_remote_bridge_endpoint_path(runtime_dir, &readable, short)
+}
+
+fn machine_bridge_names(label: &MachineLabel) -> (String, &'static str) {
+    (
+        format!("shepr-bridge-{}.sock", bridge_name_fragment(label)),
+        "shepr-b.sock",
+    )
 }
 
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {

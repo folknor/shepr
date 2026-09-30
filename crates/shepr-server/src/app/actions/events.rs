@@ -1,4 +1,86 @@
 use super::*;
+use crate::app::events::StateEvent;
+
+impl StateEvent {
+    /// The state part of `event`; `None` for the events the App applies itself
+    /// (a pane's death, a clipboard write, a Git refresh).
+    pub(crate) fn from_app_event(event: AppEvent) -> Option<Self> {
+        match event {
+            AppEvent::AgentProcessDetected {
+                pane_id,
+                agent,
+                observed_at,
+            } => Some(Self::AgentProcessDetected {
+                pane_id,
+                agent,
+                observed_at,
+            }),
+            AppEvent::StateChanged {
+                pane_id,
+                agent,
+                state,
+                visible_blocker,
+                process_exited,
+                observed_at,
+            } => Some(Self::StateChanged {
+                pane_id,
+                agent,
+                state,
+                visible_blocker,
+                process_exited,
+                observed_at,
+            }),
+            AppEvent::HookStateReported {
+                pane_id,
+                source,
+                agent_label,
+                state,
+                message,
+                seq,
+                session_ref,
+            } => Some(Self::HookStateReported {
+                pane_id,
+                source,
+                agent_label,
+                state,
+                message,
+                seq,
+                session_ref,
+            }),
+            AppEvent::AgentSessionReported {
+                pane_id,
+                source,
+                agent_label,
+                seq,
+                session_ref,
+                session_start_source,
+            } => Some(Self::AgentSessionReported {
+                pane_id,
+                source,
+                agent_label,
+                seq,
+                session_ref,
+                session_start_source,
+            }),
+            AppEvent::TerminalCwdReported { pane_id, cwd } => {
+                Some(Self::TerminalCwdReported { pane_id, cwd })
+            }
+            AppEvent::PaneDied { .. }
+            | AppEvent::ClipboardWrite { .. }
+            | AppEvent::GitStatusRefreshed { .. } => None,
+        }
+    }
+
+    pub(crate) fn pane_id(&self) -> PaneId {
+        match self {
+            Self::AgentProcessDetected { pane_id, .. }
+            | Self::StateChanged { pane_id, .. }
+            | Self::HookStateReported { pane_id, .. }
+            | Self::AgentSessionReported { pane_id, .. }
+            | Self::TerminalCwdReported { pane_id, .. } => *pane_id,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Event handling
@@ -61,26 +143,17 @@ impl AppState {
 
     /// Applies one state-level event and reports what it did to the terminal's
     /// effective agent state.
-    pub fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
+    pub(crate) fn handle_state_event(&mut self, event: StateEvent) -> StateUpdate {
         let now = self.clock_now;
         match event {
-            AppEvent::PaneDied { pane_id, .. } => {
-                // `App::handle_internal_event` removes dead panes itself,
-                // because only it can shut down the detached runtimes.
-                tracing::warn!(
-                    pane = pane_id.raw(),
-                    "PaneDied reached AppState::handle_app_event; the pane is not removed here"
-                );
-                StateUpdate::Unchanged
-            }
-            AppEvent::AgentProcessDetected {
+            StateEvent::AgentProcessDetected {
                 pane_id,
                 agent,
                 observed_at,
             } => self.update_terminal_state(pane_id, |terminal| {
                 Some(terminal.set_detected_agent_process_at(agent, observed_at))
             }),
-            AppEvent::StateChanged {
+            StateEvent::StateChanged {
                 pane_id,
                 agent,
                 state,
@@ -96,7 +169,7 @@ impl AppState {
                     observed_at,
                 ))
             }),
-            AppEvent::HookStateReported {
+            StateEvent::HookStateReported {
                 pane_id,
                 source,
                 agent_label,
@@ -132,7 +205,7 @@ impl AppState {
                     })
                 }
             }
-            AppEvent::AgentSessionReported {
+            StateEvent::AgentSessionReported {
                 pane_id,
                 source,
                 agent_label,
@@ -149,14 +222,7 @@ impl AppState {
                     now,
                 )
             }),
-            // Handled before this state-only handler, which keeps them for
-            // AppEvent exhaustiveness: a clipboard write is a host-local effect
-            // the HeadlessServer forwards to the foreground client, and git
-            // results are applied by the App's internal-event handler.
-            AppEvent::ClipboardWrite { .. } | AppEvent::GitStatusRefreshed { .. } => {
-                StateUpdate::Unchanged
-            }
-            AppEvent::TerminalCwdReported { pane_id, cwd } => {
+            StateEvent::TerminalCwdReported { pane_id, cwd } => {
                 let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
                     ws.pane_state(pane_id)
                         .map(|pane| pane.attached_terminal_id.clone())
@@ -169,6 +235,7 @@ impl AppState {
                 if terminal.cwd() != cwd.as_path() {
                     terminal.set_cwd(cwd);
                     self.mark_session_dirty();
+                    self.mark_shell_projection_dirty();
                 }
                 StateUpdate::Unchanged
             }
@@ -208,12 +275,14 @@ impl AppState {
         };
         if mutation.session_ref_changed {
             self.mark_session_dirty();
+            self.mark_shell_projection_dirty();
         }
         let agent_released = mutation.agent_released;
         let Some(change) = mutation.effective_state_change.or(unchanged_change) else {
             return StateUpdate::Unchanged;
         };
         self.record_agent_state_change_seq(&terminal_id, &change);
+        self.mark_shell_projection_dirty();
         if agent_released {
             StateUpdate::Released
         } else {
@@ -256,6 +325,13 @@ impl AppState {
             ))
         });
         update == StateUpdate::Released
+    }
+
+    /// Applies an `AppEvent` that carries state. State-level tests feed events
+    /// through this in place of the App event path.
+    #[cfg(test)]
+    pub(crate) fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
+        self.handle_state_event(StateEvent::from_app_event(event).expect("state event"))
     }
 
     /// Removes a dead pane by id and returns the terminals it detached, whose

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::ClientEndpointId;
 use super::health::{EndpointHealth, HealthAction};
+use super::writer::{EndpointReadActivity, NativeEndpointTransport};
 use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::ClientMessage;
 
@@ -22,6 +24,11 @@ pub(crate) struct EndpointConnection {
     pub(crate) generation: shepr_protocol::ConnectionGeneration,
     pub(crate) surface_active: bool,
     health: Option<EndpointHealth>,
+    /// Frame arrivals as the reader thread stamps them; a connection that has one takes
+    /// its health from it rather than from the client loop's processing.
+    read_activity: Option<Arc<EndpointReadActivity>>,
+    // Explicit detach paths use send_to before the registry is dropped.
+    detach_sent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,9 +67,10 @@ impl EndpointRegistry {
         registry
     }
 
-    /// Every connection that crosses SSH (the configured machines) gets heartbeats and a
-    /// silence deadline. The Local slot is a socket on this host: a dead server shows up
-    /// as a transport error, so it needs none.
+    /// The reader timestamps complete frames on machine connections before it queues them for
+    /// the client loop. Health deadlines therefore measure transport silence, not time spent
+    /// waiting for the client loop to process its event queue. Local uses a socket on this host
+    /// and reports a dead server as a transport error, so it needs no heartbeat.
     fn crosses_ssh(endpoint_id: &ClientEndpointId) -> bool {
         matches!(endpoint_id, ClientEndpointId::Ssh(_))
     }
@@ -93,6 +101,44 @@ impl EndpointRegistry {
         surface_active: bool,
         now: Instant,
     ) {
+        self.insert_with_activity(
+            endpoint_id,
+            transport,
+            generation,
+            surface_active,
+            None,
+            now,
+        );
+    }
+
+    pub(crate) fn insert_native(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        transport: NativeEndpointTransport,
+        generation: u64,
+        surface_active: bool,
+        now: Instant,
+    ) {
+        let read_activity = Some(transport.read_activity());
+        self.insert_with_activity(
+            endpoint_id,
+            transport,
+            generation,
+            surface_active,
+            read_activity,
+            now,
+        );
+    }
+
+    fn insert_with_activity(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        transport: impl EndpointTransport + 'static,
+        generation: u64,
+        surface_active: bool,
+        read_activity: Option<Arc<EndpointReadActivity>>,
+        now: Instant,
+    ) {
         let health = Self::crosses_ssh(&endpoint_id).then(|| EndpointHealth::new(now));
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
@@ -101,6 +147,8 @@ impl EndpointRegistry {
                 generation: generation.into(),
                 surface_active,
                 health,
+                read_activity,
+                detach_sent: false,
             },
         ) {
             previous.transport.disconnect();
@@ -119,11 +167,12 @@ impl EndpointRegistry {
         generation: u64,
         now: Instant,
     ) {
-        if let Some(health) = self
+        if let Some(connection) = self
             .connections
             .get_mut(endpoint_id)
             .filter(|connection| connection.generation == generation)
-            .and_then(|connection| connection.health.as_mut())
+            .filter(|connection| connection.read_activity.is_none())
+            && let Some(health) = connection.health.as_mut()
         {
             health.received(now);
         }
@@ -143,12 +192,14 @@ impl EndpointRegistry {
     pub(crate) fn tick_health(&mut self, now: Instant) {
         let actions = self
             .connections
-            .iter()
+            .iter_mut()
             .filter_map(|(endpoint_id, connection)| {
-                connection
-                    .health
-                    .as_ref()
-                    .map(|health| (endpoint_id.clone(), health.action(now)))
+                let health = connection.health.as_mut()?;
+                if let Some(read_activity) = &connection.read_activity {
+                    let (received_at, snapshot_received) = read_activity.observed();
+                    health.sync_reader_activity(received_at, snapshot_received);
+                }
+                Some((endpoint_id.clone(), health.action(now)))
             })
             .filter(|(_, action)| *action != HealthAction::None)
             .collect::<Vec<_>>();
@@ -209,13 +260,27 @@ impl EndpointRegistry {
         endpoint_id: &ClientEndpointId,
         message: &ClientMessage,
     ) -> EndpointSendOutcome {
+        let is_detach = matches!(message, ClientMessage::Detach);
+        if is_detach
+            && self
+                .connections
+                .get(endpoint_id)
+                .is_some_and(|connection| connection.detach_sent)
+        {
+            return EndpointSendOutcome::Sent;
+        }
         let result = self
             .connections
             .get_mut(endpoint_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "endpoint is unavailable"))
             .and_then(|connection| connection.transport.send(message));
         match result {
-            Ok(()) => EndpointSendOutcome::Sent,
+            Ok(()) => {
+                if is_detach && let Some(connection) = self.connections.get_mut(endpoint_id) {
+                    connection.detach_sent = true;
+                }
+                EndpointSendOutcome::Sent
+            }
             Err(error) => {
                 self.record_failure(endpoint_id, &error);
                 EndpointSendOutcome::NotSent
@@ -278,11 +343,15 @@ impl Drop for EndpointRegistry {
         // clock-io-ok: bound the best-effort Detach flush during shutdown.
         let deadline =
             crate::limits::Deadline::after(Instant::now(), ENDPOINT_DETACH_FLUSH_TIMEOUT);
-        // Detach is a courtesy on the way out: every connection is disconnected just
-        // below, and a server treats the closed connection as this client leaving, so a
-        // Detach that fails to send or flush changes nothing.
+        // Send one courtesy Detach per connection. An interactive detach may already have
+        // queued it, in which case the drop path only flushes and disconnects that connection.
+        // A server also treats the closed connection as this client leaving, so a Detach that
+        // fails to send or flush changes nothing.
         for connection in self.connections.values_mut() {
-            connection.transport.send(&ClientMessage::Detach).ok();
+            if !connection.detach_sent {
+                connection.transport.send(&ClientMessage::Detach).ok();
+                connection.detach_sent = true;
+            }
         }
         for connection in self.connections.values_mut() {
             connection.transport.flush(deadline.instant()).ok();
@@ -310,6 +379,7 @@ impl EndpointRegistry {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use super::*;
 
@@ -585,6 +655,81 @@ mod tests {
         assert!(registry.connection(&ssh_id).is_some());
     }
 
+    fn insert_with_reader(
+        registry: &mut EndpointRegistry,
+        sent: &Arc<Mutex<Vec<ClientMessage>>>,
+        now: Instant,
+    ) -> Arc<EndpointReadActivity> {
+        let activity = Arc::new(EndpointReadActivity::new(now));
+        registry.insert_with_activity(
+            ClientEndpointId::Ssh(profile()),
+            FakeTransport {
+                sent: Arc::clone(sent),
+                error: None,
+            },
+            2,
+            false,
+            Some(Arc::clone(&activity)),
+            now,
+        );
+        activity
+    }
+
+    #[test]
+    fn frames_stamped_by_the_reader_keep_a_stalled_loop_connected() {
+        let mut registry = EndpointRegistry::empty();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let now = Instant::now();
+        let activity = insert_with_reader(&mut registry, &sent, now);
+        let ssh_id = ClientEndpointId::Ssh(profile());
+        let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
+        registry.tick_health(ping_at);
+        assert!(matches!(
+            sent.lock().expect("test precondition").as_slice(),
+            [ClientMessage::HealthPing]
+        ));
+
+        // The snapshot and the pong arrive while the loop is stalled: the reader stamps them,
+        // the loop never processes them, and the next timer wake comes long after.
+        activity.record(now + Duration::from_millis(1), true);
+        activity.record(ping_at + Duration::from_millis(1), false);
+        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
+        assert!(registry.connection(&ssh_id).is_some());
+        assert!(registry.take_failures().is_empty());
+    }
+
+    #[test]
+    fn a_silent_reader_still_expires_the_connection() {
+        let now = Instant::now();
+        let ssh_id = ClientEndpointId::Ssh(profile());
+
+        // Nothing ever arrives: the first-snapshot deadline expires it.
+        let mut registry = EndpointRegistry::empty();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        insert_with_reader(&mut registry, &sent, now);
+        registry.tick_health(now + crate::limits::HEARTBEAT_TIMEOUT);
+        assert!(registry.connection(&ssh_id).is_none());
+        assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
+
+        // A snapshot arrived, then the link went quiet: the unanswered ping expires it, and
+        // frames the loop reports processing do not stand in for the reader's stamps.
+        let mut registry = EndpointRegistry::empty();
+        let activity = insert_with_reader(&mut registry, &sent, now);
+        let snapshot_at = now + Duration::from_millis(1);
+        activity.record(snapshot_at, true);
+        let ping_at = snapshot_at + crate::limits::HEARTBEAT_INTERVAL;
+        sent.lock().expect("test precondition").clear();
+        registry.tick_health(ping_at);
+        assert!(matches!(
+            sent.lock().expect("test precondition").as_slice(),
+            [ClientMessage::HealthPing]
+        ));
+        registry.received(&ssh_id, 2, ping_at + Duration::from_secs(1));
+        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
+        assert!(registry.connection(&ssh_id).is_none());
+        assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
+    }
+
     #[test]
     fn dropping_registry_detaches_every_connected_endpoint() {
         let local_sent = Arc::new(Mutex::new(Vec::new()));
@@ -615,6 +760,33 @@ mod tests {
         ));
         assert!(matches!(
             remote_sent.lock().expect("test precondition").as_slice(),
+            [ClientMessage::Detach]
+        ));
+    }
+
+    #[test]
+    fn an_interactive_detach_is_not_sent_again_on_drop() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = EndpointRegistry::new(
+            FakeTransport {
+                sent: Arc::clone(&sent),
+                error: None,
+            },
+            1,
+        );
+
+        assert_eq!(
+            registry.send(&ClientMessage::Detach),
+            EndpointSendOutcome::Sent
+        );
+        assert_eq!(
+            registry.send(&ClientMessage::Detach),
+            EndpointSendOutcome::Sent
+        );
+        drop(registry);
+
+        assert!(matches!(
+            sent.lock().expect("test precondition").as_slice(),
             [ClientMessage::Detach]
         ));
     }

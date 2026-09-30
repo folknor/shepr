@@ -15,7 +15,7 @@ pub(crate) use registry::*;
 pub use registry::{EndpointRegistry, EndpointTransport};
 pub use shepr_config::MachineLabel;
 pub(crate) use supervisor::*;
-pub(crate) use writer::NativeEndpointTransport;
+pub(crate) use writer::{EndpointReadActivity, NativeEndpointTransport};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClientEndpointId {
@@ -50,6 +50,18 @@ pub enum ClientEndpointStatus {
     Online,
     Reconnecting,
     Attention,
+}
+
+impl ClientEndpointStatus {
+    /// The status a failed connection attempt leaves: Attention for a failure that needs a
+    /// repair outside this client, Reconnecting for one a later attempt can outlive.
+    pub(crate) fn after_failure(failure: &shepr_remote::SshFailureDiagnostic) -> Self {
+        if failure.needs_attention() {
+            Self::Attention
+        } else {
+            Self::Reconnecting
+        }
+    }
 }
 
 #[cfg(test)]

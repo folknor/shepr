@@ -280,6 +280,11 @@ impl ClientRegistry {
     ) -> (Option<ClientConnection>, bool) {
         let was_foreground = self.foreground_client_id == Some(client_id);
         let removed = self.connections.remove(&client_id);
+        if let Some(writer) = removed.as_ref().and_then(|client| client.writer.as_ref()) {
+            // The reader thread holds a writer clone, so dropping the registry
+            // handles cannot by itself end the transport lifetime.
+            writer.close();
+        }
         self.remove_geometry_controllers_for(client_id);
         if was_foreground {
             self.foreground_client_id = None;
@@ -288,6 +293,8 @@ impl ClientRegistry {
     }
 
     pub(crate) fn clear(&mut self) {
+        // Shutdown queues its notice and flush barrier before clearing the
+        // registry; leave those transport handles alive long enough to drain.
         self.connections.clear();
         self.foreground_client_id = None;
         self.geometry_controllers.clear();
@@ -834,6 +841,36 @@ mod tests {
         let (removed, was_foreground) = registry.remove_client(second_id);
         assert!(removed.is_some());
         assert!(!was_foreground);
+    }
+
+    #[test]
+    fn removing_a_client_closes_transport_handles_still_cloned_by_its_reader() {
+        let mut registry = ClientRegistry::default();
+        let client_id = registry.allocate_client_id();
+        let (writer, control_rx, render_rx) = ClientWriter::test_pair();
+        let reader_control = writer.control.clone();
+        registry.insert(
+            client_id,
+            ClientConnection::new(
+                (80, 24),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                1,
+                Some(writer),
+            ),
+        );
+
+        let (removed, _) = registry.remove_client(client_id);
+        assert!(removed.is_some());
+        assert!(reader_control.send(vec![b'x']).is_err());
+        drop(reader_control);
+        assert!(matches!(
+            control_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert!(matches!(
+            render_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
 
     #[test]

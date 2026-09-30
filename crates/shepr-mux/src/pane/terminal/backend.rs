@@ -400,9 +400,32 @@ impl PaneTerminal {
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
         if offset_from_bottom > 0 {
             let mut remaining = offset_from_bottom.min(resize_recovery_probe_lines);
-            while remaining > 0 && terminal_visible_text(&mut core).trim().is_empty() {
-                core.terminal.scroll_viewport_delta(1);
-                remaining -= 1;
+            // Check the current viewport once; each step toward live output
+            // introduces just one new row at the bottom.
+            let viewport = core.terminal.scrollbar();
+            let mut scratch = String::new();
+            let viewport_has_text = (viewport.offset..viewport.offset.saturating_add(viewport.len))
+                .any(|row| {
+                    terminal_screen_row_has_text(&core.terminal, ScreenRow(row), &mut scratch)
+                });
+
+            if !viewport_has_text {
+                while remaining > 0 {
+                    let entering_row = core
+                        .terminal
+                        .scrollbar()
+                        .offset
+                        .saturating_add(viewport.len);
+                    core.terminal.scroll_viewport_delta(1);
+                    if terminal_screen_row_has_text(
+                        &core.terminal,
+                        ScreenRow(entering_row),
+                        &mut scratch,
+                    ) {
+                        break;
+                    }
+                    remaining -= 1;
+                }
             }
         }
         terminal_responses
@@ -948,6 +971,20 @@ impl PaneTerminal {
         }
         outcome
     }
+}
+
+fn terminal_screen_row_has_text(
+    terminal: &shepr_vt::Terminal,
+    row: ScreenRow,
+    scratch: &mut String,
+) -> bool {
+    let mut has_text = false;
+    terminal.visit_screen_row_text(row, scratch, |_, wide, text| {
+        if wide != shepr_vt::CellWide::SpacerTail && !text.trim().is_empty() {
+            has_text = true;
+        }
+    });
+    has_text
 }
 
 #[cfg(test)]

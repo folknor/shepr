@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
-use interprocess::local_socket::traits::{Listener as _, Stream as _};
+use interprocess::local_socket::traits::Listener as _;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
@@ -78,14 +78,11 @@ pub(crate) fn accept_client_connection(
 
     let client_id = clients.allocate_client_id();
 
-    if let Err(err) = stream.set_nonblocking(true) {
-        warn!(error = %err, "failed to set client stream nonblocking");
-        return Ok(());
-    }
-
     let should_quit = Arc::clone(should_quit);
     let server_event_tx = server_event_tx.clone();
     let config = Arc::clone(config);
+    // The listener is nonblocking for accept only, leaving this stream
+    // blocking for the handshake thread's deadline reader.
     std::thread::spawn(move || {
         if let Err(err) = client_transport::handle_client_handshake(
             stream,

@@ -122,7 +122,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Instal
     let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join(super::CLAUDE_SETTINGS_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
+    let _settings_lock = lock_config_for_update(&settings_path, paths)?;
     let existing_settings = if is_file(&settings_path)? {
         fs::read_to_string(&settings_path)?
     } else {
@@ -164,7 +164,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
     let hook_path = dir.join(CODEX_HOOK_INSTALL_NAME);
 
     let hooks_path = dir.join(super::CODEX_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
+    let _hooks_lock = lock_config_for_update(&hooks_path, paths)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -190,7 +190,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     let config_path = dir.join(super::CODEX_CONFIG_NAME);
-    let _config_lock = lock_config_for_update(&config_path)?;
+    let _config_lock = lock_config_for_update(&config_path, paths)?;
     let existing_config = if is_file(&config_path)? {
         fs::read_to_string(&config_path)?
     } else {
@@ -224,7 +224,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
     let config_path = dir.join(super::KIMI_CONFIG_NAME);
-    let _config_lock = lock_config_for_update(&config_path)?;
+    let _config_lock = lock_config_for_update(&config_path, paths)?;
     let existing_config = if is_file(&config_path)? {
         fs::read_to_string(&config_path)?
     } else {
@@ -262,7 +262,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
     let hook_path = hooks_dir.join(COPILOT_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join(super::COPILOT_SETTINGS_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
+    let _settings_lock = lock_config_for_update(&settings_path, paths)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -310,7 +310,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
     let hook_path = dir.join(DEVIN_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join(super::DEVIN_CONFIG_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
+    let _settings_lock = lock_config_for_update(&settings_path, paths)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -358,7 +358,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
     let hook_path = hooks_dir.join(DROID_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join(super::DROID_SETTINGS_NAME);
-    let _settings_lock = lock_config_for_update(&settings_path)?;
+    let _settings_lock = lock_config_for_update(&settings_path, paths)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -405,11 +405,12 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Inst
     }
 
     validate_tui_plugin_config(&dir)?;
-    let tui_config_edit = prepare_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC)?;
+    let tui_config_edit = prepare_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC, paths)?;
     let cli_config_edit = prepare_cli_plugin(
         &dir,
         &paths.directory(DirectoryKey::OpencodeState)?,
         super::OPENCODE_V2_TUI_PLUGIN_SPEC,
+        paths,
     )?;
 
     let plugins_dir = dir.join("plugins");
@@ -481,7 +482,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
     let hook_path = dir.join(CURSOR_HOOK_INSTALL_NAME);
 
     let hooks_path = dir.join(super::CURSOR_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
+    let _hooks_lock = lock_config_for_update(&hooks_path, paths)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({ "version": 1 }))?;
 
     if hooks_file.get("version").is_none() {
@@ -519,10 +520,6 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
     Ok(outcome)
 }
 
-pub(crate) fn mastracode_hook_command(hook_path: &Path, action: &str) -> String {
-    hook_command(hook_path, Some(action))
-}
-
 pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
     let mastracode_home = paths.directory(DirectoryKey::Mastracode)?;
     check_config_targets(&mastracode_home, config_file_names(Target::Mastracode)?)?;
@@ -536,7 +533,7 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
     let hook_path = hook_dir.join(MASTRACODE_HOOK_INSTALL_NAME);
 
     let hooks_path = mastracode_home.join(super::MASTRACODE_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
+    let _hooks_lock = lock_config_for_update(&hooks_path, paths)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = hooks_file.as_object_mut().ok_or_else(|| {
@@ -556,7 +553,7 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
         ensure_flat_command_hook(
             hooks,
             hook.event,
-            &mastracode_hook_command(&hook_path, action),
+            &hook_command(&hook_path, Some(action)),
             timeout_millis(integration_hook_timeout(Target::Mastracode)?)?,
         )?;
     }
@@ -586,7 +583,7 @@ pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Resu
     let hook_path = hooks_dir.join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
 
     let hooks_path = dir.join(super::ANTIGRAVITY_CLI_HOOKS_NAME);
-    let _hooks_lock = lock_config_for_update(&hooks_path)?;
+    let _hooks_lock = lock_config_for_update(&hooks_path, paths)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = hooks_file.as_object_mut().ok_or_else(|| {
@@ -614,10 +611,6 @@ pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Resu
     Ok(outcome)
 }
 
-pub(crate) fn antigravity_cli_hook_command(hook_path: &Path, action: &str) -> String {
-    hook_command(hook_path, Some(action))
-}
-
 /// Builds the Shepr-owned `hooks.json` block for Antigravity CLI.
 ///
 /// Every event Shepr registers takes a flat handler list; the `matcher`/`hooks`
@@ -631,7 +624,7 @@ pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> io::Result<Value> 
         };
         let handler = json!({
             "type": "command",
-            "command": antigravity_cli_hook_command(hook_path, action),
+            "command": hook_command(hook_path, Some(action)),
             "timeout": timeout_seconds,
         });
         block.insert(hook.event.to_string(), json!([handler]));

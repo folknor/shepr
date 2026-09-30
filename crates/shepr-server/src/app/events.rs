@@ -1,5 +1,48 @@
 use super::{App, RenderDemand};
+use shepr_agent::detect::{Agent, AgentState};
+use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
+use std::time::Instant;
+
+/// Events the pure data reducer can apply. Runtime removal, Git completion and
+/// clipboard delivery stay at the App boundary, outside this type.
+#[derive(Debug)]
+pub(crate) enum StateEvent {
+    AgentProcessDetected {
+        pane_id: PaneId,
+        agent: Agent,
+        observed_at: Instant,
+    },
+    StateChanged {
+        pane_id: PaneId,
+        agent: Option<Agent>,
+        state: AgentState,
+        visible_blocker: bool,
+        process_exited: bool,
+        observed_at: Instant,
+    },
+    HookStateReported {
+        pane_id: PaneId,
+        source: String,
+        agent_label: String,
+        state: AgentState,
+        message: Option<String>,
+        seq: Option<u64>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+    },
+    AgentSessionReported {
+        pane_id: PaneId,
+        source: String,
+        agent_label: String,
+        seq: Option<u64>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
+    },
+    TerminalCwdReported {
+        pane_id: PaneId,
+        cwd: shepr_mux::UsableCwd,
+    },
+}
 
 impl App {
     fn handle_git_status_refreshed(
@@ -71,12 +114,16 @@ impl App {
             return Self::render_demand_if(changed);
         }
 
+        let projection_before = self.state.shell_projection_revision;
         if let AppEvent::PaneDied { pane_id, .. } = &ev
             && !pane_exit_prepared
         {
             self.publish_pane_process_exit(*pane_id);
         }
 
+        let mut removed = false;
+        let mut state_changed = false;
+        let mut touched_pane = None;
         let session_was_dirty = self.state.session_dirty;
         let pane_removal_plan = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.state.prepare_pane_removal_by_id(*pane_id)
@@ -102,6 +149,7 @@ impl App {
             if let Some(plan) = pane_removal_plan {
                 match self.state.commit_pane_removal(&plan) {
                     crate::app::actions::PaneRemovalCommit::Removed(outcome) => {
+                        removed = true;
                         detached_terminal_ids = outcome.detached_terminal_ids;
                     }
                     crate::app::actions::PaneRemovalCommit::Stale => {
@@ -116,27 +164,35 @@ impl App {
                     }
                 }
             }
-        } else {
-            self.state.handle_app_event(ev);
+        } else if let Some(event) = StateEvent::from_app_event(ev) {
+            touched_pane = Some(event.pane_id());
+            state_changed =
+                self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         }
         if checkpointed_pane_exit {
             self.finish_checkpointed_pane_exit_after_event(session_was_dirty);
         }
-        self.sync_full_lifecycle_authority_detection_pauses();
-        if terminal_cwd_reported {
+        if let Some(pane_id) = touched_pane {
+            self.sync_pane_lifecycle_authority_detection_pause(pane_id);
+        }
+        let changed =
+            removed || state_changed || self.state.shell_projection_revision != projection_before;
+        if terminal_cwd_reported && changed {
             self.request_git_identity_refresh(self.clock.now);
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
 
         self.shutdown_detached_terminal_runtimes(&detached_terminal_ids);
-        self.state.mark_shell_projection_dirty();
-        RenderDemand::Full
+        if removed {
+            self.state.mark_shell_projection_dirty();
+        }
+        Self::render_demand_if(changed)
     }
 
     fn publish_pane_process_exit(&mut self, pane_id: shepr_core::layout::PaneId) {
         if self.state.publish_pane_process_exit_if_agent(pane_id) {
-            self.sync_full_lifecycle_authority_detection_pauses();
+            self.sync_pane_lifecycle_authority_detection_pause(pane_id);
             self.state.mark_shell_projection_dirty();
         }
     }
@@ -149,19 +205,22 @@ impl App {
         }
     }
 
-    pub(crate) fn sync_full_lifecycle_authority_detection_pauses(&self) {
-        for workspace in &self.state.workspaces {
-            for pane in workspace.panes().values() {
-                let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id) else {
-                    continue;
-                };
-                let Some(runtime) = self.terminal_runtimes.get(&pane.attached_terminal_id) else {
-                    continue;
-                };
-                runtime.set_full_lifecycle_authority_active(
-                    terminal.full_lifecycle_hook_authority_active(),
-                );
-            }
+    fn sync_pane_lifecycle_authority_detection_pause(&self, pane_id: PaneId) {
+        let Some(terminal_id) = self
+            .state
+            .workspaces
+            .iter()
+            .find_map(|workspace| workspace.terminal_id(pane_id))
+        else {
+            return;
+        };
+        if let (Some(terminal), Some(runtime)) = (
+            self.state.terminals.get(terminal_id),
+            self.terminal_runtimes.get(terminal_id),
+        ) {
+            runtime.set_full_lifecycle_authority_active(
+                terminal.full_lifecycle_hook_authority_active(),
+            );
         }
     }
 

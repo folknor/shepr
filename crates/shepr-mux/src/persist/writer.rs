@@ -14,6 +14,8 @@ struct HistoryFileStamp {
     length: u64,
     modified_seconds: i64,
     modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
 }
 
 impl HistoryFileStamp {
@@ -34,6 +36,8 @@ impl HistoryFileStamp {
             length: metadata.len(),
             modified_seconds: metadata.mtime(),
             modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
         }))
     }
 }
@@ -41,6 +45,109 @@ impl HistoryFileStamp {
 struct WrittenHistory {
     digest: Vec<u8>,
     file: HistoryFileStamp,
+}
+
+struct CachedLayoutFingerprint {
+    path: PathBuf,
+    stamp: Option<HistoryFileStamp>,
+    layout: Option<SnapshotLayoutFingerprint>,
+}
+
+#[derive(Clone)]
+struct SnapshotLayoutFingerprint {
+    has_workspaces: bool,
+    fingerprint: Option<String>,
+}
+
+#[derive(Default)]
+struct SnapshotFingerprintCache {
+    current: Option<CachedLayoutFingerprint>,
+    latest: Option<CachedLayoutFingerprint>,
+}
+
+impl SnapshotFingerprintCache {
+    fn current(&mut self, path: &Path) -> io::Result<Option<SnapshotLayoutFingerprint>> {
+        Self::read_or_reuse(path, &mut self.current)
+    }
+
+    fn latest(&mut self, path: &Path) -> io::Result<Option<SnapshotLayoutFingerprint>> {
+        Self::read_or_reuse(path, &mut self.latest)
+    }
+
+    fn read_or_reuse(
+        path: &Path,
+        cached: &mut Option<CachedLayoutFingerprint>,
+    ) -> io::Result<Option<SnapshotLayoutFingerprint>> {
+        let stamp = HistoryFileStamp::read(path)?;
+        if let Some(cached) = cached
+            && cached.path.as_path() == path
+            && cached.stamp == stamp
+        {
+            return Ok(cached.layout.clone());
+        }
+        // The writer owns the session lease, so its own publications update
+        // these entries directly. Metadata avoids rereading unchanged JSON on
+        // every save after the recovery interval; oversized or malformed
+        // files stay unknown and are handled conservatively by the caller.
+        let layout = if stamp.is_some() {
+            match super::io::read_session_file(path) {
+                Ok(content) => Some(content),
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        let layout = layout.map_or_else(
+            || {
+                stamp.map(|_| SnapshotLayoutFingerprint {
+                    has_workspaces: true,
+                    fingerprint: None,
+                })
+            },
+            |content| {
+                let snapshot = serde_json::from_str::<SessionSnapshot>(&content).ok();
+                Some(match snapshot {
+                    Some(snapshot) => SnapshotLayoutFingerprint {
+                        has_workspaces: !snapshot.workspaces.is_empty(),
+                        fingerprint: super::snapshot::layout_fingerprint(&snapshot),
+                    },
+                    None => SnapshotLayoutFingerprint {
+                        has_workspaces: true,
+                        fingerprint: None,
+                    },
+                })
+            },
+        );
+        *cached = Some(CachedLayoutFingerprint {
+            path: path.to_path_buf(),
+            stamp,
+            layout: layout.clone(),
+        });
+        Ok(layout)
+    }
+
+    fn remember_current(&mut self, path: &Path, snapshot: &SessionSnapshot) {
+        self.current = match HistoryFileStamp::read(path) {
+            Ok(Some(stamp)) => Some(CachedLayoutFingerprint {
+                path: path.to_path_buf(),
+                stamp: Some(stamp),
+                layout: Some(SnapshotLayoutFingerprint {
+                    has_workspaces: !snapshot.workspaces.is_empty(),
+                    fingerprint: super::snapshot::layout_fingerprint(snapshot),
+                }),
+            }),
+            Ok(None) | Err(_) => None,
+        };
+    }
+
+    fn forget_current(&mut self) {
+        self.current = None;
+    }
+
+    fn forget_latest(&mut self) {
+        self.latest = None;
+    }
 }
 
 /// What snapshot history needs around one write of the session file.
@@ -79,6 +186,8 @@ pub struct SessionWriter {
     /// rewritten and fsynced on every save otherwise, even when no pane printed
     /// anything.
     written_history: Option<WrittenHistory>,
+    /// Reuses parsed layout fingerprints while the writer owns unchanged files.
+    snapshot_fingerprints: SnapshotFingerprintCache,
     /// Whether the last history save had to trim scrollback or workspace
     /// shape to fit the file cap, so the log records transitions only.
     trimming_history: bool,
@@ -95,6 +204,7 @@ impl SessionWriter {
             protect_unloaded,
             lease: Some(lease),
             written_history: None,
+            snapshot_fingerprints: SnapshotFingerprintCache::default(),
             trimming_history: false,
         }
     }
@@ -118,8 +228,10 @@ impl SessionWriter {
         Ok(())
     }
 
-    fn preserve_snapshot_history(&self, now: SystemTime) {
-        if let Err(err) = preserve_snapshot_after_write(&self.path, now) {
+    fn preserve_snapshot_history(&mut self, now: SystemTime) {
+        if let Err(err) =
+            preserve_snapshot_after_write(&self.path, now, &mut self.snapshot_fingerprints)
+        {
             // The platform's session helpers also emit tracing events, but
             // cover save, clear and restore outcomes only. Keep this distinct
             // so a snapshot failure is not mislabeled as a failed session save.
@@ -198,6 +310,10 @@ impl SessionWriter {
         now: SystemTime,
     ) -> io::Result<()> {
         let mut failure = None;
+        if result.is_ok() {
+            self.snapshot_fingerprints
+                .remember_current(&self.path, snapshot);
+        }
         match result {
             Ok(super::io::Published::Durable) => {}
             // The new layout already replaced the old file; only its
@@ -240,13 +356,18 @@ impl SessionWriter {
     }
 
     fn prepare_snapshot_history(
-        &self,
+        &mut self,
         replacement: &SessionSnapshot,
         now: SystemTime,
     ) -> SnapshotHistoryPlan {
         // Preserve snapshot errors as their own tracing events; the platform's
         // session helpers emit through tracing too but label save outcomes.
-        match snapshot_history_decision(&self.path, Some(replacement), now) {
+        match snapshot_history_decision(
+            &self.path,
+            Some(replacement),
+            now,
+            &mut self.snapshot_fingerprints,
+        ) {
             Ok(SnapshotHistoryPlan::PreserveBeforeWrite) => {
                 match preserve_existing_in(
                     &self.path,
@@ -254,7 +375,10 @@ impl SessionWriter {
                     SNAPSHOT_LIMIT,
                     now,
                 ) {
-                    Ok(_) => SnapshotHistoryPlan::Skip,
+                    Ok(_) => {
+                        self.snapshot_fingerprints.forget_latest();
+                        SnapshotHistoryPlan::Skip
+                    }
                     Err(err) => {
                         tracing::warn!(
                             event = "persist.snapshot", subsystem = "persist", outcome = "error",
@@ -277,7 +401,7 @@ impl SessionWriter {
         }
     }
 
-    fn finish_snapshot_history(&self, plan: SnapshotHistoryPlan, now: SystemTime) {
+    fn finish_snapshot_history(&mut self, plan: SnapshotHistoryPlan, now: SystemTime) {
         match plan {
             SnapshotHistoryPlan::Skip | SnapshotHistoryPlan::PreserveBeforeWrite => {}
             SnapshotHistoryPlan::PreserveAfterWrite | SnapshotHistoryPlan::RetryAfterWrite => {
@@ -362,6 +486,7 @@ impl SessionWriter {
             crate::logging::session_clear_failed(&history_path, &err.to_string());
             return Err(err);
         }
+        self.snapshot_fingerprints.forget_current();
         crate::logging::session_cleared(&self.path);
         Ok(())
     }
@@ -410,6 +535,7 @@ fn snapshot_history_decision(
     path: &Path,
     replacement: Option<&SessionSnapshot>,
     now: SystemTime,
+    fingerprints: &mut SnapshotFingerprintCache,
 ) -> io::Result<SnapshotHistoryPlan> {
     let directory = super::io::snapshot_directory(path);
     let existing = match recovery_files(&directory) {
@@ -428,23 +554,19 @@ fn snapshot_history_decision(
         }
     }
     let latest_fingerprint = match latest {
-        Some(latest) => {
-            let bytes = std::fs::read(latest)?;
-            serde_json::from_slice::<SessionSnapshot>(&bytes)
-                .ok()
-                .and_then(|snapshot| super::snapshot::layout_fingerprint(&snapshot))
-        }
+        Some(latest) => fingerprints
+            .latest(latest)?
+            .and_then(|layout| layout.fingerprint),
         None => None,
     };
-    let previous = match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice::<SessionSnapshot>(&bytes).ok(),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err),
-    };
-    if previous
-        .as_ref()
-        .is_some_and(|snapshot| layout_differs_from_latest(snapshot, latest_fingerprint.as_ref()))
-    {
+    let previous = fingerprints.current(path)?;
+    if previous.as_ref().is_some_and(|layout| {
+        layout.has_workspaces
+            && layout_fingerprint_differs_from_latest(
+                layout.fingerprint.as_deref(),
+                latest_fingerprint.as_deref(),
+            )
+    }) {
         return Ok(SnapshotHistoryPlan::PreserveBeforeWrite);
     }
     if replacement
@@ -472,17 +594,21 @@ fn layout_fingerprint_differs_from_latest(fingerprint: Option<&str>, latest: Opt
     }
 }
 
-fn preserve_snapshot_after_write(path: &Path, now: SystemTime) -> io::Result<()> {
+fn preserve_snapshot_after_write(
+    path: &Path,
+    now: SystemTime,
+    fingerprints: &mut SnapshotFingerprintCache,
+) -> io::Result<()> {
     if matches!(
-        snapshot_history_decision(path, None, now)?,
+        snapshot_history_decision(path, None, now, fingerprints)?,
         SnapshotHistoryPlan::PreserveBeforeWrite
-    ) {
-        preserve_existing_in(
-            path,
-            &super::io::snapshot_directory(path),
-            SNAPSHOT_LIMIT,
-            now,
-        )?;
+    ) && preserve_existing_in(
+        path,
+        &super::io::snapshot_directory(path),
+        SNAPSHOT_LIMIT,
+        now,
+    )? {
+        fingerprints.forget_latest();
     }
     Ok(())
 }
@@ -579,11 +705,13 @@ fn preserve_existing_in(
         // Recovery-copy events use their own labels; the platform's session
         // helpers emit through tracing too but only cover session mutations.
         log_recovery_preserved(path, directory, &backup);
-        if let Err(err) = prune_backups(&older, keep) {
+        let backup_prune_error = prune_backups(&older, keep).err();
+        let orphan_prune_error = prune_orphaned_recovery_histories(directory, &backup).err();
+        if let Some(err) = backup_prune_error.or(orphan_prune_error) {
             // The new copy is durable, so preserve it and let the caller
             // complete its save or clear. The unloaded-session guard consumes
             // this copy once, and snapshot saves use their normal cadence;
-            // either path can prune it on a later preservation attempt.
+            // either path retries pruning on a later preservation attempt.
             log_recovery_prune_failure(path, directory, &err);
         }
         return Ok(true);
@@ -694,20 +822,58 @@ fn remove_recovery_history_copy(path: &Path) -> io::Result<()> {
     }
 }
 
-fn recovery_timestamp(name: &str) -> Option<u128> {
-    let fields = name.strip_prefix("session-")?.strip_suffix(".json")?;
-    let fields: Vec<_> = fields.split('-').collect();
-    if fields.len() == 2
-        && fields[0].len() == RECOVERY_TIMESTAMP_DIGITS
-        && fields[1].len() == RECOVERY_SEQUENCE_DIGITS
-        && fields
-            .iter()
-            .all(|field| !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit()))
-    {
-        fields[0].parse().ok()
-    } else {
-        None
+fn prune_orphaned_recovery_histories(directory: &Path, newest_layout: &Path) -> io::Result<()> {
+    let newest_key = newest_layout
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| recovery_copy_key(name, "session-"))
+        .ok_or_else(|| io::Error::other("invalid newest recovery layout name"))?;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(key) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| recovery_copy_key(name, "session-history-"))
+        else {
+            continue;
+        };
+        if key >= newest_key {
+            continue;
+        }
+        let layout = directory.join(recovery_filename(key.0, key.1));
+        match std::fs::symlink_metadata(&layout) {
+            Ok(metadata) if metadata.file_type().is_file() => continue,
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
+    Ok(())
+}
+
+fn recovery_timestamp(name: &str) -> Option<u128> {
+    recovery_copy_key(name, "session-").map(|(timestamp, _)| timestamp)
+}
+
+fn recovery_copy_key(name: &str, prefix: &str) -> Option<(u128, usize)> {
+    let fields = name.strip_prefix(prefix)?.strip_suffix(".json")?;
+    let (timestamp, sequence) = fields.split_once('-')?;
+    if timestamp.len() != RECOVERY_TIMESTAMP_DIGITS
+        || sequence.len() != RECOVERY_SEQUENCE_DIGITS
+        || !timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        || !sequence.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((timestamp.parse().ok()?, sequence.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -1258,19 +1424,22 @@ mod tests {
         writer
             .save_for_test(&snapshot(), Some(&history("one")))
             .expect("save");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o400))
-            .expect("test precondition");
+        // A rewrite replaces the file, so the inode tells whether one happened.
+        // (A chmod would not do as a marker: the stamp includes the change
+        // time, so it would itself count as an outside change.)
+        use std::os::unix::fs::MetadataExt;
+        let inode = || {
+            std::fs::metadata(&history_path)
+                .expect("test precondition")
+                .ino()
+        };
+        let written = inode();
         writer
             .save_for_test(&snapshot(), Some(&history("one")))
             .expect("save");
         assert_eq!(
-            std::fs::metadata(&history_path)
-                .expect("test precondition")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o400,
+            inode(),
+            written,
             "unchanged history should keep the file written by the previous save"
         );
 
@@ -1322,6 +1491,32 @@ mod tests {
         );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
+    }
+
+    #[test]
+    fn orphaned_history_copies_older_than_the_newest_layout_are_pruned() {
+        let scratch = shepr_test_support::ScratchDir::new("orphan-history-copies");
+        let directory = scratch.path();
+        let write = |name: String| {
+            std::fs::write(directory.join(name), "{}").expect("test precondition");
+        };
+        // A paired copy, an orphan older than the newest layout, the newest
+        // layout, and a history copy newer than it (a copy still being made).
+        write(recovery_filename(1, 0));
+        write(history_recovery_filename(1, 0));
+        write(history_recovery_filename(2, 0));
+        write(recovery_filename(3, 0));
+        write(history_recovery_filename(4, 0));
+
+        prune_orphaned_recovery_histories(directory, &directory.join(recovery_filename(3, 0)))
+            .expect("prune");
+
+        let exists = |name: String| directory.join(name).try_exists().expect("test stat");
+        assert!(exists(history_recovery_filename(1, 0)));
+        assert!(!exists(history_recovery_filename(2, 0)));
+        assert!(exists(history_recovery_filename(4, 0)));
+        assert!(exists(recovery_filename(1, 0)));
+        assert!(exists(recovery_filename(3, 0)));
     }
 
     #[test]

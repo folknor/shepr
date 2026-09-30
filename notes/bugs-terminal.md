@@ -56,92 +56,32 @@ Scope: vt-pty.
 
 `Scanner::scan` (`crates/shepr-vt/src/scan.rs`) finds the next ESC with
 `iter().position(|&b| b == 0x1b)`, while vte uses `memchr` on the same bytes. It
-runs on every byte of every pane's output, just before vte scans the same slice
-again. `memchr` is only a transitive dependency through vte, so using it needs a
-direct dependency edge in `shepr-vt/Cargo.toml` and a `Cargo.lock` update; a note
-beside the search says so. Take the edge (it adds no new crate to the build) and
-switch the search.
+runs on every PTY chunk of every pane in ground state, just before vte scans the
+same slice again. Switching to `memchr` was done once and reverted: the
+`shepr-vt-layer` dependency rule in `brokkr.toml` does not allow a direct
+`memchr` edge, and the layer allow lists are the owner's to extend. `memchr` is
+already in the build through vte, so the edge adds no crate. Needs the owner's
+decision on the allow list first; then the change is two lines.
 
-## TERM-014 - Deferred read effects block the PTY reader thread
+## TERM-016 - The dirty-collection hook is consumed even when collection falls back
 
-Hunter's severity: Low (perf smell). Scope: mux-pane.
+Scope: mux-pane.
 
-`PaneReadEffects::apply_deferred` runs as the read's `after_response_order` on
-the PTY actor thread. It runs `current_transient_default_color_owner` (a
-`foreground_job` `/proc` scan) for every OSC 10/11 set, and for OSC 7 a readlink
-plus `UsableCwd::new` (a `stat`, which can hang on a dead network mount). The
-ticket gate can also park the reader behind the sync-timeout timer's
-`spawn_blocking` task. No lock is held, as the comments say, but the reader loop,
-and so every write and resize for that pane, stalls meanwhile. A pane setting
-OSC 11 per frame scans `/proc` per read. Moving these to a per-pane worker
-(already ordered by tickets) would keep the reader IO-only.
-
-## TERM-015 - Resize scroll recovery rebuilds the whole screen text up to 8x rows times under the core lock
-
-Hunter's severity: Low (perf). Scope: mux-pane.
-
-`PaneTerminal::resize` (`terminal/backend.rs`), when the viewport was scrolled
-into history, loops up to `max(rows * 8, 24)` times calling
-`terminal_visible_text(&mut core)`, each running `render_state.update` (a full
-row copy, since the display offset changed) and building a `String` of the whole
-screen, while holding the core lock the PTY reader, rendering and detection wait
-on. A 60x200 pane can do 480 full-screen copies per resize. A per-row blank check
-through `visit_screen_row_text` on the rows entering the viewport would do it in
-O(rows).
-
-## TERM-016 - The output-writer seam does not do what the PTY reader does
-
-Hunter's severity: Low. Scope: mux-pane.
-
-`PaneOutputWriter`'s doc: "The PTY reader writes through one; so does anything
-else that feeds a pane its child's output", and `PaneRuntime::output_writer`:
-"feeds this pane its child's output, as the PTY reader does".
-`PaneOutputWrite::write` discards the whole `ProcessBytesResult` (terminal
-replies, render and title requests, clipboard writes, cwd reports, the
-synchronized-output timer) and never advances `detection_content_seq`. Its only
-users are tests (`shepr-server/src/test_support.rs` and this crate), so tests
-written against it silently skip the reader's effect path.
-
-Related: `with_child_io` writes `screen` before `PaneTerminal::new`, which
-discards only pending PTY replies, so title, clipboard, pwd or colour effects in
-the seeded screen surface as live effects of the first real write
-(`seed_history_ansi` uses `discard_core_effects` for this; `with_child_io` should
-too). And `on_next_dirty_collection`'s hook is consumed even when the collection
-then falls back (hyperlink present) and the snapshot is discarded.
+`on_next_dirty_collection`'s hook (`crates/shepr-mux/src/pane/terminal/backend.rs`)
+is taken before collection runs, and is consumed even when the collection then
+falls back (a hyperlink is present) and the snapshot is discarded. Take it only
+once the collected snapshot is kept. (The output-writer seam is now documented
+as parser-only and advances the detection revision.)
 
 ## TERM-017 - Smaller pane runtime items
 
 Scope: mux-pane.
 
-- `PaneState` doc says "Viewport state for a pane"; AGENTS.md defines it as only
-  the terminal link plus per-pane input flags, which is what it holds.
-- The `DetectorState::new` initial-state mismatch this hunter noted is filed
-  under AGENT-001, where the detection hunter traced its consequence.
+- `PaneState`'s doc says "Viewport state for a pane"; it holds only the terminal
+  link and per-pane input flags.
 - `try_send_focus_event` returns `true` when the send failed (the bool means
-  "focus reporting is on"); the only caller ignores it.
+  "focus reporting is on"); its only callers are tests.
 - `collect_dirty_patch_snapshot` checks for an odd revision and re-reads the
   revision after collecting, both while holding `content_write_lock`, which every
-  writer holds for its whole odd window, so neither check can fail. Harmless, but
-  it suggests a lock-free protocol that is not what runs.
-- `sanitized_osc_debug_payload` decides on the trailing `...` by counting all
-  chars, control characters included, while truncation counts only kept ones, so
-  a short payload with control characters gets a spurious ellipsis.
-- `SHEPR_DEBUG_OSC_EVIDENCE` with a refused value logs and stays off rather than
-  failing. It is an environment flag, not config, so outside the "config problem
-  fails the launch" rule, but it is the one launch-time setting in this scope
-  that falls back silently.
-
-## TERM-018 - A nested client in a pane of a client-socket-only server derives the wrong client socket
-
-Scope: mux-pane, config (residue of the pane socket export fix).
-
-Every pane now exports `SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` as the
-server resolved them. `shepr-config` gives the API variable precedence and
-derives the client socket from it, so in a pane of a server started with only a
-`SHEPR_CLIENT_SOCKET_PATH` override, a nested `shepr` client derives
-`<runtime>/shepr-client.sock` and misses its own server. The API variable cannot
-simply be dropped there: every agent integration reports through it. AGENTS.md
-names the limitation. Closing it needs the precedence rule to honour both
-variables when both are set and consistent (for example, derive only when the
-client variable is absent), which is a `shepr-config` change with its pinned
-tests.
+  writer holds for its whole odd window, so neither check can fail. It suggests a
+  lock-free protocol that is not what runs.

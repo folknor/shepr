@@ -46,6 +46,35 @@ pub(super) struct AggregateAgentTarget {
     pub(super) pane_id: shepr_protocol::PublicPaneId,
 }
 
+pub(super) fn agent_target_index(
+    targets: &[AggregateAgentTarget],
+    active_endpoint_id: &ClientEndpointId,
+    focused_pane_id: Option<&str>,
+    action: shepr_termio::input::KeybindAction,
+) -> Option<usize> {
+    use shepr_termio::input::KeybindAction;
+
+    match action {
+        KeybindAction::FocusAgent(index) => (index < targets.len()).then_some(index),
+        KeybindAction::PreviousAgent | KeybindAction::NextAgent if !targets.is_empty() => {
+            let current = targets.iter().position(|target| {
+                &target.endpoint_id == active_endpoint_id
+                    && Some(target.pane_id.as_str()) == focused_pane_id
+            });
+            match (current, action) {
+                (Some(index), KeybindAction::PreviousAgent) => {
+                    Some((index + targets.len() - 1) % targets.len())
+                }
+                (Some(index), KeybindAction::NextAgent) => Some((index + 1) % targets.len()),
+                (None, KeybindAction::PreviousAgent) => Some(targets.len() - 1),
+                (None, KeybindAction::NextAgent) => Some(0),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     _active_endpoint_id: &ClientEndpointId,
@@ -53,6 +82,12 @@ pub(super) fn aggregate_agent_rows<'a>(
 ) -> Vec<AggregateAgentRow<'a>> {
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
+            let workspaces = endpoint
+                .snapshot
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id.as_str())
+                .collect::<HashSet<_>>();
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
                 .into_iter()
                 .filter_map(move |pane_id| {
@@ -61,6 +96,11 @@ pub(super) fn aggregate_agent_rows<'a>(
                         .agents
                         .iter()
                         .find(|agent| agent.pane_id == pane_id)?;
+                    // These are the same records the sidebar can render: an agent row needs a
+                    // workspace for its label, while its pane label is optional.
+                    if !workspaces.contains(agent.workspace_id.as_str()) {
+                        return None;
+                    }
                     Some(AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -97,9 +137,10 @@ pub(super) fn online_agent_targets(
     active_endpoint_id: &ClientEndpointId,
     sort: shepr_config::AgentPanelSortConfig,
 ) -> Vec<AggregateAgentTarget> {
+    // Despite the historical name, this is the visible row order. Keeping stale rows here
+    // preserves displayed indices; focus_or_activate reports their unavailable state.
     aggregate_agent_rows(endpoints, active_endpoint_id, sort)
         .into_iter()
-        .filter(|row| !row.endpoint.stale())
         .map(|row| AggregateAgentTarget {
             endpoint_id: row.endpoint.endpoint_id.clone(),
             pane_id: row.agent.pane_id.clone(),

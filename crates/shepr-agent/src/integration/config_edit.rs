@@ -90,6 +90,9 @@ pub(crate) fn ensure_command_hook(
 // each agent's native format instead of normalizing user configuration.
 // Appends unconditionally: the caller strips entries carrying the command
 // with `remove_flat_command_hook` first.
+/// The description MastraCode's flat hook entries carry; status matches it.
+pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent state to Shepr";
+
 pub(crate) fn ensure_flat_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -106,7 +109,7 @@ pub(crate) fn ensure_flat_command_hook(
         "type": "command",
         "command": command,
         "timeout": timeout_ms,
-        "description": "Report MastraCode agent state to Shepr",
+        "description": MASTRACODE_HOOK_DESCRIPTION,
     }));
     Ok(())
 }

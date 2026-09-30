@@ -68,7 +68,9 @@ pub struct RestoredSession {
     /// Saved workspaces restore dropped (invalid layout, or no pane
     /// survived). The first save of this session overwrites the file those
     /// workspaces are still in, so a nonzero count tells the caller to back
-    /// the file up first.
+    /// the file up first. A pane pruned from a surviving workspace is not
+    /// included; callers need a separate damage signal before treating that
+    /// case as a partial restore.
     pub dropped_workspaces: usize,
 }
 
@@ -344,6 +346,10 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
         }
         valid
     });
+    // A pane pruned here may leave its workspace alive, so it does not affect
+    // `dropped_workspaces`; reporting it for that count would claim the whole
+    // workspace was dropped. The caller currently needs a separate damage
+    // signal to back up the source file for this case.
     // An invalid saved split ratio drops this one workspace, like every other
     // per-workspace restore defect below, rather than refusing the whole
     // session (which would lose every healthy workspace for one bad number) or

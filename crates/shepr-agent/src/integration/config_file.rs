@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::limits::MAX_CONFIG_SYMLINK_DEPTH;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
+use super::env::AgentIntegrationPaths;
 
 /// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
@@ -16,10 +17,13 @@ pub(super) struct ConfigUpdateLock {
 /// Serializes Shepr's read-modify-write of a user config across processes.
 /// Callers hold the returned guard from before reading the config through its
 /// atomic replacement to prevent concurrent edits from overwriting one another.
-pub(super) fn lock_config_for_update(path: &Path) -> io::Result<ConfigUpdateLock> {
+pub(super) fn lock_config_for_update(
+    path: &Path,
+    paths: &AgentIntegrationPaths,
+) -> io::Result<ConfigUpdateLock> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
-    let lock_path = config_update_lock_path(&target)?;
+    let lock_path = config_update_lock_path(&target, paths)?;
     // No lock means no edit: a lock directory that cannot be created or a
     // lock that cannot be taken fails the change instead of editing unlocked.
     let lock = shepr_platform::ipc::acquire_flock_lock(&lock_path, true).map_err(|error| {
@@ -35,18 +39,14 @@ pub(super) fn lock_config_for_update(path: &Path) -> io::Result<ConfigUpdateLock
     Ok(ConfigUpdateLock { _lock: lock })
 }
 
-fn config_update_lock_path(target: &Path) -> io::Result<PathBuf> {
-    // State storage keeps the lock identity stable across logins, so editors
-    // running in separate sessions still serialize on the same inode.
-    let state_home = match super::env::absolute_xdg_home(shepr_core::env::EnvVar::XdgStateHome)? {
-        Some(path) => path,
-        None => super::env::home_dir()?.join(".local/state"),
-    };
-    let lock_dir = state_home.join("shepr").join("integration-locks");
+fn config_update_lock_path(target: &Path, paths: &AgentIntegrationPaths) -> io::Result<PathBuf> {
     // Resolve an existing target or parent so two symlinked agent config
     // directories still key the same persistent lock file.
     let key = canonicalize_config_target(target)?;
-    Ok(shepr_platform::ipc::keyed_lock_path(&lock_dir, &key))
+    Ok(shepr_platform::ipc::keyed_lock_path(
+        &paths.config_update_lock_dir()?,
+        &key,
+    ))
 }
 
 /// Resolves existing ancestors while allowing the target or its parent to be

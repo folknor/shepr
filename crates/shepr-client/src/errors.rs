@@ -63,9 +63,9 @@ impl std::error::Error for ClientRunError {}
 /// Errors that can occur during client operation.
 #[derive(Debug)]
 pub enum ClientError {
-    /// A saved endpoint's local SSH transport cannot be configured for this launch.
+    /// A configured endpoint transport could not be prepared for this launch.
     EndpointSetup(io::Error),
-    /// Could not connect to the server's client socket.
+    /// A connection could not be prepared or established.
     ConnectionFailed(io::Error),
     /// A host terminal write failed while updating terminal modes or output.
     HostTerminal(io::Error),
@@ -91,14 +91,10 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientError::EndpointSetup(err) => {
-                write!(f, "failed to set up saved SSH endpoints: {err}")
+                write!(f, "failed to set up configured endpoint transport: {err}")
             }
             ClientError::ConnectionFailed(err) => {
-                write!(f, "failed to connect to server: {err}")?;
-                write!(
-                    f,
-                    "\nIs the shepr server running? Running `shepr` starts one."
-                )
+                write!(f, "endpoint connection setup failed: {err}")
             }
             ClientError::HostTerminal(err) => write!(f, "host terminal error: {err}"),
             ClientError::HandshakeRejected { error } => {
@@ -128,6 +124,17 @@ impl std::fmt::Display for ClientError {
 
 // Display includes nested causes, so leave the source chain empty to avoid repeating them.
 impl std::error::Error for ClientError {}
+
+/// The diagnostic an endpoint shows when its transport could not be set up after the
+/// connection was accepted (a stream clone or a reader thread that could not start).
+pub(crate) fn endpoint_setup_failure(error: &ClientError) -> shepr_remote::SshFailureDiagnostic {
+    match error {
+        ClientError::ConnectionFailed(error) | ClientError::EndpointSetup(error) => {
+            shepr_remote::SshFailureDiagnostic::from_error(error)
+        }
+        error => shepr_remote::SshFailureDiagnostic::from_message(error.to_string()),
+    }
+}
 
 impl From<shepr_protocol::FramingError> for ClientError {
     fn from(err: shepr_protocol::FramingError) -> Self {

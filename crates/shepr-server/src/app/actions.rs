@@ -14,7 +14,7 @@ use super::state::AppState;
 
 /// What applying an event did to a terminal's effective agent state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StateUpdate {
+pub(crate) enum StateUpdate {
     /// The effective state did not change.
     Unchanged,
     /// The effective state changed.

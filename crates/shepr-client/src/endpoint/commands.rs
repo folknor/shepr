@@ -41,6 +41,15 @@ pub(crate) struct EndpointCommandResult {
     pub(crate) result: Result<EndpointReply, ClientShellEndpointError>,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct EndpointCommandCancellation {
+    /// Commands rejected before a transport send was attempted.
+    pub(crate) unsent: Vec<String>,
+    /// Commands that were in flight or whose transport send failed. The server
+    /// may have received them, so their cancellation is reported as uncertain.
+    pub(crate) possibly_sent: Vec<String>,
+}
+
 #[derive(Default)]
 struct EndpointCommandLane {
     queued: VecDeque<QueuedCommand>,
@@ -126,16 +135,16 @@ impl EndpointCommands {
         endpoint_id: &ClientEndpointId,
         endpoints: &mut EndpointRegistry,
         now: Instant,
-    ) -> Vec<String> {
+    ) -> EndpointCommandCancellation {
         let lane = self.lanes.entry(endpoint_id.clone()).or_default();
-        let mut cancelled = Vec::new();
+        let mut cancelled = EndpointCommandCancellation::default();
         if lane.in_flight.is_some() {
             return cancelled;
         }
         while let Some(queued) = lane.queued.pop_front() {
             let ClientShellEndpointRequest { id, command } = *queued.request;
             if !endpoints.accepts(endpoint_id, queued.generation.get()) {
-                cancelled.push(id);
+                cancelled.unsent.push(id);
                 continue;
             }
             let request_id = RequestId::from(id);
@@ -145,7 +154,7 @@ impl EndpointCommands {
                 command,
             };
             if endpoints.send_to(endpoint_id, &message) != EndpointSendOutcome::Sent {
-                cancelled.push(request_id.to_string());
+                cancelled.possibly_sent.push(request_id.to_string());
                 continue;
             }
             lane.in_flight = Some(InFlightCommand {
@@ -181,17 +190,24 @@ impl EndpointCommands {
     /// Retire the complete source lane at source-off. The in-flight request is tombstoned for a
     /// late endpoint-local response; every queued request is cancelled before it can run in a
     /// later presentation epoch. Other endpoint lanes are deliberately untouched.
-    pub(crate) fn retire_lane(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
+    pub(crate) fn retire_lane(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+    ) -> EndpointCommandCancellation {
         let Some(lane) = self.lanes.get_mut(endpoint_id) else {
-            return Vec::new();
+            return EndpointCommandCancellation::default();
         };
-        let mut request_ids = Vec::new();
+        let mut cancelled = EndpointCommandCancellation::default();
         if let Some(command) = lane.in_flight.take() {
-            request_ids.push(command.key.request_id.to_string());
+            cancelled
+                .possibly_sent
+                .push(command.key.request_id.to_string());
             lane.retire(command.key);
         }
-        request_ids.extend(lane.queued.drain(..).map(|command| command.request.id));
-        request_ids
+        cancelled
+            .unsent
+            .extend(lane.queued.drain(..).map(|command| command.request.id));
+        cancelled
     }
 
     pub(crate) fn expire(&mut self, now: Instant) -> Vec<EndpointCommandResult> {
@@ -250,19 +266,27 @@ impl EndpointCommands {
 
     /// Disconnecting an endpoint also cancels its shell-pending requests. Connection generation
     /// rejection handles any late wire response after the lane itself is removed.
-    pub(crate) fn disconnect(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
+    pub(crate) fn disconnect(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+    ) -> EndpointCommandCancellation {
         let Some(lane) = self.lanes.remove(endpoint_id) else {
-            return Vec::new();
+            return EndpointCommandCancellation::default();
         };
-        let mut request_ids = lane
-            .queued
-            .into_iter()
-            .map(|command| command.request.id)
-            .collect::<Vec<_>>();
+        let mut cancelled = EndpointCommandCancellation {
+            unsent: lane
+                .queued
+                .into_iter()
+                .map(|command| command.request.id)
+                .collect(),
+            possibly_sent: Vec::new(),
+        };
         if let Some(command) = lane.in_flight {
-            request_ids.push(command.key.request_id.to_string());
+            cancelled
+                .possibly_sent
+                .push(command.key.request_id.to_string());
         }
-        request_ids
+        cancelled
     }
 }
 
@@ -506,7 +530,10 @@ mod tests {
 
         assert_eq!(
             commands.retire_lane(&endpoint()),
-            vec!["request-a", "queued-source"]
+            EndpointCommandCancellation {
+                unsent: vec!["queued-source".into()],
+                possibly_sent: vec!["request-a".into()],
+            }
         );
         assert!(!has_in_flight(&commands));
         assert!(
@@ -546,7 +573,10 @@ mod tests {
             .push_back(queued("queued-a", 1, boot_a()));
         assert_eq!(
             commands.disconnect(&endpoint()),
-            vec!["queued-a", "request-a"]
+            EndpointCommandCancellation {
+                unsent: vec!["queued-a".into()],
+                possibly_sent: vec!["request-a".into()],
+            }
         );
         assert!(!commands.lanes.contains_key(&endpoint()));
     }

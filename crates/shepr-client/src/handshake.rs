@@ -105,6 +105,9 @@ pub(super) fn do_handshake(
             .map_err(|error| hello_write_error(shepr_protocol::FramingError::Io(error)))?;
     }
 
+    // The hello's presentation flag is not the connection's link kind. A supervised Local
+    // reconnect also passes false here and currently gets the remote timeout; correcting that
+    // requires its caller to pass Local explicitly.
     let read_timeout = if surface_active {
         LOCAL_HANDSHAKE_READ_TIMEOUT
     } else {

@@ -134,6 +134,25 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
     best.map(|(_, agent, name)| (agent, name))
 }
 
+/// Blocking: scans descendants of the pane shell for job-control-stopped
+/// processes that still identify as agents. Call from a blocking context.
+pub fn suspended_agent_processes(child_pid: u32) -> Vec<Agent> {
+    let mut agents = Vec::new();
+    for process in proc_tree::suspended_processes(child_pid) {
+        let candidate = normalized_process_name(&process);
+        let Some(agent) = identify_agent(&candidate) else {
+            continue;
+        };
+        if agent == Agent::Letta && !is_interactive_letta_process(&process) {
+            continue;
+        }
+        if !agents.contains(&agent) {
+            agents.push(agent);
+        }
+    }
+    agents
+}
+
 /// Detect state using screen content plus OSC title/progress strings.
 pub fn detect_agent_with_osc(
     agent: Option<Agent>,

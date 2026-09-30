@@ -63,6 +63,10 @@ impl App {
                 .flatten(),
             self.pending_agent_resume_wakeup(),
             self.session_saver.deadline(),
+            // A failed automatic workspace creation retries when its backoff
+            // ends; a past retry time waits for the next wake instead.
+            self.default_workspace_retry_at
+                .filter(|retry_at| *retry_at > now),
             render_deadline,
         ]
         .into_iter()

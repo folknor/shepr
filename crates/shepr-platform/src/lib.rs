@@ -46,7 +46,7 @@ pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{
     RemoteSshConfigPaths, create_remote_ssh_config_dir, remote_bridge_endpoint_path,
     remote_ssh_config_paths, shared_ssh_control_path, ssh_control_path_under,
-    validate_ssh_runtime_dir,
+    validate_remote_bridge_endpoint_path, validate_ssh_runtime_dir,
 };
 pub use stderr_null::redirect_stderr_to_null;
 pub use terminal_environment::prefers_osc52_clipboard;

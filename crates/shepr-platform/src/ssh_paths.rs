@@ -17,7 +17,7 @@ pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths 
     }
 }
 
-/// Create an ephemeral SSH config directory under the validated XDG runtime
+/// Create an ephemeral SSH config directory under the validated private runtime
 /// directory. Each directory gets a random name so concurrent configured-machine
 /// bridges do not share a small per-process allocation limit. Callers remove
 /// it when done; the managed SSH owner also registers normal process-exit
@@ -123,22 +123,44 @@ fn ssh_config_dir_contents_owned(path: &Path, uid: u32) -> bool {
     true
 }
 
-/// Choose an endpoint socket path in the private XDG runtime directory. The
+/// Choose an endpoint socket path in shepr's private runtime directory. The
 /// token avoids collisions between concurrent bridges; the shorter name is
 /// used when the readable one would exceed Linux's socket path limit. The
 /// path is single-use, so bind it with
-/// [`crate::ipc::bind_single_use_private_socket`]. Each call first sweeps the
-/// sockets and locks such binds left behind in `runtime_dir` when their owner
-/// was killed; the owner is recorded in the lock sidecar rather than the name,
-/// so the name spends none of the socket path limit on it.
+/// [`crate::ipc::bind_single_use_private_socket`]. After confirming a path
+/// fits, allocation sweeps sockets and locks such binds left behind in
+/// `runtime_dir` when their owner was killed; the owner is recorded in the lock
+/// sidecar rather than the name, so the name spends none of the socket path
+/// limit on it.
 pub fn remote_bridge_endpoint_path(
     runtime_dir: &Path,
     readable_name: &str,
     short_name: &str,
 ) -> std::io::Result<PathBuf> {
     validate_ssh_runtime_dir(runtime_dir)?;
+    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0)?;
     super::ipc::sweep_abandoned_single_use_sockets(runtime_dir);
     let token = unpredictable_token()?;
+    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, token)
+}
+
+/// Checks that a fresh endpoint socket path can fit without sweeping the
+/// runtime directory or consuming a random token.
+pub fn validate_remote_bridge_endpoint_path(
+    runtime_dir: &Path,
+    readable_name: &str,
+    short_name: &str,
+) -> std::io::Result<()> {
+    validate_ssh_runtime_dir(runtime_dir)?;
+    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0).map(|_| ())
+}
+
+fn bridge_endpoint_path_with_token(
+    runtime_dir: &Path,
+    readable_name: &str,
+    short_name: &str,
+    token: u64,
+) -> std::io::Result<PathBuf> {
     let readable_name = with_name_token(readable_name, token);
     let short_name = with_name_token(short_name, token);
     let readable = runtime_dir.join(&readable_name);
@@ -177,7 +199,7 @@ pub(super) fn with_name_token(name: &str, token: u64) -> String {
 }
 
 /// Shared OpenSSH sockets outlive individual helpers. Keep them in the
-/// XDG runtime directory so isolated environments cannot reach a user's live
+/// private runtime directory so isolated environments cannot reach a user's live
 /// master, and reject a directory belonging to another uid, a symlink, or a
 /// directory accessible by others.
 pub fn shared_ssh_control_path(

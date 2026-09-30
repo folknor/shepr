@@ -4,9 +4,7 @@ use crate::agent::IntegrationTarget;
 use crate::limits::VERSION_PROBE_TIMEOUT;
 
 use super::env::AgentIntegrationPaths;
-use super::registry::{
-    action_label, agent_present, install_operation, integration_status, integration_target_label,
-};
+use super::registry::{action_label, agent_present, install_operation, integration_status};
 use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
 use super::version::{agent_version_requirement, enforce_agent_version};
 
@@ -24,7 +22,7 @@ use super::version::{agent_version_requirement, enforce_agent_version};
 /// timeout), so a server calls it off its startup path.
 pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
     for target in IntegrationTarget::all() {
-        let label = integration_target_label(target);
+        let label = target.label();
         match install_if_present(paths, target) {
             Ok(Some(output)) => {
                 for message in output.messages {
@@ -54,7 +52,7 @@ fn install_if_present(
 ) -> io::Result<Option<InstallOutput>> {
     if !agent_present(paths, target)? {
         tracing::debug!(
-            integration = integration_target_label(target),
+            integration = target.label(),
             "agent not present; integration skipped"
         );
         return Ok(None);
@@ -62,18 +60,17 @@ fn install_if_present(
     let status = integration_status(paths, target)?;
     if status.state == IntegrationStatusKind::Current {
         tracing::debug!(
-            integration = integration_target_label(target),
+            integration = target.label(),
             path = %status.path.display(),
             "integration is current"
         );
         return Ok(None);
     }
     tracing::info!(
-        integration = integration_target_label(status.target),
+        integration = status.target.label(),
         path = %status.path.display(),
         state = ?status.state,
         installed_version = ?status.installed_version,
-        expected_version = status.expected_version,
         "installing the agent integration"
     );
     install_target(paths, target).map(Some)
@@ -85,7 +82,7 @@ pub(crate) fn install_target(
 ) -> io::Result<InstallOutput> {
     let result = install_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
-    crate::logging::integration_action("install", integration_target_label(target), outcome);
+    crate::logging::integration_action("install", target.label(), outcome);
     result
 }
 

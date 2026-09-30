@@ -9,6 +9,7 @@ use serde_json::Value;
 use super::config_file::{
     ConfigUpdateLock, check_config_target, lock_config_for_update, write_config,
 };
+use super::env::AgentIntegrationPaths;
 use super::file_ops::{is_file, read_if_file};
 
 pub(crate) struct PluginConfigEdit {
@@ -66,6 +67,7 @@ fn validate_plugin_config(config_path: &Path, key: &str) -> io::Result<()> {
 pub(crate) fn prepare_tui_plugin(
     config_dir: &Path,
     plugin_spec: &str,
+    paths: &AgentIntegrationPaths,
 ) -> io::Result<PluginConfigEdit> {
     for path in tui_config_paths(config_dir) {
         if plugin_is_configured(&path, "plugin", plugin_spec) {
@@ -77,6 +79,7 @@ pub(crate) fn prepare_tui_plugin(
         config_dir.join(super::OPENCODE_TUI_CONFIG_NAME),
         "plugin",
         plugin_spec,
+        paths,
     )
 }
 
@@ -84,6 +87,7 @@ pub(crate) fn prepare_cli_plugin(
     config_dir: &Path,
     state_dir: &Path,
     plugin_spec: &str,
+    paths: &AgentIntegrationPaths,
 ) -> io::Result<Option<PluginConfigEdit>> {
     let path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
     check_config_target(&path)?;
@@ -95,7 +99,7 @@ pub(crate) fn prepare_cli_plugin(
     if !is_file(&path)? && cli_migration_pending(config_dir, state_dir)? {
         return Ok(None);
     }
-    prepare_plugin(path, "plugins", plugin_spec).map(Some)
+    prepare_plugin(path, "plugins", plugin_spec, paths).map(Some)
 }
 
 fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> io::Result<bool> {
@@ -109,9 +113,10 @@ fn prepare_plugin(
     config_path: PathBuf,
     key: &str,
     plugin_spec: &str,
+    paths: &AgentIntegrationPaths,
 ) -> io::Result<PluginConfigEdit> {
     check_config_target(&config_path)?;
-    let update_lock = lock_config_for_update(&config_path)?;
+    let update_lock = lock_config_for_update(&config_path, paths)?;
     let content = read_if_file(&config_path)?.unwrap_or_else(|| "{}\n".to_string());
     let root = parse_root(&content, &config_path)?;
     let object = root_object(&root, &config_path)?;
@@ -234,7 +239,8 @@ fn invalid_plugin_list(path: &Path) -> io::Error {
 
 #[cfg(test)]
 pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<PathBuf> {
-    prepare_tui_plugin(config_dir, plugin_spec)?.write()
+    let paths = AgentIntegrationPaths::resolve();
+    prepare_tui_plugin(config_dir, plugin_spec, &paths)?.write()
 }
 
 #[cfg(test)]
@@ -243,7 +249,8 @@ pub(crate) fn add_cli_plugin(
     state_dir: &Path,
     plugin_spec: &str,
 ) -> io::Result<Option<PathBuf>> {
-    prepare_cli_plugin(config_dir, state_dir, plugin_spec)?
+    let paths = AgentIntegrationPaths::resolve();
+    prepare_cli_plugin(config_dir, state_dir, plugin_spec, &paths)?
         .map(PluginConfigEdit::write)
         .transpose()
 }

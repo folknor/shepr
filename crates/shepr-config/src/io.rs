@@ -517,16 +517,14 @@ fn resolve_paths_from_env(
             } else {
                 runtime_dir_source.clone()
             };
-            // SHEPR_SOCKET_PATH selects the server endpoint first and keeps
-            // its derived client socket paired with that server. The client
-            // override selects a client socket only without an API override.
-            let client_socket_source = if api_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
-            } else if client_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(EnvVar::SheprClientSocketPath.name().to_owned())
-            } else {
-                runtime_dir_source.clone()
-            };
+            // Report the override that selected the client endpoint. A pane
+            // can export the ordinary runtime API path beside its distinct
+            // client-socket override, so the API variable alone does not
+            // always select the client socket.
+            let client_socket_source = server_address.override_variable().map_or_else(
+                || runtime_dir_source.clone(),
+                |variable| ConfigSource::EnvironmentVariable(variable.name().to_owned()),
+            );
             Ok(AppPaths {
                 config_dir,
                 state_dir,

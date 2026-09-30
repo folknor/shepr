@@ -66,6 +66,30 @@ pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
     foreground_job_from_members(process_group_id, members, process_argv)
 }
 
+/// Find job-control-stopped descendants of the pane shell. Once Ctrl-Z returns
+/// the terminal to the shell, the stopped job is no longer in the foreground
+/// process group, but its descendants remain in the shell's process tree.
+pub(super) fn suspended_processes(child_pid: u32) -> Vec<ForegroundProcess> {
+    process_tree_pids([child_pid], process_task_ids, process_task_children)
+        .into_iter()
+        .filter_map(|pid| {
+            let (_, name, state) = process_pgrp_comm_and_state(pid)?;
+            if pid == child_pid || state != 'T' {
+                return None;
+            }
+            let argv = process_state_allows_remote_memory_read(state)
+                .then(|| process_argv(pid))
+                .flatten();
+            Some(ForegroundProcess {
+                pid,
+                name,
+                cmdline: argv.as_ref().map(|parts| parts.join(" ")),
+                argv,
+            })
+        })
+        .collect()
+}
+
 fn foreground_job_from_members(
     process_group_id: u32,
     members: Vec<ProcGroupMember>,

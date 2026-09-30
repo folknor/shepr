@@ -79,14 +79,14 @@ mod tests {
     fn the_local_startup_notice_carries_the_whole_refusal() {
         let error = io::Error::other(format!(
             "the running shepr server is a different build.\n\n{}",
-            "To use this build here instead, stop the running server. Run `shepr server stop`, then run `shepr` again."
+            "To use this build here instead, stop the running server. Run the profile-specific `server stop` command, then run this build again."
         ));
         let notice = local_startup_notice(&error);
         assert!(
             notice.contains("configured machines stay available"),
             "{notice}"
         );
-        assert!(notice.contains("`shepr server stop`"), "{notice}");
+        assert!(notice.contains("server stop"), "{notice}");
         assert!(!notice.contains("--force"), "{notice}");
     }
 }

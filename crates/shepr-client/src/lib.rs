@@ -12,7 +12,8 @@
 //! - Handles ServerShutdown gracefully (clean exit, informative message returned for the
 //!   binary to print once the terminal is restored)
 //! - Handles server unreachable (clear error screen, not blank/hang)
-//! - Forwards OSC 52 clipboard writes from server to its own stdout
+//! - Forwards server clipboard writes through the host clipboard helper when available, and
+//!   uses OSC 52 when configured or as a fallback
 //!
 //! The binary launcher installs process-wide file logging before calling the
 //! client; client startup reuses that subscriber instead of installing one.
@@ -96,16 +97,21 @@ fn run_launched_client(
 
     let machines = config.machines().to_vec();
     let local_failure_policy = endpoint::LocalFailurePolicy::for_machines(&machines);
+    let mut initial_local_failure = None;
 
     let initial_stream = match shepr_platform::ipc::connect_trusted_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
         Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
+            // An absent or refusing Local socket is the ordinary "server not running" case:
+            // Local shows as Connecting and the supervisor attempts it at once, with its own
+            // guidance, rather than seeding a diagnostic from the raw connect error.
             warn!(%error, "Local is unavailable; keeping configured machines available");
             None
         }
         Err(error) => {
-            return Err(ClientRunError::Launch(io::Error::other(
-                ClientError::ConnectionFailed(error).to_string(),
+            return Err(ClientRunError::Launch(io::Error::new(
+                error.kind(),
+                ClientError::ConnectionFailed(error),
             )));
         }
     };
@@ -118,29 +124,38 @@ fn run_launched_client(
     let shell_surface_size = shell_config.initial_surface_size(host_size.cols, host_size.rows);
     // Healthy Local attaches directly; only an actual failure enters background recovery.
     // The accepted connection's config travels with its stream.
-    let initial = initial_stream
-        .map(|mut stream| {
-            let config = do_handshake(
-                &mut stream,
-                handshake::HandshakeGeometry {
-                    host: geometry,
-                    surface_size: shell_surface_size,
-                },
-                loop_config.settings.mouse_capture_active(),
-                true,
-                None,
-            )
-            .map_err(|error| io::Error::other(format!("endpoint local: {error}")))?;
-            Ok((stream, config))
-        })
-        .transpose();
-    let initial = match initial {
-        Ok(initial) => initial,
-        Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
-            warn!(%error, "Local handshake failed; keeping configured machines available");
-            None
-        }
-        Err(error) => return Err(ClientRunError::Launch(error)),
+    let mismatch_guidance = paths
+        .server_address()
+        .build_mismatch_guidance(&shepr_config::operator_entrypoint());
+    let initial = match initial_stream {
+        Some(mut stream) => match do_handshake(
+            &mut stream,
+            handshake::HandshakeGeometry {
+                host: geometry,
+                surface_size: shell_surface_size,
+            },
+            loop_config.settings.mouse_capture_active(),
+            true,
+            None,
+        ) {
+            Ok(config) => Some((stream, config)),
+            Err(error)
+                if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) =>
+            {
+                let error = endpoint::handshake_error(error, Some(&mismatch_guidance));
+                warn!(%error, "Local handshake failed; keeping configured machines available");
+                initial_local_failure =
+                    Some(shepr_remote::SshFailureDiagnostic::from_error(&error));
+                None
+            }
+            Err(error) => {
+                return Err(ClientRunError::Launch(endpoint::handshake_error(
+                    error,
+                    Some(&mismatch_guidance),
+                )));
+            }
+        },
+        None => None,
     };
 
     // A shell with configured machines can show connection notices without a server snapshot.
@@ -180,6 +195,7 @@ fn run_launched_client(
     let result = rt.block_on(async {
         run_client_loop(
             initial,
+            initial_local_failure,
             machines,
             local_failure_policy,
             geometry,
@@ -220,6 +236,7 @@ fn run_launched_client(
 /// - main loop: coordinates input, output, and server communication
 async fn run_client_loop(
     initial: Option<(LocalStream, Arc<shepr_config::ValidatedConfig>)>,
+    mut initial_local_failure: Option<shepr_remote::SshFailureDiagnostic>,
     machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_geometry: shepr_core::geometry::HostGeometry,
@@ -236,7 +253,7 @@ async fn run_client_loop(
         initial_geometry.exact,
     );
     let draw_host_cursor = should_draw_host_cursor(config.settings.host_cursor());
-    let local_unavailable = initial.is_none();
+    let mut local_unavailable = initial.is_none();
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
         terminal_geometry::bounded_cell_geometry(
             initial_cell_width_px,
@@ -287,10 +304,13 @@ async fn run_client_loop(
             .install_endpoint_config(&endpoint::ClientEndpointId::Local, Arc::clone(config));
     }
     if local_unavailable {
-        state.shell.set_endpoint_status(
-            &endpoint::ClientEndpointId::Local,
+        let status = initial_local_failure.as_ref().map_or(
             endpoint::ClientEndpointStatus::Connecting,
+            endpoint::ClientEndpointStatus::after_failure,
         );
+        state
+            .shell
+            .set_endpoint_status(&endpoint::ClientEndpointId::Local, status);
     }
     // Cell size reported by the host terminal, packed as width<<32 | height.
     // Zero means the host has not reported one.
@@ -298,7 +318,7 @@ async fn run_client_loop(
     let (stdin_mouse_capture_active, stdin_sgr_pixels_active) =
         state.host_modes.mouse_input_mirrors();
 
-    // Channel for events from the resize and server reader threads.
+    // Channel shared by the stdin, resize and server reader threads.
     let (event_tx, event_rx) =
         tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
     let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel::<
@@ -355,38 +375,76 @@ async fn run_client_loop(
 
     let write_stream = if let Some((stream, _)) = initial {
         let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
-        let transport = start_endpoint_transport(
+        match start_endpoint_transport(
             stream,
-            (),
             &event_tx,
             endpoint::ClientEndpointId::Local,
             1,
             surface_decoder,
-        )?;
-        let mut registry = endpoint::EndpointRegistry::new_at(transport, 1, launch_now);
-        registry.send(&ClientMessage::ClientShellFocus { focused: true });
-        registry
+        ) {
+            Ok(transport) => {
+                let mut registry = endpoint::EndpointRegistry::new_at(transport, 1, launch_now);
+                registry.send(&ClientMessage::ClientShellFocus { focused: true });
+                registry
+            }
+            Err(error)
+                if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) =>
+            {
+                warn!(%error, "Local transport setup failed; keeping configured machines available");
+                let diagnostic = errors::endpoint_setup_failure(&error);
+                state.shell.set_endpoint_status(
+                    &endpoint::ClientEndpointId::Local,
+                    endpoint::ClientEndpointStatus::after_failure(&diagnostic),
+                );
+                state.presentation = Presentation::Unavailable;
+                initial_local_failure = Some(diagnostic);
+                local_unavailable = true;
+                endpoint::EndpointRegistry::empty()
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         endpoint::EndpointRegistry::empty()
     };
     let mut supervisors = endpoint::EndpointSupervisors::new(&config.paths, &machines, launch_now)
         .map_err(ClientError::EndpointSetup)?;
     if local_failure_policy.reconnects_local() {
+        let connected_generation = write_stream
+            .connection(&endpoint::ClientEndpointId::Local)
+            .map(|connection| connection.generation.get());
+        // A launch attempt that failed after connecting is recorded as the outcome of
+        // generation 1, the way a supervisor Status event would record it, so the retry
+        // follows the same backoff instead of starting a redundant attempt at once.
+        let seeded_failure = connected_generation
+            .is_none()
+            .then(|| {
+                initial_local_failure
+                    .as_ref()
+                    .map(endpoint::ClientEndpointStatus::after_failure)
+            })
+            .flatten();
+        let generation = seeded_failure.map_or(connected_generation, |_| Some(1));
         supervisors.add_local(
             config.paths.server_address().client_socket().to_path_buf(),
-            write_stream
-                .connection(&endpoint::ClientEndpointId::Local)
-                .map(|connection| connection.generation.get()),
+            generation,
             launch_now,
         );
+        if let Some(status) = seeded_failure {
+            supervisors.record_status(&endpoint::ClientEndpointId::Local, 1, status, launch_now);
+        }
     }
-    if local_unavailable
-        && let Some(frame) = state.shell.compose(
+    if local_unavailable {
+        if let Some(failure) = initial_local_failure.as_ref() {
+            if failure.needs_attention() {
+                warn!(endpoint = "local", error = %failure, "endpoint needs attention");
+            }
+            present_handoff_unavailable(&mut state, format!("Local: {failure}"));
+        } else if let Some(frame) = state.shell.compose(
             state.reported_geometry.cols(),
             state.reported_geometry.rows(),
-        )
-    {
-        state.present_chrome_through_freeze(frame);
+        ) {
+            state.present_chrome_through_freeze(frame);
+        }
     }
     let next_surface_serial = 1_u64;
     let scheduled_activation = None;
@@ -510,9 +568,7 @@ impl ClientLoop {
             }
         }
 
-        // Clean exit (Ctrl+C). Send Detach before closing. The registry records a failed
-        // send against the endpoint, and its Drop sends Detach to every connection again.
-        self.write_stream.send(&ClientMessage::Detach);
+        // The registry owns the one best-effort Detach and flush during teardown.
         // Terminal restore writes and flushes through its clone of this output descriptor next
         // and logs its own failure, so a failure here would only be reported twice.
         self.state.output_writer.flush().ok();
@@ -617,11 +673,7 @@ impl ClientLoop {
         &mut self,
         err: &io::Error,
     ) -> Result<ClientLoopAction, ClientError> {
-        let Self { write_stream, .. } = self;
         info!(error = %err, "client terminal unavailable; detaching");
-        // A failed send is recorded against the endpoint, and the registry's Drop sends
-        // Detach again on the way out.
-        write_stream.send(&ClientMessage::Detach);
         Ok(ClientLoopAction::Exit)
     }
 
@@ -758,22 +810,40 @@ impl ClientLoop {
                     state.reported_geometry.cols(),
                     state.reported_geometry.rows(),
                 );
-                let reader_quit = writer.stop_handle();
-                write_stream.insert(endpoint_id.clone(), writer, generation, false, now);
+                let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
+                if let Err(error) = spawn_endpoint_reader(
+                    reader,
+                    event_tx,
+                    &writer,
+                    endpoint_id.clone(),
+                    generation,
+                    surface_decoder,
+                ) {
+                    let failure = errors::endpoint_setup_failure(&error);
+                    let status = endpoint::ClientEndpointStatus::after_failure(&failure);
+                    supervisors.record_status(&endpoint_id, generation, status, now);
+                    state.shell.set_endpoint_status(&endpoint_id, status);
+                    state.shell.set_machine_diagnostic(&endpoint_id, &failure);
+                    if status == endpoint::ClientEndpointStatus::Attention
+                        && state.shell.endpoint_is_active(&endpoint_id)
+                    {
+                        let message =
+                            format!("{}: {failure}", state.shell.endpoint_label(&endpoint_id));
+                        present_handoff_unavailable(state, message);
+                    } else if let Some(frame) = state.shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    ) {
+                        state.present_chrome(frame);
+                    }
+                    return Ok(ClientLoopAction::NextEvent);
+                }
+                write_stream.insert_native(endpoint_id.clone(), writer, generation, false, now);
                 if let Some(frame) = frame {
                     // Connecting changes no pane projection (the connection has no
                     // surface yet), only the machine list.
                     state.present_chrome(frame);
                 }
-                let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
-                spawn_endpoint_reader(
-                    reader,
-                    event_tx,
-                    &reader_quit,
-                    endpoint_id,
-                    generation,
-                    surface_decoder,
-                )?;
             }
         };
         Ok(ClientLoopAction::NextEvent)
@@ -1304,6 +1374,7 @@ impl ClientLoop {
             let mut outcome = shell.tick_selection_autoscroll(now);
             for expired in expired_endpoints {
                 if !shell.endpoint_is_active(&expired.endpoint_id) {
+                    outcome.repaint |= shell.cancel_endpoint_request(&expired.request_id);
                     continue;
                 }
                 let expired_outcome = shell.handle_endpoint_result_at(

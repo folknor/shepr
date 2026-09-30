@@ -13,15 +13,23 @@ pub(crate) enum Command {
 }
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
-    let root_json = super::matches::flag(matches, option_name_from_flag(FLAG_JSON));
+    let root_json = super::matches::try_flag(matches, option_name_from_flag(FLAG_JSON)).ok()?;
     match matches.subcommand() {
         None => Some(Command::Overview { json: root_json }),
-        Some((COMMAND_SERVER, scope)) => Some(Command::Server {
-            json: root_json || super::matches::flag(scope, option_name_from_flag(FLAG_JSON)),
-        }),
-        Some((COMMAND_CLIENT, scope)) => Some(Command::Client {
-            json: root_json || super::matches::flag(scope, option_name_from_flag(FLAG_JSON)),
-        }),
+        Some((COMMAND_SERVER, scope)) => {
+            let command_json =
+                super::matches::try_flag(scope, option_name_from_flag(FLAG_JSON)).ok()?;
+            Some(Command::Server {
+                json: root_json || command_json,
+            })
+        }
+        Some((COMMAND_CLIENT, scope)) => {
+            let command_json =
+                super::matches::try_flag(scope, option_name_from_flag(FLAG_JSON)).ok()?;
+            Some(Command::Client {
+                json: root_json || command_json,
+            })
+        }
         Some(_) => None,
     }
 }

@@ -886,6 +886,46 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
     })
 }
 
+/// Builds the same diagnostic payload for a state supplied by an integration
+/// hook. The shared converter keeps the rule and evidence fields aligned with
+/// screen-based explanations; the extra fields identify who supplied the
+/// effective state and why no screen rules were evaluated.
+pub fn hook_authority_explain_to_json_value(
+    agent_label: &str,
+    state: AgentState,
+    source: &str,
+    skip_reason: &str,
+) -> serde_json::Value {
+    // Preserve the raw state here: detect explain describes the detector's
+    // input, while the sidebar separately collapses Unknown to Idle.
+    let explain = DetectionExplain {
+        agent: Some(agent_label.to_string()),
+        state,
+        matched_rule: None,
+        screen_detection_skipped: true,
+        visible_idle: false,
+        visible_blocker: false,
+        visible_working: false,
+        skip_state_update: false,
+        skipped_update_reason: None,
+        fallback_reason: None,
+        evaluated_rules: Vec::new(),
+    };
+    let mut value = explain_to_json_value(&explain);
+    if let Some(fields) = value.as_object_mut() {
+        fields.insert(
+            "state_source".to_string(),
+            serde_json::json!("hook_authority"),
+        );
+        fields.insert("hook_source".to_string(), serde_json::json!(source));
+        fields.insert(
+            "screen_detection_skip_reason".to_string(),
+            serde_json::json!(skip_reason),
+        );
+    }
+    value
+}
+
 fn parse_manifest(content: &str) -> Result<AgentManifest, String> {
     let mut manifest = toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())?;
     manifest.compiled = Some(validate_manifest(&manifest)?);

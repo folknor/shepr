@@ -87,10 +87,13 @@ impl AppState {
 
     pub fn resize_pane(&mut self, ws_idx: usize, direction: NavDirection) {
         let area = shepr_mux::workspace::layout_rect(self.workspace_layout_area(ws_idx));
-        let resized = self
-            .workspaces
-            .get_mut(ws_idx)
-            .is_some_and(|workspace| workspace.resize_focused_pane(direction, 0.05, area));
+        let resized = self.workspaces.get_mut(ws_idx).is_some_and(|workspace| {
+            workspace.resize_focused_pane(
+                direction,
+                crate::limits::DEFAULT_PANE_RESIZE_AMOUNT,
+                area,
+            )
+        });
         if resized {
             self.mark_session_dirty();
         }

@@ -40,7 +40,15 @@ pub(super) fn api_client(context: &CliContext) -> ApiClient {
 }
 
 pub(super) fn restart_guidance(context: &CliContext) -> String {
-    context.server_address().build_mismatch_guidance()
+    context
+        .server_address()
+        .build_mismatch_guidance(&shepr_config::operator_entrypoint())
+}
+
+pub(super) fn attach_command(paths: &shepr_config::AppPaths) -> String {
+    paths
+        .server_address()
+        .attach_command(&shepr_config::operator_entrypoint())
 }
 
 pub(super) fn socket_label(context: &CliContext) -> String {

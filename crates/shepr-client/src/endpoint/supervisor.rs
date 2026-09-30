@@ -187,7 +187,11 @@ impl EndpointSupervisors {
     }
 
     pub(crate) fn add_local(&mut self, path: PathBuf, generation: Option<u64>, now: Instant) {
-        let mismatch_guidance = self.paths.server_address().build_mismatch_guidance().into();
+        let mismatch_guidance = self
+            .paths
+            .server_address()
+            .build_mismatch_guidance(&shepr_config::operator_entrypoint())
+            .into();
         let mut state = ReconnectState::new(
             ConnectTarget::Local {
                 path,
@@ -272,11 +276,7 @@ impl EndpointSupervisors {
                         EndpointSupervisorEvent::Status {
                             endpoint_id: task_endpoint_id,
                             generation,
-                            status: if failure.needs_attention() {
-                                ClientEndpointStatus::Attention
-                            } else {
-                                ClientEndpointStatus::Reconnecting
-                            },
+                            status: ClientEndpointStatus::after_failure(&failure),
                             message: failure,
                             connector,
                         }
@@ -426,8 +426,9 @@ fn connect_once(
             path,
             mismatch_guidance,
         } => {
-            let stream =
-                shepr_platform::ipc::connect_trusted_local_stream(path).map_err(|error| {
+            let remaining = attempt_time_remaining(deadline)?;
+            let stream = shepr_platform::ipc::connect_trusted_local_stream_within(path, remaining)
+                .map_err(|error| {
                     // An absent Local socket is transient, unlike a missing SSH install.
                     if error.kind() == std::io::ErrorKind::NotFound {
                         std::io::Error::new(
@@ -460,6 +461,18 @@ fn connect_once(
             )
         }),
     }
+}
+
+fn attempt_time_remaining(deadline: Instant) -> Result<Duration, std::io::Error> {
+    // clock-io-ok: what is left of the attempt's budget bounds the socket connect.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "endpoint connection attempt deadline passed",
+        ));
+    }
+    Ok(remaining)
 }
 
 /// What carries one endpoint connection, for the handshake's diagnostics.
@@ -528,9 +541,14 @@ fn establish(
     })
 }
 
+/// Classifies a failed handshake for the endpoint status. The launch's first Local handshake
+/// runs before any supervisor attempt and goes through here too, so both report alike.
 /// `mismatch_guidance` is the Local endpoint's way out of a build mismatch;
 /// a configured machine has none here, its bridge reports its own.
-fn handshake_error(error: crate::ClientError, mismatch_guidance: Option<&str>) -> std::io::Error {
+pub(crate) fn handshake_error(
+    error: crate::ClientError,
+    mismatch_guidance: Option<&str>,
+) -> std::io::Error {
     use crate::ClientError;
     use shepr_protocol::FramingError;
     let error = match error {
@@ -934,14 +952,17 @@ mod tests {
         let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error);
         assert!(diagnostic.needs_attention());
         let message = diagnostic.to_string();
+        // The commands name this build's own entry point, which for a test
+        // build is its running executable rather than the installed `shepr`.
+        let entrypoint = shepr_config::operator_entrypoint();
         for expected in [
-            "handshake failed",
-            "00000000deadbeef",
-            shepr_protocol::BUILD_ID,
-            "`shepr server stop`",
-            "`shepr`",
+            "handshake failed".to_owned(),
+            "00000000deadbeef".to_owned(),
+            shepr_protocol::BUILD_ID.to_owned(),
+            format!("`{entrypoint} server stop`"),
+            format!("`{entrypoint}`"),
         ] {
-            assert!(message.contains(expected), "{expected}: {message}");
+            assert!(message.contains(&expected), "{expected}: {message}");
         }
         assert!(!message.contains('\n'), "{message}");
     }

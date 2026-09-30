@@ -6,6 +6,19 @@ use shepr_protocol::command::{
 
 use super::endpoint::{Handled, HandlerResult, rejected, workspace_missing};
 
+/// A workspace label as the server stores it: trimmed, and an empty one
+/// clears the custom name so the automatic label returns, as a pane rename does.
+fn normalized_workspace_label(label: String) -> Option<String> {
+    let trimmed = label.trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.len() == label.len() {
+        Some(label)
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
 impl App {
     /// Creates a workspace and moves the requester onto it. Its first pane
     /// spawns at the requester's geometry (area and cell size), which is then
@@ -33,7 +46,7 @@ impl App {
         let index = self.create_workspace(&cwd, geometry).map_err(|err| {
             EndpointError::Rejected(format!("the workspace could not be created: {err}"))
         })?;
-        if let Some(label) = params.label
+        if let Some(label) = params.label.and_then(normalized_workspace_label)
             && let Some(workspace) = self.state.workspaces.get_mut(index)
         {
             workspace.set_custom_name(label);
@@ -65,7 +78,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(index) else {
             return Err(workspace_missing(&params.workspace_id));
         };
-        ws.set_custom_name(params.label);
+        ws.custom_name = normalized_workspace_label(params.label);
         crate::logging::workspace_renamed(&ws.id);
         self.schedule_session_save();
         let Some(workspace) = self.workspace_info(index) else {

@@ -89,9 +89,11 @@ question says that the restart ends the server's pane processes and that the
 layout is restored with fresh shells and agents resumed. Consent is asked on
 the terminal and defaults to keeping the server; with no terminal, or on
 refusal, the server is left running and unavailable and shepr says how to stop
-it. The stop names the boot identity that was observed, so a server that
-replaced it in the meantime is not stopped, and is offered again as a new
-occupant. Unreachable machines fail soft. With
+it. Guidance uses `shepr` for a release build and the running executable path
+for a dev build (or `brokkr run --` if the path cannot be resolved), with the
+selected socket override. The stop names the boot identity that was observed,
+so a server that replaced it in the meantime is not stopped, and is offered
+again as a new occupant. Unreachable machines fail soft. With
 machines configured, losing the local server does not end the client either:
 it keeps serving the remote machines and reconnects once the local server is
 restarted.
@@ -183,7 +185,9 @@ locations; a dev build uses sibling `shepr-dev` directories, so it has its own
 sockets, saved layout and history with no flag. Config, machines included, is
 shared by every profile. The build identity also covers the profile
 as well as the source, so a dev and a release build never talk to each other's
-server: one that is reached anyway is refused with guidance.
+server: one that is reached anyway is refused with guidance naming the current
+profile's entry point (`shepr` for release, the running executable path for
+dev).
 
 Run it with plain `brokkr run -- [<command>]`, including from inside a pane
 of the installed server. The dev client launches the `shepr-server` beside it
@@ -193,11 +197,14 @@ in `target/debug`, which `brokkr run` does not build: build it first with
 which normally win over the per-profile runtime directory, and also
 `SHEPR_BUILD_PROFILE`, the profile (`release` or `dev`) of the server that owns
 the pane. A process whose own profile differs from that marker ignores both
-socket variables and resolves its own profile's runtime directory. The API
-variable takes precedence and derives the client socket, so in a pane of a
-server started with only a client socket override, a nested `shepr` client
-derives the wrong client socket; the API variable stays exported anyway, since
-every agent integration reports through it.
+socket variables and resolves its own profile's runtime directory.
+`SHEPR_SOCKET_PATH` normally selects the API socket and derives the client
+socket. When both variables are set and the API path is exactly the profile's
+runtime `shepr.sock`, `SHEPR_CLIENT_SOCKET_PATH` selects the client socket. This
+keeps a nested client on a server started with only a client socket override.
+A non-runtime API path still takes precedence, so a user can set
+`SHEPR_SOCKET_PATH` inside a pane to select another server. The API variable
+stays exported because every agent integration reports through it.
 
 - Socket variables with no marker (set by a user or a script) and ones with a
   matching marker still win over the runtime directory.

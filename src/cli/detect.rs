@@ -6,7 +6,7 @@ use clap::ArgMatches;
 
 use shepr_api::schema::{DetectionCapture, ErrorBody, ErrorResponse, Method, PaneTarget, Request};
 
-use super::matches::{flag, string};
+use super::matches::{try_flag, try_string};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -28,14 +28,14 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
         Some(("capture", command)) => Some(Command::Capture {
             // The spec marks the pane required; `None` means spec and handler disagree.
-            pane: string(command, "pane")?,
+            pane: try_string(command, "pane").ok()??,
         }),
         Some(("explain", command)) => Some(Command::Explain(ExplainArgs {
-            pane: string(command, "pane"),
-            file: string(command, "file"),
-            agent: string(command, "agent"),
-            json: flag(command, "json"),
-            verbose: flag(command, "verbose"),
+            pane: try_string(command, "pane").ok()?,
+            file: try_string(command, "file").ok()?,
+            agent: try_string(command, "agent").ok()?,
+            json: try_flag(command, "json").ok()?,
+            verbose: try_flag(command, "verbose").ok()?,
         })),
         _ => None,
     }

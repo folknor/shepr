@@ -20,6 +20,7 @@ impl ClientShellState {
         } else {
             Rect::new(0, 1, cols, rows.saturating_sub(2))
         };
+        let sidebar_collapsed = layout.sidebar.width > 0 && self.sidebar_collapsed;
         let valid_navigation_target = self.mode == ClientShellMode::Navigate
             && self
                 .navigate_workspace_id
@@ -48,7 +49,7 @@ impl ClientShellState {
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
-            sidebar_collapsed: false,
+            sidebar_collapsed,
             sidebar_section_split: self.sidebar_section_split,
             selected_workspace_id: self
                 .navigate_workspace_id
@@ -59,14 +60,24 @@ impl ClientShellState {
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
         };
-        super::endpoint_sidebar::render_expanded(
-            &mut buffer,
-            sidebar,
-            local_snapshot.or(self.snapshot.as_deref()),
-            &self.config,
-            &mut render_state,
-            &mut self.hits,
-        );
+        if sidebar_collapsed {
+            super::endpoint_sidebar::render_collapsed(
+                &mut buffer,
+                sidebar,
+                &self.config,
+                &mut render_state,
+                &mut self.hits,
+            );
+        } else {
+            super::endpoint_sidebar::render_expanded(
+                &mut buffer,
+                sidebar,
+                local_snapshot.or(self.snapshot.as_deref()),
+                &self.config,
+                &mut render_state,
+                &mut self.hits,
+            );
+        }
         if !self.config.mouse_capture {
             self.hits = ShellHitMap::default();
         }
@@ -75,10 +86,14 @@ impl ClientShellState {
                 .endpoint_status(&self.active_endpoint_id)
                 .unwrap_or(ClientEndpointStatus::Connecting);
             let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
-            format!(
-                "{}: {label}. Select a connected machine.",
-                self.active_endpoint_label()
-            )
+            if self.endpoints.len() == 1 {
+                format!("{}: {label}.", self.active_endpoint_label())
+            } else {
+                format!(
+                    "{}: {label}. Select a connected machine.",
+                    self.active_endpoint_label()
+                )
+            }
         });
         let message_area = if layout.sidebar.width > 0 {
             layout.pane_surface

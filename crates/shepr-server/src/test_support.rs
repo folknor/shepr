@@ -35,7 +35,8 @@ pub(crate) trait PaneRuntimeFixture: Sized {
         bytes: &[u8],
         channel_capacity: usize,
     ) -> (Self, mpsc::Receiver<Bytes>);
-    /// Feed `bytes` to the terminal as the child's output.
+    /// Feed `bytes` directly to the terminal parser and advance content
+    /// revisions. This does not exercise PTY-reader effect dispatch.
     fn test_process_pty_bytes(&self, bytes: &[u8]);
     /// Arrange for a writer to try to land `bytes` while the next dirty-patch
     /// collection holds the terminal core. The writer tries the content write

@@ -87,15 +87,18 @@ fn config_update_lock_covers_the_full_read_modify_write() {
     let dir = Directory::new();
     let path = dir.0.join("settings.json");
     fs::write(&path, "0").expect("test precondition");
+    let paths = super::super::env::AgentIntegrationPaths::resolve();
+    env.set("XDG_STATE_HOME", env.path().join("changed-state"));
 
     let start = std::sync::Arc::new(std::sync::Barrier::new(3));
     let workers: Vec<_> = (0..2)
         .map(|_| {
             let path = path.clone();
+            let paths = paths.clone();
             let start = std::sync::Arc::clone(&start);
             std::thread::spawn(move || {
                 start.wait();
-                let _lock = lock_config_for_update(&path).expect("test precondition");
+                let _lock = lock_config_for_update(&path, &paths).expect("test precondition");
                 let value = fs::read_to_string(&path)
                     .expect("test precondition")
                     .parse::<u32>()
@@ -114,7 +117,7 @@ fn config_update_lock_covers_the_full_read_modify_write() {
     assert_eq!(fs::read_dir(&dir.0).expect("test precondition").count(), 1);
 
     let target = resolve_target(&path).expect("test precondition");
-    let lock_path = config_update_lock_path(&target).expect("test precondition");
+    let lock_path = config_update_lock_path(&target, &paths).expect("test precondition");
     assert!(lock_path.starts_with(state_home));
     let metadata = fs::metadata(&lock_path).expect("persistent config lock");
     assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
@@ -124,7 +127,7 @@ fn config_update_lock_covers_the_full_read_modify_write() {
     );
     let first_inode = metadata.ino();
     {
-        let _lock = lock_config_for_update(&path).expect("test precondition");
+        let _lock = lock_config_for_update(&path, &paths).expect("test precondition");
     }
     assert_eq!(
         fs::metadata(&lock_path)
@@ -141,11 +144,14 @@ fn config_update_lock_ignores_empty_and_refuses_relative_state_home() {
     let target = dir.0.join("settings.json");
     let default_dir = env.home().join(".local/state/shepr/integration-locks");
     env.set("XDG_STATE_HOME", "");
-    let lock_path = config_update_lock_path(&target).expect("test precondition");
+    let paths = super::super::env::AgentIntegrationPaths::resolve();
+    let lock_path = config_update_lock_path(&target, &paths).expect("test precondition");
     assert!(lock_path.starts_with(&default_dir), "{lock_path:?}");
 
     env.set("XDG_STATE_HOME", "relative/state");
-    let error = config_update_lock_path(&target).expect_err("a relative state home is refused");
+    let paths = super::super::env::AgentIntegrationPaths::resolve();
+    let error =
+        config_update_lock_path(&target, &paths).expect_err("a relative state home is refused");
     assert!(error.to_string().contains("XDG_STATE_HOME"), "{error}");
 }
 
@@ -159,8 +165,9 @@ fn config_update_lock_that_cannot_be_created_fails_the_edit() {
     env.set("XDG_STATE_HOME", &blocker);
     let dir = Directory::new();
     let path = dir.0.join("settings.json");
+    let paths = super::super::env::AgentIntegrationPaths::resolve();
 
-    let error = match lock_config_for_update(&path) {
+    let error = match lock_config_for_update(&path, &paths) {
         Ok(_) => panic!("an uncreatable lock directory must fail the edit"),
         Err(error) => error,
     };
@@ -185,11 +192,12 @@ fn config_update_lock_resolves_parent_symlink_aliases() {
     let actual_config = actual.join("nested/settings.json");
     let alias_target = resolve_target(&alias_config).expect("test precondition");
     let actual_target = resolve_target(&actual_config).expect("test precondition");
-    let alias_lock = config_update_lock_path(&alias_target).expect("test precondition");
-    let actual_lock = config_update_lock_path(&actual_target).expect("test precondition");
+    let paths = super::super::env::AgentIntegrationPaths::resolve();
+    let alias_lock = config_update_lock_path(&alias_target, &paths).expect("test precondition");
+    let actual_lock = config_update_lock_path(&actual_target, &paths).expect("test precondition");
     assert_eq!(alias_lock, actual_lock);
 
-    let _lock = lock_config_for_update(&alias_config).expect("test precondition");
+    let _lock = lock_config_for_update(&alias_config, &paths).expect("test precondition");
     let error = match shepr_platform::ipc::acquire_flock_lock(&actual_lock, false) {
         Ok(_) => panic!("alias path did not share the existing config lock"),
         Err(error) => error,

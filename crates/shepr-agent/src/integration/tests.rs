@@ -326,7 +326,7 @@ fn install_omp_errors_when_extension_dir_missing() {
 }
 
 #[test]
-fn a_missing_version_marker_reads_outdated() {
+fn a_drifted_asset_reads_outdated() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -344,12 +344,10 @@ fn a_missing_version_marker_reads_outdated() {
 
     assert_eq!(status.state, IntegrationStatusKind::Outdated);
     assert_eq!(status.path, extension_path);
-    assert_eq!(status.installed_version, None);
-    assert_eq!(status.expected_version, PI_INTEGRATION_VERSION);
 }
 
 #[test]
-fn a_current_version_marker_reads_current() {
+fn the_exact_bundled_asset_reads_current() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -1266,7 +1264,6 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
             integration_status_at(
                 crate::agent::IntegrationTarget::Opencode,
                 install_path(&installed, ArtifactRole::Plugin),
-                OPENCODE_INTEGRATION_VERSION,
             )
             .expect("stat plugin")
             .state,
@@ -1338,7 +1335,6 @@ fn opencode_v2_install_and_status_preserve_cli_preferences() {
         integration_status_at(
             crate::agent::IntegrationTarget::Opencode,
             install_path(&installed, ArtifactRole::Plugin).clone(),
-            OPENCODE_INTEGRATION_VERSION,
         )
         .expect("stat plugin")
         .state
@@ -1489,7 +1485,6 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
         integration_status_at(
             crate::agent::IntegrationTarget::Opencode,
             install_path(&installed, ArtifactRole::Plugin).clone(),
-            OPENCODE_INTEGRATION_VERSION,
         )
         .expect("stat plugin")
         .state
@@ -1915,10 +1910,6 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
         .env_remove("CURSOR_VERSION")
         .env_remove("CODEX_THREAD_ID")
         .env_remove("GROK_SESSION_ID")
-        // Without a session id in the payload the Devin hook asks `devin list`;
-        // pin that lookup to an empty list so the test never runs a real binary.
-        .env("SHEPR_DEVIN_LIST_JSON", "[]")
-        .env_remove("DEVIN_PROJECT_DIR")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -2179,7 +2170,6 @@ fn cursor_integration_status_is_current_after_install() {
     )
     .expect("cursor integration status");
     assert_eq!(cursor.state, IntegrationStatusKind::Current);
-    assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
 }
 
 #[test]
@@ -2258,7 +2248,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
             .expect("test precondition");
         assert_eq!(
             command,
-            mastracode_hook_command(&install_path(&installed, ArtifactRole::Hook), action)
+            hook_command(&install_path(&installed, ArtifactRole::Hook), Some(action),)
         );
         assert_eq!(
             entries[0].get("type").and_then(Value::as_str),
@@ -2531,7 +2521,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
             .expect("test precondition");
         assert_eq!(
             command,
-            antigravity_cli_hook_command(&install_path(&installed, ArtifactRole::Hook), action)
+            hook_command(&install_path(&installed, ArtifactRole::Hook), Some(action),)
         );
     }
 
@@ -2641,7 +2631,6 @@ fn grok_integration_status_is_current_after_install() {
     )
     .expect("grok integration status");
     assert_eq!(grok.state, IntegrationStatusKind::Current);
-    assert_eq!(grok.installed_version, Some(GROK_INTEGRATION_VERSION));
 }
 
 #[test]
@@ -3042,11 +3031,6 @@ fn every_shepr_name_in_the_shipped_assets_is_owned_or_asset_internal() {
             "{internal} is in the environment registry; drop it from the asset-internal list"
         );
     }
-    assert_eq!(
-        INTEGRATION_VERSION_MARKER.trim_end_matches('='),
-        "SHEPR_INTEGRATION_VERSION"
-    );
-
     let name = regex::Regex::new(r"SHEPR_[A-Z_]+").expect("test precondition");
     let mut seen = std::collections::BTreeSet::new();
     for file in &files {
@@ -3097,7 +3081,7 @@ fn hook_assets_share_one_envelope() {
         .expect("test precondition");
     let python_timeout = regex::Regex::new(r"settimeout\(([^)]*)\)").expect("test precondition");
     let js_timeout = regex::Regex::new(
-        r"(?:client\.setTimeout\(|settle\(false\), |sendRequestAttempt\(request, )(\d[\d_]*)",
+        r"(?:client\.setTimeout\(|setTimeout\(settle, |settle\(false\), |sendRequestAttempt\(request, )(\d[\d_]*)",
     )
     .expect("test precondition");
 

@@ -1,4 +1,6 @@
-use crate::limits::{MAX_SESSION_HISTORY_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS};
+use crate::limits::{
+    MAX_SESSION_FILE_BYTES, MAX_SESSION_HISTORY_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS,
+};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -51,6 +53,20 @@ fn read_history_file(path: &Path) -> std::io::Result<String> {
     Ok(content)
 }
 
+pub(super) fn read_session_file(path: &Path) -> std::io::Result<String> {
+    let file = std::fs::File::open(path)?;
+    let mut content = String::new();
+    file.take((MAX_SESSION_FILE_BYTES as u64).saturating_add(1))
+        .read_to_string(&mut content)?;
+    if content.len() > MAX_SESSION_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session file exceeds {MAX_SESSION_FILE_BYTES} bytes"),
+        ));
+    }
+    Ok(content)
+}
+
 // Follow symlinks manually so a write through a (possibly dangling) symlink
 // lands on the target. `fs::canonicalize` requires the target to exist, which
 // excludes the dangling-symlink case stow users hit on the very first save.
@@ -74,7 +90,13 @@ fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
                 .join(link)
         };
     }
-    Ok(current)
+    match std::fs::symlink_metadata(&current) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "session path still resolves through a symlink after the hop limit",
+        )),
+        _ => Ok(current),
+    }
 }
 
 /// The directory holding `path`; a bare file name lives in `.`.
@@ -215,7 +237,15 @@ pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::
 }
 
 fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<Published> {
-    save_serialized_to_path(path, &serde_json::to_vec_pretty(snapshot)?)
+    let mut json = CappedBuf::new(MAX_SESSION_FILE_BYTES);
+    serde_json::to_writer_pretty(&mut json, snapshot)?;
+    if json.len > MAX_SESSION_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session file exceeds {MAX_SESSION_FILE_BYTES} bytes"),
+        ));
+    }
+    save_serialized_to_path(path, &json.bytes)
 }
 
 fn save_serialized_to_path(path: &Path, json: &[u8]) -> std::io::Result<Published> {
@@ -388,9 +418,9 @@ fn compact_history_without_workspace_shape(
     })
 }
 
-/// A sink that keeps what is written to it while it is at most `cap` bytes,
-/// and only counts once it is not: a history that turns out too big to save
-/// costs no more memory than one that fits, and its size is still known.
+/// A sink that keeps output only while it is within `cap`, then counts the
+/// rest without retaining it. Oversized JSON costs no more buffer memory than
+/// a value that fits, and its full size is still known.
 struct CappedBuf {
     bytes: Vec<u8>,
     cap: usize,
@@ -743,7 +773,7 @@ pub fn load(lease: &DataDirLease) -> Option<SessionSnapshot> {
         return None;
     }
     let path = session_path(lease.directory());
-    let content = match std::fs::read_to_string(&path) {
+    let content = match read_session_file(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             tracing::info!(
@@ -807,6 +837,31 @@ mod tests {
     use super::*;
     use crate::pane::HistoryPiece;
     use crate::persist::snapshot::SNAPSHOT_VERSION;
+
+    #[test]
+    fn a_session_path_still_a_symlink_after_the_hop_limit_is_refused() {
+        let scratch = shepr_test_support::ScratchDir::new("session-symlink-loop");
+        let first = scratch.path().join("first.json");
+        let second = scratch.path().join("second.json");
+        std::os::unix::fs::symlink(&second, &first).expect("test precondition");
+        std::os::unix::fs::symlink(&first, &second).expect("test precondition");
+
+        let error = resolve_write_target(&first).expect_err("a symlink loop is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn an_oversized_session_file_is_refused() {
+        let scratch = shepr_test_support::ScratchDir::new("session-oversized");
+        let path = scratch.path().join("session.json");
+        // Sparse, so the test writes no real data.
+        std::fs::File::create(&path)
+            .and_then(|file| file.set_len(MAX_SESSION_FILE_BYTES as u64 + 1))
+            .expect("test precondition");
+
+        let error = read_session_file(&path).expect_err("an oversized file is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     /// A session file whose data directory does not exist yet, so saves
     /// exercise creating it.

@@ -7,6 +7,7 @@
 use crate::server::ClientId;
 use std::collections::VecDeque;
 use std::io::{self, Write};
+use std::net::Shutdown;
 use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -24,7 +25,8 @@ use shepr_protocol::{
 };
 
 use crate::limits::{
-    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+    CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS, CLIENT_WRITE_STALL_TIMEOUT,
+    HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
 };
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
@@ -112,6 +114,12 @@ impl ClientWriter {
         self.render.queue.discard_pending_render();
     }
 
+    /// Shuts down both socket directions and wakes the connection's transport
+    /// threads, even if the reader still holds a writer handle clone.
+    pub(crate) fn close(&self) {
+        self.control.queue.close_connection();
+    }
+
     /// Adds a barrier after the control messages already queued for this
     /// client. The receiver completes after the writer flushes that prefix.
     pub(crate) fn flush(&self) -> tokio::sync::oneshot::Receiver<()> {
@@ -179,11 +187,18 @@ impl ClientRenderWriter {
 struct ClientWriterQueue {
     state: Mutex<ClientWriterQueueState>,
     ready: Condvar,
+    shutdown_stream: Mutex<Option<LocalStream>>,
+    max_control_items: usize,
+    max_control_bytes: usize,
 }
 
 #[derive(Debug, Default)]
 struct ClientWriterQueueState {
     control: VecDeque<ClientControlItem>,
+    /// Queued and in-flight control items share the same bound.
+    control_items: usize,
+    /// Queued and in-flight control bytes share the same bound.
+    control_bytes: usize,
     render: Option<Vec<u8>>,
     senders: usize,
     writer_alive: bool,
@@ -203,13 +218,28 @@ enum ClientControlItem {
 }
 
 impl ClientWriterQueue {
-    fn new() -> Arc<Self> {
+    fn new_for_connection(shutdown_stream: LocalStream) -> Arc<Self> {
+        Self::with_limits(
+            Some(shutdown_stream),
+            CLIENT_CONTROL_QUEUE_MAX_ITEMS,
+            CLIENT_CONTROL_QUEUE_MAX_BYTES,
+        )
+    }
+
+    fn with_limits(
+        shutdown_stream: Option<LocalStream>,
+        max_control_items: usize,
+        max_control_bytes: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(ClientWriterQueueState {
                 writer_alive: true,
                 ..ClientWriterQueueState::default()
             }),
             ready: Condvar::new(),
+            shutdown_stream: Mutex::new(shutdown_stream),
+            max_control_items,
+            max_control_bytes,
         })
     }
 
@@ -229,6 +259,15 @@ impl ClientWriterQueue {
         if !state.writer_alive {
             return Err(SendError(data));
         }
+        if state.control_items >= self.max_control_items
+            || data.len() > self.max_control_bytes.saturating_sub(state.control_bytes)
+        {
+            drop(state);
+            self.close_connection();
+            return Err(SendError(data));
+        }
+        state.control_items += 1;
+        state.control_bytes += data.len();
         state.control.push_back(ClientControlItem::Data(data));
         self.ready.notify_one();
         Ok(())
@@ -237,10 +276,17 @@ impl ClientWriterQueue {
     fn send_flush(&self) -> tokio::sync::oneshot::Receiver<()> {
         let (ack, receiver) = tokio::sync::oneshot::channel();
         let mut state = self.lock_state();
-        if state.writer_alive {
-            state.control.push_back(ClientControlItem::Flush(ack));
-            self.ready.notify_one();
+        if !state.writer_alive {
+            return receiver;
         }
+        if state.control_items >= self.max_control_items {
+            drop(state);
+            self.close_connection();
+            return receiver;
+        }
+        state.control_items += 1;
+        state.control.push_back(ClientControlItem::Flush(ack));
+        self.ready.notify_one();
         receiver
     }
 
@@ -275,7 +321,7 @@ impl ClientWriterQueue {
             if let Some(data) = state.render.take() {
                 return Some(ClientWriteItem::Render(data));
             }
-            if state.senders == 0 {
+            if state.senders == 0 || !state.writer_alive {
                 return None;
             }
             state = self
@@ -290,7 +336,30 @@ impl ClientWriterQueue {
         state.writer_alive = false;
         state.render = None;
         state.control.clear();
+        state.control_items = 0;
+        state.control_bytes = 0;
         self.ready.notify_all();
+    }
+
+    fn finish_control_item(&self, bytes: usize) {
+        let mut state = self.lock_state();
+        state.control_items = state.control_items.saturating_sub(1);
+        state.control_bytes = state.control_bytes.saturating_sub(bytes);
+    }
+
+    fn close_connection(&self) {
+        self.close_writer();
+        let stream = self
+            .shutdown_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(stream) = stream
+            && let Err(error) = shutdown_client_connection(&stream)
+            && error.kind() != io::ErrorKind::NotConnected
+        {
+            debug!(error = %error, "failed to shut down client connection");
+        }
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ClientWriterQueueState> {
@@ -426,9 +495,9 @@ pub(crate) fn handle_client_handshake(
         return Ok(());
     }
 
-    // Reset to blocking mode for the preamble and the deadline reader below.
-    // Bounded frame writes switch to nonblocking mode in `write_framed_bytes`.
-    stream.set_nonblocking(false)?;
+    // The server listener uses accept-only nonblocking mode, so accepted
+    // streams are already blocking. Keep the handshake reads in that mode;
+    // framed writes opt into nonblocking mode when their bounded writer starts.
 
     // The build-identity preamble goes out first, before anything is read, so
     // a client of any other build learns which build it reached even though
@@ -536,14 +605,15 @@ pub(crate) fn handle_client_handshake(
     stream.set_recv_timeout(None)?;
 
     // Create separate channels for reliable control messages and droppable renders.
-    let writer_queue = ClientWriterQueue::new();
+    let write_stream = stream.try_clone()?;
+    let shutdown_stream = stream.try_clone()?;
+    let writer_queue = ClientWriterQueue::new_for_connection(shutdown_stream);
     let writer = ClientWriter {
         control: ClientControlWriter::queue(Arc::clone(&writer_queue)),
         render: ClientRenderWriter::queue(Arc::clone(&writer_queue)),
     };
 
     // Spawn a writer thread that forwards messages from the channels to the stream.
-    let write_stream = stream.try_clone()?;
     let writer_event_tx = server_event_tx.clone();
     std::thread::spawn(move || {
         client_writer_loop(write_stream, client_id, &writer_queue, &writer_event_tx);
@@ -619,30 +689,45 @@ fn client_writer_loop(
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) {
     while let Some(item) = writer_queue.recv() {
-        let result = match item {
+        let (result, completed_control_bytes) = match item {
             ClientWriteItem::Control(data) => {
-                write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT)
+                let bytes = data.len();
+                (
+                    write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT),
+                    Some(bytes),
+                )
             }
             ClientWriteItem::Render(data) => {
-                // Runs once per rendered frame, so no per-frame logging. The
-                // send fails only after the server loop dropped its receiver,
-                // when no one is left to schedule another frame for this client.
-                server_event_tx
-                    .blocking_send(ServerEvent::ClientWriterDrained { client_id })
-                    .ok();
-                write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT)
-            }
-            ClientWriteItem::Flush(ack) => match stream.flush() {
-                Ok(()) => {
-                    // The waiter drops its receiver when it stops waiting
-                    // (shutdown flush deadline passed); the flush happened
-                    // either way and nobody is left to tell.
-                    ack.send(()).ok();
-                    Ok(())
+                // Report after this frame reaches the socket. Event-channel
+                // pressure must not hold back the frame this connection has
+                // already accepted from the server.
+                let result = write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT);
+                if result.is_ok() {
+                    // The event is reliable: dropping it could leave the
+                    // server's deferred render unclaimed until another event.
+                    server_event_tx
+                        .blocking_send(ServerEvent::ClientWriterDrained { client_id })
+                        .ok();
                 }
-                Err(err) => Err(err),
-            },
+                (result, None)
+            }
+            ClientWriteItem::Flush(ack) => {
+                let result = match stream.flush() {
+                    Ok(()) => {
+                        // The waiter drops its receiver when it stops waiting
+                        // (shutdown flush deadline passed); the flush happened
+                        // either way and nobody is left to tell.
+                        ack.send(()).ok();
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                };
+                (result, Some(0))
+            }
         };
+        if let Some(bytes) = completed_control_bytes {
+            writer_queue.finish_control_item(bytes);
+        }
         if let Err(err) = result {
             debug!(error = %err, "client write failed, closing writer");
             send_client_disconnected(server_event_tx, client_id);
@@ -651,6 +736,11 @@ fn client_writer_loop(
     }
     writer_queue.close_writer();
     debug!("client writer thread exiting");
+}
+
+fn shutdown_client_connection(stream: &LocalStream) -> io::Result<()> {
+    let LocalStream::UdSocket(stream) = stream;
+    stream.inner().shutdown(Shutdown::Both)
 }
 
 fn write_framed_bytes(
@@ -818,6 +908,10 @@ fn client_read_loop_with_endpoint_controls(
                 token: data,
             },
             ClientMessage::HealthPing => {
+                // This acknowledges transport liveness for this reader and
+                // writer, not responsiveness of the headless event loop. A
+                // client removed from the registry has its socket shut down,
+                // so its reader cannot keep that client healthy with pongs.
                 let response = ServerMessage::HealthPong;
                 let Some(writer) = endpoint_control_writer else {
                     continue;
@@ -932,7 +1026,11 @@ mod tests {
         /// test has not read keeps the slot full.
         pub(crate) fn test_pair() -> (Self, std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver)
         {
-            let queue = ClientWriterQueue::new();
+            let queue = ClientWriterQueue::with_limits(
+                None,
+                CLIENT_CONTROL_QUEUE_MAX_ITEMS,
+                CLIENT_CONTROL_QUEUE_MAX_BYTES,
+            );
             let writer = Self {
                 control: ClientControlWriter::queue(Arc::clone(&queue)),
                 render: ClientRenderWriter::queue(Arc::clone(&queue)),
@@ -943,18 +1041,21 @@ mod tests {
                 while let Some(item) = drain.recv_control_for_test() {
                     match item {
                         ClientControlItem::Data(data) => {
+                            let bytes = data.len();
                             if control_tx.send(data).is_err() {
                                 // The test dropped its control receiver: the
                                 // client is gone, as a failed socket write says.
                                 drain.close_writer();
                                 return;
                             }
+                            drain.finish_control_item(bytes);
                         }
                         ClientControlItem::Flush(ack) => {
                             // Same contract as the socket writer: a waiter that
                             // stopped waiting dropped its receiver, and the
                             // barrier was reached either way.
                             ack.send(()).ok();
+                            drain.finish_control_item(0);
                         }
                     }
                 }
@@ -1093,7 +1194,11 @@ mod tests {
     }
 
     fn test_queue_writer() -> (ClientWriter, Arc<ClientWriterQueue>) {
-        let queue = ClientWriterQueue::new();
+        let queue = ClientWriterQueue::with_limits(
+            None,
+            CLIENT_CONTROL_QUEUE_MAX_ITEMS,
+            CLIENT_CONTROL_QUEUE_MAX_BYTES,
+        );
         (
             ClientWriter {
                 control: ClientControlWriter::queue(Arc::clone(&queue)),
@@ -1122,6 +1227,38 @@ mod tests {
             writer.render.try_send(second),
             Err(TrySendError::Full(_))
         ));
+    }
+
+    #[test]
+    fn client_control_queue_bounds_outstanding_bytes_and_items() {
+        let queue = ClientWriterQueue::with_limits(None, 2, 5);
+        let writer = ClientWriter {
+            control: ClientControlWriter::queue(Arc::clone(&queue)),
+            render: ClientRenderWriter::queue(Arc::clone(&queue)),
+        };
+        writer
+            .control
+            .send(vec![b'x'; 5])
+            .expect("message within the byte bound fits");
+        let Some(ClientWriteItem::Control(data)) = queue.recv() else {
+            panic!("expected the queued control message");
+        };
+        assert_eq!(data.len(), 5);
+        assert!(matches!(writer.control.send(vec![b'y']), Err(SendError(_))));
+        assert!(matches!(
+            writer.render.try_send(vec![b'z']),
+            Err(TrySendError::Disconnected(_))
+        ));
+
+        let queue = ClientWriterQueue::with_limits(None, 2, 10);
+        let writer = ClientWriter {
+            control: ClientControlWriter::queue(Arc::clone(&queue)),
+            render: ClientRenderWriter::queue(Arc::clone(&queue)),
+        };
+        writer.control.send(vec![b'a']).expect("first item fits");
+        writer.control.send(vec![b'b']).expect("second item fits");
+        assert!(matches!(queue.recv(), Some(ClientWriteItem::Control(_))));
+        assert!(matches!(writer.control.send(vec![b'c']), Err(SendError(_))));
     }
 
     #[test]
@@ -1169,6 +1306,76 @@ mod tests {
 
         drop(writer);
         handle.join().expect("writer exits after senders drop");
+    }
+
+    #[test]
+    fn client_writer_delivers_render_before_waiting_for_drain_event_capacity() {
+        let (mut client_stream, server_stream, _path) =
+            local_stream_pair("client-writer-event-backpressure");
+        client_stream
+            .set_recv_timeout(Some(Duration::from_secs(1)))
+            .expect("test precondition");
+        let (writer, queue) = test_queue_writer();
+        writer
+            .render
+            .try_send(frame_server_message(&ServerMessage::WindowTitle {
+                title: Some("render".into()),
+            }))
+            .expect("queue render");
+
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(1);
+        server_event_tx
+            .try_send(ServerEvent::QuitSignal)
+            .expect("fill the server event channel");
+        let handle = std::thread::spawn(move || {
+            client_writer_loop(
+                server_stream,
+                ClientId::test_new(10),
+                &queue,
+                &server_event_tx,
+            );
+        });
+
+        assert!(matches!(
+            shepr_protocol::read_message(&mut client_stream).expect("render is written"),
+            ServerMessage::WindowTitle { title: Some(title) } if title == "render"
+        ));
+        assert!(matches!(
+            server_event_rx.blocking_recv(),
+            Some(ServerEvent::QuitSignal)
+        ));
+        assert!(matches!(
+            server_event_rx.blocking_recv(),
+            Some(ServerEvent::ClientWriterDrained { client_id }) if client_id == 10
+        ));
+
+        drop(writer);
+        handle.join().expect("writer exits after handles drop");
+    }
+
+    #[test]
+    fn closing_client_writer_shuts_down_both_socket_directions() {
+        use std::io::Read as _;
+
+        let (mut client_stream, server_stream, _path) =
+            local_stream_pair("client-writer-close-connection");
+        client_stream
+            .set_recv_timeout(Some(Duration::from_secs(1)))
+            .expect("test precondition");
+        let queue = ClientWriterQueue::new_for_connection(
+            server_stream.try_clone().expect("clone shutdown handle"),
+        );
+        let writer = ClientWriter {
+            control: ClientControlWriter::queue(Arc::clone(&queue)),
+            render: ClientRenderWriter::queue(Arc::clone(&queue)),
+        };
+
+        writer.close();
+        let mut bytes = Vec::new();
+        client_stream
+            .read_to_end(&mut bytes)
+            .expect("peer observes shutdown");
+        assert!(bytes.is_empty());
     }
 
     #[test]

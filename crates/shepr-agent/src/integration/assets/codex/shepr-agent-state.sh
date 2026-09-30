@@ -69,12 +69,6 @@ session_id = hook_input.get("session_id")
 agent_session_id = session_id if isinstance(session_id, str) and session_id else None
 if not agent_session_id:
     raise SystemExit(0)
-# Only a session report needs the transcript; turn reports carry the session
-# id so shepr can tell them from another session's.
-if action == "session":
-    transcript_path = hook_input.get("transcript_path")
-    if not isinstance(transcript_path, str) or not transcript_path.strip():
-        raise SystemExit(0)
 inherited_session_id = os.environ.get("CODEX_THREAD_ID")
 if inherited_session_id and inherited_session_id != agent_session_id:
     raise SystemExit(0)

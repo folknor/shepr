@@ -150,7 +150,8 @@ pub struct HeadlessServer {
     /// Reason captured by the retained renderer and reported after the full
     /// render that recovers from it.
     retained_surface_fallback_reason: Option<&'static str>,
-    /// Keeps repeated retained-render fallbacks from logging on every PTY wake.
+    /// Fallback reasons already reported once, so each report can say whether
+    /// its reason is recurring. Every fallback is still logged.
     retained_surface_fallbacks_reported: HashSet<&'static str>,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
@@ -1009,9 +1010,14 @@ impl HeadlessServer {
         // Pane input and writer drains, the per-keystroke and per-frame
         // events, move no client's view and no outer focus; a client they
         // remove on a failed send is settled by `remove_client`.
-        let may_move_focus = !matches!(
+        let may_move_focus = matches!(
             ev,
-            ServerEvent::ClientShellPaneInput { .. } | ServerEvent::ClientWriterDrained { .. }
+            ServerEvent::ClientShellConnected { .. }
+                | ServerEvent::ClientShellResize { .. }
+                | ServerEvent::ClientShellFocus { .. }
+                | ServerEvent::ClientShellEndpointRequest { .. }
+                | ServerEvent::ClientDetach { .. }
+                | ServerEvent::ClientDisconnected { .. }
         );
         let changed = self.apply_server_event(ev);
         if may_move_focus {
@@ -1021,7 +1027,6 @@ impl HeadlessServer {
     }
 
     fn apply_server_event(&mut self, ev: ServerEvent) -> bool {
-        self.immediate_pty_sources_dirty = true;
         match ev {
             ServerEvent::ClientShellConnected {
                 client_id,
@@ -1065,6 +1070,8 @@ impl HeadlessServer {
                 // new client starts where the session's bookmark is.
                 shell.location = self.initial_client_location();
                 self.clients.insert(client_id, connection);
+                self.immediate_pty_sources_dirty = true;
+                self.host_input_modes_dirty = true;
                 // A known connection with an empty session can create the
                 // workspace it will view. Either way the locations are settled
                 // once more: a bookmark-less session leaves the new client
@@ -1124,6 +1131,8 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
+                let previous_geometry =
+                    (client.terminal_size, client.cell_size, client.pixel_mouse);
                 client.terminal_size =
                     shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows);
                 let observed = shepr_termio::host_term::cell_size::HostCellSize {
@@ -1134,10 +1143,16 @@ impl HeadlessServer {
                     client.cell_size = observed;
                 }
                 client.pixel_mouse = pixel_mouse && observed.is_known();
+                if previous_geometry == (client.terminal_size, client.cell_size, client.pixel_mouse)
+                {
+                    return false;
+                }
                 if !client.is_active_shell_client() {
                     return false;
                 }
                 client.request_repaint();
+                self.immediate_pty_sources_dirty = true;
+                self.host_input_modes_dirty = true;
                 self.promote_client_to_foreground(client_id);
                 self.resize_shell_workspaces_sized_for(client_id, true);
                 true
@@ -1311,19 +1326,17 @@ impl HeadlessServer {
     }
 
     fn handle_server_event_with_render_impact(&mut self, ev: ServerEvent) -> RenderDemand {
-        // Pane input changes nothing a projection shows. An endpoint command
-        // marks the shared projection dirty itself, and only when it changes
-        // shared state: a navigation moves one client's location and nothing
-        // else, which invalidates only that client's projection.
-        let leaves_projection_alone = matches!(
-            ev,
-            ServerEvent::ClientShellPaneInput { .. }
-                | ServerEvent::ClientShellEndpointRequest { .. }
-        );
+        // Writer readiness is a transport signal. Preserve the deferred demand
+        // without touching application projection or per-client input sources.
+        if let ServerEvent::ClientWriterDrained { client_id } = ev {
+            return self
+                .clients
+                .get_mut(&client_id)
+                .map_or(RenderDemand::None, ClientConnection::take_deferred_render);
+        }
+        // Presentation events change connection state only. Shared application
+        // mutations publish their projection revision at the mutation site.
         if self.handle_server_event(ev) {
-            if !leaves_projection_alone {
-                self.app.state.mark_shell_projection_dirty();
-            }
             RenderDemand::Full
         } else {
             RenderDemand::None
@@ -1343,7 +1356,6 @@ impl HeadlessServer {
         }
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
-        self.immediate_pty_sources_dirty = true;
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
 

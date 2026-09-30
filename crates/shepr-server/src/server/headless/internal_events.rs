@@ -16,7 +16,6 @@ impl HeadlessServer {
         // answered with its checkpoint before this event can change the
         // layout; after that, saving is frozen and events apply normally.
         self.sync_host_shutdown_freeze(self.app.clock.now);
-        self.immediate_pty_sources_dirty = true;
         // After a termination signal, the panes are most likely dying from the
         // same teardown. Removing them would save a session with panes missing.
         // The checkpoint taken before a signal-killed pane is removed does not
@@ -49,6 +48,10 @@ impl HeadlessServer {
                 pane_id,
                 exit_reason,
             } => {
+                // Publishing the process exit can change what the sidebar shows
+                // (the agent goes idle) even when the pane itself stays, held for
+                // its checkpoint or not removed at all.
+                let projection_before = self.app.state.shell_projection_revision;
                 let replay_generation = self.replaying_checkpointed_pane_exit.take();
                 if let Some(generation) = replay_generation {
                     if !self.app.pane_exit_checkpoint_generation_settled(generation) {
@@ -69,10 +72,14 @@ impl HeadlessServer {
                             event: ev,
                             checkpoint_generation,
                         });
-                    return false;
+                    return self.app.state.shell_projection_revision != projection_before;
                 }
 
-                self.app.handle_prepared_pane_exit(ev);
+                if self.app.handle_prepared_pane_exit(ev) == RenderDemand::None {
+                    return self.app.state.shell_projection_revision != projection_before;
+                }
+                self.immediate_pty_sources_dirty = true;
+                self.host_input_modes_dirty = true;
                 self.reconcile_client_shell_locations();
                 self.sync_pane_focus();
                 self.reapply_controlled_shell_workspace_geometry(false);
