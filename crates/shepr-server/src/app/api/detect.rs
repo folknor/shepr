@@ -1,4 +1,4 @@
-use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 use shepr_api::schema::{PaneTarget, ResponseResult};
 
 use crate::app::App;
@@ -19,7 +19,7 @@ impl App {
             return Err(pane_not_found(&target.pane_id));
         };
         let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(pane_not_found(&target.pane_id));
+            return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
 
         success(ResponseResult::DetectCapture {
@@ -36,9 +36,6 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return Err(pane_not_found(&target.pane_id));
         };
-        let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(pane_not_found(&target.pane_id));
-        };
         let Some(terminal) = self
             .state
             .workspaces
@@ -47,6 +44,9 @@ impl App {
             .and_then(|terminal_id| self.state.terminals.get(terminal_id))
         else {
             return Err(pane_not_found(&target.pane_id));
+        };
+        let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
+            return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
         if terminal.full_lifecycle_hook_authority_active() {
             let explain = serde_json::json!({
@@ -89,6 +89,26 @@ impl App {
         let value = shepr_agent::detect::manifest::explain_to_json_value(&explain);
 
         success(ResponseResult::DetectExplain { explain: value })
+    }
+
+    fn detect_terminal_unavailable_error(
+        &self,
+        ws_idx: usize,
+        pane_id: shepr_core::layout::PaneId,
+        public_pane_id: &str,
+    ) -> ApiError {
+        let restore_failure = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.terminal_id(pane_id))
+            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+            .and_then(|terminal| terminal.restore_error.as_ref());
+        let message = match restore_failure {
+            Some(failure) => format!("pane {public_pane_id} has no running terminal: {failure}"),
+            None => format!("pane {public_pane_id} has no running terminal"),
+        };
+        ApiError::new(ApiErrorCode::PaneTerminalUnavailable, message)
     }
 }
 
@@ -270,6 +290,48 @@ mod tests {
                 let response = request(&mut app, "unknown", method);
                 assert_eq!(response["error"]["code"], "pane_not_found", "{name}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn detect_on_a_pane_without_a_terminal_reports_why_it_has_none() {
+        let (mut app, pane_id) = app_with_pane("detect-no-terminal");
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        terminal.restore_error = Some(shepr_mux::terminal::RestoreFailure::shell_start_failed(
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        ));
+        let pane = app
+            .public_pane_id(0, pane_id)
+            .expect("test precondition")
+            .to_string();
+
+        for method in [
+            AppMethod::DetectCapture(PaneTarget {
+                pane_id: pane.clone(),
+            }),
+            AppMethod::DetectExplain(PaneTarget {
+                pane_id: pane.clone(),
+            }),
+        ] {
+            let response = request(&mut app, "no_terminal", method);
+            assert_eq!(
+                response["error"]["code"], "pane_terminal_unavailable",
+                "{response}"
+            );
+            let message = response["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains(&pane), "{response}");
+            assert!(
+                message.contains("Could not start the saved shell"),
+                "{response}"
+            );
         }
     }
 

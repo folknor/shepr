@@ -1,7 +1,7 @@
 //! Internal app events delivered via channel.
 //!
-//! Background tasks (PTY child watchers, future hook listeners, etc.) send
-//! events to the main loop through this channel. No polling needed.
+//! PTY child watchers, detectors, hook reports and the Git refresh send events
+//! to the main loop through this channel. No polling needed.
 
 use std::time::Instant;
 

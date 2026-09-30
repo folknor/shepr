@@ -27,6 +27,9 @@ impl AppState {
         }
 
         let desired = !workspace.zoomed();
+        // set_zoomed rejects only zooming a one-pane workspace. The count
+        // check above already handles that case without reporting it missing;
+        // unzooming always succeeds.
         workspace.set_zoomed(desired);
         if workspace.zoomed() != desired {
             return None;

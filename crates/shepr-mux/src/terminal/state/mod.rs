@@ -103,12 +103,11 @@ pub struct TerminalStateMutation {
     pub agent_released: bool,
 }
 
-/// Why a saved pane has no running shell. The pane surface and the API both
-/// present it: `guidance` says what to do, `cause` carries the OS error that
-/// tells the operator which fix applies (a missing shell binary and a denied
-/// directory need different ones). The error is rendered to text once, when
-/// the failure is recorded, so drawing an unavailable pane borrows it instead
-/// of formatting a message every frame.
+/// Why a saved pane has no running shell. The pane surface renders its
+/// `guidance` and `cause`; detect requests include its `Display` text in the
+/// existing API error message when a pane has no runtime. Causes are stored as
+/// strings when the failure is recorded, so both presentations can borrow
+/// them instead of retaining an OS error object.
 #[derive(Debug)]
 pub enum RestoreFailure {
     DirectoryUnavailable {

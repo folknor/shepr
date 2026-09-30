@@ -77,14 +77,14 @@ impl crate::ClientPaneInputEvent {
 /// any real display (an 8K panel of 4-pixel-wide cells is about a million).
 /// The server enforces it; a client of the same build can clamp to it before
 /// asking.
-pub const MAX_SURFACE_CELLS: usize = 1 << 22;
+pub const MAX_SURFACE_CELLS: usize = shepr_config::MAX_TERMINAL_GRID_CELLS;
 
 /// Largest width or height, in cells, a client may request.
 ///
 /// The per-axis cap prevents very long, narrow grids from bypassing the total
 /// cell budget; the cap supports unusually large terminals without unbounded
 /// coordinate ranges.
-pub const MAX_SURFACE_DIMENSION: u16 = 4096;
+pub const MAX_SURFACE_DIMENSION: u16 = shepr_config::MAX_TERMINAL_GRID_DIMENSION;
 
 /// Minimum permitted width or height for a client-requested surface grid.
 ///
@@ -122,11 +122,7 @@ pub const MAX_SURFACE_PATCH_SPANS: usize = 4096;
 
 /// Returns the checked number of cells in a permitted surface grid.
 pub fn surface_grid_size(width: u16, height: u16) -> Option<usize> {
-    if width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION {
-        return None;
-    }
-    let cells = usize::from(width) * usize::from(height);
-    (cells <= MAX_SURFACE_CELLS).then_some(cells)
+    shepr_config::terminal_grid_cells(width, height)
 }
 
 /// Largest reported cell width or height in pixels.

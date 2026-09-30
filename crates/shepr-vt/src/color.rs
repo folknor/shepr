@@ -175,6 +175,19 @@ impl ColorQuery {
     }
 }
 
+pub(super) fn color_query_format(
+    prefix: String,
+    terminator: &str,
+) -> Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static> {
+    let terminator = terminator.to_owned();
+    Arc::new(move |color| {
+        format!(
+            "\x1b]{};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}{}",
+            prefix, color.r, color.r, color.g, color.g, color.b, color.b, terminator
+        )
+    })
+}
+
 impl fmt::Debug for ColorQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ColorQuery")
@@ -186,31 +199,6 @@ impl fmt::Debug for ColorQuery {
 }
 
 impl Terminal {
-    /// What the terminal reports for a colour query: the child's override
-    /// first, then the host default, then (for the palette) the built-in
-    /// table. `None` for a default colour nobody has set.
-    pub(super) fn core_query_color(&self, target: ColorQueryTarget) -> Option<RgbColor> {
-        let colors = self.term.colors();
-        match target {
-            ColorQueryTarget::Palette(index) => Some(self.effective_palette_color(index)),
-            ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
-                .map(RgbColor::from_vte)
-                .or(self.host_foreground),
-            ColorQueryTarget::Background => colors[NamedColor::Background]
-                .map(RgbColor::from_vte)
-                .or(self.host_background),
-            ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
-                .or(colors[NamedColor::Foreground])
-                .map(RgbColor::from_vte)
-                .or(self.host_foreground),
-        }
-    }
-
-    fn effective_palette_color(&self, index: u8) -> RgbColor {
-        let index = usize::from(index);
-        self.term.colors()[index].map_or(self.default_palette[index], RgbColor::from_vte)
-    }
-
     pub(super) fn render_colors(&self) -> RenderColors {
         let colors = self.term.colors();
         let mut palette = self.default_palette;

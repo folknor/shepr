@@ -60,6 +60,35 @@ fn scrollback_bytes_convert_to_bounded_line_counts() {
 }
 
 #[test]
+fn terminal_regression_history_purge_restores_the_wide_panes_scrollback_budget() {
+    const MAX_SCROLLBACK_BYTES: usize = 2_000_000;
+    const NARROW_COLS: u16 = 20;
+    const WIDE_COLS: u16 = 200;
+    const INITIAL_LINES: usize = 2_500;
+    let wide_budget = scrollback_lines(MAX_SCROLLBACK_BYTES, usize::from(WIDE_COLS));
+    assert!(wide_budget < INITIAL_LINES);
+    assert!(scrollback_lines(MAX_SCROLLBACK_BYTES, usize::from(NARROW_COLS)) > wide_budget);
+
+    for purge in 0..3 {
+        let mut terminal = Terminal::new(NARROW_COLS, 3, MAX_SCROLLBACK_BYTES);
+        terminal.write("x\r\n".repeat(INITIAL_LINES).as_bytes());
+        terminal.resize(shepr_core::geometry::PaneGeometry::new(WIDE_COLS, 3, 8, 16));
+        assert!(terminal.scrollback_rows() > wide_budget);
+
+        let refill = "x\r\n".repeat(wide_budget + 32);
+        match purge {
+            0 => terminal.write(format!("\x1b[3J{refill}").as_bytes()),
+            1 => terminal.write(format!("\x1bc{refill}").as_bytes()),
+            _ => {
+                assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
+                terminal.write(refill.as_bytes());
+            }
+        }
+        assert_eq!(terminal.scrollback_rows(), wide_budget);
+    }
+}
+
+#[test]
 fn unicode_width_helpers_match_terminal_layout_rules() {
     assert_eq!(unicode_codepoint_width('A' as u32), 1);
     assert_eq!(unicode_codepoint_width('\u{301}' as u32), 0);
@@ -210,6 +239,71 @@ fn color_queries_report_child_overrides_and_palette_defaults() {
     };
     assert_eq!(palette.target(), ColorQueryTarget::Palette(1));
     assert_eq!(palette.core_color(), Some(default_palette()[1]));
+}
+
+#[test]
+fn terminal_regression_color_queries_capture_their_stream_position() {
+    let host_foreground = RgbColor { r: 1, g: 2, b: 3 };
+    let host_background = RgbColor { r: 4, g: 5, b: 6 };
+    let child_background = RgbColor {
+        r: 0x11,
+        g: 0x22,
+        b: 0x33,
+    };
+    let child_palette = RgbColor {
+        r: 0xaa,
+        g: 0xbb,
+        b: 0xcc,
+    };
+    let mut terminal = Terminal::new(20, 3, 0);
+    terminal.set_default_colors(Some(host_foreground), Some(host_background));
+
+    terminal.write(
+        b"\x1b]11;?\x07\x1b]11;rgb:11/22/33\x07\x1b]11;?\x07\
+          \x1b]4;1;?\x07\x1b]4;1;rgb:aa/bb/cc\x07\x1b]4;1;?\x07",
+    );
+    let replies = terminal.take_pty_responses();
+    let queries: Vec<_> = replies
+        .into_iter()
+        .map(|reply| match reply {
+            PtyResponse::ColorQuery(query) => {
+                (query.target(), query.core_color(), query.child_override())
+            }
+            other => panic!("expected colour query, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            (ColorQueryTarget::Background, Some(host_background), false),
+            (ColorQueryTarget::Background, Some(child_background), true),
+            (
+                ColorQueryTarget::Palette(1),
+                Some(default_palette()[1]),
+                false
+            ),
+            (ColorQueryTarget::Palette(1), Some(child_palette), false),
+        ]
+    );
+
+    terminal.write(b"\x1b]111\x07");
+    terminal.take_pty_responses();
+    terminal.write(b"\x1b[?2026h\x1b]11;?\x07\x1b]11;rgb:11/22/33\x07\x1b]11;?\x07\x1b[?2026l");
+    let replies = terminal.take_pty_responses();
+    let queries: Vec<_> = replies
+        .into_iter()
+        .map(|reply| match reply {
+            PtyResponse::ColorQuery(query) => (query.core_color(), query.child_override()),
+            other => panic!("expected colour query, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            (Some(host_background), false),
+            (Some(child_background), true)
+        ]
+    );
 }
 
 #[test]

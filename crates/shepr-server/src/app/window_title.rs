@@ -37,8 +37,8 @@ impl App {
 
     /// Renders the configured outer window title for a client that views no
     /// workspace: no workspace or pane target, and never the session's
-    /// bookmark. `None` when window titles are disabled or every token
-    /// resolved empty.
+    /// bookmark. `None` only when window titles are disabled; otherwise the
+    /// template is returned with empty token substitutions left empty.
     pub(crate) fn window_title_without_workspace(&self) -> Option<String> {
         self.window_title_for_target(None)
     }

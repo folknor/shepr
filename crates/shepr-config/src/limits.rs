@@ -23,6 +23,27 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
+/// Maximum width or height in cells for a configured terminal grid or a
+/// client-requested pane surface. The protocol reuses this limit so the
+/// headless grid and attached-client grids share one server resource ceiling.
+pub const MAX_TERMINAL_GRID_DIMENSION: u16 = 4096;
+
+/// Maximum number of cells in a configured terminal grid or a
+/// client-requested pane surface. The protocol reuses this limit so the
+/// headless grid and attached-client grids share one server resource ceiling.
+pub const MAX_TERMINAL_GRID_CELLS: usize = 1 << 22;
+
+/// Return the cell count when a grid fits the shared terminal resource budget.
+/// Zero dimensions remain representable here; callers that require a visible
+/// terminal grid must check that separately.
+pub fn terminal_grid_cells(cols: u16, rows: u16) -> Option<usize> {
+    if cols > MAX_TERMINAL_GRID_DIMENSION || rows > MAX_TERMINAL_GRID_DIMENSION {
+        return None;
+    }
+    let cells = usize::from(cols) * usize::from(rows);
+    (cells <= MAX_TERMINAL_GRID_CELLS).then_some(cells)
+}
+
 /// Maximum length in bytes of an SSH target.
 ///
 /// Bounds a value that ends up on an ssh command line and in the wire config.
@@ -117,3 +138,19 @@ macro_rules! count_key_binding_fields {
 /// The value is derived from the shared keybinding table so the wire vector
 /// accepts exactly the same set of fields as config parsing and presentation.
 pub(crate) const KEY_BINDING_COUNT: usize = crate::keybinding_table!(count_key_binding_fields);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_grid_cells_enforces_shared_dimension_and_area_limits() {
+        assert_eq!(
+            terminal_grid_cells(4096, 1024),
+            Some(MAX_TERMINAL_GRID_CELLS)
+        );
+        assert_eq!(terminal_grid_cells(4097, 1), None);
+        assert_eq!(terminal_grid_cells(4096, 1025), None);
+        assert_eq!(terminal_grid_cells(0, 24), Some(0));
+    }
+}

@@ -258,7 +258,12 @@ pub(super) fn navigator_selected_index(
     navigator: &ClientNavigatorOverlay,
 ) -> Option<usize> {
     match navigator.selected.as_ref() {
-        Some(target) => rows.iter().position(|row| row.target == *target),
+        Some(target) => rows
+            .iter()
+            .position(|row| row.target == *target)
+            // Snapshot changes can remove the selected target while the navigator stays open.
+            // Keep Enter and rendering on the same visible row in that case.
+            .or_else(|| (!rows.is_empty()).then_some(0)),
         None => rows
             .iter()
             .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))

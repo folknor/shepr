@@ -61,6 +61,10 @@ pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Poll spacing while that transport thread waits for the flush.
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// How long the client listener rests after an accept ran out of descriptors or
+/// memory before it tries the backlog again. Readiness stays set meanwhile, so
+/// without the rest the loop would spin on the same failing accept.
+pub(crate) const CLIENT_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Bound expanded input events per batch to limit dispatch work.

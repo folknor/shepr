@@ -580,3 +580,102 @@ fn parse_client_status_json_reads_last_json_record() {
     assert_eq!(status.version.as_deref(), Some("0.8.0"));
     assert_eq!(status.build_id.as_deref(), Some("0123456789abcdef"));
 }
+
+struct RejectingHost {
+    probes: Vec<String>,
+    matches: &'static str,
+    /// The first candidate's probe fails outright instead of reporting a
+    /// different build.
+    probe_fails: bool,
+}
+
+impl DiscoverySteps for RejectingHost {
+    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+        Ok(Some(executable("/usr/bin/shepr")))
+    }
+
+    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
+        Ok(None)
+    }
+
+    fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
+        Ok(vec![executable("/home/user/.cargo/bin/shepr")])
+    }
+
+    fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool> {
+        self.probes.push(candidate.as_str().to_owned());
+        if candidate.as_str() == "/usr/bin/shepr" {
+            if self.probe_fails {
+                return Err(io::Error::other(
+                    "remote client status probe failed (exit status 2)",
+                ));
+            }
+            return Err(remote_candidate_mismatch(
+                "remote Shepr compatibility error: different build".into(),
+            ));
+        }
+        Ok(candidate.as_str() == self.matches)
+    }
+
+    fn target(&self) -> &str {
+        "build"
+    }
+}
+
+#[test]
+fn an_incompatible_candidate_does_not_hide_a_later_match() {
+    let mut host = RejectingHost {
+        probes: Vec::new(),
+        matches: "/home/user/.cargo/bin/shepr",
+        probe_fails: false,
+    };
+    let found = DiscoveryProgress::default()
+        .advance(&mut host)
+        .expect("the later compatible candidate should be found");
+    assert_eq!(found.as_str(), "/home/user/.cargo/bin/shepr");
+    assert_eq!(
+        host.probes,
+        vec![
+            "/usr/bin/shepr".to_owned(),
+            "/home/user/.cargo/bin/shepr".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn a_failing_status_probe_does_not_hide_a_later_match_or_its_diagnostic() {
+    let mut host = RejectingHost {
+        probes: Vec::new(),
+        matches: "/home/user/.cargo/bin/shepr",
+        probe_fails: true,
+    };
+    let found = DiscoveryProgress::default()
+        .advance(&mut host)
+        .expect("the later candidate should still be probed");
+    assert_eq!(found.as_str(), "/home/user/.cargo/bin/shepr");
+
+    let mut host = RejectingHost {
+        probes: Vec::new(),
+        matches: "/another/path/shepr",
+        probe_fails: true,
+    };
+    let error = DiscoveryProgress::default()
+        .advance(&mut host)
+        .expect_err("no candidate matches");
+    assert!(error.to_string().contains("status probe failed"), "{error}");
+}
+
+#[test]
+fn the_first_candidate_mismatch_is_returned_when_none_match() {
+    let mut host = RejectingHost {
+        probes: Vec::new(),
+        matches: "/another/path/shepr",
+        probe_fails: false,
+    };
+    let error = DiscoveryProgress::default()
+        .advance(&mut host)
+        .expect_err("the incompatible candidate explains why discovery failed");
+    assert!(error.to_string().contains("different build"));
+    assert!(!error.to_string().contains("matching Shepr is not ready"));
+    assert_eq!(host.probes.len(), 2);
+}

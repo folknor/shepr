@@ -62,6 +62,8 @@ impl ClientShellState {
             self.machine_diagnostics.errors.insert(
                 id.clone(),
                 MachineDiagnostic {
+                    // Preserve line breaks so the notice card can display structured SSH
+                    // diagnostics as separate wrapped lines.
                     message: message
                         .filter(|c| !c.is_control() || *c == '\n')
                         .take(crate::limits::MAX_MACHINE_DIAGNOSTIC_CHARS)

@@ -262,6 +262,26 @@ impl ClientShellState {
         )
     }
 
+    pub(crate) fn receive_server_notice(&mut self, kind: &shepr_protocol::NoticeKind) -> bool {
+        let (code, title) = match kind {
+            shepr_protocol::NoticeKind::PaneInputDropped { .. } => {
+                ("pane_input_dropped", "Pane input dropped")
+            }
+            shepr_protocol::NoticeKind::PasteRejected { .. } => {
+                ("paste_rejected", "Paste rejected")
+            }
+            shepr_protocol::NoticeKind::OversizedSurface { .. } => {
+                ("oversized_surface", "Screen too large")
+            }
+        };
+        self.push_endpoint_notice(
+            ClientEndpointNoticeKind::Rejected,
+            code,
+            title,
+            kind.to_string(),
+        )
+    }
+
     pub(crate) fn receive_endpoint_unavailable(&mut self, message: String) -> bool {
         self.push_endpoint_notice(
             ClientEndpointNoticeKind::Unavailable,

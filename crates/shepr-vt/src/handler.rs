@@ -32,6 +32,8 @@
 //!   parses OSC 0/2 itself.
 //! * `set_color` for the default foreground/background notes that the child
 //!   took over a default colour (the pane tracks who owns the override).
+//! * `dynamic_color_sequence` snapshots the effective colour when the parser
+//!   dispatches the query, before later bytes in the same input can change it.
 //! * `set_cursor_style`/`set_cursor_shape` note whether the child chose a
 //!   cursor shape (DECSCUSR 1-6 or OSC 50) or asked for the default
 //!   (DECSCUSR 0, RIS).
@@ -46,8 +48,9 @@
 //! because vte buffers everything inside a synchronized update (mode 2026) and
 //! replays it at ESU: only effects dispatched through the handler happen in
 //! byte order relative to alacritty's own, inside or outside such an update.
-//! Replies go into the same event queue alacritty's `PtyWrite`s use, so they
-//! interleave with DA/DSR/DECRQM answers in request order.
+//! Replies and the alacritty events that produce replies share one ordered
+//! adapter queue, so they interleave with DA/DSR/DECRQM answers in request
+//! order.
 //!
 //! Every `Handler` method is listed explicitly: the trait gives each one a
 //! no-op default, so a method left out here would be silently dropped rather
@@ -56,7 +59,7 @@
 
 use std::sync::Mutex;
 
-use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Column;
 use alacritty_terminal::term::{Term, TermMode, color};
@@ -71,8 +74,10 @@ use crate::limits::KEYBOARD_MODE_STACK_MAX_DEPTH;
 
 use super::DecMode;
 use super::ExtraModes;
+use super::color::color_query_format;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
+use super::{ColorQuery, ColorQueryTarget, RgbColor, TerminalEvent};
 use shepr_core::geometry::{GridSize, PaneGeometry};
 
 /// The vte private mode a write of `mode` goes through, from the mode table
@@ -147,9 +152,9 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     pub(super) keyboard_depth: &'a mut KeyboardStackDepth,
     pub(super) modes: &'a mut ExtraModes,
     pub(super) cell: Option<shepr_core::geometry::CellPx>,
-    /// The queue alacritty's listener fills; adapter replies go in as
-    /// `PtyWrite`s so they keep byte order with alacritty's.
-    pub(super) events: &'a Mutex<Vec<Event>>,
+    /// Ordered adapter events, including replies from both alacritty and this
+    /// handler.
+    pub(super) events: &'a Mutex<Vec<TerminalEvent>>,
     /// Set when the child sets the default foreground or background (OSC
     /// 10/11); the terminal hands it to the pane with
     /// `take_default_color_set`.
@@ -159,14 +164,18 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     /// settles it around the actions that purge rows or swap screens.
     pub(super) rows: &'a mut RowOrigin,
     /// The primary screen's history line limit.
-    pub(super) history_limit: usize,
+    pub(super) history_limit: &'a mut usize,
+    pub(super) max_scrollback: usize,
+    pub(super) default_palette: &'a [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
+    pub(super) host_foreground: Option<RgbColor>,
+    pub(super) host_background: Option<RgbColor>,
 }
 
 impl<T: EventListener> CoreHandler<'_, T> {
     /// Closes the row-accounting batch in progress, so the action about to
     /// run is accounted for on its own.
     fn settle_rows(&mut self) {
-        self.rows.finish(self.term, self.history_limit);
+        self.rows.finish(self.term, *self.history_limit);
     }
 
     /// Opens a new row-accounting batch after such an action.
@@ -177,7 +186,26 @@ impl<T: EventListener> CoreHandler<'_, T> {
     /// Reports an upper bound on the lines the call just run pushed into the
     /// primary screen's history (see `RowOrigin::note_pushed`).
     fn pushed_rows(&mut self, lines: usize) {
-        self.rows.note_pushed(self.term, lines, self.history_limit);
+        self.rows.note_pushed(self.term, lines, *self.history_limit);
+    }
+
+    /// A purge leaves no retained history whose old capacity must be
+    /// preserved, so restore the byte-budget limit at the current width.
+    fn restore_scrollback_budget_after_history_purge(&mut self) {
+        if !self.primary_screen_active() || self.term.history_size() != 0 {
+            return;
+        }
+        let history_limit = super::scrollback_lines(self.max_scrollback, self.term.columns());
+        if history_limit == *self.history_limit {
+            return;
+        }
+
+        // set_options announces the current title; suppress that synthetic
+        // event because changing the history capacity did not change the title.
+        let queued_events = super::lock_auxiliary(self.events).len();
+        self.term.set_options(super::term_config(history_limit));
+        super::lock_auxiliary(self.events).truncate(queued_events);
+        *self.history_limit = history_limit;
     }
 
     fn primary_screen_active(&self) -> bool {
@@ -190,7 +218,7 @@ impl<T: EventListener> CoreHandler<'_, T> {
     }
 
     fn reply(&self, text: String) {
-        super::lock_auxiliary(self.events).push(Event::PtyWrite(text));
+        super::lock_auxiliary(self.events).push(TerminalEvent::PtyWrite(text.into_bytes()));
     }
 
     /// The adapter-modelled state of a private mode alacritty does not know
@@ -399,6 +427,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
             let purged = self.term.history_size();
             Handler::clear_screen(self.term, mode);
             self.rows.evict(purged);
+            self.restore_scrollback_budget_after_history_purge();
             self.resume_rows();
         } else {
             let clears_all = matches!(mode, ClearMode::All);
@@ -426,6 +455,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         self.settle_rows();
         self.rows.invalidate_primary(self.term);
         Handler::reset_state(self.term);
+        self.restore_scrollback_budget_after_history_purge();
         self.resume_rows();
         // alacritty keeps OSC 4/10/11/12 colour overrides across RIS; xterm
         // drops them with the rest of the terminal state. Only the child's
@@ -446,7 +476,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         };
         // alacritty clears its title (and title stack) here without sending
         // an event; report the reset so the pane's title follows.
-        super::lock_auxiliary(self.events).push(Event::ResetTitle);
+        super::lock_auxiliary(self.events).push(TerminalEvent::ResetTitle);
     }
 
     fn reverse_index(&mut self) {
@@ -598,7 +628,38 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn dynamic_color_sequence(&mut self, prefix: String, index: usize, terminator: &str) {
-        Handler::dynamic_color_sequence(self.term, prefix, index, terminator);
+        let Some(target) = ColorQueryTarget::from_index(index) else {
+            return;
+        };
+        let colors = self.term.colors();
+        let core_color = match target {
+            ColorQueryTarget::Palette(index) => {
+                let index = usize::from(index);
+                Some(colors[index].map_or(self.default_palette[index], RgbColor::from_vte))
+            }
+            ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
+                .map(RgbColor::from_vte)
+                .or(self.host_foreground),
+            ColorQueryTarget::Background => colors[NamedColor::Background]
+                .map(RgbColor::from_vte)
+                .or(self.host_background),
+            ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
+                .or(colors[NamedColor::Foreground])
+                .map(RgbColor::from_vte)
+                .or(self.host_foreground),
+        };
+        let child_override = match target {
+            ColorQueryTarget::Foreground => colors[NamedColor::Foreground].is_some(),
+            ColorQueryTarget::Background => colors[NamedColor::Background].is_some(),
+            ColorQueryTarget::Palette(_) | ColorQueryTarget::Cursor => false,
+        };
+        let query = ColorQuery {
+            target,
+            core_color,
+            child_override,
+            format: color_query_format(prefix, terminator),
+        };
+        super::lock_auxiliary(self.events).push(TerminalEvent::ColorQuery(query));
     }
 
     fn reset_color(&mut self, index: usize) {

@@ -28,7 +28,7 @@
 # Start new interactive pane shells as login shells.
 # login_shell = false
 
-# CWD policy for new panes and workspaces when no explicit --cwd is provided.
+# CWD policy for new interactive panes and workspaces.
 # Use "follow" to inherit the source pane/workspace, "home" for $HOME,
 # "current" for the directory Shepr was launched from, or a fixed path such as
 # "~/Projects". Fixed paths must name an existing directory. Relative paths
@@ -111,7 +111,8 @@
 # headless_rows = 40
 
 [ui]
-# Sidebar width (auto-scaled based on workspace names, this sets the default)
+# Expanded sidebar width in columns. It must be between sidebar_min_width and
+# sidebar_max_width.
 # sidebar_width = 26
 # While unset, mouse or key changes to sidebar width are remembered per server.
 # Once set, this value wins at every launch.
@@ -264,9 +265,7 @@
 # Optional allow-list: only reveal for focused panes whose detected agent
 # matches one of these names. Empty means apply to any focused pane. Unknown
 # names are configuration errors.
-# Accepted: pi, claude, codex, gemini, cursor, devin, cline, opencode,
-# copilot, kimi, kiro, droid, amp, grok, kilo, qodercli, qoder, qwen,
-# qwen-code, letta, letta-code, maki.
+# Agent labels and declared aliases are accepted, case-insensitively.
 # cjk_ime_agents = []
 # Cursor shape rendered when reveal_hidden_cursor_for_cjk_ime is true.
 # Values: block, steady_block (default), underline, steady_underline, bar, steady_bar.

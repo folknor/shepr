@@ -128,6 +128,7 @@ fn next_revision() -> u64 {
 /// The VT text of absolute rows `start..end`, as the formatter wrote it:
 /// trailing blank lines included. Whole logical lines, or (`open`) rows that
 /// stop inside a logical line.
+#[derive(Clone)]
 struct HistoryChunk {
     start: AbsRow,
     end: AbsRow,
@@ -219,13 +220,20 @@ impl PaneHistorySource {
     /// inactive primary grid cannot be read, and a full-screen program's
     /// frame is not history) or when the terminal cannot be read.
     pub fn refresh(&self, cache: &mut PaneHistoryCache) -> bool {
-        if !std::ptr::eq(Weak::as_ptr(&cache.terminal), Arc::as_ptr(&self.0)) {
-            *cache = PaneHistoryCache {
+        let mut updated = if std::ptr::eq(Weak::as_ptr(&cache.terminal), Arc::as_ptr(&self.0)) {
+            cache.duplicate()
+        } else {
+            PaneHistoryCache {
                 terminal: Arc::downgrade(&self.0),
                 ..PaneHistoryCache::default()
-            };
+            }
+        };
+        if self.0.read_primary_history_inner(&mut updated).is_some() {
+            *cache = updated;
+            true
+        } else {
+            false
         }
-        self.0.read_primary_history(cache).is_some()
     }
 }
 
@@ -252,6 +260,18 @@ impl HistoryBounds {
 }
 
 impl PaneHistoryCache {
+    fn duplicate(&self) -> Self {
+        Self {
+            terminal: Weak::clone(&self.terminal),
+            epoch: self.epoch,
+            cols: self.cols,
+            chunks: self.chunks.clone(),
+            tail: Arc::clone(&self.tail),
+            tail_content_end: self.tail_content_end,
+            revision: self.revision,
+        }
+    }
+
     /// Drops what the terminal no longer backs: everything after a resize,
     /// evicted rows at the front, rows that are on the screen again at the
     /// back. Returns whether anything was dropped.
@@ -502,6 +522,13 @@ fn format_chunk(
 impl PaneTerminal {
     /// See [`PaneHistorySource::refresh`].
     pub(crate) fn read_primary_history(&self, cache: &mut PaneHistoryCache) -> Option<()> {
+        let mut updated = cache.duplicate();
+        self.read_primary_history_inner(&mut updated)?;
+        *cache = updated;
+        Some(())
+    }
+
+    fn read_primary_history_inner(&self, cache: &mut PaneHistoryCache) -> Option<()> {
         loop {
             let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
             let terminal = &core.terminal;
@@ -521,16 +548,13 @@ impl PaneTerminal {
             {
                 let end = front.start;
                 let open_end = front.resumed;
-                let Some(formatted) = format_chunk(
+                let formatted = format_chunk(
                     terminal,
                     bounds.origin,
                     end,
                     &AnsiCarry::default(),
                     open_end,
-                ) else {
-                    cache.clear();
-                    return None;
-                };
+                )?;
                 cache.push_front(HistoryChunk {
                     start: bounds.origin,
                     end,
@@ -552,20 +576,13 @@ impl PaneTerminal {
                 let end = bounds
                     .screen_start
                     .min(next.saturating_add(SCAN_CHUNK_ROWS));
-                let Some(open_end) = terminal
+                let open_end = terminal
                     .screen_row_for_absolute(end.saturating_sub(1))
                     .and_then(|y| terminal.screen_row_wrap(y))
-                    .map(|wrap| wrap.soft_wrapped)
-                else {
-                    cache.clear();
-                    return None;
-                };
+                    .map(|wrap| wrap.soft_wrapped)?;
                 let carry = cache.open_carry();
                 let resumed = !carry.is_fresh();
-                let Some(formatted) = format_chunk(terminal, next, end, &carry, open_end) else {
-                    cache.clear();
-                    return None;
-                };
+                let formatted = format_chunk(terminal, next, end, &carry, open_end)?;
                 cache.push_back(HistoryChunk {
                     start: next,
                     end,
@@ -585,13 +602,13 @@ impl PaneTerminal {
             // The cache reaches the screen; the screen is read now, under
             // this hold, up to the last row with content or the cursor.
             let Ok(range) = terminal_recent_read_range(terminal, usize::MAX) else {
-                cache.clear();
                 return None;
             };
             let Some((_, end, _)) = range else {
                 // Nothing to read at all: the read is empty, whatever the
                 // cache held.
                 cache.clear();
+                drop(core);
                 return Some(());
             };
             let carry = cache.open_carry();
@@ -601,15 +618,14 @@ impl PaneTerminal {
                         .absolute_row_for_screen(ScreenRow(end))
                         .saturating_add(1);
                     let Some(formatted) = format_chunk(terminal, next, last, &carry, false) else {
-                        // Chunks may have advanced past the old tail.
-                        cache.clear();
+                        // The caller discards this partial refresh, including
+                        // any chunks settled or formatted earlier in the read.
                         return None;
                     };
                     (formatted.text, formatted.content_end)
                 }
                 // A line the last chunk left open has no rows left to end it.
                 _ if !carry.is_fresh() => {
-                    cache.clear();
                     return None;
                 }
                 _ => (String::new(), None),
@@ -1263,5 +1279,30 @@ mod tests {
 
         write(&pane, b"\x1b[?1049l");
         assert_eq!(source.read(&mut cache), whole_read(&pane));
+    }
+
+    #[test]
+    fn an_unreadable_replacement_terminal_leaves_the_previous_cache_untouched() {
+        let pane = terminal(20, 4, 4096);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        write(&pane, b"history before replacement\r\n");
+        let previous = source.read(&mut cache).expect("primary screen is readable");
+        let revision = cache.revision();
+
+        let replacement = terminal(20, 4, 4096);
+        // A thread that panics while holding the core lock poisons it, so the
+        // replacement terminal cannot be read.
+        let holder = Arc::clone(&replacement);
+        let poisoned = std::thread::spawn(move || {
+            let _guard = holder.core.lock().expect("test mutex starts unpoisoned");
+            panic!("poison replacement terminal");
+        })
+        .join();
+        assert!(poisoned.is_err());
+
+        assert!(!PaneHistorySource(replacement).refresh(&mut cache));
+        assert_eq!(cache.text(), previous);
+        assert_eq!(cache.revision(), revision);
     }
 }

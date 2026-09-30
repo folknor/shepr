@@ -259,7 +259,9 @@ fn result_notices(
             }
             (MachineCheck::HostKey(diagnostic), _) => {
                 let mut notice = format!("shepr: machine {}: {diagnostic}", outcome.label);
-                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
+                for hint in
+                    shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str())
+                {
                     notice.push('\n');
                     notice.push_str(&hint);
                 }
@@ -269,10 +271,22 @@ fn result_notices(
                 "shepr: machine {} cannot be used: {diagnostic}. The client shows it as unavailable and keeps retrying it.",
                 outcome.label
             )),
-            (MachineCheck::Failed(diagnostic), _) => notices.push(format!(
-                "shepr: machine {} could not be checked: {diagnostic}. The client keeps retrying it.",
-                outcome.label
-            )),
+            (MachineCheck::Failed(diagnostic), _) => {
+                let client_action = if diagnostic.needs_attention() {
+                    "The client shows it as unavailable and needs attention."
+                } else {
+                    "The client keeps retrying it."
+                };
+                let mut notice = format!(
+                    "shepr: machine {} could not be checked: {diagnostic}. {client_action}",
+                    outcome.label
+                );
+                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
+                    notice.push('\n');
+                    notice.push_str(&hint);
+                }
+                notices.push(notice);
+            }
             _ => {}
         }
     }
@@ -409,6 +423,42 @@ mod tests {
             notices[2].contains("incompatible") && notices[2].contains("another build"),
             "a machine of another build is no longer attached to in silence: {notices:?}"
         );
+    }
+
+    #[test]
+    fn ssh_process_failures_are_reported_with_configuration_guidance() {
+        let machines = [machine("config"), machine("closed")];
+        let outcomes = [
+            outcome(
+                &machines[0],
+                MachineCheck::Failed(diagnostic(
+                    "/home/u/.ssh/config: line 12: Bad configuration option: hostkeyalgorithms",
+                )),
+                None,
+            ),
+            outcome(
+                &machines[1],
+                MachineCheck::Failed(diagnostic("Connection closed by host port 22")),
+                None,
+            ),
+        ];
+
+        let notices = result_notices(&machines, &outcomes, true);
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert!(
+            notices[0].contains("Bad configuration option"),
+            "{notices:?}"
+        );
+        assert!(
+            notices[0].contains("local SSH configuration"),
+            "{notices:?}"
+        );
+        assert!(notices[0].contains("needs attention"), "{notices:?}");
+        assert!(
+            notices[1].contains("Connection closed by host"),
+            "{notices:?}"
+        );
+        assert!(notices[1].contains("needs attention"), "{notices:?}");
     }
 
     #[test]

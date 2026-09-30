@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=mastracode
-# SHEPR_INTEGRATION_VERSION=4
+# SHEPR_INTEGRATION_VERSION=5
 
 set -eu
 
@@ -16,7 +16,8 @@ hook_seq="$(date +%s%N 2>/dev/null || true)"
 
 action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-mastracode-hook.XXXXXX")" || exit 0
-trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
+trap 'rm -f "$hook_input_file"' 0
+trap 'exit 0' HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in

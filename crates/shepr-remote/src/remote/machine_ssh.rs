@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_ssh_link_failure,
-    judge_remote_server, locate_remote_shepr, remote_server_status,
+    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_remote_candidate_mismatch,
+    is_ssh_link_failure, judge_remote_server, locate_remote_shepr, remote_server_status,
     resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
 
@@ -40,9 +40,10 @@ pub fn check_machine_ssh(
 
 /// The remote executable for a check: the cached one when `verify` accepts it,
 /// otherwise whatever `discover` finds, which is then cached. A link failure while
-/// verifying says nothing about the cached path and is returned as it is. Any other
-/// verification result drops the cache entry first, so a stale hint is not tried
-/// again. Cache failures are logged and never fail the check.
+/// verifying says nothing about the cached path and is returned as it is. An absent
+/// or incompatible cached executable is dropped before discovery; other probe errors
+/// are returned without invalidating a path that may still be valid. Cache failures
+/// are logged and never fail the check.
 fn resolve_remote_shepr(
     cache: &SshMetadataCache,
     mut verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
@@ -52,6 +53,7 @@ fn resolve_remote_shepr(
         match verify(&cached) {
             Ok(true) => return Ok(cached),
             Err(error) if is_ssh_link_failure(&error) => return Err(error),
+            Err(error) if !is_remote_candidate_mismatch(&error) => return Err(error),
             Ok(false) | Err(_) => {
                 if let Err(error) = cache.invalidate() {
                     tracing::warn!(
@@ -103,10 +105,10 @@ pub struct MachineSshStream {
 /// reconnect launches the bridge straight from the remembered executable, seeded
 /// from the on-disk metadata cache at first use.
 ///
-/// A remembered executable is only a hint. When an attempt with it fails for any
-/// reason other than the SSH link itself, the hint is dropped and the same attempt
-/// runs full discovery once more, so a moved, removed or upgraded remote install
-/// costs one extra bridge launch and never a stuck endpoint.
+/// A remembered executable is only a hint. A remote command-not-found or
+/// not-executable result drops it and runs discovery once; handshake and remote
+/// launch errors leave the hint in place because they do not show that the
+/// executable moved, was removed or was upgraded.
 ///
 /// Full discovery may not fit in one attempt on a slow link without connection
 /// sharing. When an attempt ends on a timeout or other link failure, what discovery
@@ -129,6 +131,21 @@ struct ConnectorState {
     /// there is no remembered executable.
     discovery: DiscoveryProgress,
     seeded_from_disk: bool,
+}
+
+fn ensure_managed_ssh_config(
+    state: &mut ConnectorState,
+    target: &SshTarget,
+    paths: &shepr_config::AppPaths,
+) -> io::Result<()> {
+    let must_rebuild = match state.ssh.as_ref() {
+        Some(ssh) => !ssh.options().config_path.try_exists()?,
+        None => true,
+    };
+    if must_rebuild {
+        state.ssh = Some(RemoteSsh::new(target.clone(), paths)?);
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -216,9 +233,9 @@ impl MachineSshConnector {
     }
 
     /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
-    /// handshake. The handshake is part of the attempt so that a failure there can
-    /// still send the attempt back through discovery. Exclusive access keeps all mutable
-    /// connection state owned by the one supervisor attempt using this connector.
+    /// handshake. Exclusive access keeps all mutable connection state owned by the
+    /// one supervisor attempt using this connector. The handshake result is returned
+    /// as-is unless the remote command failed to execute the remembered path.
     ///
     /// Discovery commands use the smaller of their command timeout and the time left,
     /// and refuse to start once `deadline` has passed. The stdio bridge does not receive
@@ -240,12 +257,13 @@ impl MachineSshConnector {
             state.seeded_from_disk = true;
             state.remote_shepr = metadata_cache.load();
         }
-        if state.ssh.is_none() {
-            // A transient local runtime-directory or managed-config failure must not
-            // disable this endpoint for the connector's lifetime. Failed setup leaves
-            // `ssh` empty, so the next scheduled connection attempt tries it again.
-            state.ssh = Some(RemoteSsh::new(self.target.clone(), &self.paths)?);
-        }
+        // A missing managed config can mean its temporary directory was removed
+        // while the client stayed open. Rebuild it as local setup rather than retrying
+        // ssh forever with a path that no longer exists.
+        // This repairs a removed Shepr config directory while its XDG runtime root
+        // still exists. Runtime-root recreation belongs to the login manager;
+        // RemoteSsh::new validates that root and returns a setup error if it is gone.
+        ensure_managed_ssh_config(state, &self.target, &self.paths)?;
         let ConnectorState {
             ssh,
             remote_shepr,
@@ -260,7 +278,7 @@ impl MachineSshConnector {
         ssh.set_attempt_deadline(Some(deadline));
         let ssh = &*ssh;
 
-        if let Some(known) = remote_shepr.clone() {
+        let discovered = if let Some(known) = remote_shepr.clone() {
             match Self::attempt(
                 &self.paths,
                 &self.label,
@@ -271,23 +289,19 @@ impl MachineSshConnector {
                 &mut establish,
             ) {
                 Ok(connected) => return Ok(connected),
-                Err(error) if super::is_ssh_link_failure(&error) => return Err(error),
-                Err(error) => {
+                Err(error) if remote_executable_must_be_rediscovered(&error) => {
                     tracing::debug!(
                         %error,
                         machine = %self.label,
                         target = %self.target.as_str(),
-                        "remembered remote Shepr did not connect; rediscovering"
+                        "remembered remote Shepr could not be executed; rediscovering"
                     );
                     *remote_shepr = None;
-                    // A failed connection or handshake only invalidates this
-                    // connector's in-memory hint; the cached entry is overwritten
-                    // once rediscovery succeeds.
+                    resume_installed_remote_shepr_discovery(ssh, discovery)?
                 }
+                Err(error) => return Err(error),
             }
-        }
-
-        let discovered =
+        } else {
             resume_installed_remote_shepr_discovery(ssh, discovery).inspect_err(|error| {
                 if discovery.has_progress() {
                     tracing::debug!(
@@ -297,12 +311,13 @@ impl MachineSshConnector {
                         "SSH discovery stopped; the next attempt resumes it"
                     );
                 }
-            })?;
+            })?
+        };
         *discovery = DiscoveryProgress::default();
-        // Remembered before the bridge starts: when only the bridge runs out of time or
-        // loses the link, the next attempt launches it straight away instead of
-        // discovering again. Any other failure forgets it, so the next attempt discovers
-        // from scratch.
+        // Remembered before the bridge starts: a link failure can retry this path
+        // without rediscovery. Only a remote command-not-found or not-executable
+        // result forgets it, so an unrelated server or launch failure does not pay
+        // discovery again on the next attempt.
         *remote_shepr = Some(discovered.clone());
         match Self::attempt(
             &self.paths,
@@ -328,7 +343,7 @@ impl MachineSshConnector {
                 Ok(connected)
             }
             Err(error) => {
-                if !super::is_ssh_link_failure(&error) {
+                if remote_executable_must_be_rediscovered(&error) {
                     *remote_shepr = None;
                 }
                 Err(error)
@@ -362,6 +377,20 @@ impl MachineSshConnector {
             bridge: MachineSshBridge { bridge },
         })
     }
+}
+
+/// Only the POSIX shell's command-not-found (127) and not-executable (126)
+/// statuses, reported by ssh as the remote command's own exit status, prove
+/// that a remembered Shepr path is stale. The status is read from the typed
+/// diagnostic, never from message text, which carries remote stderr. A failed
+/// handshake or remote launch error says nothing about that path. The bridge
+/// relays bytes from the remote server socket, so a preamble build mismatch
+/// identifies that server, not the Shepr executable that opened the bridge.
+fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
+    matches!(
+        super::SshFailureDiagnostic::from_error(error).remote_exit_code(),
+        Some(126 | 127)
+    )
 }
 
 // The label only makes these names readable; it is not what keeps bridges
@@ -448,6 +477,35 @@ mod tests {
     }
 
     #[test]
+    fn only_remote_exec_failures_invalidate_a_remembered_path() {
+        for exit_code in [126, 127] {
+            let diagnostic = super::super::SshFailureDiagnostic::from_ssh_output(
+                Some(exit_code),
+                format!("remote command failed (exit status {exit_code})"),
+            );
+            let error = io::Error::other(diagnostic);
+            assert!(remote_executable_must_be_rediscovered(&error));
+        }
+
+        // The text alone proves nothing: only ssh's typed report of the remote
+        // command's exit status does.
+        let quoted = io::Error::other("remote command failed (exit status 127)");
+        assert!(!remote_executable_must_be_rediscovered(&quoted));
+        let own_failure = io::Error::other(super::super::SshFailureDiagnostic::from_ssh_output(
+            Some(super::super::SSH_OWN_FAILURE_EXIT_CODE),
+            "ssh: connect to host h port 22: Connection refused".into(),
+        ));
+        assert!(!remote_executable_must_be_rediscovered(&own_failure));
+
+        let server_mismatch = io::Error::new(
+            io::ErrorKind::Unsupported,
+            "SSH endpoint handshake failed: build mismatch: peer is a different shepr build",
+        );
+        assert!(!remote_executable_must_be_rediscovered(&server_mismatch));
+        assert!(super::super::SshFailureDiagnostic::from_error(&server_mismatch).needs_attention());
+    }
+
+    #[test]
     fn a_verified_cached_executable_skips_discovery() {
         let scratch = shepr_test_support::ScratchDir::new("machine-check-cached");
         let cache = cache_in(&scratch);
@@ -475,14 +533,14 @@ mod tests {
         assert_eq!(found, executable("/new/shepr"));
         assert_eq!(cache.load(), Some(executable("/new/shepr")));
 
-        let found = resolve_remote_shepr(
+        let error = resolve_remote_shepr(
             &cache,
             |_| Err(io::Error::new(io::ErrorKind::Unsupported, "another build")),
-            || Ok(executable("/newer/shepr")),
+            || panic!("untyped probe failures must not trigger discovery"),
         )
-        .expect("resolved");
-        assert_eq!(found, executable("/newer/shepr"));
-        assert_eq!(cache.load(), Some(executable("/newer/shepr")));
+        .expect_err("an untyped unsupported probe error is not proof of a stale executable");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(cache.load(), Some(executable("/new/shepr")));
     }
 
     #[test]

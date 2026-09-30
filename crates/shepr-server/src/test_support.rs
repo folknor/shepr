@@ -11,7 +11,7 @@ use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::{Direction, PaneId};
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
-use shepr_mux::workspace::{ExistingPane, PaneRemoval, PaneRemovalScope, Workspace, WorkspacePane};
+use shepr_mux::workspace::{PaneRemoval, PaneRemovalScope, Workspace, WorkspacePane};
 use shepr_protocol::TerminalId;
 use tokio::sync::{Notify, mpsc};
 
@@ -153,11 +153,12 @@ pub(crate) trait WorkspaceFixture: Sized {
 impl WorkspaceFixture for Workspace {
     fn test_new(name: &str) -> Self {
         let identity_cwd = PathBuf::from("/");
-        let existing = ExistingPane {
-            pane_id: PaneId::alloc(),
-            pane: WorkspacePane::new(PaneState::new(TerminalId::alloc())),
-        };
-        Self::from_existing_pane(Some(name.to_string()), &identity_cwd, existing)
+        Self::test_from_pane(
+            Some(name.to_string()),
+            &identity_cwd,
+            PaneId::alloc(),
+            WorkspacePane::new(PaneState::new(TerminalId::alloc())),
+        )
     }
 
     fn test_split(&mut self, direction: Direction) -> PaneId {

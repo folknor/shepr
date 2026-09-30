@@ -431,26 +431,6 @@ queue; on failure replay queued non-copy keys instead of dropping them; cap
 `push_target_event` batches at the server's limits as `push_focused_paste` does
 for text.
 
-## CLIENT-015 - Every server `ClientShellError` is shown as "Paste rejected"
-
-Scope: client-shell.
-
-`lib.rs` handles `ServerMessage::ClientShellError { kind }` with
-`shell.receive_endpoint_error(kind.to_string())`, and `navigation/actions.rs`
-hard-codes the notice:
-
-```rust
-pub(crate) fn receive_endpoint_error(&mut self, message: String) -> bool {
-    self.push_endpoint_notice(ClientEndpointNoticeKind::Rejected, "paste_rejected", "Paste rejected", message)
-}
-```
-
-The server sends three `NoticeKind`s through this message: `PasteRejected`,
-`PaneInputDropped { pane_id, events }` (`shepr-server/src/server/headless.rs`)
-and `OversizedSurface { claimed, max }` (`headless/render.rs`). Dropped
-keystrokes and an oversized surface both appear titled "Paste rejected" with code
-`paste_rejected`. Take the typed `NoticeKind` and choose the title from it.
-
 ## CLIENT-016 - An "Unavailable" notice shows once per boot of the active endpoint, then never again
 
 Scope: client-shell.
@@ -518,22 +498,6 @@ displayed remote produces a cancelled command instead of cancelling the handoff.
 not owned, for any endpoint. The shell cannot see ownership today, so either the
 runtime decides or the shell is told.
 
-## CLIENT-018 - The navigator highlights one row but Enter acts on another, or on none
-
-Scope: client-shell.
-
-`overlays/overlays.rs` `render_navigator_overlay` highlights
-`navigator_selected_index(&rows, n).unwrap_or(0)`, and
-`move_navigator_selection` also falls back to 0, but `accept_navigator_selection`
-uses `selected_navigator_target`, which returns `None` when `navigator.selected` is
-`Some(target)` and that target is no longer in `rows`. `selected` is reset on query
-or filter changes but not when a snapshot removes its pane, workspace or machine.
-Row 0 is then drawn selected, and Enter or a click on it does nothing.
-
-The footer advertises `a/b/w/i/d filter`, but `route_overlay_key` binds only `a`,
-`b`, `w` and `i`. Plain `d` does nothing; only Ctrl+D is bound, and it moves the
-selection by 8.
-
 ## CLIENT-019 - Two sort keys for the same agent list
 
 Scope: client-shell.
@@ -582,28 +546,6 @@ does not take `SwitchWorkspace`), so the list first jumps to the wrong row; the
 `reveal_focused_workspace` pass on the next snapshot corrects it. A visible jump,
 plus an early return that can skip the correction.
 
-## CLIENT-021 - The help overlay's scroll range uses a different wrap than the renderer
-
-Scope: client-shell.
-
-`render_help_overlay` computes `total_rows` as `sum of ceil(chars / width)` from
-`chars().count()`, and the group header uses `group.len()` (bytes). It renders
-with `Paragraph::wrap(Wrap { trim: false })`, which wraps at word boundaries and
-can produce more rows than character division predicts. `help_max_scroll` is then
-too small, and the last entries cannot be scrolled into view in a narrow terminal.
-
-## CLIENT-022 - The machine diagnostic keeps newlines, but the card shows one line
-
-Scope: client-shell.
-
-`machine_diagnostics.rs` keeps up to `MAX_MACHINE_DIAGNOSTIC_CHARS` (4096)
-characters and preserves `'\n'` so the SSH diagnostic stays readable.
-`endpoint_notices.rs` `render_notification_card` draws the body as a single
-`Line` in a card at most 4 rows tall, width computed from the whole string.
-Newlines are dropped or joined and everything past the first terminal-width of
-text is cut, so the diagnostic the badge click exists to show (for example the
-"restart shepr to authenticate" details) is mostly invisible.
-
 ## CLIENT-023 - Smaller client shell issues
 
 Scope: client-shell. (Its note on the endpoint config being applied only as a
@@ -643,3 +585,15 @@ keymap is filed under WIRE-011, and its dead-resize note under CLIENT-013.)
   installs do not go through `finish_client_shell_input`, so the host stays in
   report-all mode until the next input. Harmless today because the next batch
   re-syncs, but "host mode follows shell mode" is only restored lazily.
+
+## CLIENT-024 - An automatic notice with a multi-line ssh error can cover most of the UI unasked
+
+Scope: client-shell (lateral).
+
+The notice card now renders every line of its body and grows up to the rows below
+`top_offset`, so a machine diagnostic opened from its badge is readable. The same
+card also carries automatic notices: an Unavailable notice whose text is a
+multi-line ssh error pops up large, over the sidebar and panes, without any click,
+until dismissed. Keep automatic notices to a bounded height (first line or a few
+lines, with the badge leading to the full text), and let only an explicitly
+opened diagnostic grow.

@@ -670,7 +670,8 @@ fn render_navigator_overlay(
         if n.search_focused {
             " search type · move ↑↓/ctrl+n/p · open enter · back esc"
         } else {
-            " ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i/d filter · enter open · esc close"
+            // Filters cover all agents or one of the three agent states; Ctrl+D pages by eight.
+            " ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i filter · enter open · esc close"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
@@ -693,7 +694,7 @@ fn help_lines(
     keybinds: &LiveKeybindConfig,
     query: &str,
     palette: &Palette,
-) -> Vec<(usize, ratatui::text::Line<'static>)> {
+) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::text::{Line, Span};
 
     let groups = shepr_termio::input::filter_keybind_help_groups(
@@ -707,48 +708,38 @@ fn help_lines(
         .unwrap_or(8);
     if groups.is_empty() {
         let message = " no matching keybinds";
-        return vec![(
-            message.chars().count(),
-            Line::from(Span::styled(
-                message,
-                Style::default().fg(palette.overlay1).bg(palette.panel_bg),
-            )),
-        )];
+        return vec![Line::from(Span::styled(
+            message,
+            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+        ))];
     }
 
     let mut lines = Vec::new();
     for (group, entries) in groups {
-        lines.push((
-            group.len() + 1,
-            Line::from(Span::styled(
-                format!(" {group}"),
-                Style::default()
-                    .fg(palette.accent)
-                    .bg(palette.panel_bg)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        ));
+        lines.push(Line::from(Span::styled(
+            format!(" {group}"),
+            Style::default()
+                .fg(palette.accent)
+                .bg(palette.panel_bg)
+                .add_modifier(Modifier::BOLD),
+        )));
         for (key, label) in entries {
             let padded_key = format!(" {key:<key_width$} ");
-            let width = padded_key.chars().count() + label.chars().count();
-            lines.push((
-                width,
-                Line::from(vec![
-                    Span::styled(
-                        padded_key,
-                        Style::default()
-                            .fg(palette.mauve)
-                            .bg(palette.panel_bg)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        label.into_owned(),
-                        Style::default().fg(palette.text).bg(palette.panel_bg),
-                    ),
-                ]),
-            ));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    padded_key,
+                    Style::default()
+                        .fg(palette.mauve)
+                        .bg(palette.panel_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    label.into_owned(),
+                    Style::default().fg(palette.text).bg(palette.panel_bg),
+                ),
+            ]));
         }
-        lines.push((0, Line::raw("")));
+        lines.push(Line::raw(""));
     }
     lines
 }
@@ -818,22 +809,16 @@ fn render_help_overlay(
     };
 
     let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(5));
-    let lines = help_lines(k, &h.query, p);
+    // The scroll range counts rows with the same word wrapper that draws them.
+    let paragraph = Paragraph::new(help_lines(k, &h.query, p)).wrap(Wrap { trim: false });
     let viewport_rows = usize::from(body.height.max(1));
-    let wrapped_rows = |width: u16| {
-        let width = usize::from(width.max(1));
-        lines
-            .iter()
-            .map(|(line_width, _)| line_width.max(&1).div_ceil(width))
-            .sum::<usize>()
-    };
-    let needs_scrollbar = wrapped_rows(body.width) > viewport_rows;
+    let needs_scrollbar = paragraph.line_count(body.width) > viewport_rows;
     let text_area = if needs_scrollbar {
         Rect::new(body.x, body.y, body.width.saturating_sub(1), body.height)
     } else {
         body
     };
-    let total_rows = wrapped_rows(text_area.width);
+    let total_rows = paragraph.line_count(text_area.width);
     let max_scroll = total_rows.saturating_sub(viewport_rows);
     let scroll = h.scroll.min(max_scroll);
     let metrics = shepr_termio::ScrollMetrics {
@@ -849,9 +834,7 @@ fn render_help_overlay(
         body.height,
     ));
     Widget::render(
-        Paragraph::new(lines.into_iter().map(|(_, line)| line).collect::<Vec<_>>())
-            .wrap(Wrap { trim: false })
-            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+        paragraph.scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
         text_area,
         b,
     );

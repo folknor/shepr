@@ -61,6 +61,10 @@ impl ServerAddress {
     ) -> Self {
         let runtime_api = runtime_dir.join(API_SOCKET_FILE_NAME);
         if let Some(api_socket) = api_socket_override {
+            // SHEPR_SOCKET_PATH selects the server API socket. The client
+            // socket override is an alternate target only when that server
+            // override is absent, so an API override keeps its derived socket
+            // pair even if both variables are set.
             let api_socket = api_socket.to_path_buf();
             return Self {
                 client_socket: derive_client_socket_from_api_socket(&api_socket),
@@ -230,6 +234,19 @@ mod tests {
             client.override_variable(),
             Some(EnvVar::SheprClientSocketPath)
         );
+    }
+
+    #[test]
+    fn api_socket_override_takes_precedence_over_client_socket_override() {
+        let address = ServerAddress::resolve_paths(
+            Path::new("/run/user/1/shepr"),
+            Some(Path::new("/x/server.sock")),
+            Some(Path::new("/x/other-client.sock")),
+        );
+
+        assert_eq!(address.api_socket(), Path::new("/x/server.sock"));
+        assert_eq!(address.client_socket(), Path::new("/x/server-client.sock"));
+        assert_eq!(address.override_variable(), Some(EnvVar::SheprSocketPath));
     }
 
     const KEEP_GUIDANCE: &str = "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes.";

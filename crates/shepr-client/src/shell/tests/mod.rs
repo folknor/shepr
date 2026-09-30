@@ -191,4 +191,5 @@ mod endpoints;
 #[path = "input.rs"]
 mod input_domain;
 mod mouse_selection;
+mod presentation_regressions;
 mod startup_overlays;

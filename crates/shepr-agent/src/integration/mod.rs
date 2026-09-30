@@ -29,11 +29,11 @@ const OMP_INTEGRATION_VERSION: u32 = 1;
 const CLAUDE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CLAUDE_HOOK_ASSET: &str = include_str!("assets/claude/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const CLAUDE_INTEGRATION_VERSION: u32 = 2;
+const CLAUDE_INTEGRATION_VERSION: u32 = 3;
 const CODEX_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const CODEX_INTEGRATION_VERSION: u32 = 3;
+const CODEX_INTEGRATION_VERSION: u32 = 4;
 const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
@@ -44,15 +44,15 @@ const KIMI_MIN_VERSION: &str = "0.14.0";
 const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const COPILOT_INTEGRATION_VERSION: u32 = 2;
+const COPILOT_INTEGRATION_VERSION: u32 = 3;
 const DEVIN_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DEVIN_HOOK_ASSET: &str = include_str!("assets/devin/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const DEVIN_INTEGRATION_VERSION: u32 = 2;
+const DEVIN_INTEGRATION_VERSION: u32 = 3;
 const DROID_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DROID_HOOK_ASSET: &str = include_str!("assets/droid/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const DROID_INTEGRATION_VERSION: u32 = 2;
+const DROID_INTEGRATION_VERSION: u32 = 3;
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/shepr-agent-state.js");
 const OPENCODE_TUI_PLUGIN_INSTALL_NAME: &str = "shepr-tui-session.js";
@@ -83,11 +83,11 @@ const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const MASTRACODE_INTEGRATION_VERSION: u32 = 4;
+const MASTRACODE_INTEGRATION_VERSION: u32 = 5;
 const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 // limits-exempt: format version, matched against the one the adjacent asset carries.
-const GROK_INTEGRATION_VERSION: u32 = 2;
+const GROK_INTEGRATION_VERSION: u32 = 3;
 
 // Hook assets deliver reports best-effort and discard failures, because the
 // host agent may show a failing hook to the operator. The server refuses a

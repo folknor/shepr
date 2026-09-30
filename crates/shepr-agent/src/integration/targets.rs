@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use crate::agent::{IntegrationHookAction, IntegrationTarget as Target};
 
 use super::claude_settings::install as install_claude_settings;
-use super::command::{hook_command, hook_command_with_interpreter};
+use super::command::hook_command;
 use super::config_edit::{
     build_codex_config_with_hooks, build_kimi_config_with_hooks, ensure_command_hook,
     ensure_direct_command_hook, ensure_flat_command_hook, ensure_hooks_object,
@@ -639,10 +639,9 @@ pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> io::Result<Value> 
     Ok(Value::Object(block))
 }
 
-/// Grok's hook asset is a POSIX `sh` script, so it runs under `sh` rather than
-/// the `bash` the shared command formatter uses for the other hooks.
+/// Grok's hook asset uses the same POSIX shell command as the other targets.
 fn grok_hook_command(hook_path: &Path, action: Option<IntegrationHookAction>) -> String {
-    hook_command_with_interpreter(hook_path, "sh", action.map(IntegrationHookAction::as_str))
+    hook_command(hook_path, action.map(IntegrationHookAction::as_str))
 }
 
 /// The complete Shepr-owned Grok hook config, generated from its declared

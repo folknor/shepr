@@ -128,20 +128,6 @@ correctness depends on a terminal-state detail far away in `shepr-mux`. One owne
 (the App handler) should publish it, and the server should ask the App whether
 the exit is held.
 
-## SRV-005 - Detect capture and explain say "not found" for a pane that exists
-
-Scope: server-app.
-
-Both handlers in `app/api/detect.rs` return `pane_not_found(&target.pane_id)`
-when `lookup_runtime` finds no runtime.
-
-**Claims broken.** The error's own text ("pane w1:p2 not found") and
-`shepr detect capture <pane>` / `detect explain <pane>` in AGENTS.md. A pane
-waiting on agent resume, or a restored pane whose shell or resume failed
-(documented in `runtime_for_pane_in_workspace`), exists and is in the sidebar,
-but the CLI says it does not exist. It needs its own error ("pane has no running
-terminal", with the restore error when there is one).
-
 ## SRV-006 - `AppState` does /proc I/O despite "pure data"
 
 Scope: server-app.
@@ -156,29 +142,6 @@ data, testable without PTYs or async", and the `AppState` doc ("state reaches a
 runtime only through the registry it is handed"); handing it the registry is how
 the rule is sidestepped. `App` should compute the resolved cwd and pass it in, so
 `AppState` only compares.
-
-## SRV-007 - `window_title_without_workspace` does not do what its doc says
-
-Scope: server-app.
-
-`app/window_title.rs`: the doc says "`None` when window titles are disabled or
-every token resolved empty". It returns `Some("")` (or `Some` of just the
-literals) when every token is empty; the test
-`a_client_with_no_workspace_renders_no_workspace_or_pane_target` asserts
-`Some("|||x")`. The server gets the claimed behaviour only because
-`server/headless.rs` then runs `sanitize_window_title_text`. Fix the doc or move
-the sanitising into this function.
-
-## SRV-008 - `toggle_pane_zoom` reports "pane not found" after it moved focus
-
-Scope: server-app.
-
-`app/actions/pane.rs` focuses the pane first (marking the session dirty), then
-returns `None` if `set_zoomed` did not take. The only caller
-(`api/panes/geometry.rs` `handle_pane_zoom`) turns `None` into `pane_missing`, so
-the requester is told the pane does not exist while its focus changed. `None` is
-documented as "the pane is not in the workspace". A refused zoom should be a
-separate outcome.
 
 ## SRV-009 - Render and projection invalidation happen even for failed requests
 
@@ -360,34 +323,6 @@ after the data-directory lease is taken, so it is not a config check in the
 `serve()` sense. It belongs next to `load_validated` in `shepr-daemon`, or needs a
 `RunServerError::ConfigRefused` variant.
 
-## SRV-017 - A readiness error on the client listener skips the final save and the shutdown notice
-
-Scope: server-serving-ui.
-
-**Claims broken.** `ctrlc_handler`'s rationale ("without it a signal kills the
-server without the shutdown sequence that saves the session"), and
-`HeadlessServer::run`'s documented shutdown sequence.
-
-In `run`'s `select!`, the `client_listener_ready.readable()` arm does
-`Err(err) => return Err(err)`, returning straight out of `run`: no
-`initiate_shutdown` (clients get no `ServerShutdown`), no
-`save_session_before_teardown_async`, no pane teardown wait. Only `Drop` runs,
-releasing the lease and sockets. The `accept_client_connections` error path next
-to it does `run_error = Some(err); self.initiate_shutdown()`; this arm should too.
-
-## SRV-018 - The listener can strand pending connections after an accept error
-
-Scope: server-serving-ui.
-
-`run` clears AsyncFd readiness (`guard.clear_ready()`) before
-`accept_pending_client_connections` drains the backlog. The drain loop breaks on
-any accept error other than `WouldBlock` (for example `EMFILE`) with connections
-still queued; readiness is edge-triggered and already cleared, so they wait until
-a new connection arrives. Clear readiness only when `accept` reports `WouldBlock`
-(tokio's `try_io` pattern), or re-arm on error. Related:
-`accept_pending_client_connections` returns `io::Result` but never returns `Err`,
-so the `run_error` branch handling it is dead.
-
 ## SRV-019 - The retained render path resolves string pane ids per source, recipient and pane
 
 Scope: server-serving-ui.
@@ -444,22 +379,6 @@ Scope: server-serving-ui.
 next projection from it can carry older `/proc` cwd values than the seed did, and
 the client gets a snapshot that moves its cwd back until the cwd timer refresh.
 Seed from the cache (rebuilding it first if its revision is stale).
-
-## SRV-023 - Stale or wrong comments in serving
-
-Scope: server-serving-ui.
-
-- `headless.rs` module doc: "Renders to a virtual ratatui Buffer in memory". It
-  renders straight to wire cells (`render_surface_virtual` into `FrameData`). It
-  also says it "handles ... minimum terminal size"; no such handling exists in
-  the crate.
-- `send_to_all_clients` doc: "the only callers are the two shutdown notices".
-  There is one caller (`initiate_shutdown`).
-- `initiate_shutdown`: "Clear client-local host graphics, then send
-  ServerShutdown". Nothing clears graphics.
-- `client_shell.rs`: the `snapshot_from_session` doc says projection runs again
-  "only when the shared cache generation moves"; it also runs when the client's
-  own location generation moves (`needs_projection` in `render_and_stream`).
 
 ## SRV-024 - Smaller serving smells
 
@@ -606,50 +525,6 @@ Git itself would treat as broken into argv options.
 contain `..`, or do not start with `refs/` (as Git's `check_refname_format` does);
 follow `ref: ` indirection in loose refs, or report the ref unavailable.
 
-## SRV-029 - A drop by partial restore backs up the layout but not the history that pairs with it
-
-Scope: mux-persist-git-workspace.
-
-**Claim broken.** `restore.rs` on a dropped workspace: "The workspace is not lost
-on disk: a nonzero `RestoredSession::dropped_workspaces` makes the first save back
-the original file up before overwriting it."
-
-`SessionWriter::preserve_unloaded` copies only `session.json` into
-`session-backups`. The first save also replaces `session-history.json`, whose
-history belongs to the backed-up layout (`layout_fingerprint` pairs them), so
-restoring from the backup brings the layout back without its screen history. The
-periodic `session-snapshots` copies are layout-only too. A real loss only with
-`experimental.pane_history` on. Copy the history file next to the layout backup
-(same timestamp and sequence name), or narrow the doc to the layout.
-
-## SRV-030 - `from_existing_pane`, `ExistingPane` and the "pane move" rationale are production surface with no production caller
-
-Scope: mux-persist-git-workspace.
-
-**Claims broken.** AGENTS.md: "the goal is the smallest code surface that does
-what the owner uses"; the stale-doc rule.
-
-- `Workspace::from_existing_pane` and `pane_tree::ExistingPane` are `pub`, but
-  their only caller is `shepr-server/src/test_support.rs`.
-- The comment on `NEXT_WORKSPACE_NUMBER` in `workspace.rs` justifies the
-  process-global counter by saying an owned allocator "would have to be threaded
-  into every workspace constructor, pane move and restore". No pane move exists.
-- `detach_pane` returns a `DetachedPane` its only caller, `remove_pane`,
-  discards.
-- `commit_new_pane` sets the public number twice: in `commit_prepared_split` and
-  again in `register_new_pane_with_number`.
-
-Move `from_existing_pane` behind `#[cfg(test)]` or into test support as a seam,
-and drop "pane move" from the comment.
-
-## SRV-031 - `events.rs` module doc is stale
-
-Scope: mux-persist-git-workspace.
-
-It says background tasks include "future hook listeners". Hook state already
-arrives through `AppEvent::HookStateReported` and `AgentSessionReported`. Reword
-as "PTY child watchers, detectors, hook reports, the git refresh".
-
 ## SRV-032 - Overflow on hand-edited public pane numbers panics restore in the dev build
 
 Scope: mux-persist-git-workspace.
@@ -719,13 +594,14 @@ Scope: mux-persist-git-workspace (lateral).
   tokio worker during a big history save, that worker blocks for the save. Fine
   at shutdown, worth knowing if `App` is ever dropped elsewhere.
 
-## SRV-035 - `RestoreFailure` promises API presentation that does not exist
+## SRV-036 - A history recovery copy whose layout copy was never published is never pruned
 
-Scope: mux-terminal. Hunter's confidence: high.
+Scope: mux-persist (lateral).
 
-`RestoreFailure`'s doc: "The pane surface and the API both present it". Only
-`ui/panes.rs` reads `restore_error`; no API schema field carries it, and nothing
-in `shepr-api` mentions restore. The `Display` impl has no caller, since
-`restore.rs` logs it with `?reason` (Debug). Either expose it (pane info and
-`status`) or correct the doc and delete `Display`. Related: SRV-005, which wants
-the restore error in the detect "no running terminal" answer.
+Layout backups and periodic snapshots now carry a `session-history-<ts>-<seq>.json`
+sidecar, written before the layout copy, which is the commit marker. If the
+server dies between the two, or the history cleanup fails, the sidecar has no
+layout partner. Pruning walks layout files only, and `recovery_timestamp` does not
+match history names, so the orphan stays forever. A small leak, only after a
+crash. Prune history sidecars that have no layout partner and are older than the
+newest layout copy.

@@ -218,22 +218,32 @@ impl Dimensions for TermSize {
     }
 }
 
+/// Events retained by the adapter, in emission order.
+enum TerminalEvent {
+    PtyWrite(Vec<u8>),
+    ColorQuery(ColorQuery),
+    ClipboardStore(ClipboardType, String),
+    Title(String),
+    ResetTitle,
+}
+
 /// Collects the alacritty events the adapter acts on, in emission order.
 /// Bells are not among them: nothing in shepr surfaces a bell.
 #[derive(Clone)]
-struct Listener(Arc<Mutex<Vec<Event>>>);
+struct Listener(Arc<Mutex<Vec<TerminalEvent>>>);
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
-        let relevant = matches!(
-            event,
-            Event::PtyWrite(_)
-                | Event::ColorRequest(..)
-                | Event::ClipboardStore(..)
-                | Event::Title(_)
-                | Event::ResetTitle
-        );
-        if relevant {
+        let event = match event {
+            Event::PtyWrite(text) => Some(TerminalEvent::PtyWrite(text.into_bytes())),
+            Event::ClipboardStore(clipboard, text) => {
+                Some(TerminalEvent::ClipboardStore(clipboard, text))
+            }
+            Event::Title(title) => Some(TerminalEvent::Title(title)),
+            Event::ResetTitle => Some(TerminalEvent::ResetTitle),
+            _ => None,
+        };
+        if let Some(event) = event {
             crate::lock_auxiliary(&self.0).push(event);
         }
     }
@@ -310,7 +320,7 @@ pub struct Terminal {
     /// Mirror of alacritty's keyboard-mode stack depths; the parser must only
     /// ever drive `term` through a [`CoreHandler`] so it stays exact.
     keyboard_depth: KeyboardStackDepth,
-    events: Arc<Mutex<Vec<Event>>>,
+    events: Arc<Mutex<Vec<TerminalEvent>>>,
     scanner: Scanner,
     max_scrollback: usize,
     history_lines: usize,
@@ -495,6 +505,10 @@ impl Terminal {
             default_color_set,
             rows,
             history_lines,
+            max_scrollback,
+            default_palette,
+            host_foreground,
+            host_background,
             ..
         } = self;
 
@@ -508,7 +522,11 @@ impl Terminal {
                 events,
                 default_color_set,
                 rows,
-                history_limit: *history_lines,
+                history_limit: history_lines,
+                max_scrollback: *max_scrollback,
+                default_palette,
+                host_foreground: *host_foreground,
+                host_background: *host_background,
             };
             operation(&mut handler, parser)
         };
@@ -629,33 +647,16 @@ impl Terminal {
         };
         for event in events {
             match event {
-                Event::PtyWrite(text) => self.push_bytes(text.into_bytes()),
-                Event::ColorRequest(index, format) => {
-                    if let Some(target) = ColorQueryTarget::from_index(index) {
-                        let core_color = self.core_query_color(target);
-                        let child_override = match target {
-                            ColorQueryTarget::Foreground => self
-                                .default_color_override(DefaultColor::Foreground)
-                                .is_some(),
-                            ColorQueryTarget::Background => self
-                                .default_color_override(DefaultColor::Background)
-                                .is_some(),
-                            ColorQueryTarget::Palette(_) | ColorQueryTarget::Cursor => false,
-                        };
-                        self.responses.push(PtyResponse::ColorQuery(ColorQuery {
-                            target,
-                            core_color,
-                            child_override,
-                            format,
-                        }));
-                    }
+                TerminalEvent::PtyWrite(bytes) => self.push_bytes(bytes),
+                TerminalEvent::ColorQuery(query) => {
+                    self.responses.push(PtyResponse::ColorQuery(query));
                 }
-                Event::ClipboardStore(ClipboardType::Clipboard, text)
+                TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
                     if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
                 {
                     self.clipboard_writes.push(text.into_bytes());
                 }
-                Event::ClipboardStore(ClipboardType::Clipboard, text)
+                TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
                     if text.len() > MAX_CLIPBOARD_BYTES =>
                 {
                     // `text` is already decoded valid UTF-8, so `len()` is
@@ -663,8 +664,8 @@ impl Terminal {
                     // count for the pane's diagnostic; never retain the text.
                     self.dropped_clipboard_store_bytes.push(text.len());
                 }
-                Event::Title(title) => self.title_update = Some(TitleUpdate::Set(title)),
-                Event::ResetTitle => self.title_update = Some(TitleUpdate::Reset),
+                TerminalEvent::Title(title) => self.title_update = Some(TitleUpdate::Set(title)),
+                TerminalEvent::ResetTitle => self.title_update = Some(TitleUpdate::Reset),
                 _ => {}
             }
         }
@@ -946,8 +947,19 @@ impl Terminal {
         // Everything above the kept line is gone: the history and the
         // `shift` screen rows the kept line moved up over.
         self.rows.evict(history.saturating_add(shift));
+        self.restore_scrollback_budget_after_history_purge();
         self.bump_full_damage();
         ClearScreenOutcome::Cleared
+    }
+
+    fn restore_scrollback_budget_after_history_purge(&mut self) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) || self.term.history_size() != 0 {
+            return;
+        }
+        let history_lines = scrollback_lines(self.max_scrollback, self.term.columns());
+        if history_lines != self.history_lines {
+            self.set_history_lines(history_lines);
+        }
     }
 
     pub fn scroll_viewport_bottom(&mut self) {

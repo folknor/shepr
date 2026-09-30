@@ -35,7 +35,10 @@ jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst"
 libc = "0.2"
 # The client initializes Ratatui with Crossterm; other optional backends, the
 # calendar widget, layout cache, macros and underline-color support are unused.
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+# `unstable-rendered-line-info` provides `Paragraph::line_count`, so the help
+# overlay's scroll range and the notice card's height count wrapped rows with
+# the same word wrapper that draws them.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1.14"

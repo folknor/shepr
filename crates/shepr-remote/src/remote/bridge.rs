@@ -609,10 +609,11 @@ pub(crate) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
 // limits-exempt: remote exit 255 is remapped to 254 to keep it apart from SSH failures.
 pub(crate) const REMAPPED_REMOTE_255_EXIT_CODE: i32 = 254;
 
-/// Whether `error` says the SSH link, not the remote side, failed: the remote end
-/// was never reached or was lost, so nothing is known about the remote install.
+/// Whether `error` came from ssh or the link rather than from a remote command
+/// (the remote was never reached, the link was lost, or ssh refused the host
+/// key or the credentials), so nothing is known about the remote install.
 pub(crate) fn is_ssh_link_failure(error: &io::Error) -> bool {
-    super::SshFailureDiagnostic::from_error(error).is_link_failure()
+    super::SshFailureDiagnostic::from_error(error).failed_before_remote_result()
 }
 
 pub(super) fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {

@@ -11,7 +11,7 @@ use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::limits::{
     FALLBACK_SHELL, PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES,
@@ -202,13 +202,16 @@ impl PtyCommand {
     }
 
     fn search_path(&self, exe: &OsStr, cwd: &OsStr) -> io::Result<OsString> {
-        let path = if is_cwd_relative_path(Path::new(exe)) {
-            None
-        } else {
-            self.get_env(ChildEnv::Path)
-        };
-        shepr_core::shell::resolve_executable(exe, path, Path::new(cwd), classify_candidate)
-            .map(PathBuf::into_os_string)
+        // Config validation also uses the shared resolver, which decides
+        // between a cwd-relative path and a PATH lookup. Keep that decision
+        // there so validation and launch cannot diverge.
+        shepr_core::shell::resolve_executable(
+            exe,
+            self.get_env(ChildEnv::Path),
+            Path::new(cwd),
+            classify_candidate,
+        )
+        .map(PathBuf::into_os_string)
     }
 }
 
@@ -358,27 +361,10 @@ fn access_ok(path: &Path, mode: libc::c_int) -> bool {
     unsafe { libc::access(path.as_ptr(), mode) == 0 }
 }
 
-/// True if the path begins with `./` or `../`.
-fn is_cwd_relative_path(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::CurDir | Component::ParentDir)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use shepr_test_support::fixture;
-
-    #[test]
-    fn cwd_relative_paths_are_recognized() {
-        assert!(is_cwd_relative_path(Path::new(".")));
-        assert!(is_cwd_relative_path(Path::new("./foo")));
-        assert!(is_cwd_relative_path(Path::new("../foo")));
-        assert!(!is_cwd_relative_path(Path::new("foo")));
-        assert!(!is_cwd_relative_path(Path::new("/foo")));
-    }
 
     #[test]
     fn path_candidate_classification_distinguishes_all_filesystem_cases() {

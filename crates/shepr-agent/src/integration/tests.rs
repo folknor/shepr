@@ -2785,6 +2785,28 @@ fn kimi_block_without_end_marker_is_refused_instead_of_truncating_the_file() {
 }
 
 #[test]
+fn install_kimi_refuses_invalid_or_conflicting_config_before_writing() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let kimi_dir = base.join("kimi");
+    fs::create_dir_all(&kimi_dir).expect("test precondition");
+    env.set(EnvVar::KimiCodeHome, &kimi_dir);
+
+    let config_path = kimi_dir.join("config.toml");
+    let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
+    for config in ["model = [\n", "hooks = []\n", "[hooks]\ncustom = true\n"] {
+        fs::write(&config_path, config).expect("test precondition");
+
+        assert!(install_kimi(&AgentIntegrationPaths::resolve()).is_err());
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read config"),
+            config
+        );
+        assert!(!hook_path.try_exists().expect("stat hook"));
+    }
+}
+
+#[test]
 fn install_kimi_leaves_a_damaged_config_and_no_hook() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);

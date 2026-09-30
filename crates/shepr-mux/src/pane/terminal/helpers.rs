@@ -96,11 +96,11 @@ pub(super) fn drain_terminal_responses(core: &mut PaneTerminalCore) -> Vec<Bytes
     replies
 }
 
-/// The core resolves every colour (child override, then host default, then
-/// built-in); this only picks the reply form. A default colour the child set
-/// itself is echoed in the form it asked for; everything else is reported
-/// the way shepr reports host colours, ST-terminated. No reply for a
-/// default colour nobody has set.
+/// The core snapshots each colour when the query is dispatched, resolving
+/// child state and host defaults or the built-in palette as appropriate. This
+/// only picks the reply form. A default colour the child set itself is echoed in
+/// the form it asked for; everything else is reported the way shepr reports
+/// host colours, ST-terminated. No reply for a default colour nobody has set.
 pub(super) fn color_query_response(query: &shepr_vt::ColorQuery) -> Option<Bytes> {
     let color = query.core_color()?;
     if query.child_override() {

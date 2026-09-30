@@ -44,13 +44,34 @@ pub use preflight::{
 pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
+/// What a failed connection attempt established. The class also says who can
+/// fix it: [`Self::needs_attention`] is false only for failures a retry can
+/// clear by itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SshFailure {
+    /// The remote refused every offered credential.
     Authentication,
+    /// The remote's host key is unknown or changed.
     HostKey,
+    /// The remote was never reached or the link dropped: a retry can clear it.
     Link,
+    /// ssh could not use the configured target or the local ssh configuration.
+    LocalConfiguration,
+    /// The remote answered and then closed or refused the connection.
+    RemoteRejected,
+    /// ssh failed with its own exit status for a reason shepr does not
+    /// recognise. Reported rather than retried silently.
+    Unrecognized,
+    /// The remote end is not a usable shepr of this build.
     Compatibility,
+    /// Anything else: an IO error or a message with no ssh classification.
     Other,
+}
+
+impl SshFailure {
+    fn needs_attention(self) -> bool {
+        !matches!(self, Self::Link | Self::Other)
+    }
 }
 
 /// A connection failure with its diagnostic class kept alongside its text.
@@ -68,19 +89,6 @@ enum SshFailureOrigin {
     Io(std::io::ErrorKind),
     SshOutput(Option<i32>),
     Message,
-}
-
-impl SshFailure {
-    fn requires_authentication(self) -> bool {
-        self == Self::Authentication
-    }
-
-    fn needs_attention(self) -> bool {
-        matches!(
-            self,
-            Self::Authentication | Self::HostKey | Self::Compatibility
-        )
-    }
 }
 
 impl SshFailureDiagnostic {
@@ -117,10 +125,7 @@ impl SshFailureDiagnostic {
 
     pub fn from_ssh_output(exit_code: Option<i32>, message: String) -> Self {
         let failure = if exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
-            match classify_ssh_diagnostic(&message) {
-                SshFailure::Other => SshFailure::Link,
-                failure => failure,
-            }
+            classify_ssh_diagnostic(&message)
         } else {
             SshFailure::Other
         };
@@ -138,22 +143,59 @@ impl SshFailureDiagnostic {
     }
 
     pub fn requires_authentication(&self) -> bool {
-        self.failure.requires_authentication()
+        self.failure == SshFailure::Authentication
     }
 
     pub fn is_host_key(&self) -> bool {
         self.failure == SshFailure::HostKey
     }
 
-    pub fn is_link_failure(&self) -> bool {
-        if self.failure == SshFailure::Link {
-            return true;
-        }
+    /// Whether the attempt failed before any remote command produced a result:
+    /// ssh itself failed (whatever the cause, authentication and host key
+    /// included), or a typed IO error says the link was never made or was
+    /// lost. Discovery and the bridge use it so an ssh failure is never read as
+    /// a remote command's answer. It says nothing about whether a retry helps;
+    /// that is [`Self::is_transient_network_failure`].
+    pub fn failed_before_remote_result(&self) -> bool {
         match self.origin {
             SshFailureOrigin::Io(kind) => is_ssh_link_error_kind(kind),
             SshFailureOrigin::SshOutput(exit_code) => exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE),
             SshFailureOrigin::Message => false,
         }
+    }
+
+    /// Whether OpenSSH exited with its own failure status before returning a
+    /// remote command result.
+    pub fn is_ssh_process_failure(&self) -> bool {
+        matches!(
+            self.origin,
+            SshFailureOrigin::SshOutput(Some(SSH_OWN_FAILURE_EXIT_CODE))
+        )
+    }
+
+    /// The remote command's own nonzero exit status, when ssh ran the command
+    /// and it failed (ssh's own exit 255 is not one).
+    pub fn remote_exit_code(&self) -> Option<i32> {
+        match self.origin {
+            SshFailureOrigin::SshOutput(Some(code)) if code != SSH_OWN_FAILURE_EXIT_CODE => {
+                Some(code)
+            }
+            SshFailureOrigin::Io(_)
+            | SshFailureOrigin::SshOutput(_)
+            | SshFailureOrigin::Message => None,
+        }
+    }
+
+    /// Whether this failure is a transient connection problem that the client
+    /// should retry without treating the machine as needing operator attention.
+    pub fn is_transient_network_failure(&self) -> bool {
+        self.failure == SshFailure::Link
+    }
+
+    /// Whether the operator needs to fix the configured SSH target or local
+    /// OpenSSH configuration before this machine can be reached.
+    pub fn needs_local_ssh_configuration(&self) -> bool {
+        self.failure == SshFailure::LocalConfiguration
     }
 
     pub fn needs_attention(&self) -> bool {
@@ -197,12 +239,52 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
         && ["(publickey", "(keyboard-interactive", "(password"]
             .iter()
             .any(|method| message.contains(method)))
+        || message.contains("too many authentication failures")
         || (message.contains("signing failed")
             && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
     {
         return SshFailure::Authentication;
     }
-    SshFailure::Other
+    if is_local_ssh_configuration_error(&message) {
+        return SshFailure::LocalConfiguration;
+    }
+    if message.contains("could not resolve hostname") {
+        if message.contains("temporary failure in name resolution") {
+            return SshFailure::Link;
+        }
+        return SshFailure::LocalConfiguration;
+    }
+    if [
+        "connection timed out",
+        "operation timed out",
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "network is down",
+        "connection reset by peer",
+    ]
+    .iter()
+    .any(|signature| message.contains(signature))
+    {
+        return SshFailure::Link;
+    }
+    if message.contains("connection closed by ") || message.contains("received disconnect from ") {
+        return SshFailure::RemoteRejected;
+    }
+    SshFailure::Unrecognized
+}
+
+fn is_local_ssh_configuration_error(message: &str) -> bool {
+    [
+        "bad configuration option:",
+        "bad owner or permissions on ",
+        "could not open user config file",
+        "could not open config file",
+        "missing argument for ",
+        "extra arguments at end of line",
+    ]
+    .iter()
+    .any(|signature| message.contains(signature))
 }
 
 fn is_ssh_link_error_kind(kind: std::io::ErrorKind) -> bool {
@@ -236,6 +318,11 @@ pub fn machine_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<S
     if err.is_host_key() {
         vec![
             "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
+                .to_string(),
+        ]
+    } else if err.needs_local_ssh_configuration() {
+        vec![
+            "hint: check the configured SSH target and local SSH configuration; OpenSSH reports the file and line for configuration errors."
                 .to_string(),
         ]
     } else {
@@ -332,6 +419,73 @@ mod tests {
             "Permission denied (publickey). Host key verification failed.".into(),
         );
         assert!(remote_error_hint_for_failure(&diagnostic, "host").is_empty());
+    }
+
+    #[test]
+    fn ssh_255_failures_separate_transient_network_from_actionable_diagnostics() {
+        let cases = [
+            (
+                "ssh: connect to host h port 22: Connection refused",
+                "offline",
+                true,
+                false,
+            ),
+            (
+                "Received disconnect from h port 22:2: Too many authentication failures",
+                "authentication",
+                false,
+                false,
+            ),
+            (
+                "ssh: Could not resolve hostname typo.example: Name or service not known",
+                "failed",
+                false,
+                true,
+            ),
+            (
+                "/home/u/.ssh/config: line 12: Bad configuration option: hostkeyalgorithms",
+                "failed",
+                false,
+                true,
+            ),
+            (
+                "Bad owner or permissions on /home/u/.ssh/config",
+                "failed",
+                false,
+                true,
+            ),
+            ("Connection closed by h port 22", "failed", false, false),
+            ("an unrecognized ssh error", "failed", false, false),
+        ];
+
+        for (message, expected_class, transient, local_configuration) in cases {
+            let diagnostic = SshFailureDiagnostic::from_ssh_output(
+                Some(SSH_OWN_FAILURE_EXIT_CODE),
+                message.into(),
+            );
+            assert!(diagnostic.is_ssh_process_failure(), "{message}");
+            assert!(diagnostic.failed_before_remote_result(), "{message}");
+            assert_eq!(
+                diagnostic.is_transient_network_failure(),
+                transient,
+                "{message}"
+            );
+            assert_eq!(
+                diagnostic.needs_local_ssh_configuration(),
+                local_configuration,
+                "{message}"
+            );
+            let class = match crate::classify_check(Err(std::io::Error::other(diagnostic))) {
+                crate::MachineCheck::Ready => "ready",
+                crate::MachineCheck::NeedsAuthentication(_) => "authentication",
+                crate::MachineCheck::Offline(_) => "offline",
+                crate::MachineCheck::HostKey(_) => "host key",
+                crate::MachineCheck::DifferentBuild(_) => "different build",
+                crate::MachineCheck::Incompatible(_) => "incompatible",
+                crate::MachineCheck::Failed(_) => "failed",
+            };
+            assert_eq!(class, expected_class, "{message}");
+        }
     }
 
     #[test]

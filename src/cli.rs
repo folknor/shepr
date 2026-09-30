@@ -150,6 +150,14 @@ pub(crate) fn print_help() {
 
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
+    if let CliCommand::Status(status::Command::Client { json }) = command {
+        // Client identity is read from this executable and its sibling, not from
+        // server sockets or XDG paths. A remote discovery probe runs this in an
+        // ssh session that may have no XDG_RUNTIME_DIR, so it must not resolve
+        // the application paths the other commands need.
+        status::print_client_status(*json)?;
+        return Ok(0);
+    }
     let paths = resolve_app_paths()?;
     let context = target::CliContext::local(paths);
     dispatch(command, &context)
@@ -372,6 +380,20 @@ mod tests {
         ));
         assert!(matches!(parse(&["client"]).launch, Launch::Client));
         assert!(matches!(parse(&[]).launch, Launch::Tui));
+    }
+
+    #[test]
+    fn client_status_does_not_require_runtime_paths() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.remove(shepr_core::env::EnvVar::XdgRuntimeDir.name());
+        let invocation = parse(&["status", "client", "--json"]);
+        let Launch::Cli(command) = invocation.launch else {
+            panic!("status client should be a CLI command");
+        };
+        assert_eq!(
+            super::run(&command).expect("client status needs no paths"),
+            0
+        );
     }
 
     #[test]

@@ -250,6 +250,7 @@ pub struct PaneOutputWrite<'a> {
 struct ContentWriteGuard<'a> {
     seq: &'a AtomicU64,
     _lock: std::sync::MutexGuard<'a, ()>,
+    announced: bool,
 }
 
 impl<'a> ContentWriteGuard<'a> {
@@ -264,13 +265,26 @@ impl<'a> ContentWriteGuard<'a> {
 
     fn from_lock(seq: &'a AtomicU64, guard: std::sync::MutexGuard<'a, ()>) -> Self {
         seq.fetch_add(1, Ordering::AcqRel);
-        Self { seq, _lock: guard }
+        Self {
+            seq,
+            _lock: guard,
+            announced: true,
+        }
+    }
+
+    /// Cancel a write announcement when the guarded operation proved to be a
+    /// no-op. The lock still protects readers until the even revision returns.
+    fn cancel(mut self) {
+        self.seq.fetch_sub(1, Ordering::Release);
+        self.announced = false;
     }
 }
 
 impl Drop for ContentWriteGuard<'_> {
     fn drop(&mut self) {
-        self.seq.fetch_add(1, Ordering::Release);
+        if self.announced {
+            self.seq.fetch_add(1, Ordering::Release);
+        }
     }
 }
 
@@ -1325,8 +1339,14 @@ impl PaneRuntime {
     pub fn clear_screen(&self) -> Result<(), PaneClearError> {
         let guard = ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
         let result = self.terminal.clear_screen();
-        drop(guard);
-        mark_detection_content_changed(&self.detection_content_seq);
+        // A refused clear (the alternate screen is active) changed nothing, so it
+        // publishes no content revision and no detection change.
+        if result.is_ok() {
+            drop(guard);
+            mark_detection_content_changed(&self.detection_content_seq);
+        } else {
+            guard.cancel();
+        }
         result
     }
 
@@ -1525,7 +1545,14 @@ impl PaneRuntime {
     fn paste_payload(&self, text: String) -> Bytes {
         let bracketed = self.bracketed_paste_enabled();
         let payload = if bracketed {
-            let safe = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
+            // Clipboard controls must not change how a child interprets the
+            // bracketed wrapper. Preserve ordinary pasted whitespace only.
+            let safe: String = text
+                .replace("\x1b[201~", "")
+                .replace("\x1b[200~", "")
+                .chars()
+                .filter(|ch| !ch.is_control() || matches!(*ch, '\t' | '\r' | '\n'))
+                .collect();
             format!("\x1b[200~{safe}\x1b[201~")
         } else {
             text
@@ -1829,8 +1856,18 @@ mod tests {
             b"one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b[?1049halt app",
         );
         let before = runtime.visible_text();
-        runtime.clear_screen().expect("test precondition");
+        let content_seq = runtime.content_seq();
+        let detection_content_seq = runtime.detection_content_seq.load(Ordering::Acquire);
+        assert_eq!(
+            runtime.clear_screen(),
+            Err(PaneClearError::AlternateScreenActive)
+        );
         assert_eq!(runtime.visible_text(), before);
+        assert_eq!(runtime.content_seq(), content_seq);
+        assert_eq!(
+            runtime.detection_content_seq.load(Ordering::Acquire),
+            detection_content_seq
+        );
         runtime.test_process_pty_bytes(b"\x1b[?1049l");
         assert!(
             runtime
@@ -2110,6 +2147,21 @@ mod tests {
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         let payload = runtime.paste_payload("before\x1b[201~middle\x1b[200~after".into());
         assert_eq!(payload.as_ref(), b"\x1b[200~beforemiddleafter\x1b[201~");
+
+        // Removing the inner start marker reassembles an end marker; the control
+        // filter drops its ESC, so the payload still ends the paste exactly once.
+        let nested = runtime.paste_payload("\x1b[20\x1b[200~1~\nrm -rf ~\n".into());
+        assert_eq!(nested.as_ref(), b"\x1b[200~[201~\nrm -rf ~\n\x1b[201~");
+
+        // Tabs and line endings are pasted as they are; other C0 and C1 controls
+        // and DEL are dropped.
+        let whitespace = runtime.paste_payload("a\tb\r\nc\x07\x7fd\u{9b}e\r".into());
+        assert_eq!(whitespace.as_ref(), b"\x1b[200~a\tb\r\ncde\r\x1b[201~");
+
+        // Without bracketed paste the text goes through untouched.
+        runtime.test_process_pty_bytes(b"\x1b[?2004l");
+        let raw = runtime.paste_payload("a\x1b[201~\x07b\r".into());
+        assert_eq!(raw.as_ref(), b"a\x1b[201~\x07b\r");
     }
 
     #[tokio::test]

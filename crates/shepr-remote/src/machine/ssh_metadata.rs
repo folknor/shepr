@@ -53,8 +53,10 @@ impl SshMetadataCache {
     }
 
     /// Remembers where the remote shepr lives. Successful stores log the cache path
-    /// and executable path at debug. A failure leaves the cache as it was, so every
-    /// later connection pays full discovery; the caller decides how loudly to say so.
+    /// and executable path at debug. A failure before rename leaves the old cache
+    /// untouched. Since this is a disposable hint, a directory-sync failure after
+    /// rename keeps the new entry available and does not fail the store; a crash may
+    /// still lose that entry, in which case discovery can rebuild it.
     pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
             target: self.target.clone(),
@@ -96,6 +98,14 @@ fn target_file_key(target: &str) -> u64 {
 /// Writes `content` to `path` through a private temporary file and a rename,
 /// refusing to replace a symlink or a non-file.
 fn store_private_json(path: &Path, content: &[u8]) -> io::Result<()> {
+    store_private_json_with_directory_sync(path, content, shepr_platform::sync_directory)
+}
+
+fn store_private_json_with_directory_sync(
+    path: &Path,
+    content: &[u8],
+    sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -131,7 +141,17 @@ fn store_private_json(path: &Path, content: &[u8]) -> io::Result<()> {
     drop(temp);
     std::fs::rename(&temp_path, path)?;
     cleanup.0 = None;
-    shepr_platform::sync_directory(parent)
+    if let Err(error) = sync_directory(parent) {
+        // The cache is only a discovery hint. The atomic rename has published
+        // the entry for live readers, so uncertain crash durability must not be
+        // reported as if the cache were still absent.
+        tracing::debug!(
+            %error,
+            directory = %parent.display(),
+            "SSH metadata cache was published but its directory sync failed"
+        );
+    }
+    Ok(())
 }
 
 /// Removes a failed store's temporary file. A failed removal is logged with its
@@ -283,5 +303,24 @@ mod tests {
             "untouched"
         );
         std::fs::remove_dir_all(root).expect("test precondition");
+    }
+
+    #[test]
+    fn ssh_metadata_directory_sync_failure_keeps_the_published_hint() {
+        let root = shepr_test_support::ScratchDir::new("ssh-metadata-unsynced");
+        let path = root.join("cache.json");
+        let executable = RemoteExecutable::parse("/some-path/shepr").expect("test precondition");
+        let content = serde_json::to_vec(&StoredMetadata {
+            target: "dev@build.example".into(),
+            executable: executable.as_str().to_owned(),
+        })
+        .expect("serialize metadata");
+
+        store_private_json_with_directory_sync(&path, &content, |_| {
+            Err(io::Error::other("directory sync failed"))
+        })
+        .expect("the published disposable cache is still a successful store");
+
+        assert_eq!(load_metadata(&path, "dev@build.example"), Some(executable));
     }
 }

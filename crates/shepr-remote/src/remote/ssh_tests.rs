@@ -165,6 +165,39 @@ fn ssh_authentication_diagnostics_are_narrow() {
 }
 
 #[test]
+fn ssh_failure_output_wins_over_a_stdin_write_error() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let failure = Output {
+        status: std::process::ExitStatus::from_raw(255 << 8),
+        stdout: Vec::new(),
+        stderr: b"user@host: Permission denied (publickey).".to_vec(),
+    };
+    let output = finish_ssh_command(
+        Err(io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed")),
+        failure,
+    )
+    .expect("ssh failure output is retained");
+    let error = command_failed("remote SSH connection failed", &output);
+    assert!(
+        crate::SshFailureDiagnostic::from_error(&error).requires_authentication(),
+        "the authentication class must survive the failed stdin write"
+    );
+
+    let success = Output {
+        status: std::process::ExitStatus::from_raw(0),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    let error = finish_ssh_command(
+        Err(io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed")),
+        success,
+    )
+    .expect_err("a write failure still matters after a successful ssh command");
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+}
+
+#[test]
 fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
     let paths = test_app_paths();
     let config =

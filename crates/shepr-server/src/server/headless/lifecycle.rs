@@ -334,7 +334,7 @@ impl HeadlessServer {
         }
         info!("server shutdown initiated");
 
-        // Clear client-local host graphics, then send ServerShutdown to all connected clients.
+        // Send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {
             reason: Some(shepr_protocol::ShutdownReason::Message(
                 "server is shutting down".to_owned(),

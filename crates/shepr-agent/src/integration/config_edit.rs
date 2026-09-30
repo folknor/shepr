@@ -380,6 +380,9 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
     }
     result.push_str(KIMI_CONFIG_BLOCK_END);
     result.push('\n');
+    result
+        .parse::<DocumentMut>()
+        .map_err(|error| io::Error::other(format!("could not build Kimi config.toml: {error}")))?;
     Ok(result)
 }
 

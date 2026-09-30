@@ -416,26 +416,6 @@ Scope: agent-integration.
   bundled bytes is cheap, and it lets the per-target version constants and
   markers go entirely.
 
-## AGENT-017 - The Kimi config edit can produce TOML Kimi cannot parse, and install reports success
-
-Scope: agent-integration.
-
-**Claim broken.** The install-order comment at the top of `targets.rs`: "A config
-that cannot be edited then fails the install before anything is written".
-
-- `build_kimi_config_with_hooks` strips shepr's marked block and appends
-  `[[hooks]]` tables as text, never parsing input or output. A user config that
-  already defines `hooks` as an inline array (`hooks = [...]`) or a `[hooks]`
-  table gets a conflicting redefinition: invalid TOML, and Kimi refuses to start.
-  An already-invalid config is silently accepted.
-- `kimi_hooks_registered` then cannot parse the file, so the status is Outdated
-  on every launch; each launch re-runs the `kimi --version` probe (up to 5 s) and
-  rebuilds the same broken text, which is unchanged, so not rewritten, and no
-  error is logged.
-- The Claude editor re-parses with `verify_updated` and the Codex editor goes
-  through `toml_edit`. Kimi should use `toml_edit` too, or at least parse the
-  result and fail when it does not parse.
-
 ## AGENT-018 - The Devin hook can attribute another pane's session, and runs a subprocess on every tool call
 
 Scope: agent-integration.
@@ -505,28 +485,6 @@ rather than a proven defect), agent-detection (structural note).
   windows are milliseconds wide, and the headless loop drains queued internal
   events before API requests, which removes the worst ordering; it is still an
   implicit, undocumented contract.
-
-## AGENT-021 - Hook traps ignore SIGTERM
-
-Scope: agent-integration.
-
-The `set -eu` hooks install `trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM`.
-A trap on HUP/INT/TERM that does not `exit` resumes the script, so an agent that
-kills a timed-out hook with SIGTERM gets a hook that deletes its input file and
-carries on into python anyway. Use `trap '...; exit 0' HUP INT TERM`, or trap
-EXIT only.
-
-## AGENT-022 - Hooks are registered under bash although every sh asset is POSIX sh
-
-Scope: agent-integration.
-
-Every sh asset has a `#!/bin/sh` shebang and is POSIX sh, and install makes it
-executable (0755), yet `hook_command` registers `bash '<path>'` for every target
-except Grok. The Grok comment in `targets.rs` ("a POSIX `sh` script, so it runs
-under `sh` rather than the `bash` the shared command formatter uses for the other
-hooks") implies the others need bash; they do not. On a host without bash every
-hook fails silently while install and status report Current. Use one interpreter
-(`sh`), or invoke the executable path directly.
 
 ## AGENT-023 - Smaller integration contract drift
 
@@ -693,6 +651,12 @@ unless a visible blocker overrides it. That covers shepr's own Codex turn hooks
 With Codex the output routinely contradicts the sidebar: the hook says Working,
 the screen rule says Idle. The explain should name the hook source when
 `hook_authority` is effective and no visible blocker applies.
+
+Related, same handler: the runtime lookup runs before the full-lifecycle
+hook-authority branch, which does not use the runtime. A pane with no running
+terminal but under hook authority now gets `pane_terminal_unavailable`, although
+the hook-authority answer could still be given. Order the branch before the
+runtime lookup when fixing the above.
 
 ## AGENT-029 - Custom hook reports are silently refused whenever the pane has a session identity
 

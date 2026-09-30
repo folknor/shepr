@@ -91,12 +91,14 @@ pub struct TerminalCursorState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneClearError {
     TerminalLockPoisoned,
+    AlternateScreenActive,
 }
 
 impl std::fmt::Display for PaneClearError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TerminalLockPoisoned => f.write_str("terminal lock poisoned"),
+            Self::AlternateScreenActive => f.write_str("the pane is on the alternate screen"),
         }
     }
 }

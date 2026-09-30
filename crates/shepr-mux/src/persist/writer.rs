@@ -219,7 +219,6 @@ impl SessionWriter {
         }
         // Optional history failure must not reclassify our committed layout as unloaded.
         self.protect_unloaded = false;
-        self.finish_snapshot_history(snapshot_history_plan, now);
         let history_path =
             super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = self.save_history(&history_path, history) {
@@ -228,6 +227,11 @@ impl SessionWriter {
             if failure.is_none() {
                 failure = Some(err);
             }
+        } else {
+            // After-write snapshots must include the history just committed
+            // for their layout. Before-write snapshots were already copied
+            // with the old history in `prepare_snapshot_history`.
+            self.finish_snapshot_history(snapshot_history_plan, now);
         }
         if failure.is_none() {
             crate::logging::session_saved(&self.path, snapshot.workspaces.len());
@@ -385,6 +389,21 @@ fn recovery_filename(timestamp: u128, sequence: usize) -> String {
     )
 }
 
+fn history_recovery_filename(timestamp: u128, sequence: usize) -> String {
+    format!(
+        "session-history-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{sequence:0RECOVERY_SEQUENCE_DIGITS$}.json"
+    )
+}
+
+fn recovery_history_path(layout_path: &Path) -> PathBuf {
+    let name = layout_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let suffix = name.strip_prefix("session-").unwrap_or(name);
+    layout_path.with_file_name(format!("session-history-{suffix}"))
+}
+
 /// Decides which layout needs preserving before the caller replaces the file.
 /// The newest recovery copy controls both cadence and layout deduplication.
 fn snapshot_history_decision(
@@ -478,7 +497,7 @@ fn preserve_existing_in(
     keep: usize,
     now: SystemTime,
 ) -> io::Result<bool> {
-    let mut source = match File::open(path) {
+    let source = match File::open(path) {
         Ok(file) => file,
         // Recheck on the next mutation until a fresh session is actually saved.
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -487,6 +506,18 @@ fn preserve_existing_in(
     if !source.metadata()?.is_file() {
         return Err(io::Error::other("session path is not a regular file"));
     }
+    let history_path = super::io::session_history_path(super::io::containing_directory(path));
+    let has_history = match File::open(&history_path) {
+        Ok(file) if file.metadata()?.is_file() => true,
+        Ok(_) => {
+            return Err(io::Error::other(
+                "session history path is not a regular file",
+            ));
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err),
+    };
+    drop(source);
     std::fs::create_dir_all(directory)?;
     let older = recovery_files(directory)?;
     let timestamp_now = now
@@ -504,10 +535,46 @@ fn preserve_existing_in(
     };
     for sequence in 0..RECOVERY_SEQUENCE_LIMIT {
         let backup = directory.join(recovery_filename(timestamp, sequence));
+        let history_backup = directory.join(history_recovery_filename(timestamp, sequence));
+        if backup.try_exists()? || history_backup.try_exists()? {
+            continue;
+        }
+
+        // Publish history first. The layout filename is the recovery copy's
+        // commit marker, so a layout backup never appears without its pair.
+        let copied_history = if has_history {
+            let mut source = File::open(&history_path)?;
+            match copy_recovery(&mut source, &history_backup) {
+                Ok(()) => true,
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
+        } else {
+            false
+        };
+        let mut source = match File::open(path) {
+            Ok(source) => source,
+            Err(err) => {
+                if copied_history {
+                    remove_recovery_history_copy(&history_backup)?;
+                }
+                return Err(err);
+            }
+        };
         match copy_recovery(&mut source, &backup) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                if copied_history {
+                    remove_recovery_history_copy(&history_backup)?;
+                }
+                continue;
+            }
+            Err(err) => {
+                if copied_history {
+                    remove_recovery_history_copy(&history_backup)?;
+                }
+                return Err(err);
+            }
         }
         // Recovery-copy events use their own labels; the platform's session
         // helpers emit through tracing too but only cover session mutations.
@@ -602,7 +669,12 @@ fn prune_backups(older: &[(u128, PathBuf)], keep: usize) -> io::Result<()> {
             return Ok(());
         }
         match std::fs::remove_file(path) {
-            Ok(()) => remaining -= 1,
+            Ok(()) => {
+                remaining -= 1;
+                if let Err(err) = remove_recovery_history_copy(&recovery_history_path(path)) {
+                    failure = Some(err);
+                }
+            }
             Err(err) => failure = Some(err),
         }
     }
@@ -612,6 +684,14 @@ fn prune_backups(older: &[(u128, PathBuf)], keep: usize) -> io::Result<()> {
         return Err(err);
     }
     Ok(())
+}
+
+fn remove_recovery_history_copy(path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 fn recovery_timestamp(name: &str) -> Option<u128> {
@@ -701,20 +781,30 @@ mod tests {
         if !directory.try_exists().expect("test stat") {
             return Vec::new();
         }
-        let mut entries: Vec<_> = std::fs::read_dir(directory)
+        recovery_files(&directory)
             .expect("test precondition")
-            .map(|entry| entry.expect("test precondition").path())
-            .collect();
-        entries.sort();
-        entries
             .into_iter()
-            .map(|path| std::fs::read(path).expect("test precondition"))
+            .map(|(_, path)| std::fs::read(path).expect("test precondition"))
             .collect()
     }
 
     fn snapshots(writer: &SessionWriter) -> Vec<(u128, PathBuf)> {
         recovery_files(&super::super::io::snapshot_directory(&writer.path))
             .expect("test precondition")
+    }
+
+    fn paired_history_backups(directory: &Path) -> Vec<Vec<u8>> {
+        recovery_files(directory)
+            .expect("test precondition")
+            .into_iter()
+            .filter_map(|(_, layout)| {
+                let history = recovery_history_path(&layout);
+                history
+                    .try_exists()
+                    .expect("test stat")
+                    .then(|| std::fs::read(history).expect("test precondition"))
+            })
+            .collect()
     }
 
     #[test]
@@ -748,6 +838,28 @@ mod tests {
             saved
         );
         assert!(backups(&writer).is_empty());
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn session_snapshots_keep_history_with_the_layout_they_preserve() {
+        let mut writer = writer(false);
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
+        super::super::io::save_to_path(&writer.path, &snapshot()).expect("test precondition");
+        std::fs::write(&history_path, b"matching screen history").expect("test precondition");
+
+        writer.save_for_test(&snapshot(), None).expect("save");
+
+        let saved_layouts = snapshots(&writer);
+        assert_eq!(saved_layouts.len(), 1);
+        assert_eq!(
+            std::fs::read(recovery_history_path(&saved_layouts[0].1))
+                .expect("paired history snapshot"),
+            b"matching screen history"
+        );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -976,6 +1088,10 @@ mod tests {
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![original.to_vec()]);
+        assert_eq!(
+            paired_history_backups(&super::super::io::backup_directory(&writer.path)),
+            vec![b"history".to_vec()]
+        );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -1359,9 +1475,17 @@ mod tests {
         for i in 0..5u8 {
             writer.protect_unloaded = true;
             std::fs::write(&writer.path, [i]).expect("test precondition");
+            let history_path = super::super::io::session_history_path(
+                super::super::io::containing_directory(&writer.path),
+            );
+            std::fs::write(&history_path, [i + 10]).expect("test precondition");
             writer.save_for_test(&snapshot(), None).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
+        assert_eq!(
+            paired_history_backups(&super::super::io::backup_directory(&writer.path)),
+            vec![vec![12], vec![13], vec![14]]
+        );
         writer.save_for_test(&snapshot(), None).expect("save");
         writer.clear_for_test().expect("clear");
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);

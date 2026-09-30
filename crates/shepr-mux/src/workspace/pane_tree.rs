@@ -11,15 +11,6 @@ use crate::terminal::TerminalState;
 use shepr_core::layout::{Direction, NavDirection, PaneId, TileLayout};
 use shepr_protocol::TerminalId;
 
-pub(crate) type DetachedPane = (PaneId, TerminalId);
-
-/// A pane built outside a workspace, for constructors that start a workspace
-/// from one pane without spawning anything.
-pub struct ExistingPane {
-    pub pane_id: PaneId,
-    pub pane: WorkspacePane,
-}
-
 /// One pane's state and stable public number. Keeping both in the workspace
 /// record makes its pane map the source of pane identity metadata.
 pub struct WorkspacePane {
@@ -277,10 +268,10 @@ impl Workspace {
         true
     }
 
-    /// Detaches `pane_id` from the layout and returns it with its terminal id.
-    /// The runtime is left to the caller. `None` when the pane is the
-    /// workspace's last one (the workspace itself must go) or is not in it.
-    pub(super) fn detach_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
+    /// Detaches `pane_id` from the layout. The runtime is left to the caller.
+    /// `None` when the pane is the workspace's last one (the workspace itself
+    /// must go) or is not in it.
+    pub(super) fn detach_pane(&mut self, pane_id: PaneId) -> Option<()> {
         if self.panes.len() <= 1
             || !self.has_consistent_panes()
             || !self.panes.contains_key(&pane_id)
@@ -294,13 +285,12 @@ impl Workspace {
             return None;
         }
 
-        let pane = self.panes.remove(&pane_id)?;
-        let terminal_id = pane.pane_state.attached_terminal_id;
+        self.panes.remove(&pane_id)?;
         self.zoomed = false;
         if let Some(next_root) = next_root {
             self.root_pane = next_root;
         }
-        Some((pane_id, terminal_id))
+        Some(())
     }
 
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {

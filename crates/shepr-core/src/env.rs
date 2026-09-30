@@ -615,7 +615,7 @@ pub fn resolve_present(var: EnvVar, raw: Option<&OsStr>) -> Result<bool, EnvErro
 ///
 /// # Panics
 ///
-/// When `var` is a flag, presence or handoff variable, for the reason
+/// When `var` is a flag, presence, handoff or raw variable, for the reason
 /// [`resolve_flag`] gives.
 ///
 /// # Errors
@@ -709,6 +709,10 @@ pub fn read_path(var: EnvVar) -> Result<Option<PathBuf>, EnvError> {
 /// # Panics
 ///
 /// When `var` is not a [`EnvKind::Raw`] or [`EnvKind::Handoff`] value.
+///
+/// # Errors
+///
+/// Every refusal [`resolve`] makes.
 pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, EnvError> {
     assert!(
         matches!(var.kind(), EnvKind::Raw | EnvKind::Handoff),
@@ -728,6 +732,10 @@ pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, 
 /// # Panics
 ///
 /// As [`resolve_os`].
+///
+/// # Errors
+///
+/// Every refusal [`resolve`] makes.
 pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
     resolve_os(var, raw(var).as_deref())
 }
@@ -735,15 +743,15 @@ pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
 /// Reads Git's indexed command-scope config pairs in index order, followed by
 /// quoted `git -c` parameters, which override conflicting indexed pairs. Git
 /// treats an unset or empty count as zero, requires both variables for every
-/// index below the count, and rejects malformed counts or missing pairs. A
-/// valueless `git -c` parameter is represented by `None`; its consumer decides
-/// whether the key is boolean or requires a value.
+/// index below the count, and rejects malformed counts, empty keys or missing
+/// pairs. A valueless `git -c` parameter is represented by `None`; its
+/// consumer decides whether the key is boolean or requires a value.
 ///
 /// # Errors
 ///
 /// Returns an error when the count is not accepted by Git, an indexed key or
-/// value is missing, a present pair is not valid UTF-8 for shepr's config
-/// reader, or the quoted parameters are malformed.
+/// value is missing, an indexed key is empty, a present pair is not valid
+/// UTF-8 for shepr's config reader, or the quoted parameters are malformed.
 pub fn read_git_config_parameters() -> io::Result<Vec<(String, Option<String>)>> {
     let count = read_os(EnvVar::GitConfigCount)?;
     let count = count
@@ -767,19 +775,12 @@ pub fn read_git_config_parameters() -> io::Result<Vec<(String, Option<String>)>>
                 format!("missing {value_name} for Git command-scope config"),
             )
         })?;
-        let key = key.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{key_name} is not valid UTF-8"),
-            )
-        })?;
-        let value = value.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{value_name} is not valid UTF-8"),
-            )
-        })?;
-        parameters.push((key.to_owned(), Some(value.to_owned())));
+        parameters.push(indexed_git_config_pair(
+            &key_name,
+            &key,
+            &value_name,
+            &value,
+        )?);
     }
     if let Some(raw) = read_os(EnvVar::GitConfigParameters)? {
         let text = raw.to_str().ok_or_else(|| {
@@ -791,6 +792,35 @@ pub fn read_git_config_parameters() -> io::Result<Vec<(String, Option<String>)>>
         parameters.extend(parse_git_config_parameters(text)?);
     }
     Ok(parameters)
+}
+
+/// One `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` pair, refused as Git
+/// refuses it: an empty key, or text shepr's config reader cannot take.
+fn indexed_git_config_pair(
+    key_name: &str,
+    key: &OsStr,
+    value_name: &str,
+    value: &OsStr,
+) -> io::Result<(String, Option<String>)> {
+    let key = key.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{key_name} is not valid UTF-8"),
+        )
+    })?;
+    if key.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{key_name} is empty; Git config keys must not be empty"),
+        ));
+    }
+    let value = value.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{value_name} is not valid UTF-8"),
+        )
+    })?;
+    Ok((key.to_owned(), Some(value.to_owned())))
 }
 
 /// Parse Git's single-quoted command-scope assignments. Each key and value
@@ -1062,6 +1092,30 @@ mod tests {
         ] {
             assert!(parse_git_config_parameters(input).is_err(), "{input:?}");
         }
+    }
+
+    #[test]
+    fn indexed_git_config_pairs_reject_an_empty_key() {
+        let error = indexed_git_config_pair(
+            "GIT_CONFIG_KEY_0",
+            OsStr::new(""),
+            "GIT_CONFIG_VALUE_0",
+            OsStr::new("value"),
+        )
+        .expect_err("Git rejects an empty key");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("GIT_CONFIG_KEY_0 is empty"));
+
+        assert_eq!(
+            indexed_git_config_pair(
+                "GIT_CONFIG_KEY_0",
+                OsStr::new("core.editor"),
+                "GIT_CONFIG_VALUE_0",
+                OsStr::new(""),
+            )
+            .expect("an empty value is valid"),
+            ("core.editor".to_owned(), Some(String::new()))
+        );
     }
 
     #[test]

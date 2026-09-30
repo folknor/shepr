@@ -23,7 +23,7 @@ pub use self::geometry::{
     PaneChromeInfo, PaneGeometry, layout_rect, pane_inner_rect, spawn_geometry,
     terminal_content_rect,
 };
-pub use self::pane_tree::{ExistingPane, NewPane, WorkspacePane};
+pub use self::pane_tree::{NewPane, WorkspacePane};
 
 /// The channels a pane runtime reports through once it is spawned, plus the
 /// resolved API socket path its child needs. `App` owns them and lends a copy
@@ -69,10 +69,9 @@ pub struct PaneRemoval {
 /// server's app state, as the pane id counter in `shepr-core` does. One
 /// process serves one session, so unique per process is unique per session;
 /// an owned allocator would have to be threaded into every workspace
-/// constructor, pane move and restore for no change in behaviour. Restore
-/// moves the counter past every saved ID with `reserve_workspace_ids` before
-/// it allocates any, and the counter never wraps, so a live ID is never handed
-/// out twice.
+/// constructor and restore for no change in behaviour. Restore moves the
+/// counter past every saved ID with `reserve_workspace_ids` before it allocates
+/// any, and the counter never wraps, so a live ID is never handed out twice.
 static NEXT_WORKSPACE_NUMBER: AtomicUsize = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
 
 pub(crate) fn generate_workspace_id() -> WorkspaceId {
@@ -223,20 +222,22 @@ impl Workspace {
         workspace.valid_panes().then_some(workspace)
     }
 
-    pub fn from_existing_pane(
+    /// Public so dependent test-fixture crates can build a workspace without
+    /// launching a PTY; the library has no test-only feature for that seam.
+    pub fn test_from_pane(
         label: Option<String>,
         identity_cwd: &Path,
-        mut existing: ExistingPane,
+        pane_id: PaneId,
+        mut pane: WorkspacePane,
     ) -> Self {
-        let root_pane = existing.pane_id;
-        existing.pane.public_number = 1;
+        pane.public_number = 1;
         Self::assemble(
             generate_workspace_id(),
             label,
             identity_cwd.to_path_buf(),
-            root_pane,
-            TileLayout::from_live_pane(root_pane),
-            HashMap::from([(root_pane, existing.pane)]),
+            pane_id,
+            TileLayout::from_live_pane(pane_id),
+            HashMap::from([(pane_id, pane)]),
             false,
             2,
         )
@@ -361,7 +362,7 @@ impl Workspace {
         if focus && !self.focus_pane(pane_id) {
             tracing::error!(workspace = %self.id, ?pane_id, "refused to focus a pane after admitting its split");
         }
-        self.register_new_pane_with_number(pane_id, number);
+        self.advance_next_public_pane_number(number);
         Some(())
     }
 
@@ -467,12 +468,7 @@ impl Workspace {
         })
     }
 
-    fn register_new_pane_with_number(&mut self, pane_id: PaneId, number: usize) {
-        let Some(pane) = self.panes.get_mut(&pane_id) else {
-            tracing::error!(?pane_id, "cannot number a pane missing from its workspace");
-            return;
-        };
-        pane.public_number = number;
+    fn advance_next_public_pane_number(&mut self, number: usize) {
         self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
     }
 }
@@ -489,7 +485,13 @@ impl Workspace {
     }
 
     fn register_new_pane(&mut self, pane_id: PaneId) {
-        self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        let number = self.next_public_pane_number;
+        let Some(pane) = self.panes.get_mut(&pane_id) else {
+            tracing::error!(?pane_id, "cannot number a pane missing from its workspace");
+            return;
+        };
+        pane.public_number = number;
+        self.advance_next_public_pane_number(number);
     }
 }
 
@@ -990,14 +992,15 @@ mod tests {
     #[test]
     fn workspace_built_from_an_existing_pane_does_not_discover_git_identity() {
         let pane = PaneId::alloc();
-        let existing = ExistingPane {
-            pane_id: pane,
-            pane: WorkspacePane::new(PaneState::new(TerminalId::alloc())),
-        };
         // A path that cannot exist: discovery would have to stat it.
         let cwd = PathBuf::from("/shepr-test-nonexistent/repo/sub");
 
-        let ws = Workspace::from_existing_pane(None, &cwd, existing);
+        let ws = Workspace::test_from_pane(
+            None,
+            &cwd,
+            pane,
+            WorkspacePane::new(PaneState::new(TerminalId::alloc())),
+        );
 
         assert_eq!(ws.display_name(), "sub");
         assert!(ws.cached_identity_cwd.as_os_str().is_empty());

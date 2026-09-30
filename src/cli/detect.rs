@@ -66,10 +66,7 @@ fn capture_request(pane: &str) -> Request {
 fn capture(paths: &super::target::CliContext, pane: &str) -> super::CliResult<i32> {
     let response = super::send_request(paths, &capture_request(pane))?;
     if response.get("error").is_some() {
-        eprintln!(
-            "{}",
-            serde_json::to_string(&response).map_err(std::io::Error::other)?
-        );
+        print_detect_error(&response)?;
         return Ok(1);
     }
     if let Some(text) = response["result"]["text"].as_str() {
@@ -99,10 +96,7 @@ pub(super) fn explain(
             },
         )?;
         if response.get("error").is_some() {
-            eprintln!(
-                "{}",
-                serde_json::to_string(&response).map_err(std::io::Error::other)?
-            );
+            print_detect_error(&response)?;
             return Ok(1);
         }
         response["result"]["explain"].clone()
@@ -114,6 +108,20 @@ pub(super) fn explain(
         print_explain_text(&explain, args.verbose);
     }
     Ok(0)
+}
+
+fn print_detect_error(response: &serde_json::Value) -> super::CliResult<()> {
+    if response["error"]["code"] == "pane_terminal_unavailable"
+        && let Some(message) = response["error"]["message"].as_str()
+    {
+        eprintln!("{message}");
+    } else {
+        eprintln!(
+            "{}",
+            serde_json::to_string(response).map_err(std::io::Error::other)?
+        );
+    }
+    Ok(())
 }
 
 /// Evaluates a saved capture against an agent's compiled manifest. Runs in

@@ -58,8 +58,9 @@ pub fn open_boot_log(path: &Path) -> io::Result<File> {
 }
 
 /// The last part of a boot log, for a failure message: at most
-/// `BOOT_LOG_TAIL_BYTES`, decoded lossily and trimmed. Opened as
-/// [`open_boot_log`] does, so a link at the path is not followed.
+/// `BOOT_LOG_TAIL_BYTES`, decoded lossily and trimmed. Like
+/// [`open_boot_log`], it follows no link and refuses files not owned by this
+/// user.
 pub fn read_boot_log_tail(path: &Path) -> io::Result<String> {
     let mut file = fs::OpenOptions::new()
         .read(true)
@@ -70,6 +71,16 @@ pub fn read_boot_log_tail(path: &Path) -> io::Result<String> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("boot log {} is not a regular file", path.display()),
+        ));
+    }
+    let expected_uid = super::effective_uid();
+    if metadata.uid() != expected_uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "boot log {} must be owned by uid {expected_uid}",
+                path.display()
+            ),
         ));
     }
     let start = metadata
@@ -116,8 +127,9 @@ impl SpawnedDaemon {
         self.child.as_ref().map(Child::id)
     }
 
-    /// Whether the daemon has exited, without waiting. Once it reports an exit
-    /// the child is reaped and this guard no longer signals anything.
+    /// Polls the child without waiting and reports its exit status once. A
+    /// later call returns `None`, just as a call made while it is still
+    /// running does; the caller that needs the status again must retain it.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         let Some(child) = self.child.as_mut() else {
             return Ok(None);
@@ -288,6 +300,7 @@ mod tests {
         let link = dir.join("linked.log");
         std::os::unix::fs::symlink(&target, &link).expect("plant a link");
         open_boot_log(&link).expect_err("a symlinked boot log is refused");
+        read_boot_log_tail(&link).expect_err("a symlinked boot log is not read");
         assert_eq!(fs::read(&target).expect("target kept"), b"keep");
     }
 

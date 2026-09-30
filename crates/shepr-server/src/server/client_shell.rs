@@ -16,9 +16,11 @@ pub(super) fn snapshot(
 /// client.
 ///
 /// The session snapshot underneath is cached by the headless server and shared
-/// across clients. Rendering projects it again only when the shared cache
-/// generation moves: an application revision change, or the cwd timer finding
-/// that some client's projection changed.
+/// across clients. Rendering re-projects it when the shared generation moves,
+/// this client's location generation moves, or its snapshot is missing. The
+/// shared generation advances after an application revision or when the cwd
+/// timer finds a changed projection; a location change invalidates only the
+/// client that moved.
 pub(super) fn snapshot_from_session(
     app: &app::App,
     snapshot: crate::app::SessionSnapshot,

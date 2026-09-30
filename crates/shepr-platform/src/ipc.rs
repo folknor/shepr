@@ -456,10 +456,19 @@ pub fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
 /// here is nonblocking: a full backlog answers `EAGAIN`, which is retried until
 /// the deadline and then reported as `TimedOut`. Every other error is the
 /// connect's own (`NotFound`, `ConnectionRefused`, `PermissionDenied`), so
-/// callers classify them as they would a blocking connect's.
+/// callers classify them as they would a blocking connect's. A timeout too
+/// large to form an `Instant` deadline is `InvalidInput`.
 pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result<LocalStream> {
     use std::os::fd::{FromRawFd as _, OwnedFd};
     use std::os::unix::net::UnixStream;
+
+    // clock-io-ok: the checked deadline bounds a real socket connect.
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "local socket connect timeout is too large",
+        )
+    })?;
 
     let bytes = path.as_os_str().as_bytes();
     // SAFETY: `sockaddr_un` is plain data for which all-zero bytes is a valid
@@ -494,8 +503,6 @@ pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result
     // SAFETY: `raw` is a fresh descriptor nothing else owns.
     let socket = unsafe { OwnedFd::from_raw_fd(raw) };
 
-    // clock-io-ok: the deadline bounds a real socket connect.
-    let deadline = Instant::now() + timeout;
     loop {
         // SAFETY: `address` is a valid `sockaddr_un` of `address_len` bytes and
         // `socket` stays open for the call.
@@ -1151,6 +1158,14 @@ pub fn restrict_socket_permissions(path: &Path, mode: u32) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn local_socket_connect_rejects_a_timeout_that_overflows_instant() {
+        let error = connect_local_stream_within(Path::new("unused.sock"), Duration::MAX)
+            .expect_err("an unrepresentable deadline is invalid input");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("timeout is too large"));
+    }
 
     #[test]
     fn probe_classifies_absent_stale_and_live_sockets() {

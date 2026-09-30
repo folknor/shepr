@@ -13,6 +13,9 @@ impl App {
         };
         match runtime.clear_screen() {
             Ok(()) => Handled::done(),
+            Err(shepr_mux::pane::PaneClearError::AlternateScreenActive) => {
+                rejected("the pane is on the alternate screen")
+            }
             Err(err) => rejected(format!("the pane could not be cleared: {err}")),
         }
     }

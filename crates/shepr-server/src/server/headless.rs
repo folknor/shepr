@@ -5,13 +5,13 @@
 //! - Creates and listens on the API and client sockets
 //! - Initializes AppState and all PTYs from session restore or fresh state
 //! - Runs the main event loop (drain events, drain API requests, scheduled tasks)
-//! - Renders to a virtual ratatui Buffer in memory
+//! - Renders virtual surfaces directly to wire-cell frames in memory
 //! - Accepts client connections on the client socket
 //! - Streams frames to connected clients after each render
 //! - Routes client input events through the existing input pipeline
 //! - Continues running after client disconnect
-//! - Handles stale socket cleanup, explicit server stop, minimum terminal size,
-//!   and pane spawn failure during restore
+//! - Handles stale socket cleanup, explicit server stop, and pane spawn failure
+//!   during restore
 
 use crate::server::ClientId;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -25,7 +25,7 @@ use std::time::Instant;
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
 use ratatui::layout::Rect;
-use tokio::io::unix::AsyncFd;
+use tokio::io::unix::{AsyncFd, AsyncFdReadyGuard};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -33,7 +33,7 @@ use base64::Engine;
 
 use crate::app::{self, RenderDemand};
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
-use crate::server::client_accept::accept_pending_client_connections;
+use crate::server::client_accept::{self, accept_client_connection};
 use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
 };
@@ -77,13 +77,14 @@ pub(super) fn sample_app_clock() -> app::AppClock {
 // ---------------------------------------------------------------------------
 
 /// Events that the headless server event loop can process.
-enum LoopEvent {
+enum LoopEvent<'a> {
     Timer,
     Internal(AppEvent),
     Api(Box<shepr_api::ApiRequestMessage>),
     ServerEvent(ServerEvent),
     RenderRequested,
-    ClientListenerReady,
+    ClientListenerReady(AsyncFdReadyGuard<'a, ListenerFd>),
+    ClientListenerError(io::Error),
 }
 
 struct ListenerFd(RawFd);
@@ -270,6 +271,9 @@ impl HeadlessServer {
 
         let mut render_demand = RenderDemand::Full;
         let mut run_error = None;
+        // Set while the client listener rests after running out of descriptors
+        // or memory; its readiness is left set, so it is not polled until then.
+        let mut client_accept_paused_until: Option<Instant> = None;
 
         loop {
             // If shutdown has been initiated, complete it and exit.
@@ -432,6 +436,10 @@ impl HeadlessServer {
                 .map_or(next_deadline, |cwd| {
                     Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
                 });
+            client_accept_paused_until = client_accept_paused_until.filter(|until| *until > now);
+            let next_deadline = client_accept_paused_until.map_or(next_deadline, |until| {
+                Some(next_deadline.map_or(until, |current| current.min(until)))
+            });
             let stop_signal = Arc::clone(self.lifecycle.stop_signal());
             let event = {
                 tokio::select! {
@@ -455,20 +463,18 @@ impl HeadlessServer {
                     // whatever save waited for it.
                     () = self.app.session_saver.save_finished().notified() => LoopEvent::Timer,
                     _ = self.app.render_notify.notified() => LoopEvent::RenderRequested,
-                    ready = client_listener_ready.readable() => {
+                    ready = client_listener_ready.readable(),
+                        if client_accept_paused_until.is_none() => {
                         match ready {
-                            Ok(mut guard) => {
-                                guard.clear_ready();
-                                LoopEvent::ClientListenerReady
-                            }
-                            Err(err) => return Err(err),
+                            Ok(guard) => LoopEvent::ClientListenerReady(guard),
+                            Err(err) => LoopEvent::ClientListenerError(err),
                         }
                     },
                 }
             };
             // The wait above can last until the next deadline; dispatch reads
             // the time the event arrived, not the time the wait began.
-            self.refresh_app_clock();
+            let event_time = self.refresh_app_clock();
 
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 self.initiate_shutdown();
@@ -506,6 +512,10 @@ impl HeadlessServer {
                         request_id,
                         ..
                     }) => self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id),
+                    LoopEvent::ClientListenerError(err) => {
+                        tracing::error!(error = %err, "client listener readiness failed");
+                        run_error.get_or_insert(err);
+                    }
                     _ => {}
                 }
                 continue;
@@ -533,11 +543,36 @@ impl HeadlessServer {
                         render_demand.join(RenderDemand::Partial);
                     }
                 }
-                LoopEvent::ClientListenerReady => {
-                    if let Err(err) = self.accept_client_connections() {
-                        run_error = Some(err);
-                        self.initiate_shutdown();
+                LoopEvent::ClientListenerReady(mut ready) => {
+                    // Keep readiness set while accepts succeed. `try_io` clears
+                    // it only when accept observes WouldBlock, so a hard error
+                    // cannot strand connections still waiting in the backlog.
+                    loop {
+                        if self.lifecycle.stop_requested(self.app.state.should_quit) {
+                            break;
+                        }
+                        match ready.try_io(|_| self.accept_client_connection()) {
+                            Err(_) => break,
+                            Ok(Ok(())) => {}
+                            // Out of descriptors or memory: leave the backlog
+                            // queued and readiness set, and try again later.
+                            Ok(Err(err)) if client_accept::accept_resources_exhausted(&err) => {
+                                client_accept_paused_until =
+                                    Some(event_time + crate::limits::CLIENT_ACCEPT_RETRY_DELAY);
+                                break;
+                            }
+                            Ok(Err(err)) => {
+                                run_error.get_or_insert(err);
+                                self.initiate_shutdown();
+                                break;
+                            }
+                        }
                     }
+                }
+                LoopEvent::ClientListenerError(err) => {
+                    tracing::error!(error = %err, "client listener readiness failed");
+                    run_error.get_or_insert(err);
+                    self.initiate_shutdown();
                 }
             }
         }
@@ -696,9 +731,9 @@ impl HeadlessServer {
         self.reapply_controlled_shell_workspace_geometry(true);
     }
 
-    /// Accepts pending client connections from the non-blocking listener.
-    fn accept_client_connections(&mut self) -> io::Result<()> {
-        accept_pending_client_connections(
+    /// Accepts one client connection from the non-blocking listener.
+    fn accept_client_connection(&mut self) -> io::Result<()> {
+        accept_client_connection(
             &self.client_listener,
             &mut self.clients,
             self.lifecycle.stop_signal(),
@@ -869,13 +904,12 @@ impl HeadlessServer {
     /// Broken connections are tracked and cleaned up.
     ///
     /// Each client gets its own copy of the framed bytes. That is deliberate:
-    /// the only callers are the two shutdown notices (a few dozen bytes, once
-    /// per server lifetime). Render output never goes through here; every
-    /// client's frame or patch is diffed against that client's own baseline
-    /// (`render_and_stream`, `render_retained_pane_surface_and_stream`), so
-    /// there is no shared frame to hand out. Making the writer queue carry
-    /// `Arc<[u8]>` would add a refcount to every per-client render send to
-    /// save one tiny copy here.
+    /// the only caller is `initiate_shutdown`, once per server lifetime.
+    /// Render output never goes through here; each client's frame or patch is
+    /// diffed against that client's own baseline (`render_and_stream`,
+    /// `render_retained_pane_surface_and_stream`), so there is no shared frame
+    /// to hand out. Making the writer queue carry `Arc<[u8]>` would add a
+    /// refcount to every per-client render send to save one tiny copy here.
     fn send_to_all_clients(&mut self, msg: &ServerMessage) {
         let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,

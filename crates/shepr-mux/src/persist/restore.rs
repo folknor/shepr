@@ -326,15 +326,19 @@ fn restore_workspace(
         .max(snap.next_public_pane_number);
     let public_pane_numbers_by_old_raw =
         &assign_public_pane_numbers(snap, &mut next_public_pane_number);
-    let public_pane_ids_by_old_raw: HashMap<u32, String> = public_pane_numbers_by_old_raw
-        .iter()
-        .map(|(old_raw, public_number)| {
-            (
-                *old_raw,
-                shepr_protocol::PublicPaneId::new(&workspace_id, *public_number).to_string(),
-            )
-        })
-        .collect();
+    // Keep pane IDs typed through launch setup. Every workspace ID is
+    // validated and every pane number is assigned above, so converting these
+    // canonical IDs to text only to parse them back adds no validation.
+    let public_pane_ids_by_old_raw: HashMap<u32, shepr_protocol::PublicPaneId> =
+        public_pane_numbers_by_old_raw
+            .iter()
+            .map(|(&old_raw, &public_number)| {
+                (
+                    old_raw,
+                    shepr_protocol::PublicPaneId::new(&workspace_id, public_number),
+                )
+            })
+            .collect();
 
     // An invalid saved split ratio drops this one workspace, like every other
     // per-workspace restore defect below, rather than refusing the whole
@@ -481,16 +485,20 @@ fn restore_workspace(
         };
 
         let old_pane_id = reverse_id_map.get(id).copied();
-        let public_pane_id = old_pane_id
+        let Some(pane_id) = old_pane_id
             .and_then(|old_id| public_pane_ids_by_old_raw.get(&old_id))
-            .map(String::as_str);
-        let mut launch_env =
-            PaneLaunchEnv::from_extra(Vec::new(), runtime_context.api_socket_path.to_path_buf());
-        if let Some(pane_id) =
-            public_pane_id.and_then(|pane_id| pane_id.parse::<shepr_protocol::PublicPaneId>().ok())
-        {
-            launch_env = launch_env.with_pane_id(pane_id);
-        }
+            .cloned()
+        else {
+            error!(
+                workspace = %workspace_id,
+                pane = ?id,
+                "restored pane has no assigned public identity; dropping workspace"
+            );
+            return None;
+        };
+        let launch_env =
+            PaneLaunchEnv::from_extra(Vec::new(), runtime_context.api_socket_path.to_path_buf())
+                .with_pane_id(pane_id);
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
                 saved_pane,

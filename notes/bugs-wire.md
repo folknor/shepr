@@ -406,44 +406,6 @@ out of the serde impls into one validator over `Config` that
 fallible (`TryFrom`); make the wire token shape non-recursive
 (`Styled { token: Plain, .. }`). Better: WIRE-011 option (b) and delete the path.
 
-## WIRE-014 - An out-of-range `ui.sidebar_width` is silently clamped instead of failing the launch
-
-Scope: config.
-
-**Claim broken.** AGENTS.md: "Any config problem fails the launch; no fallbacks."
-
-`ValidatedUiConfig::from_config` (`crates/shepr-config/src/validated.rs`) stores
-`bounds.clamp_width(config.sidebar_width)` with no diagnostic for a width outside
-`[sidebar_min_width, sidebar_max_width]`; `sidebar_width = 80` with the default
-max of 36 launches with 36. `validated_config_resolves_runtime_values_once`
-asserts this clamp (80 -> 30), and
-`config_check_collects_all_semantic_diagnostics` includes `sidebar_width = 80`
-without expecting a diagnostic. An inverted min/max, by contrast, is a
-diagnostic.
-
-**Fix.** Report `ui.sidebar_width (N) must be between sidebar_min_width and
-sidebar_max_width` and fail. `SidebarBounds::clamp_width` stays for runtime drags
-and remembered preferences.
-
-## WIRE-015 - `server.headless_cols` and `headless_rows` have no upper bound, though every client-supplied size is capped
-
-Scope: config.
-
-**Claim broken.** The protocol bounds every grid (`MAX_SURFACE_DIMENSION = 4096`,
-`MAX_SURFACE_CELLS = 1 << 22`, `ClientSurfaceSize::clamped`), and the server-side
-comment in `limits.rs` presents these as the cap on a pane grid. The config value
-bypasses them.
-
-`ConfigResolution::parse` only requires non-zero (`GridSize::new`).
-`AppSettings::headless_rect` feeds the raw `u16`s into pane geometry
-(`app/creation.rs`, `app/mod.rs`, `app/state.rs`) whenever no client is attached.
-`headless_cols = 65535, headless_rows = 65535` sizes every PTY and
-`alacritty_terminal` grid at about 4.3G cells at server boot, with no client to
-clamp it.
-
-**Fix.** Validate against the protocol's bounds (each at most
-`MAX_SURFACE_DIMENSION`, product at most `MAX_SURFACE_CELLS`) with a diagnostic.
-
 ## WIRE-016 - Keybinding conflict detection compares exact combos, but matching is fuzzy
 
 Scope: config.
@@ -459,8 +421,8 @@ dispatch assumes each key maps to at most one action.
 several different combos as the same key:
 
 - The default `help = "prefix+?"` (`('?', NONE)`) and a user binding
-  `"prefix+shift+/"` (`('/', SHIFT)`): a kitty-protocol Shift+/ (code `/`, SHIFT,
-  shifted codepoint `?`) matches both. `"prefix+shift+?"` (`('?', SHIFT)`) also
+  `"prefix+shift+/"` (`('/', SHIFT)`): a kitty-protocol Shift+/ (code `/`, the
+  Shift modifier, shifted codepoint `?`) matches both. `"prefix+shift+?"` (`('?', SHIFT)`) also
   matches it.
 - `"prefix+shift+1..9"`, which default.toml offers as an example, and
   `"prefix+!"`: a legacy `!` press is matched by the indexed legacy-shift path and
@@ -519,31 +481,6 @@ client's config provenance, not the endpoint's.
 **Fix.** Key preferences by `ClientEndpointId::storage_key()` and switch files at
 the presentation transition, or reword both docs to "remembered per client".
 
-## WIRE-019 - Stale or wrong statements in config docs
-
-Scope: config.
-
-- `UiConfig::host_cursor` (`model.rs`): "Host cursor policy. Default: auto." The
-  default is `Native`, and `"auto"` is rejected
-  (`ui_host_cursor_defaults_to_native_and_parses_overrides` asserts it).
-- default.toml `[ui]`: "Sidebar width (auto-scaled based on workspace names, this
-  sets the default)". Nothing auto-scales the width; it is the configured value
-  clamped to the bounds, or the remembered one.
-- default.toml `[terminal]`: "CWD policy for new panes and workspaces when no
-  explicit --cwd is provided." No `--cwd` exists; AGENTS.md says the CLI has no
-  pane or workspace commands.
-
-## WIRE-020 - With both socket variables set, the client socket variable is silently ignored
-
-Scope: config (lateral). Related: TERM-005.
-
-`ServerAddress::resolve_paths` (`address.rs`) returns right after the API
-override and derives the client socket from it, dropping
-`SHEPR_CLIENT_SOCKET_PATH`; `resolve_paths_from_env` then records the client
-socket's provenance as `SHEPR_SOCKET_PATH`. AGENTS.md says socket variables "win
-over the runtime directory". A variable that is set and ignored is a quiet
-fallback; "no fallbacks" argues for refusing the pair or honouring both.
-
 ## WIRE-021 - `ui.accent` can be set and still ignored
 
 Scope: config (lateral).
@@ -554,23 +491,6 @@ so `resolve_palette` drops a non-empty `config.ui.accent` (applied only when
 Only tests and `shepr-protocol`/`shepr-termio` test helpers call this today. The
 accent's effect should depend on the value, since `Some` already means "set in
 the file" after `deserialize_ui_accent`, not on a provenance side channel.
-
-## WIRE-022 - Smaller config notes
-
-Scope: config (lateral).
-
-- **Pointless work on the failure path.** `default_loaded_config` (`io.rs`) runs
-  a full `ConfigResolution::parse` against `Config::default()`, including the
-  `SHELL`/`PATH` shell lookup and cwd checks, only to throw the result away
-  because the load already has diagnostics. `LoadedConfig` could carry `None`.
-- **Different agent-name rules in two settings.** `cjk_ime_agents` accepts
-  aliases case-insensitively (`parse_config_agent`), while `rows_by_agent` keys
-  accept only exact canonical labels. Both documented; one `ConfigAgent` parser
-  would remove the difference.
-- **Hard-coded list in the template.** The agent list in default.toml
-  (`cjk_ime_agents` "Accepted: pi, claude, ...") is enumerated by hand and will go
-  stale. The documentation rule prefers wording that does not enumerate, or a
-  test deriving the list from `ConfigAgent::all()`.
 
 ## WIRE-023 - The build identity may not be recomputed when `CARGO_PROFILE_*` environment overrides change
 

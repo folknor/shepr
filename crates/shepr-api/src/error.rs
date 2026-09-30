@@ -26,6 +26,7 @@ api_error_codes! {
     InvalidAgent => "invalid_agent",
     InvalidRequest => "invalid_request",
     PaneNotFound => "pane_not_found",
+    PaneTerminalUnavailable => "pane_terminal_unavailable",
     SerializationError => "serialization_error",
     ServerUnavailable => "server_unavailable",
     Timeout => "timeout",

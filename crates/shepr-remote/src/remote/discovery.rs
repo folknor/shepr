@@ -112,7 +112,7 @@ fn path_lookup_result_with_rejected_candidate(
 ) -> io::Result<Option<RemoteExecutable>> {
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", output);
-        if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
+        if super::SshFailureDiagnostic::from_error(&error).failed_before_remote_result() {
             return Err(error);
         }
         return Ok(None);
@@ -152,12 +152,19 @@ pub(crate) struct DiscoveryProgress {
     candidates: Option<Vec<RemoteExecutable>>,
     /// How many of `candidates` were probed and did not match.
     probed: usize,
+    /// Why the first rejected candidate was rejected: its status probe ran and
+    /// failed, or it reported an incompatible build. Probing goes on in case a
+    /// later path is the install this client can use.
+    first_candidate_rejection: Option<io::Error>,
     rejected_shell_unsafe_candidate: Option<RejectedShellUnsafeCandidate>,
 }
 
 impl DiscoveryProgress {
-    /// Runs the round trips not yet completed, in order, stopping at the first error.
-    /// Returns the first candidate that matches, or the not-ready error when none does.
+    /// Runs the round trips not yet completed, in order, skipping candidates whose
+    /// status probe failed or whose client or sibling build is incompatible. A link
+    /// failure stops the pass. Returns the first matching candidate, the first
+    /// candidate's rejection if none match, or the not-ready error when no candidate
+    /// was there to reject.
     /// Progress survives only an error that is a link failure (`is_ssh_link_failure`,
     /// which includes running out of time); any other error clears it.
     pub(super) fn advance(
@@ -205,10 +212,22 @@ impl DiscoveryProgress {
         }
         let candidates = self.candidates.clone().unwrap_or_default();
         while let Some(candidate) = candidates.get(self.probed) {
-            if steps.matches(candidate)? {
-                return Ok(candidate.clone());
+            match steps.matches(candidate) {
+                Ok(true) => return Ok(candidate.clone()),
+                Ok(false) => {}
+                // A wrong build or a failing probe at one path does not rule out a
+                // later candidate, such as the real binary behind a PATH shim.
+                Err(error) if !is_ssh_link_failure(&error) => {
+                    if self.first_candidate_rejection.is_none() {
+                        self.first_candidate_rejection = Some(error);
+                    }
+                }
+                Err(error) => return Err(error),
             }
             self.probed += 1;
+        }
+        if let Some(error) = self.first_candidate_rejection.take() {
+            return Err(error);
         }
         let rejection = self
             .rejected_shell_unsafe_candidate
@@ -354,17 +373,32 @@ pub(super) fn remote_client_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<Option<shepr_api::schema::ClientStatusJson>> {
-    let output = ssh.sh_output(&remote_shepr.status_client_command())?;
+    // Keep a distinct result for the `test -x` leg: a vanished candidate is
+    // ordinary discovery progress, but a started status command that fails is
+    // a diagnostic the operator needs to see.
+    // limits-exempt: a shell exit status chosen for the remote command contract, not a bound.
+    const CANDIDATE_NOT_EXECUTABLE: i32 = 125;
+    let status_command = remote_shepr.status_client_command();
+    let command = format!(
+        "test -x {} || exit {CANDIDATE_NOT_EXECUTABLE}; {status_command}",
+        remote_shepr.quoted(),
+    );
+    let output = ssh.sh_output(&command)?;
     if !output.status.success() {
-        let error = command_failed("remote SSH connection failed", &output);
-        if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
-            return Err(error);
+        if output.status.code() == Some(CANDIDATE_NOT_EXECUTABLE) {
+            return Ok(None);
         }
-        return Ok(None);
+        let error = command_failed("remote client status probe failed", &output);
+        return Err(error);
     }
-    Ok(parse_client_status_json(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    parse_client_status_json(&String::from_utf8_lossy(&output.stdout))
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote status client command returned no valid client status JSON",
+            )
+        })
 }
 
 pub(super) fn parse_client_status_json(
@@ -403,12 +437,9 @@ fn ensure_remote_sibling_build(
     let install_hint =
         "Install shepr and shepr-server together from the same build on the host and retry";
     let Some(sibling) = status.server.as_ref() else {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "remote Shepr installation error on {target}: shepr did not report a shepr-server beside it. {install_hint}"
-            ),
-        ));
+        return Err(remote_candidate_mismatch(format!(
+            "remote Shepr installation error on {target}: shepr did not report a shepr-server beside it. {install_hint}"
+        )));
     };
     if let Some(error) = sibling.error.as_deref() {
         let binary = sibling
@@ -416,13 +447,10 @@ fn ensure_remote_sibling_build(
             .as_deref()
             .map(super::server_lifecycle::printable_remote_text)
             .map_or_else(String::new, |binary| format!(" ({binary})"));
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {}. {install_hint}",
-                super::server_lifecycle::printable_remote_text(error)
-            ),
-        ));
+        return Err(remote_candidate_mismatch(format!(
+            "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {}. {install_hint}",
+            super::server_lifecycle::printable_remote_text(error)
+        )));
     }
     if sibling
         .build_id
@@ -433,14 +461,11 @@ fn ensure_remote_sibling_build(
     }
     let version = super::server_lifecycle::printable_remote_value(sibling.version.as_deref());
     let build_id = super::server_lifecycle::printable_remote_value(sibling.build_id.as_deref());
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "remote Shepr installation error on {target}: the shepr-server beside shepr is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
-            shepr_protocol::build_version(),
-            shepr_protocol::BUILD_ID
-        ),
-    ))
+    Err(remote_candidate_mismatch(format!(
+        "remote Shepr installation error on {target}: the shepr-server beside shepr is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID
+    )))
 }
 
 fn remote_compatibility_error(
@@ -454,14 +479,33 @@ fn remote_compatibility_error(
     } else {
         "Install the same Shepr build on the host and retry"
     };
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. {advice}",
-            shepr_protocol::build_version(),
-            shepr_protocol::BUILD_ID
-        ),
-    )
+    remote_candidate_mismatch(format!(
+        "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. {advice}",
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID
+    ))
+}
+
+#[derive(Debug)]
+struct RemoteCandidateMismatch(String);
+
+impl std::fmt::Display for RemoteCandidateMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RemoteCandidateMismatch {}
+
+fn remote_candidate_mismatch(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, RemoteCandidateMismatch(message))
+}
+
+pub(super) fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<RemoteCandidateMismatch>())
+        .is_some()
 }
 
 #[cfg(test)]

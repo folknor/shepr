@@ -517,6 +517,9 @@ fn resolve_paths_from_env(
             } else {
                 runtime_dir_source.clone()
             };
+            // SHEPR_SOCKET_PATH selects the server endpoint first and keeps
+            // its derived client socket paired with that server. The client
+            // override selects a client socket only without an API override.
             let client_socket_source = if api_socket_override.is_some() {
                 ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
             } else if client_socket_override.is_some() {
@@ -617,10 +620,7 @@ impl Config {
                 let provenance = match ConfigProvenance::from_config(&config, None) {
                     Ok(provenance) => provenance,
                     Err(error) => {
-                        return default_loaded_config(
-                            vec![ConfigDiagnostic::Provenance(error)],
-                            paths,
-                        );
+                        return default_loaded_config(vec![ConfigDiagnostic::Provenance(error)]);
                     }
                 };
                 let resolution = super::validated::ConfigResolution::parse(
@@ -646,11 +646,11 @@ impl Config {
                 LoadedConfig {
                     provenance,
                     config,
-                    resolution,
+                    resolution: Some(resolution),
                     diagnostics,
                 }
             }
-            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(err.to_string())], paths),
+            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(err.to_string())]),
         }
     }
 
@@ -664,10 +664,9 @@ impl Config {
                             match ConfigProvenance::from_config(&config, Some(&document)) {
                                 Ok(provenance) => provenance,
                                 Err(error) => {
-                                    return default_loaded_config(
-                                        vec![ConfigDiagnostic::Provenance(error)],
-                                        paths,
-                                    );
+                                    return default_loaded_config(vec![
+                                        ConfigDiagnostic::Provenance(error),
+                                    ]);
                                 }
                             };
                         let resolution = super::validated::ConfigResolution::parse(
@@ -708,18 +707,16 @@ impl Config {
                         LoadedConfig {
                             config,
                             provenance,
-                            resolution,
+                            resolution: Some(resolution),
                             diagnostics,
                         }
                     }
                     Err(err) => {
-                        default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())], paths)
+                        default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())])
                     }
                 }
             }
-            Err(err) => {
-                default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())], paths)
-            }
+            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())]),
         }
     }
 }
@@ -729,20 +726,13 @@ pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDia
     Config::load_validated(paths)
 }
 
-fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>, paths: &AppPaths) -> LoadedConfig {
+fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
     let config = Config::default();
     let provenance = ConfigProvenance::defaults(&config);
-    let resolution = super::validated::ConfigResolution::parse(
-        &config,
-        &provenance,
-        paths,
-        CwdCheck::AtLaunch,
-        ShellCheck::AtLaunch,
-    );
     LoadedConfig {
         config,
         provenance,
-        resolution,
+        resolution: None,
         diagnostics,
     }
 }
@@ -915,6 +905,15 @@ mod tests {
     }
 
     #[test]
+    fn failed_load_does_not_resolve_the_placeholder_config() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let loaded = Config::load_from_str("[broken");
+
+        assert!(loaded.resolution.is_none());
+        assert!(!loaded.diagnostics.is_empty());
+    }
+
+    #[test]
     fn config_load_reports_unreadable_path() {
         let _env = shepr_test_support::IsolatedEnv::new();
         // A directory where the config file should be cannot be read.
@@ -945,7 +944,17 @@ mod tests {
                 "[ui]\nsidebar_min_width = 50\nsidebar_max_width = 30\n",
                 "sidebar_min_width",
             ),
+            ("[ui]\nsidebar_width = 17\n", "ui.sidebar_width"),
+            ("[ui]\nsidebar_width = 37\n", "ui.sidebar_width"),
             ("[server]\nheadless_cols = 0\n", "headless_cols"),
+            (
+                "[server]\nheadless_cols = 4097\nheadless_rows = 1\n",
+                "server.headless_cols",
+            ),
+            (
+                "[server]\nheadless_cols = 4096\nheadless_rows = 1025\n",
+                "server.headless_cols",
+            ),
             (
                 "[ui]\ntab_bar_right = []\n",
                 "unknown config key ui.tab_bar_right",
@@ -1071,8 +1080,8 @@ prefix = "ctrl+"
 zoom = "prefix+not-a-key"
 [ui]
 sidebar_width = 80
-sidebar_min_width = 50
-sidebar_max_width = 30
+sidebar_min_width = 18
+sidebar_max_width = 36
 window_title = "{unknown}"
 "#,
         )
@@ -1089,7 +1098,7 @@ window_title = "{unknown}"
             "server.headless_cols",
             "keys.prefix",
             "keys.zoom",
-            "sidebar_min_width",
+            "ui.sidebar_width",
             "ui.window_title",
         ] {
             assert!(
@@ -1250,6 +1259,22 @@ window_title = "{unknown}"
         assert_eq!(
             paths.provenance().api_socket,
             ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
+        );
+        assert_eq!(
+            paths.provenance().client_socket,
+            ConfigSource::EnvironmentVariable(EnvVar::SheprSocketPath.name().to_owned())
+        );
+
+        env.set(
+            EnvVar::SheprClientSocketPath,
+            env.path().join("ignored-client.sock"),
+        );
+        let paths = AppPaths::resolve().expect("API override keeps precedence when both are set");
+        let expected_client =
+            crate::derive_client_socket_from_api_socket(&env.path().join("api.sock"));
+        assert_eq!(
+            paths.server_address().client_socket(),
+            expected_client.as_path()
         );
         assert_eq!(
             paths.provenance().client_socket,
@@ -1484,7 +1509,12 @@ sidebar_width = 26
 agent_panel_sort = "priority"
 "#,
         );
-        assert!(loaded.resolution.values.is_some());
+        assert!(
+            loaded
+                .resolution
+                .as_ref()
+                .is_some_and(|resolution| resolution.values.is_some())
+        );
         assert!(
             loaded
                 .provenance

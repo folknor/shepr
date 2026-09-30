@@ -436,6 +436,10 @@ where
 {
     let rows_by_agent = BTreeMap::<String, AgentSidebarRows>::deserialize(deserializer)?;
     for (id, rows) in &rows_by_agent {
+        // This map is looked up with the detector's canonical Agent::label(),
+        // so aliases have no lookup meaning here. Unlike cjk_ime_agents, which
+        // is a membership list, accepting aliases would also require a rule
+        // for duplicate canonical and alias keys for the same agent.
         if ConfigAgent::parse_canonical_label(id).is_none() {
             return Err(serde::de::Error::custom(format!(
                 "unknown canonical agent id `{id}` in sidebar rows_by_agent"

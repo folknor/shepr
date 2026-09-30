@@ -153,11 +153,27 @@ pub fn hostname() -> Option<String> {
         .iter()
         .position(|&byte| byte == 0)
         .unwrap_or(buffer.len());
-    let name = String::from_utf8_lossy(&buffer[..end]).into_owned();
-    (!name.is_empty()).then_some(name)
+    let name = String::from_utf8_lossy(&buffer[..end]);
+    let short_name = short_hostname(&name);
+    (!short_name.is_empty()).then(|| short_name.to_owned())
+}
+
+fn short_hostname(name: &str) -> &str {
+    name.split_once('.').map_or(name, |(short, _)| short)
 }
 
 pub(super) fn effective_uid() -> libc::uid_t {
     // SAFETY: geteuid(2) takes no arguments, cannot fail and touches no memory.
     unsafe { libc::geteuid() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_hostname;
+
+    #[test]
+    fn hostname_matches_tmux_short_hostname_form() {
+        assert_eq!(short_hostname("buildbox.example.org"), "buildbox");
+        assert_eq!(short_hostname("buildbox"), "buildbox");
+    }
 }

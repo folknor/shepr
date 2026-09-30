@@ -84,7 +84,7 @@ fn print_server_status(paths: &super::target::CliContext, json: bool) -> super::
     Ok(0)
 }
 
-fn print_client_status(json: bool) -> super::CliResult<()> {
+pub(super) fn print_client_status(json: bool) -> super::CliResult<()> {
     let status = client_status_json();
     if json {
         print_json(&status)?;

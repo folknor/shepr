@@ -2,7 +2,7 @@ use super::*;
 use ratatui::{
     style::Color,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
 
 /// Draws a notice card anchored to the top-right corner of `area`.
@@ -18,13 +18,33 @@ fn render_notification_card(
     if area.is_empty() {
         return Rect::default();
     }
-    let content_width = unicode_width::UnicodeWidthStr::width(title)
-        .max(unicode_width::UnicodeWidthStr::width(body))
+    // The body keeps its line breaks (a machine diagnostic is several lines), so the card is
+    // as wide as its widest line and as tall as the body wraps to, up to the rows below
+    // `top_offset`. A click anywhere on the card dismisses it.
+    let content_width = body
+        .lines()
+        .map(unicode_width::UnicodeWidthStr::width)
+        .chain([unicode_width::UnicodeWidthStr::width(title)])
+        .max()
+        .unwrap_or(0)
         .saturating_add(6);
     let width = u16::try_from(content_width)
         .unwrap_or(u16::MAX)
         .min(area.width);
-    let height: u16 = if body.is_empty() { 3 } else { 4 }.min(area.height);
+    let body_paragraph = Paragraph::new(
+        body.lines()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(palette.overlay0))))
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false });
+    let desired_height = if body.is_empty() {
+        3
+    } else {
+        let body_rows = body_paragraph.line_count(width.saturating_sub(4));
+        u16::try_from(body_rows.saturating_add(3)).unwrap_or(u16::MAX)
+    };
+    let available_height = area.height.saturating_sub(top_offset.min(area.height));
+    let height = desired_height.min(available_height.max(1));
     let x = area.right().saturating_sub(width);
     let max_y = area.bottom().saturating_sub(height).max(area.y);
     let y = area.y.saturating_add(top_offset).clamp(area.y, max_y);
@@ -48,19 +68,13 @@ fn render_notification_card(
     ]))
     .render(Rect::new(inner.x, inner.y, inner.width, 1), buffer);
     if !body.is_empty() && inner.height > 1 {
-        Paragraph::new(Line::from(Span::styled(
-            body,
-            Style::default().fg(palette.overlay0),
-        )))
-        .render(
-            Rect::new(
-                inner.x.saturating_add(2),
-                inner.y + 1,
-                inner.width.saturating_sub(2),
-                1,
-            ),
-            buffer,
+        let body_area = Rect::new(
+            inner.x.saturating_add(2),
+            inner.y + 1,
+            inner.width.saturating_sub(2),
+            inner.height.saturating_sub(1),
         );
+        Widget::render(body_paragraph, body_area, buffer);
     }
     rect
 }

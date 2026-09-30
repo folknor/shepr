@@ -12,86 +12,6 @@ Filed from the defect hunt over `crates/shepr-vt`, `crates/shepr-pty` and
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## TERM-001 - OSC colour query answers are resolved at the end of the parse, not at the query's position
-
-Scope: vt-pty.
-
-**Claim broken.** `crates/shepr-vt/src/color.rs`, `ColorQuery` doc: "`core_color`
-is what the terminal itself would report (...), captured at the query's position
-in the stream." `ColorQuery::child_override`: "answered from the child's own OSC
-10/11 override *at the moment it was asked*". The lib.rs module doc promises
-query replies "in byte order".
-
-**What the code does.** `Term::dynamic_color_sequence` only pushes
-`Event::ColorRequest(index, fmt)` into the listener queue. The colour is resolved
-later in `Terminal::drain_events` (`crates/shepr-vt/src/lib.rs`), which
-`with_handler` runs once after `parser.advance` has consumed the whole segment,
-so every colour change later in the segment is already applied when
-`core_query_color` and `default_color_override` run.
-
-Input in one read: `ESC ] 11 ; ? BEL   ESC ] 11 ; rgb:11/22/33 BEL`. Contract:
-answer the host background (or nothing if unset) with `child_override == false`.
-Actual: `core_color = 11/22/33`, `child_override = true`, so the pane echoes the
-new colour back in the child's own form
-(`crates/shepr-mux/src/pane/terminal/helpers.rs`, `color_query_response`). Same
-for OSC 4 palette and OSC 12 queries, and for everything in a
-synchronized-update frame, since a frame is replayed as one `advance`
-(`Processor::stop_sync_internal`), including when `tick` flushes it. "Query the
-background, then set a new one" in one write is what theme-switching tools do.
-The tests only cover set-then-query (`tests.rs`, `]11;rgb:...` then `]11;?`).
-
-**Fix.** Resolve the colour at dispatch: `CoreHandler::dynamic_color_sequence`
-runs at the right moment; give the handler the host fg/bg and default palette (it
-already carries `cell`), compute `core_color` and `child_override` there, and
-queue a typed adapter event. More broadly, stop using alacritty's `Event` enum as
-the reply queue: have `CoreHandler` push shepr-typed replies (bytes, resolved
-colour query, title, clipboard) into its own `Vec`, so every effect is captured
-at its byte position by construction, and the `Arc<Mutex<Vec<Event>>>` listener
-plus the `set_history_lines` truncation trick shrink to the few events only
-`Term` can emit (title from `set_options`/`pop_title`).
-
-## TERM-002 - Pane clear on the alternate screen reports success but does nothing
-
-Scope: vt-pty.
-
-**Claim broken.** `Terminal::clear_screen` returns the typed
-`ClearScreenOutcome::AlternateScreenActive` so the caller can tell a no-op from a
-clear ("A no-op returning `AlternateScreenActive` while the alternate screen is
-active").
-
-**What the code does.** `PaneTerminal::clear_screen`
-(`crates/shepr-mux/src/pane/terminal/backend.rs`) does
-`let _ = core.terminal.clear_screen(); Ok(())`. `PaneClearError`
-(`crates/shepr-mux/src/pane/terminal.rs`) only has `TerminalLockPoisoned`, so
-`App::handle_pane_clear` (`crates/shepr-server/src/app/api/panes/copy.rs`)
-answers `Handled::done()` for a clear that did not happen.
-`PaneRuntime::clear_screen` also bumps the detection content sequence anyway.
-
-**Fix.** Carry the outcome through (an `AlternateScreenActive` variant, or return
-the outcome) and have the endpoint reject with "the pane is on the alternate
-screen".
-
-## TERM-003 - Clearing history does not bring a widened pane back under its scrollback budget
-
-Scope: vt-pty.
-
-**Claim broken.** `Terminal::resize` comment (`crates/shepr-vt/src/lib.rs`): "a
-widened pane holds more than its byte budget until it narrows again (or its
-history is cleared)."
-
-**What the code does.** The inflated line limit (`history_lines`) is only
-recomputed inside `resize`. ED 3 (`CoreHandler::clear_screen`), RIS
-(`CoreHandler::reset_state`) and the host clear (`Terminal::clear_screen`) empty
-the history but leave `history_lines` (and alacritty's `max_scroll_limit`) at the
-widened value. New output refills history to that limit at the wide column
-count, above the byte budget, until a later resize recomputes it.
-
-**Fix.** After any purge that leaves `history_size() == 0` on the primary screen,
-call `set_history_lines(scrollback_lines(max_scrollback, cols))` (from
-`Terminal`, since the handler would need `max_scrollback`; or give the handler a
-"history purged" flag that `with_handler` acts on). Otherwise drop the
-parenthetical.
-
 ## TERM-004 - vte buffers an unterminated OSC without limit, so one pane can exhaust the shared server's memory
 
 Scope: vt-pty. Filed by the hunter as robustness.
@@ -139,6 +59,15 @@ noticed.
 
 **Fix.** Export the resolved client socket explicitly next to the API socket
 (pass it in `PaneLaunchEnv`), or fix the doc and scrub the variable.
+
+A fixer confirmed the mismatch and found the fix spans three places: the
+resolved socket pair has to travel through `PaneSpawnHandles`
+(`crates/shepr-mux/src/workspace.rs`) into `PaneLaunchEnv`, and a pane that
+exports both variables only works if `shepr-config`'s precedence (the API
+override wins and derives the client socket, now pinned by tests in
+`address.rs`) yields the same pair the server resolved. A constraint note sits
+beside the API path field in `launch.rs`. Give one fixer `launch.rs`,
+`workspace.rs` and the `PaneLaunchEnv` construction sites together.
 
 ## TERM-006 - Test-only read, mode and launch surface kept in production crates
 
@@ -207,74 +136,6 @@ Scope: vt-pty.
 - **`Terminal::tick` returns `true` for an empty expired frame.** The doc says
   it "Returns whether anything was flushed". Callers only bump an epoch and
   request a render; harmless.
-
-## TERM-008 - Bracketed-paste sanitizer is bypassed by nesting the markers
-
-Hunter's severity: High. Scope: mux-pane.
-
-`PaneRuntime::paste_payload` (`runtime.rs`):
-
-```rust
-let safe = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
-format!("\x1b[200~{safe}\x1b[201~")
-```
-
-Two single-pass replacements do not reach a fixed point; removing one marker can
-assemble the other from the surrounding bytes:
-
-- `"\x1b[20\x1b[200~1~"`: the first pass finds no `ESC[201~`; the second removes
-  `ESC[200~` and leaves `ESC[201~`.
-- The mirror `"\x1b[20\x1b[201~0~"` survives as `ESC[200~` (harmless inside a
-  paste, same flaw).
-
-So a pasted `"\x1b[20\x1b[200~1~\nrm -rf ~\n"` ends the bracketed paste early and
-the rest reaches the shell as typed input: the paste-jacking the sanitization
-exists to stop. Claim broken: the `safe` variable and the test
-`bracketed_paste_neutralizes_embedded_markers`, which only checks the non-nested
-case. The text comes from the client's clipboard through
-`shepr-server/src/server/pane_input.rs::send_paste`.
-
-**Fix.** Strip every ESC (and arguably all C0 except `\t\r\n`) from the payload
-while bracketed paste is on, or loop the removal until nothing changes. Add the
-nested case to the test.
-
-## TERM-009 - `SHEPR_PANE_ID` from the server's own environment leaks into panes
-
-Hunter's severity: Medium. Scope: mux-pane; also surfaced as a lateral finding
-in agent-integration.
-
-In `launch.rs`, `EnvVar::SheprPaneId` has policy `Allowed`, and
-`PaneLaunchEnv::pane_id` is an `Option` whose `None` is documented as "inherits
-whatever the server environment carries". Nothing removes `SHEPR_PANE_ID` from
-the server's environment (no `env_remove` for it outside the explicit set in
-`apply_pane_launch_env`).
-
-`persist/restore.rs` builds the launch env with `with_pane_id` only when the old
-id maps to a public id that parses; otherwise the pane launches with
-`pane_id: None`. The server inherits `SHEPR_PANE_ID` whenever it was started from
-inside a shepr pane, which is the documented dev-next-to-release workflow
-(AGENTS.md: "Run it with plain `brokkr run` ... including from inside a pane of
-the installed server"). Such a restored pane carries the outer server's pane id
-while its `SHEPR_SOCKET_PATH` points at this server, so the integration hooks
-(every `assets/*/shepr-agent-state.*` reads `SHEPR_PANE_ID`) report for a pane id
-belonging to another server, and if the string names a pane here too, the state
-lands on the wrong pane.
-
-**Claims broken.** The pane-env policy doc ("the inherited value describes
-something outside this pane ... is removed" is exactly this variable), and the
-integration contract that hooks report for their own pane.
-
-The integration hunter traced the inheritance itself:
-`build_server_daemon_command` (`shepr-remote/src/remote/local_server.rs`) passes
-the caller's environment through, so a server started from inside another
-server's pane inherits that pane's `SHEPR_PANE_ID` and `SHEPR_ENV`. In that
-hunter's reading the usual outcome is "pane not found", and in principle it could
-hit an unrelated pane.
-
-**Fix.** Make the pane id mandatory in `PaneLaunchEnv` (every spawn path can
-produce one; restore can allocate a fresh public id when the old one is missing)
-and classify `SheprPaneId` as `Scrubbed` (the integration hunter suggests
-`Scrubbed` or `ServerOnly`) so an absent id is never an inherited one.
 
 ## TERM-010 - A transient default-colour override can pin a pane's detection loop at 20 Hz indefinitely
 
@@ -354,23 +215,6 @@ sound order is read first, then confirm the leader is still unreaped
 **Fix.** One `ChildLiveness::live_pid()` returning the pid only while unreaped,
 re-checked after the `/proc` read, used by every accessor; the detection loop
 should exit once `wait_completed()`.
-
-## TERM-013 - `read_primary_history` clears the history cache on some failures, contrary to `refresh`'s doc
-
-Hunter's severity: Low. Scope: mux-pane.
-
-`PaneHistorySource::refresh` documents "`false`, with the cache left as it was,
-while the alternate screen is active ... or when the terminal cannot be read".
-Several failure paths in `read_primary_history` (`format_chunk` returning
-`None`, `screen_row_wrap` failing, `terminal_recent_read_range` erroring, the
-"open line with no rows left" branch) call `cache.clear()` and return `None`.
-`persist/snapshot.rs::HistoryCarry` relies on the cache being "the one copy of a
-pane's history that outlives a save", so a cleared cache saves as no history and
-the pane's saved history is lost. Rare, but the contract says the cache survives.
-
-**Fix.** On failure leave the cache untouched (drop only the chunk being built),
-or change the doc and have the save treat `false` from a clearing path as "keep
-the previous saved history".
 
 ## TERM-014 - Deferred read effects block the PTY reader thread
 

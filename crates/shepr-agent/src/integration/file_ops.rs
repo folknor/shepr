@@ -46,7 +46,7 @@ pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
 /// sibling temporary file and renaming it over `path`.
 ///
 /// Never truncate-and-rewrite in place: agents run hook scripts through
-/// `bash`, which reads a script incrementally while executing it, so a hook
+/// `sh`, which reads a script incrementally while executing it, so a hook
 /// that is running during a reinstall would otherwise continue from an
 /// arbitrary byte offset of the new contents. The rename gives the new
 /// contents a new inode; a running interpreter keeps reading the old one.
@@ -88,7 +88,7 @@ mod tests {
         let path = dir.join("hook.sh");
         write_managed_asset(&path, b"old contents\n", true).expect("first write");
         let old_inode = fs::metadata(&path).expect("metadata").ino();
-        // A reader that opened the old script (as a running bash would) keeps
+        // A reader that opened the old script (as a running sh would) keeps
         // seeing the old bytes after the reinstall.
         let mut reader = fs::File::open(&path).expect("open old");
 

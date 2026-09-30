@@ -557,7 +557,7 @@ impl ValidatedUiConfig {
         window_title: Option<WindowTitleTemplate>,
     ) -> Self {
         Self {
-            sidebar_width: bounds.clamp_width(config.sidebar_width),
+            sidebar_width: config.sidebar_width,
             sidebar_bounds: bounds,
             sidebar_start_collapsed: config.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.sidebar_collapsed_mode,
@@ -635,7 +635,11 @@ impl ConfigResolution {
         let headless_size = shepr_core::geometry::GridSize::new(
             config.server.headless_cols,
             config.server.headless_rows,
-        );
+        )
+        .filter(|_| {
+            super::terminal_grid_cells(config.server.headless_cols, config.server.headless_rows)
+                .is_some()
+        });
         let sidebar_bounds = super::validated_sidebar_bounds(
             config.ui.sidebar_min_width,
             config.ui.sidebar_max_width,
@@ -660,10 +664,19 @@ impl ConfigResolution {
                 "ui.sidebar_min_width ({}) is greater than sidebar_max_width ({})",
                 config.ui.sidebar_min_width, config.ui.sidebar_max_width
             ));
+        } else if !(config.ui.sidebar_min_width..=config.ui.sidebar_max_width)
+            .contains(&config.ui.sidebar_width)
+        {
+            diagnostics.push(format!(
+                "ui.sidebar_width ({}) must be between sidebar_min_width and sidebar_max_width",
+                config.ui.sidebar_width
+            ));
         }
         if headless_size.is_none() {
             diagnostics.push(format!(
-                "server.headless_cols and server.headless_rows must be greater than zero (got {}x{})",
+                "server.headless_cols and server.headless_rows must be greater than zero, each no larger than {}, and no larger than {} cells combined (got {}x{})",
+                super::MAX_TERMINAL_GRID_DIMENSION,
+                super::MAX_TERMINAL_GRID_CELLS,
                 config.server.headless_cols, config.server.headless_rows
             ));
         }
@@ -1024,7 +1037,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
         config.server.headless_rows = 31;
         config.ui.sidebar_min_width = 12;
         config.ui.sidebar_max_width = 30;
-        config.ui.sidebar_width = 80;
+        config.ui.sidebar_width = 26;
         config.ui.window_title = "{hostname}: {workspace}".to_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
         let provenance = ConfigProvenance::defaults(&config);
@@ -1037,13 +1050,35 @@ rows = [[{ token = "workspace", rules = [{ equals = "local" }] }, { token = "age
             validated.headless_size(),
             shepr_core::geometry::GridSize::new(92, 31).expect("non-zero test dimensions")
         );
-        assert_eq!(validated.ui().sidebar_width(), 30);
+        assert_eq!(validated.ui().sidebar_width(), 26);
         assert_eq!(validated.ui().sidebar_bounds().min(), 12);
         assert_eq!(validated.ui().sidebar_bounds().max(), 30);
         assert!(validated.ui().window_title.is_some());
         assert_eq!(
             validated.terminal().new_cwd,
             NewTerminalCwd::Path(configured_cwd)
+        );
+    }
+
+    #[test]
+    fn validated_config_accepts_the_maximum_shared_headless_grid() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-max-grid");
+        let mut config = Config::default();
+        let cols = crate::MAX_TERMINAL_GRID_DIMENSION;
+        let rows = u16::try_from(crate::MAX_TERMINAL_GRID_CELLS / usize::from(cols))
+            .expect("the shared grid budget fits in u16 rows");
+        config.server.headless_cols = cols;
+        config.server.headless_rows = rows;
+        let provenance = ConfigProvenance::defaults(&config);
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+
+        let validated = ValidatedConfig::new(config, provenance, paths)
+            .expect("the exact shared terminal cell budget is valid");
+
+        assert_eq!(
+            validated.headless_size(),
+            shepr_core::geometry::GridSize::new(cols, rows).expect("non-zero grid")
         );
     }
 

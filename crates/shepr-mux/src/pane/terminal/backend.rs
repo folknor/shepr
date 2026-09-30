@@ -426,8 +426,12 @@ impl PaneTerminal {
     pub(crate) fn clear_screen(&self) -> Result<(), PaneClearError> {
         let mut core = shepr_vt::lock_terminal_core(&self.core)
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
-        let _ = core.terminal.clear_screen();
-        Ok(())
+        match core.terminal.clear_screen() {
+            shepr_vt::ClearScreenOutcome::Cleared => Ok(()),
+            shepr_vt::ClearScreenOutcome::AlternateScreenActive => {
+                Err(PaneClearError::AlternateScreenActive)
+            }
+        }
     }
 
     pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) {

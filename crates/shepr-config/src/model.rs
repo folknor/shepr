@@ -278,7 +278,7 @@ pub struct Config {
 pub(crate) struct LoadedConfig {
     pub(crate) config: Config,
     pub(crate) provenance: super::ConfigProvenance,
-    pub(crate) resolution: super::validated::ConfigResolution,
+    pub(crate) resolution: Option<super::validated::ConfigResolution>,
     pub(crate) diagnostics: Vec<super::ConfigDiagnostic>,
 }
 
@@ -297,7 +297,7 @@ impl LoadedConfig {
         if !diagnostics.is_empty() {
             return Err(diagnostics);
         }
-        match resolution.values {
+        match resolution.and_then(|resolution| resolution.values) {
             Some(values) => Ok(super::ValidatedConfig::from_loaded(
                 config, provenance, values, paths,
             )),
@@ -383,7 +383,7 @@ pub struct UiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Host cursor policy. Default: auto.
+    /// Host cursor policy. Default: native.
     pub host_cursor: HostCursorModeConfig,
     /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
     pub right_click_passthrough_modifier: RightClickPassthroughModifierConfig,

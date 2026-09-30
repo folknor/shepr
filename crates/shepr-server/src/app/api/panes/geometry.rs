@@ -87,6 +87,8 @@ impl App {
     pub(crate) fn handle_pane_zoom(&mut self, params: &PaneZoomParams) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(outcome) = self.state.toggle_pane_zoom(ws_idx, pane_id) else {
+            // toggle_pane_zoom returns None only when the pane is absent. Its
+            // one-pane zoom no-op is handled before set_zoomed can refuse it.
             return Err(pane_missing(&params.pane_id));
         };
         if outcome.changed || outcome.focus_changed {

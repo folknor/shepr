@@ -1,7 +1,7 @@
 //! The one way shepr runs Git: a short read-only probe with a deadline, no
 //! terminal, no prompts and no repository selection inherited from the
-//! caller's environment. The server's Git status and the client's workspace
-//! label both go through [`run_git`]; what the output means stays with them.
+//! caller's environment. The server's Git status and workspace checkout
+//! probes go through [`run_git`]; what the output means stays with them.
 
 use std::ffi::OsStr;
 use std::io::{self, Read};
@@ -16,7 +16,7 @@ pub use super::limits::GIT_COMMAND_TIMEOUT;
 pub enum GitCommandError {
     /// The Git executable could not be started.
     Spawn(io::Error),
-    /// Git did not finish before the deadline and was killed.
+    /// The Git probe did not finish before the deadline.
     TimedOut,
     /// The child could not be waited for, or its output could not be read.
     Process(io::Error),
@@ -34,8 +34,8 @@ impl std::fmt::Display for GitCommandError {
 
 impl std::error::Error for GitCommandError {}
 
-/// Runs `git -C <cwd> <args>` under [`GIT_COMMAND_TIMEOUT`]. A nonzero exit is
-/// an `Ok` output; the caller decides which failures are ordinary answers.
+/// Runs Git in `cwd` under [`GIT_COMMAND_TIMEOUT`]. A nonzero exit is an `Ok`
+/// output; the caller decides which failures are ordinary answers.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
     run_git_with_program(OsStr::new("git"), cwd, args, GIT_COMMAND_TIMEOUT)
 }
@@ -62,8 +62,6 @@ fn run_git_with_program_and_clock(
     // host-program-ok: production asks Git about the repository it inspects
     let mut command = crate::child_command(program, cwd);
     command
-        .arg("-C")
-        .arg(cwd)
         .args(["-c", "core.fsmonitor=false"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -111,10 +109,11 @@ fn run_git_with_program_and_clock(
             }
         }
     };
+    let (stdout, stderr) = join_drains_until(stdout, stderr, deadline, now)?;
     Ok(Output {
         status,
-        stdout: join_drain(stdout)?,
-        stderr: join_drain(stderr)?,
+        stdout,
+        stderr,
     })
 }
 
@@ -139,6 +138,33 @@ fn join_drain(drain: Option<Drain>) -> Result<Vec<u8>, GitCommandError> {
         Err(_) => Err(GitCommandError::Process(io::Error::other(
             "git output reader panicked",
         ))),
+    }
+}
+
+/// Waits for both pipe readers without extending the child deadline. A child
+/// can exit while a descendant still holds one of its inherited pipe ends.
+fn join_drains_until(
+    stdout: Option<Drain>,
+    stderr: Option<Drain>,
+    deadline: Instant,
+    now: &dyn Fn() -> Instant,
+) -> Result<(Vec<u8>, Vec<u8>), GitCommandError> {
+    loop {
+        if drain_finished(&stdout) && drain_finished(&stderr) {
+            break;
+        }
+        if now() >= deadline {
+            return Err(GitCommandError::TimedOut);
+        }
+        std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
+    }
+    Ok((join_drain(stdout)?, join_drain(stderr)?))
+}
+
+fn drain_finished(drain: &Option<Drain>) -> bool {
+    match drain {
+        Some(Ok(handle)) => handle.is_finished(),
+        None | Some(Err(_)) => true,
     }
 }
 
@@ -239,5 +265,47 @@ mod tests {
         )
         .expect("fake git should finish");
         assert_eq!(output.stdout.len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn git_runner_deadline_also_covers_output_drain_after_child_exit() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let stdout: Drain = Ok(std::thread::spawn(move || {
+            // A release or a dropped sender both end the wait.
+            let _released = wait.recv();
+            Ok(Vec::new())
+        }));
+        let deadline = Instant::now() + Duration::from_millis(30);
+        let started = Instant::now();
+        let result = join_drains_until(Some(stdout), None, deadline, &Instant::now);
+        let elapsed = started.elapsed();
+        release.send(()).expect("release the detached reader");
+
+        assert!(matches!(result, Err(GitCommandError::TimedOut)));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "pipe drain exceeded its deadline: {elapsed:?}"
+        );
+    }
+
+    /// The child already starts in `cwd`. Passing it again as `-C <cwd>`
+    /// would resolve a relative `cwd` a second time, from inside itself.
+    #[test]
+    fn git_runner_sets_cwd_once_and_passes_no_directory_option() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = shepr_test_support::ScratchDir::new("git-runner-cwd");
+        let fake_git = stand_in(root.path(), "fake-git", &[Step::PrintArgs]);
+        let output = run_git_with_program(
+            fake_git.as_os_str(),
+            root.path(),
+            &["rev-parse", "--show-prefix"],
+            Duration::from_secs(5),
+        )
+        .expect("fake git should finish");
+
+        assert_eq!(
+            output.stdout,
+            b"-c\ncore.fsmonitor=false\nrev-parse\n--show-prefix\n"
+        );
     }
 }

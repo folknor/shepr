@@ -96,8 +96,12 @@ pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
         MachineCheck::NeedsAuthentication(diagnostic)
     } else if diagnostic.is_host_key() {
         MachineCheck::HostKey(diagnostic)
-    } else if diagnostic.is_link_failure() {
+    } else if diagnostic.is_transient_network_failure() {
         MachineCheck::Offline(diagnostic)
+    } else if diagnostic.is_ssh_process_failure() {
+        // Exit 255 alone cannot establish a transient link failure. Keep the
+        // diagnostic visible when OpenSSH reports an unknown or actionable cause.
+        MachineCheck::Failed(diagnostic)
     } else if diagnostic.needs_attention() {
         MachineCheck::Incompatible(diagnostic)
     } else {

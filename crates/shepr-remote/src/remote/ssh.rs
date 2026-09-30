@@ -348,8 +348,7 @@ impl RemoteSsh {
             ))
         };
         let output = wait_with_output_timeout(child, timeout)?;
-        write_result?;
-        normalize_remote_output(output)
+        finish_ssh_command(write_result, output)
     }
 
     /// Runs `remote_command` under `/bin/sh` through the remote user's login
@@ -365,6 +364,18 @@ impl RemoteSsh {
         let timeout = self.command_timeout(Instant::now())?;
         normalize_remote_output(wait_with_output_timeout(command.spawn()?, timeout)?)
     }
+}
+
+/// A failed ssh process has the diagnostic needed to classify authentication,
+/// host-key and connection failures. Preserve it when writing the script also
+/// failed because ssh closed stdin; only surface the write error if ssh itself
+/// completed successfully.
+fn finish_ssh_command(write_result: io::Result<()>, output: Output) -> io::Result<Output> {
+    if !output.status.success() {
+        return normalize_remote_output(output);
+    }
+    write_result?;
+    normalize_remote_output(output)
 }
 
 pub(super) fn normalize_remote_output(mut output: Output) -> io::Result<Output> {
