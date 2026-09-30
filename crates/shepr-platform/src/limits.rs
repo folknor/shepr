@@ -30,7 +30,7 @@ pub(super) const BOOT_LOG_TAIL_BYTES: u64 = 4096;
 /// marker and is left alone unread.
 pub(super) const SINGLE_USE_SOCKET_OWNER_MAX_BYTES: u64 = 128;
 
-/// Polling interval while waiting for Git and clipboard helper children.
+/// Polling interval while waiting for clipboard helper children.
 /// The interval keeps exit detection responsive without a busy loop.
 pub(super) const HELPER_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -41,18 +41,6 @@ pub(super) const CLIENT_STREAM_POLL_INTERVAL_MS: i32 = 100;
 /// Startup allowance for clipboard selection owners before detaching them.
 /// The delay gives desktop helpers time to claim a selection.
 pub(super) const CLIPBOARD_OWNER_STARTUP_WAIT: Duration = Duration::from_millis(100);
-
-/// Initial delay after a shutdown signal stream is lost.
-/// The delay retries promptly while avoiding a reconnect spin.
-pub(super) const SHUTDOWN_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
-
-/// Maximum delay while reconnecting after a shutdown signal stream is lost.
-/// The cap bounds recovery latency while keeping repeated failures inexpensive.
-pub(super) const SHUTDOWN_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
-
-/// Multiplier for ordinary logind reconnect backoff between retries.
-/// Doubling grows quickly after failure while the delay remains capped above.
-pub(super) const SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER: u32 = 2;
 
 /// Maximum time between checks by the idle SSH bridge watchdog.
 /// The interval bounds idle-expiry detection without busy polling.
@@ -88,10 +76,6 @@ pub(super) const CLIPBOARD_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
 /// accommodates large paste buffers while preventing unbounded host
 /// input. Terminal-originated storage has its own limit.
 pub(super) const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
-
-/// How long one Git probe may run before it is killed. The timeout bounds hung
-/// status probes so they cannot stall sidebar updates.
-pub const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Maximum size of one rotating process log file. The cap retains useful
 /// diagnostics while bounding disk use per process.

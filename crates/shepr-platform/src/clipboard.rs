@@ -81,6 +81,9 @@ impl ClipboardSession {
     }
 }
 
+/// Selects Linux clipboard helpers from the current display session. Keep this
+/// beside the bounded child and pipe plumbing it uses; moving the selection
+/// would leave the platform dependency in place without removing a crate edge.
 pub(super) fn clipboard_commands(session: ClipboardSession) -> Vec<ClipboardCommand> {
     let mut commands = Vec::new();
 

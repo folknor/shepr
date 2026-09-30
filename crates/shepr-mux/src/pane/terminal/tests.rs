@@ -1974,31 +1974,26 @@ fn recent_unwrapped_text_ignores_soft_wraps() {
 }
 
 #[test]
-fn recent_snapshots_report_omitted_rendered_rows() {
+fn recent_reads_limit_rendered_rows() {
     let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
     terminal.write(b"one\r\ntwo\r\nthree\r\nfour");
     let pane = PaneTerminal::new(terminal);
 
-    assert!(pane.recent_text_snapshot(2).truncated);
-    assert!(pane.recent_ansi_snapshot(2).truncated);
-    assert!(pane.recent_unwrapped_text_snapshot(2).truncated);
-    assert!(pane.recent_unwrapped_ansi_snapshot(2).truncated);
-    assert!(!pane.recent_text_snapshot(100).truncated);
+    assert_eq!(pane.recent_text(2), "three\nfour\n");
+    assert_eq!(pane.recent_unwrapped_text(2), "three\nfour");
+    assert!(!pane.recent_ansi(2).contains("two"));
+    assert!(pane.recent_text(100).contains("one"));
 }
 
 #[test]
-fn recent_snapshots_do_not_count_trailing_blank_rows_as_omitted() {
+fn recent_reads_trim_trailing_blank_rows() {
     let mut terminal = shepr_vt::Terminal::new(20, 10, 100);
     terminal.write(b"one\r\ntwo");
     let pane = PaneTerminal::new(terminal);
 
-    // Ten rows exist but only two hold content; a five-row read leaves
-    // nothing out above it.
-    let snapshot = pane.recent_text_snapshot(5);
-    assert_eq!(snapshot.text, "one\ntwo\n");
-    assert!(!snapshot.truncated);
-    assert!(!pane.recent_ansi_snapshot(5).truncated);
-    assert!(!pane.recent_unwrapped_text_snapshot(5).truncated);
+    assert_eq!(pane.recent_text(5), "one\ntwo\n");
+    assert_eq!(pane.recent_unwrapped_text(5), "one\ntwo");
+    assert!(!pane.recent_ansi(5).contains("\n\n"));
 }
 
 #[test]

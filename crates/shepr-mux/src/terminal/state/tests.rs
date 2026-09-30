@@ -3830,3 +3830,87 @@ fn older_pending_report_returns_none_without_changing_the_generation() {
     );
     assert_eq!(terminal.hook_sources, sources);
 }
+
+#[test]
+fn claude_clear_replaces_session_before_and_after_next_state_report() {
+    let mut terminal = test_terminal();
+    let old = shepr_agent::agent::resume::AgentSessionRef::id("before-clear").expect("session");
+    let new = shepr_agent::agent::resume::AgentSessionRef::id("after-clear").expect("session");
+    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    terminal
+        .set_hook_authority_with_session_ref(
+            "shepr:claude".into(),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            Some(old),
+            Some(10),
+        )
+        .expect("old authority");
+    terminal
+        .set_agent_session_ref_for_session_start(
+            "shepr:claude".into(),
+            "claude".into(),
+            Some(new.clone()),
+            Some(11),
+            Some("clear"),
+        )
+        .expect("clear start");
+    assert_eq!(
+        terminal
+            .current_session_identity_for_persistence()
+            .expect("identity")
+            .session_ref,
+        new
+    );
+    terminal
+        .set_hook_authority_with_session_ref(
+            "shepr:claude".into(),
+            "claude".into(),
+            AgentState::Idle,
+            None,
+            Some(new.clone()),
+            Some(12),
+        )
+        .expect("new state");
+    assert_eq!(
+        terminal
+            .current_session_identity_for_persistence()
+            .expect("identity")
+            .session_ref,
+        new
+    );
+}
+
+#[test]
+fn hook_ledger_uses_injected_clock_pair_and_tolerates_small_wall_reversal() {
+    let mut terminal = test_terminal();
+    let monotonic = Instant::now();
+    let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    let sample = HookClockSample { monotonic, wall };
+    assert!(terminal.accept_hook_report_at("shepr:kimi", Some(1_000), sample));
+    // Ten seconds of silence with matching clocks never reopens ordering.
+    assert!(!terminal.accept_hook_report_at(
+        "shepr:kimi",
+        Some(999),
+        HookClockSample {
+            monotonic: monotonic + Duration::from_secs(10),
+            wall: wall + Duration::from_secs(10),
+        }
+    ));
+    let stepped = HookClockSample {
+        monotonic: monotonic + Duration::from_millis(100),
+        wall: wall - Duration::from_millis(100),
+    };
+    assert!(terminal.accept_hook_report_at("shepr:kimi", Some(999), stepped));
+    // Validation and commit use the same injected samples, so a duplicate
+    // remains a duplicate immediately after re-anchoring.
+    assert!(!terminal.accept_hook_report_at(
+        "shepr:kimi",
+        Some(999),
+        HookClockSample {
+            monotonic: stepped.monotonic + Duration::from_millis(100),
+            wall: stepped.wall + Duration::from_millis(100),
+        }
+    ));
+}

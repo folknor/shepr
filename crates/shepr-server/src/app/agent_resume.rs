@@ -342,7 +342,8 @@ impl App {
             shepr_mux::pane::PaneShellConfig::new(
                 &self.state.settings.default_shell,
                 self.state.settings.login_shell,
-            ),
+            )
+            .require_cwd(),
             &launch_env,
             &self.event_tx,
             &self.render_notify,
@@ -747,6 +748,67 @@ mod tests {
             assert!(!app.has_pending_agent_resumes());
             assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80));
         }
+    }
+
+    #[tokio::test]
+    async fn resume_cwd_removed_after_worker_check_does_not_launch_in_home() {
+        use shepr_test_support::fixture::{self, Step};
+
+        let _env = IsolatedEnv::new();
+        let mut app = test_app();
+        let scratch = ScratchDir::new("resume-cwd-race");
+        let cwd = scratch.join("agent-session");
+        std::fs::create_dir(&cwd).expect("create resume cwd");
+        let available = directory_available(&cwd);
+        assert!(available, "the worker check sees the directory");
+
+        let shell = fixture::stand_in(
+            scratch.path(),
+            "resume-shell",
+            &[Step::Sleep(std::time::Duration::from_secs(30))],
+        );
+        app.state.settings.default_shell = shell
+            .to_str()
+            .expect("fixture shell path is UTF-8")
+            .to_owned();
+
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.root_pane();
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let plan =
+            crate::test_support::test_codex_plan("resume-cwd-race", long_running_test_argv());
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist");
+        *terminal = shepr_mux::terminal::TerminalState::new(terminal_id.clone(), cwd.clone());
+        terminal.pending_agent_resume_plan = Some(plan.clone());
+
+        // The worker has already reported success, but the path disappears
+        // before PTY construction on the server loop.
+        std::fs::remove_dir(&cwd).expect("remove checked resume cwd");
+        let outcome = app.start_pending_agent_resume(
+            pane_id,
+            &terminal_id,
+            &cwd,
+            &plan,
+            shepr_mux::workspace::spawn_geometry(24, 80, None),
+            available,
+            Instant::now(),
+        );
+
+        let runtime = app.terminal_runtimes.remove(&terminal_id);
+        let launched = runtime.is_some();
+        drop(runtime);
+        assert_eq!(outcome, AttemptOutcome::Abandoned);
+        assert!(!launched, "a stale resume cwd must not fall back to HOME");
+        assert!(app.state.terminals[&terminal_id].restore_error.is_some());
     }
 
     #[tokio::test]

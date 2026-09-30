@@ -411,7 +411,10 @@ mod tests {
                 None,
                 None,
                 Some(1),
-                observed_at + std::time::Duration::from_secs(1),
+                shepr_mux::terminal::state::HookClockSample {
+                    monotonic: observed_at + std::time::Duration::from_secs(1),
+                    wall: std::time::SystemTime::now(),
+                },
             )
             .expect("test precondition");
 

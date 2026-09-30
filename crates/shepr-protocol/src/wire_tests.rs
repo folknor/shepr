@@ -385,20 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn internal_surface_patch_cannot_be_framed() {
-        let patch = ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
-            boot_id: "1-1".into(),
-            projection_revision: crate::ProjectionRevision::new(1),
-            base_surface_revision: crate::SurfaceRevision::new(1),
-            surface_revision: crate::SurfaceRevision::new(2),
-            rows: Vec::new(),
-            panes: Vec::new(),
-            cursor: None,
-        });
-        assert!(write_message(&mut Vec::new(), &patch).is_err());
-    }
-
-    #[test]
     fn client_shell_snapshot_roundtrip() -> TestResult {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),

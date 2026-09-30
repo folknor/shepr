@@ -56,7 +56,7 @@ fn checkout_root(cwd: &Path) -> Result<Option<String>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("cannot stat {}: {error}", cwd.display())),
     }
-    let output = shepr_platform::git::run_git(cwd, &["rev-parse", "--show-toplevel"])
+    let output = shepr_mux::git::run_git(cwd, &["rev-parse", "--show-toplevel"])
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         // The runner fixes the locale, so Git's message is stable.
@@ -128,8 +128,7 @@ mod tests {
         let repo = scratch.path().join("repo");
         let nested = repo.join("a").join("b");
         std::fs::create_dir_all(&nested).expect("test precondition");
-        let init =
-            shepr_platform::git::run_git(&repo, &["init", "--quiet"]).expect("test precondition");
+        let init = shepr_mux::git::run_git(&repo, &["init", "--quiet"]).expect("test precondition");
         assert!(init.status.success(), "git init failed");
 
         let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {

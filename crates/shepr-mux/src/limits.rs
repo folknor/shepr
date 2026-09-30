@@ -6,6 +6,14 @@ use std::time::Duration;
 /// numbers are one-based; zero spells no workspace ID.
 pub(crate) const FIRST_WORKSPACE_NUMBER: usize = 1;
 
+/// How long one Git probe may run before it is killed. This bounds hung Git
+/// reads so they cannot stall workspace and sidebar updates.
+pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Polling interval while waiting for a Git probe and its output readers. The
+/// interval keeps exit detection responsive without a busy loop.
+pub(crate) const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
 /// Hook reports are ordered per source by the `seq` each hook process takes
 /// from its own wall clock (nanoseconds for the shell/python hooks,
 /// microseconds for the JS plugins; only ever compared within one source).
@@ -15,7 +23,10 @@ pub(crate) const FIRST_WORKSPACE_NUMBER: usize = 1;
 /// has fallen this far behind its monotonic clock since the last acceptance,
 /// the clock stepped backwards (NTP, a manual change), and dropping would lose
 /// every report until it caught up again. Such a report is accepted and
-/// re-anchors the source's sequence.
+/// re-anchors the source's sequence. A wall clock that reads earlier than it
+/// did at the last acceptance is a backward step of any size and is accepted
+/// the same way; this threshold covers a step the clock has since caught up
+/// on.
 pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
 /// Maximum distinct hook sources tracked by a terminal, preventing arbitrary
 /// source names from growing the ordering map without bound.

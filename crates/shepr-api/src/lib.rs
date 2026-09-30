@@ -116,7 +116,6 @@ mod tests {
                     source: "shepr:pi".into(),
                     agent: "pi".into(),
                     state: crate::schema::PaneAgentState::Working,
-                    message: None,
                     seq: None,
                     agent_session_id: None,
                     agent_session_path: None,

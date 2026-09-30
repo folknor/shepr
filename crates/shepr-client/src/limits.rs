@@ -56,11 +56,10 @@ pub(super) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis
 ///
 /// This bounds redraw work to a practical frame cadence.
 pub(super) const SELECTION_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
-/// The longest the client loop sleeps between timer-service ticks.
+/// Recheck timeout work whose owning state machine exposes pending state but not its deadline.
 ///
-/// Timer ticks check endpoint health and start reconnect attempts whose deadlines are not
-/// currently exposed to the shell timer calculation.
-pub(super) const MAX_CLIENT_TIMER_DELAY: Duration = Duration::from_millis(100);
+/// This keeps workspace highlight, client command, and activation expiry serviceable while idle.
+pub(super) const CLIENT_PENDING_TIMER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Poll spacing for terminal size changes that do not arrive through a signal.
 ///
 /// The interval keeps polling responsive while avoiding a busy loop.

@@ -6,15 +6,12 @@ publish = false
 
 [dependencies]
 crossterm = { workspace = true }
-futures-util = { workspace = true }
 interprocess = { workspace = true }
 libc = { workspace = true }
 sha2 = { workspace = true }
 shepr-core = { path = "../shepr-core" }
-tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-zbus = { workspace = true }
 
 [dev-dependencies]
 shepr-test-support = { path = "../shepr-test-support" }

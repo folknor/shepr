@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 alacritty_terminal = { workspace = true }
+memchr = { workspace = true }
 serde = { workspace = true }
 shepr-core = { path = "../shepr-core" }
 unicode-width = { workspace = true }

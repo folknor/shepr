@@ -1,48 +1,54 @@
 use super::*;
 
 impl TerminalState {
-    pub fn set_hook_authority_at(
+    pub fn set_hook_report_at(
         &mut self,
-        source: String,
+        source: shepr_agent::agent::AgentSource,
         agent_label: String,
         state: AgentState,
-        _message: Option<String>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        now: Instant,
+        sample: HookClockSample,
     ) -> Option<TerminalStateMutation> {
+        let now = sample.monotonic;
+        let typed_source = source;
+        let source = typed_source.to_source_string();
         self.warn_unrecognized_hook_identity(&source, &agent_label);
         // Built-in source names cannot claim another agent. Custom sources
         // retain arbitrary labels, but cannot mint official resume identities.
-        if Agent::parse_source(&source).is_some_and(|agent| agent.label() != agent_label) {
+        if typed_source
+            .agent()
+            .is_some_and(|agent| agent.label() != agent_label)
+        {
             return None;
         }
-        if shepr_agent::detect::session_identity_only_integration(&source, &agent_label) {
+        if typed_source
+            .agent()
+            .is_some_and(|agent| agent.descriptor().session_identity_only_integration)
+        {
             return None;
         }
         if let Some(session_ref) = session_ref.as_ref()
-            && shepr_agent::agent::AgentSource::from_pair(&source, &agent_label).is_some()
-            && shepr_agent::agent::resume::PersistedAgentSession::from_report(
-                &source,
-                &agent_label,
-                session_ref.clone(),
-            )
-            .is_none()
+            && typed_source.agent().is_some_and(|agent| {
+                shepr_agent::agent::resume::PersistedAgentSession::new(
+                    typed_source.clone(),
+                    agent,
+                    session_ref.clone(),
+                )
+                .is_none()
+            })
         {
             return None;
         }
         // Codex turn reports carry the id of the session they belong to. One
         // for another session than the current one (a late Stop from a session
         // that /new or /resume replaced) must not overwrite this session's state.
-        if shepr_agent::agent::AgentSource::from_pair(&source, &agent_label)
-            .and_then(|source| source.agent())
-            .is_some_and(|agent| {
-                agent
-                    .descriptor()
-                    .hook_session_policy
-                    .state_requires_current_session
-            })
-            && let Some(incoming) = session_ref.as_ref()
+        if typed_source.agent().is_some_and(|agent| {
+            agent
+                .descriptor()
+                .hook_session_policy
+                .state_requires_current_session
+        }) && let Some(incoming) = session_ref.as_ref()
             && self
                 .current_session_identity_for_persistence()
                 .is_some_and(|current| {
@@ -63,7 +69,7 @@ impl TerminalState {
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
             return None;
         }
-        let custom_state_report = session_ref.is_none() && Agent::parse_source(&source).is_none();
+        let custom_state_report = session_ref.is_none() && typed_source.agent().is_none();
         // A sessionless custom report updates state but cannot claim the
         // resume identity already stored for this pane.
         let owner_conflicts =
@@ -110,21 +116,21 @@ impl TerminalState {
             state,
             &session_ref,
             seq,
-            now,
+            sample,
         ) {
             FullLifecycleHookReportRoute::Accept { reanchor_sequence } => reanchor_sequence,
             FullLifecycleHookReportRoute::Ignore => return None,
             FullLifecycleHookReportRoute::Pending => return Some(TerminalStateMutation::default()),
         };
         if !self.hook_report_sequence_has_room(&source)
-            || (!reanchor_sequence && !self.hook_report_order_allows(&source, seq, now))
+            || (!reanchor_sequence && !self.hook_report_order_allows(&source, seq, sample))
         {
             return None;
         }
         if reanchor_sequence {
             self.clear_hook_report_sequence(&source);
         }
-        if !self.accept_hook_report_at(&source, seq, now) {
+        if !self.accept_hook_report_at(&source, seq, sample) {
             return None;
         }
 
@@ -289,8 +295,9 @@ impl TerminalState {
         state: AgentState,
         session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        reported_at: Instant,
+        sample: HookClockSample,
     ) -> FullLifecycleHookReportRoute {
+        let reported_at = sample.monotonic;
         if !shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label) {
             return FullLifecycleHookReportRoute::Accept {
                 reanchor_sequence: false,
@@ -365,7 +372,7 @@ impl TerminalState {
         let Some(seq) = seq else {
             return FullLifecycleHookReportRoute::Ignore;
         };
-        if self.hook_seq_superseded(source, seq, reported_at) {
+        if self.hook_seq_superseded(source, seq, sample) {
             return FullLifecycleHookReportRoute::Ignore;
         }
 
@@ -388,6 +395,7 @@ impl TerminalState {
                 session_ref: Some(session_ref),
             },
             seq,
+            sample,
         };
         let parked = self
             .hook_sources
@@ -483,7 +491,6 @@ impl TerminalState {
         &mut self,
         previous_detected_agent: Option<Agent>,
         detected_agent: Option<Agent>,
-        now: Instant,
     ) {
         let Some(detected_agent) = detected_agent else {
             return;
@@ -506,7 +513,7 @@ impl TerminalState {
         };
         self.persisted_agent_session = Some(persisted_session);
         if let Some(pending) = pending
-            && self.record_hook_seq(source.to_owned(), pending.seq, now)
+            && self.record_hook_seq(source.to_owned(), pending.seq, pending.sample)
         {
             self.hook_authority = Some(pending.authority);
         }
@@ -649,6 +656,31 @@ impl TerminalState {
             && shepr_agent::agent::AgentSource::from_pair(source, agent_label)
                 .and_then(|source| source.agent())
                 .is_some_and(|agent| agent.descriptor().hook_session_policy.unsequenced_selection)
+    }
+}
+
+impl TerminalState {
+    /// Convenience seam for fixtures, taking the source as a string. The event
+    /// reducer uses the typed report entry point. The message argument is
+    /// ignored: reports no longer carry one, and fixtures still pass it.
+    pub fn set_hook_authority_at(
+        &mut self,
+        source: String,
+        agent_label: String,
+        state: AgentState,
+        _message: Option<String>,
+        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+        sample: impl Into<HookClockSample>,
+    ) -> Option<TerminalStateMutation> {
+        self.set_hook_report_at(
+            source.into(),
+            agent_label,
+            state,
+            session_ref,
+            seq,
+            sample.into(),
+        )
     }
 }
 

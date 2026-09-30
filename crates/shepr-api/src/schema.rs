@@ -28,8 +28,9 @@ pub struct MethodTraits {
     pub routine: bool,
 }
 
-/// A request the app loop answers: the socket thread answers `ping` and
-/// `server.stop` itself and hands every other method to the app as this.
+/// A request the app loop answers: the socket thread answers `ping`,
+/// `server.stop` and `server.stop_if_boot` itself and hands every other method
+/// to the app as this.
 /// Not a wire type; the socket thread builds it from a decoded [`Request`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppRequest {
@@ -117,6 +118,10 @@ define_methods! {
         routine: false,
     };
     ServerStop(ServerStopParams) => "server.stop" {
+        mutates_ui: false,
+        routine: false,
+    };
+    ServerStopIfBoot(ServerStopIfBootParams) => "server.stop_if_boot" {
         mutates_ui: false,
         routine: false,
     };

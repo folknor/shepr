@@ -4,7 +4,10 @@ use crate::app::events::StateEvent;
 impl StateEvent {
     /// The state part of `event`; `None` for the events the App applies itself
     /// (a pane's death, a clipboard write, a Git refresh).
-    pub(crate) fn from_app_event(event: AppEvent) -> Option<Self> {
+    pub(crate) fn from_app_event(
+        event: AppEvent,
+        sample: shepr_mux::terminal::state::HookClockSample,
+    ) -> Option<Self> {
         match event {
             AppEvent::AgentProcessDetected {
                 pane_id,
@@ -35,15 +38,14 @@ impl StateEvent {
                 source,
                 agent_label,
                 state,
-                message,
                 seq,
                 session_ref,
             } => Some(Self::HookStateReported {
                 pane_id,
+                sample,
                 source,
                 agent_label,
                 state,
-                message,
                 seq,
                 session_ref,
             }),
@@ -56,6 +58,7 @@ impl StateEvent {
                 session_start_source,
             } => Some(Self::AgentSessionReported {
                 pane_id,
+                sample,
                 source,
                 agent_label,
                 seq,
@@ -65,7 +68,8 @@ impl StateEvent {
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 Some(Self::TerminalCwdReported { pane_id, cwd })
             }
-            AppEvent::PaneDied { .. }
+            AppEvent::Runtime { .. }
+            | AppEvent::PaneDied { .. }
             | AppEvent::ClipboardWrite { .. }
             | AppEvent::GitStatusRefreshed { .. } => None,
         }
@@ -137,7 +141,6 @@ impl AppState {
     /// Applies one state-level event and reports what it did to the terminal's
     /// effective agent state.
     pub(crate) fn handle_state_event(&mut self, event: StateEvent) -> StateUpdate {
-        let now = self.clock_now;
         match event {
             StateEvent::AgentProcessDetected {
                 pane_id,
@@ -164,15 +167,15 @@ impl AppState {
             }),
             StateEvent::HookStateReported {
                 pane_id,
+                sample,
                 source,
                 agent_label,
                 state,
-                message,
                 seq,
                 session_ref,
             } => {
                 if shepr_agent::agent::resume::is_reserved_native_state_source(
-                    &source,
+                    source.as_str(),
                     &agent_label,
                 ) {
                     self.update_terminal_state(pane_id, |terminal| {
@@ -181,25 +184,25 @@ impl AppState {
                             agent_label,
                             session_ref,
                             seq,
-                            now,
+                            sample,
                         )
                     })
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
-                        terminal.set_hook_authority_at(
+                        terminal.set_hook_report_at(
                             source,
                             agent_label,
                             state,
-                            message,
                             session_ref,
                             seq,
-                            now,
+                            sample,
                         )
                     })
                 }
             }
             StateEvent::AgentSessionReported {
                 pane_id,
+                sample,
                 source,
                 agent_label,
                 seq,
@@ -212,7 +215,7 @@ impl AppState {
                     session_ref,
                     seq,
                     session_start_source,
-                    now,
+                    sample,
                 )
             }),
             StateEvent::TerminalCwdReported { pane_id, cwd } => {
@@ -324,7 +327,16 @@ impl AppState {
     /// through this in place of the App event path.
     #[cfg(test)]
     pub(crate) fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
-        self.handle_state_event(StateEvent::from_app_event(event).expect("state event"))
+        self.handle_state_event(
+            StateEvent::from_app_event(
+                event,
+                shepr_mux::terminal::state::HookClockSample {
+                    monotonic: self.clock_now,
+                    wall: std::time::SystemTime::now(),
+                },
+            )
+            .expect("state event"),
+        )
     }
 
     /// Removes a dead pane by id and returns the terminals it detached, whose

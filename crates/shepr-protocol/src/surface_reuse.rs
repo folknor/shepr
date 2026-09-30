@@ -9,7 +9,6 @@ use super::{
 pub enum SurfaceDecodeError {
     MissingBaseline,
     BaselineMismatch,
-    MissingPatchBaseline,
     PatchBaselineMismatch,
     MissingMetadata,
     MetadataMismatch,
@@ -64,7 +63,6 @@ impl std::fmt::Display for SurfaceDecodeError {
         match self {
             Self::MissingBaseline => f.write_str("surface update without a baseline"),
             Self::BaselineMismatch => f.write_str("surface update does not match its baseline"),
-            Self::MissingPatchBaseline => f.write_str("surface patch without a baseline"),
             Self::PatchBaselineMismatch => f.write_str("surface patch does not match its baseline"),
             Self::MissingMetadata => f.write_str("surface update is missing projection metadata"),
             Self::MetadataMismatch => f.write_str("surface metadata does not match its baseline"),
@@ -314,6 +312,16 @@ impl CellBaseline {
 /// Connection-local decoding happens before activation and presentation filtering, so
 /// switching endpoints cannot discard a baseline needed by the next wire message. The
 /// exact-build preamble guarantees that surface deltas are supported by both peers.
+///
+/// The result is client-side state after interpreting a wire message. It is deliberately
+/// separate from `ServerMessage`, whose variants are exactly the messages sent on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodedServerMessage {
+    Wire(ServerMessage),
+    /// A client-local patch produced while decoding a wire `SurfaceUpdate`.
+    PaneSurfacePatch(PaneSurfacePatch),
+}
+
 #[derive(Default)]
 pub struct Decoder {
     baseline: Option<CellBaseline>,
@@ -330,7 +338,10 @@ impl Decoder {
         ))
     }
 
-    pub fn decode(&mut self, message: ServerMessage) -> Result<ServerMessage, SurfaceDecodeError> {
+    pub fn decode(
+        &mut self,
+        message: ServerMessage,
+    ) -> Result<DecodedServerMessage, SurfaceDecodeError> {
         let message = match message {
             ServerMessage::SurfaceUpdate(update) => {
                 let Some(base) = &mut self.baseline else {
@@ -441,7 +452,7 @@ impl Decoder {
                     })?;
                     base.meta = Some(meta);
                     base.surface_revision = patch.surface_revision;
-                    return Ok(ServerMessage::PaneSurfacePatch(patch));
+                    return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
                 }
                 let mut surface = meta.clone().into_surface(
                     update.boot_id,
@@ -470,88 +481,55 @@ impl Decoder {
                 base.meta = Some(meta);
                 base.projection_revision = surface.projection_revision;
                 base.surface_revision = surface.surface_revision;
-                return Ok(ServerMessage::PaneSurface(surface));
+                return Ok(DecodedServerMessage::Wire(ServerMessage::PaneSurface(
+                    surface,
+                )));
             }
             message => message,
         };
-        // The server builds every reuse, delta and patch against the surface it
-        // last sent on this connection, so a full surface that does not fill its
-        // own grid, or a patch that does not continue this baseline, means the
-        // two sides have diverged. Fail here with the real reason, leaving the
-        // baseline untouched as the reuse and delta paths do, rather than store
-        // a bad grid or silently drop the baseline and fail later on the next
-        // reuse with "without a baseline". The client transport treats any
-        // decode error as the end of the connection.
-        match &message {
-            ServerMessage::PaneSurface(surface) => {
-                let Some(expected) =
-                    super::surface_grid_size(surface.frame.width, surface.frame.height)
-                else {
-                    return Err(SurfaceDecodeError::InvalidDimensions
-                        .with_subject(SurfaceDecodeSubject::from_surface(surface)));
-                };
-                if surface.frame.cells.len() != expected {
-                    return Err(SurfaceDecodeError::InvalidCellCount
-                        .with_subject(SurfaceDecodeSubject::from_surface(surface)));
-                }
-                if surface.frame.cells.iter().any(|cell| {
-                    cell.hyperlink
-                        .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
-                }) {
-                    return Err(SurfaceDecodeError::InvalidHyperlink
-                        .with_subject(SurfaceDecodeSubject::from_surface(surface)));
-                }
-                // An existing baseline is overwritten in place to keep its cell
-                // buffer; only the first surface allocates one.
-                let base = self.baseline.get_or_insert_with(|| CellBaseline {
-                    boot_id: surface.boot_id.clone(),
-                    projection_revision: ProjectionRevision::default(),
-                    surface_revision: SurfaceRevision::default(),
-                    width: 0,
-                    height: 0,
-                    cells: Vec::new(),
-                    meta: None,
-                });
-                base.boot_id.clone_from(&surface.boot_id);
-                base.projection_revision = surface.projection_revision;
-                base.surface_revision = surface.surface_revision;
-                base.width = surface.frame.width;
-                base.height = surface.frame.height;
-                base.cells.clone_from(&surface.frame.cells);
-                base.meta = Some(surface.into());
+        // A full surface that does not fill its own grid means the two sides
+        // have diverged. Fail here with the real reason rather than store a bad
+        // grid or silently drop the baseline and fail later on the next reuse
+        // with "without a baseline". The client transport treats any decode
+        // error as the end of the connection.
+        if let ServerMessage::PaneSurface(surface) = &message {
+            let Some(expected) =
+                super::surface_grid_size(surface.frame.width, surface.frame.height)
+            else {
+                return Err(SurfaceDecodeError::InvalidDimensions
+                    .with_subject(SurfaceDecodeSubject::from_surface(surface)));
+            };
+            if surface.frame.cells.len() != expected {
+                return Err(SurfaceDecodeError::InvalidCellCount
+                    .with_subject(SurfaceDecodeSubject::from_surface(surface)));
             }
-            ServerMessage::PaneSurfacePatch(patch) => {
-                let Some(base) = &mut self.baseline else {
-                    return Err(SurfaceDecodeError::MissingPatchBaseline
-                        .with_subject(SurfaceDecodeSubject::from_patch(patch)));
-                };
-                if !base.revisions().accepts(
-                    &patch.boot_id,
-                    patch.base_surface_revision,
-                    patch.surface_revision,
-                    base.projection_revision,
-                    patch.projection_revision,
-                ) {
-                    return Err(SurfaceDecodeError::PatchBaselineMismatch
-                        .with_subject(SurfaceDecodeSubject::from_patch(patch)));
-                }
-                // `apply_rows` checks every span before touching the grid, so a
-                // bad patch does not leave the baseline half-applied.
-                super::surface_delta::apply_rows(
-                    &mut base.cells,
-                    base.width,
-                    base.height,
-                    &patch.rows,
-                )
-                .map_err(|error| {
-                    SurfaceDecodeError::RejectedPatch(error)
-                        .with_subject(SurfaceDecodeSubject::from_patch(patch))
-                })?;
-                base.surface_revision = patch.surface_revision;
+            if surface.frame.cells.iter().any(|cell| {
+                cell.hyperlink
+                    .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
+            }) {
+                return Err(SurfaceDecodeError::InvalidHyperlink
+                    .with_subject(SurfaceDecodeSubject::from_surface(surface)));
             }
-            _ => {}
+            // An existing baseline is overwritten in place to keep its cell
+            // buffer; only the first surface allocates one.
+            let base = self.baseline.get_or_insert_with(|| CellBaseline {
+                boot_id: surface.boot_id.clone(),
+                projection_revision: ProjectionRevision::default(),
+                surface_revision: SurfaceRevision::default(),
+                width: 0,
+                height: 0,
+                cells: Vec::new(),
+                meta: None,
+            });
+            base.boot_id.clone_from(&surface.boot_id);
+            base.projection_revision = surface.projection_revision;
+            base.surface_revision = surface.surface_revision;
+            base.width = surface.frame.width;
+            base.height = surface.frame.height;
+            base.cells.clone_from(&surface.frame.cells);
+            base.meta = Some(surface.into());
         }
-        Ok(message)
+        Ok(DecodedServerMessage::Wire(message))
     }
 }
 
@@ -611,7 +589,7 @@ mod tests {
         let mut bad = update.clone();
         bad.spans.push(bad.spans[0].clone());
         assert!(decoder.decode(ServerMessage::SurfaceUpdate(bad)).is_err());
-        let ServerMessage::PaneSurface(applied) = decoder
+        let DecodedServerMessage::Wire(ServerMessage::PaneSurface(applied)) = decoder
             .decode(ServerMessage::SurfaceUpdate(update))
             .expect("valid update after rejection")
         else {
@@ -671,7 +649,7 @@ mod tests {
                 cells: vec![cell("z")],
             }],
         };
-        let ServerMessage::PaneSurfacePatch(patch) = decoder
+        let DecodedServerMessage::PaneSurfacePatch(patch) = decoder
             .decode(ServerMessage::SurfaceUpdate(update))
             .expect("valid update")
         else {

@@ -240,6 +240,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
 pub struct PaneShellConfig<'a> {
     pub default_shell: &'a str,
     pub login_shell: bool,
+    require_cwd: bool,
 }
 
 impl<'a> PaneShellConfig<'a> {
@@ -247,14 +248,28 @@ impl<'a> PaneShellConfig<'a> {
         Self {
             default_shell,
             login_shell,
+            require_cwd: false,
         }
+    }
+
+    /// Fail the shell launch if its requested working directory has gone
+    /// away. Resumed agent commands use this because redirecting one to `HOME`
+    /// could act on a different project or session.
+    pub fn require_cwd(mut self) -> Self {
+        self.require_cwd = true;
+        self
     }
 }
 
 /// Config has selected the shell at launch; the PTY verifies the resolved path
 /// again when it builds the child command and uses it for exec and `SHELL`.
 pub(super) fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
-    PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell)
+    let mut command =
+        PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell);
+    if shell_config.require_cwd {
+        command.require_cwd();
+    }
+    command
 }
 
 #[cfg(test)]

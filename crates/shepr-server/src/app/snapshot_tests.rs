@@ -712,7 +712,10 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         None,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
-        std::time::Instant::now(),
+        shepr_mux::terminal::state::HookClockSample {
+            monotonic: std::time::Instant::now(),
+            wall: std::time::SystemTime::now(),
+        },
     );
 
     let snapshot = capture_from_state(&state);

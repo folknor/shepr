@@ -69,6 +69,18 @@ impl EndpointHealth {
         }
     }
 
+    pub(super) fn next_deadline(&self) -> Instant {
+        let service_deadline = self.ping_sent_at.map_or_else(
+            || self.last_received + HEARTBEAT_INTERVAL,
+            |sent_at| sent_at + HEARTBEAT_TIMEOUT,
+        );
+        if self.ready {
+            service_deadline
+        } else {
+            service_deadline.min(self.connected_at + HEARTBEAT_TIMEOUT)
+        }
+    }
+
     pub(super) fn ping_sent(&mut self, now: Instant) {
         self.ping_sent_at = Some(now);
     }
@@ -112,5 +124,24 @@ mod tests {
             health.action(now + HEARTBEAT_TIMEOUT),
             HealthAction::Expired
         );
+    }
+
+    #[test]
+    fn next_deadline_covers_pings_probes_and_missing_snapshots() {
+        let now = Instant::now();
+        let mut health = EndpointHealth::new(now);
+        assert_eq!(health.next_deadline(), now + HEARTBEAT_INTERVAL);
+
+        health.ping_sent(now + HEARTBEAT_INTERVAL);
+        assert_eq!(health.next_deadline(), now + HEARTBEAT_TIMEOUT);
+
+        health.ready();
+        let ping_sent_at = now + HEARTBEAT_INTERVAL + Duration::from_secs(1);
+        health.ping_sent(ping_sent_at);
+        assert_eq!(health.next_deadline(), ping_sent_at + HEARTBEAT_TIMEOUT);
+
+        let received_at = ping_sent_at + Duration::from_secs(1);
+        health.received(received_at);
+        assert_eq!(health.next_deadline(), received_at + HEARTBEAT_INTERVAL);
     }
 }

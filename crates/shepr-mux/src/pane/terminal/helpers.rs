@@ -673,20 +673,20 @@ pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, s
 }
 
 #[cfg(test)]
-pub(super) fn terminal_recent_ansi_snapshot(
+pub(super) fn terminal_recent_ansi(
     core: &mut PaneTerminalCore,
     lines: usize,
-) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
+) -> Result<String, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(TerminalReadSnapshot::default());
+        return Ok(String::new());
     };
     let text = terminal_read_ansi_screen(
         terminal,
         Point::new(ScreenRow(start), 0),
         Point::new(ScreenRow(end), cols.saturating_sub(1)),
     )?;
-    Ok(finish_recent_snapshot(text, start))
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -705,44 +705,33 @@ fn terminal_read_ansi_screen(
     Ok(text)
 }
 
-/// Recent read limits are measured in rendered rows, including blank or styled
-/// rows. The read is truncated only when rows above its first row were left
-/// out; trailing blank rows below the content are not "omitted" history.
 #[cfg(test)]
-pub(super) fn finish_recent_snapshot(text: String, start: usize) -> TerminalReadSnapshot {
-    TerminalReadSnapshot {
-        text,
-        truncated: start > 0,
-    }
-}
-
-#[cfg(test)]
-pub(super) fn terminal_recent_text_snapshot(
+pub(super) fn terminal_recent_text(
     core: &mut PaneTerminalCore,
     lines: usize,
-) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
+) -> Result<String, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, _)) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(TerminalReadSnapshot::default());
+        return Ok(String::new());
     };
     let text = terminal_text_rows(terminal, start, end, lines)?;
-    Ok(finish_recent_snapshot(text, start))
+    Ok(text)
 }
 
 #[cfg(test)]
-pub(super) fn terminal_recent_text_unwrapped_snapshot(
+pub(super) fn terminal_recent_text_unwrapped(
     core: &mut PaneTerminalCore,
     lines: usize,
-) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
+) -> Result<String, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(TerminalReadSnapshot::default());
+        return Ok(String::new());
     };
     let text = terminal.read_text_screen(
         Point::new(ScreenRow(start), 0),
         Point::new(ScreenRow(end), cols.saturating_sub(1)),
     )?;
-    Ok(finish_recent_snapshot(text, start))
+    Ok(text)
 }
 
 #[cfg(test)]

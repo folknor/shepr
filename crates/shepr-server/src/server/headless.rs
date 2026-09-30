@@ -34,9 +34,7 @@ use base64::Engine;
 use crate::app::{self, RenderDemand};
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_accept::{self, accept_client_connection};
-use crate::server::client_shell::{
-    render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
-};
+use crate::server::client_shell::render_pane_surface as render_client_shell_pane_surface;
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{ClientConnection, ClientRegistry, ClientShellState, render_targets};
 use crate::server::pane_input::apply_client_pane_input_events;
@@ -126,8 +124,8 @@ pub struct HeadlessServer {
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: shepr_protocol::BootId,
-    /// Shared session source for shell projections; `None` until a render
-    /// with a shell client builds it.
+    /// Shared session source for shell projections; `None` until a shell
+    /// connection or render needs it.
     shell_session_cache: Option<render::ShellSessionCache>,
     /// Moves whenever shell projections must be recomputed: the cache was
     /// rebuilt for a new application revision, or the cwd timer found a
@@ -166,7 +164,7 @@ pub struct HeadlessServer {
     /// Watches logind for shutdown warnings; `None` before `run` and while the
     /// server has dropped it to release its delay lock (see
     /// `freeze_for_host_shutdown`).
-    host_shutdown_monitor: Option<shepr_platform::HostShutdownMonitor>,
+    host_shutdown_monitor: Option<lifecycle::HostShutdownMonitor>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
@@ -1173,16 +1171,36 @@ impl HeadlessServer {
                 // viewing nothing until the reconcile lands it.
                 self.create_automatic_workspace(Some(client_id));
                 self.reconcile_client_shell_locations();
+                let Some((location, projection_revision)) =
+                    self.clients.get(&client_id).map(|client| {
+                        (
+                            client.shell_state().location.clone(),
+                            client.shell_state().projection_revision.get(),
+                        )
+                    })
+                else {
+                    return false;
+                };
+                self.refresh_stale_shell_session_cache();
+                let Some(session_cache) = self.shell_session_cache.as_ref() else {
+                    warn!(
+                        ?client_id,
+                        "shell session cache missing while seeding client"
+                    );
+                    self.remove_client(client_id);
+                    return false;
+                };
+                let seed_snapshot = crate::server::client_shell::snapshot_from_session(
+                    &self.app,
+                    &session_cache.session,
+                    &self.client_shell_boot_id,
+                    projection_revision,
+                    &location,
+                );
+                let snapshot_message = shepr_protocol::endpoint::snapshot_message(&seed_snapshot);
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                let seed_snapshot = client_shell_snapshot(
-                    &self.app,
-                    &self.client_shell_boot_id,
-                    client.shell_state().projection_revision.get(),
-                    &client.shell_state().location,
-                );
-                let snapshot_message = shepr_protocol::endpoint::snapshot_message(&seed_snapshot);
                 let shell = client.shell_state_mut();
                 shell.projected_location_generation = shell.location.generation();
                 shell.snapshot = Some(seed_snapshot);
@@ -1248,7 +1266,9 @@ impl HeadlessServer {
                 client.request_repaint();
                 self.immediate_pty_sources_dirty = true;
                 self.host_input_modes_dirty = true;
-                self.promote_client_to_foreground(client_id);
+                // A resize reports view geometry, not user activity. Window
+                // layout and font changes must not switch the host theme or
+                // pane-less clipboard destination.
                 self.resize_shell_workspaces_sized_for(client_id, true);
                 true
             }

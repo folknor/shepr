@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 mod config;
 mod discovery;
+mod runner;
 mod status;
 
 use self::discovery::automatic_workspace_label;
@@ -13,6 +14,7 @@ pub use self::{
         git_status_snapshot_for_cwd_with_demand,
     },
 };
+pub use runner::{GitCommandError, run_git};
 
 /// A Git command or repository read failed while deriving workspace information.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

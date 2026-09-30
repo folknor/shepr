@@ -142,11 +142,13 @@ pub(crate) struct RenderTarget {
 /// Presentation (surface size, outer focus, location, window title, input
 /// modes) lives on each connection; nothing here or in the app mirrors one
 /// client's view as a session-wide one. The registry holds two arbitrations
-/// between clients: which one controls each workspace's PTY geometry, and which one
-/// was active most recently (the foreground client). The foreground client
-/// supplies the host theme panes are coloured with, the one effect a pane has
-/// one of whichever client views it, and receives clipboard writes from panes
-/// that no client views.
+/// between clients: which one controls each workspace's PTY geometry, and which
+/// active shell most recently recorded user activity (the foreground client).
+/// Connection or surface activation, outer focus gain, pane interaction, and
+/// endpoint commands record activity; a surface resize only changes geometry.
+/// The foreground client supplies the host theme panes are coloured with, the
+/// one effect a pane has one of whichever client views it, and receives
+/// clipboard writes from panes that no client views.
 pub(crate) struct ClientRegistry {
     connections: HashMap<ClientId, ClientConnection>,
     next_client_id: u64,

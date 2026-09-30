@@ -1010,31 +1010,26 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
-    pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    // Test-only reads compare retained content and replay against the chunked
+    // production history reader; they need only text, not truncation metadata.
+    pub(crate) fn recent_text(&self, lines: usize) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| terminal_recent_text_snapshot(&mut core, lines).ok())
+            .and_then(|mut core| terminal_recent_text(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
-    pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    pub(crate) fn recent_ansi(&self, lines: usize) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines).ok())
+            .and_then(|mut core| terminal_recent_ansi(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
-    pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
+    pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| terminal_recent_text_unwrapped_snapshot(&mut core, lines).ok())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|mut core| terminal_recent_ansi_snapshot(&mut core, lines).ok())
+            .and_then(|mut core| terminal_recent_text_unwrapped(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
@@ -1099,18 +1094,6 @@ impl PaneTerminal {
                 == shepr_vt::ModifyOtherKeysLevel::All,
             color_scheme_reporting: core.terminal.mode_get(shepr_vt::DecMode::ColorSchemeReport),
         })
-    }
-
-    pub(crate) fn recent_text(&self, lines: usize) -> String {
-        self.recent_text_snapshot(lines).text
-    }
-
-    pub(crate) fn recent_ansi(&self, lines: usize) -> String {
-        self.recent_ansi_snapshot(lines).text
-    }
-
-    pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.recent_unwrapped_text_snapshot(lines).text
     }
 }
 

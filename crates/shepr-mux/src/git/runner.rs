@@ -1,7 +1,7 @@
 //! The one way shepr runs Git: a short read-only probe with a deadline, no
 //! terminal, no prompts and no repository selection inherited from the
-//! caller's environment. The server's Git status and workspace checkout
-//! probes go through [`run_git`]; what the output means stays with them.
+//! caller's environment. Mux Git status and server workspace checkout probes
+//! go through [`run_git`]; what the output means stays with them.
 
 use std::ffi::OsStr;
 use std::io::{self, Read};
@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{ChildStderr, ChildStdout, Output, Stdio};
 use std::time::{Duration, Instant};
 
-pub use super::limits::GIT_COMMAND_TIMEOUT;
+use crate::limits::{GIT_COMMAND_TIMEOUT, GIT_PROCESS_POLL_INTERVAL};
 
 /// Why a Git probe produced no output to interpret.
 #[derive(Debug)]
@@ -36,7 +36,7 @@ impl std::error::Error for GitCommandError {}
 
 /// Runs Git in `cwd` with one budget for launch, execution and pipe draining.
 /// The synchronous OS spawn cannot be interrupted; if it exceeds
-/// [`GIT_COMMAND_TIMEOUT`], the child is stopped as soon as spawn returns.
+/// `GIT_COMMAND_TIMEOUT`, the child is stopped as soon as spawn returns.
 /// A nonzero exit is an `Ok` output; the caller decides which failures are
 /// ordinary answers.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
@@ -45,7 +45,7 @@ pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
 
 /// [`run_git`] with the program and deadline handed in, for tests that stand
 /// a fixture in for Git.
-pub fn run_git_with_program(
+fn run_git_with_program(
     program: &OsStr,
     cwd: &Path,
     args: &[&str],
@@ -63,7 +63,7 @@ fn run_git_with_program_and_clock(
     now: &dyn Fn() -> Instant,
 ) -> Result<Output, GitCommandError> {
     // host-program-ok: production asks Git about the repository it inspects
-    let mut command = crate::child_command(program, cwd);
+    let mut command = shepr_platform::child_command(program, cwd);
     command
         .args(["-c", "core.fsmonitor=false"])
         .args(args)
@@ -106,7 +106,7 @@ fn run_git_with_program_and_clock(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
-                std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
+                std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
             }
             Err(error) => {
                 kill_and_reap(&mut child);
@@ -161,7 +161,7 @@ fn join_drains_until(
         if now() >= deadline {
             return Err(GitCommandError::TimedOut);
         }
-        std::thread::sleep(super::limits::HELPER_PROCESS_POLL_INTERVAL);
+        std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
     }
     Ok((join_drain(stdout)?, join_drain(stderr)?))
 }

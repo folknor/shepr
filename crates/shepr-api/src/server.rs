@@ -14,7 +14,7 @@ use crate::limits::{
 };
 use crate::schema::{
     AppMethod, AppRequest, ErrorResponse, Method, MethodTraits, Request, ResponseResult,
-    ServerStopParams, SuccessResponse,
+    SuccessResponse,
 };
 use crate::{ApiRequestMessage, ApiRequestSender, socket_path};
 use shepr_platform::ipc::{
@@ -406,7 +406,7 @@ fn finish_api_response(
     Ok(())
 }
 
-/// Answers `ping` and `server.stop` on this thread and hands every other
+/// Answers `ping` and both stop methods on this thread and hands every other
 /// method to the app loop as an [`AppRequest`]. The match is the one routing
 /// classification: a method the app answers has an [`AppMethod`] arm, and
 /// nothing else reaches the app.
@@ -428,7 +428,10 @@ fn handle_request(
             };
             return crate::serialize_response_or_error_with_outcome(&id, &response);
         }
-        Method::ServerStop(params) => return stop_server(&id, &params, server_stop),
+        Method::ServerStop(_) => return stop_server(&id, None, server_stop),
+        Method::ServerStopIfBoot(params) => {
+            return stop_server(&id, Some(&params.expected_boot_id), server_stop);
+        }
         Method::DetectCapture(target) => AppMethod::DetectCapture(target),
         Method::DetectExplain(target) => AppMethod::DetectExplain(target),
         Method::PaneReportAgent(params) => AppMethod::PaneReportAgent(params),
@@ -448,15 +451,17 @@ fn handle_request(
 
 fn stop_server(
     id: &str,
-    params: &ServerStopParams,
+    expected_boot_id: Option<&str>,
     server_stop: &crate::ServerStopSignal,
 ) -> crate::error::EncodedApiResponse {
-    // A stop aimed at one boot must not stop another: the caller observed
-    // that instance, and the occupant may have been replaced since. The
-    // refusal leaves this server running.
-    if let Some(expected) = &params.expected_boot_id {
+    // The conditional operation has its own method name because this request
+    // crosses builds. A server that predates it rejects the method instead of
+    // ignoring a guard and treating the request as an unconditional stop.
+    if let Some(expected) = expected_boot_id {
+        // A stop aimed at one boot must not stop another: the caller observed
+        // that instance, and the occupant may have been replaced since.
         let actual = shepr_protocol::BootId::for_this_process();
-        if actual != expected.as_str() {
+        if actual != expected {
             return error_response_json(
                 id,
                 crate::error::ApiErrorCode::ServerBootMismatch,
@@ -1001,12 +1006,18 @@ mod tests {
             panic!("ping did not answer with a pong");
         };
         let stop_with = |expected_boot_id: Option<String>, stop: &crate::ServerStopSignal| {
+            let method = match expected_boot_id {
+                Some(expected_boot_id) => {
+                    Method::ServerStopIfBoot(crate::schema::ServerStopIfBootParams {
+                        expected_boot_id,
+                    })
+                }
+                None => Method::ServerStop(crate::schema::ServerStopParams::default()),
+            };
             let response = handle_request(
                 Request {
                     id: "stop".into(),
-                    method: Method::ServerStop(crate::schema::ServerStopParams {
-                        expected_boot_id,
-                    }),
+                    method,
                 },
                 &tx,
                 stop,

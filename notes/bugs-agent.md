@@ -76,63 +76,14 @@ runtime boundary: record which rows were seeded (or the seeded row count) so the
 detector can exclude them, or clear the seeded rows' eligibility once new output
 arrives.
 
-## AGENT-034 - Typed report sources stop at the API edge
+## AGENT-038 - The pi and omp reporters still send a message the server ignores
 
-Scope: mux-terminal, server-app.
+Scope: agent-integration (lateral from review).
 
-The arbitration is now one per-source ledger with explicit states, validation
-precedes mutation, and per-agent quirks are descriptor policies. The API parses
-official sources once for reference-policy validation, but internal events
-(`StateEvent` and its reducer in `crates/shepr-server/src/app/`) still carry the
-source and agent label as strings, so `TerminalState` re-parses them. Carry the
-typed source through the event and the reducer. `crates/shepr-mux/src/limits.rs`
-still documents the old silence-based re-anchor rule, which the ledger replaced
-with server wall-clock versus monotonic-clock evidence; reword it.
-
-## AGENT-032 - Dead data left on the hook and read paths
-
-Scope: mux-terminal, server-app, api.
-
-The unused authority message storage, the runtime serde derives and the unused
-effective-change projections are gone. Left:
-
-- The report's `message` still crosses the API and the internal event envelope
-  though nothing reads it; drop it from the parameters, the event and the
-  reducer together.
-- `TerminalReadSnapshot`, its `truncated` flag
-  (`crates/shepr-mux/src/pane/terminal/read_snapshot.rs`) and the four
-  `recent_*_snapshot` methods have no production reader apart from history
-  persistence, which ignores `truncated`. Remove what history does not use.
-  (`recent_ansi_snapshot` and `recent_unwrapped_ansi_snapshot` in
-  `pane/terminal/backend.rs` are now identical, and the `format.rs` module doc
-  still names the unwrapped one.)
-
-## AGENT-036 - Hook ordering reads the host clocks inside TerminalState
-
-Scope: mux-terminal (from the review of the hook ledger).
-
-The per-source hook ledger now accepts a non-increasing sequence as a clock step
-only when the host wall clock has fallen behind its monotonic clock by the
-threshold since the last acceptance. `HookSourceState::record_sequence` and
-`hook_seq_superseded` read `Instant::now()` and `SystemTime::now()` themselves,
-so the `now` parameters of `hook_seq_superseded` and `record_hook_seq` are dead
-and the ordering tests' `t0 + delay` arguments no longer mean anything. Inject a
-wall-clock sample next to the monotonic `now`, as the rest of the arbitration
-does. Separately, a backward wall-clock step smaller than the 5 s threshold still
-drops reports until the clock catches up, which can lose a final idle report;
-decide whether a smaller step should be tolerated.
-
-## AGENT-037 - A Claude session replaced by /clear may stay pinned to the old id
-
-Scope: mux-terminal (lateral from review, unverified).
-
-For an agent without full-lifecycle authority (Claude), a recognized replacement
-start sets the persisted session, but the hook authority keeps the old session
-ref, because only full-lifecycle authorities are released on replacement.
-`current_session_identity_for_persistence` prefers the authority, and
-`conflicting_same_owner_session_ref` rewrites the next state report's new id back
-to the old one when it carries no start source. That could pin the pre-clear
-session for Claude until something clears the authority, so restore would resume
-the wrong conversation. Write a targeted test (Claude session A, SessionStart
-with source clear and session B, then a state report for B) before changing
-anything.
+The server no longer reads a state report's `message`, and a test pins that an
+extra field is still accepted. The pi and omp assets
+(`crates/shepr-agent/src/integration/assets/pi/shepr-agent-state.ts` and the omp
+one) still build and send it. Drop it from the assets, and the fixture seam
+`set_hook_authority_at` in `crates/shepr-mux/src/terminal/state/hooks.rs` still
+takes an ignored message argument at about 112 test call sites; remove it with
+the assets so nothing on the path carries a message any more.

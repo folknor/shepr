@@ -5,15 +5,6 @@ use crate::app;
 use crate::server::clients::ClientPaneIdentity;
 use shepr_protocol::FrameData;
 
-pub(super) fn snapshot(
-    app: &app::App,
-    boot_id: &shepr_protocol::BootId,
-    revision: u64,
-    location: &crate::server::clients::ClientShellLocation,
-) -> shepr_protocol::ClientShellSnapshot {
-    snapshot_from_session(app, &app.session_snapshot(), boot_id, revision, location)
-}
-
 /// Projects an already built `app.session_snapshot()` for one shell
 /// client.
 ///
@@ -394,8 +385,9 @@ mod tests {
         app.state.ensure_test_terminals();
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
-        let snapshot = snapshot(
+        let snapshot = snapshot_from_session(
             &app,
+            &app.session_snapshot(),
             &shepr_test_fixtures::fixed_boot_id(1),
             1,
             &crate::server::clients::ClientShellLocation::default(),

@@ -1,4 +1,4 @@
-use shepr_protocol::ServerMessage;
+use shepr_protocol::{ServerMessage, surface_reuse::DecodedServerMessage};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PresentationDecision {
@@ -37,7 +37,11 @@ impl PresentationGate {
         }
     }
 
-    pub(crate) fn decide(&self, message: &ServerMessage) -> PresentationDecision {
+    pub(crate) fn decide(&self, message: &DecodedServerMessage) -> PresentationDecision {
+        let message = match message {
+            DecodedServerMessage::Wire(message) => message,
+            DecodedServerMessage::PaneSurfacePatch(_) => return self.decide_surface(),
+        };
         if matches!(
             message,
             ServerMessage::EndpointWelcome(_)
@@ -56,29 +60,30 @@ impl PresentationGate {
         }
 
         match message {
-            // Surfaces and patches for the endpoint a handoff is proving go into its evidence,
-            // which stays in lockstep with the connection's decoder baseline.
-            ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_)
-                if self.buffer_surface_evidence =>
-            {
-                PresentationDecision::Buffer
-            }
+            ServerMessage::PaneSurface(_) => self.decide_surface(),
             ServerMessage::ClientShellEndpointResponse { .. } if self.activation_pending => {
                 PresentationDecision::Buffer
             }
             ServerMessage::ClientShellEndpointResponse { .. } if self.command_response => {
                 PresentationDecision::Apply
             }
-            ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_) if self.frozen => {
-                PresentationDecision::Drop
-            }
-            ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_)
-                if self.endpoint_active =>
-            {
-                PresentationDecision::Apply
-            }
             _ if self.endpoint_active => PresentationDecision::Apply,
             _ => PresentationDecision::Drop,
+        }
+    }
+
+    /// Full surfaces and decoded patches share one rule. Those for the endpoint a handoff is
+    /// proving go into its evidence, which stays in lockstep with the connection's decoder
+    /// baseline.
+    fn decide_surface(&self) -> PresentationDecision {
+        if self.buffer_surface_evidence {
+            PresentationDecision::Buffer
+        } else if self.frozen {
+            PresentationDecision::Drop
+        } else if self.endpoint_active {
+            PresentationDecision::Apply
+        } else {
+            PresentationDecision::Drop
         }
     }
 }
@@ -142,12 +147,15 @@ mod tests {
         let unowned = PresentationGate::new(true, false, false, false, false, false);
         let validated_sync = PresentationGate::new(true, false, true, true, false, false);
         for effect in effects() {
+            let effect = DecodedServerMessage::Wire(effect);
             assert_eq!(owned.decide(&effect), PresentationDecision::Apply);
             assert_eq!(unowned.decide(&effect), PresentationDecision::Drop);
             assert_eq!(validated_sync.decide(&effect), PresentationDecision::Apply);
         }
         assert_eq!(
-            unowned.decide(&ServerMessage::PaneSurface(surface())),
+            unowned.decide(&DecodedServerMessage::Wire(ServerMessage::PaneSurface(
+                surface()
+            ))),
             PresentationDecision::Apply
         );
     }
@@ -192,19 +200,24 @@ mod tests {
     #[test]
     fn inactive_endpoint_control_applies_but_presentation_effects_drop() {
         assert_eq!(
-            gate(false, false, false, false).decide(&ServerMessage::HealthPong),
+            gate(false, false, false, false)
+                .decide(&DecodedServerMessage::Wire(ServerMessage::HealthPong)),
             PresentationDecision::Apply
         );
         assert_eq!(
-            gate(false, false, false, false).decide(&ServerMessage::WindowTitle {
-                title: Some("remote".into()),
-            }),
+            gate(false, false, false, false).decide(&DecodedServerMessage::Wire(
+                ServerMessage::WindowTitle {
+                    title: Some("remote".into()),
+                },
+            )),
             PresentationDecision::Drop
         );
         assert_eq!(
-            gate(false, false, false, false).decide(&ServerMessage::Clipboard {
-                data: "text".into()
-            }),
+            gate(false, false, false, false).decide(&DecodedServerMessage::Wire(
+                ServerMessage::Clipboard {
+                    data: "text".into(),
+                },
+            )),
             PresentationDecision::Drop
         );
     }
@@ -212,11 +225,14 @@ mod tests {
     #[test]
     fn activation_surfaces_and_responses_are_buffered() {
         assert_eq!(
-            gate(false, true, false, false).decide(&ServerMessage::PaneSurface(surface())),
+            gate(false, true, false, false).decide(&DecodedServerMessage::Wire(
+                ServerMessage::PaneSurface(surface()),
+            )),
             PresentationDecision::Buffer
         );
         assert_eq!(
-            gate(false, true, false, false).decide(&response("surface")),
+            gate(false, true, false, false)
+                .decide(&DecodedServerMessage::Wire(response("surface"))),
             PresentationDecision::Buffer
         );
     }
@@ -224,7 +240,8 @@ mod tests {
     #[test]
     fn tracked_command_responses_apply_outside_the_active_presentation() {
         assert_eq!(
-            gate(false, false, true, false).decide(&response("command")),
+            gate(false, false, true, false)
+                .decide(&DecodedServerMessage::Wire(response("command"))),
             PresentationDecision::Apply
         );
     }
@@ -233,18 +250,20 @@ mod tests {
     fn frozen_activation_drops_effects_and_buffers_surface_patches() {
         let frozen = gate(true, true, false, true);
         assert_eq!(
-            frozen.decide(&ServerMessage::MouseCapture {
+            frozen.decide(&DecodedServerMessage::Wire(ServerMessage::MouseCapture {
                 enabled: true,
                 sgr_pixels: false,
-            }),
+            })),
             PresentationDecision::Drop
         );
         assert_eq!(
-            frozen.decide(&ServerMessage::PaneSurfacePatch(patch())),
+            frozen.decide(&DecodedServerMessage::PaneSurfacePatch(patch())),
             PresentationDecision::Buffer
         );
         assert_eq!(
-            gate(true, false, false, true).decide(&ServerMessage::PaneSurface(surface())),
+            gate(true, false, false, true).decide(&DecodedServerMessage::Wire(
+                ServerMessage::PaneSurface(surface()),
+            )),
             PresentationDecision::Drop
         );
     }

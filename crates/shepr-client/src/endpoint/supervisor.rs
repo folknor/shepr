@@ -295,6 +295,25 @@ impl EndpointSupervisors {
         }
     }
 
+    /// When `spawn_due` next has an attempt to start. It skips the same states `spawn_due`
+    /// skips, so a due attempt it cannot start never becomes a deadline the loop spins on.
+    pub(crate) fn next_retry_deadline(&self) -> Option<Instant> {
+        self.endpoints
+            .values()
+            .filter(|state| !state.in_flight)
+            .filter(|state| {
+                !matches!(
+                    state.target,
+                    ConnectTarget::Ssh {
+                        connector: None,
+                        ..
+                    }
+                )
+            })
+            .filter_map(|state| state.next_attempt)
+            .min()
+    }
+
     /// Hands a finished attempt's connector back to its endpoint. An attempt
     /// that lost it (its blocking task died outside the panic guard) gets a
     /// fresh one built from the machine, so the endpoint never stalls without
@@ -809,6 +828,37 @@ mod tests {
             Some(retry_at + INITIAL_RETRY_DELAY)
         );
         assert!(supervisors.supervises(&id));
+    }
+
+    #[test]
+    fn next_retry_deadline_exposes_due_and_backoff_attempts() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let now = Instant::now();
+        let machine = machine();
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        let mut supervisors = supervisors_for(&env, &[machine], now);
+
+        assert_eq!(supervisors.next_retry_deadline(), Some(now));
+
+        {
+            let state = supervisors
+                .endpoints
+                .get_mut(&id)
+                .expect("test precondition");
+            state.generation = Some(shepr_protocol::ConnectionGeneration::new(9));
+            state.in_flight = true;
+        }
+        assert_eq!(supervisors.next_retry_deadline(), None);
+        supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition")
+            .in_flight = false;
+        assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Attention, now));
+        assert_eq!(
+            supervisors.next_retry_deadline(),
+            Some(now + ATTENTION_RETRY_DELAY)
+        );
     }
 
     #[test]

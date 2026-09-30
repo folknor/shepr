@@ -201,6 +201,7 @@ impl PaneCwdProbe {
 /// PTY runtime for a pane. Owns the terminal, I/O channels, and background tasks.
 /// Dropping this aborts async tasks and closes the PTY.
 pub struct PaneRuntime {
+    generation: crate::events::RuntimeGeneration,
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     io: Box<dyn ChildIo>,
@@ -385,7 +386,7 @@ fn publish_reported_cwd(
     child_liveness: &ChildLiveness,
     cwd: std::path::PathBuf,
     reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
-    events: &mpsc::Sender<AppEvent>,
+    events: &crate::events::EventSender,
 ) {
     let Some(cwd) = UsableCwd::new(cwd) else {
         return;
@@ -440,7 +441,7 @@ struct PaneReadEffects {
     render_notify: Arc<Notify>,
     render_dirty: Arc<RenderSignal>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
-    events: mpsc::Sender<AppEvent>,
+    events: crate::events::EventSender,
     content_write_lock: Arc<Mutex<()>>,
     content_seq: Arc<AtomicU64>,
     detection_content_seq: Arc<AtomicU64>,
@@ -726,6 +727,10 @@ impl PaneReadEffects {
 }
 
 impl PaneRuntime {
+    pub fn generation(&self) -> crate::events::RuntimeGeneration {
+        self.generation
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: shepr_termio::host_term::theme::TerminalTheme) {
         self.terminal.apply_host_terminal_theme(theme);
     }
@@ -840,6 +845,8 @@ impl PaneRuntime {
             );
         }
         let child_liveness = Arc::new(ChildLiveness::new(pid, leader));
+        let generation = crate::events::RuntimeGeneration::alloc();
+        let events = crate::events::EventSender::runtime(events.clone(), pane_id, generation);
         let reported_cwd = Arc::new(Mutex::new(None));
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
@@ -1298,6 +1305,7 @@ impl PaneRuntime {
         };
 
         Ok(Self {
+            generation,
             pane_id,
             terminal,
             io,
@@ -1332,6 +1340,7 @@ impl PaneRuntime {
         terminal.write(screen);
         discard_initial_terminal_effects(&mut terminal);
         Self {
+            generation: crate::events::RuntimeGeneration::alloc(),
             // Not installed under any layout pane, so it takes an id of its
             // own rather than one some real pane may hold.
             pane_id: PaneId::alloc(),
@@ -1842,15 +1851,8 @@ impl PaneRuntime {
         self.terminal.visible_text()
     }
 
-    pub fn recent_unwrapped_text_snapshot(
-        &self,
-        lines: usize,
-    ) -> crate::terminal::TerminalReadSnapshot {
-        self.terminal.recent_unwrapped_text_snapshot(lines)
-    }
-
     pub fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.recent_unwrapped_text_snapshot(lines).text
+        self.terminal.recent_unwrapped_text(lines)
     }
 }
 
@@ -1942,7 +1944,7 @@ mod tests {
         let metrics = runtime.scroll_metrics().expect("test precondition");
         assert_eq!(metrics.max_offset_from_bottom, 0);
         assert_eq!(metrics.offset_from_bottom, 0);
-        let text = runtime.recent_unwrapped_text_snapshot(100).text;
+        let text = runtime.recent_unwrapped_text(100);
         assert!(text.contains("$ abcdefghijklmnop"), "{text:?}");
         assert!(!text.contains("old"), "{text:?}");
         runtime.test_process_pty_bytes(b"5 q");
@@ -1972,19 +1974,9 @@ mod tests {
             detection_content_seq
         );
         runtime.test_process_pty_bytes(b"\x1b[?1049l");
-        assert!(
-            runtime
-                .recent_unwrapped_text_snapshot(100)
-                .text
-                .contains("one")
-        );
+        assert!(runtime.recent_unwrapped_text(100).contains("one"));
         runtime.clear_screen().expect("test precondition");
-        assert!(
-            !runtime
-                .recent_unwrapped_text_snapshot(100)
-                .text
-                .contains("one")
-        );
+        assert!(!runtime.recent_unwrapped_text(100).contains("one"));
         assert!(runtime.visible_text().contains("five"));
     }
 
@@ -2056,7 +2048,7 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
-            &events,
+            &events.clone().into(),
         );
         assert_eq!(
             reported_path(&runtime),
@@ -2089,7 +2081,7 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
-            &events,
+            &events.clone().into(),
         );
         assert!(
             shepr_vt::lock_auxiliary(&runtime.reported_cwd).is_none(),
@@ -2102,7 +2094,7 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
-            &events,
+            &events.clone().into(),
         );
         let Ok(AppEvent::TerminalCwdReported { cwd: sent, .. }) = event_rx.try_recv() else {
             panic!("expected the retried cwd report");
@@ -2172,7 +2164,7 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.reported_cwd,
-            &events,
+            &events.clone().into(),
         );
 
         assert!(event_rx.try_recv().is_err(), "a repeat is not a new event");
@@ -2397,7 +2389,7 @@ mod tests {
             render_notify: Arc::new(Notify::new()),
             render_dirty: Arc::new(RenderSignal::new()),
             reported_cwd: Arc::new(Mutex::new(None)),
-            events,
+            events: events.into(),
             content_write_lock: Arc::new(Mutex::new(())),
             content_seq: Arc::new(AtomicU64::new(0)),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -2729,9 +2721,9 @@ mod tests {
             PaneRuntime::test_with_scrollback_bytes(80, 45, 20_000_000, history.as_bytes());
 
         runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 21, 0, 0));
-        let snapshot = runtime.recent_unwrapped_text_snapshot(usize::MAX);
-        assert!(snapshot.text.contains("00001 "));
-        assert!(snapshot.text.contains("02000 "));
+        let snapshot = runtime.recent_unwrapped_text(usize::MAX);
+        assert!(snapshot.contains("00001 "));
+        assert!(snapshot.contains("02000 "));
 
         runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 45, 0, 0));
 
@@ -2744,9 +2736,9 @@ mod tests {
                 .viewport_rows,
             45
         );
-        let snapshot = runtime.recent_unwrapped_text_snapshot(usize::MAX);
-        assert!(snapshot.text.contains("00001 "));
-        assert!(snapshot.text.contains("02000 "));
+        let snapshot = runtime.recent_unwrapped_text(usize::MAX);
+        assert!(snapshot.contains("00001 "));
+        assert!(snapshot.contains("02000 "));
     }
 
     #[tokio::test]
@@ -2757,6 +2749,7 @@ mod tests {
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
+            generation: crate::events::RuntimeGeneration::alloc(),
             persistence_cwd: Arc::new(Mutex::new(None)),
             pane_id,
             terminal,
@@ -2787,6 +2780,7 @@ mod tests {
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
+            generation: crate::events::RuntimeGeneration::alloc(),
             persistence_cwd: Arc::new(Mutex::new(None)),
             pane_id,
             terminal,

@@ -324,7 +324,10 @@ impl TerminalStateFixture for TerminalState {
             message,
             None,
             seq,
-            Instant::now(),
+            shepr_mux::terminal::state::HookClockSample {
+                monotonic: Instant::now(),
+                wall: std::time::SystemTime::now(),
+            },
         )
         .and_then(|mutation| mutation.effective_state_change)
     }

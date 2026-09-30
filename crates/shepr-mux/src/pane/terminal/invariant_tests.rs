@@ -24,7 +24,7 @@ struct Observation {
     cursor: TerminalCursorState,
     input: InputState,
     visible: String,
-    recent: TerminalReadSnapshot,
+    recent: String,
     detection: String,
     title: Option<String>,
 }
@@ -118,7 +118,7 @@ impl Harness {
             cursor: self.cursor().expect("test precondition"),
             input: self.pane.input_state().expect("test precondition"),
             visible: self.pane.visible_text(),
-            recent: self.pane.recent_text_snapshot(32),
+            recent: self.pane.recent_text(32),
             detection: self.pane.detection_text(),
             title: self.pane.terminal_title(),
         }
@@ -149,18 +149,12 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
                 for bytes in old.as_bytes().chunks(chunk_size) {
                     harness.write(bytes);
                 }
-                assert!(
-                    harness
-                        .pane
-                        .recent_text_snapshot(256)
-                        .text
-                        .contains("old-00")
-                );
+                assert!(harness.pane.recent_text(256).contains("old-00"));
                 harness.write(&new.as_bytes()[..split]);
                 for bytes in new.as_bytes()[split..].chunks(chunk_size) {
                     harness.write(bytes);
                 }
-                let recent = harness.pane.recent_text_snapshot(256).text;
+                let recent = harness.pane.recent_text(256);
                 assert!(recent.contains("new-54"), "redraw must complete");
                 assert_eq!(
                     recent.matches("welcome").count(),
@@ -185,37 +179,25 @@ fn erase_display_preserves_screen_and_history_boundaries() {
         for row in 0..55 {
             harness.write(format!("history-{row:02}\r\n").as_bytes());
         }
-        assert!(
-            harness
-                .pane
-                .recent_text_snapshot(256)
-                .text
-                .contains("history-00")
-        );
-        let primary = harness.pane.recent_text_snapshot(256);
+        assert!(harness.pane.recent_text(256).contains("history-00"));
+        let primary = harness.pane.recent_text(256);
         let visible = harness.pane.visible_text();
 
         harness.write(b"\x1b[?1049h\x1b[2J\x1b[Halternate");
         harness.write(clear);
         assert!(harness.pane.visible_text().contains("alternate"));
         harness.write(b"\x1b[?1049l");
-        assert_eq!(harness.pane.recent_text_snapshot(256), primary);
+        assert_eq!(harness.pane.recent_text(256), primary);
         assert_eq!(harness.pane.visible_text(), visible);
 
         // ED2 clears only the display, not prior shell output in scrollback.
         harness.write(b"\x1b[2J\x1b[Hprompt");
         assert_eq!(harness.pane.visible_text().trim(), "prompt");
-        assert!(
-            harness
-                .pane
-                .recent_text_snapshot(256)
-                .text
-                .contains("history-00")
-        );
+        assert!(harness.pane.recent_text(256).contains("history-00"));
         harness.write(clear);
         // ED3 clears history without erasing the current display.
         assert_eq!(harness.pane.visible_text().trim(), "prompt");
-        assert_eq!(harness.pane.recent_text_snapshot(256).text.trim(), "prompt");
+        assert_eq!(harness.pane.recent_text(256).trim(), "prompt");
     }
 }
 
@@ -280,8 +262,7 @@ fn mixed_reflow_reads_are_stable_and_chunk_independent() {
         assert!(
             whole
                 .pane
-                .recent_unwrapped_ansi_snapshot(64)
-                .text
+                .recent_ansi(64)
                 .contains("https://example.test/reflow"),
             "reflow at {width}x{height} must retain the link"
         );
@@ -400,13 +381,10 @@ fn complete_history_replay_supports_plain_append() {
     // non-wrapping printable cell with SGR and OSC8 closed; no pending tab/CSI.
     let mut source = Harness::new(24, 4);
     source.write(b"\x1b[31mred\x1b[0m\r\nplain");
-    let ansi = source.pane.recent_unwrapped_ansi_snapshot(32).text;
+    let ansi = source.pane.recent_ansi(32);
     let mut restored = Harness::new(24, 4);
     restored.pane.seed_history_ansi(&ansi);
-    assert_eq!(
-        restored.pane.recent_text_snapshot(32),
-        source.pane.recent_text_snapshot(32)
-    );
+    assert_eq!(restored.pane.recent_text(32), source.pane.recent_text(32));
     // Establish the documented live-output boundary explicitly instead of
     // requiring history formatting to restore arbitrary cursor/SGR state.
     // `source` still sits at the end of the unterminated "plain" line, so it
@@ -415,10 +393,7 @@ fn complete_history_replay_supports_plain_append() {
     // an extra blank line that never existed in `source`.
     source.write(b"\x1b[0m\r\nappended");
     restored.write(b"\x1b[0mappended");
-    assert_eq!(
-        restored.pane.recent_text_snapshot(32),
-        source.pane.recent_text_snapshot(32)
-    );
+    assert_eq!(restored.pane.recent_text(32), source.pane.recent_text(32));
     assert!(restored.effects.clipboard.is_empty());
     assert!(restored.effects.replies.is_empty());
 }

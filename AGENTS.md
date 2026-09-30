@@ -217,9 +217,14 @@ stays exported because every agent integration reports through it.
 - The saved layout is not affected by the overrides, only the sockets are.
 - `server stop` stops whatever server answers, whatever its build, with every
   pane in it. Its hidden `--expect-boot <boot id>` makes the stop conditional:
-  the server compares the id (from its `status server` output) with its own
-  boot and refuses a stop aimed at another one, so a server that replaced the
-  observed one keeps running (exit status 3).
+  the client sends `server.stop_if_boot` with the id from `status server`, and
+  the server compares it with its own boot. The distinct method name means an
+  older server rejects the request as invalid instead of ignoring the guard
+  and stopping unconditionally. A server that replaced the observed one keeps
+  running (exit status 3). The cross-build JSON control surface is the `ping`
+  response identity (`version`, `build_id`, `boot_id`) and the
+  `server.stop_if_boot` request; keep their literal JSON fixtures in the
+  `shepr-api` tests in sync with intentional wire changes.
 
 ## Principles
 
@@ -240,16 +245,20 @@ stays exported because every agent integration reports through it.
   all the views in one place each: PTY size by the PTY size rule
   (`workspace_geometry_source` in `crates/shepr-server/src/server/headless/client_views.rs`,
   which records each workspace's applied area in `AppState`), pane focus reports by
-  `sync_pane_focus`, and the host theme by the foreground client (the one
-  last active).
+  `sync_pane_focus`, and the host theme by the foreground client: the active
+  shell with the most recent user activity. Connection or surface activation,
+  outer focus gain, pane interaction, and endpoint commands count as activity;
+  a surface resize only changes geometry.
 - **No god objects.** `AppState` lives in `crates/shepr-server/src/app/state.rs`;
   `App` behavior is organized across modules under
   `crates/shepr-server/src/app/`. Keep it that way.
 - **Linux only.** No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or
   `cfg!` branches for other platforms. libc, `/proc` and helper-program
-  plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs`, plus
-  self-contained submodules such as the logind shutdown monitor); there is no
-  per-OS layer and no shims standing in for other platforms.
+  plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs` plus
+  self-contained submodules). Git command environment and deadline policy lives
+  in `shepr-mux`, and the logind shutdown monitor and checkpoint policy live in
+  `shepr-server`. There is no per-OS layer and no shims standing in for other
+  platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never
   touches the parser or viewport state. When changing a manifest, capture the
   pane with `shepr detect capture <pane>`, encode

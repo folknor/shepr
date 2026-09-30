@@ -3,14 +3,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PingParams {}
 
-/// Params of `server.stop`.
+/// Params of an unconditional `server.stop`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ServerStopParams {
+#[serde(deny_unknown_fields)]
+pub struct ServerStopParams {}
+
+/// Params of `server.stop_if_boot`, the cross-build conditional stop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerStopIfBootParams {
     /// Stop only the server process whose `ping` reported this boot identity.
     /// A server of any other boot refuses with `server_boot_mismatch` and keeps
-    /// running. Absent: stop whatever server answers.
-    #[serde(default)]
-    pub expected_boot_id: Option<String>,
+    /// running.
+    pub expected_boot_id: String,
 }
 
 /// JSON emitted by `shepr status client --json`, also read during remote discovery.

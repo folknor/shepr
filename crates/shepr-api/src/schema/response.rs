@@ -44,7 +44,7 @@ pub enum ResponseResult {
         version: String,
         build_id: String,
         /// Identifies this server process, which a build id cannot: a
-        /// conditional `server.stop` names the boot it expects.
+        /// conditional `server.stop_if_boot` names the boot it expects.
         boot_id: String,
     },
     /// The detector's input for one pane, including its OSC title and progress.

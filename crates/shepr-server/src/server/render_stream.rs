@@ -311,6 +311,7 @@ impl ClientRenderState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_protocol::surface_reuse::DecodedServerMessage;
 
     fn test_surface(content: &str) -> PaneSurfaceFrame {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
@@ -397,7 +398,7 @@ mod tests {
             bytes.len()
         );
 
-        let ServerMessage::PaneSurface(decoded) = decoder
+        let DecodedServerMessage::Wire(ServerMessage::PaneSurface(decoded)) = decoder
             .decode(update.message().clone())
             .expect("test precondition")
         else {
@@ -437,7 +438,7 @@ mod tests {
         let update = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
-        let ServerMessage::PaneSurface(decoded) = decoder
+        let DecodedServerMessage::Wire(ServerMessage::PaneSurface(decoded)) = decoder
             .decode(update.message().clone())
             .expect("test precondition")
         else {
@@ -457,7 +458,7 @@ mod tests {
             decoder
                 .decode(changed.message().clone())
                 .expect("test precondition"),
-            ServerMessage::PaneSurfacePatch(_)
+            DecodedServerMessage::PaneSurfacePatch(_)
         ));
         let decoded = decoder.current_surface().expect("decoded changed surface");
         assert_eq!(decoded.frame, surface.frame);
@@ -501,7 +502,8 @@ mod tests {
         assert!(bytes.len() > shepr_protocol::MAX_FRAME_SIZE);
         let read: ServerMessage =
             shepr_protocol::read_message(&mut bytes.as_slice()).expect("test precondition");
-        let ServerMessage::PaneSurface(decoded) = decoder.decode(read).expect("test precondition")
+        let DecodedServerMessage::Wire(ServerMessage::PaneSurface(decoded)) =
+            decoder.decode(read).expect("test precondition")
         else {
             panic!("decoded full surface");
         };
@@ -540,15 +542,17 @@ mod tests {
             .prepare_pane_surface(test_surface("abc"))
             .expect("test precondition");
         state.commit_sent_frame(initial);
+        // Committing reads only the patch; the message stands in for the
+        // update that was sent.
         state.commit_sent_frame(PreparedRender::SemanticPatch {
-            message: ServerMessage::PaneSurfacePatch(patch.clone()),
+            message: ServerMessage::HealthPong,
             patch: patch.clone(),
         });
         assert!(state.last_pane_surface().is_none());
 
         // Committing with no baseline at all is also survivable.
         state.commit_sent_frame(PreparedRender::SemanticPatch {
-            message: ServerMessage::PaneSurfacePatch(patch.clone()),
+            message: ServerMessage::HealthPong,
             patch,
         });
         assert!(state.last_pane_surface().is_none());

@@ -1330,18 +1330,30 @@ impl ClientShellState {
         repaint
     }
 
-    pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {
-        // The fallback also drives ClientLoop health checks and due reconnect attempts. Their
-        // deadlines live in endpoint modules, so extending the sleep to a shell-only deadline
-        // could delay those services until the shell deadline expires.
-        let default = crate::limits::MAX_CLIENT_TIMER_DELAY;
+    pub(crate) fn timer_delay(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        let notice_deadline = self.visible_endpoint_notice.as_ref().and_then(|notice| {
+            self.endpoint_notice_deadline
+                .as_ref()
+                .and_then(|(key, body, deadline)| {
+                    (key == &notice.key && body == &notice.body).then_some(*deadline)
+                })
+        });
+        // These state machines expose pending work but keep its exact expiry private.
+        let pending_work_deadline = (self.pending_workspace_highlight.is_some()
+            || !self.pending_requests.is_empty())
+        .then_some(now + crate::limits::CLIENT_PENDING_TIMER_POLL_INTERVAL);
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.selection_highlight_clear_deadline)
+            .chain(
+                self.endpoint_error_deadline
+                    .filter(|_| self.endpoint_error.is_some()),
+            )
+            .chain(notice_deadline)
+            .chain(pending_work_deadline)
             .min()
-            .map_or(default, |deadline| {
-                deadline.saturating_duration_since(now).min(default)
-            })
+            .map(|deadline| deadline.saturating_duration_since(now))
     }
 
     /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize

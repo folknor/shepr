@@ -20,7 +20,8 @@ shepr-protocol = { path = "../shepr-protocol" }
 shepr-pty = { path = "../shepr-pty" }
 shepr-termio = { path = "../shepr-termio" }
 shepr-vt = { path = "../shepr-vt" }
-tokio = { workspace = true }
+# `net` provides `AsyncFd`, which the pane runtime waits on a child pidfd with.
+tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
 

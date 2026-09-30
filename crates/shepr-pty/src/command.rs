@@ -25,6 +25,7 @@ pub struct PtyCommand {
     login: bool,
     envs: BTreeMap<OsString, OsString>,
     cwd: Option<OsString>,
+    cwd_required: bool,
 }
 
 impl PtyCommand {
@@ -36,6 +37,7 @@ impl PtyCommand {
             login,
             envs: base_env(),
             cwd: None,
+            cwd_required: false,
         };
         command.env(ChildEnv::Shell, default_shell);
         command
@@ -58,31 +60,52 @@ impl PtyCommand {
         self.envs.get(key.as_ref()).map(OsString::as_os_str)
     }
 
-    /// Working directory. If the path is missing or stops being a directory
-    /// before spawn, the pane uses a usable `HOME`, then the passwd home, then
+    /// Working directory. Unless [`Self::require_cwd`] is set, a missing or
+    /// unusable path falls back to a usable `HOME`, then the passwd home, then
     /// `/`.
     pub fn cwd<D: AsRef<OsStr>>(&mut self, dir: D) {
         self.cwd = Some(dir.as_ref().to_owned());
     }
 
+    /// Use the requested working directory without checking it while building
+    /// the command. If it disappeared, child spawn fails instead of starting
+    /// in `HOME`. Restored agent commands use this so they cannot run in a
+    /// different directory after their worker-side check.
+    pub fn require_cwd(&mut self) {
+        self.cwd_required = true;
+    }
+
     /// Build the `std::process::Command`: resolved program and argv0, working
     /// directory, and exactly this command's environment (the process
-    /// environment is cleared first). If a requested cwd became unusable after
-    /// validation, it starts in a usable `HOME`, then the passwd home, then
-    /// `/`. PTY stdio and session setup are added by `crate::backend`.
+    /// environment is cleared first). By default, if a requested cwd became
+    /// unusable after validation, it starts in a usable `HOME`, then the
+    /// passwd home, then `/`. A required cwd is passed to child spawn without
+    /// checking it here. PTY stdio and session setup are added by
+    /// `crate::backend`.
     pub(crate) fn to_std_command(&self) -> io::Result<std::process::Command> {
-        let dir: OsString = match self.cwd.as_ref() {
-            Some(dir) if usable_directory(Path::new(dir), "pty working directory") => dir.clone(),
-            requested => {
-                let home = self.home_dir();
-                if let Some(requested) = requested {
-                    tracing::warn!(
-                        cwd = %requested.to_string_lossy(),
-                        fallback = %home.to_string_lossy(),
-                        "pty working directory is not a directory; starting in the fallback"
-                    );
+        let dir: OsString = if self.cwd_required {
+            self.cwd.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "required pty working directory was not set",
+                )
+            })?
+        } else {
+            match self.cwd.as_ref() {
+                Some(dir) if usable_directory(Path::new(dir), "pty working directory") => {
+                    dir.clone()
                 }
-                home
+                requested => {
+                    let home = self.home_dir();
+                    if let Some(requested) = requested {
+                        tracing::warn!(
+                            cwd = %requested.to_string_lossy(),
+                            fallback = %home.to_string_lossy(),
+                            "pty working directory is not a directory; starting in the fallback"
+                        );
+                    }
+                    home
+                }
             }
         };
         let shell = self.search_path(&self.program, &dir)?;

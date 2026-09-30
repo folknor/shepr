@@ -347,10 +347,5 @@ impl InputState {
     }
 }
 
-// The recent-read snapshots are test-only readers; their type is imported last
-// so no production item sits below a test cfg.
-#[cfg(test)]
-use crate::terminal::TerminalReadSnapshot;
-
 #[cfg(test)]
 mod tests;

@@ -31,17 +31,15 @@ fn request_uses_dot_method_names() {
 
 #[test]
 fn request_round_trips_for_server_stop() {
-    for expected_boot_id in [None, Some("17-23".to_owned())] {
-        let request = Request {
-            id: "req_stop".into(),
-            method: Method::ServerStop(ServerStopParams { expected_boot_id }),
-        };
+    let request = Request {
+        id: "req_stop".into(),
+        method: Method::ServerStop(ServerStopParams::default()),
+    };
 
-        let json = serde_json::to_value(&request).expect("test precondition");
-        assert_eq!(json["method"], "server.stop");
-        let restored: Request = serde_json::from_value(json).expect("test precondition");
-        assert_eq!(restored, request);
-    }
+    let json = serde_json::to_value(&request).expect("test precondition");
+    assert_eq!(json["method"], "server.stop");
+    let restored: Request = serde_json::from_value(json).expect("test precondition");
+    assert_eq!(restored, request);
 }
 
 #[test]
@@ -50,9 +48,84 @@ fn server_stop_without_params_is_unconditional() {
         .expect("test precondition");
     assert_eq!(
         request.method,
-        Method::ServerStop(ServerStopParams {
-            expected_boot_id: None
-        })
+        Method::ServerStop(ServerStopParams::default())
+    );
+}
+
+#[test]
+fn server_stop_rejects_a_boot_guard_on_the_unconditional_method() {
+    let request = r#"{"id":"s","method":"server.stop","params":{"expected_boot_id":"17-23"}}"#;
+    assert!(serde_json::from_str::<Request>(request).is_err());
+
+    let missing_boot = r#"{"id":"s","method":"server.stop_if_boot","params":{}}"#;
+    assert!(serde_json::from_str::<Request>(missing_boot).is_err());
+}
+
+#[test]
+fn cross_build_ping_and_conditional_stop_json_is_frozen() {
+    // Preflight can inspect and restart a server from another build. Keep the
+    // ping identity and guarded stop request bytes stable across those builds.
+    const PING_REQUEST: &str = r#"{"id":"cross-build:ping","method":"ping","params":{}}"#;
+    const PONG_RESPONSE: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23"}}"#;
+    const STOP_REQUEST: &str = r#"{"id":"cross-build:stop","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23"}}"#;
+    const STOP_RESPONSE: &str = r#"{"id":"cross-build:stop","result":{"type":"ok"}}"#;
+
+    let ping_request = Request {
+        id: "cross-build:ping".into(),
+        method: Method::Ping(PingParams::default()),
+    };
+    assert_eq!(
+        serde_json::to_string(&ping_request).expect("test precondition"),
+        PING_REQUEST
+    );
+    assert_eq!(
+        serde_json::from_str::<Request>(PING_REQUEST).expect("test precondition"),
+        ping_request
+    );
+
+    let pong_response = SuccessResponse {
+        id: "cross-build:ping".into(),
+        result: ResponseResult::Pong {
+            version: "0.1.2".into(),
+            build_id: "0123456789abcdef".into(),
+            boot_id: "17-23".into(),
+        },
+    };
+    assert_eq!(
+        serde_json::to_string(&pong_response).expect("test precondition"),
+        PONG_RESPONSE
+    );
+    assert_eq!(
+        serde_json::from_str::<SuccessResponse>(PONG_RESPONSE).expect("test precondition"),
+        pong_response
+    );
+
+    let stop_request = Request {
+        id: "cross-build:stop".into(),
+        method: Method::ServerStopIfBoot(ServerStopIfBootParams {
+            expected_boot_id: "17-23".into(),
+        }),
+    };
+    assert_eq!(
+        serde_json::to_string(&stop_request).expect("test precondition"),
+        STOP_REQUEST
+    );
+    assert_eq!(
+        serde_json::from_str::<Request>(STOP_REQUEST).expect("test precondition"),
+        stop_request
+    );
+
+    let stop_response = SuccessResponse {
+        id: "cross-build:stop".into(),
+        result: ResponseResult::Ok {},
+    };
+    assert_eq!(
+        serde_json::to_string(&stop_response).expect("test precondition"),
+        STOP_RESPONSE
+    );
+    assert_eq!(
+        serde_json::from_str::<SuccessResponse>(STOP_RESPONSE).expect("test precondition"),
+        stop_response
     );
 }
 

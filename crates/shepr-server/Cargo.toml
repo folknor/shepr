@@ -9,6 +9,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { workspace = true }
+futures-util = { workspace = true }
 interprocess = { workspace = true }
 libc = { workspace = true }
 ratatui = { workspace = true }
@@ -25,9 +26,11 @@ shepr-pty = { path = "../shepr-pty" }
 shepr-remote = { path = "../shepr-remote" }
 shepr-termio = { path = "../shepr-termio" }
 shepr-vt = { path = "../shepr-vt" }
-tokio = { workspace = true }
+# `net` provides `AsyncFd`, which the headless loop waits on its listeners with.
+tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
 # The endpoint handoff test drives a real client shell state machine against

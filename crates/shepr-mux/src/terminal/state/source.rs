@@ -39,11 +39,11 @@ impl HookSourceState {
         &self.stale_sessions
     }
 
-    pub(super) fn record_sequence(&mut self, value: u64) {
+    pub(super) fn record_sequence(&mut self, value: u64, sample: HookClockSample) {
         self.sequence = Some(HookSequence {
             value,
-            accepted_at: Instant::now(),
-            accepted_wall_clock: SystemTime::now(),
+            accepted_at: sample.monotonic,
+            accepted_wall_clock: sample.wall,
         });
     }
 
@@ -258,13 +258,21 @@ impl HookSequence {
         if seq > self.value {
             return false;
         }
+        // An actual reversal of the sampled wall clock corroborates even a
+        // small step. Do not lose a final idle report while it catches up.
+        if wall_clock < self.accepted_wall_clock {
+            return false;
+        }
         let monotonic_elapsed = now.saturating_duration_since(self.accepted_at);
         let wall_elapsed = wall_clock
             .duration_since(self.accepted_wall_clock)
             .unwrap_or_default();
         // Silence is not evidence of a clock step. Re-anchor only when the
         // server's wall clock has fallen behind its monotonic clock by the
-        // threshold. Reporter stamps have differing units, so they are never
+        // threshold. Smaller elapsed-time discrepancies without an actual
+        // wall-clock reversal can also be clock slew or sampling skew; they
+        // do not prove a step and must not admit a racing older report.
+        // Reporter stamps have differing units, so they are never
         // subtracted from a server clock or an observation Instant.
         monotonic_elapsed.saturating_sub(wall_elapsed) < crate::limits::HOOK_SEQUENCE_REANCHOR_AFTER
     }
@@ -284,6 +292,7 @@ pub(super) struct SuppressedFullLifecycleHookReport {
 pub(super) struct PendingFullLifecycleHookReport {
     pub(super) authority: HookAuthority,
     pub(super) seq: u64,
+    pub(super) sample: HookClockSample,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

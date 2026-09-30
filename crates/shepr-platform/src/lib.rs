@@ -9,7 +9,6 @@ mod clipboard;
 mod config_file;
 mod daemon;
 mod executable;
-pub mod git;
 mod host;
 pub mod ipc;
 mod limits;
@@ -20,7 +19,6 @@ mod process_identity;
 mod random;
 mod remote_bridge;
 mod remote_bridge_io;
-mod shutdown;
 mod ssh_paths;
 mod stderr_null;
 mod terminal_environment;
@@ -41,7 +39,6 @@ pub use process::{
 };
 pub use random::unpredictable_token;
 pub use remote_bridge_io::{RemoteBridgeOutcome, RemoteBridgeWake, forward_remote_bridge_stdio};
-pub use shutdown::HostShutdownMonitor;
 pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{
     RemoteSshConfigPaths, create_remote_ssh_config_dir, remote_bridge_endpoint_path,

@@ -192,6 +192,28 @@ impl EndpointRegistry {
         }
     }
 
+    /// When the client loop must next run `tick_health` and `take_failures`: at `now` while a
+    /// transport failure is queued (a send can fail during any event, and the loop learns of
+    /// the loss only from that entry), otherwise at the earliest heartbeat deadline. A writer
+    /// error stored while the loop sleeps surfaces through the reader's disconnect or the next
+    /// send, which fails once the writer has stopped.
+    pub(crate) fn next_service_deadline(&mut self, now: Instant) -> Option<Instant> {
+        if !self.failures.is_empty() {
+            return Some(now);
+        }
+        self.connections
+            .values_mut()
+            .filter_map(|connection| {
+                let health = connection.health.as_mut()?;
+                if let Some(read_activity) = &connection.read_activity {
+                    let (received_at, snapshot_received) = read_activity.observed();
+                    health.sync_reader_activity(received_at, snapshot_received);
+                }
+                Some(health.next_deadline())
+            })
+            .min()
+    }
+
     pub(crate) fn tick_health(&mut self, now: Instant) {
         let actions = self
             .connections
@@ -731,6 +753,47 @@ mod tests {
         registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn next_service_deadline_tracks_reader_activity() {
+        let mut registry = EndpointRegistry::empty();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let now = Instant::now();
+        let activity = insert_with_reader(&mut registry, &sent, now);
+        assert_eq!(
+            registry.next_service_deadline(now),
+            Some(now + crate::limits::HEARTBEAT_INTERVAL)
+        );
+
+        let received_at = now + Duration::from_millis(1);
+        activity.record(received_at, true);
+        assert_eq!(
+            registry.next_service_deadline(now),
+            Some(received_at + crate::limits::HEARTBEAT_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn a_queued_failure_makes_the_service_deadline_due() {
+        // Local has no heartbeat, so only the queued failure can wake an idle loop.
+        let now = Instant::now();
+        let mut registry = EndpointRegistry::new_at(
+            FakeTransport {
+                sent: Arc::new(Mutex::new(Vec::new())),
+                error: Some(io::ErrorKind::BrokenPipe),
+            },
+            1,
+            now,
+        );
+        assert_eq!(registry.next_service_deadline(now), None);
+        assert_eq!(
+            registry.send(&ClientMessage::ClientShellFocus { focused: true }),
+            EndpointSendOutcome::NotSent
+        );
+        assert_eq!(registry.next_service_deadline(now), Some(now));
+        assert_eq!(registry.take_failures().len(), 1);
+        assert_eq!(registry.next_service_deadline(now), None);
     }
 
     #[test]

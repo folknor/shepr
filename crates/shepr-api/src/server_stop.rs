@@ -618,11 +618,17 @@ fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> Se
 }
 
 fn server_stop_request(id: &str, expected_boot_id: Option<&str>) -> crate::schema::Request {
+    let method = match expected_boot_id {
+        Some(expected_boot_id) => {
+            crate::schema::Method::ServerStopIfBoot(crate::schema::ServerStopIfBootParams {
+                expected_boot_id: expected_boot_id.to_owned(),
+            })
+        }
+        None => crate::schema::Method::ServerStop(crate::schema::ServerStopParams::default()),
+    };
     crate::schema::Request {
         id: id.into(),
-        method: crate::schema::Method::ServerStop(crate::schema::ServerStopParams {
-            expected_boot_id: expected_boot_id.map(str::to_owned),
-        }),
+        method,
     }
 }
 
@@ -751,7 +757,7 @@ mod tests {
             received,
             server_stop_request("cli:server:stop", Some("17-23"))
         );
-        assert_eq!(received.method.traits().name, "server.stop");
+        assert_eq!(received.method.traits().name, "server.stop_if_boot");
     }
 
     #[test]

@@ -596,7 +596,6 @@ fn visible_blocker_overrides_hook_working() {
         source: "shepr:codex".into(),
         agent_label: "codex".into(),
         state: AgentState::Working,
-        message: None,
         seq: Some(1),
         session_ref: None,
     });
@@ -646,7 +645,6 @@ fn reserved_native_state_report_does_not_override_screen_state() {
         source: "shepr:claude".into(),
         agent_label: "claude".into(),
         state: AgentState::Blocked,
-        message: None,
         seq: Some(1),
         session_ref: shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
     });
@@ -702,7 +700,6 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
         source: "shepr:devin".into(),
         agent_label: "devin".into(),
         state: AgentState::Working,
-        message: None,
         seq: Some(1),
         session_ref: shepr_agent::agent::resume::AgentSessionRef::id("devin-session"),
     });
@@ -733,7 +730,6 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         source: "custom:pi".into(),
         agent_label: "pi".into(),
         state: AgentState::Working,
-        message: None,
         seq: Some(20),
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(first_session),
     });
@@ -745,7 +741,6 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
         source: "custom:pi".into(),
         agent_label: "pi".into(),
         state: AgentState::Working,
-        message: None,
         seq: Some(21),
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(second_session),
     });

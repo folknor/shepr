@@ -31,3 +31,35 @@ fn endpoint_notice_expires_without_a_click() {
     assert!(state.tick_transient_banners(far));
     assert!(state.visible_endpoint_notice.is_none());
 }
+
+#[test]
+fn transient_shell_deadlines_schedule_their_expiry() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_endpoint_error("failure", state.now);
+    state.compose(106, 20).expect("frame");
+    let error_deadline = state.endpoint_error_deadline.expect("error deadline");
+    assert_eq!(
+        state.timer_delay(error_deadline - std::time::Duration::from_secs(1)),
+        Some(std::time::Duration::from_secs(1))
+    );
+    state.endpoint_error = None;
+    state.endpoint_error_deadline = None;
+
+    assert!(state.push_endpoint_notice(
+        ClientEndpointNoticeKind::Rejected,
+        "code",
+        "title",
+        "body",
+    ));
+    state.compose(106, 20).expect("notice frame");
+    let notice_deadline = state
+        .endpoint_notice_deadline
+        .as_ref()
+        .map(|(_, _, deadline)| *deadline)
+        .expect("notice deadline");
+    assert_eq!(
+        state.timer_delay(notice_deadline - std::time::Duration::from_secs(1)),
+        Some(std::time::Duration::from_secs(1))
+    );
+}

@@ -12,12 +12,19 @@ use shepr_agent::agent::resume::AgentSessionStartSource;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_protocol::TerminalId;
 
+/// One caller-sampled clock pair used throughout a report's validation and commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookClockSample {
+    pub monotonic: Instant,
+    pub wall: SystemTime,
+}
+
 /// Runtime hook authority. Observation times are monotonic instants sampled
 /// by the server; they are not the reporter's wall-clock sequence numbers.
 /// `reported_at` is the loop's report observation time. Detector observations
 /// retain their pre-probe timestamp, so an older queued detector observation
 /// cannot override a report merely because it is processed later. Sequence
-/// ordering separately samples monotonic and wall clocks at acceptance.
+/// ordering uses the caller-sampled monotonic and wall-clock pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookAuthority {
     pub source: String,
@@ -175,6 +182,28 @@ mod sessions;
 mod source;
 
 use source::*;
+
+#[cfg(test)]
+impl From<Instant> for HookClockSample {
+    fn from(monotonic: Instant) -> Self {
+        // Synthetic observation times advance both clocks equally unless a test
+        // explicitly supplies a clock step.
+        std::thread_local! {
+            static ORIGIN: Instant = Instant::now();
+        }
+        ORIGIN.with(|origin| Self {
+            monotonic,
+            wall: if monotonic >= *origin {
+                SystemTime::UNIX_EPOCH
+                    + std::time::Duration::from_secs(1_000_000)
+                    + monotonic.duration_since(*origin)
+            } else {
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000)
+                    - origin.duration_since(monotonic)
+            },
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests;

@@ -1,7 +1,8 @@
 # Defects: client, TUI shell and terminal input
 
-Filed from the defect hunt over `crates/shepr-client` (endpoint, transport,
-handshake, loop, input, and the `shell/` presentation) and `crates/shepr-termio`.
+Filed from the defect hunt over `crates/shepr-client` and `crates/shepr-termio`,
+and from the reviews of the waves that resolved it. IDs continue the original
+series.
 
 1. An entry is removed entirely when completely resolved. No historical record
    stays here.
@@ -12,18 +13,18 @@ handshake, loop, input, and the `shell/` presentation) and `crates/shepr-termio`
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CLIENT-023 - The client loop wakes every 100 ms while idle
+## CLIENT-027 - The idle-sleep test proves little, and some pending work still polls
 
-Scope: client-shell and client-endpoint.
+Scope: client-endpoint (lateral from review).
 
-`timer_delay` (`crates/shepr-client/src/shell/state.rs`) knows only the
-autoscroll and repaint deadlines; the notice, endpoint error, workspace highlight
-and selection-clear deadlines rely on the `MAX_CLIENT_TIMER_DELAY` (100 ms) cap in
-the client loop (`lib.rs`, `limits.rs`), so an idle client wakes ten times a
-second forever. The same tick also drives endpoint health checks and reconnect
-scheduling, whose deadlines live in `endpoint/registry.rs` and
-`endpoint/supervisor.rs` and are not exposed, which is why the cap cannot simply
-be lifted (a note at each site says so). Expose the next health and retry
-deadline from the registry, fold every shell deadline into `timer_delay`, and let
-the loop sleep until the earliest; one fixer needs the shell state, the loop and
-the endpoint registry and supervisor together.
+- `no_deadline_leaves_the_loop_asleep_past_one_hundred_milliseconds`
+  (`crates/shepr-client/src/lib.rs`) only exercises `std::future::pending` and
+  costs 120 ms of wall time; it does not drive the client loop's timer selection.
+  Replace it with a test on the deadline computation itself (no deadline yields
+  no timer; the earliest of shell, health and retry deadlines wins).
+- The loop keeps a 100 ms recheck while a workspace highlight, a client command
+  or an activation is pending, because those deadlines are private to
+  `shell/navigation/workspace_navigation.rs`, `endpoint/commands.rs` and
+  `endpoint/activation/model.rs`. `EndpointCommands` could expose its exact
+  expiry (the in-flight `sent_at` plus the command timeout), and the other two
+  their deadlines, so the loop sleeps exactly until the earliest.

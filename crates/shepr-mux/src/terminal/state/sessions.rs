@@ -10,11 +10,11 @@ impl TerminalState {
 
     pub fn set_agent_session_ref_at(
         &mut self,
-        source: String,
+        source: shepr_agent::agent::AgentSource,
         agent_label: String,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        now: Instant,
+        sample: impl Into<HookClockSample>,
     ) -> Option<TerminalStateMutation> {
         self.set_agent_session_ref_for_typed_start_source_at(
             source,
@@ -22,31 +22,40 @@ impl TerminalState {
             session_ref,
             seq,
             None,
-            now,
+            sample,
         )
     }
 
     pub fn set_agent_session_ref_for_typed_start_source_at(
         &mut self,
-        source: String,
+        source: shepr_agent::agent::AgentSource,
         agent_label: String,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
-        now: Instant,
+        sample: impl Into<HookClockSample>,
     ) -> Option<TerminalStateMutation> {
+        let sample = sample.into();
+        let now = sample.monotonic;
+        let typed_source = source;
+        let source = typed_source.to_source_string();
         self.warn_unrecognized_hook_identity(&source, &agent_label);
         // Built-in source names cannot claim another agent. Custom sources
         // retain arbitrary labels, but cannot mint official resume identities.
-        if Agent::parse_source(&source).is_some_and(|agent| agent.label() != agent_label) {
+        if typed_source
+            .agent()
+            .is_some_and(|agent| agent.label() != agent_label)
+        {
             return None;
         }
         let session_ref = session_ref?;
         // Policy validation belongs here too: callers need not have used the
         // API constructor, and a rejected reference cannot alter authority.
-        let persisted_session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
-            &source,
-            &agent_label,
+        let persisted_session = shepr_agent::agent::resume::PersistedAgentSession::new(
+            typed_source.clone(),
+            typed_source
+                .agent()
+                .or_else(|| Agent::parse_canonical_label(&agent_label))?,
             session_ref.clone(),
         )?;
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
@@ -128,7 +137,7 @@ impl TerminalState {
                 return None;
             }
             let seq = seq?;
-            if self.hook_seq_superseded(&source, seq, now) {
+            if self.hook_seq_superseded(&source, seq, sample) {
                 return None;
             }
             if !self.hook_report_sequence_has_room(&source) {
@@ -140,7 +149,7 @@ impl TerminalState {
             let previous_session = self.current_session_identity_for_persistence();
             // Capacity and ordering were validated above. Commit the sequence
             // before the pending start; no fallible step follows either write.
-            if !self.record_hook_seq(source.clone(), seq, now) {
+            if !self.record_hook_seq(source.clone(), seq, sample) {
                 return None;
             }
             self.hook_sources
@@ -159,11 +168,7 @@ impl TerminalState {
                 );
 
             if process_present {
-                self.clear_full_lifecycle_hook_suppression_for_detected_agent(
-                    None,
-                    known_agent,
-                    now,
-                );
+                self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
                 let current_session = self.current_session_identity_for_persistence();
                 return Some(TerminalStateMutation {
                     effective_state_change: self
@@ -221,7 +226,7 @@ impl TerminalState {
             return None;
         }
 
-        if !unsequenced_selection && !self.accept_hook_report_at(&source, seq, now) {
+        if !unsequenced_selection && !self.accept_hook_report_at(&source, seq, sample) {
             return None;
         }
         if selection_can_reconcile {
@@ -243,14 +248,10 @@ impl TerminalState {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_state = self.state;
         let previous_session = self.current_session_identity_for_persistence();
-        // A replacing Codex session must not stay shadowed by the previous
-        // session's turn report, which would keep supplying the identity.
-        if persisted_session
-            .agent
-            .descriptor()
-            .hook_session_policy
-            .state_requires_current_session
-            && session_replacement_allowed
+        // A recognized replacement start must not stay shadowed by the old
+        // session's state authority, which otherwise keeps supplying its id
+        // to persistence and rewrites subsequent reports back to that id.
+        if session_replacement_allowed
             && self.hook_authority.as_ref().is_some_and(|authority| {
                 authority.source == source
                     && authority.agent_label == agent_label
@@ -348,15 +349,16 @@ impl TerminalState {
         &self,
         source: &str,
         seq: Option<u64>,
-        now: Instant,
+        sample: impl Into<HookClockSample>,
     ) -> bool {
+        let sample = sample.into();
         seq.map_or_else(
             || {
                 self.hook_sources
                     .get(source)
                     .is_none_or(|record| record.sequence_value().is_none())
             },
-            |seq| !self.hook_seq_superseded(source, seq, now),
+            |seq| !self.hook_seq_superseded(source, seq, sample),
         )
     }
 
@@ -364,29 +366,40 @@ impl TerminalState {
         &mut self,
         source: &str,
         seq: Option<u64>,
-        now: Instant,
+        sample: impl Into<HookClockSample>,
     ) -> bool {
-        if !self.hook_report_order_allows(source, seq, now) {
+        let sample = sample.into();
+        if !self.hook_report_order_allows(source, seq, sample) {
             return false;
         }
         match seq {
-            Some(seq) => self.record_hook_seq(source.to_string(), seq, now),
+            Some(seq) => self.record_hook_seq(source.to_string(), seq, sample),
             None => true,
         }
     }
 
     /// Sequence numbers are wall-clock stamps, not monotonic observation times.
     /// Within one generation they must increase unless a backward step in the
-    /// server's wall clock is corroborated by its monotonic clock. Both clocks
-    /// are sampled at acceptance, independently of the event observation time.
+    /// server's wall clock is corroborated by its monotonic clock. The caller supplies
+    /// the same clock pair to validation and acceptance.
     /// Generation transitions also reset ordering. Mere silence never does.
-    pub(super) fn hook_seq_superseded(&self, source: &str, seq: u64, _now: Instant) -> bool {
+    pub(super) fn hook_seq_superseded(
+        &self,
+        source: &str,
+        seq: u64,
+        sample: HookClockSample,
+    ) -> bool {
         self.hook_sources
             .get(source)
-            .is_some_and(|record| record.seq_superseded(seq, Instant::now(), SystemTime::now()))
+            .is_some_and(|record| record.seq_superseded(seq, sample.monotonic, sample.wall))
     }
 
-    pub(super) fn record_hook_seq(&mut self, source: String, seq: u64, _now: Instant) -> bool {
+    pub(super) fn record_hook_seq(
+        &mut self,
+        source: String,
+        seq: u64,
+        sample: HookClockSample,
+    ) -> bool {
         if !self.hook_report_sequence_has_room(&source) {
             tracing::debug!(source = %source, limit = MAX_HOOK_REPORT_SOURCES,
                 "ignoring hook report from a new source: too many sources");
@@ -398,7 +411,7 @@ impl TerminalState {
         self.hook_sources
             .entry(source)
             .or_default()
-            .record_sequence(seq);
+            .record_sequence(seq, sample);
         true
     }
 
@@ -458,7 +471,7 @@ impl TerminalState {
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
     ) -> Option<TerminalStateMutation> {
-        self.set_agent_session_ref_at(source, agent_label, session_ref, seq, Instant::now())
+        self.set_agent_session_ref_at(source.into(), agent_label, session_ref, seq, Instant::now())
     }
 
     pub fn set_agent_session_ref_for_session_start(
@@ -470,7 +483,7 @@ impl TerminalState {
         session_start_source: Option<&str>,
     ) -> Option<TerminalStateMutation> {
         self.set_agent_session_ref_for_typed_start_source_at(
-            source,
+            source.into(),
             agent_label,
             session_ref,
             seq,

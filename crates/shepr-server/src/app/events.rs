@@ -23,16 +23,17 @@ pub(crate) enum StateEvent {
     },
     HookStateReported {
         pane_id: PaneId,
-        source: String,
+        sample: shepr_mux::terminal::state::HookClockSample,
+        source: shepr_agent::agent::AgentSource,
         agent_label: String,
         state: AgentState,
-        message: Option<String>,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
     },
     AgentSessionReported {
         pane_id: PaneId,
-        source: String,
+        sample: shepr_mux::terminal::state::HookClockSample,
+        source: shepr_agent::agent::AgentSource,
         agent_label: String,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
@@ -81,6 +82,34 @@ impl App {
         changed
     }
 
+    /// Check the producer before publication, checkpointing, or forwarding.
+    /// A discarded resume attempt can finish after a successor runtime starts.
+    pub(crate) fn admit_runtime_event(&self, ev: AppEvent) -> Option<AppEvent> {
+        match ev {
+            AppEvent::Runtime {
+                pane_id,
+                generation,
+                event,
+            } => {
+                let runtime = self
+                    .state
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, _)| {
+                        self.state.runtime_for_pane_in_workspace(
+                            &self.terminal_runtimes,
+                            index,
+                            pane_id,
+                        )
+                    });
+                runtime.filter(|runtime| runtime.generation() == generation)?;
+                self.admit_runtime_event(*event)
+            }
+            event => Some(event),
+        }
+    }
+
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
         let _ = self.handle_internal_event_with_render_demand(ev);
     }
@@ -120,6 +149,9 @@ impl App {
         ev: AppEvent,
         pane_exit_prepared: bool,
     ) -> RenderDemand {
+        let Some(ev) = self.admit_runtime_event(ev) else {
+            return RenderDemand::None;
+        };
         if matches!(&ev, AppEvent::ClipboardWrite { .. }) {
             return RenderDemand::None;
         }
@@ -183,7 +215,13 @@ impl App {
                     }
                 }
             }
-        } else if let Some(event) = StateEvent::from_app_event(ev) {
+        } else if let Some(event) = StateEvent::from_app_event(
+            ev,
+            shepr_mux::terminal::state::HookClockSample {
+                monotonic: self.clock.now,
+                wall: self.clock.wall_now,
+            },
+        ) {
             touched_pane = Some(event.pane_id());
             state_changed =
                 self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
@@ -266,5 +304,149 @@ impl App {
 impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         self.handle_internal_event_with_render_demand(ev) != RenderDemand::None
+    }
+}
+
+#[cfg(test)]
+mod runtime_generation_tests {
+    use super::*;
+    use crate::test_support::*;
+
+    #[tokio::test]
+    async fn discarded_and_replaced_runtimes_cannot_remove_a_restored_pane() {
+        let _env = IsolatedEnv::new();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::Config::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.root_pane();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("terminal")
+            .clone();
+        let session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
+            "shepr:codex",
+            "codex",
+            shepr_agent::agent::resume::AgentSessionRef::id("restored").expect("session"),
+        )
+        .expect("persisted identity");
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.set_persisted_agent_session(session.clone());
+        terminal.pending_agent_resume_plan =
+            Some(test_codex_plan("restored", vec!["codex".into()]));
+        let discarded = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let generation = discarded.generation();
+        drop(discarded);
+        let died = || AppEvent::Runtime {
+            pane_id,
+            generation,
+            event: Box::new(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            }),
+        };
+        assert_eq!(
+            app.handle_internal_event_with_render_demand(died()),
+            RenderDemand::None
+        );
+        assert!(app.state.workspaces[0].contains_pane(pane_id));
+        assert_eq!(
+            app.state.terminals[&terminal_id]
+                .persisted_agent_session
+                .as_ref(),
+            Some(&session)
+        );
+        assert!(
+            app.state.terminals[&terminal_id]
+                .pending_agent_resume_plan
+                .is_some()
+        );
+
+        let replacement = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let replacement_generation = replacement.generation();
+        assert_ne!(generation, replacement_generation);
+        app.insert_test_runtime(pane_id, replacement);
+        // This also covers a checkpointed exit replayed after replacement:
+        // its original envelope is checked again before any removal.
+        assert_eq!(app.handle_prepared_pane_exit(died()), RenderDemand::None);
+        assert!(app.state.workspaces[0].contains_pane(pane_id));
+        assert!(
+            app.admit_runtime_event(AppEvent::Runtime {
+                pane_id,
+                generation: replacement_generation,
+                event: Box::new(AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                }),
+            })
+            .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_cannot_forward_clipboard_or_update_detector_and_cwd() {
+        let _env = IsolatedEnv::new();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::Config::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.root_pane();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let generation = runtime.generation();
+        app.insert_test_runtime(pane_id, runtime);
+        let stale = shepr_mux::events::RuntimeGeneration::alloc();
+        for event in [
+            AppEvent::ClipboardWrite {
+                pane_id,
+                content: b"stale".to_vec(),
+            },
+            AppEvent::AgentProcessDetected {
+                pane_id,
+                agent: Agent::Codex,
+                observed_at: app.clock.now,
+            },
+            AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Codex),
+                state: AgentState::Working,
+                visible_blocker: false,
+                process_exited: false,
+                observed_at: app.clock.now,
+            },
+            AppEvent::TerminalCwdReported {
+                pane_id,
+                cwd: shepr_mux::UsableCwd::new("/".into()).expect("root"),
+            },
+        ] {
+            assert!(
+                app.admit_runtime_event(AppEvent::Runtime {
+                    pane_id,
+                    generation: stale,
+                    event: Box::new(event),
+                })
+                .is_none()
+            );
+        }
+        assert!(
+            app.admit_runtime_event(AppEvent::Runtime {
+                pane_id,
+                generation,
+                event: Box::new(AppEvent::ClipboardWrite {
+                    pane_id,
+                    content: Vec::new()
+                }),
+            })
+            .is_some()
+        );
     }
 }

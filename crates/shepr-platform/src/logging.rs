@@ -146,6 +146,9 @@ pub fn help_log_paths_summary(dir: &Path) -> String {
     )
 }
 
+/// One shared file-rotation implementation for client and server logs. Its
+/// inode checks and `flock` coordination are Linux file plumbing, so keeping
+/// it here avoids separate writers in the crates that initialize each log.
 struct RotatingFileMakeWriter {
     state: Arc<Mutex<RotatingFileState>>,
 }

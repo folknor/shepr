@@ -65,6 +65,22 @@ impl HeadlessServer {
         });
     }
 
+    /// Rebuilds the shared session when application state that feeds it has
+    /// changed, so a render and a new connection's seed both project from the
+    /// one current source. A rebuild advances the generation, so existing
+    /// clients see that change too. Afterwards the cache is always present.
+    pub(super) fn refresh_stale_shell_session_cache(&mut self) {
+        let app_revision = self.app.state.shell_projection_revision;
+        let cache_is_current = self
+            .shell_session_cache
+            .as_ref()
+            .is_some_and(|cache| cache.revision == app_revision);
+        if !cache_is_current {
+            self.rebuild_shell_session_cache();
+            self.shell_session_generation = self.shell_session_generation.saturating_add(1);
+        }
+    }
+
     /// Timer path for inputs no event reports. Rebuilds the shared session and
     /// checks clients until the first changed projection. That change requests
     /// a render, which reuses the projections already built on this pass. An
@@ -442,15 +458,8 @@ impl HeadlessServer {
         // Rebuild the shared session only when application state that feeds
         // it changed. `/proc`-derived fields are rechecked by the headless
         // loop's timer (`refresh_shell_projection_sources`), not here.
-        let app_revision = self.app.state.shell_projection_revision;
-        let refresh_session = !render_targets.is_empty()
-            && self
-                .shell_session_cache
-                .as_ref()
-                .is_none_or(|cache| cache.revision != app_revision);
-        if refresh_session {
-            self.rebuild_shell_session_cache();
-            self.shell_session_generation = self.shell_session_generation.saturating_add(1);
+        if !render_targets.is_empty() {
+            self.refresh_stale_shell_session_cache();
         }
         // (client, claimed bytes, message limit)
         let mut oversized_notices: Vec<(ClientId, usize, usize)> = Vec::new();

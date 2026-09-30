@@ -2,6 +2,9 @@ use super::*;
 
 use crate::limits::SHUTDOWN_FLUSH_TIMEOUT;
 
+mod host_shutdown;
+pub(super) use host_shutdown::HostShutdownMonitor;
+
 /// The server lifecycle states that can affect saves or request handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShutdownPhase {
@@ -216,7 +219,7 @@ impl ShutdownLifecycle {
 impl HeadlessServer {
     pub(super) fn start_host_shutdown_monitor(&mut self) {
         let quit_notify = self.server_event_tx.clone();
-        self.host_shutdown_monitor = Some(shepr_platform::HostShutdownMonitor::start(
+        self.host_shutdown_monitor = Some(HostShutdownMonitor::start(
             Arc::clone(self.lifecycle.host_shutdown_request_flag()),
             move || {
                 // Only a wakeup: the monitor updates the request flag before
@@ -267,7 +270,7 @@ impl HeadlessServer {
                 let generation = self
                     .host_shutdown_monitor
                     .as_ref()
-                    .map(shepr_platform::HostShutdownMonitor::warning_generation);
+                    .map(HostShutdownMonitor::warning_generation);
                 if self.lifecycle.frozen_warning_generation() != generation
                     && let Some(freeze) = self.lifecycle.restart_host_shutdown_warning()
                 {
@@ -293,7 +296,7 @@ impl HeadlessServer {
         let generation = self
             .host_shutdown_monitor
             .as_ref()
-            .map(shepr_platform::HostShutdownMonitor::warning_generation);
+            .map(HostShutdownMonitor::warning_generation);
         let persist_session = self.app.policy.persists_session();
         if persist_session {
             let Some(saved) = self.app.take_host_shutdown_checkpoint_result() else {

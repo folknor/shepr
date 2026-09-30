@@ -33,6 +33,7 @@ interprocess = "2.4.2"
 jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst", "serde_json"] }
 # Also the PTY layer (crates/shepr-pty/src/backend.rs): openpty, session setup, pre-exec.
 libc = "0.2"
+memchr = "2"
 # The client initializes Ratatui with Crossterm; other optional backends, the
 # calendar widget, layout cache, macros and underline-color support are unused.
 # `unstable-rendered-line-info` provides `Paragraph::line_count`, so the help

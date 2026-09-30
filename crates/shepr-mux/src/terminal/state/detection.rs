@@ -129,7 +129,6 @@ impl TerminalState {
                     previous_detected_agent
                 },
                 agent,
-                now,
             );
         }
         self.fallback_state = fallback_state;

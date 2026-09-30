@@ -10,11 +10,17 @@ fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
         assert!(!state.request_selection_drag_repaint(now + ms(elapsed)));
         assert_eq!(state.selection_repaint_deadline, Some(now + ms(16)));
     }
-    assert_eq!(state.timer_delay(now + ms(8)), ms(8));
+    assert_eq!(state.timer_delay(now + ms(8)), Some(ms(8)));
     assert!(!state.tick_selection_autoscroll(now + ms(15)).repaint);
     assert!(state.tick_selection_autoscroll(now + ms(16)).repaint);
     assert!(state.selection_repaint_deadline.is_none());
     assert!(!state.tick_selection_autoscroll(now + ms(17)).repaint);
+}
+
+#[test]
+fn idle_shell_has_no_timer_deadline() {
+    let state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    assert_eq!(state.timer_delay(std::time::Instant::now()), None);
 }
 
 #[test]

@@ -1421,16 +1421,13 @@ name = "shepr-platform"
 version = "0.1.0"
 dependencies = [
  "crossterm",
- "futures-util",
  "interprocess",
  "libc",
  "sha2",
  "shepr-core",
  "shepr-test-support",
- "tokio",
  "tracing",
  "tracing-subscriber",
- "zbus",
 ]
 
 [[package]]
@@ -1483,6 +1480,7 @@ dependencies = [
  "bytes",
  "crossterm",
  "ctrlc",
+ "futures-util",
  "interprocess",
  "libc",
  "ratatui",
@@ -1506,6 +1504,7 @@ dependencies = [
  "toml",
  "tracing",
  "unicode-width",
+ "zbus",
 ]
 
 [[package]]
@@ -1553,6 +1552,7 @@ name = "shepr-vt"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "memchr",
  "serde",
  "shepr-core",
  "unicode-width",

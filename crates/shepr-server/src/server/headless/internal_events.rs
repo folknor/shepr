@@ -12,6 +12,18 @@ impl HeadlessServer {
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
+        let runtime_origin = match &ev {
+            AppEvent::Runtime {
+                pane_id,
+                generation,
+                ..
+            } => Some((*pane_id, *generation)),
+            _ => None,
+        };
+        let Some(ev) = self.app.admit_runtime_event(ev) else {
+            self.replaying_checkpointed_pane_exit = None;
+            return false;
+        };
         // A host shutdown warning that arrived since the loop last looked is
         // answered with its checkpoint before this event can change the
         // layout; after that, saving is frozen and events apply normally.
@@ -57,7 +69,14 @@ impl HeadlessServer {
                     if !self.app.pane_exit_checkpoint_generation_settled(generation) {
                         self.pending_checkpointed_pane_exits.push_back(
                             PendingCheckpointedPaneExit {
-                                event: ev,
+                                event: match runtime_origin {
+                                    Some((pane_id, generation)) => AppEvent::Runtime {
+                                        pane_id,
+                                        generation,
+                                        event: Box::new(ev),
+                                    },
+                                    None => ev,
+                                },
                                 checkpoint_generation: generation,
                             },
                         );
@@ -69,7 +88,14 @@ impl HeadlessServer {
                     // Keep the pre-exit layout live until its checkpoint is durable.
                     self.pending_checkpointed_pane_exits
                         .push_back(PendingCheckpointedPaneExit {
-                            event: ev,
+                            event: match runtime_origin {
+                                Some((pane_id, generation)) => AppEvent::Runtime {
+                                    pane_id,
+                                    generation,
+                                    event: Box::new(ev),
+                                },
+                                None => ev,
+                            },
                             checkpoint_generation,
                         });
                     return self.app.state.shell_projection_revision != projection_before;

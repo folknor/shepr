@@ -384,11 +384,11 @@ pub(super) fn git_trimmed_stdout(
     }
 }
 
-/// Runs one Git probe through the shared platform runner, typing its failure
-/// for the status refresh.
+/// Runs one Git probe through the mux runner, typing its failure for the
+/// status refresh.
 pub(super) fn run_git_output(cwd: &Path, args: &[&str]) -> Result<Output, GitReadError> {
-    use shepr_platform::git::GitCommandError;
-    shepr_platform::git::run_git(cwd, args).map_err(|error| match error {
+    use super::GitCommandError;
+    super::run_git(cwd, args).map_err(|error| match error {
         GitCommandError::Spawn(error) => GitReadError::Spawn {
             cwd: cwd.to_path_buf(),
             message: error.to_string(),

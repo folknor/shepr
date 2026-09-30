@@ -3,6 +3,19 @@ use std::time::Duration;
 /// Maximum retry delay for host-shutdown session checkpoints.
 pub(crate) const HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 
+/// Initial delay after the logind shutdown signal stream is lost. The delay
+/// retries promptly while avoiding a reconnect spin.
+pub(crate) const SHUTDOWN_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+
+/// Maximum delay while reconnecting after the logind shutdown signal stream is
+/// lost. The cap bounds recovery latency while keeping repeated failures
+/// inexpensive.
+pub(crate) const SHUTDOWN_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
+
+/// Multiplier for ordinary logind reconnect backoff between retries. Doubling
+/// grows quickly after failure while the delay stays capped above.
+pub(crate) const SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER: u32 = 2;
+
 /// Bounded queue capacity for events forwarded from client threads.
 pub(crate) const SERVER_EVENT_CHANNEL_CAPACITY: usize = 64;
 

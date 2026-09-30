@@ -6,7 +6,6 @@ use crate::limits::{
     PROCESS_RECHECK_MISSING_FOREGROUND_GROUP, PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT,
     TRANSIENT_COLOR_RECHECK_WINDOW,
 };
-use tokio::sync::mpsc;
 use tracing::warn;
 
 use super::agent_detection::{
@@ -32,7 +31,7 @@ pub(super) struct StateChangedUpdate {
 }
 
 pub(super) async fn publish_state_changed_event(
-    state_events: mpsc::Sender<AppEvent>,
+    state_events: impl Into<crate::events::EventSender>,
     pane_id: PaneId,
     update: StateChangedUpdate,
 ) {
@@ -40,6 +39,7 @@ pub(super) async fn publish_state_changed_event(
     // Waiting for queue space here preserves correctness-critical state transitions
     // without blocking pane I/O.
     if let Err(e) = state_events
+        .into()
         .send(AppEvent::StateChanged {
             pane_id,
             agent: update.agent,
@@ -59,12 +59,13 @@ pub(super) async fn publish_state_changed_event(
 }
 
 pub(super) async fn publish_agent_process_detected_event(
-    state_events: mpsc::Sender<AppEvent>,
+    state_events: impl Into<crate::events::EventSender>,
     pane_id: PaneId,
     agent: Agent,
     observed_at: std::time::Instant,
 ) {
     if let Err(e) = state_events
+        .into()
         .send(AppEvent::AgentProcessDetected {
             pane_id,
             agent,
@@ -894,7 +895,7 @@ impl DetectorState {
 
     pub(super) async fn apply_publish_update(
         &mut self,
-        state_events: mpsc::Sender<AppEvent>,
+        state_events: impl Into<crate::events::EventSender>,
         pane_id: PaneId,
         agent: Option<Agent>,
         update: AgentDetectionPublishUpdate,

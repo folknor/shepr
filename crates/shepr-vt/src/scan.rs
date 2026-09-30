@@ -31,6 +31,7 @@ use crate::limits::{
     MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_PARSER_OSC_BYTES,
     MAX_U16_DECIMAL_DIGITS, MAX_XTGETTCAP_BYTES, XTGETTCAP_REPLY_OVERHEAD_BYTES,
 };
+use memchr::memchr;
 
 /// Raw OSC working-directory report. It may be a URI or a path, so parsing
 /// belongs to the pane after the terminal scanner has framed it.
@@ -108,7 +109,7 @@ impl Scanner {
         while index < bytes.len() {
             if self.state == State::Ground {
                 // Fast path: only ESC leaves ground state.
-                match bytes[index..].iter().position(|&b| b == 0x1b) {
+                match memchr(0x1b, &bytes[index..]) {
                     Some(offset) => index += offset,
                     None => break,
                 }

@@ -69,7 +69,7 @@ use interprocess::local_socket::traits::Stream as _;
 use tracing::{info, warn};
 
 use shepr_platform::ipc::LocalStream;
-use shepr_protocol::{ClientMessage, ServerMessage};
+use shepr_protocol::{ClientMessage, ServerMessage, surface_reuse::DecodedServerMessage};
 use shepr_termio::blit as render_ansi;
 
 /// Runs the local shell client with startup settings already loaded by the
@@ -497,6 +497,19 @@ struct ClientLoop {
     will_query_host_cell_size: bool,
 }
 
+fn earliest_client_timer_deadline(
+    deadlines: impl IntoIterator<Item = Option<std::time::Instant>>,
+) -> Option<std::time::Instant> {
+    deadlines.into_iter().flatten().min()
+}
+
+async fn wait_for_client_timer(deadline: Option<std::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
 impl ClientLoop {
     async fn run(&mut self) -> Result<(), ClientError> {
         while !self.should_quit.load(Ordering::Acquire) {
@@ -541,16 +554,36 @@ impl ClientLoop {
                 },
                 &self.supervisor_tx,
             );
-            // Keep the timer-service cadence for endpoint health and reconnect work; a shell
-            // deadline may shorten it, but cannot replace those endpoint-owned deadlines.
-            let timer_delay = self.state.shell.timer_delay(loop_now);
-            let timer_deadline = self.client_timer.deadline(loop_now, timer_delay);
+            let shell_deadline = self
+                .state
+                .shell
+                .timer_delay(loop_now)
+                .and_then(|delay| loop_now.checked_add(delay));
+            let activation_poll_deadline = self
+                .state
+                .presentation
+                .handoff()
+                .is_some()
+                .then_some(loop_now + limits::CLIENT_PENDING_TIMER_POLL_INTERVAL);
+            let timer_deadline = earliest_client_timer_deadline([
+                shell_deadline,
+                activation_poll_deadline,
+                self.write_stream.next_service_deadline(loop_now),
+                self.supervisors.next_retry_deadline(),
+            ])
+            .map(|deadline| {
+                self.client_timer
+                    .deadline(loop_now, deadline.saturating_duration_since(loop_now))
+            });
+            if timer_deadline.is_none() {
+                self.client_timer.fired();
+            }
             let event = if let Some(event) = self.scheduled_activation.take() {
                 event
             } else {
                 tokio::select! {
                     biased;
-                    _ = tokio::time::sleep_until(timer_deadline.into()) => ClientLoopEvent::Timer,
+                    _ = wait_for_client_timer(timer_deadline) => ClientLoopEvent::Timer,
                     ev = self.supervisor_rx.recv() => ev.map_or(ClientLoopEvent::Timer, ClientLoopEvent::EndpointSupervisor),
                     ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
                 }
@@ -880,7 +913,7 @@ impl ClientLoop {
         &mut self,
         endpoint_id: &endpoint::ClientEndpointId,
         generation: u64,
-        message: Box<ServerMessage>,
+        message: Box<DecodedServerMessage>,
         now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self {
@@ -908,11 +941,11 @@ impl ClientLoop {
             .handoff()
             .is_some_and(|pending| pending.buffers_surface_evidence_for(endpoint_id, generation));
         let command_response = match message.as_ref() {
-            ServerMessage::ClientShellEndpointResponse {
+            DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse {
                 boot_id,
                 request_id,
                 ..
-            } => endpoint_commands.accepts_response(endpoint_id, generation, boot_id, request_id),
+            }) => endpoint_commands.accepts_response(endpoint_id, generation, boot_id, request_id),
             _ => false,
         };
         let presentation_decision = endpoint::PresentationGate::new(
@@ -927,35 +960,9 @@ impl ClientLoop {
         if presentation_decision == endpoint::PresentationDecision::Drop {
             return Ok(ClientLoopAction::NextEvent);
         }
-        match *message {
-            ServerMessage::PaneSurface(surface) => {
-                if presentation_decision == endpoint::PresentationDecision::Buffer {
-                    let progress = state
-                        .presentation
-                        .handoff_mut()
-                        .map(|pending| pending.receive_surface(endpoint_id, generation, surface));
-                    if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                        && let Some(event) = complete_endpoint_activation(
-                            state,
-                            write_stream,
-                            endpoint_commands,
-                            now,
-                        )?
-                    {
-                        *scheduled_activation = Some(event);
-                    }
-                    return Ok(ClientLoopAction::NextEvent);
-                }
-                state.shell.set_pane_surface(surface);
-                let composed = state.shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                );
-                if let Some(frame) = composed {
-                    state.present_frame(frame);
-                }
-            }
-            ServerMessage::PaneSurfacePatch(patch) => {
+        let message = match *message {
+            DecodedServerMessage::Wire(message) => message,
+            DecodedServerMessage::PaneSurfacePatch(patch) => {
                 if presentation_decision == endpoint::PresentationDecision::Buffer {
                     let progress = state
                         .presentation
@@ -1028,6 +1035,36 @@ impl ClientLoop {
                     if let Some(frame) = composed {
                         state.present_frame(frame);
                     }
+                }
+                return Ok(ClientLoopAction::NextEvent);
+            }
+        };
+        match message {
+            ServerMessage::PaneSurface(surface) => {
+                if presentation_decision == endpoint::PresentationDecision::Buffer {
+                    let progress = state
+                        .presentation
+                        .handoff_mut()
+                        .map(|pending| pending.receive_surface(endpoint_id, generation, surface));
+                    if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
+                        && let Some(event) = complete_endpoint_activation(
+                            state,
+                            write_stream,
+                            endpoint_commands,
+                            now,
+                        )?
+                    {
+                        *scheduled_activation = Some(event);
+                    }
+                    return Ok(ClientLoopAction::NextEvent);
+                }
+                state.shell.set_pane_surface(surface);
+                let composed = state.shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                );
+                if let Some(frame) = composed {
+                    state.present_frame(frame);
                 }
             }
             ServerMessage::ServerShutdown { reason } => {
@@ -1420,3 +1457,57 @@ use terminal_setup::{
 };
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod client_timer_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    struct TimerTransport;
+
+    impl endpoint::EndpointTransport for TimerTransport {
+        fn send(&mut self, _message: &ClientMessage) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn disconnect(&mut self) {}
+
+        fn flush(&mut self, _deadline: Instant) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn take_error(&mut self) -> Option<io::Error> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn no_deadline_leaves_the_loop_asleep_past_one_hundred_milliseconds() {
+        let deadline = earliest_client_timer_deadline([None, None]);
+        let result =
+            tokio::time::timeout(Duration::from_millis(120), wait_for_client_timer(deadline)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_due_health_deadline_still_wakes_the_loop() {
+        let now = Instant::now();
+        let health_started = now
+            .checked_sub(limits::HEARTBEAT_INTERVAL)
+            .expect("test precondition: monotonic clock has elapsed a heartbeat interval");
+        let endpoint_id = endpoint::ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("timer-test").expect("test machine label"),
+        );
+        let mut registry = endpoint::EndpointRegistry::empty();
+        registry.insert(endpoint_id, TimerTransport, 1, false, health_started);
+        let health_deadline = registry
+            .next_service_deadline(now)
+            .expect("SSH endpoint has a health deadline");
+        assert!(health_deadline <= now);
+        let deadline = earliest_client_timer_deadline([Some(health_deadline)]);
+        assert_eq!(deadline, Some(health_deadline));
+        tokio::time::timeout(Duration::from_millis(100), wait_for_client_timer(deadline))
+            .await
+            .expect("due health deadline wakes the client loop");
+    }
+}

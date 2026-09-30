@@ -131,11 +131,4 @@ pub enum ServerMessage {
     PresentationReady(String),
     /// Response to a connection health probe.
     HealthPong,
-
-    /// Client-side result of applying `SurfaceUpdate`, carried in the shared
-    /// message pipeline but never sent. Keep it skipped so framing it fails.
-    /// Both ends use the same build, so this local variant has no cross-build
-    /// wire index to preserve.
-    #[serde(skip)]
-    PaneSurfacePatch(PaneSurfacePatch),
 }

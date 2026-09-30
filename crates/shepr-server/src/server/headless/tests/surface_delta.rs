@@ -13,7 +13,9 @@ fn decode_surface_message(
     message: ServerMessage,
 ) -> shepr_protocol::PaneSurfaceFrame {
     match decoder.decode(message).expect("decode surface message") {
-        ServerMessage::PaneSurface(surface) => surface,
+        shepr_protocol::surface_reuse::DecodedServerMessage::Wire(ServerMessage::PaneSurface(
+            surface,
+        )) => surface,
         other => panic!("expected decoded pane surface, got {other:?}"),
     }
 }

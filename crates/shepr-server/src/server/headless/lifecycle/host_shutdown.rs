@@ -21,9 +21,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use futures_util::StreamExt;
 use tokio::sync::watch;
 
+use crate::limits::{
+    SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER, SHUTDOWN_RECONNECT_INITIAL_DELAY,
+    SHUTDOWN_RECONNECT_MAX_DELAY,
+};
+
 /// Watches logind for host shutdown warnings and cancellations. Dropping it
 /// stops the watch and releases any delay inhibitor it holds.
-pub struct HostShutdownMonitor {
+pub(in crate::server::headless) struct HostShutdownMonitor {
     task: tokio::task::JoinHandle<()>,
     shared: Arc<Shared>,
     /// The warning generation the server has checkpointed for.
@@ -34,7 +39,10 @@ impl HostShutdownMonitor {
     /// Start watching. `requested` is set while a host shutdown is pending
     /// and cleared when it is cancelled; `wake` runs after every change.
     /// Must be called inside a tokio runtime.
-    pub fn start(requested: Arc<AtomicBool>, wake: impl Fn() + Send + Sync + 'static) -> Self {
+    pub(in crate::server::headless) fn start(
+        requested: Arc<AtomicBool>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let shared = Arc::new(Shared {
             requested,
             generation: AtomicU64::new(0),
@@ -50,7 +58,7 @@ impl HostShutdownMonitor {
     }
 
     /// Generation associated with the current or most recent shutdown warning.
-    pub fn warning_generation(&self) -> u64 {
+    pub(in crate::server::headless) fn warning_generation(&self) -> u64 {
         self.shared.generation.load(Ordering::Acquire)
     }
 
@@ -59,7 +67,7 @@ impl HostShutdownMonitor {
     /// and let the shutdown proceed. A call with no warning pending, or one
     /// that races a cancellation, is ignored: each warning is numbered, and
     /// only a release for the warning still pending counts.
-    pub fn release_delay_lock(&self, generation: u64) {
+    pub(in crate::server::headless) fn release_delay_lock(&self, generation: u64) {
         if self.warning_generation() == generation {
             self.checkpointed.send_replace(generation);
         }
@@ -136,21 +144,21 @@ impl Shared {
 }
 
 async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
-    let mut retry = super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY;
+    let mut retry = SHUTDOWN_RECONNECT_INITIAL_DELAY;
     let mut refresh_pending_warning = false;
     // The sender lives in the handle, whose drop also aborts this task; a
     // closed channel only means the abort has not landed yet.
     while checkpoints.has_changed().is_ok() {
         match watch_shutdown(&shared, &mut checkpoints, refresh_pending_warning).await {
             Ok(()) => {
-                retry = super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY;
+                retry = SHUTDOWN_RECONNECT_INITIAL_DELAY;
                 refresh_pending_warning = shared.requested.load(Ordering::Acquire);
             }
             Err(err) => {
                 let shutdown_pending = shared.requested.load(Ordering::Acquire);
                 refresh_pending_warning |= shutdown_pending;
                 let retry_delay = if shutdown_pending {
-                    super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY
+                    SHUTDOWN_RECONNECT_INITIAL_DELAY
                 } else {
                     retry
                 };
@@ -187,10 +195,10 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                 // A pending shutdown resets the delay; ordinary absence
                 // backs off.
                 retry = if shutdown_pending {
-                    super::limits::SHUTDOWN_RECONNECT_INITIAL_DELAY
+                    SHUTDOWN_RECONNECT_INITIAL_DELAY
                 } else {
-                    (retry * super::limits::SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER)
-                        .min(super::limits::SHUTDOWN_RECONNECT_MAX_DELAY)
+                    (retry * SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER)
+                        .min(SHUTDOWN_RECONNECT_MAX_DELAY)
                 };
             }
         }

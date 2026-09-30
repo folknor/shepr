@@ -9,6 +9,7 @@ use bytes::Bytes;
 use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
 use shepr_protocol::MAX_FRAME_SIZE;
 use shepr_protocol::command::EndpointCommand;
+use shepr_protocol::surface_reuse::DecodedServerMessage;
 
 pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
@@ -2102,6 +2103,133 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
 }
 
 #[tokio::test]
+async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
+    let mut server = test_headless_server();
+    let first = shepr_mux::workspace::Workspace::test_new("cached-cwd-first");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("cached-cwd-second");
+    let second_workspace_id = second.id.clone();
+    server.app.state.workspaces = vec![first, second];
+    server.app.state.ensure_test_terminals();
+    server.app.state.set_bookmark_index(Some(0));
+
+    let terminal_id = server.app.state.workspaces[0]
+        .terminal_id(first_pane)
+        .expect("first pane terminal")
+        .clone();
+    let older_cwd = shepr_test_support::ScratchDir::new("seed-cwd-older");
+    let newer_cwd = shepr_test_support::ScratchDir::new("seed-cwd-newer");
+    let older_cwd_text = older_cwd.path().to_str().expect("older cwd utf8");
+    let newer_cwd_text = newer_cwd.path().to_str().expect("newer cwd utf8");
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .expect("first pane terminal state")
+        .set_cwd(
+            shepr_mux::UsableCwd::new(older_cwd.path().to_path_buf()).expect("older cwd is usable"),
+        );
+    let public_pane_id = server
+        .app
+        .public_pane_id(0, first_pane)
+        .expect("first pane public id");
+
+    let (first_control, _first_render) = connect_matching_test_shell(&mut server, 7);
+    let first_seed = client_shell_snapshot(&first_control);
+    assert_eq!(
+        first_seed
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .expect("first pane snapshot")
+            .cwd
+            .as_deref(),
+        Some(older_cwd_text)
+    );
+    server.render_and_stream();
+    assert!(first_control.try_recv().is_err());
+
+    let cache_revision = server
+        .shell_session_cache
+        .as_ref()
+        .expect("session cache")
+        .revision;
+    assert_eq!(cache_revision, server.app.state.shell_projection_revision);
+
+    // Model an unreported cwd source moving forward without an application
+    // revision, like the foreground cwd read from `/proc` between timer runs.
+    // The live session now reads a newer cwd while the shared cache still has
+    // the older value.
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .expect("first pane terminal state")
+        .set_cwd(
+            shepr_mux::UsableCwd::new(newer_cwd.path().to_path_buf()).expect("newer cwd is usable"),
+        );
+    assert_eq!(
+        server.app.session_snapshot().panes[0].cwd.as_deref(),
+        Some(newer_cwd_text)
+    );
+    assert_eq!(
+        server
+            .shell_session_cache
+            .as_ref()
+            .expect("session cache")
+            .session
+            .panes[0]
+            .cwd
+            .as_deref(),
+        Some(older_cwd_text)
+    );
+
+    let (control, _render) = connect_matching_test_shell(&mut server, 8);
+    let seed = client_shell_snapshot(&control);
+    assert_eq!(
+        seed.panes
+            .iter()
+            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .expect("seed pane snapshot")
+            .cwd
+            .as_deref(),
+        Some(older_cwd_text)
+    );
+
+    assert!(server.place_test_client_on_workspace(ClientId::test_new(8), &second_workspace_id));
+    server.render_and_stream();
+    let location_projection = client_shell_snapshot(&control);
+    assert_eq!(
+        location_projection
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .expect("projected pane snapshot")
+            .cwd
+            .as_deref(),
+        Some(older_cwd_text),
+        "a location projection must not move cwd backwards from its seed"
+    );
+
+    assert!(server.refresh_shell_projection_sources());
+    let mut previous = location_projection.revision;
+    let refreshed = next_projection(&mut server, &control, &mut previous);
+    assert_eq!(
+        refreshed
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .expect("refreshed pane snapshot")
+            .cwd
+            .as_deref(),
+        Some(newer_cwd_text)
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn create_default_workspace_invalidates_the_shell_projection() {
     let mut server = test_headless_server();
     let revision = server.app.state.shell_projection_revision;
@@ -2133,13 +2261,15 @@ impl PaneSurfaceReceiver {
         self.receiver.try_recv()
     }
 
-    fn recv(&mut self, context: &str) -> ServerMessage {
+    fn recv(&mut self, context: &str) -> DecodedServerMessage {
         let message = read_server_message(
             self.receiver
                 .recv()
                 .unwrap_or_else(|error| panic!("{context}: {error}")),
         );
-        self.decoder.decode(message.clone()).unwrap_or(message)
+        self.decoder
+            .decode(message.clone())
+            .unwrap_or(DecodedServerMessage::Wire(message))
     }
 }
 
@@ -2148,8 +2278,10 @@ fn recv_pane_surface(
     context: &str,
 ) -> shepr_protocol::PaneSurfaceFrame {
     match receiver.recv(context) {
-        ServerMessage::PaneSurface(surface) => surface,
-        ServerMessage::PaneSurfacePatch(_) => receiver.decoder.current_surface().expect("baseline"),
+        DecodedServerMessage::Wire(ServerMessage::PaneSurface(surface)) => surface,
+        DecodedServerMessage::PaneSurfacePatch(_) => {
+            receiver.decoder.current_surface().expect("baseline")
+        }
         other => panic!("{context}: expected pane surface, got {other:?}"),
     }
 }
@@ -2667,7 +2799,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
 
     assert!(matches!(
         slow_render.recv("slow queued first patch"),
-        ServerMessage::PaneSurfacePatch(_)
+        DecodedServerMessage::PaneSurfacePatch(_)
     ));
     assert!(
         server.handle_server_event(ServerEvent::ClientWriterDrained {
@@ -2677,7 +2809,8 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     server.render_and_stream();
     assert!(matches!(
         slow_render.recv("slow full recovery surface"),
-        ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_)
+        DecodedServerMessage::Wire(ServerMessage::PaneSurface(_))
+            | DecodedServerMessage::PaneSurfacePatch(_)
     ));
 
     shutdown_test_runtimes(&mut server);
@@ -4087,6 +4220,93 @@ fn client_shell_host_theme_follows_foreground_client() {
         Some(shepr_termio::host_term::theme::HostAppearance::Light)
     );
     assert!(!server.app.state.host_terminal_appearance_explicit);
+}
+
+#[test]
+fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
+    let mut server = test_headless_server();
+    let (first_writer, first_control, _first_render) = test_client_writer();
+    let (second_writer, second_control, _second_render) = test_client_writer();
+    server.insert_test_client(
+        1,
+        ClientConnection::new(
+            (80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            1,
+            Some(first_writer),
+        ),
+    );
+    server.insert_test_client(
+        2,
+        ClientConnection::new(
+            (80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            2,
+            Some(second_writer),
+        ),
+    );
+    server
+        .clients
+        .set_foreground_client_id(Some(ClientId::test_new(1)));
+
+    let first_background = shepr_protocol::ClientHostColor {
+        r: 20,
+        g: 30,
+        b: 40,
+    };
+    let second_background = shepr_protocol::ClientHostColor {
+        r: 10,
+        g: 20,
+        b: 200,
+    };
+    for (client_id, color) in [
+        (ClientId::test_new(1), first_background),
+        (ClientId::test_new(2), second_background),
+    ] {
+        server.handle_server_event(ServerEvent::ClientShellHostTheme {
+            client_id,
+            update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
+                kind: shepr_protocol::ClientHostDefaultColorKind::Background,
+                color,
+            },
+        });
+    }
+    assert_eq!(
+        server.app.state.host_terminal_theme.background,
+        Some(first_background.into())
+    );
+
+    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
+        client_id: ClientId::test_new(2),
+        surface_cols: 100,
+        surface_rows: 30,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    }));
+    assert_eq!(
+        server.clients.foreground_client_id(),
+        Some(ClientId::test_new(1))
+    );
+    assert_eq!(
+        server.app.state.host_terminal_theme.background,
+        Some(first_background.into())
+    );
+
+    assert!(!server.handle_internal_event_with_forwarding(unviewed_clipboard_write()));
+    assert!(matches!(
+        read_server_message(
+            first_control
+                .recv_timeout(Duration::from_millis(100))
+                .expect("foreground clipboard message")
+        ),
+        ServerMessage::Clipboard { data } if data == "dGVzdA=="
+    ));
+    assert!(
+        second_control
+            .recv_timeout(Duration::from_millis(50))
+            .is_err()
+    );
 }
 
 #[tokio::test]
