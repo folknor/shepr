@@ -758,7 +758,7 @@ impl ClientShellState {
             ClientConfirmCloseOverlay {
                 workspace_id,
                 title: "Close workspace?".to_owned(),
-                detail: format!("{} \u{2014} {scope}", workspace.label),
+                detail: format!("{} - {scope}", workspace.label),
                 return_to_navigate: self.mode == ClientShellMode::Navigate,
             },
         ));

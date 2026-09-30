@@ -323,9 +323,9 @@ fn restore_workspace(
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
 ) -> Option<RestoredWorkspace> {
     let mut next_public_pane_number = snap
-        .public_pane_numbers
+        .panes
         .values()
-        .copied()
+        .filter_map(|pane| pane.public_number)
         .max()
         .and_then(|max| max.checked_add(1))
         .unwrap_or(1)
@@ -580,22 +580,22 @@ fn restore_workspace(
         }
     }
 
+    // Every surviving pane is a saved layout pane, which
+    // `assign_public_pane_numbers` numbered and counted into
+    // `next_public_pane_number`; a pane without one means that invariant broke.
     for (pane_id, pane) in &mut panes {
-        let public_number = public_pane_numbers_by_old_raw
-            .get(
-                &reverse_id_map
-                    .get(pane_id)
-                    .copied()
-                    .unwrap_or(pane_id.raw()),
-            )
-            .copied()
-            .unwrap_or_else(|| {
-                let number = next_public_pane_number;
-                next_public_pane_number += 1;
-                number
-            });
+        let Some(&public_number) = reverse_id_map
+            .get(pane_id)
+            .and_then(|old_raw| public_pane_numbers_by_old_raw.get(old_raw))
+        else {
+            error!(
+                workspace = %workspace_id,
+                pane_id = pane_id.raw(),
+                "restored pane has no public number; dropping workspace"
+            );
+            return None;
+        };
         pane.public_number = public_number;
-        next_public_pane_number = next_public_pane_number.max(public_number + 1);
     }
 
     let workspace = Workspace::from_restored(
@@ -788,10 +788,13 @@ fn assign_public_pane_numbers(
     next_public_pane_number: &mut usize,
 ) -> HashMap<u32, usize> {
     let mut numbers: HashMap<u32, usize> = snap
-        .public_pane_numbers
+        .panes
         .iter()
-        .filter(|(_, number)| **number > 0)
-        .map(|(old_raw, number)| (*old_raw, *number))
+        .filter_map(|(old_raw, pane)| {
+            pane.public_number
+                .filter(|number| *number > 0)
+                .map(|number| (*old_raw, number))
+        })
         .collect();
     let mut layout_panes = Vec::new();
     collect_snapshot_pane_ids(&snap.layout, &mut layout_panes);
@@ -1180,6 +1183,7 @@ mod tests {
         assert!(!cwd.try_exists().expect("test stat"));
         super::super::snapshot::PaneSnapshot {
             cwd,
+            public_number: None,
             label: None,
             agent_session: None,
         }
@@ -1197,7 +1201,6 @@ mod tests {
             id: id.map(str::to_string),
             custom_name: Some(name.into()),
             identity_cwd: PathBuf::from("/"),
-            public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             layout,
             panes: panes.iter().map(|id| (*id, runtimeless_pane())).collect(),
@@ -1267,6 +1270,47 @@ mod tests {
         assert_eq!(restored.active, Some(0));
         assert_eq!(restored.selected, 0);
         assert_eq!(restored.terminals.len(), 1);
+    }
+
+    /// Capture writes one number per pane, so two panes sharing one is a
+    /// damaged file; the workspace is dropped like any other defect rather
+    /// than renumbered, and the first save backs the original up.
+    #[test]
+    fn restore_drops_a_workspace_whose_panes_share_a_public_number() {
+        let mut duplicated = workspace_snapshot(
+            Some("w1"),
+            "duplicated",
+            LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(1)),
+                second: Box::new(LayoutSnapshot::Pane(2)),
+            },
+            &[1, 2],
+        );
+        for pane in duplicated.panes.values_mut() {
+            pane.public_number = Some(3);
+        }
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
+            workspaces: vec![
+                duplicated,
+                workspace_snapshot(Some("w2"), "healthy", LayoutSnapshot::Pane(3), &[3]),
+            ],
+            active: Some(1),
+            selected: 1,
+        };
+
+        let restored = restore_runtimeless(&snapshot);
+
+        assert_eq!(restored.dropped_workspaces, 1);
+        let names: Vec<_> = restored
+            .workspaces
+            .iter()
+            .map(|ws| ws.custom_name.as_deref())
+            .collect();
+        assert_eq!(names, vec![Some("healthy")]);
     }
 
     #[test]
@@ -1740,13 +1784,13 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 layout: LayoutSnapshot::Pane(0),
                 panes: HashMap::from([(
                     0,
                     super::super::snapshot::PaneSnapshot {
                         cwd,
+                        public_number: None,
                         label: Some("reviewer".into()),
                         agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                             source: "shepr:opencode".into(),
@@ -1812,7 +1856,6 @@ mod tests {
                 id: Some("w1".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1825,6 +1868,7 @@ mod tests {
                         10,
                         super::super::snapshot::PaneSnapshot {
                             cwd: cwd.clone(),
+                            public_number: Some(1),
                             label: None,
                             agent_session: None,
                         },
@@ -1833,6 +1877,7 @@ mod tests {
                         20,
                         super::super::snapshot::PaneSnapshot {
                             cwd: cwd.clone(),
+                            public_number: Some(3),
                             label: None,
                             agent_session: None,
                         },
@@ -1880,8 +1925,9 @@ mod tests {
 
     #[test]
     fn every_saved_pane_gets_a_public_number_before_its_shell_starts() {
-        let pane = || super::super::snapshot::PaneSnapshot {
+        let pane = |public_number| super::super::snapshot::PaneSnapshot {
             cwd: PathBuf::from("/"),
+            public_number,
             label: None,
             agent_session: None,
         };
@@ -1889,8 +1935,6 @@ mod tests {
             id: Some("w1".into()),
             custom_name: None,
             identity_cwd: PathBuf::from("/"),
-            // Only pane 10 kept its number; 30 and 20 lost theirs.
-            public_pane_numbers: HashMap::from([(10, 4)]),
             next_public_pane_number: 5,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -1910,7 +1954,8 @@ mod tests {
                     }),
                 }),
             },
-            panes: [10, 30, 20].iter().map(|id| (*id, pane())).collect(),
+            // Only pane 10 kept its number; 30 and 20 lost theirs.
+            panes: HashMap::from([(10, pane(Some(4))), (30, pane(None)), (20, pane(None))]),
             zoomed: false,
             focused: None,
             root_pane: None,
@@ -1929,13 +1974,13 @@ mod tests {
             id: Some("w1".into()),
             custom_name: None,
             identity_cwd: PathBuf::from("/"),
-            public_pane_numbers: HashMap::from([(10, 0)]),
             next_public_pane_number: 1,
             layout: LayoutSnapshot::Pane(10),
             panes: HashMap::from([(
                 10,
                 super::super::snapshot::PaneSnapshot {
                     cwd: PathBuf::from("/"),
+                    public_number: Some(0),
                     label: None,
                     agent_session: None,
                 },
@@ -1956,11 +2001,12 @@ mod tests {
     async fn cold_restore_with_gapped_public_pane_numbers_starts_a_plain_shell_without_an_agent() {
         let scratch = crate::test_support::ScratchDir::new("restore-public-pane-cwd");
         let cwd = scratch.to_path_buf();
-        let pane_snap = |id: u32| {
+        let pane_snap = |id: u32, public_number: usize| {
             (
                 id,
                 super::super::snapshot::PaneSnapshot {
                     cwd: cwd.clone(),
+                    public_number: Some(public_number),
                     label: None,
                     agent_session: None,
                 },
@@ -1968,6 +2014,7 @@ mod tests {
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
             cwd: cwd.clone(),
+            public_number: Some(7),
             label: Some("planner".into()),
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "shepr:codex".into(),
@@ -1984,7 +2031,6 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 // Numbers 1 to 3 were public panes that are gone.
-                public_pane_numbers: HashMap::from([(10, 4), (13, 7)]),
                 next_public_pane_number: 8,
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
@@ -1992,7 +2038,7 @@ mod tests {
                     first: Box::new(LayoutSnapshot::Pane(10)),
                     second: Box::new(LayoutSnapshot::Pane(13)),
                 },
-                panes: HashMap::from([pane_snap(10), (13, final_pane)]),
+                panes: HashMap::from([pane_snap(10, 4), (13, final_pane)]),
                 zoomed: false,
                 focused: Some(13),
                 root_pane: Some(10),
@@ -2042,13 +2088,13 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 layout: LayoutSnapshot::Pane(0),
                 panes: HashMap::from([(
                     0,
                     super::super::snapshot::PaneSnapshot {
                         cwd,
+                        public_number: None,
                         label: None,
                         agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                             source: "shepr:codex".into(),
@@ -2116,6 +2162,7 @@ mod tests {
             let scratch = crate::test_support::ScratchDir::new("restore-pane-size");
             let pane = || super::super::snapshot::PaneSnapshot {
                 cwd: scratch.to_path_buf(),
+                public_number: None,
                 label: None,
                 agent_session: None,
             };
@@ -2321,6 +2368,7 @@ mod tests {
             0,
             super::super::snapshot::PaneSnapshot {
                 cwd: cwd.clone(),
+                public_number: None,
                 label: None,
                 agent_session: None,
             },
@@ -2348,7 +2396,6 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd,
-                public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 layout: LayoutSnapshot::Pane(0),
                 panes,

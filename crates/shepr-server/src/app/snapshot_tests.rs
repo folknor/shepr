@@ -148,6 +148,7 @@ fn round_trip_full_workspace_snapshot() {
         0,
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/shepr"),
+            public_number: Some(1),
             label: None,
             agent_session: None,
         },
@@ -156,6 +157,7 @@ fn round_trip_full_workspace_snapshot() {
         1,
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/website"),
+            public_number: Some(2),
             label: Some("website".into()),
             agent_session: None,
         },
@@ -167,7 +169,6 @@ fn round_trip_full_workspace_snapshot() {
             id: Some("wproj".to_string()),
             custom_name: Some("pi-mono".to_string()),
             identity_cwd: PathBuf::from("/home/can/Projects/shepr"),
-            public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
             next_public_pane_number: 3,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -331,12 +332,17 @@ fn capture_contract_tracks_public_id_counters() {
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
+    let numbers: HashMap<u32, Option<usize>> = workspace
+        .panes
+        .iter()
+        .map(|(id, pane)| (*id, pane.public_number))
+        .collect();
     assert_eq!(
-        workspace.public_pane_numbers,
+        numbers,
         HashMap::from([
-            (state.workspaces[0].root_pane().raw(), 1),
-            (third.raw(), 3),
-            (fourth.raw(), 4),
+            (state.workspaces[0].root_pane().raw(), Some(1)),
+            (third.raw(), Some(3)),
+            (fourth.raw(), Some(4)),
         ])
     );
     assert_eq!(workspace.next_public_pane_number, 5);
@@ -794,6 +800,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         0,
         PaneSnapshot {
             cwd: missing_cwd.clone(),
+            public_number: None,
             label: None,
             agent_session: None,
         },
@@ -802,6 +809,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         1,
         PaneSnapshot {
             cwd: existing_cwd.clone(),
+            public_number: None,
             label: None,
             agent_session: None,
         },
@@ -814,7 +822,6 @@ fn snapshot_parsing_preserves_missing_cwd() {
             id: Some("test-ws".to_string()),
             custom_name: Some("fallback test".to_string()),
             identity_cwd: existing_cwd,
-            public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,

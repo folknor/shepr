@@ -7,7 +7,7 @@ use shepr_core::env::SHEPR_ENV_IN_PANE;
 const NESTED_SHEPR_MESSAGES: &[&str] = &[
     "inception detected. we need to go deeper... said no one ever.",
     "recursion is a pathway to many abilities some consider to be... unnatural.",
-    "you were so preoccupied with whether you could, you didn't stop to think if you should. \u{2014} dr. malcolm",
+    "you were so preoccupied with whether you could, you didn't stop to think if you should. - dr. malcolm",
     "recursive shepring is disabled. somewhere, a call stack breathes a sigh of relief.",
     "recursive descent denied. there is, in fact, such a thing as too much shepr.",
     "recursion detected. base case not found. aborting.",

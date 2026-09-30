@@ -199,9 +199,6 @@ pub struct WorkspaceSnapshot {
         deserialize_with = "path_bytes::deserialize_saved_cwd"
     )]
     pub identity_cwd: PathBuf,
-    /// Captured from the public numbers in the workspace's pane records.
-    #[serde(default)]
-    pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
     pub next_public_pane_number: usize,
     pub layout: LayoutSnapshot,
@@ -220,6 +217,11 @@ pub struct PaneSnapshot {
         deserialize_with = "path_bytes::deserialize_saved_cwd"
     )]
     pub cwd: PathBuf,
+    /// The pane's public number within its workspace. Restore gives a pane
+    /// with none, or with zero (which no public ID can carry), a fresh free
+    /// number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_number: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -391,7 +393,7 @@ fn capture_workspace(
     cwds: &mut PendingCwds,
 ) -> WorkspaceSnapshot {
     let mut panes = HashMap::new();
-    for id in ws.panes.keys() {
+    for (id, workspace_pane) in &ws.panes {
         let terminal_id = ws.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let runtime = terminal_id.and_then(|id| terminal_runtimes.get(id));
@@ -433,6 +435,7 @@ fn capture_workspace(
             id.raw(),
             PaneSnapshot {
                 cwd,
+                public_number: Some(workspace_pane.public_number),
                 label,
                 agent_session,
             },
@@ -445,11 +448,6 @@ fn capture_workspace(
         id: Some(ws.id.to_string()),
         custom_name: ws.custom_name.clone(),
         identity_cwd,
-        public_pane_numbers: ws
-            .panes
-            .iter()
-            .map(|(pane_id, pane)| (pane_id.raw(), pane.public_number))
-            .collect(),
         next_public_pane_number: ws.next_public_pane_number,
         layout: capture_node(ws.layout.root()),
         panes,

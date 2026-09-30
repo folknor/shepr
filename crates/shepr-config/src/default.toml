@@ -64,7 +64,7 @@
 # previous_agent = ""     # optional, unset by default
 # next_agent = ""         # optional, unset by default
 # focus_agent = ""        # optional indexed binding, e.g. "prefix+alt+1..9"
-# switch_workspace = "prefix+1..9"   # indexed binding, e.g. "prefix+shift+1..9"
+# switch_workspace = "prefix+1..9"   # indexed: prefix+1 switches to workspace 1, and so on
 # rename_pane = "prefix+shift+p"
 # clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
 # copy_mode = "prefix+["

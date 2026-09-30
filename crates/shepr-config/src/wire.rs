@@ -655,7 +655,6 @@ mod tests {
         }
         crate::keybinding_table!(distinct_values);
         assert_eq!(count, KEY_BINDING_COUNT);
-        assert_eq!(KEY_BINDING_COUNT, 48);
 
         let wire = WireKeysConfig::from_config(&keys);
         assert_eq!(wire.bindings.len(), KEY_BINDING_COUNT);

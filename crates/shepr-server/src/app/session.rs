@@ -806,6 +806,7 @@ mod tests {
         // starting a shell.
         let pane = || PaneSnapshot {
             cwd: scratch.join("missing-cwd"),
+            public_number: None,
             label: None,
             agent_session: None,
         };
@@ -814,7 +815,6 @@ mod tests {
                 id: Some(id.into()),
                 custom_name: Some(name.into()),
                 identity_cwd: scratch.path().to_path_buf(),
-                public_pane_numbers: std::collections::HashMap::new(),
                 next_public_pane_number: 0,
                 layout,
                 panes: ids.iter().map(|id| (*id, pane())).collect(),
