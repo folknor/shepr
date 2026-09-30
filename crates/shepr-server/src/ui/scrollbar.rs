@@ -1,7 +1,9 @@
-use ratatui::{Frame, buffer::Buffer, layout::Rect};
+use ratatui::{buffer::Buffer, layout::Rect};
 
+use super::chrome::overlay_buffer;
 use crate::app::AppState;
 use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
+use shepr_protocol::FrameData;
 
 pub(crate) fn pane_scrollbar_rect(info: &PaneInfo) -> Option<Rect> {
     info.scrollbar_rect
@@ -37,7 +39,7 @@ pub(crate) fn render_pane_scrollbar_buffer(
 
 pub(super) fn render_pane_scrollbar(
     app: &AppState,
-    frame: &mut Frame<'_>,
+    frame: &mut FrameData,
     info: &PaneInfo,
     rt: &shepr_mux::pane::PaneRuntime,
 ) {
@@ -47,11 +49,14 @@ pub(super) fn render_pane_scrollbar(
     let Some(track) = pane_scrollbar_rect(info) else {
         return;
     };
+    let mut scratch = Buffer::empty(track);
     render_pane_scrollbar_buffer(
-        frame.buffer_mut(),
+        &mut scratch,
         metrics,
         track,
         &app.settings.palette,
         info.is_focused,
     );
+    // The scrollbar draws its whole track.
+    overlay_buffer(frame, &scratch, track);
 }

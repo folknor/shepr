@@ -17,6 +17,13 @@ pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 /// visible promptly without a busy wait.
 pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Least time between two starts of the server daemon in one launch. A daemon
+/// that found the data directory held while nothing listened (the holder was
+/// stopping, or still booting) is started again once this has passed, so a
+/// holder that is only leaving never fails the launch, and a holder that stays
+/// is not asked every poll.
+pub(crate) const DAEMON_RESTART_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Time allowed for one status request to a local server, the response
 /// deadline of every launch probe. The timeout bounds an unavailable or
 /// overloaded local server check.

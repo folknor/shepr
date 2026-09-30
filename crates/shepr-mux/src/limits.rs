@@ -84,6 +84,20 @@ pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_mil
 /// chunks the lock is released so the PTY reader, rendering and detection
 /// are never stalled behind a scan of the whole scrollback.
 pub(crate) const SCAN_CHUNK_ROWS: u64 = 2048;
+/// The most rows a merged history chunk covers. Eviction drops a chunk whole
+/// and formats the rows of it that survive again under one lock hold, so this
+/// bounds that rework (a history at its limit evicts on nearly every save, and
+/// each would redo the whole oldest chunk). With `MERGE_MAX_BYTES` it also sets
+/// the chunk count: two neighbours that could still merge do not exist, so a
+/// cache of `n` rows holds about `2 n / MERGE_MAX_ROWS` chunks at most, however
+/// often it was saved.
+pub(crate) const MERGE_MAX_ROWS: u64 = 256;
+/// The most text a merged history chunk holds. Merging copies both texts, and
+/// a save that adds a few rows to a small last chunk copies that chunk again;
+/// this caps the copy at a size that costs far less than the formatting of the
+/// rows that caused it, which happens under the terminal lock and the copy does
+/// not.
+pub(crate) const MERGE_MAX_BYTES: usize = 64 * 1024;
 /// Copy-mode punctuation treated as word boundaries, matching shell-style
 /// punctuation rather than consuming it as part of words.
 pub(crate) const COPY_MODE_WORD_SEPARATORS: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~";

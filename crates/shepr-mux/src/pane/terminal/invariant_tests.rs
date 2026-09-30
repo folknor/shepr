@@ -61,25 +61,34 @@ impl Harness {
         self.height = height;
     }
 
+    fn full_frame(&self) -> FrameData {
+        // A full render into a blank frame: the independent oracle the
+        // incremental dirty rows are compared against.
+        let mut frame = FrameData::blank(self.width, self.height);
+        self.pane
+            .render_into(&mut frame, Rect::new(0, 0, self.width, self.height));
+        frame
+    }
+
     fn full_cells(&self) -> Vec<CellData> {
-        // Read the frame buffer, not TestBackend's diff output (which may skip
-        // wide spacer cells). This is the independent full-render oracle.
-        let backend = ratatui::backend::TestBackend::new(self.width, self.height);
-        let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-        let mut cells = Vec::new();
-        terminal
-            .draw(|frame| {
-                self.pane
-                    .render(frame, Rect::new(0, 0, self.width, self.height), false);
-                cells = frame
-                    .buffer_mut()
-                    .content
-                    .iter()
-                    .map(CellData::from_ratatui_cell)
-                    .collect();
-            })
-            .expect("test precondition");
-        cells
+        self.full_frame().cells
+    }
+
+    /// Every linked cell as its position, symbol and target.
+    fn links(&self) -> Vec<((u16, u16), String, String)> {
+        let frame = self.full_frame();
+        let mut links = Vec::new();
+        for (index, cell) in frame.cells.iter().enumerate() {
+            let Some(link) = cell.hyperlink else { continue };
+            let x = u16::try_from(index % usize::from(frame.width)).expect("test precondition");
+            let y = u16::try_from(index / usize::from(frame.width)).expect("test precondition");
+            links.push((
+                (x, y),
+                cell.symbol.clone(),
+                frame.hyperlinks[usize::try_from(link).expect("test precondition")].clone(),
+            ));
+        }
+        links
     }
 
     fn cursor(&self) -> Option<TerminalCursorState> {
@@ -95,9 +104,7 @@ impl Harness {
             geometry: (self.width, self.height),
             cells: self.full_cells(),
             text_rows,
-            links: self
-                .pane
-                .visible_hyperlinks(Rect::new(0, 0, self.width, self.height)),
+            links: self.links(),
             cursor: self.cursor().expect("test precondition"),
             input: self.pane.input_state().expect("test precondition"),
             visible: self.pane.visible_text(),
@@ -281,7 +288,7 @@ fn mixed_reflow_reads_are_stable_and_chunk_independent() {
 fn incremental_rows_reconstruct_full_render() {
     let mut incremental = Harness::new(12, 5);
     let mut full = Harness::new(12, 5);
-    let mut retained = vec![CellData::from_ratatui_cell(&ratatui::buffer::Cell::default()); 60];
+    let mut retained = vec![CellData::blank(); 60];
     // Independent terminals: full render must not consume incremental dirty state.
     for bytes in [
         b"".as_slice(),

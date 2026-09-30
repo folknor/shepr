@@ -24,11 +24,6 @@ none blocks anything.
   `XDG_*`) from the server process, which a client- or SSH-spawned server may
   not share with the user's interactive shells; an agent with a non-default
   config directory then reads as absent.
-- **A stopped server whose lease outlives its sockets.** `server stop` now waits
-  for the data-directory lease, so the launcher no longer does. A server stopped
-  another way (a signal) can still drop its sockets before its lease, and a
-  launch right then meets the new daemon's already-running refusal instead of
-  waiting.
 - **Re-prompting for SSH authentication.** A machine that still needs
   authentication after a failed or skipped startup prompt is not prompted again
   until the next launch, and there is no TUI action to suspend the screen and
@@ -53,14 +48,19 @@ Do this the next time opencode or Kilo is in use.
 - If they are wrong, opencode/Kilo panes never show as blocked on a permission prompt; they read as working or idle while waiting on you.
 - To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
 
-## Rendering and history leftovers
+## Server shutdown edges
 
-- The server renders pane surfaces into ratatui buffers and converts them to
-  wire cells, so underline shapes still cross as `Modifier` bits there
-  (`WireStyle::to_ratatui_modifier`, the `RATATUI_UNDERLINE_*` constants, used
-  from `crates/shepr-mux/src/pane/terminal/helpers.rs`). The client no longer
-  does; the server side is the same round trip.
-- The history cache pushes one chunk per save that finds new rows and never
-  merges them (`crates/shepr-mux/src/pane/terminal/history.rs`), so a slowly
-  scrolling pane collects many small chunks until eviction drops them.
+Surfaced while fixing the lease-versus-socket order at stop; none loses a
+session in normal use.
+
+- **A launch during the final save.** While the final session save runs, the
+  client socket is still bound but the loop no longer accepts, so a launcher
+  probing then gets an unusable-status or unresponsive error instead of
+  waiting for the socket to go.
+- **An early `run()` error skips the final save.** A listener error or a failed
+  signal-handler install ends through `Drop`, which releases the lease and
+  sockets in order but does not save the session first.
+- **The log outlives the lease.** After releasing the lease on a clean exit the
+  process keeps writing the server log in the data directory until it exits,
+  so a new server can briefly share that file with it.
 

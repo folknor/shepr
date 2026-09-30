@@ -1,3 +1,4 @@
+mod chrome;
 mod panes;
 mod scrollbar;
 mod surface;
@@ -6,8 +7,7 @@ mod text;
 pub(crate) use self::panes::pane_is_scrolled_back;
 pub(crate) use self::scrollbar::render_pane_scrollbar_buffer;
 pub(crate) use self::surface::{
-    SurfaceLayout, SurfaceView, compute_surface_for, render_surface, resize_surface,
-    surface_cursor, surface_hyperlinks,
+    SurfaceLayout, SurfaceView, compute_surface_for, render_surface, resize_surface, surface_cursor,
 };
 
 use shepr_mux::pane::PaneRuntimeRegistry;

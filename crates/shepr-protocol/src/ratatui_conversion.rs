@@ -1,7 +1,8 @@
-//! Conversion between semantic wire frames and ratatui buffers.
+//! Conversion from what ratatui renderers draw (chrome, scratch buffers) to
+//! semantic wire frames. Pane cells do not use it: they are written straight
+//! into `FrameData`.
 
 use crate::{CellData, CursorState, FrameData, SurfaceRect, WireColor, WireStyle, WireStyleFlags};
-use crate::{RATATUI_UNDERLINE_STYLE_MASK, RATATUI_UNDERLINE_STYLE_SHIFT};
 use std::collections::HashMap;
 
 impl WireColor {
@@ -55,107 +56,43 @@ impl WireColor {
 }
 
 impl WireStyle {
+    /// The style of a ratatui modifier. Ratatui has no underline shape, so
+    /// `UNDERLINED` reads as a single underline and nothing else can be
+    /// recovered: use this for cells a ratatui renderer drew (chrome, scratch
+    /// buffers), never for pane cells, which are written to the wire with
+    /// their typed shape.
     pub fn from_ratatui_modifier(modifier: ratatui::style::Modifier) -> Self {
         use ratatui::style::Modifier;
 
+        const FLAGS: [(Modifier, WireStyleFlags); 8] = [
+            (Modifier::BOLD, WireStyleFlags::BOLD),
+            (Modifier::DIM, WireStyleFlags::DIM),
+            (Modifier::ITALIC, WireStyleFlags::ITALIC),
+            (Modifier::SLOW_BLINK, WireStyleFlags::SLOW_BLINK),
+            (Modifier::RAPID_BLINK, WireStyleFlags::RAPID_BLINK),
+            (Modifier::REVERSED, WireStyleFlags::REVERSED),
+            (Modifier::HIDDEN, WireStyleFlags::HIDDEN),
+            (Modifier::CROSSED_OUT, WireStyleFlags::CROSSED_OUT),
+        ];
+        let flags = FLAGS
+            .into_iter()
+            .filter(|(source, _)| modifier.contains(*source))
+            .fold(WireStyleFlags::default(), |flags, (_, flag)| {
+                flags.union(flag)
+            });
         let underline = if modifier.contains(Modifier::UNDERLINED) {
-            match (modifier.bits() & RATATUI_UNDERLINE_STYLE_MASK) >> RATATUI_UNDERLINE_STYLE_SHIFT
-            {
-                2 => shepr_vt::UnderlineStyle::Double,
-                3 => shepr_vt::UnderlineStyle::Curly,
-                4 => shepr_vt::UnderlineStyle::Dotted,
-                5 => shepr_vt::UnderlineStyle::Dashed,
-                _ => shepr_vt::UnderlineStyle::Single,
-            }
+            shepr_vt::UnderlineStyle::Single
         } else {
             shepr_vt::UnderlineStyle::None
         };
-
-        Self {
-            flags: {
-                let mut flags = WireStyleFlags::default();
-                if modifier.contains(Modifier::BOLD) {
-                    flags = flags.union(WireStyleFlags::BOLD);
-                }
-                if modifier.contains(Modifier::DIM) {
-                    flags = flags.union(WireStyleFlags::DIM);
-                }
-                if modifier.contains(Modifier::ITALIC) {
-                    flags = flags.union(WireStyleFlags::ITALIC);
-                }
-                if modifier.contains(Modifier::SLOW_BLINK) {
-                    flags = flags.union(WireStyleFlags::SLOW_BLINK);
-                }
-                if modifier.contains(Modifier::RAPID_BLINK) {
-                    flags = flags.union(WireStyleFlags::RAPID_BLINK);
-                }
-                if modifier.contains(Modifier::REVERSED) {
-                    flags = flags.union(WireStyleFlags::REVERSED);
-                }
-                if modifier.contains(Modifier::HIDDEN) {
-                    flags = flags.union(WireStyleFlags::HIDDEN);
-                }
-                if modifier.contains(Modifier::CROSSED_OUT) {
-                    flags = flags.union(WireStyleFlags::CROSSED_OUT);
-                }
-                flags
-            },
-            underline,
-        }
-    }
-
-    pub fn to_ratatui_modifier(self) -> ratatui::style::Modifier {
-        use ratatui::style::Modifier;
-
-        let mut modifier = Modifier::empty();
-        if self.flags.contains(WireStyleFlags::BOLD) {
-            modifier |= Modifier::BOLD;
-        }
-        if self.flags.contains(WireStyleFlags::DIM) {
-            modifier |= Modifier::DIM;
-        }
-        if self.flags.contains(WireStyleFlags::ITALIC) {
-            modifier |= Modifier::ITALIC;
-        }
-        if self.flags.contains(WireStyleFlags::SLOW_BLINK) {
-            modifier |= Modifier::SLOW_BLINK;
-        }
-        if self.flags.contains(WireStyleFlags::RAPID_BLINK) {
-            modifier |= Modifier::RAPID_BLINK;
-        }
-        if self.flags.contains(WireStyleFlags::REVERSED) {
-            modifier |= Modifier::REVERSED;
-        }
-        if self.flags.contains(WireStyleFlags::HIDDEN) {
-            modifier |= Modifier::HIDDEN;
-        }
-        if self.flags.contains(WireStyleFlags::CROSSED_OUT) {
-            modifier |= Modifier::CROSSED_OUT;
-        }
-
-        let underline_style = match self.underline {
-            shepr_vt::UnderlineStyle::None => return modifier,
-            shepr_vt::UnderlineStyle::Single => {
-                modifier |= Modifier::UNDERLINED;
-                return modifier;
-            }
-            shepr_vt::UnderlineStyle::Double => 2,
-            shepr_vt::UnderlineStyle::Curly => 3,
-            shepr_vt::UnderlineStyle::Dotted => 4,
-            shepr_vt::UnderlineStyle::Dashed => 5,
-        };
-        modifier |= Modifier::UNDERLINED;
-        modifier |= Modifier::from_bits_retain(underline_style << RATATUI_UNDERLINE_STYLE_SHIFT);
-        modifier
+        Self { flags, underline }
     }
 }
 
-// Ratatui's Modifier has no underline-shape field, so the conversions above carry the shape
-// in reserved modifier bits for callers that hold a style in a ratatui Buffer. Client
-// composition does not: it works on wire cells directly. Wire cells carry the typed
-// UnderlineStyle.
-
 impl CellData {
+    /// A cell a ratatui renderer drew. Lossless for everything ratatui can
+    /// express; an underline is `Single` (see [`WireStyle::from_ratatui_modifier`]).
+    /// Pane cells are never drawn through ratatui, so none reach this.
     pub fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self {
         Self {
             symbol: cell.symbol().to_owned(),

@@ -1,5 +1,16 @@
 use super::*;
-use ratatui::{layout::Rect, style::Color};
+use ratatui::layout::Rect;
+
+/// A full render of the pane into a blank frame of its own size.
+fn render_frame(pane: &PaneTerminal, width: u16, height: u16) -> FrameData {
+    let mut frame = FrameData::blank(width, height);
+    pane.render_into(&mut frame, Rect::new(0, 0, width, height));
+    frame
+}
+
+fn frame_cell(frame: &FrameData, x: u16, y: u16) -> &CellData {
+    &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
+}
 
 #[test]
 fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
@@ -68,17 +79,17 @@ fn redefined_palette_entries_render_as_rgb_and_others_stay_indexed() {
 
     assert_eq!(
         terminal_cell_color(shepr_vt::CellColor::Palette(18), Some(&overrides)),
-        Color::Rgb(169, 177, 214)
+        WireColor::Rgb(169, 177, 214)
     );
     // Untouched entries keep being forwarded, so they still follow the host theme.
     assert_eq!(
         terminal_cell_color(shepr_vt::CellColor::Palette(19), Some(&overrides)),
-        Color::Indexed(19)
+        WireColor::Indexed(19)
     );
     // ...and so does everything when the program never wrote a palette at all.
     assert_eq!(
         terminal_cell_color(shepr_vt::CellColor::Palette(18), None),
-        Color::Indexed(18)
+        WireColor::Indexed(18)
     );
 }
 
@@ -93,7 +104,7 @@ fn direct_rgb_cells_are_unaffected_by_palette_overrides() {
             shepr_vt::CellColor::Rgb(rgb(122, 162, 247)),
             Some(&overrides)
         ),
-        Color::Rgb(122, 162, 247)
+        WireColor::Rgb(122, 162, 247)
     );
 }
 
@@ -852,10 +863,8 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
     assert_eq!(deadline, start + Duration::from_millis(150));
     assert!(pane.synchronized_output_active());
     assert_eq!(pane.synchronized_output_state(), Some((true, 1)));
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut host = ratatui::Terminal::new(backend).expect("test precondition");
-    host.draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
+    // A synchronized update in flight is not drawn.
+    assert_eq!(render_frame(&pane, 20, 5), FrameData::blank(20, 5));
     assert_eq!(
         pane.collect_dirty_patch(20, 5),
         TerminalDirtyPatchOutcome::Fallback
@@ -1023,28 +1032,6 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
     let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
 
     assert!(should_probe_host_terminal_theme_restore(&core));
-}
-
-#[test]
-fn terminal_render_can_suppress_cursor_position() {
-    let mut first_terminal = shepr_vt::Terminal::new(20, 5, 0);
-    first_terminal.write(b"left");
-    let first = PaneTerminal::new(first_terminal);
-
-    let mut second_terminal = shepr_vt::Terminal::new(20, 5, 0);
-    second_terminal.write(b"r\r\nb");
-    let second = PaneTerminal::new(second_terminal);
-
-    let backend = ratatui::backend::TestBackend::new(40, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| {
-            first.render(frame, Rect::new(0, 0, 20, 5), true);
-            second.render(frame, Rect::new(20, 0, 20, 5), false);
-        })
-        .expect("test precondition");
-
-    terminal.backend_mut().assert_cursor_position((4, 0));
 }
 
 #[test]
@@ -1829,17 +1816,12 @@ fn render_keeps_halfwidth_katakana_and_voiced_mark_in_their_own_cells() {
     terminal.write("ｶﾞZ".as_bytes());
     let pane = PaneTerminal::new(terminal);
 
-    let backend = ratatui::backend::TestBackend::new(20, 1);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 1), false))
-        .expect("test precondition");
-    let buffer = terminal.backend().buffer();
+    let frame = render_frame(&pane, 20, 1);
 
     // The halfwidth voiced mark is a spacing character one cell wide.
-    assert_eq!(buffer[(0, 0)].symbol(), "ｶ");
-    assert_eq!(buffer[(1, 0)].symbol(), "\u{ff9e}");
-    assert_eq!(buffer[(2, 0)].symbol(), "Z");
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "ｶ");
+    assert_eq!(frame_cell(&frame, 1, 0).symbol, "\u{ff9e}");
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, "Z");
 }
 
 #[test]
@@ -2317,14 +2299,10 @@ fn seeded_history_is_rendered_on_next_draw() {
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("restored history");
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    let row = (0..16).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+    let frame = render_frame(&pane, 20, 5);
+    let row = (0..16)
+        .map(|x| frame_cell(&frame, x, 0).symbol.as_str())
+        .collect::<String>();
     assert_eq!(row, "restored history");
 }
 
@@ -2337,19 +2315,13 @@ fn render_leaves_unknown_host_default_background_transparent() {
         core.terminal.write(b"hi");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(0, 0)].symbol(), "h");
-    assert_eq!(buffer[(0, 0)].style().fg, Some(Color::Reset));
-    assert_eq!(buffer[(0, 0)].style().bg, Some(Color::Reset));
-    assert_eq!(buffer[(2, 0)].symbol(), " ");
-    assert_eq!(buffer[(2, 0)].style().fg, Some(Color::Reset));
-    assert_eq!(buffer[(2, 0)].style().bg, Some(Color::Reset));
+    let frame = render_frame(&pane, 20, 5);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "h");
+    assert_eq!(frame_cell(&frame, 0, 0).fg, WireColor::Reset);
+    assert_eq!(frame_cell(&frame, 0, 0).bg, WireColor::Reset);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 2, 0).fg, WireColor::Reset);
+    assert_eq!(frame_cell(&frame, 2, 0).bg, WireColor::Reset);
 }
 
 #[test]
@@ -2362,16 +2334,10 @@ fn render_blanks_kitty_unicode_placeholders() {
             .write("before\u{10eeee}\u{0305}\u{0305}after".as_bytes());
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(0, 0)].symbol(), "b");
-    assert_eq!(buffer[(6, 0)].symbol(), " ");
-    assert_eq!(buffer[(7, 0)].symbol(), "a");
+    let frame = render_frame(&pane, 20, 5);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "b");
+    assert_eq!(frame_cell(&frame, 6, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 7, 0).symbol, "a");
     assert_eq!(pane.visible_text().lines().next(), Some("before after"));
     assert_eq!(pane.recent_text(5), "before after\n");
 }
@@ -2385,18 +2351,12 @@ fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
         core.terminal.write(b"\x1b[38;2;68;85;102mhi\x1b[0m");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    let expected_fg = Some(Color::Rgb(0x44, 0x55, 0x66));
-    assert_eq!(buffer[(0, 0)].symbol(), "h");
-    assert_eq!(buffer[(0, 0)].style().fg, expected_fg);
-    assert_eq!(buffer[(2, 0)].symbol(), " ");
-    assert_eq!(buffer[(2, 0)].style().fg, Some(Color::Reset));
+    let frame = render_frame(&pane, 20, 5);
+    let expected_fg = WireColor::Rgb(0x44, 0x55, 0x66);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "h");
+    assert_eq!(frame_cell(&frame, 0, 0).fg, expected_fg);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 2, 0).fg, WireColor::Reset);
 }
 
 #[test]
@@ -2408,18 +2368,12 @@ fn render_keeps_explicit_cell_background_when_host_is_unknown() {
         core.terminal.write(b"\x1b[48;2;68;85;102mhi\x1b[0m");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    let expected_bg = Some(Color::Rgb(0x44, 0x55, 0x66));
-    assert_eq!(buffer[(0, 0)].symbol(), "h");
-    assert_eq!(buffer[(0, 0)].style().bg, expected_bg);
-    assert_eq!(buffer[(2, 0)].symbol(), " ");
-    assert_eq!(buffer[(2, 0)].style().bg, Some(Color::Reset));
+    let frame = render_frame(&pane, 20, 5);
+    let expected_bg = WireColor::Rgb(0x44, 0x55, 0x66);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "h");
+    assert_eq!(frame_cell(&frame, 0, 0).bg, expected_bg);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 2, 0).bg, WireColor::Reset);
 }
 
 #[test]
@@ -2433,21 +2387,15 @@ fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
         );
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(0, 0)].symbol(), "R");
-    assert_eq!(buffer[(0, 0)].style().fg, Some(Color::Indexed(1)));
-    assert_eq!(buffer[(2, 0)].symbol(), "I");
-    assert_eq!(buffer[(2, 0)].style().fg, Some(Color::Indexed(171)));
-    assert_eq!(buffer[(4, 0)].symbol(), "B");
-    assert_eq!(buffer[(4, 0)].style().bg, Some(Color::Indexed(4)));
-    assert_eq!(buffer[(6, 0)].symbol(), "T");
-    assert_eq!(buffer[(6, 0)].style().fg, Some(Color::Rgb(1, 2, 3)));
+    let frame = render_frame(&pane, 20, 5);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "R");
+    assert_eq!(frame_cell(&frame, 0, 0).fg, WireColor::Indexed(1));
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, "I");
+    assert_eq!(frame_cell(&frame, 2, 0).fg, WireColor::Indexed(171));
+    assert_eq!(frame_cell(&frame, 4, 0).symbol, "B");
+    assert_eq!(frame_cell(&frame, 4, 0).bg, WireColor::Indexed(4));
+    assert_eq!(frame_cell(&frame, 6, 0).symbol, "T");
+    assert_eq!(frame_cell(&frame, 6, 0).fg, WireColor::Rgb(1, 2, 3));
 }
 
 #[test]
@@ -2459,16 +2407,10 @@ fn render_preserves_palette_background_fill_cells() {
         core.terminal.write(b"\x1b[48;5;4m\x1b[K");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
+    let frame = render_frame(&pane, 20, 5);
     for x in 0..20 {
-        assert_eq!(buffer[(x, 0)].symbol(), " ");
-        assert_eq!(buffer[(x, 0)].style().bg, Some(Color::Indexed(4)));
+        assert_eq!(frame_cell(&frame, x, 0).symbol, " ");
+        assert_eq!(frame_cell(&frame, x, 0).bg, WireColor::Indexed(4));
     }
 }
 
@@ -2481,16 +2423,10 @@ fn render_preserves_rgb_background_fill_cells() {
         core.terminal.write(b"\x1b[48;2;17;34;51m\x1b[K");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
+    let frame = render_frame(&pane, 20, 5);
     for x in 0..20 {
-        assert_eq!(buffer[(x, 0)].symbol(), " ");
-        assert_eq!(buffer[(x, 0)].style().bg, Some(Color::Rgb(17, 34, 51)));
+        assert_eq!(frame_cell(&frame, x, 0).symbol, " ");
+        assert_eq!(frame_cell(&frame, x, 0).bg, WireColor::Rgb(17, 34, 51));
     }
 }
 
@@ -2856,50 +2792,80 @@ fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
 }
 
 #[test]
-fn render_preserves_underline_color() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
-    let pane = PaneTerminal::new(terminal);
-    {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-        core.terminal.write(b"\x1b[4m\x1b[58:2::17:34:51mU");
+fn full_frame_preserves_every_underline_shape() {
+    use shepr_vt::UnderlineStyle;
+    for (sequence, shape) in [
+        ("\x1b[4mU", UnderlineStyle::Single),
+        ("\x1b[4:2mU", UnderlineStyle::Double),
+        ("\x1b[4:3mU", UnderlineStyle::Curly),
+        ("\x1b[4:4mU", UnderlineStyle::Dotted),
+        ("\x1b[4:5mU", UnderlineStyle::Dashed),
+        ("\x1b[4:3m\x1b[24mU", UnderlineStyle::None),
+    ] {
+        let mut terminal = shepr_vt::Terminal::new(20, 5, 0);
+        terminal.write(sequence.as_bytes());
+        let pane = PaneTerminal::new(terminal);
+
+        let frame = render_frame(&pane, 20, 5);
+
+        assert_eq!(frame.cells[0].symbol, "U");
+        assert_eq!(frame.cells[0].style.underline, shape, "{sequence:?}");
+        // The next cell is not underlined by the shape of the one before.
+        assert_eq!(frame.cells[1].style.underline, UnderlineStyle::None);
     }
-
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let style = terminal.backend().buffer()[(0, 0)].style();
-    assert!(style.add_modifier.contains(Modifier::UNDERLINED));
-    assert_eq!(style.underline_color, Some(Color::Rgb(17, 34, 51)));
 }
 
 #[test]
-fn full_frame_preserves_curly_underline_style() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+fn full_frame_links_cells_by_uri_in_one_table() {
+    let mut terminal = shepr_vt::Terminal::new(20, 3, 0);
+    terminal.write(
+        b"\x1b]8;;https://a.example\x1b\\ab\x1b]8;;\x1b\\-\x1b]8;;https://b.example\x1b\\c\x1b]8;;\x1b\\\r\n\x1b]8;;https://a.example\x1b\\d\x1b]8;;\x1b\\",
+    );
     let pane = PaneTerminal::new(terminal);
-    {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-        core.terminal.write(b"\x1b[4:3mU");
+
+    let frame = render_frame(&pane, 20, 3);
+
+    assert_eq!(
+        frame.hyperlinks,
+        vec![
+            "https://a.example".to_owned(),
+            "https://b.example".to_owned()
+        ]
+    );
+    let links = (0..20)
+        .map(|x| frame_cell(&frame, x, 0).hyperlink)
+        .collect::<Vec<_>>();
+    assert_eq!(&links[..5], &[Some(0), Some(0), None, Some(1), None]);
+    assert_eq!(frame_cell(&frame, 0, 1).hyperlink, Some(0));
+    assert_eq!(frame_cell(&frame, 1, 1).hyperlink, None);
+}
+
+#[test]
+fn render_into_a_sub_rect_touches_only_that_rect_and_clips_to_the_frame() {
+    let mut terminal = shepr_vt::Terminal::new(6, 3, 0);
+    terminal.write(b"abcdef\r\nghijkl");
+    let pane = PaneTerminal::new(terminal);
+    let mut frame = FrameData::blank(8, 4);
+    for cell in &mut frame.cells {
+        cell.symbol = "#".to_owned();
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
+    pane.render_into(&mut frame, Rect::new(1, 1, 6, 3));
 
-    let frame = shepr_protocol::FrameData::from_ratatui_buffer_with_hyperlinks(
-        terminal.backend().buffer(),
-        None,
-        &[],
-    );
-    assert_eq!(frame.cells[0].symbol, "U");
-    assert_eq!(
-        frame.cells[0].style.underline,
-        shepr_vt::UnderlineStyle::Curly
-    );
+    let row = |y: u16| {
+        (0..8)
+            .map(|x| frame_cell(&frame, x, y).symbol.as_str())
+            .collect::<String>()
+    };
+    assert_eq!(row(0), "########");
+    assert_eq!(row(1), "#abcdef#");
+    assert_eq!(row(2), "#ghijkl#");
+    assert_eq!(row(3), "#      #");
+
+    // Larger than the frame: the overhang is dropped, not a panic.
+    let mut small = FrameData::blank(4, 2);
+    pane.render_into(&mut small, Rect::new(0, 0, 6, 3));
+    assert_eq!(frame_cell(&small, 3, 1).symbol, "j");
 }
 
 #[test]
@@ -3421,19 +3387,13 @@ fn render_leaves_host_default_background_transparent() {
         core.terminal.write(b"hi");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(0, 0)].symbol(), "h");
-    assert_eq!(buffer[(0, 0)].style().fg, Some(Color::Reset));
-    assert_eq!(buffer[(0, 0)].style().bg, Some(Color::Reset));
-    assert_eq!(buffer[(2, 0)].symbol(), " ");
-    assert_eq!(buffer[(2, 0)].style().fg, Some(Color::Reset));
-    assert_eq!(buffer[(2, 0)].style().bg, Some(Color::Reset));
+    let frame = render_frame(&pane, 20, 5);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "h");
+    assert_eq!(frame_cell(&frame, 0, 0).fg, WireColor::Reset);
+    assert_eq!(frame_cell(&frame, 0, 0).bg, WireColor::Reset);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 2, 0).fg, WireColor::Reset);
+    assert_eq!(frame_cell(&frame, 2, 0).bg, WireColor::Reset);
 }
 
 #[test]
@@ -3459,18 +3419,12 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
         core.terminal.write(b"\x1b]10;rgb:44/55/66\x1b\\hi");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    let expected_fg = Some(Color::Rgb(0x44, 0x55, 0x66));
-    assert_eq!(buffer[(0, 0)].symbol(), "h");
-    assert_eq!(buffer[(0, 0)].style().fg, expected_fg);
-    assert_eq!(buffer[(2, 0)].symbol(), " ");
-    assert_eq!(buffer[(2, 0)].style().fg, expected_fg);
+    let frame = render_frame(&pane, 20, 5);
+    let expected_fg = WireColor::Rgb(0x44, 0x55, 0x66);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "h");
+    assert_eq!(frame_cell(&frame, 0, 0).fg, expected_fg);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 2, 0).fg, expected_fg);
 }
 
 #[test]
@@ -3496,18 +3450,12 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
         core.terminal.write(b"\x1b]11;rgb:44/55/66\x1b\\hi");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    let expected_bg = Some(Color::Rgb(0x44, 0x55, 0x66));
-    assert_eq!(buffer[(0, 0)].symbol(), "h");
-    assert_eq!(buffer[(0, 0)].style().bg, expected_bg);
-    assert_eq!(buffer[(2, 0)].symbol(), " ");
-    assert_eq!(buffer[(2, 0)].style().bg, expected_bg);
+    let frame = render_frame(&pane, 20, 5);
+    let expected_bg = WireColor::Rgb(0x44, 0x55, 0x66);
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "h");
+    assert_eq!(frame_cell(&frame, 0, 0).bg, expected_bg);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 2, 0).bg, expected_bg);
 }
 
 #[test]
@@ -3534,19 +3482,13 @@ fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
         core.terminal.write(b"\x1b[7mhi\x1b[27m");
     }
 
-    let backend = ratatui::backend::TestBackend::new(20, 5);
-    let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
-    terminal
-        .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), false))
-        .expect("test precondition");
-
-    let buffer = terminal.backend().buffer();
-    let cell = &buffer[(0, 0)];
-    assert_eq!(cell.symbol(), "h");
+    let frame = render_frame(&pane, 20, 5);
+    let cell = frame_cell(&frame, 0, 0);
+    assert_eq!(cell.symbol, "h");
     // After inverse: fg should be the resolved bg, bg should be the original fg.
-    // fg is never Color::Reset here, which would be the same hue as bg.
-    assert_eq!(cell.style().fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
-    assert_eq!(cell.style().bg, Some(Color::Rgb(0xaa, 0xbb, 0xcc)));
+    // fg is never WireColor::Reset here, which would be the same hue as bg.
+    assert_eq!(cell.fg, WireColor::Rgb(0x11, 0x22, 0x33));
+    assert_eq!(cell.bg, WireColor::Rgb(0xaa, 0xbb, 0xcc));
 }
 
 #[test]
@@ -3830,10 +3772,7 @@ fn full_render_leaves_dirty_rows_for_the_next_patch() {
     pane.collect_dirty_patch(8, 4);
     pane.process_pty_bytes(pane_id, b"\x1b[2;1HX");
 
-    let backend = ratatui::backend::TestBackend::new(8, 4);
-    let mut host = ratatui::Terminal::new(backend).expect("test precondition");
-    host.draw(|frame| pane.render(frame, Rect::new(0, 0, 8, 4), false))
-        .expect("test precondition");
+    render_frame(&pane, 8, 4);
 
     let TerminalDirtyPatchOutcome::Patch(patch) = pane.collect_dirty_patch(8, 4) else {
         panic!("the row written before the render must still be sent");

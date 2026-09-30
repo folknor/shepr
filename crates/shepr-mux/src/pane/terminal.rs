@@ -1,6 +1,6 @@
 use crate::limits::{
-    COPY_MODE_WORD_SEPARATORS, DEFAULT_DETECTION_ROWS, SCAN_CHUNK_ROWS,
-    SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
+    COPY_MODE_WORD_SEPARATORS, DEFAULT_DETECTION_ROWS, MERGE_MAX_BYTES, MERGE_MAX_ROWS,
+    SCAN_CHUNK_ROWS, SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
 };
 pub use shepr_termio::ScrollMetrics;
 use std::collections::VecDeque;
@@ -13,13 +13,12 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ratatui::style::{Color, Style};
-use ratatui::{Frame, layout::Rect};
+use ratatui::layout::Rect;
 use tracing::{debug, error, warn};
 use unicode_width::UnicodeWidthStr;
 
 use shepr_core::layout::PaneId;
-use shepr_protocol::CellData;
+use shepr_protocol::{CellData, FrameData, WireColor, WireStyle, WireStyleFlags};
 use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
 use super::cursor::decscusr_cursor_shape;
@@ -285,9 +284,6 @@ pub use history::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
 
 use helpers::*;
 use text::*;
-
-#[cfg(test)]
-use ratatui::style::Modifier;
 
 #[cfg(test)]
 use serde::{Deserialize, Serialize};

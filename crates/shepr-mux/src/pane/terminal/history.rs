@@ -71,6 +71,18 @@
 //!
 //! Since chunks are cut at the window end and nowhere else, no run of rows,
 //! however blank, is formatted under one lock hold longer than a window.
+//!
+//! Saves that find a few new rows each would leave a chunk per save, so a
+//! chunk just added is merged into the one before it (after the lock is
+//! released) while the result stays within `MERGE_MAX_ROWS` rows and
+//! `MERGE_MAX_BYTES` bytes. The merged text is the two texts with the
+//! separator the first one owes (none when it is open), so it is the bytes a
+//! whole read has for those rows; it keeps the first chunk's start and
+//! `resumed` and the second one's end and `open`, and its content end is the
+//! second's shifted past the first (or the first's when the second has none).
+//! A merged chunk is dropped whole by eviction like any other and its
+//! surviving rows are formatted again, which the row cap keeps small. The
+//! exposed text does not change, so neither does the revision.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -130,6 +142,57 @@ struct HistoryChunk {
     /// Set when the chunk ends inside a logical line: the state the chunk
     /// after it starts from.
     open: Option<AnsiCarry>,
+}
+
+impl HistoryChunk {
+    fn rows(&self) -> u64 {
+        self.end.0.saturating_sub(self.start.0)
+    }
+
+    /// The line separator between this chunk's text and the next chunk's:
+    /// present exactly when this chunk ends a logical line.
+    fn separator(&self) -> &'static str {
+        if self.open.is_some() { "" } else { "\r\n" }
+    }
+
+    /// Whether `next`, the chunk right after this one, can be joined into it.
+    /// Any two adjacent chunks can be as far as exactness goes; only the size
+    /// caps decide.
+    fn can_absorb(&self, next: &Self) -> bool {
+        self.rows().saturating_add(next.rows()) <= MERGE_MAX_ROWS
+            && self
+                .text
+                .len()
+                .saturating_add(self.separator().len())
+                .saturating_add(next.text.len())
+                <= MERGE_MAX_BYTES
+    }
+
+    /// Joins `next` onto this chunk as a whole read joins them: the text of
+    /// this one, the separator it owes the next (none when it is open) and the
+    /// text of the next. The result starts from this chunk's state
+    /// (`resumed`) and stops in the next one's (`open`).
+    ///
+    /// The content end is where the whole read would cut the joined text: at
+    /// the next chunk's own content end, shifted past this text and the
+    /// separator (`Some(0)` lands right after them, as `pieces` cuts such a
+    /// piece), and when the next has no content, at this chunk's, since
+    /// everything after that is trailing blank.
+    fn absorb(&mut self, next: Self) {
+        let separator = self.separator();
+        let offset = self.text.len() + separator.len();
+        let mut text = String::with_capacity(offset + next.text.len());
+        text.push_str(&self.text);
+        text.push_str(separator);
+        text.push_str(&next.text);
+        self.text = text.into();
+        self.content_end = match next.content_end {
+            Some(end) => Some(offset + end),
+            None => self.content_end,
+        };
+        self.end = next.end;
+        self.open = next.open;
+    }
 }
 
 /// One piece of a pane's history text, shared with the cache it came from.
@@ -254,6 +317,30 @@ impl PaneHistoryCache {
     fn push_back(&mut self, chunk: HistoryChunk) {
         self.chunks.push_back(chunk);
         self.revision = next_revision();
+    }
+
+    /// Merges the chunk at `index` into the one before it when
+    /// [`HistoryChunk::can_absorb`] allows. Copies at most the merge byte cap,
+    /// so a reader calls it after it has let go of the terminal lock. The
+    /// exposed text does not change, so the revision does not either (the push
+    /// that made the chunk already moved it).
+    fn coalesce_at(&mut self, index: usize) {
+        let Some(before) = index.checked_sub(1) else {
+            return;
+        };
+        let mergeable = match (self.chunks.get(before), self.chunks.get(index)) {
+            (Some(first), Some(second)) => first.can_absorb(second),
+            _ => false,
+        };
+        if !mergeable {
+            return;
+        }
+        let Some(second) = self.chunks.remove(index) else {
+            return;
+        };
+        if let Some(first) = self.chunks.get_mut(before) {
+            first.absorb(second);
+        }
     }
 
     /// Forgets all text, the tail included.
@@ -453,6 +540,7 @@ impl PaneTerminal {
                     open: formatted.open,
                 });
                 drop(core);
+                cache.coalesce_at(1);
                 std::thread::yield_now();
                 continue;
             }
@@ -487,6 +575,8 @@ impl PaneTerminal {
                     open: formatted.open,
                 });
                 drop(core);
+                // Merged with the lock released: it is a copy of cached text.
+                cache.coalesce_at(cache.chunks.len().saturating_sub(1));
                 // Give the PTY reader waiting on the lock a chance to take it.
                 std::thread::yield_now();
                 continue;
@@ -953,6 +1043,200 @@ mod tests {
         assert!(!cache.has_text());
         assert!(cache.pieces().is_empty());
         assert_eq!(cache.text(), "");
+    }
+
+    /// No two neighbours the caps would let merge: what bounds the chunk
+    /// count by the history size and not by the number of saves.
+    fn assert_no_mergeable_neighbours(cache: &PaneHistoryCache) {
+        for (index, pair) in cache
+            .chunks
+            .iter()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .enumerate()
+        {
+            assert!(!pair[0].can_absorb(pair[1]), "chunks {index} and next");
+        }
+    }
+
+    /// What one small save writes: blank lines, styled text, wrapped lines and
+    /// a line left open across saves, so merged neighbours are closed and open,
+    /// resumed, blank and contentful in every mix.
+    fn small_save(round: usize) -> String {
+        match round % 5 {
+            0 => "\r\n\r\n".to_string(),
+            1 => format!("\x1b[1;31mred {round}\x1b[0m\r\nplain {round}\r\n"),
+            // The line stays open: no newline, styled, wraps in history.
+            2 => format!("\x1b[4m{}", "u".repeat(30)),
+            3 => format!("{}\x1b[0m\r\n", "v".repeat(20)),
+            _ => format!("a long line that wraps {round}\r\n"),
+        }
+    }
+
+    #[test]
+    fn a_long_run_of_small_saves_keeps_a_bounded_chunk_count_and_reads_exactly() {
+        let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        let saves = 1_500;
+        for round in 0..saves {
+            write(&pane, small_save(round).as_bytes());
+            assert_eq!(source.read(&mut cache), whole_read(&pane), "round {round}");
+            assert_no_mergeable_neighbours(&cache);
+        }
+        // Blank saves at the end: trailing blank rows merge in, unexposed.
+        for round in 0..50 {
+            write_blank_lines(&pane, 2);
+            assert_eq!(source.read(&mut cache), whole_read(&pane), "blank {round}");
+        }
+        assert_no_mergeable_neighbours(&cache);
+
+        let rows = cache
+            .chunks
+            .back()
+            .map_or(0, |chunk| chunk.end.0)
+            .saturating_sub(cache.chunks.front().map_or(0, |chunk| chunk.start.0));
+        assert!(rows > 3_000, "history of {rows} rows");
+        // One chunk per save would be well over a thousand.
+        let bound = usize::try_from(2 * rows / MERGE_MAX_ROWS + 2).expect("test precondition");
+        assert!(
+            cache.chunks.len() <= bound,
+            "{} chunks for {rows} rows",
+            cache.chunks.len()
+        );
+        assert!(cache.pieces().len() <= bound + 1);
+        assert!(cache.chunks.iter().any(|chunk| chunk.rows() > 100));
+        assert!(
+            cache.chunks.iter().any(|chunk| chunk.open.is_some()),
+            "an open chunk was cached"
+        );
+        assert_eq!(Some(cache.text()), whole_read(&pane));
+    }
+
+    #[test]
+    fn eviction_inside_a_merged_chunk_reads_exactly() {
+        // The smallest history keeps a thousand lines, so the origin walks
+        // through merged chunks a few rows per save.
+        let pane = terminal(12, 4, 2048);
+        let source = PaneHistorySource(Arc::clone(&pane));
+        let mut cache = PaneHistoryCache::default();
+        let mut inside_merged = 0;
+        for round in 0..1_500 {
+            write(&pane, small_save(round).as_bytes());
+            let origin = shepr_vt::lock_terminal_core(&pane.core)
+                .expect("test precondition")
+                .terminal
+                .history_origin();
+            // The origin is past the first rows of a chunk that merged more
+            // than one save's rows: part of it is evicted, the rest stays.
+            if cache
+                .chunks
+                .iter()
+                .any(|chunk| chunk.rows() > 6 && chunk.start < origin && origin < chunk.end)
+            {
+                inside_merged += 1;
+            }
+            assert_eq!(source.read(&mut cache), whole_read(&pane), "round {round}");
+            assert_no_mergeable_neighbours(&cache);
+            assert!(
+                cache
+                    .chunks
+                    .iter()
+                    .all(|chunk| chunk.rows() <= MERGE_MAX_ROWS)
+            );
+        }
+        assert!(
+            inside_merged > 20,
+            "evicted inside a merged chunk {inside_merged} times"
+        );
+        assert!(cache.chunks.len() <= 12, "{} chunks", cache.chunks.len());
+        assert_eq!(Some(cache.text()), whole_read(&pane));
+    }
+
+    #[test]
+    fn merging_joins_content_ends_as_pieces_cut_them() {
+        fn chunk(
+            start: u64,
+            text: &str,
+            content_end: Option<usize>,
+            resumed: bool,
+            open: bool,
+        ) -> HistoryChunk {
+            HistoryChunk {
+                start: AbsRow(start),
+                end: AbsRow(start + 1),
+                text: text.into(),
+                content_end,
+                resumed,
+                open: open.then(AnsiCarry::default),
+            }
+        }
+        let cases = [
+            // closed + closed: the separator is part of the merged text.
+            (
+                chunk(0, "ab", Some(2), false, false),
+                chunk(1, "cd", Some(2), false, false),
+            ),
+            (
+                chunk(0, "ab\r\n\r\n", Some(2), false, false),
+                chunk(1, "cd", Some(2), false, false),
+            ),
+            // A trailing blank second chunk leaves the first's content end.
+            (
+                chunk(0, "ab\r\n", Some(2), false, false),
+                chunk(1, "\r\n", None, false, false),
+            ),
+            (
+                chunk(0, "\r\n", None, false, false),
+                chunk(1, "\r\n", None, false, false),
+            ),
+            (
+                chunk(0, "\r\n", None, false, false),
+                chunk(1, "cd", Some(2), false, false),
+            ),
+            // open + resumed: no separator, and Some(0) lands at the join.
+            (
+                chunk(0, "abc", Some(3), false, true),
+                chunk(1, "", Some(0), true, false),
+            ),
+            (
+                chunk(0, "abc", Some(3), false, true),
+                chunk(1, "de\r\n", Some(2), true, false),
+            ),
+            (
+                chunk(0, "abc", Some(3), false, true),
+                chunk(1, "de", Some(2), true, true),
+            ),
+        ];
+        for (index, (first, second)) in cases.into_iter().enumerate() {
+            let mut cache = PaneHistoryCache::default();
+            let mut merged_cache = PaneHistoryCache::default();
+            let (first_resumed, second_open) = (first.resumed, second.open.is_some());
+            let expect_text = format!("{}{}{}", first.text, first.separator(), second.text);
+            let copy = |c: &HistoryChunk| HistoryChunk {
+                start: c.start,
+                end: c.end,
+                text: Arc::clone(&c.text),
+                content_end: c.content_end,
+                resumed: c.resumed,
+                open: c.open.clone(),
+            };
+            merged_cache.chunks.push_back(copy(&first));
+            merged_cache.chunks.push_back(copy(&second));
+            cache.chunks.push_back(first);
+            cache.chunks.push_back(second);
+            assert!(cache.chunks[0].can_absorb(&cache.chunks[1]));
+            merged_cache.coalesce_at(1);
+            assert_eq!(merged_cache.chunks.len(), 1, "case {index}");
+            let merged = &merged_cache.chunks[0];
+            assert_eq!(&*merged.text, expect_text, "case {index}");
+            assert_eq!(merged.resumed, first_resumed, "case {index}");
+            assert_eq!(merged.open.is_some(), second_open, "case {index}");
+            assert_eq!(merged.end, AbsRow(2));
+            // As pieces cut them, unmerged and merged (the tail is empty).
+            assert_eq!(merged_cache.text(), cache.text(), "case {index}");
+            assert_eq!(merged_cache.has_text(), cache.has_text(), "case {index}");
+        }
     }
 
     #[test]

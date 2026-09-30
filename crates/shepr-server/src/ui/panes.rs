@@ -1,18 +1,20 @@
 use ratatui::{
-    Frame,
+    buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Borders, Paragraph, Wrap},
+    widgets::{Borders, Paragraph, Widget, Wrap},
 };
 
 use super::PaneResizer;
+use super::chrome::{overlay_buffer, put_run};
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
 use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::RestoreFailure;
 use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
+use shepr_protocol::{CellData, FrameData, WireColor};
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.scroll_metrics()
@@ -144,10 +146,12 @@ pub(super) fn compute_pane_infos_for_workspace(
     pane_infos
 }
 
+/// Draws the panes of one workspace and their chrome into `frame`: pane cells
+/// go straight to the wire form, the chrome over them afterwards.
 pub(super) fn render_panes(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
-    frame: &mut Frame<'_>,
+    frame: &mut FrameData,
     target: Option<&shepr_protocol::WorkspaceId>,
     pane_infos: &[PaneInfo],
     split_borders: &[shepr_core::layout::SplitBorder],
@@ -164,18 +168,20 @@ pub(super) fn render_panes(
 
     for info in pane_infos {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            let show_cursor = info.is_focused && !pane_is_scrolled_back(rt);
-            rt.render(frame, info.inner_rect, show_cursor);
+            rt.render_into(frame, info.inner_rect);
             render_pane_scrollbar(app, frame, info, rt);
         } else if let Some(reason) = ws
             .terminal_id(info.id)
             .and_then(|id| app.terminals.get(id))
             .and_then(|terminal| terminal.restore_error.as_ref())
         {
-            frame.render_widget(
-                Paragraph::new(restore_failure_text(reason)).wrap(Wrap { trim: false }),
-                info.inner_rect,
-            );
+            let mut scratch = Buffer::empty(info.inner_rect);
+            Paragraph::new(restore_failure_text(reason))
+                .wrap(Wrap { trim: false })
+                .render(info.inner_rect, &mut scratch);
+            // A pane with no runtime has no cells of its own: the message owns
+            // its whole content rect.
+            overlay_buffer(frame, &scratch, info.inner_rect);
         }
     }
 
@@ -195,7 +201,7 @@ fn render_pane_borders(
     ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[shepr_core::layout::SplitBorder],
-    frame: &mut Frame<'_>,
+    frame: &mut FrameData,
 ) {
     if !app.settings.pane_borders.draws_borders()
         || pane_infos.iter().all(|info| info.borders.is_empty())
@@ -209,14 +215,8 @@ fn render_pane_borders(
     }
     add_split_border_cells(app.settings.pane_gaps, split_borders, &mut cells);
 
-    let buf = frame.buffer_mut();
-    let area = buf.area;
     for ((x, y), line) in cells {
-        if x < area.x
-            || x >= area.x.saturating_add(area.width)
-            || y < area.y
-            || y >= area.y.saturating_add(area.height)
-        {
+        if x >= frame.width || y >= frame.height {
             continue;
         }
         let focused = pane_infos
@@ -226,14 +226,17 @@ fn render_pane_borders(
         if symbol.is_empty() {
             continue;
         }
-        let cell = &mut buf[(x, y)];
-        cell.set_symbol(symbol);
         let color = if focused {
             app.settings.palette.accent
         } else {
             app.settings.palette.overlay0
         };
-        cell.set_style(Style::default().fg(color));
+        let cell = CellData {
+            symbol: symbol.to_owned(),
+            fg: WireColor::from_ratatui(color),
+            ..CellData::blank()
+        };
+        put_run(frame, x, y, &[cell]);
     }
 
     render_pane_border_titles(app, ws, pane_infos, frame);
@@ -365,10 +368,9 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneInfo],
-    frame: &mut Frame<'_>,
+    frame: &mut FrameData,
 ) {
-    let buf = frame.buffer_mut();
-    let area = buf.area;
+    let area = Rect::new(0, 0, frame.width, frame.height);
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
@@ -406,12 +408,15 @@ fn render_pane_border_titles(
         if info.is_focused {
             style = style.add_modifier(Modifier::BOLD);
         }
-        buf.set_stringn(
-            start_x,
-            y,
-            title,
-            end_x.saturating_sub(start_x) as usize,
-            style,
+        let width = end_x.saturating_sub(start_x);
+        let mut scratch = Buffer::empty(Rect::new(start_x, y, width, 1));
+        // The title owns what it wrote, its padding spaces included; the
+        // border stroke after it stays.
+        let (end, _) = scratch.set_stringn(start_x, y, title, usize::from(width), style);
+        overlay_buffer(
+            frame,
+            &scratch,
+            Rect::new(start_x, y, end.saturating_sub(start_x), 1),
         );
     }
 }
@@ -452,7 +457,7 @@ fn compute_pane_infos(
 }
 
 #[cfg(test)]
-use ratatui::{buffer::Buffer, style::Color};
+use ratatui::style::Color;
 #[cfg(test)]
 use shepr_config::theme::Palette;
 #[cfg(test)]
@@ -548,16 +553,12 @@ mod tests {
             split_borders: &layout.split_borders,
         };
         let cursor = crate::ui::surface_cursor(&app, &runtimes, surface);
-        let backend = ratatui::backend::TestBackend::new(area.width, area.height);
-        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
-        terminal
-            .draw(|frame| crate::ui::render_surface(&app, &runtimes, surface, frame))
-            .expect("render surface");
-        let buffer = terminal.backend().buffer();
-        let text: String = buffer
-            .content
+        let mut frame = FrameData::blank(area.width, area.height);
+        crate::ui::render_surface(&app, &runtimes, surface, &mut frame);
+        let text: String = frame
+            .cells
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(|cell| cell.symbol.as_str())
             .collect();
         assert!(text.contains("Saved directory is unavailable."));
         assert!(text.contains("Restore the directory and restart this session."));
@@ -629,16 +630,12 @@ mod tests {
         terminal_state.set_manual_label("1 模块组织（已定）".into());
         app.terminals.insert(terminal_id, terminal_state);
 
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3))
-            .expect("test precondition");
-        terminal
-            .draw(|frame| render_pane_borders(&app, &ws, &pane_infos, &[], frame))
-            .expect("test precondition");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(4, 0)].symbol(), "模");
-        assert_eq!(buffer[(5, 0)].symbol(), " ");
-        assert_eq!(buffer[(6, 0)].symbol(), "块");
+        let mut frame = FrameData::blank(12, 3);
+        render_pane_borders(&app, &ws, &pane_infos, &[], &mut frame);
+        let buffer = |x: u16, y: u16| &frame.cells[usize::from(y) * 12 + usize::from(x)];
+        assert_eq!(buffer(4, 0).symbol, "模");
+        assert_eq!(buffer(5, 0).symbol, " ");
+        assert_eq!(buffer(6, 0).symbol, "块");
     }
 
     #[test]
@@ -891,18 +888,14 @@ mod tests {
             },
         ];
         let ws = Workspace::test_new("test");
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 4))
-            .expect("test precondition");
-
-        terminal
-            .draw(|frame| render_pane_borders(&app, &ws, &pane_infos, &split_borders, frame))
-            .expect("test precondition");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(2, 2)].symbol(), "┼");
-        assert_eq!(buffer[(2, 2)].style().fg, Some(app.settings.palette.accent));
-        assert_eq!(buffer[(2, 1)].symbol(), "│");
-        assert_eq!(buffer[(2, 1)].style().fg, Some(app.settings.palette.accent));
+        let mut frame = FrameData::blank(4, 4);
+        render_pane_borders(&app, &ws, &pane_infos, &split_borders, &mut frame);
+        let buffer = |x: u16, y: u16| &frame.cells[usize::from(y) * 4 + usize::from(x)];
+        let accent = WireColor::from_ratatui(app.settings.palette.accent);
+        assert_eq!(buffer(2, 2).symbol, "┼");
+        assert_eq!(buffer(2, 2).fg, accent);
+        assert_eq!(buffer(2, 1).symbol, "│");
+        assert_eq!(buffer(2, 1).fg, accent);
     }
 
     #[test]
@@ -928,18 +921,16 @@ mod tests {
             },
         ];
         let ws = Workspace::test_new("test");
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3))
-            .expect("test precondition");
-
-        terminal
-            .draw(|frame| render_pane_borders(&app, &ws, &pane_infos, &[], frame))
-            .expect("test precondition");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(1, 1)].style().fg, Some(app.settings.palette.accent));
+        let mut frame = FrameData::blank(4, 3);
+        render_pane_borders(&app, &ws, &pane_infos, &[], &mut frame);
+        let buffer = |x: u16, y: u16| &frame.cells[usize::from(y) * 4 + usize::from(x)];
         assert_eq!(
-            buffer[(2, 1)].style().fg,
-            Some(app.settings.palette.overlay0)
+            buffer(1, 1).fg,
+            WireColor::from_ratatui(app.settings.palette.accent)
+        );
+        assert_eq!(
+            buffer(2, 1).fg,
+            WireColor::from_ratatui(app.settings.palette.overlay0)
         );
     }
 

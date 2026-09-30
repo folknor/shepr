@@ -1384,7 +1384,10 @@ fn client_pane_input_has_interaction(events: &[shepr_protocol::ClientPaneInputEv
 
 impl Drop for HeadlessServer {
     fn drop(&mut self) {
-        self.cleanup_sockets();
+        // The lease before the sockets, as on a clean exit; see
+        // `release_sockets_after_save`. Without this the sockets went first
+        // and the lease with the fields dropped after this body.
+        self.release_sockets_after_save();
     }
 }
 

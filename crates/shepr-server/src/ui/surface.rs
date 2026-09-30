@@ -1,4 +1,4 @@
-use ratatui::{Frame, layout::Rect};
+use ratatui::layout::Rect;
 
 use super::PaneResizer;
 use super::panes::{compute_pane_infos_for_workspace, render_panes, resize_pane_infos};
@@ -6,7 +6,7 @@ use crate::app::AppState;
 use shepr_core::layout::SplitBorder;
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
-use shepr_protocol::{CursorState, WorkspaceId};
+use shepr_protocol::{CursorState, FrameData, WorkspaceId};
 
 pub(crate) struct SurfaceLayout {
     pub(crate) target: Option<WorkspaceId>,
@@ -67,11 +67,14 @@ pub(crate) fn resize_surface(
     resize_pane_infos(app, resizer, workspace_index, &pane_infos, cell_size);
 }
 
+/// Draws the surface's panes and chrome into `frame`, whose size is the
+/// client's surface. Pane cells, typed underline shapes and hyperlinks
+/// included, are written directly in wire form.
 pub(crate) fn render_surface(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     surface: SurfaceView<'_>,
-    frame: &mut Frame<'_>,
+    frame: &mut FrameData,
 ) {
     render_panes(
         app,
@@ -81,25 +84,6 @@ pub(crate) fn render_surface(
         surface.pane_infos,
         surface.split_borders,
     );
-}
-
-pub(crate) fn surface_hyperlinks(
-    app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    surface: SurfaceView<'_>,
-) -> Vec<((u16, u16), String, String)> {
-    let Some(ws_idx) = surface.target.and_then(|id| app.workspace_index(id)) else {
-        return Vec::new();
-    };
-
-    let mut links = Vec::new();
-    for info in surface.pane_infos {
-        if let Some(runtime) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
-        {
-            links.extend(runtime.visible_hyperlinks(info.inner_rect));
-        }
-    }
-    links
 }
 
 pub(crate) fn surface_cursor(
@@ -164,8 +148,6 @@ pub(crate) fn surface_cursor(
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
     use shepr_core::layout::Direction;
     use shepr_mux::workspace::Workspace;
 
@@ -214,31 +196,27 @@ mod tests {
             pane_infos: &surface.pane_infos,
             split_borders: &surface.split_borders,
         };
-        let mut terminal = Terminal::new(TestBackend::new(full_area.width, full_area.height))
-            .expect("test precondition");
-        terminal
-            .draw(|frame| {
-                render_surface(&app, &runtimes, surface_view, frame);
-            })
-            .expect("test precondition");
+        let mut frame = FrameData::blank(full_area.width, full_area.height);
+        render_surface(&app, &runtimes, surface_view, &mut frame);
 
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
+        let rendered = frame
+            .cells
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(|cell| cell.symbol.as_str())
             .collect::<String>();
         assert!(rendered.contains("LEFT"), "surface: {rendered:?}");
         assert!(rendered.contains("RIGHT"), "surface: {rendered:?}");
         assert!(!rendered.contains("shell-workspace"));
 
-        let links = surface_hyperlinks(&app, &runtimes, surface_view);
-        assert!(
-            links
-                .iter()
-                .any(|(_, symbol, link)| { symbol == "L" && link == uri })
-        );
+        // The link is on the cells of the linked text, in the frame's table.
+        assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
+        let linked = frame
+            .cells
+            .iter()
+            .filter(|cell| cell.hyperlink.is_some())
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>();
+        assert_eq!(linked, "LEFT");
         assert!(surface_cursor(&app, &runtimes, surface_view,).is_some());
     }
 }

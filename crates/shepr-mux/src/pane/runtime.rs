@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use bytes::Bytes;
-use ratatui::{Frame, layout::Rect};
+use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::{error, info, warn};
 
@@ -1466,8 +1466,10 @@ impl PaneRuntime {
         self.terminal.extract_selection(selection)
     }
 
-    pub fn render(&self, frame: &mut Frame<'_>, area: Rect, show_cursor: bool) {
-        self.terminal.render(frame, area, show_cursor);
+    /// Draws the visible screen into `area` of a wire frame; see
+    /// [`PaneTerminal::render_into`].
+    pub fn render_into(&self, frame: &mut shepr_protocol::FrameData, area: Rect) {
+        self.terminal.render_into(frame, area);
     }
 
     pub fn collect_dirty_patch_snapshot(
@@ -1495,10 +1497,6 @@ impl PaneRuntime {
             alternate_screen_active: self.alternate_screen_active(),
         };
         (self.content_seq() == revision).then_some(snapshot)
-    }
-
-    pub fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
-        self.terminal.visible_hyperlinks(area)
     }
 
     pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {

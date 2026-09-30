@@ -145,8 +145,6 @@ pub(super) fn cursor_state_from_render_state(
     })
 }
 
-pub(super) type VisibleHyperlinks = Vec<((u16, u16), String, String)>;
-
 pub(super) fn terminal_collect_dirty_patch(
     core: &mut PaneTerminalCore,
     area_width: u16,
@@ -206,7 +204,7 @@ pub(super) fn terminal_collect_dirty_patch(
             if basic.has_hyperlink {
                 fallback!("hyperlink_present");
             }
-            let style = terminal_cell_style(
+            let paint = terminal_cell_paint(
                 &cell_view,
                 &basic,
                 default_fg,
@@ -217,11 +215,11 @@ pub(super) fn terminal_collect_dirty_patch(
             );
             let symbol =
                 terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch).to_owned();
-            patch_cells.push(cell_data_from_style(symbol, style));
+            patch_cells.push(paint.into_cell(symbol));
             x = x.saturating_add(1);
         }
         while x < area_width {
-            patch_cells.push(blank_cell_data(default_fg, default_bg));
+            patch_cells.push(CellPaint::blank(default_fg, default_bg).into_cell(" ".to_owned()));
             x += 1;
         }
         patch_rows.push((y, patch_cells));
@@ -250,32 +248,6 @@ pub(super) fn terminal_collect_dirty_patch(
     finish!(TerminalDirtyPatchOutcome::Patch(TerminalDirtyPatch {
         rows: patch_rows
     }));
-}
-
-pub(super) fn terminal_visible_hyperlinks(
-    core: &mut PaneTerminalCore,
-    area: Rect,
-) -> Result<VisibleHyperlinks, shepr_vt::Error> {
-    let PaneTerminalCore {
-        terminal,
-        render_state,
-        ..
-    } = core;
-    let terminal: &shepr_vt::Terminal = terminal;
-    render_state.update(terminal);
-    let mut links = Vec::new();
-    for row in render_state.iter_rows().take(usize::from(area.height)) {
-        let y = row.y();
-        for (x, cells) in row.cells().take(usize::from(area.width)).enumerate() {
-            let x = u16::try_from(x).unwrap_or(u16::MAX);
-            if cells.has_hyperlink()
-                && let Some(uri) = terminal.viewport_hyperlink_uri(x, ViewportRow(y))?
-            {
-                links.push(((area.x + x, area.y + y), terminal_cell_symbol(&cells), uri));
-            }
-        }
-    }
-    Ok(links)
 }
 
 pub(super) fn terminal_visible_text(core: &mut PaneTerminalCore) -> String {
@@ -501,62 +473,58 @@ pub(super) fn terminal_buffer_symbol_into<'a>(
     symbol_scratch.as_str()
 }
 
-pub(super) fn terminal_reset_cell(
-    cell: &mut ratatui::buffer::Cell,
-    default_fg: Option<Color>,
-    default_bg: Option<Color>,
-) {
-    cell.reset();
-    cell.set_symbol(" ");
-    if let Some(bg) = default_bg {
-        cell.set_bg(bg);
+/// The colours and text style of one pane cell, as the wire carries them.
+/// Underline colour (SGR 58) has no wire form and is not read.
+#[derive(Clone, Copy)]
+pub(super) struct CellPaint {
+    pub(super) fg: WireColor,
+    pub(super) bg: WireColor,
+    pub(super) style: WireStyle,
+}
+
+impl CellPaint {
+    /// A blank cell: the terminal's default colours, `Reset` where the host's
+    /// own default shows through.
+    pub(super) fn blank(default_fg: Option<WireColor>, default_bg: Option<WireColor>) -> Self {
+        Self {
+            fg: default_fg.unwrap_or(WireColor::Reset),
+            bg: default_bg.unwrap_or(WireColor::Reset),
+            style: WireStyle::default(),
+        }
     }
-    if let Some(fg) = default_fg {
-        cell.set_fg(fg);
+
+    pub(super) fn into_cell(self, symbol: String) -> CellData {
+        CellData {
+            symbol,
+            fg: self.fg,
+            bg: self.bg,
+            style: self.style,
+            skip: false,
+            hyperlink: None,
+        }
+    }
+
+    /// Overwrites `cell` completely, keeping its symbol allocation.
+    pub(super) fn write_cell(self, cell: &mut CellData, symbol: &str, hyperlink: Option<u32>) {
+        cell.symbol.clear();
+        cell.symbol.push_str(symbol);
+        cell.fg = self.fg;
+        cell.bg = self.bg;
+        cell.style = self.style;
+        cell.skip = false;
+        cell.hyperlink = hyperlink;
     }
 }
 
-pub(super) fn blank_cell_data(default_fg: Option<Color>, default_bg: Option<Color>) -> CellData {
-    cell_data_from_style(
-        " ".to_string(),
-        terminal_default_style(default_fg, default_bg),
-    )
-}
-
-pub(super) fn cell_data_from_style(symbol: String, style: Style) -> CellData {
-    CellData {
-        symbol,
-        fg: shepr_protocol::WireColor::from_ratatui(style.fg.unwrap_or(Color::Reset)),
-        bg: shepr_protocol::WireColor::from_ratatui(style.bg.unwrap_or(Color::Reset)),
-        style: shepr_protocol::WireStyle::from_ratatui_modifier(style.add_modifier),
-        skip: false,
-        hyperlink: None,
-    }
-}
-
-pub(super) fn terminal_default_style(
-    default_fg: Option<Color>,
-    default_bg: Option<Color>,
-) -> Style {
-    let mut style = Style::default();
-    if let Some(fg) = default_fg {
-        style = style.fg(fg);
-    }
-    if let Some(bg) = default_bg {
-        style = style.bg(bg);
-    }
-    style
-}
-
-pub(super) fn terminal_cell_style(
+pub(super) fn terminal_cell_paint(
     cells: &shepr_vt::CellView<'_>,
     basic: &shepr_vt::CellBasicData,
-    default_fg: Option<Color>,
-    default_bg: Option<Color>,
-    resolved_fg: Option<Color>,
-    resolved_bg: Option<Color>,
+    default_fg: Option<WireColor>,
+    default_bg: Option<WireColor>,
+    resolved_fg: Option<WireColor>,
+    resolved_bg: Option<WireColor>,
     palette_overrides: Option<&PaletteOverrides>,
-) -> Style {
+) -> CellPaint {
     let mut fg = basic
         .style
         .fg_color
@@ -575,7 +543,7 @@ pub(super) fn terminal_cell_style(
     if basic.style.inverse {
         // When the background is transparent (None), resolve it to the
         // actual terminal background color before swapping.  Otherwise
-        // the swapped fg becomes None (Color::Reset) which the host
+        // the swapped fg becomes None (WireColor::Reset) which the host
         // terminal renders as its default foreground - the same hue as
         // the new bg, making inverse text invisible.
         if bg.is_none() {
@@ -587,32 +555,27 @@ pub(super) fn terminal_cell_style(
         std::mem::swap(&mut fg, &mut bg);
     }
 
-    let mut style = terminal_default_style(fg, bg);
-    if let Some(underline_color) = basic
-        .style
-        .underline_color
-        .map(|color| terminal_cell_color(color, palette_overrides))
-    {
-        style = style.underline_color(underline_color);
-    }
-    let mut flags = shepr_protocol::WireStyleFlags::default();
+    let mut flags = WireStyleFlags::default();
     if basic.style.bold {
-        flags = flags.union(shepr_protocol::WireStyleFlags::BOLD);
+        flags = flags.union(WireStyleFlags::BOLD);
     }
     if basic.style.faint {
-        flags = flags.union(shepr_protocol::WireStyleFlags::DIM);
+        flags = flags.union(WireStyleFlags::DIM);
     }
     if basic.style.italic {
-        flags = flags.union(shepr_protocol::WireStyleFlags::ITALIC);
+        flags = flags.union(WireStyleFlags::ITALIC);
     }
     if basic.style.strikethrough {
-        flags = flags.union(shepr_protocol::WireStyleFlags::CROSSED_OUT);
+        flags = flags.union(WireStyleFlags::CROSSED_OUT);
     }
-    let wire_style = shepr_protocol::WireStyle {
-        flags,
-        underline: basic.style.underline,
-    };
-    style.add_modifier(wire_style.to_ratatui_modifier())
+    CellPaint {
+        fg: fg.unwrap_or(WireColor::Reset),
+        bg: bg.unwrap_or(WireColor::Reset),
+        style: WireStyle {
+            flags,
+            underline: basic.style.underline,
+        },
+    }
 }
 
 pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
@@ -626,7 +589,7 @@ pub(super) fn terminal_default_fg(
     color: shepr_vt::RgbColor,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     initial_default_foreground: Option<shepr_vt::RgbColor>,
-) -> Option<Color> {
+) -> Option<WireColor> {
     if let Some(host_foreground) = host_theme.foreground {
         if host_foreground == color {
             None
@@ -644,7 +607,7 @@ pub(super) fn terminal_default_bg(
     color: shepr_vt::RgbColor,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     initial_default_background: Option<shepr_vt::RgbColor>,
-) -> Option<Color> {
+) -> Option<WireColor> {
     if let Some(host_background) = host_theme.background {
         if host_background == color {
             None
@@ -688,20 +651,20 @@ impl PaletteOverrides {
 pub(super) fn terminal_cell_color(
     color: shepr_vt::CellColor,
     palette_overrides: Option<&PaletteOverrides>,
-) -> Color {
+) -> WireColor {
     match color {
         shepr_vt::CellColor::Palette(index) => {
             match palette_overrides.and_then(|overrides| overrides.get(index)) {
                 Some(color) => terminal_color(color),
-                None => Color::Indexed(index),
+                None => WireColor::Indexed(index),
             }
         }
         shepr_vt::CellColor::Rgb(color) => terminal_color(color),
     }
 }
 
-pub(super) fn terminal_color(color: shepr_vt::RgbColor) -> Color {
-    Color::Rgb(color.r, color.g, color.b)
+pub(super) fn terminal_color(color: shepr_vt::RgbColor) -> WireColor {
+    WireColor::Rgb(color.r, color.g, color.b)
 }
 
 pub(super) fn lines_to_text(lines: &[String]) -> String {

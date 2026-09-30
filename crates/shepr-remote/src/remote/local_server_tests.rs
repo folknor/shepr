@@ -63,7 +63,7 @@ fn serve_status_once(
 fn fixture_daemon<'a>(
     steps: &[Step],
     pid: &'a Cell<u32>,
-) -> impl FnOnce(Stdio) -> io::Result<Child> + 'a {
+) -> impl FnMut(Stdio) -> io::Result<Child> + 'a {
     let steps = steps.to_vec();
     move |stderr| {
         let mut command = fixture::command(&steps);
@@ -469,8 +469,9 @@ fn an_occupant_of_another_build_is_handed_back_once_the_daemon_gave_way() {
         Duration::from_secs(10),
         || {
             calls.set(calls.get() + 1);
-            // Long enough that the daemon has exited before the occupant answers.
-            Ok(if calls.get() < 8 {
+            // Long enough that the daemon has exited before the occupant
+            // answers, and short of the interval that starts it again.
+            Ok(if calls.get() < 4 {
                 Probed::NoServer
             } else {
                 Probed::Running(other_build())
@@ -498,6 +499,104 @@ fn an_occupant_that_never_answers_ends_in_a_timeout() {
         error.to_string().contains("another server already running"),
         "{error}"
     );
+}
+
+/// Runs `launch_with` where the first daemon gives way (as one that met a
+/// lease still held by a stopping server does) and later ones idle; returns
+/// the result, how many daemons were started, and the last daemon's group.
+fn launch_after_a_refused_first_daemon(
+    dir: &ScratchDir,
+    timeout: Duration,
+    mut probe: impl FnMut(u32) -> io::Result<Probed>,
+) -> (io::Result<RuntimeStatus>, u32, u32) {
+    let server = dir.join("shepr-server");
+    let boot_log = dir.join("server-boot.log");
+    let server_log = dir.join("shepr-server.log");
+    let spawned = Cell::new(0_u32);
+    let group = Cell::new(0_u32);
+    let refused = [Step::Exit(
+        shepr_api::daemon_exit::ALREADY_RUNNING_EXIT_CODE,
+    )];
+    let idle = idle_daemon_steps();
+    let result = launch_with(
+        &LaunchFiles {
+            server: &server,
+            boot_log: &boot_log,
+            server_log: &server_log,
+        },
+        timeout,
+        |stderr| {
+            spawned.set(spawned.get() + 1);
+            let steps = if spawned.get() == 1 {
+                &refused[..]
+            } else {
+                &idle[..]
+            };
+            fixture_daemon(steps, &group)(stderr)
+        },
+        || probe(spawned.get()),
+        &mut Instant::now,
+        &mut std::thread::sleep,
+    );
+    (result, spawned.get(), group.get())
+}
+
+#[test]
+fn a_daemon_refused_by_a_leaving_holder_is_started_again_once_nothing_listens() {
+    let dir = ScratchDir::new("launch-lease-outlives-sockets");
+    let (result, spawned, group) =
+        launch_after_a_refused_first_daemon(&dir, Duration::from_secs(10), |spawned| {
+            // The holder's sockets are already gone; the second daemon, which
+            // finds the lease free, is what answers.
+            Ok(if spawned < 2 {
+                Probed::NoServer
+            } else {
+                Probed::Running(this_build())
+            })
+        });
+    let status = result.expect("the second daemon owns the directory and answers");
+    assert!(shepr_protocol::is_this_build(&status.build_id));
+    assert_eq!(spawned, 2, "one restart, not one per poll");
+    assert!(
+        !group_is_gone(group),
+        "the answering daemon is kept running"
+    );
+    kill_group(group);
+}
+
+#[test]
+fn a_refused_daemon_is_not_started_again_while_an_occupant_listens() {
+    let dir = ScratchDir::new("launch-occupant-not-restarted");
+    let (result, spawned, _) =
+        launch_after_a_refused_first_daemon(&dir, DAEMON_RESTART_INTERVAL * 3, |_| {
+            Ok(Probed::Unresponsive)
+        });
+    assert_eq!(
+        result
+            .expect_err("a silent occupant is never attached to")
+            .kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert_eq!(
+        spawned, 1,
+        "a listener is an occupant, not a leaving holder"
+    );
+}
+
+#[test]
+fn a_holder_that_never_leaves_ends_the_launch_in_a_timeout_with_restarts_paced() {
+    let dir = ScratchDir::new("launch-lease-held-forever");
+    let (result, spawned, group) =
+        launch_after_a_refused_first_daemon(&dir, DAEMON_RESTART_INTERVAL * 3, |_| {
+            Ok(Probed::NoServer)
+        });
+    let error = result.expect_err("the launch stays bounded");
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        (2..=4).contains(&spawned),
+        "restarts are paced by the interval, got {spawned} starts"
+    );
+    assert_group_dies(group);
 }
 
 #[test]

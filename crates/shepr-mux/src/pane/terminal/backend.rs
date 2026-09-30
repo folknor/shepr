@@ -808,14 +808,15 @@ impl PaneTerminal {
         self.read_primary_history(&mut cache).map(|()| cache.text())
     }
 
-    pub(crate) fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .and_then(|mut core| terminal_visible_hyperlinks(&mut core, area).ok())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn render(&self, frame: &mut Frame<'_>, area: Rect, show_cursor: bool) {
+    /// Writes the visible screen into `area` of `frame`, cell by cell: typed
+    /// underline shapes, wide-glyph tails (empty symbols) and OSC 8 links
+    /// (added to the frame's link table) go straight to the wire form.
+    ///
+    /// Draws nothing while a synchronized update is open or the core is
+    /// unreadable. The part of `area` outside the frame is not drawn, and rows
+    /// or columns the screen does not have are blank in the terminal's default
+    /// colours.
+    pub(crate) fn render_into(&self, frame: &mut FrameData, area: Rect) {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return;
         };
@@ -835,7 +836,6 @@ impl PaneTerminal {
         } = &mut *core;
         let terminal: &shepr_vt::Terminal = terminal;
         render_state.update(terminal);
-        let cursor_shape_overridden = terminal.cursor_shape_overridden();
         let colors = render_state.colors();
         let default_bg =
             terminal_default_bg(colors.background, host_theme, initial_default_background);
@@ -846,62 +846,64 @@ impl PaneTerminal {
         let default_palette = terminal.default_palette();
         let palette_overrides = PaletteOverrides::new(&colors.palette, &default_palette);
 
-        {
-            let buf = frame.buffer_mut();
-            let mut symbol_scratch = String::new();
-            let mut y = 0u16;
-            for row in render_state.iter_rows().take(usize::from(area.height)) {
-                let mut cells = row.cells().take(usize::from(area.width));
-                let mut x = 0u16;
-                for cell_view in &mut cells {
-                    let basic = cell_view.basic_data();
-                    let style = terminal_cell_style(
-                        &cell_view,
-                        &basic,
-                        default_fg,
-                        default_bg,
-                        resolved_fg,
-                        resolved_bg,
-                        palette_overrides.as_ref(),
-                    );
-                    let symbol =
-                        terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch);
-                    let cell = &mut buf[(area.x + x, area.y + y)];
-                    cell.reset();
-                    cell.set_symbol(symbol);
-                    cell.set_style(style);
-                    x += 1;
-                }
-                while x < area.width {
-                    let cell = &mut buf[(area.x + x, area.y + y)];
-                    terminal_reset_cell(cell, default_fg, default_bg);
-                    x += 1;
-                }
-                y = y.saturating_add(1);
+        let frame_width = usize::from(frame.width);
+        if frame.cells.len() != frame_width * usize::from(frame.height) {
+            return;
+        }
+        let area = area.intersection(Rect::new(0, 0, frame.width, frame.height));
+        if area.is_empty() {
+            return;
+        }
+        let blank = CellPaint::blank(default_fg, default_bg);
+        let mut symbol_scratch = String::new();
+        let mut rows_drawn = 0u16;
+        for row in render_state.iter_rows().take(usize::from(area.height)) {
+            let row_start = usize::from(area.y + rows_drawn) * frame_width + usize::from(area.x);
+            let mut x = 0usize;
+            for cell_view in row.cells().take(usize::from(area.width)) {
+                let basic = cell_view.basic_data();
+                let paint = terminal_cell_paint(
+                    &cell_view,
+                    &basic,
+                    default_fg,
+                    default_bg,
+                    resolved_fg,
+                    resolved_bg,
+                    palette_overrides.as_ref(),
+                );
+                let symbol =
+                    terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch);
+                // A link that cannot be read (or a full link table) leaves the
+                // cell unlinked rather than failing the frame.
+                let hyperlink = if basic.has_hyperlink {
+                    let x = u16::try_from(x).unwrap_or(u16::MAX);
+                    terminal
+                        .viewport_hyperlink_uri(x, ViewportRow(row.y()))
+                        .ok()
+                        .flatten()
+                        .and_then(|uri| frame.intern_hyperlink(&uri))
+                } else {
+                    None
+                };
+                let cell = &mut frame.cells[row_start + x];
+                paint.write_cell(cell, symbol, hyperlink);
+                x += 1;
             }
-            while y < area.height {
-                for x in 0..area.width {
-                    let cell = &mut buf[(area.x + x, area.y + y)];
-                    terminal_reset_cell(cell, default_fg, default_bg);
-                }
-                y += 1;
+            for cell in &mut frame.cells[row_start + x..row_start + usize::from(area.width)] {
+                blank.write_cell(cell, " ", None);
+            }
+            rows_drawn += 1;
+        }
+        for y in rows_drawn..area.height {
+            let row_start = usize::from(area.y + y) * frame_width + usize::from(area.x);
+            for cell in &mut frame.cells[row_start..row_start + usize::from(area.width)] {
+                blank.write_cell(cell, " ", None);
             }
         }
-
         // A full render draws every row whatever its dirty flag says, so it
         // leaves the flags alone: they belong to dirty-patch collection
         // alone. Clearing them here let a full frame drawn for one purpose
         // swallow rows a later patch still had to send.
-
-        if show_cursor
-            && let Some(cursor) =
-                cursor_state_from_render_state(render_state, cursor_shape_overridden)
-                    .filter(|cursor| cursor.visible)
-            && cursor.x < area.width
-            && cursor.y < area.height
-        {
-            frame.set_cursor_position((area.x + cursor.x, area.y + cursor.y));
-        }
     }
 
     pub(crate) fn collect_dirty_patch(

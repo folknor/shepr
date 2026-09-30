@@ -19,6 +19,20 @@ pub struct CellData {
     pub hyperlink: Option<u32>,
 }
 
+impl CellData {
+    /// An unstyled space: the cell of an empty surface.
+    pub fn blank() -> Self {
+        Self {
+            symbol: " ".to_owned(),
+            fg: WireColor::Reset,
+            bg: WireColor::Reset,
+            style: WireStyle::default(),
+            skip: false,
+            hyperlink: None,
+        }
+    }
+}
+
 impl Clone for CellData {
     fn clone(&self) -> Self {
         Self {
@@ -95,4 +109,32 @@ pub struct FrameData {
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_HYPERLINKS, _, _>"
     )]
     pub hyperlinks: Vec<String>,
+}
+
+impl FrameData {
+    /// A `width` by `height` frame of blank cells, with no cursor or links.
+    pub fn blank(width: u16, height: u16) -> Self {
+        Self {
+            cells: vec![CellData::blank(); usize::from(width) * usize::from(height)],
+            width,
+            height,
+            cursor: None,
+            hyperlinks: Vec::new(),
+        }
+    }
+
+    /// The index of `uri` in this frame's link table, adding it when absent.
+    /// `None` once the table is full: the cell then simply carries no link,
+    /// rather than the frame growing past what the wire accepts.
+    pub fn intern_hyperlink(&mut self, uri: &str) -> Option<u32> {
+        if let Some(index) = self.hyperlinks.iter().position(|known| known == uri) {
+            return u32::try_from(index).ok();
+        }
+        if self.hyperlinks.len() >= MAX_SURFACE_HYPERLINKS {
+            return None;
+        }
+        let index = u32::try_from(self.hyperlinks.len()).ok()?;
+        self.hyperlinks.push(uri.to_owned());
+        Some(index)
+    }
 }

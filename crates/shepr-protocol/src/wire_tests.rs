@@ -1,4 +1,3 @@
-use super::style::RATATUI_UNDERLINE_STYLE_SHIFT;
 use super::*;
 use serde::Serialize;
 use shepr_core::geometry::SplitBranch;
@@ -869,33 +868,56 @@ mod tests {
     // ---- Style conversion ----
 
     #[test]
-    fn wire_style_roundtrip_through_ratatui_modifier() {
-        let all_mods = [
-            Modifier::BOLD,
-            Modifier::ITALIC,
-            Modifier::REVERSED,
-            Modifier::UNDERLINED,
-            Modifier::DIM,
-            Modifier::SLOW_BLINK,
-            Modifier::CROSSED_OUT,
-            Modifier::BOLD | Modifier::ITALIC,
-            Modifier::BOLD | Modifier::UNDERLINED | Modifier::REVERSED,
-            Modifier::empty(),
+    fn wire_style_from_ratatui_modifier_maps_flags_and_a_single_underline() {
+        let cases = [
+            (Modifier::BOLD, WireStyleFlags::BOLD),
+            (Modifier::ITALIC, WireStyleFlags::ITALIC),
+            (Modifier::REVERSED, WireStyleFlags::REVERSED),
+            (Modifier::DIM, WireStyleFlags::DIM),
+            (Modifier::SLOW_BLINK, WireStyleFlags::SLOW_BLINK),
+            (Modifier::RAPID_BLINK, WireStyleFlags::RAPID_BLINK),
+            (Modifier::HIDDEN, WireStyleFlags::HIDDEN),
+            (Modifier::CROSSED_OUT, WireStyleFlags::CROSSED_OUT),
+            (
+                Modifier::BOLD | Modifier::ITALIC,
+                WireStyleFlags::BOLD.union(WireStyleFlags::ITALIC),
+            ),
+            (Modifier::empty(), WireStyleFlags::default()),
         ];
-        for m in all_mods {
-            let style = WireStyle::from_ratatui_modifier(m);
-            assert_eq!(style.to_ratatui_modifier(), m, "roundtrip failed for {m:?}");
+        for (modifier, flags) in cases {
+            let style = WireStyle::from_ratatui_modifier(modifier);
+            assert_eq!(style.flags, flags, "{modifier:?}");
+            assert_eq!(style.underline, shepr_vt::UnderlineStyle::None);
         }
+        let underlined = WireStyle::from_ratatui_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+        assert_eq!(underlined.underline, shepr_vt::UnderlineStyle::Single);
+        assert_eq!(underlined.flags, WireStyleFlags::BOLD);
     }
 
     #[test]
-    fn stale_ratatui_underline_style_is_dropped_from_ununderlined_cells() {
-        let stale = Modifier::from_bits_retain(
-            Modifier::BOLD.bits() | (3 << RATATUI_UNDERLINE_STYLE_SHIFT),
-        );
-        let style = WireStyle::from_ratatui_modifier(stale);
-        assert_eq!(style.underline, shepr_vt::UnderlineStyle::None);
-        assert_eq!(style.to_ratatui_modifier(), Modifier::BOLD);
+    fn blank_frame_is_a_grid_of_unstyled_spaces() {
+        let frame = FrameData::blank(3, 2);
+        assert_eq!((frame.width, frame.height), (3, 2));
+        assert_eq!(frame.cells.len(), 6);
+        assert!(frame.cells.iter().all(|cell| *cell == CellData::blank()));
+        assert!(frame.cursor.is_none() && frame.hyperlinks.is_empty());
+        assert!(FrameData::blank(0, 5).cells.is_empty());
+    }
+
+    #[test]
+    fn interned_hyperlinks_are_deduplicated_and_bounded() {
+        let mut frame = FrameData::blank(1, 1);
+        assert_eq!(frame.intern_hyperlink("https://a.example"), Some(0));
+        assert_eq!(frame.intern_hyperlink("https://b.example"), Some(1));
+        assert_eq!(frame.intern_hyperlink("https://a.example"), Some(0));
+        assert_eq!(frame.hyperlinks.len(), 2);
+
+        frame.hyperlinks = (0..crate::MAX_SURFACE_HYPERLINKS)
+            .map(|index| index.to_string())
+            .collect();
+        assert_eq!(frame.intern_hyperlink("7"), Some(7));
+        assert_eq!(frame.intern_hyperlink("full"), None);
+        assert_eq!(frame.hyperlinks.len(), crate::MAX_SURFACE_HYPERLINKS);
     }
 
     #[test]

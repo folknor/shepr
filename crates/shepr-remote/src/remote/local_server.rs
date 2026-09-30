@@ -35,8 +35,9 @@ use tracing::info;
 use shepr_api::schema::SiblingServerJson;
 
 use crate::limits::{
-    BOOT_LOG_MAX_BYTES, LAUNCH_LOCK_WAIT_GRACE, SIBLING_VERSION_OUTPUT_BYTES,
-    SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL, STATUS_REQUEST_TIMEOUT,
+    BOOT_LOG_MAX_BYTES, DAEMON_RESTART_INTERVAL, LAUNCH_LOCK_WAIT_GRACE,
+    SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL,
+    STATUS_REQUEST_TIMEOUT,
 };
 
 pub use crate::limits::SERVER_READY_TIMEOUT;
@@ -519,11 +520,15 @@ fn launch_daemon(
 /// daemon exiting because another server already holds the runtime is not a
 /// failure yet: the occupant is what the client will attach to, so polling
 /// goes on for it until the deadline. An occupant of another build that
-/// answers is returned for the caller's build-check policy.
+/// answers is returned for the caller's build-check policy. While nothing
+/// listens, such a daemon is started again every
+/// [`DAEMON_RESTART_INTERVAL`]: the holder may be a server that is still
+/// stopping, whose lease outlives its sockets, and the launch is then owed a
+/// daemon of its own once the lease is free.
 fn launch_with(
     files: &LaunchFiles<'_>,
     timeout: Duration,
-    spawn: impl FnOnce(Stdio) -> io::Result<Child>,
+    mut spawn: impl FnMut(Stdio) -> io::Result<Child>,
     mut probe: impl FnMut() -> io::Result<Probed>,
     now: &mut impl FnMut() -> Instant,
     sleep: &mut impl FnMut(Duration),
@@ -548,14 +553,27 @@ fn launch_with(
             ),
         )
     })?;
-    let child = spawn(Stdio::from(boot_log)).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("failed to start {}: {error}", files.server.display()),
-        )
-    })?;
-    info!(pid = child.id(), "server daemon spawned");
-    let mut daemon = SpawnedDaemon::new(child);
+    let spawn_daemon = |spawn: &mut dyn FnMut(Stdio) -> io::Result<Child>| {
+        let stderr = boot_log.try_clone().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot open the server boot log {}: {error}",
+                    files.boot_log.display()
+                ),
+            )
+        })?;
+        let child = spawn(Stdio::from(stderr)).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to start {}: {error}", files.server.display()),
+            )
+        })?;
+        info!(pid = child.id(), "server daemon spawned");
+        Ok::<_, io::Error>(SpawnedDaemon::new(child))
+    };
+    let mut daemon = spawn_daemon(&mut spawn)?;
+    let mut last_spawn = now();
 
     let deadline = now() + timeout;
     let mut exited: Option<ExitStatus> = None;
@@ -583,6 +601,7 @@ fn launch_with(
                 return Err(failed.map_or(error, |status| boot_failure(files, status)));
             }
         };
+        let nothing_listens = matches!(probed, Probed::NoServer);
         if let Probed::Running(status) = probed {
             if shepr_protocol::is_this_build(&status.build_id) {
                 // Nothing in the boot log matters once the daemon is up, and
@@ -608,8 +627,28 @@ fn launch_with(
         {
             return Err(boot_log_overflow(files));
         }
-        if now() >= deadline {
+        let current = now();
+        if current >= deadline {
             return Err(boot_timeout(files, timeout, exited.is_some()));
+        }
+        // The daemon gave way and nothing listens, so what it met was not a
+        // server that will answer: a holder that was still stopping (its
+        // lease can outlive its sockets when it exits by a path that drops
+        // them first) or still booting. Start another daemon, which the
+        // lease keeps from ever sharing the directory with the holder. A
+        // holder that is a live, healthy server listens, which the probe
+        // above turns into an answer instead of reaching here.
+        if exited.is_some()
+            && nothing_listens
+            && current.saturating_duration_since(last_spawn) >= DAEMON_RESTART_INTERVAL
+        {
+            info!(
+                "the server daemon found the data directory held while nothing listens, starting it again"
+            );
+            daemon = spawn_daemon(&mut spawn)?;
+            last_spawn = current;
+            exited = None;
+            continue;
         }
         sleep(SOCKET_POLL_INTERVAL);
     }

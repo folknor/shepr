@@ -40,7 +40,6 @@ pub use projection::*;
 pub use revision::*;
 pub use status::*;
 pub use style::*;
-pub use style::{RATATUI_UNDERLINE_STYLE_MASK, RATATUI_UNDERLINE_STYLE_SHIFT};
 pub use surface::*;
 
 /// Version advertised by the JSON API, using the same build ID as the wire preamble.

@@ -1,12 +1,11 @@
 //! Virtual rendering helpers for headless client frame streaming.
 
-use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
 use crate::app::state::AppState;
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_protocol::{
-    CursorState, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage, SurfaceRevision,
+    FrameData, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage, SurfaceRevision,
 };
 
 fn warn_surface_encoding_failure(
@@ -281,41 +280,24 @@ impl PreparedRender {
     }
 }
 
-pub(crate) type RenderedSurface = (
-    ratatui::buffer::Buffer,
-    Option<CursorState>,
-    Vec<((u16, u16), String, String)>,
-    crate::ui::SurfaceLayout,
-);
-
-/// Renders only the focused workspace's pane surface at an origin-relative client viewport.
+/// Renders only the focused workspace's pane surface at an origin-relative
+/// client viewport, straight into wire form: the frame holds the cells, the
+/// links and the cursor.
 pub(crate) fn render_surface_virtual(
     app_state: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     layout: crate::ui::SurfaceLayout,
     area: Rect,
-) -> RenderedSurface {
+) -> (FrameData, crate::ui::SurfaceLayout) {
     let surface = crate::ui::SurfaceView {
         target: layout.target.as_ref(),
         pane_infos: &layout.pane_infos,
         split_borders: &layout.split_borders,
     };
-    let cursor = crate::ui::surface_cursor(app_state, terminal_runtimes, surface);
-    let hyperlinks = crate::ui::surface_hyperlinks(app_state, terminal_runtimes, surface);
-
-    let backend = TestBackend::new(area.width, area.height);
-    // The backend's error type is `Infallible`, so these patterns are irrefutable.
-    let Ok(mut terminal) = ratatui::Terminal::new(backend);
-    let Ok(_) = terminal.draw(|frame| {
-        crate::ui::render_surface(app_state, terminal_runtimes, surface, frame);
-    });
-
-    (
-        terminal.backend().buffer().clone(),
-        cursor,
-        hyperlinks,
-        layout,
-    )
+    let mut frame = FrameData::blank(area.width, area.height);
+    crate::ui::render_surface(app_state, terminal_runtimes, surface, &mut frame);
+    frame.cursor = crate::ui::surface_cursor(app_state, terminal_runtimes, surface);
+    (frame, layout)
 }
 
 #[cfg(test)]
@@ -329,7 +311,6 @@ impl ClientRenderState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_protocol::FrameData;
 
     fn test_surface(content: &str) -> PaneSurfaceFrame {
         let pane = ratatui::buffer::Buffer::with_lines([content]);

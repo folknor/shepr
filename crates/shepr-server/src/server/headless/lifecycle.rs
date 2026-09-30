@@ -411,11 +411,29 @@ impl HeadlessServer {
         }
     }
 
-    /// Removes the API socket and then the client socket, after the final
-    /// session save.
+    /// Releases what a launching `shepr` looks at, in the one order that keeps
+    /// it from being misled: first the data-directory lease (the session
+    /// writer retires, after the save still in flight), then the API socket
+    /// and last the client socket. A launcher that finds no client socket
+    /// starts a daemon, which must then find the lease free; the reverse
+    /// order would refuse it as already running for as long as this process
+    /// lingered. Every exit runs this, the error and unwind ones through
+    /// `Drop` too; each step is idempotent.
     pub(super) fn release_sockets_after_save(&mut self) {
+        self.release_sockets_after_save_observed(|| {});
+    }
+
+    /// [`Self::release_sockets_after_save`], running `before_client_socket_removal`
+    /// at the moment the client socket is about to go, which is when a
+    /// launcher watching for it would act. Tests observe the lease there.
+    pub(super) fn release_sockets_after_save_observed(
+        &mut self,
+        before_client_socket_removal: impl FnOnce(),
+    ) {
+        self.app.retire_session_writer();
         // Dropping the handle removes the API socket file.
         drop(self._api_server.take());
+        before_client_socket_removal();
         self.cleanup_sockets();
     }
 
@@ -480,6 +498,34 @@ mod phase_tests {
             .expect("a warning freezes");
         assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
         assert_eq!(lifecycle.frozen_session_policy(), Some(true));
+    }
+
+    #[test]
+    fn a_test_server_holds_the_data_directory_lease() {
+        // The precondition the test below relies on: a test server holds the
+        // lease, so a probe while it is held really does fail.
+        let server = super::super::tests::test_headless_server();
+        let data_dir = server.app.paths.data_dir().to_path_buf();
+        assert!(shepr_mux::persist::DataDirLease::acquire(&data_dir).is_err());
+        drop(server);
+    }
+
+    #[test]
+    fn the_lease_is_free_by_the_time_the_client_socket_goes() {
+        // What a launcher that sees the client socket vanish and starts a
+        // daemon would meet, observed at exactly that moment. `Drop` and
+        // every stop path run this same sequence.
+        let mut server = super::super::tests::test_headless_server();
+        let data_dir = server.app.paths.data_dir().to_path_buf();
+        let socket = server.client_socket_path.clone();
+        let mut lease_free = None;
+        let mut socket_present = None;
+        server.release_sockets_after_save_observed(|| {
+            socket_present = Some(socket.try_exists().is_ok_and(|present| present));
+            lease_free = Some(shepr_mux::persist::DataDirLease::acquire(&data_dir).is_ok());
+        });
+        assert_eq!(socket_present, Some(true), "probed before the socket went");
+        assert_eq!(lease_free, Some(true), "no lease may outlive the socket");
     }
 
     #[tokio::test]

@@ -178,7 +178,7 @@ pub(super) fn render_pane_surface(
             }
         }
     }
-    let (buffer, cursor, hyperlinks, layout) = crate::server::render_stream::render_surface_virtual(
+    let (frame, layout) = crate::server::render_stream::render_surface_virtual(
         &app.state,
         &app.terminal_runtimes,
         layout,
@@ -294,7 +294,7 @@ pub(super) fn render_pane_surface(
         }
     }
     Ok(RenderedPaneSurface {
-        frame: FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &hyperlinks),
+        frame,
         panes,
         splits,
     })
