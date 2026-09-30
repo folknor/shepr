@@ -19,6 +19,7 @@ Three standings:
 | script | standing | what it is |
 |---|---|---|
 | `_brokkr_config.py` | gate | shared module: `repository_sources()`, the one definition of "a file this repository authored", and `workspace_member_manifests()`, the root package plus the globbed members |
+| `check_agent_asset_tests.py` | gate | the `agent-asset-tests` check: runs the bun tests beside the integration assets and passes only on a clean run with passing tests, no failure and every test file run |
 | `check_cited_paths.py` | gate | the `cited-paths` check: every backticked repository path in a comment or durable document names a file in the tree |
 | `check_scripts_roster.py` | gate | the `scripts-roster` check: this table against this directory |
 | `check_skip_after_scopes.py` | gate | the `skip-after-scopes` check: every textlint `skip_after` rule re-applied to the production items below a file's first test cfg, which the line-based exemption releases; and that shape itself refused, so a file in a skip_after rule's scope holds no production code below its first `#[cfg(test)]` |

@@ -661,6 +661,15 @@ expect = "seal paths ok"
 match = "last-line"
 stage = "pre-clippy"
 
+# The agent plugins that load into a JavaScript agent (Pi, Oh My Pi, opencode,
+# Kilo) are tested with bun, a development dependency.
+[[script_check]]
+name = "agent-asset-tests"
+command = "python3 scripts/check_agent_asset_tests.py"
+expect = "agent asset tests ok"
+match = "last-line"
+stage = "pre-test"
+
 # Name every package because an empty selection checks only a root package.
 [[check]]
 name = "workspace"

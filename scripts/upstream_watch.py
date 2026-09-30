@@ -2,10 +2,17 @@
 """Report what changed in upstream herdr since the commit shepr last caught up to.
 
 shepr is a hard fork of https://github.com/herdrdev/herdr. This script keeps a
-blobless clone of upstream in `research/herdr-upstream/` (untracked), fetches it,
-and reports, per watched path, the files added, removed and modified between the
-recorded baseline (`scripts/upstream_baseline.txt`) and upstream HEAD, each with
-the shepr file it concerns.
+blobless bare mirror of upstream in `research/herdr-upstream/` (gitignored),
+fetches it, and reports, per watched path, the files added, removed and modified
+between the recorded baseline (`scripts/upstream_baseline.txt`) and upstream
+HEAD, each with the shepr file it concerns. The mirror has no working tree: it
+is only ever read through git objects, never through checked-out files.
+
+Watched: the integration assets (hooks, plugins and their bun tests), the
+detection manifests both as upstream bundles them and as it publishes them for
+over-the-air updates (a published manifest can be newer than the bundled one,
+and shepr, which has no over-the-air updates, ports it as a detection fix), the
+manifest check tooling, and the detection and hook wiring with its tests.
 
   scripts/upstream_watch.py                report
   scripts/upstream_watch.py --diff         report with the upstream diffs
@@ -41,19 +48,30 @@ MAPPING = [
     ("src/integration/", "crates/shepr-agent/src/integration/"),
     ("src/detect/manifests/", "crates/shepr-agent/src/detect/manifests/"),
     ("src/detect/", "crates/shepr-agent/src/detect/"),
+    # Upstream's published copies of the manifests, one file per agent under
+    # the same names as the bundled ones.
+    ("distribution/agent-detection/", "crates/shepr-agent/src/detect/manifests/"),
+    ("src/pane/agent_detection.rs", "crates/shepr-mux/src/pane/agent_detection.rs"),
+    ("src/server/autodetect.rs", "src/autodetect.rs"),
 ]
 
 # Watched upstream paths with no fixed shepr counterpart: where the agent list,
-# resume definitions and hook wiring live upstream. A change here is reported
-# with the shepr area to compare by hand.
+# resume definitions, hook wiring and the tests that exercise them live
+# upstream. A change here is reported with the shepr area to compare by hand.
 LOOSE = [
+    ("distribution/agent-detection/index.toml", "(upstream's publish catalog; shepr publishes nothing)"),
+    ("scripts/agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/ (manifest validation and its tests)"),
+    ("scripts/test_agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/ (manifest validation and its tests)"),
+    ("scripts/test_hermes_integration_asset.py", "crates/shepr-agent/src/integration/ (asset tests)"),
+    ("tests/auto_detect.rs", "src/autodetect.rs and crates/shepr-agent/src/detect/ (detection tests)"),
     ("src/detect.rs", "crates/shepr-agent/src/detect/"),
     ("src/integration.rs", "crates/shepr-agent/src/integration/"),
     ("src/agent", "crates/shepr-agent/src/agent/ (agent list, resume definitions)"),
     ("src/terminal/state.rs", "crates/shepr-mux/src/terminal/state/ (hook authority, sessions)"),
+    ("src/app/actions.rs", "crates/shepr-server/src/app/ (hook-lifecycle tests)"),
 ]
 
-WATCHED =["src/integration/", "src/detect/"] + [p for p, _ in LOOSE]
+WATCHED = sorted({p for p, _ in MAPPING} | {p for p, _ in LOOSE})
 
 
 def git(*args: str, cwd=CLONE, check: bool = True) -> str:
@@ -66,19 +84,24 @@ def git(*args: str, cwd=CLONE, check: bool = True) -> str:
 
 
 def ensure_clone(fetch: bool) -> None:
-    if not (CLONE / ".git").exists():
+    if not (CLONE / "HEAD").exists():
+        if CLONE.exists():
+            sys.exit(
+                f"{CLONE.relative_to(ROOT)} exists but is not the bare mirror this script keeps; "
+                "remove it and run again"
+            )
         CLONE.parent.mkdir(parents=True, exist_ok=True)
-        print(f"cloning {UPSTREAM_URL} (blobless) into {CLONE.relative_to(ROOT)}", file=sys.stderr)
+        print(f"mirroring {UPSTREAM_URL} (blobless) into {CLONE.relative_to(ROOT)}", file=sys.stderr)
         subprocess.run(
-            ["git", "clone", "--filter=blob:none", "--no-checkout", UPSTREAM_URL, str(CLONE)],
+            ["git", "clone", "--mirror", "--filter=blob:none", UPSTREAM_URL, str(CLONE)],
             check=True,
         )
     elif fetch:
-        git("fetch", "--quiet", "origin")
+        git("fetch", "--quiet", "--prune", "origin")
 
 
 def head_rev() -> str:
-    return git("rev-parse", "origin/HEAD").strip()
+    return git("rev-parse", "HEAD").strip()
 
 
 def baseline() -> str:
@@ -89,13 +112,15 @@ def baseline() -> str:
 
 
 def ours(path: str) -> str:
-    best = max((m for m in MAPPING if path.startswith(m[0])), key=lambda m: len(m[0]), default=None)
-    if best is not None:
-        return best[1] + path[len(best[0]):]
-    for up, area in LOOSE:
-        if path.startswith(up):
-            return area
-    return "(no mapping)"
+    """The shepr file or area an upstream path concerns: the longest matching
+    prefix across both tables, so a LOOSE entry nested under a MAPPING prefix
+    wins for its own path."""
+    candidates = [(up, mine, True) for up, mine in MAPPING] + [(up, area, False) for up, area in LOOSE]
+    best = max((c for c in candidates if path.startswith(c[0])), key=lambda c: len(c[0]), default=None)
+    if best is None:
+        return "(no mapping)"
+    up, target, mapped = best
+    return target + path[len(up):] if mapped else target
 
 
 def changes(base: str, head: str) -> list[tuple[str, str]]:
@@ -140,7 +165,7 @@ def report(show_diff: bool, show_log: bool, do_fetch: bool) -> int:
 
 def advance(rev: str | None, do_fetch: bool) -> int:
     ensure_clone(do_fetch)
-    target = git("rev-parse", "--verify", f"{rev or 'origin/HEAD'}^{{commit}}").strip()
+    target = git("rev-parse", "--verify", f"{rev or 'HEAD'}^{{commit}}").strip()
     BASELINE.write_text(target + "\n")
     print(f"baseline is now {target}")
     return 0
@@ -167,7 +192,7 @@ def fork_point(do_fetch: bool, limit: int = 300) -> int:
     manifests = "src/detect/manifests/"
     mine_dir = ROOT / "crates/shepr-agent/src/detect/manifests"
     mine = {p.name: p.read_text().splitlines() for p in mine_dir.glob("*.toml")}
-    revs = git("rev-list", f"--max-count={limit}", "origin/HEAD", "--", manifests).split()
+    revs = git("rev-list", f"--max-count={limit}", "HEAD", "--", manifests).split()
     cache: dict[tuple[str, str], int] = {}
     scored = []
     for rev in revs:

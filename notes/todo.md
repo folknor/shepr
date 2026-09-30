@@ -19,11 +19,6 @@ once, so it needs a wave of its own rather than parallel fixers.
 
 Parked until the situation comes up.
 
-- **TypeScript tests nothing runs.**
-  `crates/shepr-agent/src/integration/assets/shepr-agent-state.test.ts` and the
-  opencode `*.test.ts` next to its assets are not run by any gate. Running them
-  would bring node or bun into the gate; the alternative is deleting them, with
-  any coverage that matters moved to Rust tests over the installed asset.
 - **A visible notice for a partially restored session.** A workspace
   dropped during restore leaves only a server log line and a backup of the
   original `session.json`; pane-level restore errors draw inside the pane, but
@@ -54,13 +49,12 @@ none blocks anything.
 ## Review upstream changes
 
 `scripts/upstream_watch.py` reports upstream herdr changes to the integration
-assets and detection manifests since the baseline in
+assets and their tests, the detection manifests (bundled and published), the
+manifest tooling and the detection and hook wiring since the baseline in
 `scripts/upstream_baseline.txt` (the fork was 21d0ce6; the baseline advances
-as upstream changes are ported or judged irrelevant). Run it periodically.
-Upstream keeps agent descriptors and resume in `src/agent*`, and hook
-authority and session handling in `src/terminal/state.rs`; the script watches
-both. Upstream's hook-lifecycle tests live in `src/app/actions.rs`, which is not
-watched.
+as upstream changes are ported or judged irrelevant). Run it periodically;
+its docstring lists what it watches. Test coverage of the agent plugins grows by
+porting upstream's tests, not by writing our own.
 
 ## Confirm the opencode/Kilo permission-dialog labels
 
