@@ -108,7 +108,7 @@ impl std::fmt::Display for ServerReady {
 /// loop starts; the binary uses it to tell a foreground operator where the
 /// server listens. It runs on the tokio runtime, so it must not block.
 pub fn run_server(
-    config: &shepr_config::ValidatedConfig,
+    config: &shepr_config::ValidatedServerConfig,
     paths: &shepr_config::AppPaths,
     on_ready: impl FnOnce(&ServerReady),
 ) -> Result<(), RunServerError> {

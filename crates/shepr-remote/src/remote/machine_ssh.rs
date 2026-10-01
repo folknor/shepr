@@ -231,7 +231,7 @@ impl MachineSshConnector {
             validate_machine_bridge_path(runtime_dir, &self.label)?;
             shepr_platform::shared_ssh_control_path(
                 runtime_dir,
-                self.paths.config_file(),
+                &self.paths.client_config_file(),
                 self.target.as_str(),
             )?;
             Ok(())

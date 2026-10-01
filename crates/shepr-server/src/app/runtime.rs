@@ -134,7 +134,7 @@ mod tests {
 
     fn test_app_with_pane() -> (super::super::App, shepr_core::layout::PaneId) {
         let mut app = super::super::App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
         );

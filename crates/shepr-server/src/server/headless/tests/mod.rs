@@ -136,7 +136,7 @@ pub(crate) fn client_shell_snapshot(
 }
 
 pub(crate) fn test_headless_server() -> HeadlessServer {
-    let config = shepr_config::Config::default();
+    let config = shepr_config::ServerConfig::default();
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test, api_rx);
 

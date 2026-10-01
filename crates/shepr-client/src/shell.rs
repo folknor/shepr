@@ -102,7 +102,7 @@ use compose_pane_surface::*;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
 #[cfg(test)]
-use shepr_config::Config;
+use shepr_config::ClientConfig;
 
 #[cfg(test)]
 use shepr_termio::input::raw_input::RawInputEvent;

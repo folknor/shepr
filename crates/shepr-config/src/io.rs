@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 
 use shepr_core::env::EnvVar;
 
-use super::{Config, ConfigDiagnostic, ConfigProvenance, ValidatedConfig, model::LoadedConfig};
+use super::{
+    ClientConfig, ConfigDiagnostic, ConfigProvenance, ServerConfig, ValidatedClientConfig,
+    ValidatedServerConfig,
+};
 
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 
@@ -24,7 +27,8 @@ pub const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
 /// cargo dev profile) uses `shepr-dev` in place of `shepr` for the runtime
 /// directory and the saved-layout directory, so a dev server and the installed
 /// release server hold different sockets, locks and saved layouts without any
-/// flag. Config and the client-owned state stay shared by every profile.
+/// flag. Both config files and the client-owned state stay shared by every
+/// profile.
 /// A server of another build is still refused by the build-identity checks,
 /// which is what tells the two apart once they can no longer collide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +90,6 @@ pub struct AppPaths {
     data_dir: PathBuf,
     xdg_runtime_dir: PathBuf,
     runtime_dir: PathBuf,
-    config_file: PathBuf,
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
     server_address: super::ServerAddress,
@@ -136,8 +139,12 @@ impl AppPaths {
         &self.runtime_dir
     }
 
-    pub fn config_file(&self) -> &Path {
-        &self.config_file
+    pub fn client_config_file(&self) -> PathBuf {
+        self.config_dir.join("client.toml")
+    }
+
+    pub fn server_config_file(&self) -> PathBuf {
+        self.config_dir.join("server.toml")
     }
 
     pub fn home_dir(&self) -> Option<&Path> {
@@ -184,7 +191,6 @@ impl AppPaths {
             data_dir: root.join("state"),
             xdg_runtime_dir: root.to_path_buf(),
             runtime_dir: root.join("runtime"),
-            config_file: root.join("config/config.toml"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
             server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None, None),
@@ -310,43 +316,13 @@ fn resolve_paths_from_env(
     };
     let xdg_runtime_dir = xdg_runtime_dir.ok().flatten();
 
-    let config_path_override = shepr_core::env::read_path(EnvVar::SheprConfigPath);
-    let config_file = match config_path_override {
-        Err(error) => Err(io::Error::from(error)),
-        Ok(Some(path)) => {
-            if path.is_absolute() {
-                Ok(path)
-            } else if let Some(current_dir) = current_dir.as_ref() {
-                Ok(current_dir.join(path))
-            } else {
-                Err(io::Error::other(format!(
-                    "cannot resolve relative {} without a current directory",
-                    EnvVar::SheprConfigPath
-                )))
-            }
-        }
-        Ok(None) => config_dir
-            .as_ref()
-            .map(|directory| directory.join("config.toml"))
-            .map_err(|error| io::Error::other(error.to_string())),
-    };
-
     let mut diagnostics = Vec::new();
-    let config_file = match config_file {
-        Ok(path) => Some(path),
-        Err(error) => {
-            diagnostics.push(format!("config path error: {error}"));
-            None
-        }
-    };
-
     let config_dir = match config_dir {
         Ok(path) => Some(path),
-        Err(error) if config_file.is_some() => {
+        Err(error) => {
             diagnostics.push(format!("config directory error: {error}"));
             None
         }
-        Err(_) => None,
     };
 
     let state_dir = match state_dir {
@@ -364,20 +340,10 @@ fn resolve_paths_from_env(
         }
     };
 
-    match (
-        config_dir,
-        state_dir,
-        xdg_runtime_dir,
-        runtime_dir,
-        config_file,
-    ) {
-        (
-            Some(config_dir),
-            Some(state_dir),
-            Some(xdg_runtime_dir),
-            Some(runtime_dir),
-            Some(config_file),
-        ) if diagnostics.is_empty() => {
+    match (config_dir, state_dir, xdg_runtime_dir, runtime_dir) {
+        (Some(config_dir), Some(state_dir), Some(xdg_runtime_dir), Some(runtime_dir))
+            if diagnostics.is_empty() =>
+        {
             let server_address = super::ServerAddress::resolve_paths(
                 &runtime_dir,
                 api_socket_override.as_deref(),
@@ -392,7 +358,6 @@ fn resolve_paths_from_env(
                 data_dir,
                 xdg_runtime_dir,
                 runtime_dir,
-                config_file,
                 home_dir: Some(home_dir),
                 current_dir,
                 server_address,
@@ -453,22 +418,48 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-impl Config {
+// The loaders share diagnostics and parsing, but deserialize and resolve only
+// the role's concrete schema. No program reads the other role's document.
+macro_rules! role_loader {
+    ($raw:ident, $validated:ident, $resolution:ident, $loaded:ident, $path:ident) => {
+#[derive(Debug)]
+struct $loaded {
+    config: $raw,
+    provenance: ConfigProvenance,
+    resolution: Option<super::validated::$resolution>,
+    diagnostics: Vec<ConfigDiagnostic>,
+}
+impl $loaded {
+    fn failed(diagnostics: Vec<ConfigDiagnostic>) -> Self {
+        Self { config: $raw::default(), provenance: ConfigProvenance::defaults(), resolution: None, diagnostics }
+    }
+    fn into_validated(self, paths: AppPaths) -> Result<$validated, Vec<ConfigDiagnostic>> {
+        if !self.diagnostics.is_empty() { return Err(self.diagnostics); }
+        match self.resolution.and_then(|resolution| resolution.values) {
+            Some(values) => Ok($validated::from_loaded(self.config, self.provenance, values, paths)),
+            None => Err(vec![ConfigDiagnostic::Validation("configuration resolution produced no values and no diagnostic".to_owned())]),
+        }
+    }
+}
+impl $raw {
     /// Load a config for an application launch. Every path or validation
     /// problem is fatal, so a default config from an unsuccessful parse is
     /// never returned to runtime callers.
-    pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDiagnostic>> {
-        Self::load_from_path_with_paths(paths.config_file(), paths).into_validated(paths.clone())
+    pub fn load_validated(paths: &AppPaths) -> Result<$validated, Vec<ConfigDiagnostic>> {
+        let path = paths.$path();
+        Self::load_from_path_with_paths(&path, paths).into_validated(paths.clone()).map_err(|diagnostics| {
+            diagnostics.into_iter().map(|diagnostic| diagnostic.with_file(&path)).collect()
+        })
     }
 
-    fn load_from_path_with_paths(path: &Path, paths: &AppPaths) -> LoadedConfig {
+    fn load_from_path_with_paths(path: &Path, paths: &AppPaths) -> $loaded {
         match read_optional_config(path) {
             Ok(Some(content)) => Self::load_from_str_with_paths(&content, paths),
             Ok(None) => {
                 let config = Self::default();
                 let provenance = ConfigProvenance::from_document(None);
                 let resolution =
-                    super::validated::ConfigResolution::parse(&config, &provenance, paths);
+                    super::validated::$resolution::parse(&config, &provenance, paths);
                 let diagnostics = resolution
                     .diagnostics
                     .iter()
@@ -482,26 +473,26 @@ impl Config {
                             .map(ConfigDiagnostic::Path),
                     )
                     .collect();
-                LoadedConfig {
+                $loaded {
                     provenance,
                     config,
                     resolution: Some(resolution),
                     diagnostics,
                 }
             }
-            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(err.to_string())]),
+            Err(err) => $loaded::failed(vec![ConfigDiagnostic::Read(err.to_string())]),
         }
     }
 
-    fn load_from_str_with_paths(content: &str, paths: &AppPaths) -> LoadedConfig {
+    fn load_from_str_with_paths(content: &str, paths: &AppPaths) -> $loaded {
         match content.parse::<toml::Table>() {
             Ok(table) => {
                 let document = toml::Value::Table(table);
-                match deserialize_with_ignored::<Config, _>(document.clone()) {
+                match deserialize_with_ignored::<$raw, _>(document.clone()) {
                     Ok((config, ignored_keys)) => {
                         let provenance = ConfigProvenance::from_document(Some(&document));
                         let resolution =
-                            super::validated::ConfigResolution::parse(&config, &provenance, paths);
+                            super::validated::$resolution::parse(&config, &provenance, paths);
                         let (unknown_sections, unknown_diagnostics) =
                             unknown_top_level_sections(&document, &ignored_keys);
                         let mut diagnostics = unknown_diagnostics
@@ -530,7 +521,7 @@ impl Config {
                                 .cloned()
                                 .map(ConfigDiagnostic::Path),
                         );
-                        LoadedConfig {
+                        $loaded {
                             config,
                             provenance,
                             resolution: Some(resolution),
@@ -538,29 +529,41 @@ impl Config {
                         }
                     }
                     Err(err) => {
-                        default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())])
+                        $loaded::failed(vec![ConfigDiagnostic::Parse(err.to_string())])
                     }
                 }
             }
-            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(err.to_string())]),
+            Err(err) => $loaded::failed(vec![ConfigDiagnostic::Parse(err.to_string())]),
         }
     }
 }
 
-/// Parse, resolve and validate the config for an application process.
-pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDiagnostic>> {
-    Config::load_validated(paths)
+    };
 }
+role_loader!(
+    ClientConfig,
+    ValidatedClientConfig,
+    ClientConfigResolution,
+    LoadedClientConfig,
+    client_config_file
+);
+role_loader!(
+    ServerConfig,
+    ValidatedServerConfig,
+    ServerConfigResolution,
+    LoadedServerConfig,
+    server_config_file
+);
 
-fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
-    let config = Config::default();
-    let provenance = ConfigProvenance::defaults();
-    LoadedConfig {
-        config,
-        provenance,
-        resolution: None,
-        diagnostics,
-    }
+pub fn load_client_validated(
+    paths: &AppPaths,
+) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
+    ClientConfig::load_validated(paths)
+}
+pub fn load_server_validated(
+    paths: &AppPaths,
+) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
+    ServerConfig::load_validated(paths)
 }
 
 fn unknown_top_level_sections(
@@ -672,6 +675,25 @@ where
     Ok((value, ignored))
 }
 
+#[cfg(test)]
+macro_rules! role_test_loader {
+    ($raw:ident, $loaded:ident) => {
+        #[cfg(test)]
+        impl $raw {
+            fn load_from_path(path: &Path) -> $loaded {
+                Self::load_from_path_with_paths(path, &AppPaths::default())
+            }
+            fn load_from_str(content: &str) -> $loaded {
+                Self::load_from_str_with_paths(content, &AppPaths::default())
+            }
+        }
+    };
+}
+#[cfg(test)]
+role_test_loader!(ClientConfig, LoadedClientConfig);
+#[cfg(test)]
+role_test_loader!(ServerConfig, LoadedServerConfig);
+
 /// Absolute like resolved launch paths, and identical across calls, so two
 /// test configs compare equal.
 /// The root cannot be created by an unprivileged user: a test that writes
@@ -681,17 +703,6 @@ impl Default for AppPaths {
     fn default() -> Self {
         let root = Path::new("/nonexistent/shepr-test-config");
         Self::rooted_at(root, Some(root), None)
-    }
-}
-
-#[cfg(test)]
-impl Config {
-    fn load_from_path(path: &Path) -> LoadedConfig {
-        Self::load_from_path_with_paths(path, &AppPaths::default())
-    }
-
-    fn load_from_str(content: &str) -> LoadedConfig {
-        Self::load_from_str_with_paths(content, &AppPaths::default())
     }
 }
 
@@ -707,21 +718,156 @@ mod tests {
     use super::*;
 
     #[test]
+    fn misplaced_settings_and_retired_settings_fail_only_the_owning_launch() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        for source in [
+            "[terminal]\ndefault_shell = '/bin/sh'\n",
+            "[session]\nresume_agents_on_restore = true\n",
+            "[server]\nheadless_cols = 120\n",
+            "[advanced]\nscrollback_limit_bytes = 1000\n",
+            "[experimental]\npane_history = true\n",
+            "[experimental]\nreveal_hidden_cursor_for_cjk_ime = true\n",
+            "[experimental]\ncjk_ime_agents = ['codex']\n",
+            "[experimental]\ncjk_ime_cursor_shape = 'bar'\n",
+            "[ui]\npane_borders = 'always'\n",
+            "[ui]\npane_outer_borders = true\n",
+            "[ui]\npane_scrollbars = true\n",
+            "[ui]\npane_gaps = true\n",
+            "[ui]\nshow_agent_labels_on_pane_borders = true\n",
+            "[ui]\nwindow_title = '{hostname}'\n",
+        ] {
+            assert!(
+                ServerConfig::load_from_str(source)
+                    .into_validated(AppPaths::default())
+                    .is_ok(),
+                "{source}"
+            );
+            let errors = ClientConfig::load_from_str(source)
+                .into_validated(AppPaths::default())
+                .expect_err("server setting in client file");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error, ConfigDiagnostic::Unknown(_))),
+                "{source}: {errors:?}"
+            );
+        }
+        for source in [
+            "[[machines]]\nlabel = 'build'\nssh = 'build'\n",
+            "[keys]\nprefix = 'ctrl+b'\n",
+            "[ui]\nmouse_capture = false\n",
+            "[ui]\nsidebar_width = 26\n",
+            "[ui.sidebar.spaces]\nrows = [['workspace']]\n",
+        ] {
+            assert!(
+                ClientConfig::load_from_str(source)
+                    .into_validated(AppPaths::default())
+                    .is_ok(),
+                "{source}"
+            );
+            let errors = ServerConfig::load_from_str(source)
+                .into_validated(AppPaths::default())
+                .expect_err("client setting in server file");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error, ConfigDiagnostic::Unknown(_))),
+                "{source}: {errors:?}"
+            );
+        }
+        for source in [
+            "[experimental]\nallow_nested = true\n",
+            "[ui]\naccent = 'cyan'\n",
+        ] {
+            assert!(
+                ClientConfig::load_from_str(source)
+                    .into_validated(AppPaths::default())
+                    .is_err()
+            );
+            assert!(
+                ServerConfig::load_from_str(source)
+                    .into_validated(AppPaths::default())
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn each_program_reads_only_its_file_and_never_the_retired_file() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("role-config-load");
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
+        std::fs::write(paths.config_dir().join("config.toml"), "broken = [")
+            .expect("retired file fixture");
+        std::fs::write(paths.server_config_file(), "broken = [").expect("broken server fixture");
+        env.set(EnvVar::Shell, scratch.join("missing/wrapper"));
+        assert!(
+            load_client_validated(&paths).is_ok(),
+            "client must not read server config or SHELL"
+        );
+        let errors = load_server_validated(&paths).expect_err("server parses its file");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("server.toml"))
+        );
+        std::fs::write(
+            paths.server_config_file(),
+            "[terminal]\ndefault_shell = '/bin/sh'\n",
+        )
+        .expect("valid server fixture");
+        std::fs::write(paths.client_config_file(), "broken = [").expect("broken client fixture");
+        assert!(
+            load_server_validated(&paths).is_ok(),
+            "server must not read client config"
+        );
+        let errors = load_client_validated(&paths).expect_err("client parses its file");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("client.toml"))
+        );
+        std::fs::remove_file(paths.client_config_file()).expect("remove client fixture");
+        assert!(load_client_validated(&paths).is_ok());
+    }
+
+    #[test]
+    fn server_launch_collects_chrome_grid_and_terminal_errors() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let errors = ServerConfig::load_from_str("[server]\nheadless_cols = 0\n[ui]\nwindow_title = '{unknown}'\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
+            .into_validated(AppPaths::default()).expect_err("invalid server settings");
+        for setting in [
+            "server.headless_cols",
+            "ui.window_title",
+            "terminal.default_shell",
+            "terminal.new_cwd",
+        ] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.to_string().contains(setting)),
+                "{setting}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn load_diagnostics_keep_their_kind() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let parse = Config::load_from_str("[keys\nprefix = 'ctrl+a'");
+        let parse = ClientConfig::load_from_str("[keys\nprefix = 'ctrl+a'");
         assert!(matches!(
             parse.diagnostics.as_slice(),
             [ConfigDiagnostic::Parse(_)]
         ));
 
-        let unknown = Config::load_from_str("[keys]\nunknown_binding = 'ctrl+a'");
+        let unknown = ClientConfig::load_from_str("[keys]\nunknown_binding = 'ctrl+a'");
         assert!(matches!(
             unknown.diagnostics.as_slice(),
             [ConfigDiagnostic::Unknown(_)]
         ));
 
-        let invalid = Config::load_from_str("[keys]\nprefix = 'ctrl+'");
+        let invalid = ClientConfig::load_from_str("[keys]\nprefix = 'ctrl+'");
         assert!(
             invalid
                 .diagnostics
@@ -733,7 +879,7 @@ mod tests {
     #[test]
     fn failed_load_does_not_resolve_the_placeholder_config() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = Config::load_from_str("[broken");
+        let loaded = ClientConfig::load_from_str("[broken");
 
         assert!(loaded.resolution.is_none());
         assert!(!loaded.diagnostics.is_empty());
@@ -744,7 +890,9 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         // A directory where the config file should be cannot be read.
         let scratch = shepr_test_support::ScratchDir::new("config");
-        let startup = Config::load_from_path(scratch.path());
+        let startup = ClientConfig::load_from_path(scratch.path());
+        let server = ServerConfig::load_from_path(scratch.path());
+        assert!(server.into_validated(AppPaths::default()).is_err());
         assert!(
             startup
                 .diagnostics
@@ -764,7 +912,7 @@ mod tests {
                 "[theme.custom]\nred = \"not-a-color\"\n",
                 "theme.custom.red",
             ),
-            ("[ui]\naccent = \"not-a-color\"\n", "ui.accent"),
+            ("[theme]\naccent = \"not-a-color\"\n", "theme.accent"),
             ("[ui]\nwindow_title = \"{unknown}\"\n", "ui.window_title"),
             (
                 "[ui]\nsidebar_min_width = 50\nsidebar_max_width = 30\n",
@@ -795,10 +943,15 @@ mod tests {
                 "unknown config key ui.mouse_captur",
             ),
         ] {
-            let loaded = Config::load_from_str(content);
-            let errors = loaded
-                .into_validated(AppPaths::default())
-                .expect_err("invalid config must not be returned for launch");
+            let errors = if content.contains("[server]") || content.contains("window_title") {
+                ServerConfig::load_from_str(content)
+                    .into_validated(AppPaths::default())
+                    .expect_err("invalid server config")
+            } else {
+                ClientConfig::load_from_str(content)
+                    .into_validated(AppPaths::default())
+                    .expect_err("invalid client config")
+            };
             assert!(
                 errors
                     .iter()
@@ -807,14 +960,14 @@ mod tests {
             );
         }
 
-        let parse_error = Config::load_from_str("[server]\nheadless_cols = \"wide\"\n");
+        let parse_error = ServerConfig::load_from_str("[server]\nheadless_cols = \"wide\"\n");
         assert!(parse_error.into_validated(AppPaths::default()).is_err());
     }
 
     #[test]
     fn machines_load_in_config_order() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = Config::load_from_str(
+        let loaded = ClientConfig::load_from_str(
             r#"
 [[machines]]
 label = "build"
@@ -838,7 +991,7 @@ ssh = "ssh://gpu.example"
             [("build", "dev@build"), ("gpu", "ssh://gpu.example")]
         );
 
-        let none = Config::load_from_str("[terminal]\n")
+        let none = ClientConfig::load_from_str("")
             .into_validated(AppPaths::default())
             .expect("no machines is valid");
         assert!(none.machines().is_empty());
@@ -874,7 +1027,7 @@ ssh = "ssh://gpu.example"
                 "unknown config key machines.0.host",
             ),
         ] {
-            let errors = Config::load_from_str(content)
+            let errors = ClientConfig::load_from_str(content)
                 .into_validated(AppPaths::default())
                 .expect_err("invalid machines must not launch");
             assert!(
@@ -893,14 +1046,12 @@ ssh = "ssh://gpu.example"
         let paths = AppPaths::test_at(scratch.path());
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
         std::fs::write(
-            paths.config_file(),
+            paths.client_config_file(),
             r#"
 [theme]
 name = "not-a-theme"
 [theme.custom]
 red = "not-a-color"
-[server]
-headless_cols = 0
 [keys]
 prefix = "ctrl+"
 zoom = "prefix+not-a-key"
@@ -908,12 +1059,12 @@ zoom = "prefix+not-a-key"
 sidebar_width = 80
 sidebar_min_width = 18
 sidebar_max_width = 36
-window_title = "{unknown}"
 "#,
         )
         .expect("write invalid config fixture");
 
-        let diagnostics = Config::load_validated(&paths).expect_err("invalid fixture is refused");
+        let diagnostics =
+            ClientConfig::load_validated(&paths).expect_err("invalid fixture is refused");
         let messages = diagnostics
             .iter()
             .map(ToString::to_string)
@@ -921,11 +1072,9 @@ window_title = "{unknown}"
         for expected in [
             "theme.name",
             "theme.custom.red",
-            "server.headless_cols",
             "keys.prefix",
             "keys.zoom",
             "ui.sidebar_width",
-            "ui.window_title",
         ] {
             assert!(
                 messages.iter().any(|message| message.contains(expected)),
@@ -939,23 +1088,23 @@ window_title = "{unknown}"
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-load");
         let paths = AppPaths::test_at(scratch.path());
-        let path = paths.config_file();
+        let path = paths.client_config_file();
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
 
-        std::fs::write(path, "[server]\nheadless_rows = 0\n").expect("write bad config fixture");
-        assert!(Config::load_validated(&paths).is_err());
+        std::fs::write(&path, "[ui]\nsidebar_width = 0\n").expect("write bad config fixture");
+        assert!(ClientConfig::load_validated(&paths).is_err());
 
-        std::fs::remove_file(path).expect("remove config fixture");
-        let defaults = Config::load_validated(&paths).expect("missing config uses defaults");
+        std::fs::remove_file(&path).expect("remove config fixture");
+        let defaults = ClientConfig::load_validated(&paths).expect("missing config uses defaults");
         assert!(defaults.validated_live_keybinds().is_ok());
         assert_eq!(defaults.palette(), &crate::theme::Palette::catppuccin());
 
         std::fs::write(
-            path,
+            &path,
             "[theme]\nname = \"nord\"\n[theme.custom]\naccent = \"#010203\"\n",
         )
         .expect("write valid themed config");
-        let themed = Config::load_validated(&paths).expect("valid theme loads");
+        let themed = ClientConfig::load_validated(&paths).expect("valid theme loads");
         assert_eq!(themed.palette().accent, ratatui::style::Color::Rgb(1, 2, 3));
     }
 
@@ -967,11 +1116,12 @@ window_title = "{unknown}"
         // when HOME is missing or relative.
         let paths = AppPaths::test_at(scratch.path());
         assert!(paths.home_dir().is_none());
-        let path = paths.config_file();
+        let path = paths.server_config_file();
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
-        std::fs::write(path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
+        std::fs::write(&path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
 
-        let errors = Config::load_validated(&paths).expect_err("home cwd needs absolute HOME");
+        let errors =
+            ServerConfig::load_validated(&paths).expect_err("home cwd needs absolute HOME");
         assert!(
             errors
                 .iter()
@@ -981,47 +1131,12 @@ window_title = "{unknown}"
     }
 
     #[test]
-    fn config_path_honours_the_override_variable() {
+    fn role_config_paths_use_the_xdg_config_directory() {
         let env = shepr_test_support::IsolatedEnv::new();
-        assert_eq!(
-            AppPaths::resolve()
-                .expect("default paths resolve")
-                .config_file(),
-            env.home()
-                .join(".config")
-                .join(SHARED_APP_DIR_NAME)
-                .join("config.toml")
-                .as_path()
-        );
-        let custom = env.path().join("custom.toml");
-        env.set(EnvVar::SheprConfigPath, &custom);
-        assert_eq!(
-            AppPaths::resolve()
-                .expect("override resolves")
-                .config_file(),
-            custom
-        );
-
-        // Empty is unset: the default config file.
-        env.set(EnvVar::SheprConfigPath, "");
-        let paths = AppPaths::resolve().expect("an empty override reads as unset");
-        assert_eq!(
-            paths.config_file(),
-            env.home()
-                .join(".config")
-                .join(SHARED_APP_DIR_NAME)
-                .join("config.toml")
-                .as_path()
-        );
-
-        env.set(EnvVar::SheprConfigPath, format!("{} ", custom.display()));
-        let errors = AppPaths::resolve().expect_err("a padded override is refused");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("SHEPR_CONFIG_PATH") && error.contains("whitespace")),
-            "{errors:?}"
-        );
+        let paths = AppPaths::resolve().expect("default paths resolve");
+        let directory = env.home().join(".config").join(SHARED_APP_DIR_NAME);
+        assert_eq!(paths.client_config_file(), directory.join("client.toml"));
+        assert_eq!(paths.server_config_file(), directory.join("server.toml"));
     }
 
     #[test]
@@ -1045,16 +1160,22 @@ window_title = "{unknown}"
 
         // `current` and a relative new_cwd resolve against the launch directory.
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
-        std::fs::write(paths.config_file(), "[terminal]\nnew_cwd = \"project\"\n")
-            .expect("write config fixture");
-        let config = Config::load_validated(&paths).expect("relative new_cwd validates");
+        std::fs::write(
+            paths.server_config_file(),
+            "[terminal]\nnew_cwd = \"project\"\n",
+        )
+        .expect("write config fixture");
+        let config = ServerConfig::load_validated(&paths).expect("relative new_cwd validates");
         assert_eq!(
             config.terminal().new_cwd,
             crate::NewTerminalCwd::Path(launch.join("project"))
         );
-        std::fs::write(paths.config_file(), "[terminal]\nnew_cwd = \"current\"\n")
-            .expect("write config fixture");
-        let config = Config::load_validated(&paths).expect("current new_cwd validates");
+        std::fs::write(
+            paths.server_config_file(),
+            "[terminal]\nnew_cwd = \"current\"\n",
+        )
+        .expect("write config fixture");
+        let config = ServerConfig::load_validated(&paths).expect("current new_cwd validates");
         assert_eq!(config.terminal().new_cwd, crate::NewTerminalCwd::Current);
         assert_eq!(config.paths().current_dir(), Some(launch.as_path()));
 
@@ -1170,10 +1291,11 @@ window_title = "{unknown}"
             runtime.join("shepr-dev/shepr-client.sock")
         );
 
-        // Config, the shared state directory (with the client state below
-        // it) and the XDG runtime root are the same in both profiles.
+        // Both config files, the shared state directory (with the client state
+        // below it) and the XDG runtime root are the same in both profiles.
         assert_eq!(release.config_dir(), dev.config_dir());
-        assert_eq!(release.config_file(), dev.config_file());
+        assert_eq!(release.client_config_file(), dev.client_config_file());
+        assert_eq!(release.server_config_file(), dev.server_config_file());
         assert_eq!(release.state_dir(), dev.state_dir());
         assert_eq!(release.client_state_dir(), dev.client_state_dir());
         assert_eq!(release.xdg_runtime_dir(), dev.xdg_runtime_dir());
@@ -1268,15 +1390,12 @@ window_title = "{unknown}"
     #[test]
     fn config_load_reports_unknown_keys_and_parses_known_siblings() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = Config::load_from_str(
+        let loaded = ClientConfig::load_from_str(
             r##"
 plugin = []
 
 [theme.custom]
 accentt = "#ffffff"
-
-[advanced]
-scrollback_limit_bytes = 42
 
 [keys]
 zoom = "prefix+z"
@@ -1303,14 +1422,13 @@ mouse_captur = true
                 "unknown config key ui.mouse_captur",
             ]
         );
-        assert_eq!(loaded.config.advanced.scrollback_limit_bytes, 42);
         assert!(!loaded.config.ui.mouse_capture);
     }
 
     #[test]
     fn config_load_records_provenance_for_ui_values() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = Config::load_from_str(
+        let loaded = ClientConfig::load_from_str(
             r#"
 [ui]
 sidebar_width = 26
@@ -1339,7 +1457,7 @@ agent_panel_sort = "priority"
                 .is_explicit(super::super::UiPreferenceKey::SidebarStartCollapsed)
         );
 
-        let empty = Config::load_from_str("[terminal]\n");
+        let empty = ClientConfig::load_from_str("");
         assert!(
             !empty
                 .provenance
@@ -1351,17 +1469,17 @@ agent_panel_sort = "priority"
     fn config_provenance_queries_array_fields_by_their_parent_key() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let configured =
-            Config::load_from_str("[keys]\nfocus_agent = [\"prefix+1\", \"prefix+2\"]\n");
+            ClientConfig::load_from_str("[keys]\nfocus_agent = [\"prefix+1\", \"prefix+2\"]\n");
         assert!(configured.provenance.key_is_configured("keys.focus_agent"));
 
-        let defaults = Config::load_from_str("[keys]\n");
+        let defaults = ClientConfig::load_from_str("[keys]\n");
         assert!(!defaults.provenance.key_is_configured("keys.focus_agent"));
     }
 
     #[test]
     fn config_load_reports_unknown_top_level_sections() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = Config::load_from_str(
+        let loaded = ClientConfig::load_from_str(
             r#"
 [[plugin]]
 id = "example"

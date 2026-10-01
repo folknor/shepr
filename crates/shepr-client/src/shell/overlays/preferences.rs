@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Three of these values also have `[ui]` config keys (`sidebar_width`,
 /// `sidebar_start_collapsed`, `agent_panel_sort`). The documented key wins:
-/// a remembered value is used only while its key is absent from config.toml,
+/// a remembered value is used only while its key is absent from client.toml,
 /// and is neither loaded nor stored once the key is set. Manual changes still
 /// apply for the rest of the session either way.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -26,13 +26,13 @@ pub(super) struct ClientChromePreferences {
     pub(super) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent_panel_sort: Option<shepr_config::AgentPanelSortConfig>,
-    /// Which of the values above config.toml sets. Taken from the config at
+    /// Which of the values above client.toml sets. Taken from the config at
     /// launch, never from the file.
     #[serde(skip)]
     pub(super) configured: ConfiguredChrome,
 }
 
-/// Which remembered chrome values have a `[ui]` key set in config.toml.
+/// Which remembered chrome values have a `[ui]` key set in client.toml.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ConfiguredChrome {
     pub(super) sidebar_width: bool,
@@ -41,7 +41,7 @@ pub(super) struct ConfiguredChrome {
 }
 
 impl ConfiguredChrome {
-    pub(super) fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
+    pub(super) fn from_validated_config(config: &shepr_config::ValidatedClientConfig) -> Self {
         Self {
             sidebar_width: config
                 .provenance()
@@ -57,7 +57,7 @@ impl ConfiguredChrome {
 }
 
 impl ClientChromePreferences {
-    /// These preferences with every value config.toml owns dropped.
+    /// These preferences with every value client.toml owns dropped.
     pub(super) fn without_configured(mut self, configured: ConfiguredChrome) -> Self {
         if configured.sidebar_width {
             self.sidebar_width = None;
@@ -264,13 +264,13 @@ mod tests {
 
     #[test]
     fn configured_chrome_follows_config_value_provenance() {
-        let default_config = shepr_config::ValidatedConfig::test_default();
+        let default_config = shepr_config::ValidatedClientConfig::test_default();
         assert_eq!(
             ConfiguredChrome::from_validated_config(&default_config),
             ConfiguredChrome::default()
         );
-        let config = shepr_config::ValidatedConfig::test_from_config(
-            shepr_config::Config::default(),
+        let config = shepr_config::ValidatedClientConfig::test_from_config(
+            shepr_config::ClientConfig::default(),
             Some("[ui]\nsidebar_start_collapsed = false\n"),
         );
         assert_eq!(

@@ -77,7 +77,7 @@ use shepr_termio::blit as render_ansi;
 /// logger before calling this function. The machines are the launch
 /// config's `[[machines]]`, fixed for the life of the client.
 fn run_launched_client(
-    config: &shepr_config::ValidatedConfig,
+    config: &shepr_config::ValidatedClientConfig,
     paths: &shepr_config::AppPaths,
 ) -> Result<ClientExit, ClientRunError> {
     let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
@@ -1539,9 +1539,9 @@ mod client_timer_tests {
         now: Instant,
         write_stream: endpoint::EndpointRegistry,
     ) -> (ClientLoop, tokio::sync::mpsc::Sender<ClientLoopEvent>) {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
+        use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
-        let config = shepr_config::ValidatedConfig::test_default();
+        let config = shepr_config::ValidatedClientConfig::test_default();
         let supervisors = endpoint::EndpointSupervisors::new(config.paths(), &[], now)
             .expect("test precondition: no configured supervisors");
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);

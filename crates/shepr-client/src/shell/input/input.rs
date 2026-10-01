@@ -1092,7 +1092,8 @@ mod tests {
     use shepr_protocol::MAX_INPUT_PAYLOAD;
 
     fn shell() -> ClientShellState {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(super::super::tests::snapshot()));
         state
     }

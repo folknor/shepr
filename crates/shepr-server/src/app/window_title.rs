@@ -105,12 +105,16 @@ impl App {
 mod tests {
     use crate::app::App;
     use crate::test_support::*;
-    use shepr_config::Config;
+    use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+        let mut app = App::new(
+            &ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
         app.state.workspaces = vec![Workspace::test_new("herd")];
         app.state.ensure_test_terminals();
         app

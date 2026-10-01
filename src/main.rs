@@ -18,44 +18,29 @@ mod cli;
 mod limits;
 mod preflight;
 
-/// Checks the nested-launch policy and returns whether a matching-profile pane
-/// owns this process. `SHEPR_ENV` counts only when it is exactly
-/// [`SHEPR_ENV_IN_PANE`], the value shepr writes and the hook assets check. A
-/// pane with a different profile has separate sockets and may launch this TUI;
-/// without a profile marker, the existing nested-launch guard still applies.
-fn refuse_if_nested_disabled(config: &shepr_config::ValidatedConfig) -> CliResult<bool> {
+/// Refuses a TUI or client launch from a pane of a server of this build
+/// profile. `SHEPR_ENV` counts only when it is exactly [`SHEPR_ENV_IN_PANE`],
+/// the value shepr writes and the hook assets check. A pane whose profile
+/// marker names the other profile has separate sockets and may launch this
+/// TUI; a pane with no marker is refused like a matching one.
+fn refuse_if_nested() -> CliResult<()> {
     let shepr_env = shepr_core::env::read_text(EnvVar::SheprEnv)
         .map_err(|error| CliError::Config(vec![error.to_string()]))?;
     let owner_profile = shepr_core::env::read_text(EnvVar::SheprBuildProfile)
         .map_err(|error| CliError::Config(vec![error.to_string()]))?;
-    let blocked =
-        should_block_nested_for_env(config, shepr_env.as_deref(), owner_profile.as_deref());
+    let blocked = should_block_nested_for_env(shepr_env.as_deref(), owner_profile.as_deref());
     if blocked {
         return Err(CliError::Nested {
             quip: random_nested_message(),
         });
     }
-    Ok(same_profile_pane_for_env(
-        shepr_env.as_deref(),
-        owner_profile.as_deref(),
-    ))
+    Ok(())
 }
 
-fn should_block_nested_for_env(
-    config: &shepr_config::ValidatedConfig,
-    shepr_env: Option<&str>,
-    owner_profile: Option<&str>,
-) -> bool {
+fn should_block_nested_for_env(shepr_env: Option<&str>, owner_profile: Option<&str>) -> bool {
     let profile_matches_or_is_unknown = owner_profile
         .is_none_or(|profile| profile == shepr_config::BuildProfile::current().marker());
-    !config.experimental().allow_nested
-        && shepr_env == Some(SHEPR_ENV_IN_PANE)
-        && profile_matches_or_is_unknown
-}
-
-fn same_profile_pane_for_env(shepr_env: Option<&str>, owner_profile: Option<&str>) -> bool {
-    shepr_env == Some(SHEPR_ENV_IN_PANE)
-        && owner_profile == Some(shepr_config::BuildProfile::current().marker())
+    shepr_env == Some(SHEPR_ENV_IN_PANE) && profile_matches_or_is_unknown
 }
 
 fn random_nested_message() -> &'static str {
@@ -133,12 +118,16 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
         return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
     }
 
+    // Every launch left is the TUI or its internal client launch. Neither runs
+    // inside a pane of a server of this profile, so refuse before client.toml
+    // is read: a broken file must not hide the refusal.
+    refuse_if_nested()?;
+
     let loaded_config = load_validated_config(shepr_config::AppPaths::resolve())?;
     let paths = loaded_config.paths();
 
     match invocation.launch {
         cli::Launch::Client => {
-            refuse_if_nested_disabled(&loaded_config)?;
             init_client_logging(paths)?;
             return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
         }
@@ -148,15 +137,13 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
         }
     }
 
-    let local_restart_ends_launching_pane = refuse_if_nested_disabled(&loaded_config)?;
-
     autodetect::ensure_terminal_geometry()
         .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
 
     init_client_logging(paths)?;
     // Prompts and restart offers must run before the client takes the
     // terminal: it connects to machines with BatchMode and cannot answer one.
-    preflight::run(&loaded_config, paths, local_restart_ends_launching_pane);
+    preflight::run(&loaded_config, paths);
     let client = autodetect::auto_detect_launch(
         &loaded_config,
         paths,
@@ -211,9 +198,9 @@ fn resolve_bridge_paths() -> CliResult<shepr_config::AppPaths> {
 
 fn load_validated_config(
     resolved_paths: Result<shepr_config::AppPaths, Vec<String>>,
-) -> CliResult<shepr_config::ValidatedConfig> {
+) -> CliResult<shepr_config::ValidatedClientConfig> {
     let paths = resolved_paths.map_err(CliError::Config)?;
-    shepr_config::load_validated(&paths).map_err(|diagnostics| {
+    shepr_config::load_client_validated(&paths).map_err(|diagnostics| {
         CliError::Config(diagnostics.iter().map(ToString::to_string).collect())
     })
 }
@@ -224,26 +211,15 @@ mod test_support;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_fixtures::ValidatedConfigFixture as _;
 
     #[test]
     fn nested_shepr_blocks_when_env_is_set() {
-        let config = shepr_config::ValidatedConfig::test_default();
-        assert!(should_block_nested_for_env(
-            &config,
-            Some(SHEPR_ENV_IN_PANE),
-            None
-        ));
+        assert!(should_block_nested_for_env(Some(SHEPR_ENV_IN_PANE), None));
     }
 
     #[test]
-    fn nested_shepr_does_not_block_when_allowed() {
-        let config = shepr_config::ValidatedConfig::test_from_config(
-            toml::from_str("[experimental]\nallow_nested = true\n").expect("test precondition"),
-            Some("[experimental]\nallow_nested = true\n"),
-        );
-        assert!(!should_block_nested_for_env(
-            &config,
+    fn nested_shepr_blocks_with_a_matching_profile() {
+        assert!(should_block_nested_for_env(
             Some(SHEPR_ENV_IN_PANE),
             Some(shepr_config::BuildProfile::current().marker())
         ));
@@ -251,16 +227,20 @@ mod tests {
 
     #[test]
     fn nested_shepr_does_not_block_without_env() {
-        let config = shepr_config::ValidatedConfig::test_default();
-        assert!(!should_block_nested_for_env(&config, None, None));
+        assert!(!should_block_nested_for_env(None, None));
     }
 
     #[test]
     fn server_stop_does_not_load_a_broken_config() {
         let env = crate::test_support::IsolatedEnv::new();
-        let config = env.path().join("broken-config.toml");
+        let scratch = shepr_test_support::ScratchDir::new("broken-launch-config");
+        env.set(EnvVar::XdgConfigHome, scratch.path());
+        let paths = shepr_config::AppPaths::resolve().expect("resolve paths");
+        std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
+        let config = paths.client_config_file();
         std::fs::write(&config, "this = [not valid TOML").expect("write broken config");
-        env.set(EnvVar::SheprConfigPath, &config);
+        std::fs::write(paths.server_config_file(), "this = [not valid TOML")
+            .expect("write broken server config");
         let args = ["shepr", "server", "stop"].map(str::to_owned);
 
         let result = launch_with_args(&args);
@@ -271,30 +251,37 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_launch_is_refused_before_a_broken_client_config_is_read() {
+        let env = crate::test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("nested-broken-config");
+        env.set(EnvVar::XdgConfigHome, scratch.path());
+        env.set(EnvVar::SheprEnv, SHEPR_ENV_IN_PANE);
+        env.set(
+            EnvVar::SheprBuildProfile,
+            shepr_config::BuildProfile::current().marker(),
+        );
+        let paths = shepr_config::AppPaths::resolve().expect("resolve paths");
+        std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
+        std::fs::write(paths.client_config_file(), "this = [not valid TOML")
+            .expect("write broken client config");
+
+        let result = launch_with_args(&["shepr".to_owned()]);
+        assert!(
+            matches!(&result, Err(CliError::Nested { .. })),
+            "a same-profile pane is refused before config loads: {result:?}"
+        );
+    }
+
+    #[test]
     fn a_different_profile_pane_does_not_block_nesting() {
-        let config = shepr_config::ValidatedConfig::test_default();
         let other_profile = match shepr_config::BuildProfile::current() {
             shepr_config::BuildProfile::Release => "dev",
             shepr_config::BuildProfile::Dev => "release",
         };
         assert!(!should_block_nested_for_env(
-            &config,
             Some(SHEPR_ENV_IN_PANE),
             Some(other_profile)
         ));
-        assert!(!same_profile_pane_for_env(
-            Some(SHEPR_ENV_IN_PANE),
-            Some(other_profile)
-        ));
-    }
-
-    #[test]
-    fn only_a_matching_profile_marker_identifies_the_local_server_pane() {
-        assert!(same_profile_pane_for_env(
-            Some(SHEPR_ENV_IN_PANE),
-            Some(shepr_config::BuildProfile::current().marker())
-        ));
-        assert!(!same_profile_pane_for_env(Some(SHEPR_ENV_IN_PANE), None));
     }
 
     #[test]

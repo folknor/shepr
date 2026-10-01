@@ -302,8 +302,8 @@ impl HostWriteFailure {
 #[cfg(test)]
 impl ClientState {
     pub(super) fn test_new() -> Self {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
-        let config = shepr_config::ValidatedConfig::test_default();
+        use shepr_test_fixtures::ValidatedClientConfigFixture as _;
+        let config = shepr_config::ValidatedClientConfig::test_default();
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
             output_writer: Box::new(io::sink()),

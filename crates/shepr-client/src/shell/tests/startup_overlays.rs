@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn endpoint_notice_expires_without_a_click() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Rejected,
@@ -34,7 +34,7 @@ fn endpoint_notice_expires_without_a_click() {
 
 #[test]
 fn transient_shell_deadlines_schedule_their_expiry() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_endpoint_error("failure", state.now);
     state.compose(106, 20).expect("frame");
@@ -61,7 +61,8 @@ fn transient_shell_deadlines_schedule_their_expiry() {
 #[test]
 fn overlays_render_without_a_pane_surface_or_snapshot() {
     for with_snapshot in [false, true] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         if with_snapshot {
             state.set_snapshot(Box::new(snapshot()));
         }
@@ -88,7 +89,7 @@ fn overlays_render_without_a_pane_surface_or_snapshot() {
 
 #[test]
 fn unavailable_global_menu_renders_and_activates_without_snapshot() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.compose(106, 30).expect("placeholder frame");
     state.toggle_global_menu();
     let frame = state.compose(106, 30).expect("menu frame");
@@ -105,7 +106,7 @@ fn unavailable_global_menu_renders_and_activates_without_snapshot() {
 
 #[test]
 fn unavailable_small_popup_uses_the_common_hint_and_clears_hits() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.open_navigator_overlay();
     state.compose(106, 30).expect("navigator frame");
     assert!(!state.hits.navigator_popup.is_empty());

@@ -224,7 +224,7 @@ mod tests {
     fn the_surface_lease_answered_by_the_loop_is_reported_as_misrouted() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
@@ -243,7 +243,7 @@ mod tests {
     fn read_only_commands_do_not_force_a_render() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
@@ -278,7 +278,7 @@ mod tests {
     fn workspace_rename_trims_and_clears_and_renders_what_it_changed() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
@@ -332,7 +332,7 @@ mod tests {
     fn pane_exit_keeps_the_workspace_when_other_panes_remain() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
@@ -354,7 +354,7 @@ mod tests {
     fn pane_exit_removes_the_workspace_it_empties() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );
@@ -384,7 +384,7 @@ mod tests {
     fn process_exit_releases_a_newer_hook_owned_agent() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );

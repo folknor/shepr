@@ -133,7 +133,7 @@ pub(crate) use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT
 
 impl App {
     pub(crate) fn with_paths(
-        config: &shepr_config::ValidatedConfig,
+        config: &shepr_config::ValidatedServerConfig,
         paths: &shepr_config::AppPaths,
         lease: shepr_mux::persist::DataDirLease,
         policy: AppPolicy,
@@ -430,7 +430,7 @@ mod tests {
     use crate::test_support::IsolatedEnv;
     use crate::test_support::*;
     use shepr_agent::detect::{Agent, AgentState};
-    use shepr_config::Config;
+    use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::command::{
         EndpointCommand, EndpointReply, PaneSplitParams, PaneTarget, SplitDirection,
@@ -449,14 +449,14 @@ mod tests {
     impl App {
         /// Test constructor: the app's files live in a fresh scratch directory.
         pub(crate) fn new(
-            config: &Config,
+            config: &ServerConfig,
             policy: AppPolicy,
             api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         ) -> Self {
-            use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+            use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
             let scratch = crate::test_support::ScratchDir::new("app");
             let paths = shepr_config::AppPaths::test_at(&scratch);
-            let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
+            let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
                 config.clone(),
                 None,
                 paths.clone(),
@@ -517,22 +517,26 @@ mod tests {
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+        let mut app = App::new(
+            &ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
         app.state.settings.default_shell = exiting_test_command().into();
         app
     }
 
     #[test]
     fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
-        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
             DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("pruned-pane-backup");
         let paths = shepr_config::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-            Config::default(),
+        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+            ServerConfig::default(),
             None,
             paths.clone(),
         );
@@ -730,7 +734,7 @@ mod tests {
 
     #[test]
     fn theme_uses_configured_name() {
-        let mut config = Config::default();
+        let mut config = ServerConfig::default();
         config.theme.name = Some("tokyo-night".to_string());
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -740,14 +744,14 @@ mod tests {
     }
 
     #[test]
-    fn ui_accent_applies_only_when_set_and_not_overridden_by_the_theme() {
+    fn theme_accent_applies_only_when_set_and_not_overridden_by_the_theme() {
         use ratatui::style::Color;
 
         let theme_accent = state::Palette::catppuccin().accent;
         assert_ne!(theme_accent, Color::Cyan, "test precondition");
 
         // Unset: the theme's accent.
-        let config = Config::default();
+        let config = ServerConfig::default();
         assert_eq!(
             config
                 .resolve_palette()
@@ -757,14 +761,14 @@ mod tests {
         );
 
         // Set explicitly: it applies over the theme accent.
-        let mut config = Config::default();
-        config.ui.accent = Some("cyan".into());
+        let mut config = ServerConfig::default();
+        config.theme.accent = Some("cyan".into());
         assert_eq!(
             config.resolve_palette().expect("valid cyan accent").accent,
             Color::Cyan
         );
 
-        config.ui.accent = Some("magenta".into());
+        config.theme.accent = Some("magenta".into());
         assert_eq!(
             config
                 .resolve_palette()
@@ -773,7 +777,7 @@ mod tests {
             Color::Magenta
         );
 
-        // `theme.custom.accent` wins over `ui.accent`.
+        // `theme.custom.accent` wins over `theme.accent`.
         config.theme.custom = Some(shepr_config::CustomThemeColors {
             accent: Some("#010203".into()),
             ..Default::default()

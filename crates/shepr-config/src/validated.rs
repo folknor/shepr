@@ -2,10 +2,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::{
-    AppPaths, Config, SidebarBounds,
+    AppPaths, ClientConfig, SidebarBounds,
     model::{
-        AdvancedConfig, ExperimentalConfig, NewTerminalCwdConfig, SessionConfig, TerminalConfig,
-        UiConfig,
+        AdvancedConfig, ClientUiConfig, ExperimentalConfig, NewTerminalCwdConfig, SessionConfig,
+        TerminalConfig,
     },
     window_title::WindowTitleTemplate,
 };
@@ -120,7 +120,7 @@ fn collect_toml_paths(
 /// The width and bounds travel together and stay private, so the width is
 /// always inside the bounds and no crate outside this one can build a value.
 #[derive(Debug, Clone)]
-pub struct ValidatedUiConfig {
+pub struct ValidatedClientUiConfig {
     sidebar_width: u16,
     sidebar_bounds: SidebarBounds,
     pub sidebar_start_collapsed: bool,
@@ -133,12 +133,6 @@ pub struct ValidatedUiConfig {
     pub mouse_scroll_lines: std::num::NonZeroU16,
     pub confirm_close: bool,
     pub prompt_new_workspace_name: bool,
-    pub pane_borders: super::PaneBordersConfig,
-    pub pane_outer_borders: bool,
-    pub pane_scrollbars: bool,
-    pub pane_gaps: bool,
-    pub show_agent_labels_on_pane_borders: bool,
-    pub window_title: Option<WindowTitleTemplate>,
     pub agent_panel_sort: super::AgentPanelSortConfig,
     pub status_indicators: super::StatusIndicatorStyle,
     pub sidebar: super::SidebarConfig,
@@ -370,7 +364,7 @@ fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-impl ValidatedUiConfig {
+impl ValidatedClientUiConfig {
     /// Configured expanded sidebar width, already validated to be within
     /// `sidebar_bounds`.
     pub fn sidebar_width(&self) -> u16 {
@@ -382,10 +376,9 @@ impl ValidatedUiConfig {
     }
 
     fn from_config(
-        config: &UiConfig,
+        config: &ClientUiConfig,
         bounds: SidebarBounds,
         mouse_scroll_lines: std::num::NonZeroU16,
-        window_title: Option<WindowTitleTemplate>,
     ) -> Self {
         Self {
             sidebar_width: config.sidebar_width,
@@ -400,12 +393,6 @@ impl ValidatedUiConfig {
             mouse_scroll_lines,
             confirm_close: config.confirm_close,
             prompt_new_workspace_name: config.prompt_new_workspace_name,
-            pane_borders: config.pane_borders,
-            pane_outer_borders: config.pane_outer_borders,
-            pane_scrollbars: config.pane_scrollbars,
-            pane_gaps: config.pane_gaps,
-            show_agent_labels_on_pane_borders: config.show_agent_labels_on_pane_borders,
-            window_title,
             agent_panel_sort: config.agent_panel_sort,
             status_indicators: config.status_indicators,
             sidebar: config.sidebar.clone(),
@@ -414,12 +401,10 @@ impl ValidatedUiConfig {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ValidatedValues {
-    pub(crate) headless_size: shepr_core::geometry::GridSize,
+pub(crate) struct ValidatedClientValues {
     pub(crate) palette: crate::theme::Palette,
     pub(crate) live_keybinds: super::LiveKeybindConfig,
-    pub(crate) ui: ValidatedUiConfig,
-    pub(crate) terminal: ValidatedTerminalConfig,
+    pub(crate) ui: ValidatedClientUiConfig,
 }
 
 /// One diagnostic per machine whose label an earlier entry already uses. Labels
@@ -444,43 +429,26 @@ fn machine_label_diagnostics(machines: &[super::MachineConfig]) -> Vec<String> {
 /// No fallback values escape this boundary: `values` is present only when all
 /// parsed fields are valid.
 #[derive(Debug, Clone)]
-pub(crate) struct ConfigResolution {
+pub(crate) struct ClientConfigResolution {
     pub(crate) diagnostics: Vec<String>,
     pub(crate) path_diagnostics: Vec<String>,
-    pub(crate) values: Option<ValidatedValues>,
+    pub(crate) values: Option<ValidatedClientValues>,
 }
 
-impl ConfigResolution {
-    pub(crate) fn parse(config: &Config, provenance: &ConfigProvenance, paths: &AppPaths) -> Self {
-        Self::parse_with_terminal(
-            config,
-            provenance,
-            ValidatedTerminalConfig::parse(&config.terminal, paths),
-        )
-    }
-
-    fn parse_with_terminal(
-        config: &Config,
+impl ClientConfigResolution {
+    pub(crate) fn parse(
+        config: &ClientConfig,
         provenance: &ConfigProvenance,
-        terminal: Result<ValidatedTerminalConfig, Vec<String>>,
+        _paths: &AppPaths,
     ) -> Self {
         let keybind_validation = config.compute_keybind_validation(|field| {
             provenance.key_is_configured(&format!("keys.{field}"))
         });
         let palette = config.resolve_palette();
-        let headless_size = shepr_core::geometry::GridSize::new(
-            config.server.headless_cols,
-            config.server.headless_rows,
-        )
-        .filter(|_| {
-            super::terminal_grid_cells(config.server.headless_cols, config.server.headless_rows)
-                .is_some()
-        });
         let sidebar_bounds = super::validated_sidebar_bounds(
             config.ui.sidebar_min_width,
             config.ui.sidebar_max_width,
         );
-        let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
         let mouse_scroll_lines = config.ui.mouse_scroll_lines();
         let mouse_scroll_lines = u16::try_from(mouse_scroll_lines)
             .ok()
@@ -493,9 +461,6 @@ impl ConfigResolution {
         let mut diagnostics = keybind_validation.diagnostics.clone();
         if let Err(errors) = &palette {
             diagnostics.extend(errors.iter().cloned());
-        }
-        if let Err(error) = &window_title {
-            diagnostics.push(format!("ui.window_title {error}"));
         }
         if sidebar_bounds.is_none() {
             diagnostics.push(format!(
@@ -510,14 +475,6 @@ impl ConfigResolution {
                 config.ui.sidebar_width
             ));
         }
-        if headless_size.is_none() {
-            diagnostics.push(format!(
-                "server.headless_cols and server.headless_rows must be greater than zero, each no larger than {}, and no larger than {} cells combined (got {}x{})",
-                super::MAX_TERMINAL_GRID_DIMENSION,
-                super::MAX_TERMINAL_GRID_CELLS,
-                config.server.headless_cols, config.server.headless_rows
-            ));
-        }
         if mouse_scroll_lines.is_none() {
             diagnostics.push(format!(
                 "ui.mouse_scroll_lines must be between {MIN_MOUSE_SCROLL_LINES} and {MAX_INPUT_EVENT_BATCH} (got {})",
@@ -525,40 +482,28 @@ impl ConfigResolution {
             ));
         }
         diagnostics.extend(machine_label_diagnostics(&config.machines));
-        let mut path_diagnostics = Vec::new();
-        if let Err(errors) = &terminal {
-            path_diagnostics.extend(errors.iter().cloned());
-        }
+        let path_diagnostics = Vec::new();
 
         let values = if diagnostics.is_empty() && path_diagnostics.is_empty() {
             match (
                 keybind_validation.live,
                 palette,
-                headless_size,
                 sidebar_bounds,
                 mouse_scroll_lines,
-                window_title,
-                terminal,
             ) {
                 (
                     Some(live_keybinds),
                     Ok(palette),
-                    Some(headless_size),
                     Some(sidebar_bounds),
                     Some(mouse_scroll_lines),
-                    Ok(window_title),
-                    Ok(terminal),
-                ) => Some(ValidatedValues {
-                    headless_size,
+                ) => Some(ValidatedClientValues {
                     palette,
                     live_keybinds,
-                    ui: ValidatedUiConfig::from_config(
+                    ui: ValidatedClientUiConfig::from_config(
                         &config.ui,
                         sidebar_bounds,
                         mouse_scroll_lines,
-                        window_title,
                     ),
-                    terminal,
                 }),
                 _ => None,
             }
@@ -577,25 +522,23 @@ impl ConfigResolution {
 /// Immutable, validated configuration resolved at the process boundary.
 /// Runtime preferences continue to live in their own mutable state.
 #[derive(Debug, Clone)]
-pub struct ValidatedConfig {
-    config: Config,
+pub struct ValidatedClientConfig {
+    config: ClientConfig,
     provenance: ConfigProvenance,
     paths: AppPaths,
     resolved_palette: crate::theme::Palette,
-    headless_size: shepr_core::geometry::GridSize,
     live_keybinds: super::LiveKeybindConfig,
-    ui: ValidatedUiConfig,
-    terminal: ValidatedTerminalConfig,
+    ui: ValidatedClientUiConfig,
 }
 
-impl ValidatedConfig {
+impl ValidatedClientConfig {
     /// Validate `config` exactly as a launch does, with `source` as the config
     /// document the values were read from: it decides which values count as
     /// explicitly configured, and `None` makes every value a default. The
     /// document is not checked for unknown keys; a launch load does that
     /// before it gets here.
     pub fn from_values(
-        config: Config,
+        config: ClientConfig,
         source: Option<&str>,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
@@ -614,9 +557,9 @@ impl ValidatedConfig {
     /// Build from a load whose diagnostics, including checked terminal paths,
     /// are already empty.
     pub(crate) fn from_loaded(
-        config: Config,
+        config: ClientConfig,
         provenance: ConfigProvenance,
-        values: ValidatedValues,
+        values: ValidatedClientValues,
         paths: AppPaths,
     ) -> Self {
         Self {
@@ -624,19 +567,17 @@ impl ValidatedConfig {
             provenance,
             paths,
             resolved_palette: values.palette,
-            headless_size: values.headless_size,
             live_keybinds: values.live_keybinds,
             ui: values.ui,
-            terminal: values.terminal,
         }
     }
 
     fn from_resolution(
-        config: Config,
+        config: ClientConfig,
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        let resolution = ConfigResolution::parse(&config, &provenance, &paths);
+        let resolution = ClientConfigResolution::parse(&config, &provenance, &paths);
         let mut diagnostics = resolution.diagnostics;
         diagnostics.extend(resolution.path_diagnostics);
         if !diagnostics.is_empty() {
@@ -662,28 +603,8 @@ impl ValidatedConfig {
         &self.resolved_palette
     }
 
-    pub fn headless_size(&self) -> shepr_core::geometry::GridSize {
-        self.headless_size
-    }
-
-    pub fn ui(&self) -> &ValidatedUiConfig {
+    pub fn ui(&self) -> &ValidatedClientUiConfig {
         &self.ui
-    }
-
-    pub fn terminal(&self) -> &ValidatedTerminalConfig {
-        &self.terminal
-    }
-
-    pub fn session(&self) -> &SessionConfig {
-        &self.config.session
-    }
-
-    pub fn advanced(&self) -> &AdvancedConfig {
-        &self.config.advanced
-    }
-
-    pub fn experimental(&self) -> &ExperimentalConfig {
-        &self.config.experimental
     }
 
     /// The configured machines, in config order. Labels are unique.
@@ -696,11 +617,200 @@ impl ValidatedConfig {
     }
 }
 
+/// Pane chrome resolved by the server at launch.
+#[derive(Debug, Clone)]
+pub struct ValidatedServerUiConfig {
+    pub pane_borders: super::PaneBordersConfig,
+    pub pane_outer_borders: bool,
+    pub pane_scrollbars: bool,
+    pub pane_gaps: bool,
+    pub show_agent_labels_on_pane_borders: bool,
+    pub window_title: Option<WindowTitleTemplate>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedServerValues {
+    pub(crate) headless_size: shepr_core::geometry::GridSize,
+    pub(crate) palette: crate::theme::Palette,
+    pub(crate) ui: ValidatedServerUiConfig,
+    pub(crate) terminal: ValidatedTerminalConfig,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ServerConfigResolution {
+    pub(crate) diagnostics: Vec<String>,
+    pub(crate) path_diagnostics: Vec<String>,
+    pub(crate) values: Option<ValidatedServerValues>,
+}
+
+impl ServerConfigResolution {
+    pub(crate) fn parse(
+        config: &super::ServerConfig,
+        _provenance: &ConfigProvenance,
+        paths: &AppPaths,
+    ) -> Self {
+        Self::parse_with_terminal(
+            config,
+            ValidatedTerminalConfig::parse(&config.terminal, paths),
+        )
+    }
+
+    fn parse_with_terminal(
+        config: &super::ServerConfig,
+        terminal: Result<ValidatedTerminalConfig, Vec<String>>,
+    ) -> Self {
+        let palette = config.resolve_palette();
+        let headless_size = shepr_core::geometry::GridSize::new(
+            config.server.headless_cols,
+            config.server.headless_rows,
+        )
+        .filter(|_| {
+            super::terminal_grid_cells(config.server.headless_cols, config.server.headless_rows)
+                .is_some()
+        });
+        let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
+        let mut diagnostics = Vec::new();
+        if let Err(errors) = &palette {
+            diagnostics.extend(errors.iter().cloned());
+        }
+        if let Err(error) = &window_title {
+            diagnostics.push(format!("ui.window_title {error}"));
+        }
+        if headless_size.is_none() {
+            diagnostics.push(format!(
+                "server.headless_cols and server.headless_rows must be greater than zero, each no larger than {}, and no larger than {} cells combined (got {}x{})",
+                super::MAX_TERMINAL_GRID_DIMENSION, super::MAX_TERMINAL_GRID_CELLS,
+                config.server.headless_cols, config.server.headless_rows));
+        }
+        let path_diagnostics = terminal.as_ref().err().cloned().unwrap_or_default();
+        let values = if diagnostics.is_empty() && path_diagnostics.is_empty() {
+            match (palette, headless_size, window_title, terminal) {
+                (Ok(palette), Some(headless_size), Ok(window_title), Ok(terminal)) => {
+                    Some(ValidatedServerValues {
+                        palette,
+                        headless_size,
+                        terminal,
+                        ui: ValidatedServerUiConfig {
+                            pane_borders: config.ui.pane_borders,
+                            pane_outer_borders: config.ui.pane_outer_borders,
+                            pane_scrollbars: config.ui.pane_scrollbars,
+                            pane_gaps: config.ui.pane_gaps,
+                            show_agent_labels_on_pane_borders: config
+                                .ui
+                                .show_agent_labels_on_pane_borders,
+                            window_title,
+                        },
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        Self {
+            diagnostics,
+            path_diagnostics,
+            values,
+        }
+    }
+}
+
+/// Immutable server configuration, with no client settings.
+#[derive(Debug, Clone)]
+pub struct ValidatedServerConfig {
+    config: super::ServerConfig,
+    paths: AppPaths,
+    values: ValidatedServerValues,
+}
+
+impl ValidatedServerConfig {
+    /// Validate server values against the launch context. A launch loader also
+    /// checks unknown document keys before constructing this value.
+    pub fn from_values(
+        config: super::ServerConfig,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Result<Self, Vec<String>> {
+        let document = source
+            .map(|source| {
+                source
+                    .parse::<toml::Table>()
+                    .map(toml::Value::Table)
+                    .map_err(|error| vec![format!("config parse error: {error}")])
+            })
+            .transpose()?;
+        let provenance = ConfigProvenance::from_document(document.as_ref());
+        let resolution = ServerConfigResolution::parse(&config, &provenance, &paths);
+        let mut errors = resolution.diagnostics;
+        errors.extend(resolution.path_diagnostics);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        match resolution.values {
+            Some(values) => Ok(Self::from_loaded(config, provenance, values, paths)),
+            None => Err(vec![
+                "configuration resolution produced no values and no diagnostics".to_owned(),
+            ]),
+        }
+    }
+    pub(crate) fn from_loaded(
+        config: super::ServerConfig,
+        _provenance: ConfigProvenance,
+        values: ValidatedServerValues,
+        paths: AppPaths,
+    ) -> Self {
+        Self {
+            config,
+            paths,
+            values,
+        }
+    }
+    pub fn paths(&self) -> &AppPaths {
+        &self.paths
+    }
+    pub fn palette(&self) -> &crate::theme::Palette {
+        &self.values.palette
+    }
+    pub fn headless_size(&self) -> shepr_core::geometry::GridSize {
+        self.values.headless_size
+    }
+    pub fn ui(&self) -> &ValidatedServerUiConfig {
+        &self.values.ui
+    }
+    pub fn terminal(&self) -> &ValidatedTerminalConfig {
+        &self.values.terminal
+    }
+    pub fn session(&self) -> &SessionConfig {
+        &self.config.session
+    }
+    pub fn advanced(&self) -> &AdvancedConfig {
+        &self.config.advanced
+    }
+    pub fn experimental(&self) -> &ExperimentalConfig {
+        &self.config.experimental
+    }
+}
+
 #[cfg(test)]
-impl ConfigResolution {
+impl ValidatedClientConfig {
+    pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
+        Ok(self.live_keybinds())
+    }
+
+    pub fn test_from_config_with_paths(
+        config: ClientConfig,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Self {
+        Self::from_values(config, source, paths).expect("test config is valid")
+    }
+}
+
+#[cfg(test)]
+impl ServerConfigResolution {
     pub(crate) fn parse_document(
-        config: &Config,
-        provenance: &ConfigProvenance,
+        config: &super::ServerConfig,
+        _provenance: &ConfigProvenance,
         paths: &AppPaths,
     ) -> Self {
         let terminal = ValidatedTerminalConfig::parse_new_cwd(&config.terminal.new_cwd, paths)
@@ -710,44 +820,33 @@ impl ConfigResolution {
                 new_cwd,
             })
             .map_err(|error| vec![error]);
-        Self::parse_with_terminal(config, provenance, terminal)
+        Self::parse_with_terminal(config, terminal)
     }
 }
 
 #[cfg(test)]
-impl ValidatedConfig {
+impl ValidatedServerConfig {
     pub fn new(
-        config: Config,
-        provenance: ConfigProvenance,
+        config: super::ServerConfig,
+        _provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        Self::from_resolution(config, provenance, paths)
-    }
-
-    pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
-        Ok(self.live_keybinds())
-    }
-
-    pub fn test_from_config_with_paths(
-        config: Config,
-        source: Option<&str>,
-        paths: AppPaths,
-    ) -> Self {
-        Self::from_values(config, source, paths).expect("test config is valid")
+        Self::from_values(config, None, paths)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ServerConfig;
 
     #[test]
     fn accent_value_applies_without_an_explicit_document() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("accent-value");
-        let mut config = Config::default();
-        config.ui.accent = Some("#123456".into());
-        let validated = ValidatedConfig::from_values(
+        let mut config = ClientConfig::default();
+        config.theme.accent = Some("#123456".into());
+        let validated = ValidatedClientConfig::from_values(
             config,
             None,
             AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
@@ -765,27 +864,21 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("validated-config-cwd");
         let configured_cwd = scratch.join("relative/worktree");
         std::fs::create_dir_all(&configured_cwd).expect("create configured cwd");
-        let mut config = Config::default();
+        let mut config = ServerConfig::default();
         config.server.headless_cols = 92;
         config.server.headless_rows = 31;
-        config.ui.sidebar_min_width = 12;
-        config.ui.sidebar_max_width = 30;
-        config.ui.sidebar_width = 26;
         config.ui.window_title = "{hostname}: {workspace}".to_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
         let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
-        let validated =
-            ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
+        let validated = ValidatedServerConfig::new(config, provenance, paths)
+            .expect("test configuration is valid");
 
         assert_eq!(
             validated.headless_size(),
             shepr_core::geometry::GridSize::new(92, 31).expect("non-zero test dimensions")
         );
-        assert_eq!(validated.ui().sidebar_width(), 26);
-        assert_eq!(validated.ui().sidebar_bounds().min(), 12);
-        assert_eq!(validated.ui().sidebar_bounds().max(), 30);
         assert!(validated.ui().window_title.is_some());
         assert_eq!(
             validated.terminal().new_cwd,
@@ -797,7 +890,7 @@ mod tests {
     fn validated_config_accepts_the_maximum_shared_headless_grid() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-max-grid");
-        let mut config = Config::default();
+        let mut config = ServerConfig::default();
         let cols = crate::MAX_TERMINAL_GRID_DIMENSION;
         let rows = u16::try_from(crate::MAX_TERMINAL_GRID_CELLS / usize::from(cols))
             .expect("the shared grid budget fits in u16 rows");
@@ -806,7 +899,7 @@ mod tests {
         let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
-        let validated = ValidatedConfig::new(config, provenance, paths)
+        let validated = ValidatedServerConfig::new(config, provenance, paths)
             .expect("the exact shared terminal cell budget is valid");
 
         assert_eq!(
@@ -822,13 +915,13 @@ mod tests {
         let home = scratch.join("home");
         let configured_cwd = home.join("work");
         std::fs::create_dir_all(&configured_cwd).expect("create home cwd");
-        let mut config = Config::default();
+        let mut config = ServerConfig::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
         let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(&home), Some(scratch.path()));
 
-        let validated =
-            ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
+        let validated = ValidatedServerConfig::new(config, provenance, paths)
+            .expect("test configuration is valid");
 
         assert_eq!(
             validated.terminal().new_cwd,
@@ -843,11 +936,14 @@ mod tests {
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
         for (path, expected) in [("", "must not be empty"), ("missing", "unavailable")] {
-            let mut config = Config::default();
+            let mut config = ServerConfig::default();
             config.terminal.new_cwd = NewTerminalCwdConfig::Path(path.to_owned());
-            let error =
-                ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone())
-                    .expect_err("invalid cwd must fail config parsing");
+            let error = ValidatedServerConfig::new(
+                config.clone(),
+                ConfigProvenance::defaults(),
+                paths.clone(),
+            )
+            .expect_err("invalid cwd must fail config parsing");
             assert!(
                 error.iter().any(|message| message.contains(expected)),
                 "expected {expected:?} in {error:?}"
@@ -860,12 +956,13 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-multiple-path-errors");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
-        let mut config = Config::default();
+        let mut config = ServerConfig::default();
         config.terminal.default_shell = scratch.join("missing/zsh").to_string_lossy().into_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("missing-cwd".to_owned());
 
-        let errors = ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
-            .expect_err("both invalid terminal paths should be reported");
+        let errors =
+            ValidatedServerConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
+                .expect_err("both invalid terminal paths should be reported");
 
         assert!(
             errors
@@ -903,11 +1000,14 @@ mod tests {
             (non_executable_shell, "is not executable"),
             (not_a_shell, "does not recognize"),
         ] {
-            let mut config = Config::default();
+            let mut config = ServerConfig::default();
             config.terminal.default_shell = shell.to_string_lossy().into_owned();
-            let error =
-                ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone())
-                    .expect_err("an unusable configured shell fails the launch");
+            let error = ValidatedServerConfig::new(
+                config.clone(),
+                ConfigProvenance::defaults(),
+                paths.clone(),
+            )
+            .expect_err("an unusable configured shell fails the launch");
             assert!(
                 error.iter().any(|message| message.contains(expected)),
                 "expected {expected:?} in {error:?}"
@@ -924,11 +1024,12 @@ mod tests {
         env.set("SHELL", &inherited);
         let configured = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         let configured_shell = configured.to_string_lossy().into_owned();
-        let mut config = Config::default();
+        let mut config = ServerConfig::default();
         config.terminal.default_shell = configured_shell.clone();
 
-        let validated = ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
-            .expect("a configured shell takes precedence over inherited SHELL");
+        let validated =
+            ValidatedServerConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
+                .expect("a configured shell takes precedence over inherited SHELL");
 
         assert_eq!(validated.terminal().default_shell, configured_shell);
     }
@@ -941,9 +1042,10 @@ mod tests {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-inherited-shell");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
-        let config = Config::default();
-        let validate =
-            || ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone());
+        let config = ServerConfig::default();
+        let validate = || {
+            ValidatedServerConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone())
+        };
 
         let zsh = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("SHELL", &zsh);

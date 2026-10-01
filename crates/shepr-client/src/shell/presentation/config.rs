@@ -18,7 +18,7 @@ impl ClientShellState {
                 .then_some(self.config.agent_panel_sort),
             configured: preferences::ConfiguredChrome::default(),
         }
-        // A value config.toml sets is only a session change: storing it would
+        // A value client.toml sets is only a session change: storing it would
         // bring it back if the key were later removed from the config.
         .without_configured(self.config.preferences.configured);
         if let Err(error) = preferences::store(path, &preferences) {
@@ -29,7 +29,7 @@ impl ClientShellState {
 }
 
 impl ClientShellConfig {
-    pub fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
+    pub fn from_validated_config(config: &shepr_config::ValidatedClientConfig) -> Self {
         Self::from_config_with_configured(
             config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
@@ -39,7 +39,7 @@ impl ClientShellConfig {
     }
 
     fn from_config_with_configured(
-        config: &shepr_config::ValidatedUiConfig,
+        config: &shepr_config::ValidatedClientUiConfig,
         configured: preferences::ConfiguredChrome,
         palette: shepr_config::theme::Palette,
         keybinds: LiveKeybindConfig,
@@ -136,9 +136,9 @@ impl ClientShellConfig {
 
 #[cfg(test)]
 impl ClientShellConfig {
-    pub fn from_config(config: &Config) -> Self {
-        use shepr_test_fixtures::ValidatedConfigFixture as _;
-        let validated = shepr_config::ValidatedConfig::test_from_config(config.clone(), None);
+    pub fn from_config(config: &ClientConfig) -> Self {
+        use shepr_test_fixtures::ValidatedClientConfigFixture as _;
+        let validated = shepr_config::ValidatedClientConfig::test_from_config(config.clone(), None);
         Self::from_config_with_configured(
             validated.ui(),
             preferences::ConfiguredChrome::default(),
@@ -166,8 +166,8 @@ mod tests {
             },
         )
         .expect("persist endpoint chrome");
-        let config =
-            ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+        let config = ClientShellConfig::from_config(&ClientConfig::default())
+            .with_preferences_path(path.clone());
         let initial = config.initial_surface_size(100, 30);
         let state = ClientShellState::new(config);
         assert_eq!(initial, state.surface_size(100, 30));
@@ -189,9 +189,9 @@ mod tests {
         )
         .expect("persist endpoint chrome");
 
-        let mut values = Config::default();
+        let mut values = ClientConfig::default();
         values.ui.sidebar_width = 24;
-        let config = shepr_config::ValidatedConfig::test_from_config(
+        let config = shepr_config::ValidatedClientConfig::test_from_config(
             values,
             Some("[ui]\nsidebar_width = 24\nagent_panel_sort = \"spaces\"\n"),
         );
@@ -231,7 +231,7 @@ mod tests {
             .expect("block preferences directory");
 
         let result = ClientShellConfig::from_validated_config(
-            &shepr_config::ValidatedConfig::test_default(),
+            &shepr_config::ValidatedClientConfig::test_default(),
         )
         .with_local_endpoint(&state_dir, std::path::Path::new("/run/shepr/client.sock"));
 

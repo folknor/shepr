@@ -21,10 +21,10 @@ use std::time::Duration;
 /// A launch failure before the client runs is the error; once the client has
 /// run, its own result is handed back untouched for the caller to report.
 pub(crate) fn auto_detect_launch<T>(
-    config: &shepr_config::ValidatedConfig,
+    config: &shepr_config::ValidatedClientConfig,
     paths: &shepr_config::AppPaths,
     server_ready_timeout: Duration,
-    run_client: impl FnOnce(&shepr_config::ValidatedConfig, &shepr_config::AppPaths) -> T,
+    run_client: impl FnOnce(&shepr_config::ValidatedClientConfig, &shepr_config::AppPaths) -> T,
 ) -> io::Result<T> {
     let socket_path = paths.server_address().client_socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");

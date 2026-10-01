@@ -62,29 +62,41 @@ detect capture <pane>` prints the screen text and OSC title and progress the
 detector evaluates for a pane, as JSON that `detect explain --file` reads back,
 and `shepr detect explain <pane>` says which rule decided its state.
 
-Config is read and validated once at launch, by the TUI (and its internal
-`client` launch) and by `shepr-server`; CLI subcommands and the internal
-`remote-client-bridge` launch do not load it. There is no reload. Any config problem fails the launch; no
-fallbacks. Directories follow the XDG spec.
-Config never crosses hosts. Each process uses only the config.toml of the
-host it runs on, and the handshake welcome carries no config. (The client's
-hello does report its mouse-capture preference, which comes from its own
+Configuration is two files in the XDG config directory: `client.toml`, read
+only by the TUI (and its internal `client` launch), and `server.toml`, read
+only by `shepr-server`. CLI subcommands and the internal
+`remote-client-bridge` launch read neither. Each file is read and validated
+once at launch, and a missing file means that program's defaults. There is no
+reload and no config path override. Any config problem fails the launch; no
+fallbacks. An unknown key is a config problem, so a setting placed in the
+other program's file fails this program's launch. Directories follow the XDG
+spec. `crates/shepr-config/src/default-client.toml` and `default-server.toml`
+document every setting of each file.
+
+Config never crosses hosts. Each process uses only its own file on the host
+it runs on, and the handshake welcome carries no config. (The client's hello
+does report its mouse-capture preference, which comes from its own
 `ui.mouse_capture`, so the server knows when to capture the mouse for that
-client.) A setting
-belongs to whoever draws or interprets it. The client applies its own
-config to everything it draws and interprets: keys, the sidebar, agent
-panel order, status indicators, prompts, mouse and copy behaviour and
-their colours, the same whichever machine is being presented. Each server
-applies its own config to what it runs and to what it renders into pane
-cells: shell and working directory, session, pane borders, gaps and
-scrollbars, the colours of that pane chrome, and the window title. A
-machine whose theme differs from the local one therefore draws its pane
-chrome in its own colours. A server always computes a workspace's Git
-branch and ahead/behind, whatever any sidebar shows.
+client.) A setting belongs to whoever draws or interprets it, and lives in
+that program's file. The client applies its own config to everything it draws
+and interprets: keys, the sidebar, agent panel order, status indicators,
+prompts, mouse and copy behaviour and their colours, the same whichever
+machine is being presented. `client.toml` holds those `[ui]` settings,
+`[keys]` and `[[machines]]`. Each server applies its own config to what it
+runs and to what it renders into pane cells: shell and working directory,
+session, pane borders, gaps and scrollbars, the colours of that pane chrome,
+the window title and the cursor it reveals for CJK input methods.
+`server.toml` holds those `[ui]` settings, `[terminal]`, `[session]`,
+`[server]`, `[advanced]` and `[experimental]`. `[theme]` is in both files, so
+a machine whose theme differs from the local one draws its pane chrome in its
+own colours; in either file `theme.custom.accent` takes precedence over
+`theme.accent`, and an empty `theme.accent` means unset. A server always
+computes a workspace's Git branch and ahead/behind, whatever any sidebar
+shows.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
-Machines are configured in config.toml as `[[machines]]` entries (a `label` and
+Machines are configured in `client.toml` as `[[machines]]` entries (a `label` and
 an `ssh` target), read once at launch like the rest of the config; there are no
 commands to add, remove or list them. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
@@ -196,15 +208,17 @@ so only crates above those can take it.
 The build profile selects the runtime directory and the data directory (saved
 layout, history, server log, lease). A release build keeps the plain XDG
 locations; a dev build uses sibling `shepr-dev` directories, so it has its own
-sockets, saved layout and history with no flag. Config, machines included, is
-shared by every profile. The build identity also covers the profile
+sockets, saved layout and history with no flag. Both config files, machines
+included, are shared by every profile. The build identity also covers the profile
 as well as the source, so a dev and a release build never talk to each other's
 server: one that is reached anyway is refused with guidance naming the current
 profile's entry point (`shepr` for release, the running executable path for
 dev).
 
 Run it with plain `brokkr run -- [<command>]`, including from inside a pane
-of the installed server. The dev client launches the `shepr-server` beside it
+of the installed server. The TUI is always refused inside a pane of a server
+of its own profile, so a dev TUI runs from a release pane and not from a dev
+one. The dev client launches the `shepr-server` beside it
 in `target/debug`, which `brokkr run` does not build: build it first with
 `brokkr run shepr-server -- --version`, or through `brokkr check`. Every pane exports
 `SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` as its server resolved them,

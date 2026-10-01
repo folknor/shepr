@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
     for mode in [ClientShellMode::Prefix, ClientShellMode::Navigate] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         let mut projection = snapshot();
         let mut second = projection.panes[0].clone();
         second.pane_id = test_pane_id("w1:p2");
@@ -35,7 +36,7 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
 
 #[test]
 fn host_theme_updates_are_forwarded_to_the_server() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
 
     let inferred = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
         kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
@@ -90,7 +91,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
 
 #[test]
 fn host_appearance_switch_requeries_the_host_theme() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     for appearance in [
         shepr_termio::host_term::theme::HostAppearance::Dark,
         shepr_termio::host_term::theme::HostAppearance::Light,
@@ -105,7 +106,7 @@ fn host_appearance_switch_requeries_the_host_theme() {
 
 #[test]
 fn passive_host_events_do_not_dismiss_endpoint_errors() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     state.set_endpoint_error("action failed", now);
     let deadline = state.endpoint_error_deadline;
@@ -148,7 +149,7 @@ fn passive_host_events_do_not_dismiss_endpoint_errors() {
 #[test]
 fn focus_gained_forces_a_full_redraw_only_when_configured() {
     for redraw in [false, true] {
-        let mut config = Config::default();
+        let mut config = ClientConfig::default();
         config.ui.redraw_on_focus_gained = redraw;
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
         let outcome = state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
@@ -163,7 +164,7 @@ fn focus_gained_forces_a_full_redraw_only_when_configured() {
 fn full_host_palette_response_is_sent_as_one_theme_update() {
     use std::fmt::Write as _;
 
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let mut responses = String::new();
     for index in 0..=u8::MAX {
         write!(responses, "\x1b]4;{index};rgb:1111/2222/3333\x1b\\")
@@ -213,7 +214,7 @@ fn modal_paste_shortcut_is_ctrl_v() {
 
 #[test]
 fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
         title: "rename pane",
         input: TextEditor::new("replace me", true),
@@ -239,7 +240,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
 
 #[test]
 fn highlighted_search_match_copies_after_in_flight_repeat() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -344,7 +345,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
 
 #[test]
 fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
@@ -391,7 +392,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
 
 #[test]
 fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
-    let config = ClientShellConfig::from_config(&Config::default());
+    let config = ClientShellConfig::from_config(&ClientConfig::default());
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(snapshot()));
 
@@ -446,7 +447,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
 
 #[test]
 fn pane_key_release_keeps_the_press_target() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
 
     let press = state.handle_input_bytes(b"\x1b[99;5u");
@@ -477,7 +478,7 @@ fn pane_key_release_keeps_the_press_target() {
 
 #[test]
 fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     // `h` with its associated text, then its release, as kitty reports them.
     let press_bytes = b"\x1b[104;1;104u";
@@ -522,7 +523,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
 
 #[test]
 fn help_overlay_uses_live_keymap_and_owns_filter_state() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
@@ -574,7 +575,7 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
 
 #[test]
 fn overlay_that_does_not_fit_still_presents_the_frame() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
@@ -619,7 +620,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
         })
         .collect();
     many.focused_workspace_id = Some(test_workspace_id("w30"));
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
     state.sidebar_collapsed = true;
     state.set_snapshot(Box::new(many));
@@ -667,7 +668,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
 
 #[test]
 fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
@@ -713,7 +714,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
 fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     let mut snapshot = snapshot();
     snapshot.panes[0].label = Some("build".into());
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot));
     let mut open = ClientShellInput::default();
     state.record_binding(
@@ -734,7 +735,7 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
 
 #[test]
 fn styled_client_composition_preserves_pane_hyperlinks() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     let linked = Buffer::with_lines(["LIVE", "PANE"]);
@@ -773,7 +774,7 @@ fn last_row_text(frame: &FrameData) -> String {
 
 #[test]
 fn overlay_that_gives_up_commits_nothing_but_the_hint_row() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let before = state.compose(106, 8).expect("frame without overlay");
@@ -791,7 +792,7 @@ fn overlay_that_gives_up_commits_nothing_but_the_hint_row() {
 fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
     use shepr_protocol::WireStyleFlags;
 
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     for cell in &mut pane_surface.frame.cells {
@@ -835,7 +836,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
 
 #[test]
 fn mode_bar_is_drawn_only_while_no_overlay_is_open() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.mode = ClientShellMode::Prefix;

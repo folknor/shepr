@@ -15,7 +15,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
         })
         .collect();
 
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(initial));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("full sidebar");
@@ -53,7 +53,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
 
 #[test]
 fn client_owned_sidebar_dividers_resize_live() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("expanded sidebar");
@@ -158,7 +158,7 @@ fn client_owned_sidebar_dividers_resize_live() {
 
 #[test]
 fn context_menus_capture_stable_targets_and_route_actions() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
@@ -243,7 +243,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
 
 #[test]
 fn global_menu_opens_from_sidebar_and_routes_client_actions() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("shell frame");
@@ -292,7 +292,7 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
 
 #[test]
 fn lost_sidebar_drag_release_still_resizes_on_the_next_press() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("expanded sidebar");
@@ -319,7 +319,7 @@ fn lost_sidebar_drag_release_still_resizes_on_the_next_press() {
 
 #[test]
 fn oversized_retained_surface_is_clipped_with_its_hits() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     // A surface produced for a pane area far larger than the one composed below, as after a
     // resize or sidebar toggle before the resized surface arrives.
@@ -369,7 +369,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
 
 #[test]
 fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.selection = Some(shepr_vt::selection::Selection::range(
         test_pane_id("w1:p1"),

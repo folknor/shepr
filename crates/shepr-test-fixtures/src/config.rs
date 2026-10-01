@@ -1,9 +1,11 @@
-//! Config values for tests that need a `ValidatedConfig` or `AppPaths`
-//! without a launch.
+//! Config values for tests that need a `ValidatedClientConfig`,
+//! `ValidatedServerConfig` or `AppPaths` without a launch.
 
 use std::path::Path;
 
-use shepr_config::{AppPaths, Config, ValidatedConfig};
+use shepr_config::{
+    AppPaths, ClientConfig, ServerConfig, ValidatedClientConfig, ValidatedServerConfig,
+};
 
 /// Absolute, so a config built on these paths survives the resolved-path
 /// check on the wire, and identical across calls, so two test configs compare
@@ -36,31 +38,71 @@ impl AppPathsFixture for AppPaths {
     }
 }
 
-pub trait ValidatedConfigFixture: Sized {
+pub trait ValidatedClientConfigFixture: Sized {
     /// The default config on [`AppPathsFixture::test_default`] paths.
     fn test_default() -> Self;
 
     /// `config`, validated on [`AppPathsFixture::test_default`] paths.
     /// `source` is the document the values stand for; see
-    /// `ValidatedConfig::from_values`. An invalid config is a broken test and
+    /// `ValidatedClientConfig::from_values`. An invalid config is a broken test and
     /// panics.
-    fn test_from_config(config: Config, source: Option<&str>) -> Self;
+    fn test_from_config(config: ClientConfig, source: Option<&str>) -> Self;
 
     /// As [`Self::test_from_config`], on `paths`.
-    fn test_from_config_with_paths(config: Config, source: Option<&str>, paths: AppPaths) -> Self;
+    fn test_from_config_with_paths(
+        config: ClientConfig,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Self;
 }
 
-impl ValidatedConfigFixture for ValidatedConfig {
+impl ValidatedClientConfigFixture for ValidatedClientConfig {
     fn test_default() -> Self {
-        Self::test_from_config(Config::default(), None)
+        Self::test_from_config(ClientConfig::default(), None)
     }
 
-    fn test_from_config(config: Config, source: Option<&str>) -> Self {
+    fn test_from_config(config: ClientConfig, source: Option<&str>) -> Self {
         Self::test_from_config_with_paths(config, source, AppPaths::test_default())
     }
 
     fn test_from_config_with_paths(
-        mut config: Config,
+        config: ClientConfig,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Self {
+        Self::from_values(config, source, paths).expect("test config is valid")
+    }
+}
+
+pub trait ValidatedServerConfigFixture: Sized {
+    /// The default config on [`AppPathsFixture::test_default`] paths.
+    fn test_default() -> Self;
+
+    /// `config`, validated on [`AppPathsFixture::test_default`] paths.
+    /// `source` is the document the values stand for; see
+    /// `ValidatedServerConfig::from_values`. An invalid config is a broken test and
+    /// panics.
+    fn test_from_config(config: ServerConfig, source: Option<&str>) -> Self;
+
+    /// As [`Self::test_from_config`], on `paths`.
+    fn test_from_config_with_paths(
+        config: ServerConfig,
+        source: Option<&str>,
+        paths: AppPaths,
+    ) -> Self;
+}
+
+impl ValidatedServerConfigFixture for ValidatedServerConfig {
+    fn test_default() -> Self {
+        Self::test_from_config(ServerConfig::default(), None)
+    }
+
+    fn test_from_config(config: ServerConfig, source: Option<&str>) -> Self {
+        Self::test_from_config_with_paths(config, source, AppPaths::test_default())
+    }
+
+    fn test_from_config_with_paths(
+        mut config: ServerConfig,
         source: Option<&str>,
         paths: AppPaths,
     ) -> Self {

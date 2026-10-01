@@ -29,11 +29,7 @@ use crate::limits::MAX_LOCAL_OFFERS;
 /// and keeps retrying. Host keys are never accepted; a machine whose key is
 /// unknown or changed is named so the operator can fix it. A server left
 /// running is reported with what to do about it.
-pub(crate) fn run(
-    config: &shepr_config::ValidatedConfig,
-    paths: &shepr_config::AppPaths,
-    local_restart_ends_launching_pane: bool,
-) {
+pub(crate) fn run(config: &shepr_config::ValidatedClientConfig, paths: &shepr_config::AppPaths) {
     // Questions go to stderr and answers come from stdin, and ssh prompts use
     // the terminal too, so asking needs both to be a terminal.
     let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
@@ -52,7 +48,7 @@ pub(crate) fn run(
         || local_server_status(paths),
         |boot_id| shepr_api::server_stop::stop_active_server(paths, Some(boot_id)),
         |status| {
-            let consent = confirm(&local_offer(status, local_restart_ends_launching_pane));
+            let consent = confirm(&local_offer(status));
             if consent {
                 crate::cli::print_notice(&"shepr: stopping the local server.");
             }
@@ -150,15 +146,10 @@ fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-fn local_offer(status: &RuntimeStatus, includes_launching_pane: bool) -> String {
-    let launching_pane = if includes_launching_pane {
-        "\nThis includes the pane running this shepr process, so answering yes ends the terminal asking this question."
-    } else {
-        ""
-    };
+fn local_offer(status: &RuntimeStatus) -> String {
     format!(
         "shepr: the local shepr server is a different build (server build {}, boot {}, this shepr build {}).\n\
-         Restarting it stops that server, which ends every pane process it hosts.{launching_pane}\n\
+         Restarting it stops that server, which ends every pane process it hosts.\n\
          The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
         status.build_id,
@@ -593,8 +584,7 @@ mod tests {
     #[test]
     fn the_offers_say_what_a_restart_ends_and_what_is_restored() {
         let remote = remote_offer(&machine("build"), &different_build_server());
-        let local = local_offer(&status("ffffffffffffffff", "17-23"), false);
-        let local_from_its_own_pane = local_offer(&status("ffffffffffffffff", "17-23"), true);
+        let local = local_offer(&status("ffffffffffffffff", "17-23"));
         for offer in [&remote, &local] {
             assert!(offer.contains("different build"), "{offer}");
             assert!(offer.contains("ends every pane process"), "{offer}");
@@ -603,12 +593,6 @@ mod tests {
             assert!(offer.contains("[y/N]"), "the default is to keep: {offer}");
         }
         assert!(remote.contains("build (build.example)"), "{remote}");
-        assert!(
-            local_from_its_own_pane.contains(
-                "This includes the pane running this shepr process, so answering yes ends the terminal asking this question."
-            ),
-            "{local_from_its_own_pane}"
-        );
     }
 
     #[test]

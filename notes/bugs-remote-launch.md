@@ -28,3 +28,14 @@ launcher waits through the API-first startup and shutdown transitions. Residue:
 the server's own lease, API and client socket release order is still a third,
 separately maintained rule, and boot identity is still a separate status check.
 Folding the API into the client socket would leave one rule.
+
+## RLAUNCH-019 - The client-socket override rule may have lost its last consumer
+
+Lateral. `ServerAddress::resolve_paths` lets `SHEPR_CLIENT_SOCKET_PATH` select
+the client socket when `SHEPR_SOCKET_PATH` is exactly the profile's runtime
+`shepr.sock`; AGENTS.md says this "keeps a nested client on a server started
+with only a client socket override". Nested launches in a same-profile pane are
+now always refused, and a pane of the other profile ignores both socket
+variables, so a nested client reaches that rule only if `SHEPR_ENV` was
+removed by hand. Check whether anything else (a CLI command run in a pane)
+still needs it; if not, delete the rule and its AGENTS.md sentence.

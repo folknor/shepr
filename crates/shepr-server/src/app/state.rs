@@ -99,7 +99,7 @@ pub(crate) struct AppSettings {
 }
 
 impl AppSettings {
-    pub(crate) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
+    pub(crate) fn from_config(config: &shepr_config::ValidatedServerConfig) -> Self {
         let ui = config.ui();
         let experimental = config.experimental();
         let terminal = config.terminal();
@@ -286,7 +286,7 @@ impl AppState {
 }
 
 #[cfg(test)]
-use crate::test_support::{ValidatedConfigFixture as _, WorkspaceFixture as _};
+use crate::test_support::{ValidatedServerConfigFixture as _, WorkspaceFixture as _};
 
 #[cfg(test)]
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -328,7 +328,7 @@ impl AppState {
             bookmark_position: 0,
             should_quit: false,
             workspace_geometry: std::collections::HashMap::new(),
-            settings: AppSettings::from_config(&shepr_config::ValidatedConfig::test_default()),
+            settings: AppSettings::from_config(&shepr_config::ValidatedServerConfig::test_default()),
             next_agent_state_change_seq: 0,
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
@@ -449,14 +449,14 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("pane-resolved-shell");
         let shell = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("PATH", scratch.path());
-        let mut values = shepr_config::Config::default();
+        let mut values = shepr_config::ServerConfig::default();
         values.terminal.default_shell = "zsh".into();
         let paths = shepr_config::AppPaths::rooted_at(
             scratch.path(),
             Some(scratch.path()),
             Some(scratch.path()),
         );
-        let config = shepr_config::ValidatedConfig::from_values(values, None, paths)
+        let config = shepr_config::ValidatedServerConfig::from_values(values, None, paths)
             .expect("shell resolves");
         assert_eq!(
             AppSettings::from_config(&config).default_shell,

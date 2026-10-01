@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::Deserialize;
 
-use super::Config;
+use super::ClientConfig;
 use crate::limits::{
     FIRST_INDEXED_BINDING_KEY, INDEXED_BINDING_RANGE_SYNTAX, LAST_INDEXED_BINDING_KEY,
     MAX_FUNCTION_KEY_NUMBER, MIN_FUNCTION_KEY_NUMBER,
@@ -367,7 +367,7 @@ impl BindingRegistry {
     }
 }
 
-impl Config {
+impl ClientConfig {
     /// Parse and validate `[keys]` for an in-memory config. The boot resolver
     /// calls this once and stores the result on its immutable value.
     pub(super) fn compute_keybind_validation(
@@ -1120,7 +1120,7 @@ impl ActionKeybinds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Config;
+    use crate::ClientConfig;
 
     struct TerminalKey(KeyCode, KeyModifiers, Option<u32>);
 
@@ -1154,13 +1154,13 @@ mod tests {
             .collect()
     }
 
-    fn parse_keybinds(config: &Config, configured: &[&str]) -> Option<Keybinds> {
+    fn parse_keybinds(config: &ClientConfig, configured: &[&str]) -> Option<Keybinds> {
         let validation = config.compute_keybind_validation(|field| configured.contains(&field));
         validation.live.map(|live| live.keybinds)
     }
 
     fn diagnostics_and_keybinds(
-        config: &Config,
+        config: &ClientConfig,
         configured: &[&str],
     ) -> (Vec<String>, Option<Keybinds>) {
         let validation = config.compute_keybind_validation(|field| configured.contains(&field));
@@ -1192,7 +1192,7 @@ mod tests {
 
     #[test]
     fn unicode_prefix_config_is_valid() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 prefix = "ö"
@@ -1293,7 +1293,7 @@ prefix = "ö"
 
     #[test]
     fn prefix_binding_is_not_direct_binding() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 next_workspace = "prefix+n"
@@ -1312,7 +1312,7 @@ next_workspace = "prefix+n"
 
     #[test]
     fn goto_defaults_to_prefix_g() {
-        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
+        let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.goto),
             vec![BindingTrigger::Prefix((
@@ -1324,7 +1324,7 @@ next_workspace = "prefix+n"
 
     #[test]
     fn copy_mode_uses_tmux_prefix_bracket_by_default() {
-        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
+        let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.copy_mode),
             vec![BindingTrigger::Prefix((
@@ -1336,13 +1336,13 @@ next_workspace = "prefix+n"
 
     #[test]
     fn back_and_forth_keybinds_are_unset_by_default() {
-        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
+        let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert!(kb.last_pane.bindings.is_empty());
     }
 
     #[test]
     fn array_bindings_allow_prefix_and_modified_direct() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 next_workspace = ["prefix+n", "ctrl+alt+]"]
@@ -1365,7 +1365,7 @@ next_workspace = ["prefix+n", "ctrl+alt+]"]
 
     #[test]
     fn unsafe_direct_printable_binding_has_validation_diagnostic() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 new_workspace = "c"
@@ -1482,8 +1482,9 @@ close_workspace = "X"
     #[test]
     fn keybinding_registry_rejects_shifted_punctuation_aliases() {
         for alias in ["prefix+shift+/", "prefix+shift+?"] {
-            let config: Config = toml::from_str(&format!("[keys]\nnew_workspace = {alias:?}\n"))
-                .expect("test precondition");
+            let config: ClientConfig =
+                toml::from_str(&format!("[keys]\nnew_workspace = {alias:?}\n"))
+                    .expect("test precondition");
             let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_workspace"]);
             assert!(keybinds.is_none(), "{alias}");
             assert!(
@@ -1496,7 +1497,7 @@ close_workspace = "X"
             );
         }
 
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 switch_workspace = "prefix+shift+1..9"
@@ -1570,7 +1571,7 @@ zoom = "prefix+!"
 
     #[test]
     fn prefix_rhs_equal_to_configured_prefix_is_rejected() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 prefix = "ctrl+a"
@@ -1586,7 +1587,7 @@ help = "prefix+ctrl+a"
                 && diag.contains("keys.prefix")
         }));
 
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 prefix = "ctrl+a"
@@ -1599,7 +1600,7 @@ help = "prefix+ctrl+b"
 
     #[test]
     fn navigate_bindings_allow_plain_keys_and_reject_local_conflicts() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 navigate_workspace_up = "j"
@@ -1621,7 +1622,7 @@ navigate_pane_down = "ctrl+j"
 
     #[test]
     fn navigate_bindings_reject_fixed_arrow_aliases() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 navigate_workspace_up = ["left", "right"]
@@ -1646,7 +1647,7 @@ navigate_workspace_up = ["left", "right"]
 
     #[test]
     fn navigate_bindings_can_reuse_navigate_mode_prefix_rhs_keys() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 navigate_workspace_down = ["n", "f"]
@@ -1682,7 +1683,7 @@ navigate_workspace_down = ["n", "f"]
 
     #[test]
     fn navigate_bindings_do_not_conflict_with_general_focus_pane_bindings() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 navigate_pane_down = "j"
@@ -1701,7 +1702,7 @@ navigate_pane_down = "j"
 
     #[test]
     fn navigate_bindings_reject_prefix_syntax_and_prefix_key() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 prefix = "ctrl+a"
@@ -1727,7 +1728,7 @@ navigate_workspace_down = "ctrl+a"
 
     #[test]
     fn prefixed_indexed_bindings_support_modifiers() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 switch_workspace = "prefix+shift+1..9"
@@ -1745,7 +1746,7 @@ switch_workspace = "prefix+shift+1..9"
 
     #[test]
     fn invalid_indexed_binding_does_not_displace_default_binding() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 switch_workspace = "prefix+?"
@@ -1770,7 +1771,7 @@ switch_workspace = "prefix+?"
 
     #[test]
     fn default_keymap_is_prefix_first_and_workspace_centered() {
-        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
+        let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.next_workspace),
             vec![BindingTrigger::Prefix((
@@ -1829,7 +1830,7 @@ switch_workspace = "prefix+?"
 
     #[test]
     fn duplicate_prefix_bindings_report_conflict() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 next_workspace = "prefix+n"
@@ -1849,7 +1850,7 @@ new_workspace = "prefix+n"
 
     #[test]
     fn user_binding_conflicting_with_a_default_is_reported() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 new_workspace = "prefix+z"
@@ -1870,7 +1871,7 @@ new_workspace = "prefix+z"
     #[test]
     fn rebinding_the_displaced_action_too_resolves_the_conflict() {
         for zoom in ["\"prefix+shift+z\"", "\"\"", "[]"] {
-            let config: Config = toml::from_str(&format!(
+            let config: ClientConfig = toml::from_str(&format!(
                 "[keys]\nnew_workspace = \"prefix+z\"\nzoom = {zoom}\n"
             ))
             .expect("test precondition");
@@ -1896,7 +1897,7 @@ new_workspace = "prefix+z"
             ("h", "keys.navigate_pane_left", "keybinding conflict"),
             ("n", "keys.next_workspace", "reserved keybinding"),
         ] {
-            let config: Config = toml::from_str(&format!("[keys]\nprefix = {prefix:?}\n"))
+            let config: ClientConfig = toml::from_str(&format!("[keys]\nprefix = {prefix:?}\n"))
                 .expect("test precondition");
             let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["prefix"]);
 
@@ -1911,7 +1912,7 @@ new_workspace = "prefix+z"
 
     #[test]
     fn duplicate_user_binding_still_reports_conflict() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [keys]
 previous_workspace = "prefix+shift+l"

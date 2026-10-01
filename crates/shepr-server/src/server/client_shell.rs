@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn snapshot_state_fields_follow_ids_not_positions() {
         let mut app = app::App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
         );

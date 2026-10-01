@@ -16,19 +16,14 @@ pub mod selection_render;
 mod test_config {
     use std::path::Path;
 
-    use shepr_config::{AppPaths, Config, ValidatedConfig};
+    use shepr_config::{AppPaths, ClientConfig, ValidatedClientConfig};
 
     /// `source` as a config document, validated as a launch would validate
     /// it, on paths that cannot be written to.
-    pub(crate) fn validated(source: &str) -> ValidatedConfig {
-        let mut config: Config = toml::from_str(source).expect("test config parses");
-        // Keep validation off the inherited `SHELL` and `PATH`: this helper
-        // holds no `IsolatedEnv`.
-        if config.terminal.default_shell.trim().is_empty() {
-            config.terminal.default_shell = "/bin/sh".to_owned();
-        }
+    pub(crate) fn validated(source: &str) -> ValidatedClientConfig {
+        let config: ClientConfig = toml::from_str(source).expect("test config parses");
         let root = Path::new("/nonexistent/shepr-test-config");
-        ValidatedConfig::from_values(
+        ValidatedClientConfig::from_values(
             config,
             Some(source),
             AppPaths::rooted_at(root, Some(root), None),

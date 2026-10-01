@@ -13,8 +13,8 @@ pub(crate) enum CliError {
     /// The configuration or the paths it resolves could not be loaded; one
     /// entry per diagnostic.
     Config(Vec<String>),
-    /// A launch inside a shepr pane while nesting is disabled. `quip` is the
-    /// closing line.
+    /// A TUI or client launch inside a pane of a server of this build profile.
+    /// `quip` is the closing line.
     Nested {
         quip: &'static str,
     },
@@ -69,8 +69,9 @@ impl CliError {
                 }
             }
             Self::Nested { quip } => {
-                eprintln!("\x1b[1merror:\x1b[0m nested shepr is disabled by default.");
-                eprintln!("see configuration if you want to enable it.");
+                eprintln!(
+                    "\x1b[1merror:\x1b[0m shepr does not run inside a pane of a server of its own build profile."
+                );
                 eprintln!();
                 eprintln!("\x1b[2m\"{quip}\"\x1b[0m");
             }
@@ -122,7 +123,7 @@ impl std::fmt::Display for CliError {
             Self::Config(diagnostics) => {
                 write!(f, "configuration error:\n  {}", diagnostics.join("\n  "))
             }
-            Self::Nested { .. } => f.write_str("nested shepr is disabled"),
+            Self::Nested { .. } => f.write_str("nested shepr is refused"),
             Self::Client(error) => error.fmt(f),
             Self::BridgeIdle => f.write_str("remote bridge idle timeout expired"),
         }

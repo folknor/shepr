@@ -919,7 +919,7 @@ mod tests {
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             super::super::AppPolicy::Test,
             api_rx,
         )
@@ -1129,15 +1129,15 @@ mod tests {
     /// replacing it. The copy is made once, not on every save.
     #[test]
     fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
-        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
             DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
         let paths = shepr_config::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-            shepr_config::Config::default(),
+        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+            shepr_config::ServerConfig::default(),
             None,
             paths.clone(),
         );
@@ -1248,12 +1248,12 @@ mod tests {
     /// told, and the first save backs the file up before replacing it.
     #[test]
     fn an_unusable_session_file_is_reported_and_backed_up() {
-        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
 
         let scratch = crate::test_support::ScratchDir::new("unusable-session-notice");
         let paths = shepr_config::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-            shepr_config::Config::default(),
+        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+            shepr_config::ServerConfig::default(),
             None,
             paths.clone(),
         );
@@ -1295,12 +1295,12 @@ mod tests {
 
     #[test]
     fn a_fresh_start_has_nothing_to_report() {
-        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
 
         let scratch = crate::test_support::ScratchDir::new("fresh-start-no-notice");
         let paths = shepr_config::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-            shepr_config::Config::default(),
+        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+            shepr_config::ServerConfig::default(),
             None,
             paths.clone(),
         );

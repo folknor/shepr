@@ -11,7 +11,7 @@ use shepr_protocol::command::{ClientShellSurfaceSetParams, EndpointCommand};
 use crate::server::ClientId;
 use crate::server::client_transport::{RenderLaneReceiver, ServerEvent};
 use crate::server::headless::tests as headless_tests;
-use crate::test_support::ValidatedConfigFixture as _;
+use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
 /// Maximum time an expected server control message may take in this test.
 const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -177,7 +177,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let now = std::time::Instant::now();
     let mut shell = shepr_client::ClientShellState::new_at(
         shepr_client::ClientShellConfig::from_validated_config(
-            &shepr_config::ValidatedConfig::test_default(),
+            &shepr_config::ValidatedClientConfig::test_default(),
         ),
         now,
     );

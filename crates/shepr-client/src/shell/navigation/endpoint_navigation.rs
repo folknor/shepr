@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn displayed_machine_body_submits_a_targetless_selection() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(
-            &shepr_config::Config::default(),
+            &shepr_config::ClientConfig::default(),
         ));
         state.hits.machines.push(MachineHit {
             rect: Rect::new(0, 0, 10, 1),

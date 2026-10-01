@@ -58,7 +58,7 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 
     for compact in [false, true] {
         for selection_bg in [Color::Reset, Color::Rgb(70, 63, 93)] {
-            let mut config = ClientShellConfig::from_config(&Config::default());
+            let mut config = ClientShellConfig::from_config(&ClientConfig::default());
             config.palette = Palette::terminal();
             config.palette.selection_bg = selection_bg;
             let expected_bg = if selection_bg == Color::Reset {
@@ -525,7 +525,7 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
 }
 
 fn local_navigation_state(compact: bool) -> ClientShellState {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.palette = Palette::terminal();
     state.sidebar_collapsed = compact;
     state.set_snapshot(Box::new(workspaces(3)));
@@ -805,7 +805,7 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
 
 #[test]
 fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
-    let mut config = Config::default();
+    let mut config = ClientConfig::default();
     config.keys.focus_agent = shepr_config::BindingConfig::one("ctrl+alt+1");
     let mut projected = workspaces(3);
     projected.agents.push(agent(AgentStatus::Idle, 1));

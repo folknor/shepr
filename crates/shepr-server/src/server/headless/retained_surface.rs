@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn retained_resolution_uses_the_typed_baseline_identity() {
         let mut app = app::App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
         );
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn retained_scrollbar_does_not_invent_a_gutter_at_the_pane_border() {
         let mut app = app::App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
         );
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn retained_layout_is_reused_for_recipients_with_the_same_workspace_and_size() {
         let mut app = app::App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             app::AppPolicy::Test,
             tokio::sync::mpsc::unbounded_channel().1,
         );

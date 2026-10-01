@@ -762,7 +762,8 @@ mod tests {
 
     #[test]
     fn placeholder_lifecycle_and_notice_leave_the_hidden_sidebar_header_clear() {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
         state.sidebar_collapsed = true;
         state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
@@ -784,7 +785,8 @@ mod tests {
 
     #[test]
     fn online_placeholder_notice_starts_below_the_expanded_sidebar_header() {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.sidebar_collapsed = false;
         state.sidebar_width = 24;
         state.set_snapshot(Box::new(crate::shell::tests::snapshot()));

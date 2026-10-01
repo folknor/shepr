@@ -197,7 +197,7 @@ fn shell_and_registry() -> TestFixture {
 
 fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> TestFixture {
     let mut shell = crate::ClientShellState::new(crate::ClientShellConfig::from_config(
-        &shepr_config::Config::default(),
+        &shepr_config::ClientConfig::default(),
     ));
     let machine = shepr_config::MachineConfig {
         label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),

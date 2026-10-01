@@ -24,7 +24,7 @@ pub(crate) fn resolve_new_terminal_cwd(
         NewTerminalCwd::Current => {
             current_dir.map_or_else(|| PathBuf::from("/"), std::path::Path::to_path_buf)
         }
-        // Config validation resolved it to an absolute directory at launch
+        // ServerConfig validation resolved it to an absolute directory at launch
         // (`~` expanded, relative paths joined to the launch directory).
         NewTerminalCwd::Path(path) => path.clone(),
     }

@@ -587,13 +587,13 @@ pub(super) fn write_managed_ssh_config(
     app_paths: &shepr_config::AppPaths,
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
-    let config_file = app_paths.config_file();
+    let config_file = app_paths.client_config_file();
     let runtime_dir = ensure_ssh_runtime_dir(app_paths)?;
     let paths: shepr_platform::RemoteSshConfigPaths =
         shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(shepr_platform::ssh_control_path_under(
         control_dir.path,
-        config_file,
+        &config_file,
         target,
     )?);
 

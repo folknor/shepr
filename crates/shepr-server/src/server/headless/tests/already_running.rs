@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::server::headless::{RunServerError, ServerSocket, run_server};
 use crate::server::socket_paths::client_socket_path;
 use crate::test_support::{
-    AppPathsFixture as _, IsolatedEnv, ScratchDir, ValidatedConfigFixture as _,
+    AppPathsFixture as _, IsolatedEnv, ScratchDir, ValidatedServerConfigFixture as _,
 };
 
 /// Names what the re-executed child holds before it starts a server: a
@@ -64,8 +64,8 @@ fn already_running_subprocess_entry_point() {
     let _env = IsolatedEnv::new();
     let scratch = ScratchDir::new("already-running-server");
     let paths = shepr_config::AppPaths::test_at(&scratch);
-    let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-        shepr_config::Config::default(),
+    let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+        shepr_config::ServerConfig::default(),
         None,
         paths.clone(),
     );
@@ -108,8 +108,8 @@ fn refuse_a_held_data_dir_lease() {
     let _env = IsolatedEnv::new();
     let scratch = ScratchDir::new("already-running-data-dir");
     let paths = shepr_config::AppPaths::test_at(&scratch);
-    let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-        shepr_config::Config::default(),
+    let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+        shepr_config::ServerConfig::default(),
         None,
         paths.clone(),
     );

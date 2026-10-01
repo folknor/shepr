@@ -1883,7 +1883,8 @@ mod tests {
         let mut snapshot = super::super::tests::snapshot();
         snapshot.revision = shepr_protocol::ProjectionRevision::new(2);
         let boot_id = snapshot.boot_id.clone();
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot));
 
         let surface = split_surface(boot_id.clone(), 1, SplitBranch::First);

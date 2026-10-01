@@ -61,7 +61,7 @@ fn serve(client_spawned: bool) -> ExitCode {
         Ok(paths) => paths,
         Err(errors) => return config_error(&errors),
     };
-    let config = match shepr_config::load_validated(&paths) {
+    let config = match shepr_config::load_server_validated(&paths) {
         Ok(config) => config,
         Err(diagnostics) => {
             let errors: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();

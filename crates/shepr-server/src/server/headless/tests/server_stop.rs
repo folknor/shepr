@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::server::headless::run_server;
 use crate::test_support::{
-    AppPathsFixture as _, IsolatedEnv, ScratchDir, ValidatedConfigFixture as _,
+    AppPathsFixture as _, IsolatedEnv, ScratchDir, ValidatedServerConfigFixture as _,
 };
 
 const CHILD_MARKER: &str = "SERVER_STOP_TEST_CHILD";
@@ -57,8 +57,8 @@ fn idle_server_stop_subprocess_entry_point() {
     let _env = IsolatedEnv::new();
     let scratch = ScratchDir::new("idle-server-stop");
     let paths = shepr_config::AppPaths::test_at(&scratch);
-    let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
-        shepr_config::Config::default(),
+    let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+        shepr_config::ServerConfig::default(),
         None,
         paths.clone(),
     );

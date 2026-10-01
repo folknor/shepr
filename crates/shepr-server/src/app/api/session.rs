@@ -87,12 +87,16 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::test_support::*;
-    use shepr_config::Config;
+    use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
 
     fn app_with_two_panes() -> crate::app::App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = crate::app::App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+        let mut app = crate::app::App::new(
+            &ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
         let mut workspace = Workspace::test_new("snapshot");
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];

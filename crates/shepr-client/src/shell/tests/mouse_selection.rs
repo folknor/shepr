@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     let ms = std::time::Duration::from_millis;
     state.last_composed_at = Some(now);
@@ -19,13 +19,13 @@ fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
 
 #[test]
 fn idle_shell_has_no_timer_deadline() {
-    let state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     assert_eq!(state.next_timer_deadline(), None);
 }
 
 #[test]
 fn selection_repaint_cadence_allows_immediate_paint_when_due() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     assert!(state.request_selection_drag_repaint(now));
     state.last_composed_at = Some(now);
@@ -35,7 +35,7 @@ fn selection_repaint_cadence_allows_immediate_paint_when_due() {
 
 #[test]
 fn selection_repaint_cadence_does_not_leave_work_after_another_composition() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     state.selection_repaint_deadline = Some(now);
     state.compose(106, 20).expect("frame");
@@ -45,7 +45,7 @@ fn selection_repaint_cadence_does_not_leave_work_after_another_composition() {
 
 #[test]
 fn a_pane_without_scroll_metrics_takes_no_selection() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = None;
@@ -79,7 +79,7 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
 
 #[test]
 fn selection_release_copies_latest_position_before_deferred_paint() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
@@ -114,7 +114,7 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
 
 #[test]
 fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.splits.push(PaneSurfaceSplit {
@@ -211,7 +211,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
 
 #[test]
 fn disabled_mouse_chrome_removes_split_drag_hits() {
-    let mut config = Config::default();
+    let mut config = ClientConfig::default();
     config.ui.mouse_capture = false;
     let projected = snapshot();
     let mut pane_surface = surface();
@@ -327,7 +327,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
 }
 
 fn word_drag_state(copy_on_select: bool) -> ClientShellState {
-    let mut config = Config::default();
+    let mut config = ClientConfig::default();
     config.ui.copy_on_select = copy_on_select;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
@@ -595,7 +595,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
         projected.focused_pane_id = Some(test_pane_id(pane_id));
         projected
     };
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(focused_on("w1:p2")));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
@@ -641,7 +641,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
 
 #[test]
 fn selection_in_focused_pane_still_ends_when_focus_moves() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
@@ -844,7 +844,7 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
 
 #[test]
 fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let surface_at = |surface_revision, content_revision, alternate_screen_active| {
         let mut pane_surface = surface();
@@ -961,7 +961,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
 
 #[test]
 fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
@@ -1025,7 +1025,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
 
 #[test]
 fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
@@ -1094,7 +1094,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
 fn pane_owned_right_click_forwards_the_complete_gesture() {
     let mut snapshot = snapshot();
     snapshot.panes[0].right_click_passthrough = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
@@ -1140,7 +1140,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
 
 #[test]
 fn context_menu_keyboard_and_outside_click_are_client_owned() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");

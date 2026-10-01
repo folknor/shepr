@@ -9,7 +9,7 @@ pub(super) struct ClientSettings {
 
 impl ClientSettings {
     pub(super) fn resolve(
-        config: &shepr_config::ValidatedConfig,
+        config: &shepr_config::ValidatedClientConfig,
     ) -> Result<Self, shepr_core::env::EnvError> {
         let modify_other_keys_mode = shepr_termio::input::host_modify_other_keys_mode()?;
         Ok(Self::resolve_with_host_preferences(
@@ -20,7 +20,7 @@ impl ClientSettings {
     }
 
     fn resolve_with_host_preferences(
-        config: &shepr_config::ValidatedConfig,
+        config: &shepr_config::ValidatedClientConfig,
         modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
         prefers_osc52_clipboard: bool,
     ) -> Self {
@@ -59,7 +59,7 @@ pub(super) struct ClientLoopConfig {
 
 #[cfg(test)]
 impl ClientSettings {
-    pub(super) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
+    pub(super) fn from_config(config: &shepr_config::ValidatedClientConfig) -> Self {
         Self::resolve_with_host_preferences(config, None, false)
     }
 }
@@ -67,11 +67,11 @@ impl ClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_fixtures::ValidatedConfigFixture as _;
+    use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
     #[test]
     fn settings_carry_the_host_preferences() {
-        let config = shepr_config::ValidatedConfig::test_default();
+        let config = shepr_config::ValidatedClientConfig::test_default();
         let settings = ClientSettings::resolve_with_host_preferences(
             &config,
             Some(shepr_vt::ModifyOtherKeysLevel::All),

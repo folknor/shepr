@@ -15,7 +15,7 @@ use shepr_mux::workspace::{PaneRemoval, PaneRemovalScope, Workspace, WorkspacePa
 use shepr_protocol::TerminalId;
 use tokio::sync::{Notify, mpsc};
 
-pub(crate) use shepr_test_fixtures::{AppPathsFixture, ValidatedConfigFixture};
+pub(crate) use shepr_test_fixtures::{AppPathsFixture, ValidatedServerConfigFixture};
 pub(crate) use shepr_test_support::{IsolatedEnv, ScratchDir};
 
 /// Pane runtimes with no child: what the pane writes to its child arrives on

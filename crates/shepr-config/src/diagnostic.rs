@@ -9,6 +9,18 @@ pub enum ConfigDiagnostic {
 }
 
 impl ConfigDiagnostic {
+    pub(crate) fn with_file(mut self, path: &std::path::Path) -> Self {
+        let message = match &mut self {
+            Self::Read(message)
+            | Self::Parse(message)
+            | Self::Unknown(message)
+            | Self::Validation(message)
+            | Self::Path(message) => message,
+        };
+        *message = format!("{message} ({})", path.display());
+        self
+    }
+
     /// The diagnostic detail without the category prefix added by `Display`.
     pub fn message(&self) -> &str {
         match self {

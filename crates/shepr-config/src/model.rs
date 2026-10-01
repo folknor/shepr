@@ -225,52 +225,23 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
-pub struct Config {
+pub struct ClientConfig {
     pub theme: ThemeConfig,
-    pub terminal: TerminalConfig,
-    pub session: SessionConfig,
-    pub server: ServerConfig,
     pub keys: KeysConfig,
-    pub ui: UiConfig,
-    pub advanced: AdvancedConfig,
-    pub experimental: ExperimentalConfig,
-    /// The `[[machines]]` entries, in file order.
+    pub ui: ClientUiConfig,
     pub machines: Vec<super::MachineConfig>,
 }
 
-#[derive(Debug)]
-pub(crate) struct LoadedConfig {
-    pub(crate) config: Config,
-    pub(crate) provenance: super::ConfigProvenance,
-    pub(crate) resolution: Option<super::validated::ConfigResolution>,
-    pub(crate) diagnostics: Vec<super::ConfigDiagnostic>,
-}
-
-impl LoadedConfig {
-    pub(crate) fn into_validated(
-        self,
-        paths: super::AppPaths,
-    ) -> Result<super::ValidatedConfig, Vec<super::ConfigDiagnostic>> {
-        let Self {
-            config,
-            provenance,
-            resolution,
-            diagnostics,
-            ..
-        } = self;
-        if !diagnostics.is_empty() {
-            return Err(diagnostics);
-        }
-        match resolution.and_then(|resolution| resolution.values) {
-            Some(values) => Ok(super::ValidatedConfig::from_loaded(
-                config, provenance, values, paths,
-            )),
-            None => Err(vec![super::ConfigDiagnostic::Validation(
-                "configuration resolution produced no values and no diagnostic; no invalid setting could be identified"
-                    .to_owned(),
-            )]),
-        }
-    }
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    pub theme: ThemeConfig,
+    pub terminal: TerminalConfig,
+    pub session: SessionConfig,
+    pub server: HeadlessConfig,
+    pub ui: ServerUiConfig,
+    pub advanced: AdvancedConfig,
+    pub experimental: ExperimentalConfig,
 }
 
 macro_rules! define_keys_config {
@@ -328,7 +299,7 @@ impl PaneBordersConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
-pub struct UiConfig {
+pub struct ClientUiConfig {
     /// Expanded sidebar width (columns). Default: 26. While unset, the client
     /// shell remembers a width set by dragging the sidebar divider; once set,
     /// it wins at every launch.
@@ -359,6 +330,19 @@ pub struct UiConfig {
     pub confirm_close: bool,
     /// Ask for a workspace name before interactive creation. Default: true.
     pub prompt_new_workspace_name: bool,
+    /// Agent sidebar ordering: "spaces" or "priority". Default: "spaces".
+    /// While unset, the client shell remembers the last toggle of the agent
+    /// panel's sort control; once set, it wins at every launch.
+    pub agent_panel_sort: AgentPanelSortConfig,
+    /// Agent status indicator style. Values are "dots" or "symbols". Default: "dots".
+    pub status_indicators: StatusIndicatorStyle,
+    /// Expanded sidebar row composition.
+    pub sidebar: SidebarConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ServerUiConfig {
     /// Draw borders around split panes. auto draws them only for split panes,
     /// always also frames a lone pane (only while pane_outer_borders is
     /// enabled, since every edge of a lone pane is an outer edge), off
@@ -375,24 +359,9 @@ pub struct UiConfig {
     /// Format for the outer terminal window title. Empty leaves the title alone.
     /// Default: "{hostname}: {workspace}".
     pub window_title: String,
-    /// Agent sidebar ordering: "spaces" or "priority". Default: "spaces".
-    /// While unset, the client shell remembers the last toggle of the agent
-    /// panel's sort control; once set, it wins at every launch.
-    pub agent_panel_sort: AgentPanelSortConfig,
-    /// Agent status indicator style. Values are "dots" or "symbols". Default: "dots".
-    pub status_indicators: StatusIndicatorStyle,
-    /// Expanded sidebar row composition.
-    pub sidebar: SidebarConfig,
-    /// Accent color for highlights, borders, and navigation UI.
-    /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
-    /// Applies when set in the config file; otherwise the theme accent applies.
-    /// theme.custom.accent takes precedence.
-    /// An empty string has the same meaning as unset.
-    #[serde(default, deserialize_with = "deserialize_ui_accent")]
-    pub accent: Option<String>,
 }
 
-fn deserialize_ui_accent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(crate) fn deserialize_theme_accent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -428,7 +397,7 @@ impl ImeCursorShape {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
-pub struct ServerConfig {
+pub struct HeadlessConfig {
     /// Virtual terminal width used when no client is attached. Default: 120.
     pub headless_cols: u16,
     /// Virtual terminal height used when no client is attached. Default: 40.
@@ -468,8 +437,6 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
-    /// Allow launching shepr inside an existing shepr pane. Default: false.
-    pub allow_nested: bool,
     /// Persist pane screen history to session-history.json. Default: false.
     pub pane_history: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
@@ -498,7 +465,7 @@ pub struct ExperimentalConfig {
     pub cjk_ime_cursor_shape: ImeCursorShape,
 }
 
-impl Default for UiConfig {
+impl Default for ClientUiConfig {
     fn default() -> Self {
         Self {
             sidebar_width: 26,
@@ -514,21 +481,27 @@ impl Default for UiConfig {
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_workspace_name: true,
+            agent_panel_sort: AgentPanelSortConfig::Spaces,
+            status_indicators: StatusIndicatorStyle::Dots,
+            sidebar: SidebarConfig::default(),
+        }
+    }
+}
+
+impl Default for ServerUiConfig {
+    fn default() -> Self {
+        Self {
             pane_borders: PaneBordersConfig::Auto,
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             window_title: super::window_title::default_window_title(),
-            agent_panel_sort: AgentPanelSortConfig::Spaces,
-            status_indicators: StatusIndicatorStyle::Dots,
-            sidebar: SidebarConfig::default(),
-            accent: None,
         }
     }
 }
 
-impl UiConfig {
+impl ClientUiConfig {
     pub fn mouse_scroll_lines(&self) -> usize {
         self.mouse_scroll_lines
             .map_or(DEFAULT_MOUSE_SCROLL_LINES, NonZeroUsize::get)
@@ -539,7 +512,7 @@ impl UiConfig {
     }
 }
 
-impl Default for ServerConfig {
+impl Default for HeadlessConfig {
     fn default() -> Self {
         Self {
             headless_cols: crate::DEFAULT_HEADLESS_COLS,
@@ -562,7 +535,7 @@ mod tests {
 
     #[test]
     fn terminal_default_shell_defaults_empty_and_parses() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert!(default_config.terminal.default_shell.is_empty());
         assert!(!default_config.terminal.login_shell);
 
@@ -571,20 +544,20 @@ mod tests {
 default_shell = "nu"
 login_shell = true
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.terminal.default_shell, "nu");
         assert!(config.terminal.login_shell);
     }
 
     #[test]
     fn terminal_new_cwd_defaults_follow_and_parses() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert_eq!(
             default_config.terminal.new_cwd,
             NewTerminalCwdConfig::Follow
         );
 
-        let config: Config = toml::from_str(
+        let config: ServerConfig = toml::from_str(
             r#"
 [terminal]
 new_cwd = "home"
@@ -593,7 +566,7 @@ new_cwd = "home"
         .expect("test precondition");
         assert_eq!(config.terminal.new_cwd, NewTerminalCwdConfig::Home);
 
-        let config: Config = toml::from_str(
+        let config: ServerConfig = toml::from_str(
             r#"
 [terminal]
 new_cwd = "~/Projects"
@@ -605,14 +578,14 @@ new_cwd = "~/Projects"
             NewTerminalCwdConfig::Path("~/Projects".into())
         );
 
-        let empty: Config =
+        let empty: ServerConfig =
             toml::from_str("[terminal]\nnew_cwd = \"\"\n").expect("empty path parses");
         assert_eq!(
             empty.terminal.new_cwd,
             NewTerminalCwdConfig::Path(String::new())
         );
 
-        let padded: Config =
+        let padded: ServerConfig =
             toml::from_str("[terminal]\nnew_cwd = \" home \"\n").expect("literal path parses");
         assert_eq!(
             padded.terminal.new_cwd,
@@ -622,7 +595,7 @@ new_cwd = "~/Projects"
 
     #[test]
     fn resume_agents_on_restore_defaults_on_and_parses() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert!(default_config.session.resume_agents_on_restore);
         assert_eq!(default_config.session.startup_per_agent_delay_ms, 100);
 
@@ -631,7 +604,7 @@ new_cwd = "~/Projects"
 resume_agents_on_restore = false
 startup_per_agent_delay_ms = 0
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.session.resume_agents_on_restore);
         assert_eq!(config.session.startup_per_agent_delay_ms, 0);
     }
@@ -639,7 +612,7 @@ startup_per_agent_delay_ms = 0
     #[test]
     fn agent_panel_sort_config_parses_and_defaults() {
         assert_eq!(
-            Config::default().ui.agent_panel_sort,
+            ClientConfig::default().ui.agent_panel_sort,
             AgentPanelSortConfig::Spaces
         );
 
@@ -647,18 +620,18 @@ startup_per_agent_delay_ms = 0
 [ui]
 agent_panel_sort = "priority"
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Priority);
     }
 
     #[test]
     fn status_indicator_style_defaults_to_dots_and_parses_symbols() {
         assert_eq!(
-            Config::default().ui.status_indicators,
+            ClientConfig::default().ui.status_indicators,
             StatusIndicatorStyle::Dots
         );
 
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [ui]
 status_indicators = "symbols"
@@ -670,21 +643,21 @@ status_indicators = "symbols"
 
     #[test]
     fn pane_borders_parse_modes() {
-        let auto: Config =
+        let auto: ServerConfig =
             toml::from_str("[ui]\npane_borders = \"auto\"").expect("test precondition");
         assert_eq!(auto.ui.pane_borders, PaneBordersConfig::Auto);
 
-        let off: Config =
+        let off: ServerConfig =
             toml::from_str("[ui]\npane_borders = \"off\"").expect("test precondition");
         assert_eq!(off.ui.pane_borders, PaneBordersConfig::Off);
 
-        assert!(toml::from_str::<Config>("[ui]\npane_borders = \"framed\"").is_err());
-        assert!(toml::from_str::<Config>("[ui]\npane_borders = true").is_err());
+        assert!(toml::from_str::<ServerConfig>("[ui]\npane_borders = \"framed\"").is_err());
+        assert!(toml::from_str::<ServerConfig>("[ui]\npane_borders = true").is_err());
     }
 
     #[test]
     fn pane_appearance_defaults_and_parse() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert_eq!(default_config.ui.pane_borders, PaneBordersConfig::Auto);
         assert!(default_config.ui.pane_outer_borders);
         assert!(default_config.ui.pane_scrollbars);
@@ -699,7 +672,7 @@ pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.ui.pane_borders, PaneBordersConfig::Always);
         assert!(!config.ui.pane_outer_borders);
         assert!(!config.ui.pane_scrollbars);
@@ -709,33 +682,33 @@ show_agent_labels_on_pane_borders = true
 
     #[test]
     fn prompt_new_workspace_name_defaults_on_and_parses() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert!(default_config.ui.prompt_new_workspace_name);
 
         let toml = r#"
 [ui]
 prompt_new_workspace_name = false
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.prompt_new_workspace_name);
     }
 
     #[test]
     fn reveal_hidden_cursor_for_cjk_ime_default_off_and_parse() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert!(!default_config.experimental.reveal_hidden_cursor_for_cjk_ime);
 
         let toml = r#"
 [experimental]
 reveal_hidden_cursor_for_cjk_ime = true
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert!(config.experimental.reveal_hidden_cursor_for_cjk_ime);
     }
 
     #[test]
     fn cjk_ime_cursor_shape_default_steady_block_and_parse() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert_eq!(
             default_config.experimental.cjk_ime_cursor_shape,
             ImeCursorShape::SteadyBlock
@@ -745,7 +718,7 @@ reveal_hidden_cursor_for_cjk_ime = true
 [experimental]
 cjk_ime_cursor_shape = "bar"
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(
             config.experimental.cjk_ime_cursor_shape,
             ImeCursorShape::Bar
@@ -754,14 +727,14 @@ cjk_ime_cursor_shape = "bar"
 
     #[test]
     fn cjk_ime_agents_default_empty_and_parse() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert!(default_config.experimental.cjk_ime_agents.is_empty());
 
         let toml = r#"
 [experimental]
 cjk_ime_agents = ["claude", "codex", " Claude-Code "]
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(
             config.experimental.cjk_ime_agents,
             vec![crate::ConfigAgent::Claude, crate::ConfigAgent::Codex]
@@ -770,7 +743,7 @@ cjk_ime_agents = ["claude", "codex", " Claude-Code "]
 
     #[test]
     fn cjk_ime_agents_reject_unknown_names() {
-        let err = toml::from_str::<Config>(
+        let err = toml::from_str::<ServerConfig>(
             r#"
 [experimental]
 cjk_ime_agents = ["claude", "typo"]
@@ -783,7 +756,7 @@ cjk_ime_agents = ["claude", "typo"]
 
     #[test]
     fn sidebar_bounds_default_and_parse() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert_eq!(default_config.ui.sidebar_min_width, 18);
         assert_eq!(default_config.ui.sidebar_max_width, 36);
 
@@ -792,27 +765,27 @@ cjk_ime_agents = ["claude", "typo"]
 sidebar_min_width = 12
 sidebar_max_width = 80
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.ui.sidebar_min_width, 12);
         assert_eq!(config.ui.sidebar_max_width, 80);
     }
 
     #[test]
     fn sidebar_start_collapsed_defaults_off_and_parses_on() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert!(!default_config.ui.sidebar_start_collapsed);
 
         let toml = r#"
 [ui]
 sidebar_start_collapsed = true
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(config.ui.sidebar_start_collapsed);
     }
 
     #[test]
     fn sidebar_collapsed_mode_defaults_compact_and_parses_hidden() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert_eq!(
             default_config.ui.sidebar_collapsed_mode,
             SidebarCollapsedModeConfig::Compact
@@ -822,7 +795,7 @@ sidebar_start_collapsed = true
 [ui]
 sidebar_collapsed_mode = "hidden"
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(
             config.ui.sidebar_collapsed_mode,
             SidebarCollapsedModeConfig::Hidden
@@ -852,33 +825,33 @@ sidebar_collapsed_mode = "hidden"
 
     #[test]
     fn mouse_capture_default_on_and_parse() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert!(default_config.ui.mouse_capture);
 
         let toml = r#"
 [ui]
 mouse_capture = false
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.mouse_capture);
     }
 
     #[test]
     fn copy_on_select_default_on_and_parse() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert!(default_config.ui.copy_on_select);
 
         let toml = r#"
 [ui]
 copy_on_select = false
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.copy_on_select);
     }
 
     #[test]
     fn right_click_passthrough_modifier_defaults_off_and_parses() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert_eq!(default_config.ui.right_click_passthrough_modifiers(), None);
 
         for value in ["", "off", "none", "disabled"] {
@@ -888,7 +861,7 @@ copy_on_select = false
 right_click_passthrough_modifier = "{value}"
 "#
             );
-            let config: Config = toml::from_str(&toml).expect("test precondition");
+            let config: ClientConfig = toml::from_str(&toml).expect("test precondition");
             assert_eq!(
                 config.ui.right_click_passthrough_modifiers(),
                 None,
@@ -911,7 +884,7 @@ right_click_passthrough_modifier = "{value}"
 right_click_passthrough_modifier = "{value}"
 "#
             );
-            let config: Config = toml::from_str(&toml).expect("test precondition");
+            let config: ClientConfig = toml::from_str(&toml).expect("test precondition");
             assert_eq!(
                 config.ui.right_click_passthrough_modifiers(),
                 Some(expected),
@@ -942,7 +915,7 @@ right_click_passthrough_modifier = "{value}"
 right_click_passthrough_modifier = "{value}"
 "#
             );
-            let error = toml::from_str::<Config>(&toml)
+            let error = toml::from_str::<ClientConfig>(&toml)
                 .expect_err("a modifier mouse reports cannot carry must be rejected")
                 .to_string();
             assert!(
@@ -962,7 +935,7 @@ right_click_passthrough_modifier = "{value}"
 "#
             );
             assert!(
-                toml::from_str::<Config>(&toml).is_err(),
+                toml::from_str::<ClientConfig>(&toml).is_err(),
                 "value {value:?} should be rejected"
             );
         }
@@ -970,20 +943,20 @@ right_click_passthrough_modifier = "{value}"
 
     #[test]
     fn redraw_on_focus_gained_default_on_and_parse() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert!(default_config.ui.redraw_on_focus_gained);
 
         let toml = r#"
 [ui]
 redraw_on_focus_gained = false
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.redraw_on_focus_gained);
     }
 
     #[test]
     fn mouse_scroll_lines_defaults_to_three_and_parses() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert_eq!(
             default_config.ui.mouse_scroll_lines(),
             DEFAULT_MOUSE_SCROLL_LINES
@@ -993,7 +966,7 @@ redraw_on_focus_gained = false
 [ui]
 mouse_scroll_lines = 1
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.ui.mouse_scroll_lines(), 1);
     }
 
@@ -1003,12 +976,12 @@ mouse_scroll_lines = 1
 [ui]
 mouse_scroll_lines = 0
 "#;
-        assert!(toml::from_str::<Config>(toml).is_err());
+        assert!(toml::from_str::<ClientConfig>(toml).is_err());
     }
 
     #[test]
     fn server_headless_size_defaults_and_parses() {
-        let default_config = Config::default();
+        let default_config = ServerConfig::default();
         assert_eq!(
             default_config.server.headless_cols,
             crate::DEFAULT_HEADLESS_COLS
@@ -1018,7 +991,7 @@ mouse_scroll_lines = 0
             crate::DEFAULT_HEADLESS_ROWS
         );
 
-        let config: Config = toml::from_str(
+        let config: ServerConfig = toml::from_str(
             r#"[server]
 headless_cols = 160
 headless_rows = 50
@@ -1028,7 +1001,7 @@ headless_rows = 50
         assert_eq!(config.server.headless_cols, 160);
         assert_eq!(config.server.headless_rows, 50);
 
-        let invalid: Config = toml::from_str(
+        let invalid: ServerConfig = toml::from_str(
             r#"[server]
 headless_cols = 0
 headless_rows = 50
@@ -1046,7 +1019,7 @@ headless_rows = 50
 
     #[test]
     fn advanced_defaults_include_scrollback_limit_bytes() {
-        let config = Config::default();
+        let config = ServerConfig::default();
         assert_eq!(
             config.advanced.scrollback_limit_bytes,
             DEFAULT_SCROLLBACK_LIMIT_BYTES
@@ -1055,26 +1028,14 @@ headless_rows = 50
 
     #[test]
     fn pane_history_persistence_is_opt_in() {
-        assert!(!Config::default().experimental.pane_history);
+        assert!(!ServerConfig::default().experimental.pane_history);
 
         let toml = r#"
 [experimental]
 pane_history = true
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
 
-        assert!(config.experimental.pane_history);
-    }
-
-    #[test]
-    fn experimental_config_parses() {
-        let toml = r#"
-[experimental]
-allow_nested = true
-pane_history = true
-"#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
-        assert!(config.experimental.allow_nested);
         assert!(config.experimental.pane_history);
     }
 
@@ -1084,7 +1045,7 @@ pane_history = true
 [advanced]
 scrollback_limit_bytes = 12345
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.advanced.scrollback_limit_bytes, 12345);
     }
 }

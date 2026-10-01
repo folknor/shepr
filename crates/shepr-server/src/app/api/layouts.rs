@@ -57,14 +57,18 @@ impl App {
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use shepr_config::Config;
+    use shepr_config::ServerConfig;
     use shepr_core::layout::Direction;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::command::EndpointError;
 
     fn app_with_workspace() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+        let mut app = App::new(
+            &ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
         app.state.workspaces = vec![Workspace::test_new("layout")];
         app.state.ensure_test_terminals();
         app

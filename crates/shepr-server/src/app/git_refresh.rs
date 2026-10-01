@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn git_refresh_item_collection_does_not_discover_uncached_cwd() {
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         let scratch = crate::test_support::ScratchDir::new("uncached-cwd");
         let cwd = scratch.join("cwd");
         let mut ws = Workspace::test_new("test");
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn git_refresh_item_collection_reuses_matching_cached_key() {
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         let cwd = PathBuf::from("/repo/deep/nested");
         let cache_key = PathBuf::from("/repo");
         let mut ws = Workspace::test_new("test");
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn periodic_repo_discovery_ignores_cached_key_hints() {
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         let cwd = PathBuf::from("/repo/deep/nested");
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = cwd.clone();
@@ -492,10 +492,9 @@ mod tests {
     }
 
     #[test]
-    fn cwd_identity_refresh_runs_once_without_sidebar_git_tokens() {
+    fn cwd_identity_refresh_runs_once() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut config = shepr_config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
+        let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
         let mut workspace = Workspace::test_new("test");
         let scratch = crate::test_support::ScratchDir::new("git-refresh-identity");
@@ -513,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_without_git_tokens_still_refresh_branch_and_ahead_behind() {
+    fn server_refreshes_branch_and_ahead_behind_without_client_settings() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("git-full-demand");
         let git = |args: &[&str]| {
@@ -551,8 +550,7 @@ mod tests {
             "-m",
             "ahead",
         ]);
-        let mut config = shepr_config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
+        let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = scratch.path().to_path_buf();
@@ -576,10 +574,9 @@ mod tests {
     }
 
     #[test]
-    fn moved_cwd_without_osc7_or_git_tokens_rediscovers_the_label_identity() {
+    fn moved_cwd_without_osc7_rediscovers_the_label_identity() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut config = shepr_config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
+        let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
         let mut ws = Workspace::test_new("test");
         ws.custom_name = None;
@@ -597,10 +594,9 @@ mod tests {
     }
 
     #[test]
-    fn undiscovered_workspace_identity_is_refreshed_without_git_tokens() {
+    fn undiscovered_workspace_identity_is_refreshed() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut config = shepr_config::Config::default();
-        config.ui.sidebar.spaces.rows = vec![vec![shepr_config::SpaceSidebarToken::Workspace]];
+        let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
         let mut ws = Workspace::test_new("test");
         let scratch = crate::test_support::ScratchDir::new("undiscovered-workspace");
@@ -621,7 +617,7 @@ mod tests {
 
     #[test]
     fn headless_deadline_can_suppress_git_refresh_timer() {
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
         app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
@@ -641,7 +637,7 @@ mod tests {
         // The ceiling keeps the scratch directory from being discovered as
         // part of the checkout the scratch base sits in.
         let _env = crate::test_support::IsolatedEnv::new();
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         let scratch = crate::test_support::ScratchDir::new("git-miss");
         let cwd = scratch.to_path_buf();
         let (_, entry) = shepr_mux::git::git_status_snapshot_for_cwd_with_demand(
@@ -660,7 +656,7 @@ mod tests {
 
     #[test]
     fn git_refresh_due_request_survives_in_flight_refresh() {
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         let now = Instant::now();
         app.git_refresh.git_refresh_in_flight = true;
 
@@ -693,7 +689,7 @@ mod tests {
 
     #[test]
     fn empty_refresh_after_a_panic_unwedges_the_refresh_deadline() {
-        let mut app = test_app(&shepr_config::Config::default());
+        let mut app = test_app(&shepr_config::ServerConfig::default());
         app.state.workspaces.push(Workspace::test_new("test"));
         app.git_refresh.git_refresh_in_flight = true;
         assert_eq!(app.git_refresh_deadline(), None);
@@ -708,7 +704,7 @@ mod tests {
         assert!(app.git_refresh_deadline().is_some());
     }
 
-    fn test_app(config: &shepr_config::Config) -> super::super::App {
+    fn test_app(config: &shepr_config::ServerConfig) -> super::super::App {
         super::super::App::new(
             config,
             crate::app::AppPolicy::Test,

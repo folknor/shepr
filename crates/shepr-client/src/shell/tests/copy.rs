@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
         query: TextEditor::default(),
         search_focused: true,
@@ -58,7 +58,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
 
 #[test]
 fn copy_cursor_is_never_left_under_the_mode_bar() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let area = state.layout(106, 20).pane_surface;
     let mut pane_surface = surface();
@@ -128,7 +128,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use shepr_termio::host_term::theme::{DefaultColorKind, HostAppearance, RgbColor};
 
     for explicit_appearance in [false, true] {
-        let mut config = ClientShellConfig::from_config(&Config::default());
+        let mut config = ClientShellConfig::from_config(&ClientConfig::default());
         config.palette = Palette::terminal();
         let mut state = ClientShellState::new(config);
         state.set_snapshot(Box::new(snapshot()));
@@ -203,7 +203,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
 
 #[test]
 fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
@@ -295,7 +295,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
 
 #[test]
 fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -405,7 +405,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
 
 #[test]
 fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     // The pane starts one row down, as the lower pane of a split does, so the
@@ -476,7 +476,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
 
 #[test]
 fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -601,7 +601,8 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
 fn keyboard_selections_survive_output_and_copy_live_ranges() {
     // Character and linewise selections have distinct anchor/range projections.
     for selection_key in [b"v", b"V"] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -662,7 +663,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
 
 #[test]
 fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -714,7 +715,8 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
 #[test]
 fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
     for screen_switch in [false, true] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -759,7 +761,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
 
 #[test]
 fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -816,7 +818,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
 
 #[test]
 fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -886,7 +888,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
 
 #[test]
 fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -1145,7 +1147,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
 
 #[test]
 fn navigator_workspace_headings_use_the_active_themes_primary_text() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1198,7 +1200,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     pane.pane_id = test_pane_id("w2:p1");
     snapshot.workspaces.push(workspace);
     snapshot.panes.push(pane);
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1273,7 +1275,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
 fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() {
     let mut projected = snapshot();
     projected.panes[0].label = Some("alpha beta gamma".into());
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1332,7 +1334,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     second_agent.agent_status = AgentStatus::Blocked;
     second_agent.focused = false;
     projected.agents = vec![first_agent, second_agent];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1434,7 +1436,7 @@ fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
         pane.focused = false;
         projected.panes.push(pane);
     }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
     state.open_navigator_overlay();
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
@@ -1454,7 +1456,7 @@ fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
 fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
     let mut projected = snapshot();
     projected.panes.clear();
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
     state.open_navigator_overlay();
     for (query, filter, expected) in [
@@ -1516,7 +1518,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
         projected.panes.push(pane);
     }
     projected.workspaces.push(last);
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1575,7 +1577,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
 
 #[test]
 fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1725,7 +1727,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
 
 #[test]
 fn navigator_narrow_layout_and_long_search_stay_inside_the_popup() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
@@ -1787,7 +1789,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
                 .map(|pane| pane.pane_id.clone())
         })
         .collect::<Vec<_>>();
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let remote = shepr_config::MachineConfig {
         label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
         ssh: shepr_config::SshTarget::parse("dev@example.invalid").expect("test precondition"),
@@ -1829,7 +1831,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
 
 #[test]
 fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
@@ -1939,7 +1941,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
 
 #[test]
 fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -2084,7 +2086,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
 
 #[test]
 fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2120,7 +2122,7 @@ fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
 
 #[test]
 fn retained_selection_copy_suppresses_key_repeats() {
-    let mut config = Config::default();
+    let mut config = ClientConfig::default();
     config.ui.copy_on_select = false;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
@@ -2155,7 +2157,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
 
 #[test]
 fn rapid_copy_motions_are_chained_from_the_previous_result() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2208,7 +2210,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
 
 #[test]
 fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2261,7 +2263,8 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
         shepr_termio::input::TerminalKey::new(KeyCode::Char('q'), KeyModifiers::empty()),
         shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
     ] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2308,7 +2311,8 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
 #[test]
 fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_ignored() {
     for exit_with_escape in [true, false] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2377,7 +2381,7 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
 
 #[test]
 fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2416,7 +2420,7 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
 
 #[test]
 fn deferred_copy_input_is_bounded() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2448,7 +2452,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
         for operation in [b"w".as_slice(), b"/LIVE\r".as_slice()] {
             for queued in [b"w".as_slice(), b"yx".as_slice(), b"\rx".as_slice()] {
                 let mut state =
-                    ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+                    ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
                 state.set_snapshot(Box::new(snapshot()));
                 let mut pane_surface = surface();
                 pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2507,7 +2511,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
 
 #[test]
 fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2548,7 +2552,7 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
 
 #[test]
 fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2592,7 +2596,7 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
 
 #[test]
 fn copy_operation_does_not_capture_input_after_focus_moves() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2648,7 +2652,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
 
 #[test]
 fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2680,7 +2684,7 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
 
 #[test]
 fn copy_waits_for_endpoint_motion_before_copying_selection() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2736,7 +2740,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
 /// re-wraps the text under them and drops them all.
 #[test]
 fn copy_search_matches_survive_output_but_not_a_resize() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
@@ -2822,7 +2826,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
 
 #[test]
 fn word_selection_result_survives_focus_snapshot_lag() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
@@ -2865,7 +2869,8 @@ fn word_selection_result_survives_focus_snapshot_lag() {
 #[test]
 fn copy_mode_repeat_during_projection_gap_stays_active() {
     for selection_before_gap in [None, Some(true), Some(false)] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {

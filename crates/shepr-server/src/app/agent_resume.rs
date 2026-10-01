@@ -509,7 +509,7 @@ mod tests {
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         )
@@ -534,7 +534,7 @@ mod tests {
     #[tokio::test]
     async fn abandoned_resumes_are_all_settled_in_one_pass_without_spacing() {
         for delay_ms in [100, 250, 0] {
-            let config: shepr_config::Config = toml::from_str(&format!(
+            let config: shepr_config::ServerConfig = toml::from_str(&format!(
                 "[session]\nstartup_per_agent_delay_ms = {delay_ms}"
             ))
             .expect("test precondition");

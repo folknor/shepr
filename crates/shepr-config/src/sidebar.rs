@@ -455,7 +455,8 @@ mod tests {
             ]
         );
         assert!(
-            toml::from_str::<crate::Config>("[ui.sidebar.agents]\nrows = [[\"tab\"]]\n").is_err()
+            toml::from_str::<crate::ClientConfig>("[ui.sidebar.agents]\nrows = [[\"tab\"]]\n")
+                .is_err()
         );
         assert!(config.agents.rows_by_agent.is_empty());
         assert_eq!(config.agents.row_gap, 0);
@@ -471,7 +472,7 @@ mod tests {
 
     #[test]
     fn parses_builtin_tokens() {
-        let config: crate::Config = toml::from_str(
+        let config: crate::ClientConfig = toml::from_str(
             r#"
 [ui.sidebar.agents]
 rows = [["state_icon", "workspace"], ["state_text", "agent", "pane"], ["terminal_title", "terminal_title_stripped", "pane"]]
@@ -520,7 +521,7 @@ row_gap = 3
 
     #[test]
     fn parses_occurrence_styles_without_changing_plain_tokens() {
-        let config: crate::Config = toml::from_str(
+        let config: crate::ClientConfig = toml::from_str(
             r##"
 [ui.sidebar.agents]
 rows = [[{ token = "workspace", fg = "#abc", bold = false }, "workspace"], [{ token = "pane", dim = false }]]
@@ -619,7 +620,7 @@ rows = [[{ token = "branch", rules = [{ contains = "error", bold = true }] }]]
 
     #[test]
     fn rejects_invalid_occurrence_styles() {
-        let invalid_color = toml::from_str::<crate::Config>(
+        let invalid_color = toml::from_str::<crate::ClientConfig>(
             r##"[ui.sidebar.agents]
 rows = [[{ token = "workspace", fg = "red" }]]
 "##,
@@ -650,7 +651,7 @@ rows = [[{ token = "workspace", fg = "red" }]]
         ] {
             let input = format!("[ui.sidebar.agents]\nrows = [[{entry}]]\n");
             assert!(
-                toml::from_str::<crate::Config>(&input).is_err(),
+                toml::from_str::<crate::ClientConfig>(&input).is_err(),
                 "accepted {entry}"
             );
         }
@@ -663,13 +664,13 @@ rows = [[{ token = "workspace", fg = "red" }]]
         // below are down to the token and not to malformed TOML.
         for token in ["workspace", "terminal_title"] {
             assert!(
-                toml::from_str::<crate::Config>(&input(token)).is_ok(),
+                toml::from_str::<crate::ClientConfig>(&input(token)).is_ok(),
                 "rejected {token}"
             );
         }
         for token in ["summary", "$", "$bad.name", "$summary"] {
             assert!(
-                toml::from_str::<crate::Config>(&input(token)).is_err(),
+                toml::from_str::<crate::ClientConfig>(&input(token)).is_err(),
                 "accepted {token}"
             );
         }
@@ -681,16 +682,16 @@ rows = [[{ token = "workspace", fg = "red" }]]
             .collect::<Vec<_>>()
             .join(",");
         let input = format!("[ui.sidebar.agents]\nrows = [{too_many_rows}]\n");
-        assert!(toml::from_str::<crate::Config>(&input).is_err());
+        assert!(toml::from_str::<crate::ClientConfig>(&input).is_err());
 
         let too_many_tokens = std::iter::repeat_n("\"workspace\"", MAX_SIDEBAR_TOKENS_PER_ROW + 1)
             .collect::<Vec<_>>()
             .join(",");
         let input = format!("[ui.sidebar.spaces]\nrows = [[{too_many_tokens}]]\n");
-        assert!(toml::from_str::<crate::Config>(&input).is_err());
+        assert!(toml::from_str::<crate::ClientConfig>(&input).is_err());
 
         let input = format!("[ui.sidebar.agents.rows_by_agent]\nclaude = [{too_many_rows}]\n");
-        assert!(toml::from_str::<crate::Config>(&input).is_err());
+        assert!(toml::from_str::<crate::ClientConfig>(&input).is_err());
     }
 
     #[test]
@@ -702,7 +703,7 @@ rows = [[{ token = "workspace", fg = "red" }]]
             .collect::<Vec<_>>()
             .join("\n");
         let input = format!("[ui.sidebar.agents.rows_by_agent]\n{entries}\n");
-        let config: crate::Config = toml::from_str(&input).expect("canonical keys");
+        let config: crate::ClientConfig = toml::from_str(&input).expect("canonical keys");
 
         assert_eq!(config.ui.sidebar.agents.rows_by_agent.len(), agents.len());
     }
@@ -712,7 +713,7 @@ rows = [[{ token = "workspace", fg = "red" }]]
         for key in ["claude-code", "Claude", "' claude '", "unknown"] {
             let input = format!("[ui.sidebar.agents.rows_by_agent]\n{key} = [[\"agent\"]]\n");
             assert!(
-                toml::from_str::<crate::Config>(&input).is_err(),
+                toml::from_str::<crate::ClientConfig>(&input).is_err(),
                 "accepted key {key:?}"
             );
         }

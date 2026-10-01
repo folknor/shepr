@@ -52,7 +52,7 @@ mod tests {
 
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
-            &shepr_config::Config::default(),
+            &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
             api_rx,
         );

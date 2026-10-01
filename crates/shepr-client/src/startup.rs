@@ -5,7 +5,7 @@ use super::*;
 /// Returns the lines the binary prints once the host terminal is restored; a
 /// failed run is a [`ClientRunError`], after which the binary exits nonzero.
 pub fn run_client(
-    config: &shepr_config::ValidatedConfig,
+    config: &shepr_config::ValidatedClientConfig,
     paths: &shepr_config::AppPaths,
 ) -> Result<ClientExit, ClientRunError> {
     run_launched_client(config, paths)

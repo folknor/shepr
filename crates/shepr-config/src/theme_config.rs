@@ -17,6 +17,9 @@ use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES, canonical_them
 pub struct ThemeConfig {
     /// Built-in theme name. The default is the first built-in theme.
     pub name: Option<String>,
+    /// Fallback accent override; theme.custom.accent takes precedence.
+    #[serde(default, deserialize_with = "crate::model::deserialize_theme_accent")]
+    pub accent: Option<String>,
     /// Custom overrides - applied on top of the selected base theme.
     pub custom: Option<CustomThemeColors>,
 }
@@ -91,11 +94,9 @@ fn parse_configured_color(
     })
 }
 
-pub(crate) fn resolve_palette(
-    config: &super::Config,
-) -> Result<crate::theme::Palette, Vec<String>> {
+pub(crate) fn resolve_palette(config: &ThemeConfig) -> Result<crate::theme::Palette, Vec<String>> {
     let mut diagnostics = Vec::new();
-    let name = config.theme.name.as_deref().unwrap_or(DEFAULT_THEME);
+    let name = config.name.as_deref().unwrap_or(DEFAULT_THEME);
     let canonical = canonical_theme_name(name).or_else(|| {
         diagnostics.push(format!(
             "unknown theme name theme.name = {name:?}; valid themes: {}",
@@ -110,14 +111,14 @@ pub(crate) fn resolve_palette(
         }
         palette
     });
-    let overrides = config.theme.custom.as_ref().map_or_else(
+    let overrides = config.custom.as_ref().map_or_else(
         || Ok(ParsedThemeColors::default()),
         CustomThemeColors::parse,
     );
     if let Err(errors) = &overrides {
         diagnostics.extend(errors.iter().cloned());
     }
-    let ui_accent = match parse_configured_color("ui.accent", config.ui.accent.as_deref()) {
+    let theme_accent = match parse_configured_color("theme.accent", config.accent.as_deref()) {
         Ok(color) => color,
         Err(errors) => {
             diagnostics.extend(errors);
@@ -137,11 +138,10 @@ pub(crate) fn resolve_palette(
         palette = palette.with_overrides(&overrides);
     }
     let custom_accent = config
-        .theme
         .custom
         .as_ref()
         .is_some_and(|custom| custom.accent.is_some());
-    if !custom_accent && let Some(accent) = ui_accent {
+    if !custom_accent && let Some(accent) = theme_accent {
         palette.accent = accent;
     }
     Ok(palette)
@@ -219,7 +219,7 @@ pub(crate) fn try_parse_color(s: &str) -> Option<ratatui::style::Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Config;
+    use crate::ClientConfig;
 
     #[test]
     fn theme_name_parses() {
@@ -227,13 +227,13 @@ mod tests {
 [theme]
 name = "dracula"
 "#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.theme.name.as_deref(), Some("dracula"));
     }
 
     #[test]
     fn unknown_theme_names_are_diagnosed() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r#"
 [theme]
 name = "catppucin"
@@ -277,7 +277,7 @@ selection_bg = "#45475a"
 accent = "#ff79c6"
 red = "rgb(255, 85, 85)"
 "##;
-        let config: Config = toml::from_str(toml).expect("test precondition");
+        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.theme.name.as_deref(), Some("nord"));
         let custom = config.theme.custom.as_ref().expect("test precondition");
         assert_eq!(custom.panel_bg.as_deref(), Some("#1e1e2e"));
@@ -291,7 +291,7 @@ red = "rgb(255, 85, 85)"
 
     #[test]
     fn theme_defaults_when_missing() {
-        let config: Config = toml::from_str("").expect("test precondition");
+        let config: ClientConfig = toml::from_str("").expect("test precondition");
         assert!(config.theme.name.is_none());
         assert!(config.theme.custom.is_none());
     }
@@ -324,7 +324,7 @@ red = "rgb(255, 85, 85)"
 
     #[test]
     fn invalid_custom_colors_are_diagnosed() {
-        let config: Config = toml::from_str(
+        let config: ClientConfig = toml::from_str(
             r##"
 [theme.custom]
 accent = "#ff79c6"
@@ -342,34 +342,34 @@ peach = "#aééb"
     }
 
     #[test]
-    fn invalid_ui_accent_reaches_config_diagnostics() {
-        let config: Config =
-            toml::from_str("[ui]\naccent = \"#aééb\"\n").expect("test precondition");
+    fn invalid_theme_accent_reaches_config_diagnostics() {
+        let config: ClientConfig =
+            toml::from_str("[theme]\naccent = \"#aééb\"\n").expect("test precondition");
         let diagnostics = config.collect_diagnostics();
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.contains("invalid color ui.accent = \"#aééb\"")),
+                .any(|d| d.contains("invalid color theme.accent = \"#aééb\"")),
             "{diagnostics:?}"
         );
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.contains("invalid color ui.accent"))
+                .any(|d| d.contains("invalid color theme.accent"))
         );
 
-        let custom: Config =
-            toml::from_str("[ui]\naccent = \"#aééb\"\n[theme.custom]\naccent = \"#112233\"\n")
+        let custom: ClientConfig =
+            toml::from_str("[theme]\naccent = \"#aééb\"\n[theme.custom]\naccent = \"#112233\"\n")
                 .expect("test precondition");
         assert!(
             custom
                 .collect_diagnostics()
                 .iter()
-                .any(|d| { d.contains("invalid color ui.accent") })
+                .any(|d| { d.contains("invalid color theme.accent") })
         );
 
-        let valid: Config =
-            toml::from_str("[ui]\naccent = \"magenta\"\n").expect("test precondition");
+        let valid: ClientConfig =
+            toml::from_str("[theme]\naccent = \"magenta\"\n").expect("test precondition");
         assert!(
             !valid
                 .collect_diagnostics()
@@ -379,18 +379,18 @@ peach = "#aééb"
     }
 
     #[test]
-    fn empty_ui_accent_is_unset_and_uses_the_theme_accent() {
-        let source = "[ui]\naccent = \"\"\n";
-        let config: Config = toml::from_str(source).expect("empty accent parses as unset");
-        assert_eq!(config.ui.accent, None);
-        let palette =
-            resolve_palette(&config).expect("empty accent leaves the theme palette in effect");
+    fn empty_theme_accent_is_unset_and_uses_the_theme_accent() {
+        let source = "[theme]\naccent = \"\"\n";
+        let config: ClientConfig = toml::from_str(source).expect("empty accent parses as unset");
+        assert_eq!(config.theme.accent, None);
+        let palette = resolve_palette(&config.theme)
+            .expect("empty accent leaves the theme palette in effect");
         assert_eq!(palette.accent, crate::theme::Palette::catppuccin().accent);
     }
 
     #[test]
     fn default_config_has_no_color_diagnostics() {
-        let config = Config::default();
+        let config = ClientConfig::default();
         assert!(
             !config
                 .collect_diagnostics()

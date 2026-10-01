@@ -24,14 +24,17 @@ pub use self::limits::{
 pub use self::machine::{
     IntoSshTarget, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
 };
-/// The raw config values, as deserialized. Runtime code receives a
-/// [`ValidatedConfig`]; raw values become one only through validation
-/// ([`ValidatedConfig::from_values`] or a launch load).
-pub use self::model::Config;
+/// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
+/// or [`ValidatedServerConfig`], constructed through validation at launch or
+/// through that role's `from_values` seam.
+pub use self::model::{ClientConfig, ServerConfig};
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::ConfigDiagnostic,
-    io::{AppPaths, BuildProfile, DATA_DIR_LEASE_FILE_NAME, load_validated},
+    io::{
+        AppPaths, BuildProfile, DATA_DIR_LEASE_FILE_NAME, load_client_validated,
+        load_server_validated,
+    },
     keybinds::{
         ActionKeybinds, BindingConfig, BindingKey, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,
@@ -47,8 +50,9 @@ pub use self::{
     },
     theme_config::ThemeConfig,
     validated::{
-        ConfigProvenance, NewTerminalCwd, UiPreferenceKey, ValidatedConfig,
-        ValidatedTerminalConfig, ValidatedUiConfig,
+        ConfigProvenance, NewTerminalCwd, UiPreferenceKey, ValidatedClientConfig,
+        ValidatedClientUiConfig, ValidatedServerConfig, ValidatedServerUiConfig,
+        ValidatedTerminalConfig,
     },
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
@@ -56,20 +60,44 @@ pub use self::{
 pub use self::keybinds::parse_key_combo;
 pub use self::window_title::sanitize_window_title_text;
 
-pub const DEFAULT_CONFIG: &str = include_str!("default.toml");
+pub const DEFAULT_CLIENT_CONFIG: &str = include_str!("default-client.toml");
+pub const DEFAULT_SERVER_CONFIG: &str = include_str!("default-server.toml");
 
-impl Config {
+impl ClientConfig {
     pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
-        theme_config::resolve_palette(self)
+        theme_config::resolve_palette(&self.theme)
     }
+}
 
-    #[cfg(test)]
+impl ServerConfig {
+    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
+        theme_config::resolve_palette(&self.theme)
+    }
+}
+
+#[cfg(test)]
+impl ClientConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
         let provenance = ConfigProvenance::defaults();
-        // Diagnostics here cover the document alone; the launch-time shell
-        // lookup reads the process environment, so it is skipped.
+        // Client document validation has no shell or working-directory lookup.
         let resolution =
-            validated::ConfigResolution::parse_document(self, &provenance, &AppPaths::default());
+            validated::ClientConfigResolution::parse(self, &provenance, &AppPaths::default());
+        resolution
+            .diagnostics
+            .into_iter()
+            .chain(resolution.path_diagnostics)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+impl ServerConfig {
+    pub fn collect_diagnostics(&self) -> Vec<String> {
+        let resolution = validated::ServerConfigResolution::parse_document(
+            self,
+            &ConfigProvenance::defaults(),
+            &AppPaths::default(),
+        );
         resolution
             .diagnostics
             .into_iter()
@@ -83,8 +111,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::model::{
-        AdvancedConfig, ExperimentalConfig, KeysConfig, ServerConfig, SessionConfig,
-        TerminalConfig, UiConfig,
+        AdvancedConfig, ClientUiConfig, ExperimentalConfig, HeadlessConfig, KeysConfig,
+        ServerConfig, ServerUiConfig, SessionConfig, TerminalConfig,
     };
     use super::*;
 
@@ -92,7 +120,7 @@ mod tests {
     fn default_template_documented_values_match_defaults() {
         let mut document = String::new();
         let mut section = String::new();
-        for line in DEFAULT_CONFIG.lines() {
+        for line in DEFAULT_CLIENT_CONFIG.lines() {
             let line = line.trim();
             let content = line.strip_prefix("# ").unwrap_or(line);
             if content.starts_with('[') && content.ends_with(']') {
@@ -127,15 +155,12 @@ mod tests {
             {
                 continue;
             }
-            if section == "[ui]" && key == "accent" {
-                // This override is an example, rather than the unset default.
-                continue;
-            }
             document.push_str(setting);
             document.push('\n');
         }
-        let mut documented: Config = toml::from_str(&document).expect("documented defaults parse");
-        let defaults = Config::default();
+        let mut documented: ClientConfig =
+            toml::from_str(&document).expect("documented defaults parse");
+        let defaults = ClientConfig::default();
         assert_eq!(
             documented.ui.mouse_scroll_lines(),
             defaults.ui.mouse_scroll_lines()
@@ -146,8 +171,48 @@ mod tests {
     }
 
     #[test]
+    fn server_default_template_documented_values_match_defaults() {
+        let mut document = String::new();
+        let mut section = String::new();
+        for line in DEFAULT_SERVER_CONFIG.lines() {
+            let line = line.trim();
+            let content = line.strip_prefix("# ").unwrap_or(line);
+            if content.starts_with('[') && content.ends_with(']') {
+                section = content.to_owned();
+                // The theme sections hold examples, not the unset defaults.
+                if !matches!(section.as_str(), "[theme]" | "[theme.custom]") {
+                    document.push_str(content);
+                    document.push('\n');
+                }
+                continue;
+            }
+            if matches!(section.as_str(), "[theme]" | "[theme.custom]") {
+                continue;
+            }
+            let Some(setting) = line.strip_prefix("# ") else {
+                continue;
+            };
+            let Some((key, _)) = setting.split_once(" = ") else {
+                continue;
+            };
+            if !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                continue;
+            }
+            document.push_str(setting);
+            document.push('\n');
+        }
+        let documented: ServerConfig =
+            toml::from_str(&document).expect("documented defaults parse");
+        let defaults = ServerConfig::default();
+        assert_eq!(documented, defaults);
+    }
+
+    #[test]
     fn default_template_documents_every_config_field() {
-        let mut config = Config::default();
+        let mut config = ClientConfig::default();
         config.theme.custom = Some(CustomThemeColors::default());
         config.machines.push(MachineConfig {
             label: MachineLabel::parse("schema example").expect("valid test label"),
@@ -157,7 +222,7 @@ mod tests {
 
         let mut documented = BTreeSet::new();
         let mut section = String::new();
-        for line in DEFAULT_CONFIG.lines() {
+        for line in DEFAULT_CLIENT_CONFIG.lines() {
             let line = line.trim();
             let content = line.strip_prefix("# ").unwrap_or(line);
             if content.starts_with('[') && content.ends_with(']') {
@@ -195,7 +260,57 @@ mod tests {
         let missing = fields.difference(&documented).collect::<Vec<_>>();
         assert!(
             missing.is_empty(),
-            "default.toml does not document config fields: {missing:?}"
+            "config template does not document config fields: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn server_default_template_documents_every_config_field() {
+        let mut config = ServerConfig::default();
+        config.theme.custom = Some(CustomThemeColors::default());
+        let fields = server_config_field_paths(config);
+
+        let mut documented = BTreeSet::new();
+        let mut section = String::new();
+        for line in DEFAULT_SERVER_CONFIG.lines() {
+            let line = line.trim();
+            let content = line.strip_prefix("# ").unwrap_or(line);
+            if content.starts_with('[') && content.ends_with(']') {
+                section = content.to_owned();
+                let table = section.trim_start_matches('[').trim_end_matches(']');
+                // A nested header documents every table above it too.
+                for (index, _) in table.match_indices('.') {
+                    documented.insert(table[..index].to_owned());
+                }
+                documented.insert(table.to_owned());
+                continue;
+            }
+            let Some(setting) = line.strip_prefix("# ") else {
+                continue;
+            };
+            let Some((key, _)) = setting.split_once(" = ") else {
+                continue;
+            };
+            if !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                || section == "[ui.sidebar.agents.rows_by_agent]"
+            {
+                continue;
+            }
+            let table = section.trim_start_matches('[').trim_end_matches(']');
+            let path = if table.is_empty() {
+                key.to_owned()
+            } else {
+                format!("{table}.{key}")
+            };
+            documented.insert(path);
+        }
+
+        let missing = fields.difference(&documented).collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "config template does not document config fields: {missing:?}"
         );
     }
 
@@ -242,21 +357,97 @@ mod tests {
     }
     crate::keybinding_table!(record_key_config_fields);
 
-    fn config_field_paths(config: Config) -> BTreeSet<String> {
+    fn config_field_paths(config: ClientConfig) -> BTreeSet<String> {
         let mut fields = BTreeSet::new();
-        record_config_fields!(fields, config, "", Config {
+        record_config_fields!(fields, config, "", ClientConfig {
             theme => theme,
-            terminal => terminal,
-            session => session,
-            server => server,
             keys => keys,
             ui => ui,
-            advanced => advanced,
-            experimental => experimental,
             machines => machines,
         });
         record_config_fields!(fields, theme, "theme", ThemeConfig {
             name => _,
+            accent => _,
+            custom => custom,
+        });
+        if let Some(custom) = custom {
+            record_config_fields!(fields, custom, "theme.custom", CustomThemeColors {
+                accent => _,
+                panel_bg => _,
+                sidebar_bg => _,
+                active_row_bg => _,
+                selection_bg => _,
+                surface0 => _,
+                surface1 => _,
+                surface_dim => _,
+                overlay0 => _,
+                overlay1 => _,
+                text => _,
+                subtext0 => _,
+                mauve => _,
+                green => _,
+                yellow => _,
+                red => _,
+                blue => _,
+                teal => _,
+                peach => _,
+            });
+        }
+        record_key_config_fields(&mut fields, keys);
+        record_config_fields!(fields, ui, "ui", ClientUiConfig {
+            sidebar_width => _,
+            sidebar_min_width => _,
+            sidebar_max_width => _,
+            sidebar_start_collapsed => _,
+            sidebar_collapsed_mode => _,
+            mouse_capture => _,
+            copy_on_select => _,
+            host_cursor => _,
+            right_click_passthrough_modifier => _,
+            redraw_on_focus_gained => _,
+            mouse_scroll_lines => _,
+            confirm_close => _,
+            prompt_new_workspace_name => _,
+            agent_panel_sort => _,
+            status_indicators => _,
+            sidebar => sidebar,
+        });
+        record_config_fields!(fields, sidebar, "ui.sidebar", SidebarConfig {
+            agents => agents,
+            spaces => spaces,
+        });
+        record_config_fields!(fields, agents, "ui.sidebar.agents", AgentsSidebarConfig {
+            rows => _,
+            rows_by_agent => _,
+            row_gap => _,
+        });
+        record_config_fields!(fields, spaces, "ui.sidebar.spaces", SpacesSidebarConfig {
+            rows => _,
+            row_gap => _,
+        });
+        for machine in machines {
+            record_config_fields!(fields, machine, "machines", MachineConfig {
+                label => _,
+                ssh => _,
+            });
+        }
+        fields
+    }
+
+    fn server_config_field_paths(config: ServerConfig) -> BTreeSet<String> {
+        let mut fields = BTreeSet::new();
+        record_config_fields!(fields, config, "", ServerConfig {
+            theme => theme,
+            terminal => terminal,
+            session => session,
+            server => server,
+            ui => ui,
+            advanced => advanced,
+            experimental => experimental,
+        });
+        record_config_fields!(fields, theme, "theme", ThemeConfig {
+            name => _,
+            accent => _,
             custom => custom,
         });
         if let Some(custom) = custom {
@@ -291,78 +482,45 @@ mod tests {
             resume_agents_on_restore => _,
             startup_per_agent_delay_ms => _,
         });
-        record_config_fields!(fields, server, "server", ServerConfig {
+        record_config_fields!(fields, server, "server", HeadlessConfig {
             headless_cols => _,
             headless_rows => _,
         });
-        record_key_config_fields(&mut fields, keys);
-        record_config_fields!(fields, ui, "ui", UiConfig {
-            sidebar_width => _,
-            sidebar_min_width => _,
-            sidebar_max_width => _,
-            sidebar_start_collapsed => _,
-            sidebar_collapsed_mode => _,
-            mouse_capture => _,
-            copy_on_select => _,
-            host_cursor => _,
-            right_click_passthrough_modifier => _,
-            redraw_on_focus_gained => _,
-            mouse_scroll_lines => _,
-            confirm_close => _,
-            prompt_new_workspace_name => _,
+        record_config_fields!(fields, ui, "ui", ServerUiConfig {
             pane_borders => _,
             pane_outer_borders => _,
             pane_scrollbars => _,
             pane_gaps => _,
             show_agent_labels_on_pane_borders => _,
             window_title => _,
-            agent_panel_sort => _,
-            status_indicators => _,
-            sidebar => sidebar,
-            accent => _,
-        });
-        record_config_fields!(fields, sidebar, "ui.sidebar", SidebarConfig {
-            agents => agents,
-            spaces => spaces,
-        });
-        record_config_fields!(fields, agents, "ui.sidebar.agents", AgentsSidebarConfig {
-            rows => _,
-            rows_by_agent => _,
-            row_gap => _,
-        });
-        record_config_fields!(fields, spaces, "ui.sidebar.spaces", SpacesSidebarConfig {
-            rows => _,
-            row_gap => _,
         });
         record_config_fields!(fields, advanced, "advanced", AdvancedConfig {
             scrollback_limit_bytes => _,
         });
         record_config_fields!(fields, experimental, "experimental", ExperimentalConfig {
-            allow_nested => _,
             pane_history => _,
             reveal_hidden_cursor_for_cjk_ime => _,
             cjk_ime_agents => _,
             cjk_ime_cursor_shape => _,
         });
-        for machine in machines {
-            record_config_fields!(fields, machine, "machines", MachineConfig {
-                label => _,
-                ssh => _,
-            });
-        }
         fields
     }
 
     #[test]
     fn config_default_template_keeps_all_settings_comment_only() {
-        for (index, line) in DEFAULT_CONFIG.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
-                continue;
-            }
+        for (name, template) in [
+            ("default-client.toml", DEFAULT_CLIENT_CONFIG),
+            ("default-server.toml", DEFAULT_SERVER_CONFIG),
+        ] {
+            for (index, line) in template.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+                    continue;
+                }
 
-            let line_number = index + 1;
-            panic!("active setting on line {line_number}: {line}");
+                let line_number = index + 1;
+                panic!("active setting on {name} line {line_number}: {line}");
+            }
         }
     }
 
@@ -370,19 +528,19 @@ mod tests {
     /// setting is the real default.
     #[test]
     fn default_template_lists_every_theme_and_the_default() {
-        let words: Vec<&str> = DEFAULT_CONFIG
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-            .collect();
-        for name in theme::THEME_NAMES {
-            assert!(words.contains(name), "default.toml does not list {name}");
+        for template in [DEFAULT_CLIENT_CONFIG, DEFAULT_SERVER_CONFIG] {
+            let words: Vec<&str> = template
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .collect();
+            for name in theme::THEME_NAMES {
+                assert!(words.contains(name), "config template does not list {name}");
+            }
+            let default_line = format!("# name = \"{}\"", theme::DEFAULT_THEME);
+            assert!(
+                template.lines().any(|line| line.trim() == default_line),
+                "config template must show {default_line}"
+            );
         }
-        let default_line = format!("# name = \"{}\"", theme::DEFAULT_THEME);
-        assert!(
-            DEFAULT_CONFIG
-                .lines()
-                .any(|line| line.trim() == default_line),
-            "default.toml must show {default_line}"
-        );
     }
 
     /// The commented `[keys]` settings in the template, uncommented, are
@@ -393,7 +551,7 @@ mod tests {
         let mut in_keys = false;
         let mut uncommented = String::from("[keys]\n");
         let mut listed = 0;
-        for line in DEFAULT_CONFIG.lines() {
+        for line in DEFAULT_CLIENT_CONFIG.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with('[') {
                 in_keys = trimmed == "[keys]";
@@ -411,10 +569,12 @@ mod tests {
                 listed += 1;
             }
         }
-        let config: Config = toml::from_str(&uncommented).expect("template keys parse");
+        let config: ClientConfig = toml::from_str(&uncommented).expect("template keys parse");
         assert_eq!(config.keys, KeysConfig::default());
         // The prefix plus every binding in the keybinding table.
-        assert_eq!(listed, 49, "{uncommented}");
+        let mut fields = BTreeSet::new();
+        record_key_config_fields(&mut fields, KeysConfig::default());
+        assert_eq!(listed, fields.len(), "{uncommented}");
     }
 
     #[test]
@@ -477,7 +637,7 @@ mod tests {
 
     #[test]
     fn a_prefix_shared_with_a_default_navigate_key_names_the_binding_to_set() {
-        let config: Config =
+        let config: ClientConfig =
             toml::from_str("[keys]\nprefix = \"esc\"\n").expect("test precondition");
         let validation = config.compute_keybind_validation(|_| false);
         assert!(validation.live.is_none());
@@ -490,15 +650,16 @@ mod tests {
             validation.diagnostics
         );
 
-        let config: Config = toml::from_str("[keys]\nprefix = \"esc\"\nnavigate_back = \"\"\n")
-            .expect("test precondition");
+        let config: ClientConfig =
+            toml::from_str("[keys]\nprefix = \"esc\"\nnavigate_back = \"\"\n")
+                .expect("test precondition");
         assert!(config.compute_keybind_validation(|_| false).live.is_some());
     }
 
     #[test]
     fn keybind_parser_returns_only_complete_values() {
         for profile in ["", "[keys]\nprefix = \"ctrl+a\"\n"] {
-            let config: Config = toml::from_str(profile).expect("test precondition");
+            let config: ClientConfig = toml::from_str(profile).expect("test precondition");
             let validation = config.compute_keybind_validation(|_| false);
             let live = validation
                 .live
@@ -506,7 +667,7 @@ mod tests {
             assert_eq!(live.keybinds.detach.label(), Some("prefix+q".into()));
         }
 
-        let config: Config =
+        let config: ClientConfig =
             toml::from_str("[keys]\nprefix = \"ctrl+\"\n").expect("test precondition");
         let validation = config.compute_keybind_validation(|_| false);
         assert!(validation.live.is_none());
@@ -520,17 +681,17 @@ mod tests {
 
     #[test]
     fn ui_host_cursor_defaults_to_native_and_parses_overrides() {
-        let default_config = Config::default();
+        let default_config = ClientConfig::default();
         assert_eq!(default_config.ui.host_cursor, HostCursorModeConfig::Native);
 
-        let native: Config =
+        let native: ClientConfig =
             toml::from_str("[ui]\nhost_cursor = 'native'\n").expect("test precondition");
         assert_eq!(native.ui.host_cursor, HostCursorModeConfig::Native);
 
-        let drawn: Config =
+        let drawn: ClientConfig =
             toml::from_str("[ui]\nhost_cursor = 'drawn'\n").expect("test precondition");
         assert_eq!(drawn.ui.host_cursor, HostCursorModeConfig::Drawn);
 
-        assert!(toml::from_str::<Config>("[ui]\nhost_cursor = 'auto'\n").is_err());
+        assert!(toml::from_str::<ClientConfig>("[ui]\nhost_cursor = 'auto'\n").is_err());
     }
 }

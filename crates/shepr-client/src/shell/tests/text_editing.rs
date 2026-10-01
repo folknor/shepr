@@ -2,7 +2,7 @@ use super::*;
 use shepr_termio::input::{KeybindAction, KeybindMatch, TerminalKey};
 
 fn shell(field: usize) -> ClientShellState {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut frame = surface();
     frame.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {

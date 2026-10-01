@@ -39,8 +39,8 @@ impl AgentReportHarness {
         at: HookClockSample,
     ) -> Result<Self, String> {
         let paths = shepr_config::AppPaths::rooted_at(root, Some(root), Some(root));
-        let config = shepr_config::ValidatedConfig::from_values(
-            shepr_config::Config::default(),
+        let config = shepr_config::ValidatedServerConfig::from_values(
+            shepr_config::ServerConfig::default(),
             None,
             paths.clone(),
         )

@@ -179,21 +179,18 @@ pub(crate) fn print_help() {
     }
     match shepr_config::AppPaths::resolve() {
         Ok(paths) => {
-            println!("Config: {}", paths.config_file().display());
+            println!("Client config: {}", paths.client_config_file().display());
+            println!("Server config: {}", paths.server_config_file().display());
             println!(
-                "Logs:   {}",
+                "Logs:          {}",
                 shepr_platform::logging::help_log_paths_summary(paths.data_dir())
             );
         }
         Err(errors) => {
-            println!("Config: unavailable ({})", errors.join("; "));
-            println!("Logs:   unavailable ({})", errors.join("; "));
+            println!("Config:        unavailable ({})", errors.join("; "));
+            println!("Logs:          unavailable ({})", errors.join("; "));
         }
     }
-    println!(
-        "Env:    {} overrides config file path",
-        shepr_core::env::EnvVar::SheprConfigPath
-    );
 }
 
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.

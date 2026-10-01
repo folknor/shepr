@@ -126,9 +126,6 @@ env_vocabulary! {
     /// The table test below pins the name and kind of every variant.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum EnvVar {
-        /// `SHEPR_CONFIG_PATH`: the config file, explicitly; a relative value
-        /// is joined to the current directory.
-        SheprConfigPath => "SHEPR_CONFIG_PATH",
         /// `SHEPR_SOCKET_PATH`: the API socket of the server to target. Written
         /// into every pane as the socket of the server that owns it.
         SheprSocketPath => "SHEPR_SOCKET_PATH",
@@ -345,8 +342,7 @@ impl EnvVar {
             Self::SheprPaneId | Self::SheprEnv | Self::SheprBuildProfile | Self::SheprLog => {
                 EnvKind::Text
             }
-            Self::SheprConfigPath
-            | Self::PiCodingAgentDir
+            Self::PiCodingAgentDir
             | Self::PiConfigDir
             | Self::ClaudeConfigDir
             | Self::CodexHome
@@ -966,7 +962,6 @@ mod tests {
     fn every_variable_has_its_documented_name_and_kind() {
         use EnvKind::{AbsolutePath, Flag, Handoff, Path, Presence, Raw, SelectorPath, Text};
         let table: &[(EnvVar, &str, EnvKind)] = &[
-            (EnvVar::SheprConfigPath, "SHEPR_CONFIG_PATH", Path),
             (EnvVar::SheprSocketPath, "SHEPR_SOCKET_PATH", SelectorPath),
             (
                 EnvVar::SheprClientSocketPath,
@@ -1340,7 +1335,7 @@ mod tests {
         }
         // A plain path kind leaves relative paths to its owning site.
         assert_eq!(
-            resolve_path(EnvVar::SheprConfigPath, Some(OsStr::new("rel.toml"))),
+            resolve_path(EnvVar::CodexHome, Some(OsStr::new("rel.toml"))),
             Ok(Some(PathBuf::from("rel.toml")))
         );
     }

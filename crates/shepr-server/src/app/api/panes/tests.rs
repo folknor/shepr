@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::SpawnGeometry;
 use crate::test_support::*;
-use shepr_config::Config;
+use shepr_config::ServerConfig;
 use shepr_mux::workspace::Workspace;
 use shepr_protocol::command::{EndpointCommand, EndpointError};
 use shepr_protocol::{PublicPaneId, WorkspaceId};
@@ -9,7 +9,11 @@ use shepr_termio::host_term::cell_size::HostCellSize;
 
 fn app_with_test_workspace() -> (App, PublicPaneId) {
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+    let mut app = App::new(
+        &ServerConfig::default(),
+        crate::app::AppPolicy::Test,
+        api_rx,
+    );
     app.state.workspaces = vec![Workspace::test_new("metadata")];
     app.state.ensure_test_terminals();
     let pane_id = app.state.workspaces[0].root_pane();
@@ -501,7 +505,11 @@ fn pane_rename_sets_and_clears_the_manual_label() {
 
 fn app_with_workspace() -> App {
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+    let mut app = App::new(
+        &ServerConfig::default(),
+        crate::app::AppPolicy::Test,
+        api_rx,
+    );
     app.state.workspaces = vec![Workspace::test_new("issue")];
     app.state.ensure_test_terminals();
     app

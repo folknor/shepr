@@ -57,7 +57,7 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
 fn state_with_machines(
     machines: &[shepr_config::MachineConfig],
 ) -> (ClientShellState, ClientEndpointId) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let endpoint_id = ClientEndpointId::Ssh(machines[0].label.clone());
     state.set_machines(machines);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
@@ -508,7 +508,7 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
 fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
     use shepr_termio::input::KeybindAction;
 
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
     state.sidebar_collapsed = true;
 
@@ -783,7 +783,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
 
 #[test]
 fn configured_machines_start_connecting_without_a_snapshot() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let machine = remote_machine();
     let remote = ClientEndpointId::Ssh(machine.label.clone());
     state.set_machines(&[machine]);
@@ -799,7 +799,8 @@ fn configured_machines_start_connecting_without_a_snapshot() {
 #[test]
 fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
     for (cols, rows) in [(100, 28), (36, 18)] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         let machine = remote_machine();
         let remote = ClientEndpointId::Ssh(machine.label.clone());
         state.set_machines(&[machine]);
@@ -1181,7 +1182,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
     use shepr_protocol::AgentStatus;
 
-    let mut config = Config::default();
+    let mut config = ClientConfig::default();
     config.ui.status_indicators = StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![
         AgentSidebarToken::StateIcon,
@@ -1244,7 +1245,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     use shepr_config::AgentSidebarToken;
     use shepr_protocol::AgentStatus;
 
-    let mut config = Config::default();
+    let mut config = ClientConfig::default();
     config.ui.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
@@ -1964,7 +1965,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         assert_eq!(prefix, expected, "{target:?}");
     }
 
-    let mut local = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut local = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     local.set_snapshot(Box::new(snapshot()));
     local.set_pane_surface(surface());
     let frame = local.compose(100, 28).expect("local-only sidebar");

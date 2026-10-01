@@ -307,7 +307,8 @@ mod tests {
     }
 
     fn state_with_copy_pane_focus(copy_pane_focused: bool) -> (ClientShellState, Rect) {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.last_composed_size = Some((80, 24));
         let mut snapshot = crate::shell::tests::snapshot();
         let copy_pane_id = snapshot.panes[0].pane_id.clone();

@@ -158,14 +158,18 @@ mod tests {
     use super::*;
     use crate::app::SpawnGeometry;
     use crate::test_support::*;
-    use shepr_config::Config;
+    use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::WorkspaceId;
     use shepr_termio::host_term::cell_size::HostCellSize;
 
     fn app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), crate::app::AppPolicy::Test, api_rx);
+        let mut app = App::new(
+            &ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
         app.state.settings.default_shell =
             super::super::test_support::exiting_test_command().into();
         app.state.settings.login_shell = false;

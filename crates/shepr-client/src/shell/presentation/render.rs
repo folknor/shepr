@@ -330,18 +330,18 @@ pub(super) fn display_width(text: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_fixtures::ValidatedConfigFixture as _;
+    use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
     #[test]
     fn navigate_mode_bar_uses_configured_action_keys() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut config = shepr_config::Config::default();
+        let mut config = shepr_config::ClientConfig::default();
         config.keys.navigate_back = shepr_config::BindingConfig::one("q");
         config.keys.navigate_workspace_up = shepr_config::BindingConfig::one("u");
         config.keys.navigate_workspace_down = shepr_config::BindingConfig::one("d");
         config.keys.navigate_cycle_pane_next = shepr_config::BindingConfig::one("n");
         config.keys.navigate_cycle_pane_previous = shepr_config::BindingConfig::one("p");
-        let validated = shepr_config::ValidatedConfig::test_from_config(config, None);
+        let validated = shepr_config::ValidatedClientConfig::test_from_config(config, None);
         let area = Rect::new(0, 0, 120, 2);
         let mut buffer = Buffer::empty(area);
 

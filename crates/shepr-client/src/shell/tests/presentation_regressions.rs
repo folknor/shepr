@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let notices = [
         (
             shepr_protocol::NoticeKind::PaneInputDropped {
@@ -37,7 +37,7 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
 
 #[test]
 fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
     state.sidebar_collapsed = true;
     state.set_snapshot(Box::new(snapshot()));
@@ -60,7 +60,7 @@ fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
 
 #[test]
 fn client_presentation_regression_removed_navigator_target_accepts_visible_fallback() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.open_navigator_overlay();
     let removed_target = ClientNavigatorTarget::Pane {
@@ -113,7 +113,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
 
 #[test]
 fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_terminal() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let groups = shepr_termio::input::keybind_help_groups(
@@ -164,7 +164,7 @@ fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_ter
 
 #[test]
 fn client_presentation_regression_notice_card_keeps_diagnostic_lines_visible() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Unavailable,
@@ -184,7 +184,7 @@ fn client_presentation_regression_notice_card_keeps_diagnostic_lines_visible() {
 
 #[test]
 fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let kind = shepr_protocol::SessionRestoreNotice {
         unusable: None,
@@ -235,7 +235,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
 
 #[test]
 fn transient_cards_and_dismissal_do_not_discard_queued_restore_cards() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let boot = crate::tests::test_boot_id("restored");
     let kind = shepr_protocol::SessionRestoreNotice {
         unusable: None,

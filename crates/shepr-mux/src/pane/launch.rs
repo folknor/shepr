@@ -29,8 +29,7 @@ fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
             PaneEnvPolicy::ServerOnly
         }
         EnvVar::Tmux | EnvVar::WeztermPane => PaneEnvPolicy::Scrubbed,
-        EnvVar::SheprConfigPath
-        | EnvVar::SheprSocketPath
+        EnvVar::SheprSocketPath
         | EnvVar::SheprClientSocketPath
         | EnvVar::SheprEnv
         | EnvVar::SheprBuildProfile

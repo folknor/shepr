@@ -2,7 +2,7 @@ use super::*;
 use crate::endpoint::ClientEndpointId;
 
 fn pending_request() -> (ClientShellState, Vec<ClientShellAction>) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     submit_request(state)
@@ -25,7 +25,8 @@ fn request_id(actions: &[ClientShellAction]) -> &str {
 #[test]
 fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot() {
     for missing_snapshot in [false, true] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         state.set_pane_surface(surface());
         let pane_id = test_pane_id("w1:p1");
@@ -68,7 +69,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
 
 #[test]
 fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let pane_id = test_pane_id("w1:p1");
@@ -98,7 +99,7 @@ fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
 
 #[test]
 fn disconnecting_a_pending_scroll_does_not_show_an_interrupted_action_notice() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let pane_id = test_pane_id("w1:p1");
@@ -151,7 +152,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     tx.try_send(ClientLoopEvent::Timer)
         .expect("test precondition");
     let mut scheduled = None;
-    let mut shell = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut shell = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     crate::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
@@ -188,7 +189,8 @@ fn current_owned_targetless_pick_is_a_noop_but_unowned_pick_reproves() {
         let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
         let mut commands = EndpointCommands::default();
         let mut scheduled = None;
-        let mut shell = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut shell =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         crate::shell_runtime::dispatch_client_shell_actions(
             vec![ClientShellAction::ActivateEndpoint {
                 endpoint_id: ClientEndpointId::Local,
@@ -303,7 +305,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
 
 #[test]
 fn failed_selection_copy_does_not_send_terminal_input() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.selection = Some(shepr_vt::selection::Selection::range(

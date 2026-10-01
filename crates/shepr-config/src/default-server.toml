@@ -1,0 +1,126 @@
+# shepr server configuration
+# Place this file at ~/.config/shepr/server.toml
+# Only shepr-server reads this file, on the host it runs on. It decides the
+# panes' shell and working directory, the session, pane borders, gaps and
+# scrollbars, their colours, and the window title. Keys, the sidebar, mouse and
+# copy behaviour and the machines belong in client.toml, which only the shepr
+# client reads. An unknown or misplaced setting fails the launch.
+
+[theme]
+# Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,
+#                  tokyo-night-day, dracula, nord, gruvbox, gruvbox-light,
+#                  one-dark, one-light, solarized, solarized-light, kanagawa,
+#                  kanagawa-lotus, rose-pine, rose-pine-dawn, vesper
+# name = "catppuccin"
+
+# Accent color for highlights, borders, and navigation UI.
+# Unset or empty uses the theme accent.
+# Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
+# This is an example override; theme.custom.accent takes precedence.
+# accent = "#89b4fa"
+
+# Override individual color tokens on top of the base theme.
+# Accepts: hex (#rrggbb), named colors, rgb(r,g,b), or panel_bg = "reset"
+# [theme.custom]
+# sidebar_bg = "#181825"
+# active_row_bg = "#1e1e2e"
+# selection_bg = "#313244"
+# panel_bg = "reset"
+# accent = "#f5c2e7"
+# surface0 = "#313244"
+# surface1 = "#45475a"
+# surface_dim = "#181825"
+# overlay0 = "#6c7086"
+# overlay1 = "#7f849c"
+# text = "#cdd6f4"
+# subtext0 = "#a6adc8"
+# mauve = "#cba6f7"
+# red = "#ff6188"
+# green = "#a6e3a1"
+# yellow = "#f9e2af"
+# blue = "#89b4fa"
+# teal = "#94e2d5"
+# peach = "#fab387"
+
+[terminal]
+# Executable used for new interactive panes.
+# Empty means $SHELL, or /bin/sh when SHELL is unset. A SHELL that is not
+# a usable shell shepr recognizes fails the launch, like a bad value here.
+# default_shell = ""
+
+# Start new interactive pane shells as login shells.
+# login_shell = false
+
+# CWD policy for new interactive panes and workspaces.
+# Use "follow" to inherit the source pane/workspace, "home" for $HOME,
+# "current" for the directory Shepr was launched from, or a fixed path such as
+# "~/Projects". Fixed paths must name an existing directory. Relative paths
+# resolve against the launch directory; an empty path is an error.
+# new_cwd = "follow"
+
+[server]
+# Size of the virtual terminal used when no client is attached.
+# Attached clients always use their own terminal size.
+# headless_cols = 120
+# headless_rows = 40
+
+[ui]
+# Draw borders around split panes.
+# "auto" draws them only for split panes, "always" also frames a lone pane
+# (only while pane_outer_borders is enabled), "off" disables them.
+# pane_borders = "auto"
+
+# Draw borders along the outside edge of the pane area.
+# Disable for tmux-style internal splitters without an outside frame.
+# pane_outer_borders = true
+
+# Draw interactive scrollbars beside terminal panes.
+# Set false to reclaim the scrollbar column and keep it out of terminal-native selections.
+# pane_scrollbars = true
+
+# Keep split panes visually separated instead of sharing divider borders.
+# pane_gaps = true
+
+# Show detected/reported agent labels in split pane borders when no manual pane name is set.
+# show_agent_labels_on_pane_borders = false
+
+# Title Shepr writes to the terminal it runs in, which is what window managers
+# show in title, tab, and group bars. Tokens are {hostname}, {workspace},
+# {pane}, and {terminal_title}; {{ and }} are literal braces.
+# The title renders on the Shepr server, so {hostname} names the host the panes
+# run on even when attaching from a remote client.
+# The sanitized title is limited to 200 characters.
+# Set to "" to leave the outer terminal title alone.
+# window_title = "{hostname}: {workspace}"
+
+[session]
+# Resume supported AI-agent panes into their native conversation sessions after
+# a Shepr server restart. Needs the agent's hooks, which the server installs at
+# launch for every agent present on its host.
+# resume_agents_on_restore = true
+# Milliseconds between automatic agent restores; 0 starts them without spacing.
+# startup_per_agent_delay_ms = 100
+
+[experimental]
+# Save recent pane screen history across full server restarts.
+# pane_history = false
+# Expose the focused pane's cursor to the outer terminal so input
+# methods keep tracking the candidate window when TUIs paint their own
+# cursor (Claude Code, pi, codex). Trade-off: extra cursor visible for
+# apps that hide it without painting a replacement (vim normal mode, etc.).
+# reveal_hidden_cursor_for_cjk_ime = false
+# Optional allow-list: only reveal for focused panes whose detected agent
+# matches one of these names. Empty means apply to any focused pane. Unknown
+# names are configuration errors.
+# Agent labels and declared aliases are accepted, case-insensitively.
+# cjk_ime_agents = []
+# Cursor shape rendered when reveal_hidden_cursor_for_cjk_ime is true.
+# Values: block, steady_block (default), underline, steady_underline, bar, steady_bar.
+# cjk_ime_cursor_shape = "steady_block"
+
+[advanced]
+# Approximate per-pane scrollback budget in bytes; 0 disables scrollback.
+# Not a hard cap: nonzero values keep at least 1000 lines, and widening a pane
+# keeps its existing history.
+# scrollback_limit_bytes = 10000000
+
