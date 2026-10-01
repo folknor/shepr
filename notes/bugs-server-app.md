@@ -12,79 +12,15 @@ Filed from the defect hunt over `crates/shepr-server/src/app/`, `lib.rs`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SAPP-002 - One hung resume directory blocks every other agent resume, indefinitely
+## SAPP-002 - A hung resume directory check leaves that pane's resume pending forever
 
-Claims broken: the same comment ("leaves the loop free while the resume waits")
-implies the wait is per resume; AGENTS.md promises agent resume on restore.
-
-`start_pending_agent_resumes` refuses the whole pass if any candidate lacks a
-check:
-
-```rust
-if pending.iter().any(|candidate| {
-    !self.resume_schedule.has_directory_check(&candidate.terminal_id, &candidate.cwd)
-}) {
-    return false;
-}
-```
-
-`worker::resume_cwd_check` has no timeout. One pane whose saved cwd sits on a
-hung mount keeps every other restored agent, in every workspace, from resuming
-for as long as the mount hangs. The
-comment justifies the all-or-nothing gate as keeping candidate order and
-spacing.
-
-Direction: attempt candidates that have a check in order and skip (not block on)
-ones still waiting, or give the worker check a deadline after which the
-directory counts as unavailable and the resume is abandoned with
-`RestoreFailure::DirectoryUnavailable`.
-
-## SAPP-003 - Automatic workspace replacement destroys the pane-exit checkpoint on the production shutdown path
-
-Claim broken: `create_default_workspace` (`mod.rs`): "Automatic replacement is
-part of pane removal, not a new user mutation", and it re-arms
-`pane_exit_checkpoint_pending` so the checkpoint survives. The test
-`pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown` asserts
-the saved session keeps both panes.
-
-`create_default_workspace` calls `create_workspace`, which calls
-`schedule_session_save()` -> `SessionSaver::schedule`, which sets
-`pane_exit_checkpoint_pending = false` and `pane_exit_checkpoint_snapshot =
-None`. `create_default_workspace` then sets `pending = true` again but cannot
-restore the snapshot. On shutdown the production path is
-`save_session_before_teardown_async`: `preserve_checkpoint` is true (pending,
-not dirty); the snapshot is `None`, so `checkpoint_job` is `Some(None)`; it logs
-"could not pair fresh pane history with the saved pane-exit layout" (wrong
-reason) and captures the live session, the freshly created one-pane default
-workspace, overwriting the checkpoint.
-
-The test passes only because it calls the `#[cfg(test)]`
-`save_session_before_teardown`, which when preserving skips the save and leaves
-the file on disk. Production never runs that function.
-
-Scenario: a client is attached, every shell dies from a signal (session
-teardown, SIGHUP), all workspaces empty, `create_automatic_workspace` makes a new
-one, then the server gets SIGTERM within the debounce window: the saved layout is
-replaced by a single default workspace.
-
-Related, lower severity: `capture_save_job_from_pane_exit_checkpoint` returns
-`None` whenever `capture_pending_cwds_for_snapshot` or
-`capture_pending_history_for_snapshot` cannot map a snapshot pane to a terminal
-ID, and the caller saves the live session with the same misleading warning. The
-`terminal_ids` map is built by `capture_pane_exit_checkpoint_snapshot` keyed by
-`(workspace_index, pane_id.raw())` and rejected wholesale if counts differ, so
-in practice a stored snapshot always maps; the fallback is reachable only
-through the missing-snapshot case above, where the message is wrong. The two
-cases should be distinct in the log, and it is worth asking whether falling back
-to the live layout is ever right when `preserve_checkpoint` means the live layout
-is the damaged one.
-
-Direction: (a) the checkpoint state should not be resettable by a side channel:
-`schedule()` should not drop the snapshot when the caller is about to declare
-the change non-durable, or `create_default_workspace` should not go through
-`schedule_session_save`. (b) Delete the test-only `save_session_before_teardown`
-and `save_session_now`, or make them thin wrappers over the async path. See
-SAPP-007 and SAPP-012.
+The resume pass now skips candidates whose directory check has not landed and
+resumes the checked ones in layout order, so one hung mount no longer blocks
+every other agent. Residue: `worker::resume_cwd_check` (`std::fs::metadata` on a
+worker) still has no deadline, so a pane whose saved cwd sits on a hung mount
+keeps its resume pending for as long as the mount hangs. A deadline after which
+the directory counts as unavailable (abandoning the resume with
+`RestoreFailure::DirectoryUnavailable`) would end it.
 
 ## SAPP-004 - A pane-exit checkpoint drops the dying pane's agent session before it captures
 
@@ -116,9 +52,6 @@ exit reason into the release so a signal death keeps `persisted_agent_session`.
 Several `#[cfg(test)]` functions duplicate production logic with different
 semantics, and tests assert on the duplicate:
 
-- `App::save_session_before_teardown` and `save_session_now` (`session.rs`) vs
-  production `save_session_before_teardown_async`. Different behaviour when a
-  checkpoint is preserved; SAPP-003 hides behind this.
 - `AppState::handle_pane_died` / `remove_pane` (actions) vs the App's
   `handle_internal_event_inner` removal.
 - `AppState::navigate_pane`, `swap_pane`, `resize_pane` (`actions/pane.rs`) vs
@@ -143,20 +76,22 @@ even when the removal plan went `Stale` and nothing was removed, clearing
 
 `AppState::mark_session_dirty` (flag, converted by `sync_session_save_schedule`
 once per loop pass) and `App::schedule_session_save` (immediately bumps
-`session_revision`, clears the checkpoint snapshot and pending flag). Handlers
-pick one or both arbitrarily (`handle_workspace_rename` only schedules,
-`handle_pane_rename` only marks, `handle_pane_swap` does both). SAPP-003 is a
-direct consequence. One mutation entry point would remove the class.
+`session_revision` and clears the checkpoint snapshot). Handlers pick one or
+both arbitrarily (`handle_workspace_rename` only schedules,
+`handle_pane_rename` only marks, `handle_pane_swap` does both). Automatic
+workspace replacement no longer goes through the scheduling side channel, but
+the two entry points remain; one mutation entry point would remove the class.
 
 ## SAPP-012 - Structural: the pane-exit checkpoint as a typed state machine
 
-The checkpoint in `session.rs` spreads one concept across ten loosely coupled
-fields (`pane_exit_checkpoint_pending`, `_requested`, `_generation`,
-`_saved_generation`, `_snapshot`, `_failures`, `_ready`, `session_revision`,
-`critical_save_retry_deadline`, the host-shutdown trio). Every finding in this
-area is an invariant between two of them that some path forgot. A typed enum (no
-checkpoint / requested gen N / saved gen N with snapshot / abandoned) would make
-SAPP-003 and SAPP-010 unrepresentable; the hunter recommends the rewrite.
+The checkpoint in `session.rs` spreads one concept across loosely coupled
+fields. The separate pending flag is gone (preservation is now the snapshot's
+presence), but the requested generation, saved generation, failures, readiness,
+`session_revision`, `critical_save_retry_deadline` and the host-shutdown trio
+remain separate. Every finding in this area is an invariant between two of them
+that some path forgot. A typed enum (no checkpoint / requested gen N / saved
+gen N with snapshot / abandoned) would make SAPP-010 unrepresentable; the
+hunter recommends the rewrite.
 
 ## SAPP-013 - A production-compiled test harness
 

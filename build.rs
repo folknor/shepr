@@ -309,19 +309,17 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
     );
+    // Only the build scripts of shepr-protocol and shepr-config include this
+    // one (the root package has none), so the workspace root is two levels up.
     let crate_dir_name = manifest_dir.file_name().and_then(|name| name.to_str());
     // shepr-config includes this script only for the profile constant, so it
     // skips the identity, which would hash the whole tree a second time.
     let stamps_identity = crate_dir_name != Some("shepr-config");
-    let root = if matches!(crate_dir_name, Some("shepr-protocol" | "shepr-config")) {
-        manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("missing workspace root")?
-            .to_path_buf()
-    } else {
-        manifest_dir
-    };
+    let root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("missing workspace root")?
+        .to_path_buf();
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
 
     let profile = std::env::var("PROFILE")
@@ -346,13 +344,6 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     }
     let build_id = build_id(&root, &profile_inputs)?;
 
-    fs::write(
-        out_dir.join("build_id.rs"),
-        format!(
-            "/// Fingerprint of the source tree and build profile this binary was built from.\n\
-             pub(crate) const BUILD_ID: &str = \"{build_id}\";\n"
-        ),
-    )?;
     fs::write(
         out_dir.join("build_identity.rs"),
         format!(

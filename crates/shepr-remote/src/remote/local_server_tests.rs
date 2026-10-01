@@ -266,9 +266,60 @@ fn a_regular_file_at_the_socket_path_is_an_error_not_absence() {
 fn a_listener_without_a_status_answer_is_unresponsive() {
     let dir = ScratchDir::new("probe-unresponsive");
     let path = dir.join("s.sock");
+    let api = dir.join("a.sock");
     let _listener = UnixListener::bind(&path).expect("test precondition");
-    let probed = probe_server_at(&path, &dir.join("a.sock")).expect("a live socket probes");
+    let _api_listener = UnixListener::bind(&api).expect("test precondition");
+    let probed = probe_server_at(&path, &api).expect("a live socket probes");
     assert!(matches!(probed, Probed::Unresponsive));
+}
+
+#[test]
+fn a_client_socket_left_after_api_release_is_still_shutting_down() {
+    let dir = ScratchDir::new("probe-api-released");
+    let client = dir.join("client.sock");
+    let api = dir.join("api.sock");
+    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+
+    let probed = probe_server_at(&client, &api).expect("the released API socket is not an error");
+
+    assert!(matches!(probed, Probed::Releasing));
+}
+
+#[test]
+fn an_api_socket_live_before_the_client_socket_is_a_startup_transition() {
+    let dir = ScratchDir::new("probe-api-first");
+    let client = dir.join("client.sock");
+    let api = dir.join("api.sock");
+    let _api_listener = UnixListener::bind(&api).expect("test precondition");
+
+    let probed = probe_server_at(&client, &api).expect("the live API socket is a transition");
+
+    assert!(matches!(probed, Probed::Starting));
+}
+
+#[test]
+fn launch_waits_for_the_client_socket_after_api_release() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let (client, _api) = runtime_sockets(&paths);
+    let client_listener = UnixListener::bind(&client).expect("test precondition");
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let wait_paths = paths.clone();
+    let waiter = std::thread::spawn(move || {
+        let result = wait_for_server_sockets_to_settle(&wait_paths, Duration::from_secs(1));
+        finished_tx.send(result).expect("send the wait result");
+    });
+
+    assert!(
+        finished_rx.recv_timeout(Duration::from_millis(75)).is_err(),
+        "a live client socket must keep launch waiting after API release"
+    );
+    drop(client_listener);
+    finished_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the transition completes when the client socket disappears")
+        .expect("shutdown sockets cleared");
+    waiter.join().expect("test waiter thread");
 }
 
 #[test]
@@ -918,8 +969,9 @@ fn a_socket_override_never_starts_a_server() {
 fn a_listener_that_does_not_answer_is_never_replaced() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, _api) = runtime_sockets(&paths);
+    let (client, api) = runtime_sockets(&paths);
     let _listener = UnixListener::bind(&client).expect("test precondition");
+    let _api_listener = UnixListener::bind(&api).expect("test precondition");
 
     let error = ensure_running(
         &paths,
@@ -964,6 +1016,35 @@ fn a_running_server_of_another_build_is_refused_before_attaching() {
     server.join().expect("fake server thread");
     let message = error.to_string();
     assert!(message.contains("different build"), "{message}");
+    assert_nothing_was_launched(&paths);
+}
+
+#[test]
+fn a_mismatched_server_at_a_socket_override_is_not_promised_a_restart() {
+    let env = IsolatedEnv::new();
+    let api = env.path().join("custom-api.sock");
+    env.set(EnvVar::SheprSocketPath, &api);
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let client = paths.server_address().client_socket().to_path_buf();
+    let server = serve_status_once(
+        UnixListener::bind(&api).expect("test precondition"),
+        other_build_id(),
+    );
+    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+
+    let error = ensure_running(&paths, Duration::from_secs(1), BuildCheck::BeforeAttach)
+        .expect_err("a different build remains incompatible at an override");
+    server.join().expect("fake server thread");
+    let message = error.to_string();
+    assert!(
+        message.contains("cannot start a replacement at the selected socket override"),
+        "{message}"
+    );
+    assert!(message.contains("SHEPR_SOCKET_PATH"), "{message}");
+    assert!(
+        !message.contains("restart it before attaching"),
+        "{message}"
+    );
     assert_nothing_was_launched(&paths);
 }
 

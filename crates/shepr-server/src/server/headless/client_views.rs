@@ -36,41 +36,55 @@ pub(super) enum GeometrySource {
 ///
 /// - With exactly one client presenting surfaces, every workspace is sized for
 ///   it, viewed or not, so switching workspaces never resizes a pane.
-/// - Otherwise a workspace is sized for its geometry controller: the client
-///   that first viewed it, or that last claimed it by interacting with it
-///   (input, outer focus, navigation, surface activation when no other active
-///   shell with outer-terminal focus is viewing that workspace). When the
-///   controller stops viewing the workspace, a remaining viewer takes it over
-///   (`reapply_controlled_shell_workspace_geometry`).
+/// - Otherwise a workspace is sized for a current viewer. Its last geometry
+///   controller wins while it still views that workspace; if it does not, the
+///   lowest-id current viewer is the fallback. With several clients presenting
+///   and no viewer, the workspace keeps its size: `None`.
 /// - With no client presenting surfaces, every workspace is sized for the
 ///   configured headless size.
-/// - A workspace no client controls while several clients present keeps the
-///   size it has: `None`.
 fn workspace_geometry_source(
     clients: &crate::server::clients::ClientRegistry,
     workspace_id: &shepr_protocol::WorkspaceId,
 ) -> Option<GeometrySource> {
-    let mut presenting = clients
-        .iter()
-        .filter(|(_, client)| presents_surface(client))
-        .map(|(&client_id, _)| client_id);
-    let first = presenting.next();
-    if let Some(sole) = first
-        && presenting.next().is_none()
-    {
-        return Some(GeometrySource::Client(sole));
+    let last_controller = clients.geometry_controller(workspace_id);
+    let mut sole_presenter = None;
+    let mut has_multiple_presenters = false;
+    let mut lowest_viewer = None;
+    let mut current_controller = None;
+    for (&client_id, client) in clients {
+        if !presents_surface(client) {
+            continue;
+        }
+        if sole_presenter.is_some() {
+            has_multiple_presenters = true;
+        } else {
+            sole_presenter = Some(client_id);
+        }
+        if client.shell_state().location.focused_workspace_id.as_ref() == Some(workspace_id) {
+            if lowest_viewer.is_none_or(|viewer| client_id < viewer) {
+                lowest_viewer = Some(client_id);
+            }
+            if last_controller == Some(client_id) {
+                // A remembered choice has effect only while its client is a
+                // current viewer; navigation can make it stale before any
+                // geometry settlement runs.
+                current_controller = Some(client_id);
+            }
+        }
     }
-    if let Some(controller) = clients
-        .geometry_controller(workspace_id)
-        .filter(|controller| {
-            clients
-                .get(controller)
-                .is_some_and(ClientConnection::is_active_shell_client)
-        })
-    {
+    if !has_multiple_presenters {
+        if let Some(sole) = sole_presenter {
+            return Some(GeometrySource::Client(sole));
+        }
+        return Some(GeometrySource::Headless);
+    }
+    if let Some(controller) = current_controller {
         return Some(GeometrySource::Client(controller));
     }
-    first.is_none().then_some(GeometrySource::Headless)
+    if let Some(viewer) = lowest_viewer {
+        return Some(GeometrySource::Client(viewer));
+    }
+    None
 }
 
 /// Whether a client presents a surface: an active shell with a way to send
@@ -402,8 +416,8 @@ impl HeadlessServer {
     }
 
     /// Applies the PTY size rule to one workspace: resizes its visible panes
-    /// and records the geometry on the session. Returns whether the rule
-    /// sized it.
+    /// and records the geometry on the session. Returns whether the recorded
+    /// workspace geometry changed.
     pub(super) fn apply_workspace_geometry(
         &mut self,
         workspace_id: &shepr_protocol::WorkspaceId,
@@ -414,6 +428,7 @@ impl HeadlessServer {
         let Some(geometry) = self.workspace_geometry(workspace_id) else {
             return false;
         };
+        let previous = self.app.state.workspace_spawn_geometry(workspace_index);
         crate::ui::resize_surface(
             &self.app.state,
             &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
@@ -424,12 +439,12 @@ impl HeadlessServer {
         self.app
             .state
             .record_workspace_geometry(workspace_id, geometry);
-        true
+        previous != Some(geometry)
     }
 
-    /// Applies the PTY size rule to every workspace. A pane already at its
-    /// size is not resized again, so this is safe to run after any change the
-    /// rule depends on.
+    /// Applies the PTY size rule to every workspace. Pane runtimes ignore an
+    /// unchanged pane size; the result reports whether any recorded workspace
+    /// geometry changed.
     pub(super) fn apply_all_workspace_geometry(&mut self) -> bool {
         let workspace_ids: Vec<_> = self
             .app
@@ -438,37 +453,43 @@ impl HeadlessServer {
             .iter()
             .map(|workspace| workspace.id.clone())
             .collect();
-        let mut applied = false;
+        let mut changed = false;
         for workspace_id in &workspace_ids {
-            applied |= self.apply_workspace_geometry(workspace_id);
+            changed |= self.apply_workspace_geometry(workspace_id);
         }
-        applied
+        changed
     }
 
-    fn finish_shell_workspace_geometry_change(&mut self, start_pending_agent_resumes: bool) {
-        for client in self.clients.values_mut() {
-            client.request_recompute();
+    fn finish_shell_workspace_geometry_change(
+        &mut self,
+        geometry_changed: bool,
+        start_pending_agent_resumes: bool,
+    ) -> bool {
+        if geometry_changed {
+            for client in self.clients.values_mut() {
+                client.request_recompute();
+            }
         }
         if !start_pending_agent_resumes {
-            return;
+            return geometry_changed;
         }
         let now = self.app.clock.now;
-        if self.app.start_pending_agent_resumes(now) {
+        let resumes_started = self.app.start_pending_agent_resumes(now);
+        if resumes_started {
             for client in self.clients.values_mut() {
                 client.request_recompute();
             }
             self.sync_pane_focus();
         }
+        geometry_changed || resumes_started
     }
 
-    /// Applies the PTY size rule to every workspace and, when it sized any,
-    /// has every client recompute its surface and settles pending resumes.
+    /// Applies the PTY size rule to every workspace and has every client
+    /// recompute when the recorded geometry changed. Pending resumes are
+    /// settled even when this application repeats the current geometry.
     fn apply_shell_geometry(&mut self, start_pending_agent_resumes: bool) -> bool {
-        if !self.apply_all_workspace_geometry() {
-            return false;
-        }
-        self.finish_shell_workspace_geometry_change(start_pending_agent_resumes);
-        true
+        let geometry_changed = self.apply_all_workspace_geometry();
+        self.finish_shell_workspace_geometry_change(geometry_changed, start_pending_agent_resumes)
     }
 
     /// Whether the PTY size rule sizes some workspace for `client_id`.
@@ -478,8 +499,9 @@ impl HeadlessServer {
         })
     }
 
-    /// Hands each viewed workspace whose controller no longer views it to one
-    /// of its viewers, then applies the PTY size rule to every workspace.
+    /// Settles the remembered controller of each viewed workspace to one of
+    /// its current viewers, then applies the view-derived PTY size rule to
+    /// every workspace.
     pub(super) fn reapply_controlled_shell_workspace_geometry(
         &mut self,
         start_pending_agent_resumes: bool,
@@ -600,20 +622,41 @@ mod tests {
         );
 
         let first = clients.allocate_client_id();
-        clients.insert(first, client(true, true));
+        let mut first_client = client(true, true);
+        first_client.shell_state_mut().location.focused_workspace_id = Some(workspace_id.clone());
+        clients.insert(first, first_client);
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Client(first))
         );
 
-        // A second presenting surface: an uncontrolled workspace keeps its size.
+        // With a second presenter, the current viewers decide the source.
         let second = clients.allocate_client_id();
-        clients.insert(second, client(true, true));
-        assert_eq!(workspace_geometry_source(&clients, &workspace_id), None);
+        let mut second_client = client(true, true);
+        second_client
+            .shell_state_mut()
+            .location
+            .focused_workspace_id = Some(workspace_id.clone());
+        clients.insert(second, second_client);
+        assert_eq!(
+            workspace_geometry_source(&clients, &workspace_id),
+            Some(GeometrySource::Client(first)),
+            "without a current claim, the lowest-id viewer is the fallback"
+        );
         assert!(clients.claim_geometry(workspace_id.clone(), second));
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Client(second))
+        );
+
+        let other_workspace_id: shepr_protocol::WorkspaceId = shepr_test_fixtures::id("w2");
+        if let Some(client) = clients.get_mut(&second) {
+            client.shell_state_mut().location.focused_workspace_id = Some(other_workspace_id);
+        }
+        assert_eq!(
+            workspace_geometry_source(&clients, &workspace_id),
+            Some(GeometrySource::Client(first)),
+            "a remembered controller only wins while it still views the workspace"
         );
 
         // An inactive surface presents nothing: the other one is sole again.

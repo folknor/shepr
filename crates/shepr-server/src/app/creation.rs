@@ -116,6 +116,18 @@ impl App {
         initial_cwd: &std::path::Path,
         geometry: SpawnGeometry,
     ) -> std::io::Result<usize> {
+        let index = self.create_workspace_without_save(initial_cwd, geometry)?;
+        self.schedule_session_save();
+        Ok(index)
+    }
+
+    // Automatic replacement belongs to the checkpointed removal, so its
+    // caller decides whether this creation is a durable session mutation.
+    pub(super) fn create_workspace_without_save(
+        &mut self,
+        initial_cwd: &std::path::Path,
+        geometry: SpawnGeometry,
+    ) -> std::io::Result<usize> {
         let chrome = self.state.pane_geometry_in(geometry.area);
         let (ws, terminal, runtime) = Workspace::spawn(
             initial_cwd,
@@ -135,7 +147,6 @@ impl App {
             .record_workspace_geometry(&outcome.workspace_id, geometry);
         self.terminal_runtimes.insert(terminal_id, runtime);
         crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
-        self.schedule_session_save();
         Ok(outcome.workspace_index)
     }
 

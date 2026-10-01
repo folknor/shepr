@@ -92,10 +92,7 @@ impl std::fmt::Display for GitReadError {
                 cwd.display()
             ),
             Self::ConfigEnvironment { message } => {
-                write!(
-                    formatter,
-                    "git command-scope config environment is invalid: {message}"
-                )
+                write!(formatter, "Git config environment is invalid: {message}")
             }
             Self::FileRead { path, message } => {
                 write!(formatter, "could not read {}: {message}", path.display())

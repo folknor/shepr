@@ -24,6 +24,11 @@ pub(crate) struct GitWorktreeInfo {
     pub is_linked_worktree: bool,
 }
 
+struct LocatedGitDir {
+    path: PathBuf,
+    from_gitfile: bool,
+}
+
 /// The label for a cwd outside any Git checkout: `~` for the home directory,
 /// the directory name otherwise. This runs when a workspace's identity cwd
 /// changes or its Git status is refreshed, never per frame, so `$HOME` is
@@ -43,7 +48,17 @@ pub(super) fn git_worktree_info_with_errors(
 ) -> Option<GitWorktreeInfo> {
     let repo_root = git_repo_root_with_errors(cwd, errors)?;
     let git_dir = match locate_git_dir(&repo_root) {
-        Ok(Some(git_dir)) => git_dir,
+        Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
+            Ok(true) => git_dir.path,
+            Ok(false) => return None,
+            Err(error) => {
+                errors.push(GitReadError::FileRead {
+                    path: git_dir.path.join("HEAD"),
+                    message: error.to_string(),
+                });
+                return None;
+            }
+        },
         Ok(None) => return None,
         Err(error) => {
             errors.push(GitReadError::FileRead {
@@ -246,7 +261,19 @@ fn is_file_entry(path: &Path) -> std::io::Result<bool> {
 /// logged and gives `None`, since none of them can do more with it.
 pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
     match locate_git_dir(repo_root) {
-        Ok(git_dir) => git_dir,
+        Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
+            Ok(true) => Some(git_dir.path),
+            Ok(false) => None,
+            Err(error) => {
+                tracing::debug!(
+                    path = %git_dir.path.join("HEAD").display(),
+                    %error,
+                    "git HEAD unreadable"
+                );
+                None
+            }
+        },
+        Ok(None) => None,
         Err(error) => {
             tracing::debug!(path = %repo_root.display(), %error, "git directory unreadable");
             None
@@ -256,39 +283,71 @@ pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
 
 /// [`git_dir_for_repo_root`] with a stat or read error kept apart from "not a
 /// checkout root", so the discovery walk can stop instead of ascending.
-fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<PathBuf>> {
+fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<LocatedGitDir>> {
     let git_path = repo_root.join(".git");
     match entry_type(&git_path)? {
-        Some(kind) if kind.is_dir() => return Ok(Some(git_path)),
-        Some(kind) if kind.is_file() => match std::fs::read_to_string(&git_path) {
-            Ok(gitdir) => {
-                if let Some(relative) = gitdir.trim().strip_prefix("gitdir:").map(str::trim) {
-                    let resolved = Path::new(relative);
-                    return Ok(Some(if resolved.is_absolute() {
-                        resolved.to_path_buf()
-                    } else {
-                        repo_root.join(resolved)
-                    }));
-                }
-            }
-            // A `.git` file that is not UTF-8 is not a gitfile; one that
-            // vanished since the stat is absent. Both fall through to the
-            // bare-layout check, as a malformed `.git` file always has.
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData || is_absence(&error) => {
-            }
-            Err(error) => return Err(error),
-        },
+        Some(kind) if kind.is_dir() => {
+            return Ok(Some(LocatedGitDir {
+                path: git_path,
+                from_gitfile: false,
+            }));
+        }
+        Some(kind) if kind.is_file() => {
+            // A regular `.git` file claims to be a gitfile. Any failure to
+            // read its target is an invalid marker, not a reason to ascend.
+            let gitdir = std::fs::read_to_string(&git_path)?;
+            let Some(relative) = gitdir
+                .trim()
+                .strip_prefix("gitdir:")
+                .map(str::trim)
+                .filter(|relative| !relative.is_empty())
+            else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "gitfile has no gitdir target",
+                ));
+            };
+            let resolved = Path::new(relative);
+            return Ok(Some(LocatedGitDir {
+                path: if resolved.is_absolute() {
+                    resolved.to_path_buf()
+                } else {
+                    repo_root.join(resolved)
+                },
+                from_gitfile: true,
+            }));
+        }
         Some(_) | None => {}
     }
 
     if path_is_git_dir_layout(repo_root)? {
         let info = git_config_info(repo_root, repo_root)?;
         if git_dir_is_bare(&info)? {
-            return Ok(Some(repo_root.to_path_buf()));
+            return Ok(Some(LocatedGitDir {
+                path: repo_root.to_path_buf(),
+                from_gitfile: false,
+            }));
         }
     }
 
     Ok(None)
+}
+
+fn git_head_file_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
+    let head = git_dir.path.join("HEAD");
+    let is_file = is_file_entry(&head)?;
+    // Git can skip a `.git` directory without HEAD, but a gitfile target must
+    // identify a usable repository and cannot be treated as absent.
+    if !is_file && git_dir.from_gitfile {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "gitfile target has no regular HEAD file",
+        ));
+    }
+    if is_file && git_dir.from_gitfile {
+        drop(std::fs::File::open(head)?);
+    }
+    Ok(is_file)
 }
 
 fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
@@ -496,11 +555,11 @@ fn git_repo_root_below_with_errors(
 
     loop {
         let found = match locate_git_dir(&current) {
-            Ok(Some(git_dir)) => match is_file_entry(&git_dir.join("HEAD")) {
+            Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
                 Ok(found) => found,
                 Err(error) => {
                     errors.push(GitReadError::FileRead {
-                        path: git_dir.join("HEAD"),
+                        path: git_dir.path.join("HEAD"),
                         message: error.to_string(),
                     });
                     return None;
@@ -901,6 +960,53 @@ mod tests {
         std::fs::create_dir_all(&cwd).expect("test precondition");
 
         assert_eq!(git_repo_root(&cwd), None);
+    }
+
+    #[test]
+    fn invalid_gitfiles_stop_before_an_enclosing_checkout() {
+        let outer = temp_test_dir("invalid-gitfile-enclosing-repo");
+        mark_checkout(&outer);
+
+        let cases: [(&str, &[u8]); 4] = [
+            ("missing-target", b"gitdir: absent-admin\n"),
+            ("missing-directive", b"not a gitfile\n"),
+            ("non-utf8", b"\xff"),
+            ("non-file-head", b"gitdir: admin\n"),
+        ];
+        for (name, contents) in cases {
+            let checkout = outer.join(".worktrees").join(name);
+            std::fs::create_dir_all(&checkout).expect("test precondition");
+            std::fs::write(checkout.join(".git"), contents).expect("test precondition");
+            if name == "non-file-head" {
+                std::fs::create_dir_all(checkout.join("admin/HEAD")).expect("test precondition");
+            }
+
+            let mut errors = Vec::new();
+            assert_eq!(
+                git_repo_root_below_with_errors(&checkout, &GitCeilings::default(), &mut errors),
+                None,
+                "invalid gitfile in {name} must stop discovery"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error, GitReadError::FileRead { .. })),
+                "invalid gitfile in {name} must be reported: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_directory_without_head_can_be_skipped_for_an_enclosing_checkout() {
+        let outer = temp_test_dir("git-directory-without-head");
+        mark_checkout(&outer);
+        let nested = outer.join(".worktrees/no-head");
+        std::fs::create_dir_all(nested.join(".git")).expect("test precondition");
+
+        assert_eq!(
+            git_repo_root_below(&nested, &GitCeilings::default()),
+            Some(outer)
+        );
     }
 
     /// A directory discovery recognises as a checkout root.

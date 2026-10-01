@@ -37,43 +37,6 @@ Structural fix: split `ValidatedConfig` into per-role resolutions (client-drawn,
 server-run) so each process validates only what it applies. Each role still
 parses the whole file, so unknown-key and syntax errors still fail every launch.
 
-## WIRECFG-002 - A pane's own socket variables make a nested process treat the runtime address as an override
-
-Surfaced by the wire and config hunt and, as a related false negative, by the
-remote and launch hunt. Files: `crates/shepr-config/src/address.rs`
-(`ServerAddress::resolve_paths`, `is_runtime_address`, `command`,
-`apply_to_child_command`); consumer
-`crates/shepr-remote/src/remote/local_server.rs` (`require_own_runtime_address`).
-
-Claim: `is_runtime_address`: "Whether this is the build profile's own runtime
-address, as opposed to one a socket override picked. Only the runtime address is
-one a client may start a server for." AGENTS.md: guidance names "the selected
-socket override".
-
-Every pane exports `SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH`, for the
-default server exactly `<runtime>/shepr.sock` and `<runtime>/shepr-client.sock`.
-In any process inheriting that environment with a matching profile marker,
-`resolve_paths` sees "client override set, API override equal to runtime_api"
-and classifies the address `AddressSource::ClientOverride`, though both paths are
-the runtime defaults. Only `SHEPR_SOCKET_PATH` set and equal to the runtime path
-is classified `ApiOverride`. Results:
-
-- `require_own_runtime_address` refuses to start a server ("no shepr server is
-  running at ..., which SHEPR_CLIENT_SOCKET_PATH selects"). This bites any
-  process that outlives the server's pane while keeping its environment: a
-  terminal window or tmux session started from a pane, or a script.
-- Build-mismatch and stop guidance comes out as
-  `SHEPR_CLIENT_SOCKET_PATH=/run/user/N/shepr/shepr-client.sock shepr server
-  stop` rather than `shepr server stop`.
-- `apply_to_child_command` passes the variable on to children.
-
-The remote hunter rated this low (reachable only with inherited pane
-environment).
-
-Fix: in `resolve_paths`, treat an override equal to the runtime path it would
-replace as no override. Classify by the resulting paths, not by which variables
-were present.
-
 ## WIRECFG-003 - Every `SurfaceUpdate` carries the full metadata, and the fanout clones and re-sends the hyperlink table on every patch
 
 Files: `crates/shepr-protocol/src/surface.rs` (`SurfaceUpdate`: "An absent
@@ -125,31 +88,14 @@ update.
 
 Files: `crates/shepr-protocol/src/frame.rs` (`intern_hyperlink`), called per
 cell from `crates/shepr-mux/src/pane/terminal/backend.rs` in the full-frame
-render. Every cell with `has_hyperlink` triggers `hyperlinks.iter().position(...)`
-over the table so far. A screen of distinct links (`ls --hyperlink`, a file tree)
-costs O(linked cells x distinct links) string comparisons per full render per
-pane, worst case millions of cells against 65,536 links; consecutive cells of one
-link repeat the lookup. A `HashMap<String, u32>` beside the `Vec` (as
-`from_ratatui_buffer_with_hyperlinks` already does), or a last-URI fast path,
-makes this linear.
-
-## WIRECFG-006 - The codec doc claims a textlint covers config
-
-`crates/shepr-protocol/src/codec.rs` module doc: "A brokkr textlint rule rejects
-these serde shapes in protocol, config, core and VT source". The rule in
-`brokkr.toml` (`wire-types-use-positional-serde-shapes`) covers protocol, core
-and VT only, and says "config is not checked". Config does use
-`#[serde(untagged)]` (`keybinds.rs`, `BindingConfig`), which is fine because
-config never crosses the wire.
-
-## WIRECFG-007 - `build.rs` writes dead output and has an unreachable branch
-
-`build.rs` writes `OUT_DIR/build_id.rs` (a `pub(crate) const BUILD_ID`) next to
-`build_identity.rs`. Nothing includes `build_id.rs`; only `build_identity.rs` is
-included, by `shepr-protocol/src/limits.rs`. The `crate_dir_name` branch that
-roots the tree at `manifest_dir` for any crate other than
-`shepr-protocol`/`shepr-config` is unreachable: the root package has
-`build = false`.
+render. Consecutive cells of one link now hit a table-tail fast path. Residue:
+a cell whose link differs from the last one still scans the table with
+`hyperlinks.iter().position(...)`, so a screen of distinct links
+(`ls --hyperlink`, a file tree) costs O(linked cells x distinct links) string
+comparisons per full render per pane. The table is a public `Vec` the wire
+indexes into and callers can mutate, which is what kept a `HashMap<String, u32>`
+index beside it (as `from_ratatui_buffer_with_hyperlinks` already has) out of
+the first pass.
 
 ## WIRECFG-008 - `read_runtime_status_at` maps two kinds of "no usable status" differently
 
@@ -157,18 +103,6 @@ A stalled server (`TimedOut`) maps to `Ok(None)`, but a server that accepts and
 closes without a line (connection thread spawn failure, peer-credential
 refusal, oversized request line) maps to `Err("empty api response")`. Both mean
 "no usable status".
-
-## WIRECFG-009 - `ValidatedUiConfig::sidebar_width` says "clamped"
-
-The doc says "already clamped to `sidebar_bounds`". It is not clamped:
-validation rejects an out-of-range width. The invariant holds; the word is wrong.
-
-## WIRECFG-010 - `format_key_combo` labels for `+` do not read back
-
-`format_key_combo` says labels should "read back as the same binding". For
-`KeyCode::Char('+')` (configured as `plus`) it prints `+`, so the label is
-`ctrl++` / `prefix++`, which `parse_key_combo` rejects (it splits on `+`).
-Display only today.
 
 ## WIRECFG-011 - `TerminalGeometry` serializes and deserializes through two hand-synced structs
 

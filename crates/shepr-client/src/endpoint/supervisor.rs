@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{ClientEndpointId, ClientEndpointStatus, NativeEndpointTransport};
+use crate::events::ClientLoopEvent;
 pub(crate) use crate::limits::MAX_RETRY_DELAY;
 use crate::limits::{
     ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, STABLE_CONNECTION_PERIOD,
@@ -204,7 +205,7 @@ impl EndpointSupervisors {
         &mut self,
         now: Instant,
         options: EndpointConnectOptions,
-        event_tx: &tokio::sync::mpsc::Sender<EndpointSupervisorEvent>,
+        event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     ) {
         for (endpoint_id, state) in &mut self.endpoints {
             if state.in_flight || state.next_attempt.is_none_or(|deadline| deadline > now) {
@@ -289,7 +290,10 @@ impl EndpointSupervisors {
                     // The send fails only once the client loop has exited and dropped its
                     // receiver; the returned event then drops here, releasing any
                     // connection it carries, which is all teardown needs.
-                    event_tx.send(event).await.ok();
+                    event_tx
+                        .send(ClientLoopEvent::EndpointSupervisor(event))
+                        .await
+                        .ok();
                 }
             });
         }

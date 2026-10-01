@@ -12,79 +12,25 @@ Filed from the defect hunt over `crates/shepr-server/src/server/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SLOOP-001 - A large endpoint reply disconnects the client instead of being refused
+## SLOOP-001 - A reply that fits the control queue alone can still close a busy client
 
-Claim broken: the doc on `response_message` (`server/client_commands.rs`):
-"only one past `MAX_MESSAGE_SIZE`, which the client would refuse, is answered
-with `EndpointError::ResponseTooLarge`, naming its size, rather than failing to
-send and leaving the client to wait out its command timeout."
+`response_message` (`server/client_commands.rs`) now answers
+`EndpointError::ResponseTooLarge` for a reply that cannot fit the client control
+queue cap (`CLIENT_CONTROL_QUEUE_MAX_BYTES`) by itself. Residue: a reply that
+fits the cap alone but lands while earlier control items occupy part of it is
+still refused by `ClientWriterQueue::send_control` (`client_transport.rs`),
+which closes the connection under the slow-reader policy. Letting a single item
+exceed the cap when the queue is otherwise empty, or answering such a reply
+with an error instead of a disconnect, would close it.
 
-`response_message` measures against `shepr_protocol::MAX_MESSAGE_SIZE` (1 GiB).
-The reply then goes onto the client's control lane through `send_to_client` ->
-`ClientControlWriter::send` -> `ClientWriterQueue::send_control`
-(`client_transport.rs`), which refuses any item larger than the free part of
-`CLIENT_CONTROL_QUEUE_MAX_BYTES` (16 MiB) and on refusal calls
-`close_connection()`. `send_to_client` then runs
-`remove_client_and_resize_if_needed`.
+## SLOOP-003 - Requests still buffered at the stop are refused after the shutdown notice
 
-A `pane.selection.read` whose text is between 16 MiB and 1 GiB (scrollback is
-capped at 1,000,000 lines, so a select-all over a long history gets there)
-shuts the whole client connection instead of returning `ResponseTooLarge`. The
-same applies to any reply that lands while earlier control items occupy part of
-the 16 MiB.
-
-Direction: pick one bound for a single control item (at most the queue byte
-cap) and use it in `response_within`; or let a single item exceed the queue cap
-when the queue is otherwise empty (the cap is meant to bound a slow reader's
-backlog, not one message), which is what the queue's own doc ("Bound control
-memory per client even when a peer reads slowly") wants.
-
-## SLOOP-002 - Navigating away leaves the old workspace sized for a client that no longer views it
-
-Claim broken: the PTY size rule doc on `workspace_geometry_source`
-(`headless/client_views.rs`): "When the controller stops viewing the workspace,
-a remaining viewer takes it over (`reapply_controlled_shell_workspace_geometry`)."
-
-`handle_client_shell_command` (`headless/endpoint_requests.rs`) only calls
-`reapply_controlled_shell_workspace_geometry` when the command's
-`traits.changes_topology` is set. `workspace.focus` and other plain navigation
-have it false, so they take `claim_shell_workspace_geometry(client_id)`, which
-claims the workspace the client navigated to. The workspace it left keeps that
-client as its controller.
-
-Scenario: clients A (200x60) and B (100x30) view W1, A controls it. A runs
-`workspace.focus` to W2. `workspace_geometry_source(W1)` still finds two
-presenting clients and returns `Client(A)` because A is still active, so W1's
-PTYs stay at 200x60 while only B looks at them, until B sends input, gains outer
-focus or runs a geometry-claiming command.
-
-Direction: derive "controller of W" level-based from the views each time they
-change, as `sync_pane_focus` does (keep the last claimant only as a tie-break
-among current viewers). At minimum, call
-`reapply_controlled_shell_workspace_geometry` whenever `navigate_shell_client`
-moved the client. See SLOOP-018.
-
-## SLOOP-003 - Replies answered before the stop go out after the shutdown notice
-
-Claim broken: the comment in the `Stopping` branch of `HeadlessServer::run`:
-"Commands answered before the stop (a command that arrived while stopping is
-answered with the refusal) still reach their clients, ahead of the shutdown
-notice."
-
-Every path into the stop calls `initiate_shutdown` first, which immediately
-queues `ServerShutdown` on every client's control lane via `send_to_all_clients`
-and places the shutdown flush barrier. Held endpoint replies are flushed only on
-the next loop pass (`resolve_pending_endpoint_replies_for_shutdown` and
-`flush_endpoint_replies`) or in `reject_endpoint_request_for_shutdown`, both
-after that. The control lane is FIFO, so the replies reach the socket behind
-`ServerShutdown` and behind the flush barrier `await_shutdown_flushes` waits for.
-A client that tears down on `ServerShutdown` never reads them. No test covers
-the order relative to `ServerShutdown`
-(`pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdown` only
-checks the replies among themselves).
-
-Direction: flush (and resolve) held replies inside `initiate_shutdown`, before
-`send_to_all_clients`, or make the comment say what happens.
+Held endpoint replies are now resolved and queued before `ServerShutdown` is
+broadcast, and a request already dequeued when the stop arrives gets its
+refusal first. Residue: requests still buffered in the server event receiver
+are refused during shutdown cleanup, after the notice, so a client that tears
+down on `ServerShutdown` may never read those refusals. The comment in
+`lifecycle.rs` states this ordering.
 
 ## SLOOP-004 - A slow client turns every drain of its render slot into a full render for everyone
 
@@ -160,22 +106,6 @@ so a pane-input flood from several clients, or an agent hook storm on the API,
 can postpone rendering and the scheduled tasks for as long as it lasts. Bound
 both like the internal one.
 
-## SLOOP-014 - A `ClientDisconnected` for an already-removed client re-runs removal
-
-Every removal shuts the socket down, so the reader always reports EOF afterwards,
-and it is not short-circuited: `remove_client_and_resize_if_needed` runs again,
-re-applies every workspace's geometry, requests a recompute on every client,
-attempts pending agent resumes, and the event returns a full render. Same for
-`ClientDetach` followed by EOF.
-
-## SLOOP-015 - Geometry application reports "applied", not "changed"
-
-`apply_shell_geometry` / `apply_all_workspace_geometry` return "the rule applied
-to some workspace", not "something changed size". With one client that is always
-true, so every topology command, client removal and resize of the sole client
-requests a recompute of every client. `PaneRuntime::resize` is a no-op for an
-unchanged size, so wasted work rather than wrong output.
-
 ## SLOOP-016 - Structural: bootstrap restores before binding the client socket
 
 `headless/bootstrap.rs`: lease, then the API socket, then `App::with_paths`
@@ -192,18 +122,30 @@ out the restore.
 Outbound messages to a client take the control lane (FIFO, byte-capped, overflow
 closes the connection), the one-slot render lane (drained after control), and
 the endpoint-reply outbox in the loop (held until after the render). SLOOP-001,
-SLOOP-003 and the ghost-client finding in `notes/bugs-rejected-candidates.md`
+SLOOP-003 (both residues) and the ghost-client finding in `notes/bugs-rejected-candidates.md`
 are each a place where two of these disagree. One per-client outbox type owning
 ordering, size policy, flush barriers and disconnect reporting would remove the
 class.
 
-## SLOOP-018 - Structural: geometry control and render demand are stored edge-triggered state
+## SLOOP-018 - Structural: render demand is stored edge-triggered state
 
-Geometry control (SLOOP-002) and render demand (SLOOP-004) are stored,
-edge-triggered state that paths must remember to update, while pane focus
-(`sync_pane_focus`) is derived level-based from the views and has none of these
-bugs. Deriving the controller and per-client demand the same way is the rewrite
-the hunter says pays.
+Geometry control is now resolved from the current viewers (a remembered
+controller wins only while it views the workspace). Render demand (SLOOP-004)
+is still stored, edge-triggered state that paths must remember to update, while
+pane focus (`sync_pane_focus`) is derived level-based from the views. Deriving
+per-client demand the same way is the remaining rewrite.
+
+## SLOOP-020 - The geometry fallback ignores outer focus
+
+Lateral. `workspace_geometry_source` (`headless/client_views.rs`) falls back to
+the lowest-id viewer when the remembered controller is not viewing, ignoring
+outer focus. If a stale controller survives to a surface activation,
+`resize_shell_workspaces_sized_for` can size the workspace for the activating
+client although a focused viewer is present, bypassing the rule that surface
+activation does not claim a workspace another focused active shell already
+views. Settlement after navigation makes this hard to reach. Preferring a
+focused viewer before the lowest id, in both the fallback and
+`reapply_controlled_shell_workspace_geometry`, would close it.
 
 ## SLOOP-019 - A mouse release over another pane leaves the press held
 

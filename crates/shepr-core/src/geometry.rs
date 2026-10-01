@@ -84,10 +84,31 @@ impl CellPx {
     }
 }
 
+/// Pane geometry with an optional cell-pixel size.
+///
+/// Deserialization clamps the grid to the pane minimum. The public fields
+/// still permit callers to construct a below-minimum value directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "PaneGeometryRepr")]
 pub struct PaneGeometry {
     pub grid: GridSize,
     pub cell: Option<CellPx>,
+}
+
+#[derive(Deserialize)]
+struct PaneGeometryRepr {
+    grid: GridSize,
+    cell: Option<CellPx>,
+}
+
+impl From<PaneGeometryRepr> for PaneGeometry {
+    fn from(received: PaneGeometryRepr) -> Self {
+        Self {
+            grid: received.grid,
+            cell: received.cell,
+        }
+        .clamped()
+    }
 }
 
 impl PaneGeometry {
@@ -98,8 +119,8 @@ impl PaneGeometry {
         }
     }
 
-    /// Reapply the pane-grid boundary to geometry received as a struct or wire
-    /// value.
+    /// Clamp pane grids below the shared minimum. Deserialization applies this
+    /// boundary; callers that build values directly can reapply it.
     pub fn clamped(self) -> Self {
         Self {
             grid: GridSize::clamped_pane(self.cols(), self.rows()),
@@ -202,6 +223,16 @@ mod tests {
         let generic = GridSize::clamped(0, 0);
         assert_eq!((generic.cols.get(), generic.rows.get()), (1, 1));
         assert_eq!(pane.clamped(), pane);
+    }
+
+    #[test]
+    fn pane_geometry_received_representation_clamps_grid_minimum() {
+        let pane = PaneGeometry::from(PaneGeometryRepr {
+            grid: GridSize::clamped(1, 1),
+            cell: None,
+        });
+
+        assert_eq!((pane.cols(), pane.rows()), (PANE_MIN_COLS, PANE_MIN_ROWS));
     }
 
     #[test]

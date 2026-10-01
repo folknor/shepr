@@ -171,6 +171,23 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
+    pub(super) fn cancel_word_selection_row(
+        &mut self,
+        pane_id: &str,
+        absolute_row: shepr_vt::AbsRow,
+        generation: u64,
+    ) -> bool {
+        if self.word_selection_generation != generation
+            || self.word_selection_gesture.as_ref().is_none_or(|gesture| {
+                gesture.pane_id != pane_id || gesture.pending_row != Some(absolute_row)
+            })
+        {
+            return false;
+        }
+        self.cancel_word_selection();
+        true
+    }
+
     pub(super) fn complete_word_selection_row(
         &mut self,
         pane_id: &str,

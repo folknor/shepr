@@ -12,50 +12,6 @@ Filed from the defect hunt over `crates/shepr-remote/src/`, the root binary's
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## RLAUNCH-001 - A launch right after a successful conditional stop can be refused as "listening but not answering"
-
-Hunter's severity: medium (narrow race, deterministic consequence, hits the
-designed restart flow).
-
-- The server releases what a launcher looks at in this order
-  (`HeadlessServer::release_sockets_after_save_observed`): data-directory lease,
-  then the API socket (dropping `ServerHandle` unlinks the file and joins the API
-  listener thread, "bounded by one accept-failure backoff (at most a second)"),
-  then the client socket.
-- The conditional stop (`stop_socket_with_timeout` with `expected_boot_id`)
-  succeeds as soon as the named boot stops answering on the API socket and the
-  lease is free. It does not wait for the client socket; the unconditional stop
-  does (`wait_until_stopped_until` over both sockets).
-- So `stop_active_server(paths, Some(boot))` returns inside the window where the
-  client socket is live and the API socket file is already gone.
-- `local_server::probe_server_at` checks the client socket first (`Live`), then
-  `shepr_api::read_runtime_status_at` on the API socket, which returns `Ok(None)`
-  for an absent API socket file and for `ConnectionRefused`; `probe_server_at`
-  maps `Ok(None)` to `Probed::Unresponsive`.
-- `ensure_running` turns `Unresponsive` into a hard error: "a shepr server is
-  listening at ..., but it is not answering status requests, so its build cannot
-  be confirmed and no second server is started", with stop guidance for a server
-  that is gone.
-
-The preflight path walks into this: `preflight::run` -> `restart_local` ->
-`stop_active_server(paths, Some(boot_id))` returns `Ok` -> notice "stopped the
-local server of a different build; one of this build starts now" ->
-`auto_detect_launch` -> `ensure_running` probes within milliseconds. With no
-machines configured the TUI launch then fails. The remote equivalent
-(`stop_remote_server`, then the bridge's `ensure_running` on the remote host) is
-the same race, surfacing as a retryable bridge failure.
-
-Claims broken: `local_server.rs` module doc step 1 (a stopping server "is treated
-as no server ... and the launch below outlasts it"); the
-`release_sockets_after_save` doc (the release order is "the one order that keeps
-[a launching shepr] from being misled"); `preflight::local_notice` for `Stopped`
-("one of this build starts now").
-
-Direction: make the conditional stop's success criterion the launcher's notion of
-"no server" (wait for both sockets, as the unconditional stop does), or have the
-probe treat "client socket live, API socket absent or refusing" as `Stopping`,
-not `Unresponsive`. See RLAUNCH-014.
-
 ## RLAUNCH-002 - FIDO-touch keys are classified Offline, so the documented prompt never runs
 
 Hunter's severity: medium; confidence moderate (depends on the authenticator's
@@ -74,21 +30,6 @@ Offline machines get no prompt and no notice. The "signing failed" signature in
 ssh lived long enough to print it. Net effect: a FIDO machine is silently shown
 offline at startup, every client attempt blocks on a touch request for its
 whole budget, and interactive authentication is never offered.
-
-## RLAUNCH-003 - The local restart offer promises a restart it cannot perform for a socket-override address
-
-Hunter's severity: low-medium. `preflight::run` offers the local restart for
-whatever `running_server_status(paths)` finds, which follows the resolved
-address, including a socket override. After consent and a successful stop,
-`local_notice(Stopped)` says "one of this build starts now", and the offer says
-"The saved layout is restored with fresh shells". But `ensure_running` ->
-`require_own_runtime_address` refuses to start a server for any address that is
-not the profile's runtime address: a stopped server, no replacement, and (with
-no machines) a failed launch reading "no shepr server is running at ..., which
-SHEPR_SOCKET_PATH selects". Claims broken: the offer and `local_notice` text;
-AGENTS.md "the layout is restored with fresh shells and agents resumed". The
-related `ServerAddress::resolve_paths` misclassification of the runtime address
-is WIRECFG-002.
 
 ## RLAUNCH-004 - Local failures are filed as remote incompatibility
 
@@ -157,8 +98,24 @@ disagree (cache trust, progress retention, error classes).
 
 ## RLAUNCH-014 - Structural: server presence is decided in three places with three rules
 
-The launcher (client socket liveness, then an API ping), the stop (API boot
-answer, lease, or both sockets depending on mode) and the server's own release
-order. RLAUNCH-001 is the visible symptom. Folding the API into the client socket,
-or giving the launcher and the stop one shared predicate, would make the race
-impossible rather than narrow.
+The launcher and the stop now share one socket-pair absence predicate, and the
+launcher waits through the API-first startup and shutdown transitions. Residue:
+the server's own lease, API and client socket release order is still a third,
+separately maintained rule, and boot identity is still a separate status check.
+Folding the API into the client socket would leave one rule.
+
+## RLAUNCH-015 - The conditional stop's socket wait can start with its deadline already spent
+
+Lateral, `crates/shepr-api/src/server_stop.rs`. In the conditional stop the lease
+wait has its own deadline, and the socket wait that follows reuses the overall
+`deadline`, which may already have passed. A server that releases its lease
+before its last socket then gets a single socket check and the stop reports
+`TimedOut`. The socket wait could use the later of the two deadlines.
+
+## RLAUNCH-016 - A flapping server keeps the launcher waiting without bound
+
+Lateral, `crates/shepr-remote/src/remote/local_server.rs`. The transition loop in
+`ensure_running` re-arms a fresh timeout on each Starting, Stopping or Releasing
+round, so a server that keeps moving between those states keeps the launcher
+waiting, holding the launch lock, without bound. One overall deadline would
+bound it.

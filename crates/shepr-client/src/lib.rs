@@ -58,7 +58,7 @@ use terminal_setup::{HostMouseMode, TerminalGuard, setup_terminal, should_draw_h
 
 pub use errors::{ClientError, ClientExit, ClientRunError};
 use handshake::do_handshake;
-use limits::{CLIENT_EVENT_QUEUE_CAPACITY, ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY};
+use limits::CLIENT_EVENT_QUEUE_CAPACITY;
 
 use std::io::{self, Write as _};
 use std::sync::Arc;
@@ -181,12 +181,16 @@ fn run_launched_client(
         .map_err(io::Error::other)?;
 
     let should_quit = Arc::new(AtomicBool::new(false));
+    let (event_tx, event_rx) =
+        tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
 
     // ctrlc's "termination" feature also catches SIGTERM/SIGHUP so direct
-    // termination signals still run the quit path and TerminalGuard::Drop.
+    // termination signals wake the event loop so it restores the terminal.
     let quit_flag = Arc::clone(&should_quit);
+    let quit_event_tx = event_tx.clone();
     if let Err(err) = ctrlc::set_handler(move || {
         quit_flag.store(true, Ordering::Release);
+        quit_event_tx.try_send(ClientLoopEvent::Quit).ok();
     }) {
         warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
     }
@@ -199,6 +203,7 @@ fn run_launched_client(
             local_failure_policy,
             geometry,
             should_quit,
+            (event_tx, event_rx),
             loop_config,
             shell_config,
             output_writer,
@@ -233,6 +238,7 @@ fn run_launched_client(
 /// - stdin reader thread → sends parsed input events
 /// - resize poller thread → sends resize events to main loop
 /// - server reader thread → reads ServerMessages and sends to main loop
+/// - one event channel: host input, resize, endpoint readers, connection supervisors, and quit
 /// - main loop: coordinates input, output, and server communication
 async fn run_client_loop(
     initial: Option<LocalStream>,
@@ -241,6 +247,10 @@ async fn run_client_loop(
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_geometry: shepr_core::geometry::HostGeometry,
     should_quit: Arc<AtomicBool>,
+    (event_tx, event_rx): (
+        tokio::sync::mpsc::Sender<ClientLoopEvent>,
+        tokio::sync::mpsc::Receiver<ClientLoopEvent>,
+    ),
     mut config: ClientLoopConfig,
     shell_config: shell::ClientShellConfig,
     output_writer: terminal_setup::HostTerminalWriter,
@@ -311,9 +321,7 @@ async fn run_client_loop(
     let (stdin_mouse_capture_active, stdin_sgr_pixels_active) =
         state.host_modes.mouse_input_mirrors();
 
-    // Channel shared by the stdin, resize and server reader threads.
-    let (event_tx, event_rx) =
-        tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
+    // Channel shared by the host helpers, endpoint readers, supervisors and the signal handler.
     let stdin_tx = event_tx.clone();
 
     // Arm reply tracking only after the corresponding query was written successfully.
@@ -479,8 +487,6 @@ struct ClientLoop {
     reported_cell_size: Arc<AtomicCellSize>,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
-    supervisor_tx: tokio::sync::mpsc::Sender<endpoint::EndpointSupervisorEvent>,
-    supervisor_rx: tokio::sync::mpsc::Receiver<endpoint::EndpointSupervisorEvent>,
     will_query_host_cell_size: bool,
 }
 
@@ -499,8 +505,8 @@ async fn wait_for_client_timer(deadline: Option<std::time::Instant>) {
 
 impl ClientLoop {
     /// The one construction `run_client_loop` and the loop tests share. It takes
-    /// what the caller has already wired up (the event channel the input,
-    /// resize and transport threads hold a sender of, the shared cell size,
+    /// what the caller has already wired up (the event channel host helpers,
+    /// endpoint readers, supervisors and the signal handler share, the cell size,
     /// the endpoints) and starts the loop's own state itself, so a test drives
     /// a loop that begins exactly as production's does.
     fn new(
@@ -515,9 +521,6 @@ impl ClientLoop {
         event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
         will_query_host_cell_size: bool,
     ) -> Self {
-        let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel::<
-            endpoint::EndpointSupervisorEvent,
-        >(ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY);
         Self {
             state,
             local_failure_policy,
@@ -532,8 +535,6 @@ impl ClientLoop {
             reported_cell_size,
             event_tx,
             event_rx,
-            supervisor_tx,
-            supervisor_rx,
             will_query_host_cell_size,
         }
     }
@@ -551,9 +552,8 @@ impl ClientLoop {
         ])
     }
 
-    /// Waits for the loop's next event: a scheduled activation at once, else
-    /// the timer armed from the earliest pending deadline as of `now`, a
-    /// supervisor event or a client event, whichever comes first.
+    /// Waits for a quit request or scheduled activation at once, else the timer armed from
+    /// the earliest pending deadline as of `now` or the shared event queue.
     async fn wait_for_next_event(&mut self, now: std::time::Instant) -> ClientLoopEvent {
         let timer_deadline = self.next_timer_deadline(now).map(|deadline| {
             self.client_timer
@@ -562,6 +562,9 @@ impl ClientLoop {
         if timer_deadline.is_none() {
             self.client_timer.fired();
         }
+        if self.should_quit.load(Ordering::Acquire) {
+            return ClientLoopEvent::Quit;
+        }
         if let Some(event) = self.scheduled_activation.take() {
             return event;
         }
@@ -569,7 +572,6 @@ impl ClientLoop {
         tokio::select! {
             biased;
             _ = wait_for_client_timer(timer_deadline) => ClientLoopEvent::Timer,
-            ev = self.supervisor_rx.recv() => ev.map_or(ClientLoopEvent::Timer, ClientLoopEvent::EndpointSupervisor),
             ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
         }
     }
@@ -615,12 +617,15 @@ impl ClientLoop {
                     },
                     mouse_capture: self.state.host_modes.mouse_shell_preference(),
                 },
-                &self.supervisor_tx,
+                &self.event_tx,
             );
             let event = self.wait_for_next_event(loop_now).await;
             // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
             if self.handle_event(event, now)? == ClientLoopAction::Exit {
+                if self.should_quit.load(Ordering::Acquire) {
+                    break;
+                }
                 return Ok(());
             }
         }
@@ -639,6 +644,7 @@ impl ClientLoop {
     ) -> Result<ClientLoopAction, ClientError> {
         self.state.shell.now = now;
         match event {
+            ClientLoopEvent::Quit => Ok(ClientLoopAction::Exit),
             ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs, now),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
             ClientLoopEvent::Resize(geometry) => self.handle_resize(
@@ -1149,6 +1155,10 @@ impl ClientLoop {
                                 *scheduled_activation = Some(event);
                             }
                         }
+                        endpoint::SurfaceActivationProgress::FinishedUnavailable { message } => {
+                            state.end_handoff(Presentation::Unavailable);
+                            present_handoff_unavailable(state, message);
+                        }
                         endpoint::SurfaceActivationProgress::Rejected {
                             message,
                             source_release_rejected,
@@ -1539,6 +1549,38 @@ mod client_timer_tests {
             ),
             event_tx,
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quit_event_wakes_a_deadline_free_loop() {
+        let now = tokio::time::Instant::now().into_std();
+        let (mut client_loop, event_tx) =
+            test_client_loop(now, endpoint::EndpointRegistry::empty());
+        // The wait future borrows the loop, so it lives in its own scope and
+        // the loop is free again to handle the event it produced.
+        let event = {
+            let wait = client_loop.wait_for_next_event(now);
+            tokio::pin!(wait);
+            // Poll once so the loop is parked on its queue before quit arrives.
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), &mut wait)
+                    .await
+                    .is_err(),
+                "a deadline-free client loop produced an event"
+            );
+            assert!(
+                event_tx.try_send(ClientLoopEvent::Quit).is_ok(),
+                "client event queue has room for quit"
+            );
+            wait.await
+        };
+        assert!(matches!(&event, ClientLoopEvent::Quit));
+        assert!(matches!(
+            client_loop
+                .handle_event(event, now)
+                .expect("quit event is handled"),
+            ClientLoopAction::Exit
+        ));
     }
 
     #[test]

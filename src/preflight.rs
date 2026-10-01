@@ -85,10 +85,15 @@ pub(crate) fn run(
     }
 }
 
-/// The status of a running local server of any build, for the restart offer. A
-/// server that cannot be read is not offered anything: the launch that follows
-/// reports it.
+/// The status of a running local server of any build, when this client can
+/// start its replacement. A socket override names an existing server but is
+/// not an address this client can launch for, so it gets no restart offer. A
+/// server that cannot be read is also left for the launch that follows to
+/// report.
 fn local_server_status(paths: &shepr_config::AppPaths) -> Option<RuntimeStatus> {
+    if !paths.server_address().is_runtime_address() {
+        return None;
+    }
     match shepr_remote::local_server::running_server_status(paths) {
         Ok(status) => status,
         Err(error) => {

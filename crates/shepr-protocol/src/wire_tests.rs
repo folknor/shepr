@@ -895,6 +895,7 @@ mod tests {
         let mut frame = FrameData::blank(1, 1);
         assert_eq!(frame.intern_hyperlink("https://a.example"), Some(0));
         assert_eq!(frame.intern_hyperlink("https://b.example"), Some(1));
+        assert_eq!(frame.intern_hyperlink("https://b.example"), Some(1));
         assert_eq!(frame.intern_hyperlink("https://a.example"), Some(0));
         assert_eq!(frame.hyperlinks.len(), 2);
 

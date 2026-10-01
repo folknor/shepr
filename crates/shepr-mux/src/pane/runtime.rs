@@ -179,14 +179,15 @@ pub struct PaneCwdProbe {
 }
 
 impl PaneCwdProbe {
-    /// The shell's absolute /proc cwd right now, or `None` when the shell has
-    /// been reaped (its numeric PID may belong to another process by now) or
-    /// the read failed. A successful read is remembered for the pane's later
-    /// saves. Persistence observations must not change OSC authority or
-    /// follow-cwd behavior, so nothing else is touched.
+    /// The shell's usable /proc cwd right now, or `None` when the shell has
+    /// been reaped (its numeric PID may belong to another process by now),
+    /// the cwd cannot be confirmed as a usable directory, or the read failed. A successful
+    /// read is remembered for the pane's later saves. Persistence observations
+    /// must not change OSC authority or follow-cwd behavior, so nothing else is
+    /// touched.
     pub fn read(&self) -> Option<std::path::PathBuf> {
         let pid = self.child_liveness.live_pid()?;
-        let cwd = shepr_agent::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())?;
+        let cwd = super::process_probe::usable_process_cwd(pid)?;
         if self.child_liveness.live_pid() != Some(pid) {
             return None;
         }
@@ -1641,12 +1642,12 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     ///
-    /// The latest OSC 7 report wins while the shell's /proc cwd is unchanged
-    /// since that report arrived; once the shell has moved without reporting,
-    /// its /proc cwd wins. One /proc read per call.
+    /// The latest OSC 7 report wins while the shell's usable /proc cwd is
+    /// unchanged since that report arrived; once the shell has moved without
+    /// reporting, its usable /proc cwd wins. One /proc read per call.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
         let shell_cwd = self.child_liveness.live_pid().and_then(|pid| {
-            let cwd = shepr_agent::detect::process_cwd(pid);
+            let cwd = super::process_probe::usable_process_cwd(pid);
             (self.child_liveness.live_pid() == Some(pid))
                 .then_some(cwd)
                 .flatten()
@@ -2627,6 +2628,54 @@ mod tests {
         assert_eq!(runtime.remembered_cwd(), Some(saved));
         *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = None;
         assert_eq!(runtime.remembered_cwd(), None);
+    }
+
+    #[tokio::test]
+    async fn deleted_process_cwd_does_not_replace_remembered_or_reported_cwd() {
+        struct ChildGuard(std::process::Child);
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                self.0.kill().ok();
+                self.0.wait().ok();
+            }
+        }
+
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let scratch = crate::test_support::ScratchDir::new("deleted-process-cwd");
+        let remembered = scratch.join("remembered");
+        let reported = scratch.join("reported");
+        let deleted = scratch.join("deleted");
+        std::fs::create_dir(&remembered).expect("create remembered cwd");
+        std::fs::create_dir(&reported).expect("create reported cwd");
+        std::fs::create_dir(&deleted).expect("create process cwd");
+
+        let child = ChildGuard(
+            fixture::command(&[Step::Sleep(std::time::Duration::from_secs(30))])
+                .current_dir(&deleted)
+                .spawn()
+                .expect("spawn process in cwd"),
+        );
+        let pid = child.0.id();
+        assert_eq!(
+            shepr_agent::detect::process_cwd(pid),
+            Some(deleted.clone()),
+            "test precondition: process starts in the selected cwd"
+        );
+        runtime.child_liveness.set_pid_for_test(pid);
+        std::fs::remove_dir(&deleted).expect("unlink process cwd");
+        let deleted_link = shepr_agent::detect::process_cwd(pid).expect("read unlinked cwd");
+        assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
+
+        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(remembered.clone());
+        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+            path: reported.clone(),
+            shell_cwd_at_report: None,
+        });
+
+        assert_eq!(runtime.cwd_probe().read(), None);
+        assert_eq!(runtime.remembered_cwd(), Some(remembered));
+        assert_eq!(runtime.cwd(), Some(reported));
     }
 
     #[tokio::test]

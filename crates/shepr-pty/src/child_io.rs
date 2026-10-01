@@ -34,7 +34,9 @@ impl std::error::Error for ChildIoSendError {}
 /// the terminal core lock) and are called at most once. They are `FnMut` only
 /// so the trait stays object-safe.
 pub trait ChildIo: Send + Sync {
-    /// Stop accepting writes; anything queued afterwards is dropped.
+    /// Stop accepting writes and ask the actor to stop. The actor stops at its
+    /// next shutdown check and drops everything still queued when it closes
+    /// the inbox; work it processes before then may still be written.
     fn shutdown(&self);
 
     /// Whether a child process stands behind the channel, so ending the pane

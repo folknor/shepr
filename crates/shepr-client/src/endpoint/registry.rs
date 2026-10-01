@@ -239,7 +239,10 @@ impl EndpointRegistry {
                             .get_mut(&endpoint_id)
                             .and_then(|connection| connection.health.as_mut())
                     {
-                        health.ping_sent(now);
+                        // Native transports queue the frame before this marker, so reader stamps
+                        // observed during the earlier sync remain pre-probe activity.
+                        // clock-io-ok: the reader thread stamps frames with the real clock.
+                        health.ping_sent(Instant::now().max(now));
                     }
                 }
                 HealthAction::Expired => self.record_failure(

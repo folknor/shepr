@@ -58,70 +58,6 @@ message is about, not its envelope. Better still, make the restore state a field
 of `ClientShellSnapshot` rather than a one-shot message, so it cannot be lost to
 ordering or gating and is re-delivered on every reconnect.
 
-## CEND-002 - SIGTERM / SIGHUP does not wake the client loop; a Local-only client lingers
-
-Claim broken: `run_launched_client`: "ctrlc's "termination" feature also catches
-SIGTERM/SIGHUP so direct termination signals still run the quit path and
-TerminalGuard::Drop."
-
-The handler only stores `should_quit`. `ClientLoop::run` checks the flag only at
-the top of each iteration and otherwise sits in `wait_for_next_event`'s
-`select!`. Nothing wakes it:
-
-- the stdin thread is blocked in `read_fd`; on hangup it gets EOF/EIO and
-  `stdin_reader_loop` breaks without sending any event;
-- `resize_poll_loop` checks `should_quit` after its 100 ms sleep and exits
-  silently when set, so on SIGHUP it usually exits before its ioctl can fail and
-  send `TerminalUnavailable`;
-- Local has no heartbeat (`EndpointRegistry::crosses_ssh`), so with no machines
-  configured there is no timer deadline;
-- `ClientLoop` holds an `event_tx`, so the channel never closes.
-
-With no machines, an idle Local server and no shell timers pending, the client
-keeps running after SIGTERM or after its terminal closed, until the server sends
-a frame. While it lingers it stays a connected client with an active surface and
-takes part in the server's per-client decisions (PTY size rule, foreground
-client for the host theme). With machines configured the 5 s SSH heartbeat
-bounds the delay.
-
-Fix direction: give the signal handler a clone of the event sender and have it
-`try_send` a quit event (or use `tokio::signal` in the loop's `select!`). Have
-`stdin_reader_loop` report EOF/EIO as `TerminalUnavailable` instead of breaking
-silently, and have `resize_poll_loop` not swallow a final failure because quit
-was requested. See CEND-016.
-
-## CEND-003 - A rollback whose target acknowledged target-off still kills the target's healthy connection
-
-Claim broken: `rollback_at`'s `ReleasingTargetForRollback` arm closes the target
-transport with "endpoint did not acknowledge surface revocation"; the comment
-says closing is "the only safe local revocation when target-off is not
-acknowledged". It is also reached when target-off was acknowledged.
-
-Path (`endpoint/activation.rs`, `lib.rs`): source unavailable at begin (Local
-down, presentation `Unavailable`, the user picks a machine), so
-`source_available = false`. The target activation fails (focus target gone,
-server error, phase timeout) and `rollback_at` from `ActivatingTarget` calls
-`start_target_release`, entering `ReleasingTargetForRollback`. The target answers
-target-off successfully. `receive_response_for_boot_at` handles that by
-`set_surface_active(target, false)` and, because `!self.source_available`,
-returns `SurfaceActivationProgress::Rejected` without changing the phase. The
-loop treats every `Rejected` the same: `rollback_endpoint_activation` ->
-`rollback_at` again; still `ReleasingTargetForRollback`, so it calls
-`endpoints.fail(target, TimedOut "endpoint did not acknowledge surface
-revocation")` and returns `Unavailable("...; the target connection was closed
-because no presentation owner could be proven")`.
-
-Result: with Local lost and remotes served, a failed machine switch tears down
-that machine's healthy connection, logs a false transport failure, shows a false
-reason and forces a full SSH reconnect. `activation_tests.rs` covers target loss
-and source loss, not this.
-
-Fix direction: an acknowledged target-off with no source to restore should end
-the handoff `Unavailable` directly (a distinct progress variant, or a terminal
-outcome the loop maps to `end_handoff(Unavailable)`). More broadly,
-`SurfaceActivationProgress::Rejected` conflates "the peer refused" with "the
-handoff is finished and failed".
-
 ## CEND-004 - The disconnect notice text does not read as the documented sentence
 
 Claim broken: `handoff_interrupted_notice`'s doc says `notice` is "the same
@@ -155,12 +91,6 @@ frame before changing any shell state (status is set Online only when the
 snapshot arrives), so the "machine list" repaint it comments on shows nothing
 new.
 
-## CEND-013 - A health probe can be counted answered by a frame that predates it
-
-`EndpointHealth`: a frame the reader stamped between `tick_health`'s sync and
-its `HealthPing` send is synced on the next tick as `received`, which clears
-`ping_sent_at`. Effect is only a detection delay of up to one interval.
-
 ## CEND-014 - Structural: "which endpoint" is held in six places
 
 The registry's `active`, `Presentation` (`Owned` / `Handoff` / `Unavailable`),
@@ -170,7 +100,8 @@ the selection tracker's `selected` / `attempt` / `failed`,
 every turn (`settle`, then `automatic_activation`), and
 `begin_endpoint_activation`, `complete_endpoint_activation`,
 `rollback_endpoint_activation` and `handle_endpoint_disconnect` each patch a
-subset. CEND-003 and the rollback-leaves-surface-on finding (in
+subset. A rollback that tore down a healthy target connection (since fixed)
+and the rollback-leaves-surface-on finding (in
 `notes/bugs-rejected-candidates.md`) are consequences. One owner for the endpoint
 choice (a single enum covering selected, deferred, handing off from/to,
 failed-on-generation) would remove most of these interactions.
@@ -182,12 +113,6 @@ and source-on, successor intents, effects fence) exists to keep at most one
 server-side surface on and pane input ordered. If surface activation were
 idempotent per connection and the client simply chose which connection's frames
 to draw and where to send input, with the server told only "viewing" vs "not
-viewing" for its foreground and PTY size rules, the rollback paths (and CEND-003)
-would disappear. The hunter suggests weighing this as a rewrite rather than
+viewing" for its foreground and PTY size rules, the rollback paths and their
+failure modes would disappear. The hunter suggests weighing this as a rewrite rather than
 another round of patches to `activation.rs`.
-
-## CEND-016 - Structural: the loop's wakeup sources are split
-
-Event channel, supervisor channel, a timer from five deadline sources, and a
-signal flag that wakes nothing. Folding the quit signal and every helper-thread
-exit into the one event channel would make CEND-002 structurally impossible.

@@ -1230,6 +1230,84 @@ fn widening_resize_keeps_history_that_already_fit() {
     );
 }
 
+#[test]
+fn widened_history_survives_height_and_further_width_changes() {
+    let per_line_narrow = 40 * mem::size_of::<Cell>();
+    let mut terminal = Terminal::new(40, 3, per_line_narrow * 2_000);
+    write_line_range(&mut terminal, 0..1_500, 1);
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
+    let before = terminal.scrollback_rows();
+    assert!(before > scrollback_lines(terminal.max_scrollback, 80));
+    let origin = terminal.history_origin();
+    let ids = [
+        origin,
+        origin.saturating_add(750),
+        origin.saturating_add(1_499),
+    ];
+    let texts = ids.map(|id| absolute_row_text(&terminal, id));
+
+    // The newest history row moves onto the screen. Every retained row
+    // keeps its id, and shrinking must have room to return it to history.
+    for height in [8, 3, 1_600, 3] {
+        terminal.resize(shepr_core::geometry::PaneGeometry::new(80, height, 8, 16));
+        assert_eq!(terminal.history_origin(), origin);
+        assert_eq!(ids.map(|id| absolute_row_text(&terminal, id)), texts);
+    }
+    assert_eq!(terminal.scrollback_rows(), before);
+
+    // A second width change while history is on screen must not lower the
+    // capacity either. Width changes retire ids, so compare content here.
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 8, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(120, 8, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(120, 3, 8, 16));
+    assert_eq!(terminal.scrollback_rows(), before);
+    assert_eq!(
+        terminal
+            .read_text_screen(sr(0, 0), sr(119, 0))
+            .expect("oldest row"),
+        "000000"
+    );
+}
+
+/// A pane that was once narrow must not keep the narrow line budget at a wider
+/// width when it holds less than that: the byte budget bounds its growth.
+#[test]
+fn widening_with_short_history_settles_to_the_wider_budget() {
+    let per_line_narrow = 40 * mem::size_of::<Cell>();
+    let mut terminal = Terminal::new(40, 3, per_line_narrow * 2_000);
+    write_line_range(&mut terminal, 0..20, 1);
+    let held = terminal.scrollback_rows();
+
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
+    assert_eq!(
+        terminal.history_lines,
+        scrollback_lines(terminal.max_scrollback, 80)
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 30, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
+    assert_eq!(terminal.scrollback_rows(), held);
+}
+
+#[test]
+fn unchanged_dimensions_do_not_retire_rows_in_full_history() {
+    let height = u16::try_from(MIN_SCROLLBACK_LINES + 100).expect("test height");
+    let mut terminal = Terminal::new(10, height, 1);
+    write_line_range(
+        &mut terminal,
+        0..MIN_SCROLLBACK_LINES + usize::from(height) + 20,
+        1,
+    );
+    assert_eq!(terminal.scrollback_rows(), MIN_SCROLLBACK_LINES);
+    let origin = terminal.history_origin();
+
+    // Neither a cell-size update nor an identical geometry pushes a line.
+    for _ in 0..2 {
+        terminal.resize(shepr_core::geometry::PaneGeometry::new(10, height, 8, 16));
+        assert_eq!(terminal.history_origin(), origin);
+        assert_rows_name_their_lines(&terminal, [origin, origin.saturating_add(500)]);
+    }
+}
+
 /// Formats the whole screen as unwrapped VT (as history persistence does),
 /// replays it into a fresh terminal, and compares cells and styles.
 #[test]

@@ -43,52 +43,6 @@ Claims broken:
 
 Fix direction: one composition pipeline; see CSHELL-017.
 
-## CSHELL-002 - Cancellation drops follow-up work but keeps the state that work set: copy mode and pane scrolling can wedge
-
-Where: `cancel_endpoint_request_with_notice` (`shell/navigation/actions.rs`),
-`complete_copy_operation` and `dispatch_queued_copy_input`
-(`shell/input/copy_mode.rs`). Callers: `cancel_unsent_endpoint_request` (from
-`dispatch_client_shell_actions` in `shell_runtime.rs` when the active endpoint
-does not own presentation, and from `cancel_endpoint_commands`) and
-`cancel_endpoint_request` (from `lib.rs` for completions on another generation
-or a non-active endpoint, and from `mark_endpoint_disconnected`).
-
-The comment in `cancel_endpoint_request_with_notice` says "A cancelled copy-mode
-request does not continue its key queue (`continue_queue` is false on every
-error), so nothing but a repaint can come out of it." That is false.
-`complete_copy_operation` with `continue_queue == false` still calls
-`dispatch_queued_copy_input` whenever `copy_mode_owns_input()` holds ("Failed
-copy requests still release the buffered input"). Replayed keys can issue a new
-copy motion or search (`dispatch_next_copy_operation` sets
-`copy_operation_in_flight = true`, inserts a `pending_requests` entry, pushes a
-`ClientShellAction::Endpoint`); exit copy mode (`y`, Enter, `q`), so
-`exit_copy_mode` pushes `PaneSelectionRead` and `PaneScroll` and
-`dispatch_pane_scroll_offset` inserts `pane_scroll_in_flight[pane]`; and after
-that exit, route the keys behind it to the pane as `ClientShellPaneInput`.
-
-The cancel wrapper keeps only `outcome.repaint` and logs the rest as dropped. On
-the handoff path (`cancel_unsent_endpoint_request` while the endpoint is still
-online) `push_endpoint_command_with_kind` succeeds, so the dropped work leaves:
-
-- `copy_operation_in_flight == true` with a pending request that never completes
-  or expires (it never reached the endpoint command queue, so nothing times it
-  out). Every later copy-mode key is queued in `handle_key` until
-  `MAX_COPY_INPUT_QUEUE`, then refused with "copy-mode input queue is full". Copy
-  mode is wedged until an interrupt key exits it.
-- `pane_scroll_in_flight[pane]` with no request behind it. `push_pane_scroll_offset`
-  for that pane then only writes `pane_scroll_queued`, so copy-mode paging,
-  scrollbar drags and selection autoscroll stop scrolling that pane until a
-  reboot, a disconnect or an endpoint switch clears the maps.
-- typed keystrokes silently lost.
-
-The test-only `handle_endpoint_result` says it: "The caller must route the whole
-outcome ... or the replayed keystrokes are lost." The cancel path breaks that
-rule.
-
-Fix direction: make cancellation return a full `ClientShellInput` and route it
-through `finish_client_shell_input` like any result, or make a cancelled copy
-operation discard the queue instead of replaying it. General fix: CSHELL-018.
-
 ## CSHELL-003 - A pane-split drag released during a projection gap drops the final ratio
 
 Where: the `ClientChromeDrag::PaneSplit` arms in `handle_mouse_with_accounting`
@@ -206,11 +160,19 @@ mode bar once, in one order.
 In-flight state is spread across `pending_requests`, `pane_scroll_in_flight`,
 `pane_scroll_queued`, `pane_scroll_targets`, `copy_operation_in_flight`,
 `copy_operation_queue`, `copy_input_queue`, `ClientWordSelection::pending_row`
-and `PendingWorkspaceHighlight::request_id`. Each completion path must unwind its
-own maps, and the cancel path (CSHELL-002) does not. One ledger whose entries own
-their completion and rollback, with cancellation a completion with `Err` whose
-whole outcome is routed, would make dropped follow-up work impossible by
-construction.
+and `PendingWorkspaceHighlight::request_id`. Cancellation now runs a rollback
+owned by each pending request kind, but ordinary completion still unwinds each
+feature's own maps and queues by hand (CSHELL-023 is a path that forgets). One
+ledger whose entries own both completion and rollback would make dropped
+follow-up work impossible by construction.
+
+## CSHELL-023 - A result for a mismatched boot drops its pending entry without rollback
+
+Lateral. `apply_endpoint_result` removes the pending request entry before it
+returns early for a result whose boot no longer matches, and it does not run the
+request kind's rollback on that path, so the in-flight state that request set
+(copy operation, pane scroll, word-selection row) can stay set with nothing
+behind it. Cancellation runs the rollback; this path should too.
 
 ## CSHELL-019 - Structural: surface baseline versus presentable surface
 

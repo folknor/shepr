@@ -262,14 +262,10 @@ pub(super) const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
 /// later keys are dropped with a notice instead of growing the queue without bound.
 pub(super) const MAX_COPY_INPUT_QUEUE: usize = 256;
 
-/// Event queue capacity shared by the stdin, resize and server-reader threads.
+/// Event queue capacity shared by host input, resize, endpoint readers, supervisors and quit.
 ///
 /// The capacity absorbs short bursts without allowing unlimited event accumulation.
 pub(super) const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
-/// Event queue capacity for endpoint supervisor notifications.
-///
-/// The capacity covers endpoint status bursts while keeping the queue bounded.
-pub(super) const ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY: usize = 64;
 /// Channel capacity for the asynchronous clipboard helper.
 ///
 /// The channel suffices because every read has its receiver and completes once.

@@ -126,7 +126,18 @@ impl FrameData {
     /// The index of `uri` in this frame's link table, adding it when absent.
     /// `None` once the table is full: the cell then simply carries no link,
     /// rather than the frame growing past what the wire accepts.
+    /// Pane rendering calls this per cell. Hyperlink runs occupy adjacent
+    /// cells, so a match at the table tail makes repeated cells constant-time.
+    /// Distinct URIs still scan the table: its vector positions are their wire
+    /// indices, and callers can mutate the public vector directly.
     pub fn intern_hyperlink(&mut self, uri: &str) -> Option<u32> {
+        if self.hyperlinks.last().is_some_and(|known| known == uri) {
+            return self
+                .hyperlinks
+                .len()
+                .checked_sub(1)
+                .and_then(|index| u32::try_from(index).ok());
+        }
         if let Some(index) = self.hyperlinks.iter().position(|known| known == uri) {
             return u32::try_from(index).ok();
         }

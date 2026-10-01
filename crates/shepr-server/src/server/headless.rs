@@ -308,9 +308,9 @@ impl HeadlessServer {
         loop {
             // If shutdown has been initiated, complete it and exit.
             if self.lifecycle.phase() == ShutdownPhase::Stopping {
-                // Commands answered before the stop (a command that arrived
-                // while stopping is answered with the refusal) still reach
-                // their clients, ahead of the shutdown notice.
+                // Finalize any reply still in the outbox before waiting for
+                // client flushes. Replies held when shutdown began were
+                // already queued ahead of the shutdown notice.
                 self.resolve_pending_endpoint_replies_for_shutdown();
                 self.flush_endpoint_replies();
                 if let Err(err) = self.complete_shutdown().await {
@@ -512,6 +512,22 @@ impl HeadlessServer {
             let event_time = self.refresh_app_clock();
 
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
+                // This request was already dequeued when the stop arrived.
+                // Queue its refusal before initiate_shutdown broadcasts the
+                // notice that can make a client stop reading its control lane.
+                if let LoopEvent::ServerEvent(ServerEvent::ClientShellEndpointRequest {
+                    client_id,
+                    boot_id,
+                    request_id,
+                    ..
+                }) = &event
+                {
+                    self.reject_endpoint_request_for_shutdown(
+                        *client_id,
+                        boot_id.clone(),
+                        request_id.clone(),
+                    );
+                }
                 self.initiate_shutdown();
                 match event {
                     LoopEvent::Internal(ev) => {
@@ -541,18 +557,13 @@ impl HeadlessServer {
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
                     LoopEvent::Api(msg) => self.reject_api_request_for_shutdown(&msg),
-                    LoopEvent::ServerEvent(ServerEvent::ClientShellEndpointRequest {
-                        client_id,
-                        boot_id,
-                        request_id,
-                        ..
-                    }) => self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id),
                     LoopEvent::ClientListenerError(err) => {
                         tracing::error!(error = %err, "client listener readiness failed");
                         run_error.get_or_insert(err);
                     }
-                    // A worker completion lands here too: the shutdown flush
-                    // answers its pending reply with the shutdown refusal.
+                    // A worker completion and a client endpoint request land
+                    // here: the shutdown flush answers a pending reply with
+                    // the shutdown refusal.
                     _ => {}
                 }
                 continue;
@@ -773,13 +784,19 @@ impl HeadlessServer {
         );
     }
 
-    fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) {
+    fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) -> bool {
+        // Closing a registered writer makes its reader report EOF. Ignore a
+        // later detach or disconnect once the registry has already removed it.
+        if !self.clients.contains_key(&client_id) {
+            return false;
+        }
         self.remove_client(client_id);
         // Removing the client dropped its geometry controller mappings. Each
         // workspace it controlled goes to a remaining viewer, or every
         // workspace to the headless size when no surface remains, so no pane
         // keeps the departed client's size.
         self.reapply_controlled_shell_workspace_geometry(true);
+        true
     }
 
     /// Accepts one client connection from the non-blocking listener.
@@ -807,8 +824,10 @@ impl HeadlessServer {
     /// Closes the server event channel and settles what is left in it: a
     /// client that connected too late is sent the shutdown notice, and an
     /// endpoint command still queued is answered with the shutdown refusal
-    /// rather than left to its client's command timeout. Everything else is
-    /// moot once the server stops.
+    /// rather than left to its client's command timeout. Replies already held
+    /// when shutdown began were queued before its notice; these requests still
+    /// in the receiver are refused after it. Everything else is moot once the
+    /// server stops.
     async fn reject_late_client_connections(&mut self) {
         self.server_event_rx.close();
         while let Some(event) = self.server_event_rx.recv().await {
@@ -1114,6 +1133,14 @@ impl HeadlessServer {
     /// Handles a server event, then reports any change in which panes hold
     /// terminal focus. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
+        if matches!(
+            &ev,
+            ServerEvent::ClientDetach { client_id }
+                | ServerEvent::ClientDisconnected { client_id }
+                if !self.clients.contains_key(client_id)
+        ) {
+            return false;
+        }
         // Pane input and writer drains, the per-keystroke and per-frame
         // events, move no client's view and no outer focus; a client they
         // remove on a failed send is settled by `remove_client`.
@@ -1437,13 +1464,17 @@ impl HeadlessServer {
                 self.handle_client_shell_endpoint_request(client_id, boot_id, request_id, *command)
             }
             ServerEvent::ClientDetach { client_id } => {
+                if !self.remove_client_and_resize_if_needed(client_id) {
+                    return false;
+                }
                 info!(?client_id, "client detached");
-                self.remove_client_and_resize_if_needed(client_id);
                 true
             }
             ServerEvent::ClientDisconnected { client_id } => {
+                if !self.remove_client_and_resize_if_needed(client_id) {
+                    return false;
+                }
                 info!(?client_id, "client disconnected");
-                self.remove_client_and_resize_if_needed(client_id);
                 true
             }
             ServerEvent::ClientWriterDrained { client_id } => {

@@ -63,16 +63,6 @@ impl App {
         }
 
         let pending = self.pending_agent_resume_candidates();
-        // A candidate is not safe to launch until a worker has checked its
-        // saved cwd. Waiting for every candidate in this pass keeps the
-        // schedule's candidate order and spacing rules intact.
-        if pending.iter().any(|candidate| {
-            !self
-                .resume_schedule
-                .has_directory_check(&candidate.terminal_id, &candidate.cwd)
-        }) {
-            return false;
-        }
         let mut pass = self.resume_schedule.begin_pass(now);
         for PendingAgentResumeCandidate {
             pane_id,
@@ -85,10 +75,14 @@ impl App {
             if self.terminal_runtimes.get(terminal_id).is_some() {
                 continue;
             }
-            let directory_available = self
-                .resume_schedule
-                .take_directory_check(terminal_id, cwd)
-                .unwrap_or(false);
+            // A worker checks each saved cwd independently. Preserve layout
+            // order among ready candidates, but let one slow filesystem lookup
+            // hold only its own resume instead of the whole pass.
+            let Some(directory_available) =
+                self.resume_schedule.take_directory_check(terminal_id, cwd)
+            else {
+                continue;
+            };
             let outcome = self.start_pending_agent_resume(
                 *pane_id,
                 terminal_id,
@@ -695,6 +689,72 @@ mod tests {
             .test_record_all_workspace_areas(Rect::new(0, 0, 0, 0));
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unchecked_cwd_does_not_block_a_later_checked_resume() {
+        let _env = IsolatedEnv::new();
+        let mut app = test_app();
+        app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
+        let waiting_workspace = shepr_mux::workspace::Workspace::test_new("waiting");
+        let waiting_pane = waiting_workspace.root_pane();
+        let waiting_terminal = waiting_workspace
+            .terminal_id(waiting_pane)
+            .cloned()
+            .expect("test precondition");
+        let ready_workspace = shepr_mux::workspace::Workspace::test_new("ready");
+        let ready_pane = ready_workspace.root_pane();
+        let ready_terminal = ready_workspace
+            .terminal_id(ready_pane)
+            .cloned()
+            .expect("test precondition");
+        app.state.workspaces = vec![waiting_workspace, ready_workspace];
+        app.state.set_bookmark_index(Some(0));
+        app.state
+            .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
+        app.state.ensure_test_terminals();
+        for terminal_id in [&waiting_terminal, &ready_terminal] {
+            app.state
+                .terminals
+                .get_mut(terminal_id)
+                .expect("test terminal should exist")
+                .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
+                &format!("shepr:codex\0codex\0Id\0{terminal_id}"),
+                long_running_test_argv(),
+            ));
+        }
+        let waiting_cwd = app.state.terminals[&waiting_terminal].cwd().to_path_buf();
+        let ready_cwd = app.state.terminals[&ready_terminal].cwd().to_path_buf();
+        report_test_host_theme(&mut app);
+
+        let now = Instant::now();
+        app.record_pending_agent_resume_cwd_check(ready_terminal.clone(), ready_cwd.clone(), true);
+        assert!(app.start_pending_agent_resumes(now));
+
+        assert!(app.terminal_runtimes.get(&waiting_terminal).is_none());
+        assert!(
+            app.state.terminals[&waiting_terminal]
+                .pending_agent_resume_plan
+                .is_some()
+        );
+        assert!(
+            !app.resume_schedule
+                .has_directory_check(&waiting_terminal, &waiting_cwd)
+        );
+        assert!(app.terminal_runtimes.get(&ready_terminal).is_some());
+        assert!(
+            app.state.terminals[&ready_terminal]
+                .pending_agent_resume_plan
+                .is_none()
+        );
+        assert!(
+            !app.resume_schedule
+                .has_directory_check(&ready_terminal, &ready_cwd)
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            drop(runtime);
+        }
     }
 
     fn long_running_test_argv() -> Vec<String> {

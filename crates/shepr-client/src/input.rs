@@ -82,7 +82,13 @@ pub(crate) fn stdin_reader_loop(
 
     while !should_quit.load(Ordering::Acquire) {
         match shepr_platform::read_fd(stdin_fd, &mut scratch) {
-            Ok(0) => break,
+            Ok(0) => {
+                report_terminal_unavailable(
+                    event_tx,
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "host terminal input closed"),
+                );
+                break;
+            }
             Ok(n) => {
                 if !consume_input_bytes(
                     &scratch[..n],
@@ -113,10 +119,17 @@ pub(crate) fn stdin_reader_loop(
                 if err.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
+                report_terminal_unavailable(event_tx, err);
                 break;
             }
         }
     }
+}
+
+fn report_terminal_unavailable(event_tx: &mpsc::Sender<ClientLoopEvent>, error: io::Error) {
+    event_tx
+        .blocking_send(ClientLoopEvent::TerminalUnavailable(error))
+        .ok();
 }
 
 fn consume_input_bytes(

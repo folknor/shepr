@@ -22,6 +22,49 @@ fn request_id(actions: &[ClientShellAction]) -> &str {
     &request.id
 }
 
+#[test]
+fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot() {
+    for missing_snapshot in [false, true] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        let pane_id = test_pane_id("w1:p1");
+        let mut first = ClientShellInput::default();
+        state.push_pane_scroll_offset(pane_id.clone(), 3, &mut first);
+        let id = request_id(&first.actions).to_owned();
+        let mut queued = ClientShellInput::default();
+        state.push_pane_scroll_offset(pane_id.clone(), 7, &mut queued);
+        assert!(queued.actions.is_empty());
+        assert_eq!(state.pane_scroll_queued.get(&pane_id), Some(&7));
+        if missing_snapshot {
+            state.snapshot = None;
+        }
+
+        let cancelled = state.handle_endpoint_result_at(
+            &crate::tests::test_boot_id("boot-1"),
+            &id,
+            Err(ClientShellEndpointError::Cancelled),
+            std::time::Instant::now(),
+        );
+
+        assert!(cancelled.repaint);
+        assert!(cancelled.actions.is_empty());
+        assert!(cancelled.requests.is_empty());
+        assert!(state.pending_requests.is_empty());
+        assert!(state.pane_scroll_in_flight.is_empty());
+        assert!(state.pane_scroll_queued.is_empty());
+        assert!(state.pane_scroll_targets.is_empty());
+        state.set_snapshot(Box::new(snapshot()));
+        let mut next = ClientShellInput::default();
+        state.push_pane_scroll_offset(pane_id.clone(), 2, &mut next);
+        assert!(matches!(
+            next.actions.as_slice(),
+            [ClientShellAction::Endpoint { .. }]
+        ));
+        assert!(state.pane_scroll_in_flight.contains_key(&pane_id));
+    }
+}
+
 struct TestTransport {
     fail: bool,
 }

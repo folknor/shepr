@@ -129,6 +129,9 @@ pub enum SurfaceActivationProgress {
         message: String,
         source_release_rejected: bool,
     },
+    FinishedUnavailable {
+        message: String,
+    },
     Stale,
 }
 

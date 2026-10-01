@@ -48,8 +48,7 @@ fn config_output(cwd: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
 // origin listing is only a cache dependency list, never a second config parser.
 // Stamp absent default files and include targets too: creating an empty or
 // previously missing config must invalidate the same cache as editing one.
-fn config_deps(info: &GitWorktreeInfo) -> io::Result<Vec<FileDep>> {
-    let mut paths = git_user_config_paths_at(&info.repo_root)?;
+fn config_deps(info: &GitWorktreeInfo, mut paths: Vec<PathBuf>) -> io::Result<Vec<FileDep>> {
     paths.extend([
         info.git_common_dir.join("config"),
         info.git_dir.join("config.worktree"),
@@ -156,7 +155,19 @@ pub(super) fn read_config_for_status(
     branch: &str,
     errors: &mut Vec<GitReadError>,
 ) -> ConfigCtx {
-    let mut deps = match config_deps(info) {
+    // Keep refused environment values typed apart from errors reading config files.
+    let user_config_paths = match git_user_config_paths_at(&info.repo_root) {
+        Ok(paths) => paths,
+        Err(error) => {
+            errors.push(GitReadError::ConfigEnvironment {
+                message: error.to_string(),
+            });
+            let mut dep = stamp(info.git_common_dir.join("config"), None);
+            dep.2 = false;
+            return (branch.to_owned(), None, vec![dep]);
+        }
+    };
+    let mut deps = match config_deps(info, user_config_paths) {
         Ok(deps) => deps,
         Err(error) => {
             errors.push(GitReadError::FileRead {
@@ -244,7 +255,9 @@ pub(super) fn read_bare(info: &GitWorktreeInfo) -> io::Result<bool> {
     Ok(output.stdout == b"true\n")
 }
 
-pub(super) fn git_user_config_paths_at(cwd: &Path) -> io::Result<Vec<PathBuf>> {
+pub(super) fn git_user_config_paths_at(
+    cwd: &Path,
+) -> Result<Vec<PathBuf>, shepr_core::env::EnvError> {
     let mut paths = Vec::new();
     let no_system = shepr_core::env::read_text(shepr_core::env::EnvVar::GitConfigNoSystem)?
         .and_then(|value| git_config_bool(&value))
@@ -282,7 +295,7 @@ pub(super) fn git_user_config_paths_at(cwd: &Path) -> io::Result<Vec<PathBuf>> {
 fn git_config_override_path(
     cwd: &Path,
     var: shepr_core::env::EnvVar,
-) -> io::Result<Option<PathBuf>> {
+) -> Result<Option<PathBuf>, shepr_core::env::EnvError> {
     Ok(shepr_core::env::read_os(var)?.map(|path| {
         let path = PathBuf::from(path);
         if path.is_absolute() {

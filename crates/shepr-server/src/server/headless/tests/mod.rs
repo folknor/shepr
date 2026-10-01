@@ -348,6 +348,20 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
     shutdown_test_runtimes(&mut server);
 }
 
+#[test]
+fn disconnect_after_detach_has_no_render_impact() {
+    let mut server = test_headless_server();
+    let _pane_id = install_shared_view_test_runtime(&mut server);
+    let (control, _render) = connect_test_shell(&mut server, 8, 112, 36);
+    let _snapshot = client_shell_snapshot(&control);
+    let client_id = ClientId::test_new(8);
+
+    assert!(server.handle_server_event(ServerEvent::ClientDetach { client_id }));
+    assert!(!server.handle_server_event(ServerEvent::ClientDisconnected { client_id }));
+    assert!(!server.clients.contains_key(&client_id));
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn headless_api_reads_latest_title() {
     let mut server = test_headless_server();
@@ -915,6 +929,22 @@ pub(crate) fn test_client_writer() -> (
     ClientWriter::test_pair()
 }
 
+/// Gives an already inserted fixture client a way to send frames, so it
+/// presents a surface and takes part in the PTY size rule. The receivers must
+/// stay alive for as long as the client is used.
+fn attach_test_writer(
+    server: &mut HeadlessServer,
+    client_id: u64,
+) -> (std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver) {
+    let (writer, control, render) = test_client_writer();
+    server
+        .clients
+        .get_mut(&ClientId::test_new(client_id))
+        .expect("fixture client is registered")
+        .writer = Some(writer);
+    (control, render)
+}
+
 #[tokio::test]
 async fn client_shell_attach_seeds_workspace() {
     let mut server = test_headless_server();
@@ -1422,8 +1452,7 @@ async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdow
         2,
         "the pending slot holds the reply behind it"
     );
-    server.resolve_pending_endpoint_replies_for_shutdown();
-    server.flush_endpoint_replies();
+    server.initiate_shutdown();
     let mut replies = Vec::new();
     while replies.len() < 2 {
         if let ServerMessage::ClientShellEndpointResponse {
@@ -1446,6 +1475,14 @@ async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdow
     assert!(matches!(
         &replies[0].1,
         Err(shepr_protocol::command::EndpointError::ShuttingDown)
+    ));
+    assert!(matches!(
+        read_server_message(
+            control_b
+                .recv_timeout(Duration::from_secs(1))
+                .expect("shutdown notice follows held replies")
+        ),
+        ServerMessage::ServerShutdown { .. }
     ));
     assert!(server.endpoint_replies.is_empty());
     shutdown_test_runtimes(&mut server);
@@ -1808,7 +1845,9 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
         .app
         .public_pane_id(0, server.app.state.workspaces[0].root_pane())
         .expect("pane id");
-    assert!(command_through_server(
+    // Scrolling a pane already at the bottom changes nothing, and the claim it
+    // makes records no new geometry, so it asks for no render.
+    assert!(!command_through_server(
         &mut server,
         7,
         EndpointCommand::PaneScroll(shepr_protocol::command::PaneScrollParams {
@@ -2717,7 +2756,13 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.place_test_client_on_workspace(ClientId::test_new(8), &second_workspace_id));
-    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(8), false));
+    // Both shells are the same size, so the claim moves the controller without
+    // changing any recorded geometry.
+    let _ = server.claim_shell_workspace_geometry(ClientId::test_new(8), false);
+    assert_eq!(
+        server.clients.geometry_controller(&second_workspace_id),
+        Some(ClientId::test_new(8))
+    );
     assert!(
         server.pty_sources_visible_to_any_render_target(&HashSet::from([first_pane, second_pane,]))
     );
@@ -3393,7 +3438,13 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_workspace() {
     assert!(server.place_test_client_on_workspace(ClientId::test_new(67), &second_workspace_id));
     assert!(server.claim_shell_workspace_geometry(ClientId::test_new(67), false));
     assert!(server.place_test_client_on_workspace(ClientId::test_new(67), &third_workspace_id));
-    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(67), false));
+    // The workspace is already sized for this client, so only the controller
+    // moves and no geometry changes.
+    let _ = server.claim_shell_workspace_geometry(ClientId::test_new(67), false);
+    assert_eq!(
+        server.clients.geometry_controller(&third_workspace_id),
+        Some(ClientId::test_new(67))
+    );
     assert!(server.place_test_client_on_workspace(ClientId::test_new(68), &second_workspace_id));
     assert_eq!(
         server.clients.geometry_controller(&second_workspace_id),
@@ -3649,7 +3700,13 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     let mut render_rx = PaneSurfaceReceiver::new(render_rx);
     let _ = client_shell_snapshot(&control_rx);
     assert!(server.place_test_client_on_workspace(ClientId::test_new(9), &second_workspace_id));
-    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(9), false));
+    // The sole shell already sized every workspace, so the claim only records
+    // the controller.
+    let _ = server.claim_shell_workspace_geometry(ClientId::test_new(9), false);
+    assert_eq!(
+        server.clients.geometry_controller(&second_workspace_id),
+        Some(ClientId::test_new(9))
+    );
     server.render_and_stream();
     let diverged = client_shell_snapshot(&control_rx);
     assert_eq!(
@@ -3763,6 +3820,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             None,
         ),
     );
+    let _writer_lanes = attach_test_writer(&mut server, 11);
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
@@ -5518,6 +5576,8 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 None,
             ),
         );
+        let _first_lanes = attach_test_writer(server, 1);
+        let _second_lanes = attach_test_writer(server, 2);
         server
             .clients
             .set_foreground_client_id(Some(ClientId::test_new(2)));

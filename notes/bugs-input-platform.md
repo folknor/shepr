@@ -13,18 +13,14 @@ Filed from the defect hunt over `crates/shepr-termio/src/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## INPLAT-004 - Host input can never parse legacy Alt+arrow
+## INPLAT-004 - Legacy Alt+arrow split across two reads still parses as Esc then the arrow
 
-`crates/shepr-termio/src/input/raw_input.rs` (`drain_available_chunks`,
-`split_coalesced_escape`) and `crates/shepr-termio/src/input/parse.rs`
-(`parse_legacy_special_sequence`). The host framer (`for_host_input`) always
-splits a leading `ESC ESC` into a lone Escape before extracting an event, so the
-parser's `"\x1b\x1b[A"`-style Alt+arrow entries and the doubled-ESC recursion in
-`complete_escape_sequence_len` can never match host input. A terminal sending
-rxvt-style `ESC ESC [ A` for Alt+Up produces Esc then Up: an `alt+up` binding
-never fires and the pane gets two keys. Claim broken: the parser's own table.
-Fix: let the coalesced-escape split skip a doubled ESC that completes a known
-sequence, or delete the dead table entries. Both files are upstream-tracked.
+`crates/shepr-termio/src/input/raw_input.rs`. The host framer now keeps a
+complete, recognised doubled-ESC sequence (rxvt-style `ESC ESC [ A` for Alt+Up)
+together when it is buffered in one piece. Residue: when `ESC ESC` arrives in
+one read and the arrow tail in a later one, the framer still splits the escapes,
+so the pane gets Esc then Up and an `alt+up` binding does not fire. The file is
+upstream-tracked.
 
 ## INPLAT-007 - Kitty flags without DISAMBIGUATE send CSI u for modified characters <!-- shout-ok -->
 
@@ -42,14 +38,6 @@ Lateral. `pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>` ("Preserv
 the public path used by API and client crates") and `set_local_stream_polling` (a
 one-line wrapper over `set_nonblocking`) are compatibility shims in a repo with no
 compatibility to keep.
-
-## INPLAT-012 - `ssh_control_path_under` budgets only literal `%C`
-
-Lateral. It counts only literal `%C` in the runtime directory when it budgets the
-staging length. Any other `%` token, or `%%`, in `XDG_RUNTIME_DIR` would also be
-expanded by OpenSSH, changing both the length and the path; the ControlPath is
-not escaped. Whether it matters depends on whether a runtime directory containing
-`%` is worth refusing outright.
 
 ## INPLAT-013 - Structural: drop `interprocess` from `shepr-platform`
 
@@ -96,10 +84,10 @@ HostReplyEsc, .. }` where each variant gives a byte bound and a flush-count boun
 would make "every hold ends" a type-level property. The file is
 upstream-tracked, so this rewrite cuts against porting upstream fixes.
 
-## INPLAT-017 - Structural: route `PaneGeometry` deserialization through the clamp
+## INPLAT-017 - Structural: an under-minimum `PaneGeometry` can still be built directly
 
-The pane minimum is enforced only by remembering to call
-`PaneGeometry::clamped()` on received values ("Reapply the pane-grid boundary to
-geometry received as a struct or wire value"). Routing `Deserialize` through
-`#[serde(from = ..)]` with the clamp would make an under-minimum pane grid
-unrepresentable.
+`PaneGeometry` deserialization now clamps the pane grid. Residue: its fields are
+public, so a value built directly can still be below the minimum, and the
+defensive clamps in `shepr-pty/src/fd.rs` and `shepr-vt/src/lib.rs` stay
+necessary. Private fields with a clamping constructor would make an
+under-minimum pane grid unrepresentable.

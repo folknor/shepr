@@ -89,7 +89,9 @@ checks every machine and runs interactive ssh for each one that needs
 authentication, one at a time, on shepr's own control socket, then checks those
 again; there is no command for it. Host keys are never accepted automatically.
 A running server of a different build, the local one or a machine's, is then
-offered a restart in one pass after the last authentication prompt: the
+offered a restart (the local one only at the build profile's own runtime
+address: a socket override names a server this client cannot relaunch, so it
+gets stop guidance instead) in one pass after the last authentication prompt: the
 question says that the restart ends the server's pane processes and that the
 layout is restored with fresh shells and agents resumed. Consent is asked on
 the terminal and defaults to keeping the server; with no terminal, or on
@@ -316,9 +318,10 @@ PTYs do not use `alacritty_terminal::tty`: it can only add environment
 variables (panes must strip inherited host and agent ones), cannot set a
 login-shell argv0, injects its own variables, blocks in `Drop` waiting for the
 child, and exits the process on a failed resize. `crates/shepr-pty/src/` owns the PTY on
-libc instead: `command.rs` (`PtyCommand`: argv or login shell, full env
-control, cwd) builds the launch, `backend.rs` opens the PTY and spawns the
-child as a session leader with the PTY as controlling terminal, and
+libc instead: `command.rs` (`PtyCommand`: configured pane shell with no extra
+arguments, optional login argv0, full env control and cwd) builds the launch,
+`backend.rs` opens the PTY and spawns the child as a session leader with the PTY
+as controlling terminal, and
 `actor.rs`/`fd.rs` own the master fd, the IO loop and resizing. The child is a
 plain `std::process::Child`. The pane runtime watches its pidfd and reaps it
 with `waitid` when available; `Child::wait` runs in a blocking task as the

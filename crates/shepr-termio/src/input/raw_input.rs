@@ -828,7 +828,10 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 continue;
             }
 
-            if self.split_coalesced_escape && self.buffer.starts_with(b"\x1b\x1b") {
+            if self.split_coalesced_escape
+                && self.buffer.starts_with(b"\x1b\x1b")
+                && !starts_with_complete_key_sequence(&self.buffer)
+            {
                 chunks.push(vec![ESC]);
                 self.buffer.drain(..1);
                 continue;
@@ -1254,6 +1257,22 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
     }
     std::str::from_utf8(&buffer[1..1 + escaped_char_width]).ok()?;
     Some(1 + escaped_char_width)
+}
+
+/// Keep a complete, parsed doubled-ESC key together for host input. The host
+/// framer still separates an ambiguous ESC followed by another key when the
+/// bytes do not complete a key sequence.
+fn starts_with_complete_key_sequence(buffer: &[u8]) -> bool {
+    let Some(sequence_len) = complete_escape_sequence_len(buffer) else {
+        return false;
+    };
+    if sequence_len <= 1 {
+        return false;
+    }
+    std::str::from_utf8(&buffer[..sequence_len])
+        .ok()
+        .and_then(parse_terminal_key_sequence)
+        .is_some()
 }
 
 fn starts_with_incomplete_sgr_mouse_sequence(buffer: &[u8]) -> bool {
@@ -2408,12 +2427,26 @@ mod tests {
     }
 
     #[test]
-    fn host_input_splits_lone_escape_from_arrow() {
+    fn host_input_keeps_complete_legacy_alt_arrow_together() {
+        let mut framer = RawInputFramer::for_host_input();
+
+        let events = framer.push(b"\x1b\x1b[D");
+
+        assert_eq!(events.len(), 1);
+        assert_raw_key(
+            events.into_iter().next().expect("test precondition"),
+            KeyCode::Left,
+            KeyModifiers::ALT,
+        );
+    }
+
+    #[test]
+    fn host_input_still_splits_unrecognized_doubled_escape() {
         let mut framer = RawInputByteFramer::for_host_input();
 
         assert_eq!(
-            framer.push(b"\x1b\x1b[D"),
-            vec![b"\x1b".to_vec(), b"\x1b[D".to_vec()]
+            framer.push(b"\x1b\x1bx"),
+            vec![b"\x1b".to_vec(), b"\x1bx".to_vec()]
         );
     }
 

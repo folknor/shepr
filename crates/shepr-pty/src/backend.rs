@@ -251,6 +251,9 @@ fn mark_inherited_fds_cloexec() -> io::Result<()> {
     if directory_fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `open` returned a new owned descriptor. Its close operation is
+    // async-signal-safe, and ownership ensures every error return closes it.
+    let directory_fd = unsafe { OwnedFd::from_raw_fd(directory_fd) };
 
     // limits-exempt: a field offset in the Linux `linux_dirent64` record.
     const DIRENT_RECLEN_OFFSET: usize = 16;
@@ -263,7 +266,7 @@ fn mark_inherited_fds_cloexec() -> io::Result<()> {
         let bytes_read = unsafe {
             libc::syscall(
                 libc::SYS_getdents64,
-                directory_fd,
+                directory_fd.as_raw_fd(),
                 buffer.as_mut_ptr(),
                 buffer.len(),
             )
@@ -337,8 +340,6 @@ fn mark_inherited_fds_cloexec() -> io::Result<()> {
         }
     }
 
-    // SAFETY: `directory_fd` was returned by open above and is owned here.
-    unsafe { libc::close(directory_fd) };
     Ok(())
 }
 

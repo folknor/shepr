@@ -371,7 +371,8 @@ fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
 }
 
 impl ValidatedUiConfig {
-    /// Configured expanded sidebar width, already clamped to `sidebar_bounds`.
+    /// Configured expanded sidebar width, already validated to be within
+    /// `sidebar_bounds`.
     pub fn sidebar_width(&self) -> u16 {
         self.sidebar_width
     }

@@ -802,6 +802,50 @@ fn source_release_rejection_restores_the_source_coherently() {
 }
 
 #[test]
+fn acknowledged_target_release_preserves_connection_when_source_is_unavailable() {
+    let (shell, mut endpoints, _local_sent, _remote_sent) = shell_and_registry();
+    let target = endpoint();
+    endpoints.set_surface_active(&ClientEndpointId::Local, false);
+    let now = Instant::now();
+    let mut activation = PendingEndpointActivation::begin(
+        &shell,
+        &mut endpoints,
+        &target,
+        None,
+        handoff_geometry(),
+        28,
+        now,
+    )
+    .expect("test precondition");
+
+    assert_eq!(
+        activation.rollback(&mut endpoints, "target activation failed", false),
+        ActivationRollback::Pending
+    );
+    let progress = activation.receive_response(
+        &target,
+        7,
+        "client-shell-surface:28:rollback-target-off",
+        &surface_success("client-shell-surface:28:rollback-target-off", false, 2),
+        &mut endpoints,
+    );
+
+    assert_eq!(
+        progress,
+        SurfaceActivationProgress::FinishedUnavailable {
+            message: "target activation failed; no endpoint owns the presentation".into(),
+        }
+    );
+    assert!(endpoints.connection(&target).is_some());
+    assert!(
+        !endpoints
+            .connection(&target)
+            .is_some_and(|connection| connection.surface_active)
+    );
+    assert!(endpoints.take_failures().is_empty());
+}
+
+#[test]
 fn source_release_timeout_starts_an_acknowledged_source_restore() {
     let (shell, mut endpoints, local_sent, _remote_sent) = shell_and_registry();
     let mut activation = PendingEndpointActivation::begin(

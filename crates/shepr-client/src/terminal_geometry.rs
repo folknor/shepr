@@ -170,6 +170,9 @@ pub(super) fn resize_poll_loop(
     let mut last_size = initial;
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(TERMINAL_RESIZE_POLL_INTERVAL);
+        // Finish the probe after a quit arrives during sleep so terminal loss can still enter
+        // the event queue; a successful unchanged probe is silent and quit already wakes the
+        // client loop.
         let signalled = shepr_platform::take_terminal_resize_signal();
         let new_size = match current_terminal_geometry(
             reported_cell_size,

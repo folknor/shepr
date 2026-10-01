@@ -1,6 +1,51 @@
 use super::*;
 use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 
+impl PendingEndpointKind {
+    /// Roll back only the state owned by this request. Cancellation cannot dispatch work:
+    /// its caller may have lost presentation or the connection that would carry that work.
+    fn cancel(self, shell: &mut ClientShellState) -> bool {
+        match self {
+            Self::Generic | Self::SelectionCopy => true,
+            Self::WorkspaceLabel { lookup_id } => shell.complete_workspace_label_lookup(
+                lookup_id,
+                Err(ClientShellEndpointError::Cancelled),
+            ),
+            Self::PaneScroll { pane_id, serial } => {
+                if shell.pane_scroll_in_flight.get(&pane_id).copied() != Some(serial) {
+                    return false;
+                }
+                shell.pane_scroll_in_flight.remove(&pane_id);
+                shell.pane_scroll_queued.remove(&pane_id);
+                shell.pane_scroll_targets.remove(&pane_id);
+                true
+            }
+            Self::WordSelection {
+                pane_id,
+                absolute_row,
+                generation,
+            } => shell.cancel_word_selection_row(&pane_id, absolute_row, generation),
+            Self::CopyMotion {
+                session_generation, ..
+            }
+            | Self::CopySearch {
+                session_generation, ..
+            } => {
+                if shell.copy_session_generation != session_generation {
+                    return false;
+                }
+                // Buffered keys depend on a result we will never apply. Discard them rather
+                // than replaying exits, new motions, or pane input into a frozen presentation.
+                shell.reset_copy_pipeline();
+                if let Some(copy_mode) = shell.copy_mode.as_mut() {
+                    copy_mode.copy_after_search = false;
+                }
+                true
+            }
+        }
+    }
+}
+
 impl ClientShellState {
     pub(super) fn record_binding(
         &mut self,
@@ -383,17 +428,10 @@ impl ClientShellState {
             self.now,
             show_cancelled_notice,
         );
-        // A cancelled copy-mode request does not continue its key queue
-        // (`continue_queue` is false on every error), so nothing but a repaint
-        // can come out of it. Callers take only the repaint, so anything else
-        // would be dropped; say so in the log instead of losing it silently.
+        // Cancellation uses the request kind's rollback, which produces only a repaint.
+        // Unlike an ordinary failed reply it must not release buffered input or start work.
         if !(outcome.actions.is_empty() && outcome.requests.is_empty()) {
-            tracing::warn!(
-                request_id,
-                actions = outcome.actions.len(),
-                requests = outcome.requests.len(),
-                "cancelled endpoint request produced follow-up work, which is dropped"
-            );
+            tracing::error!("a cancelled endpoint request produced actions or requests");
         }
         outcome.repaint
     }
@@ -452,11 +490,13 @@ impl ClientShellState {
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
         };
+        let cancelled = matches!(&result, Err(ClientShellEndpointError::Cancelled));
         if pending.boot_id != boot_id
-            || self
-                .snapshot
-                .as_deref()
-                .is_none_or(|snapshot| snapshot.boot_id != boot_id)
+            || (!cancelled
+                && self
+                    .snapshot
+                    .as_deref()
+                    .is_none_or(|snapshot| snapshot.boot_id != boot_id))
         {
             return (false, Vec::new());
         }
@@ -512,6 +552,11 @@ impl ClientShellState {
                     body,
                 );
             }
+        }
+        if cancelled {
+            // The ledger entry owns rollback even when its snapshot is no longer presented.
+            // Generations and serials in the kind protect newer work from an old cancellation.
+            return (pending.kind.cancel(self), Vec::new());
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}

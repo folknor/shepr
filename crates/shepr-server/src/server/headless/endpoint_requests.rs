@@ -151,8 +151,9 @@ impl HeadlessServer {
         changed |= outcome.render != RenderDemand::None;
         let mut immediate_sources_changed = outcome.effects.changes_immediate_pty_sources();
 
+        let mut navigated = false;
         if let Some(workspace_id) = &outcome.navigate {
-            let navigated = self.navigate_shell_client(client_id, workspace_id);
+            navigated = self.navigate_shell_client(client_id, workspace_id);
             changed |= navigated;
             immediate_sources_changed |= navigated;
         }
@@ -168,6 +169,13 @@ impl HeadlessServer {
         }
         if traits.claims_shell_geometry {
             changed |= if traits.changes_topology {
+                self.reapply_controlled_shell_workspace_geometry(false)
+            } else if navigated {
+                if let Some(workspace_id) = self.shell_target_for_client(client_id) {
+                    let _ = self.clients.claim_geometry(workspace_id, client_id);
+                }
+                // The destination may already remember this client, so the
+                // claim alone may not apply geometry after its view changed.
                 self.reapply_controlled_shell_workspace_geometry(false)
             } else {
                 self.claim_shell_workspace_geometry(client_id, false)

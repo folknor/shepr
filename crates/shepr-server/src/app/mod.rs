@@ -388,10 +388,9 @@ impl App {
         self.default_workspace_retry_at = None;
 
         let cwd = self.resolve_new_terminal_cwd(None);
-        let preserve_checkpoint =
-            self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty;
+        let preserve_checkpoint = self.preserves_pane_exit_checkpoint();
 
-        match self.create_workspace(&cwd, geometry) {
+        match self.create_workspace_without_save(&cwd, geometry) {
             Ok(_index) => {
                 self.default_workspace_retry_delay = None;
                 // Callers include non-mutating API requests and client
@@ -399,8 +398,9 @@ impl App {
                 self.state.mark_shell_projection_dirty();
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.
-                    self.session_saver.pane_exit_checkpoint_pending = true;
                     self.finish_checkpointed_pane_exit();
+                } else {
+                    self.schedule_session_save();
                 }
                 true
             }
@@ -1223,7 +1223,7 @@ mod tests {
         let geometry = app.headless_spawn_geometry();
         assert!(app.create_default_workspace(geometry));
 
-        app.save_session_before_teardown();
+        app.save_session_before_teardown_async().await;
         app.retire_session_writer();
 
         let lease =
@@ -1267,10 +1267,7 @@ mod tests {
         app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
         app.start_background_session_save();
         assert!(app.session_saver.save_in_flight());
-        app.session_saver
-            .take_in_flight_result()
-            .expect("a save is in flight")
-            .expect("session save succeeds");
+        app.wait_for_session_save();
         app.save_session_before_teardown();
         app.retire_session_writer();
 

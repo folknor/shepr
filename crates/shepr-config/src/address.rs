@@ -26,20 +26,18 @@ impl ServerAddress {
         client_socket_override: Option<&Path>,
     ) -> Self {
         let runtime_api = runtime_dir.join(API_SOCKET_FILE_NAME);
+        let runtime_client = derive_client_socket_from_api_socket(&runtime_api);
+        let api_socket_override = api_socket_override.filter(|path| *path != runtime_api.as_path());
+        let client_socket_override =
+            client_socket_override.filter(|path| *path != runtime_client.as_path());
         // Panes export both resolved socket paths. When the server was
         // selected only by a client-socket override, that also exports the
         // profile's ordinary API socket. Keep the client override paired with
         // it, while allowing a non-runtime SHEPR_SOCKET_PATH to select a
-        // different server even when both variables are set.
-        if let Some(client_socket) = client_socket_override
-            && (api_socket_override.is_none() || api_socket_override == Some(runtime_api.as_path()))
-        {
-            return Self {
-                api_socket: runtime_api,
-                client_socket: client_socket.to_path_buf(),
-                source: AddressSource::ClientOverride,
-            };
-        }
+        // different server even when both variables are set. Inherited values
+        // equal to the runtime paths are not overrides: they select no
+        // different address and must not block a nested client from starting
+        // its profile's server.
         if let Some(api_socket) = api_socket_override {
             let api_socket = api_socket.to_path_buf();
             return Self {
@@ -48,10 +46,16 @@ impl ServerAddress {
                 source: AddressSource::ApiOverride,
             };
         }
-        let client_socket = derive_client_socket_from_api_socket(&runtime_api);
+        if let Some(client_socket) = client_socket_override {
+            return Self {
+                api_socket: runtime_api,
+                client_socket: client_socket.to_path_buf(),
+                source: AddressSource::ClientOverride,
+            };
+        }
         Self {
             api_socket: runtime_api,
-            client_socket,
+            client_socket: runtime_client,
             source: AddressSource::Runtime,
         }
     }
@@ -95,11 +99,16 @@ impl ServerAddress {
 
     /// What to tell an operator whose build met a running server of another
     /// build at this address. A dev and a release build keep separate runtime
-    /// directories, so the way forward is to stop that server, which exits its
-    /// panes, with the plain `server stop` command: it stops whatever server
-    /// answers, whatever its build.
+    /// directories, so a runtime address can be switched by stopping the old
+    /// server and starting this build. A socket override only names an existing
+    /// server; this client cannot start its replacement there.
     pub fn build_mismatch_guidance(&self, entrypoint: &str) -> String {
         let stop_command = self.stop_command(entrypoint);
+        if !self.is_runtime_address() {
+            return format!(
+                "To keep the running server and its panes, keep using the shepr build that started it.\nThis shepr cannot start a server at the selected socket override, so it cannot restart this address. To stop the running server anyway, run `{stop_command}`."
+            );
+        }
         let attach_command = self.attach_command(entrypoint);
         format!(
             "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. Run `{stop_command}`, then run `{attach_command}` again."
@@ -255,6 +264,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pane_exported_runtime_sockets_are_not_overrides() {
+        let runtime = Path::new("/run/user/1/shepr");
+        let runtime_api = runtime.join("shepr.sock");
+        let runtime_client = runtime.join("shepr-client.sock");
+        let address = ServerAddress::resolve_paths(
+            runtime,
+            Some(runtime_api.as_path()),
+            Some(runtime_client.as_path()),
+        );
+
+        assert!(address.is_runtime_address());
+        assert_eq!(address.override_variable(), None);
+        assert_eq!(address.api_socket(), runtime_api.as_path());
+        assert_eq!(address.client_socket(), runtime_client.as_path());
+        assert_eq!(address.stop_command("shepr"), "shepr server stop");
+
+        let mut command = shepr_test_support::command_in_scratch("shepr", "address-env");
+        address.apply_to_child_command(&mut command);
+        let envs: Vec<_> = command.get_envs().collect();
+        for variable in [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath] {
+            assert!(
+                envs.iter().any(|(key, value)| {
+                    *key == std::ffi::OsStr::new(variable.name()) && value.is_none()
+                }),
+                "{variable} must not be inherited as a socket override"
+            );
+        }
+    }
+
     const KEEP_GUIDANCE: &str = "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes.";
 
     #[test]
@@ -279,7 +318,7 @@ mod tests {
         assert_eq!(
             api.build_mismatch_guidance("shepr"),
             format!(
-                "{KEEP_GUIDANCE} Run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
+                "{OVERRIDE_GUIDANCE} To stop the running server anyway, run `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`."
             )
         );
         let client =
@@ -287,7 +326,7 @@ mod tests {
         assert_eq!(
             client.build_mismatch_guidance("shepr"),
             format!(
-                "{KEEP_GUIDANCE} Run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
+                "{OVERRIDE_GUIDANCE} To stop the running server anyway, run `SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`."
             )
         );
     }
@@ -310,4 +349,6 @@ mod tests {
             Path::new("/run/user/1/shepr/shepr.sock")
         );
     }
+
+    const OVERRIDE_GUIDANCE: &str = "To keep the running server and its panes, keep using the shepr build that started it.\nThis shepr cannot start a server at the selected socket override, so it cannot restart this address.";
 }

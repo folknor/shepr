@@ -350,6 +350,82 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
 }
 
 #[tokio::test]
+async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
+    let mut server = test_headless_server();
+    let first = shepr_mux::workspace::Workspace::test_new("first");
+    let first_pane = first.root_pane();
+    let second = shepr_mux::workspace::Workspace::test_new("second");
+    let second_pane = second.root_pane();
+    server.app.state.workspaces = vec![first, second];
+    server.app.state.ensure_test_terminals();
+    server.app.insert_test_runtime(
+        first_pane,
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+    );
+    server.app.insert_test_runtime(
+        second_pane,
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+    );
+    server.app.state.set_bookmark_index(Some(0));
+    let first_id = server.app.public_workspace_id(0).expect("first workspace");
+    let second_id = server.app.public_workspace_id(1).expect("second workspace");
+
+    let (first_control, _first_render) = connect_test_shell(&mut server, 7, 200, 60);
+    let _ = client_shell_snapshot(&first_control);
+    let (second_control, _second_render) = connect_test_shell(&mut server, 8, 100, 30);
+    let _ = client_shell_snapshot(&second_control);
+    assert_eq!(
+        server.app.state.workspace_area(0),
+        Some(ratatui::layout::Rect::new(0, 0, 200, 60))
+    );
+
+    // The destination already remembers client 7 as its controller by the
+    // time it returns to it, so the final move cannot rely on a new claim to
+    // trigger geometry settlement.
+    for workspace_id in [&second_id, &first_id, &second_id] {
+        let (_, result) = server.handle_client_shell_command(
+            ClientId::test_new(7),
+            EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
+                workspace_id: workspace_id.clone(),
+            }),
+        );
+        assert!(result.is_ok());
+    }
+
+    assert_eq!(
+        server.workspace_geometry_source(&first_id),
+        Some(super::super::client_views::GeometrySource::Client(
+            ClientId::test_new(8)
+        ))
+    );
+    assert_eq!(
+        server.app.state.workspace_area(0),
+        Some(ratatui::layout::Rect::new(0, 0, 100, 30))
+    );
+    assert_eq!(server.app.test_runtime(first_pane).current_size(), (30, 99));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn unchanged_geometry_application_does_not_force_surface_recompute() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    let (control, _render) = connect_test_shell(&mut server, 7, 80, 23);
+    let _ = client_shell_snapshot(&control);
+    server.render_and_stream();
+    assert!(!server.clients[&7].render_state.requires_recompute());
+    let applied_size = server.app.test_runtime(pane_id).current_size();
+
+    assert!(!server.reapply_controlled_shell_workspace_geometry(false));
+    assert!(!server.clients[&7].render_state.requires_recompute());
+    assert_eq!(
+        server.app.test_runtime(pane_id).current_size(),
+        applied_size
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn presentation_sync_epoch_replays_modes_and_title() {
     let mut server = test_headless_server();
     let (writer, control_rx, _render_rx) = test_client_writer();

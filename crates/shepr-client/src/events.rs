@@ -7,6 +7,7 @@ pub(super) struct ParsedHostInput {
 }
 
 pub(super) enum ClientLoopEvent {
+    Quit,
     StdinInput(Vec<ParsedHostInput>),
     Resize(shepr_core::geometry::HostGeometry),
     TerminalUnavailable(io::Error),

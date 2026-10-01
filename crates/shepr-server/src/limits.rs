@@ -88,6 +88,12 @@ pub(crate) const CLIENT_CONTROL_QUEUE_MAX_ITEMS: usize = 1024;
 /// Bound control memory per client even when a peer reads slowly but continues
 /// to make enough progress to stay inside the socket stall timeout.
 pub(crate) const CLIENT_CONTROL_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Frames needed to carry a full control queue of endpoint response bytes.
+pub(crate) const MAX_ENDPOINT_RESPONSE_FRAME_COUNT: usize =
+    CLIENT_CONTROL_QUEUE_MAX_BYTES.div_ceil(shepr_protocol::MAX_FRAME_SIZE);
+/// Encoded size cap of one endpoint response, leaving room for frame prefixes.
+pub(crate) const MAX_ENDPOINT_RESPONSE_ENCODED_BYTES: usize =
+    CLIENT_CONTROL_QUEUE_MAX_BYTES - std::mem::size_of::<u32>() * MAX_ENDPOINT_RESPONSE_FRAME_COUNT;
 /// How long a transport thread waits for a client it could not register to
 /// receive its shutdown frame.
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);

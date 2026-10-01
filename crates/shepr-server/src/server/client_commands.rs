@@ -1,13 +1,17 @@
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, RequestId, ServerMessage};
 
+use crate::limits::MAX_ENDPOINT_RESPONSE_ENCODED_BYTES;
+
 pub(crate) use crate::limits::{MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES};
 
 /// The one response to an endpoint command. A large result (a selection of a
-/// long scrollback) crosses in as many frames as it needs; only one past
-/// `MAX_MESSAGE_SIZE`, which the client would refuse, is answered with
-/// `EndpointError::ResponseTooLarge`, naming its size, rather than failing to
-/// send and leaving the client to wait out its command timeout.
+/// long scrollback) crosses in as many frames as it needs, up to the control
+/// queue's byte cap including frame prefixes. A larger result becomes
+/// `EndpointError::ResponseTooLarge` instead of closing the client connection
+/// and leaving it to wait out its command timeout. This bounds one reply; if
+/// earlier control messages have consumed the remaining queue space, the
+/// queue's slow-reader policy can still close that connection.
 pub(crate) fn response_message(
     boot_id: BootId,
     request_id: RequestId,
@@ -17,12 +21,12 @@ pub(crate) fn response_message(
         boot_id,
         request_id,
         result,
-        shepr_protocol::MAX_MESSAGE_SIZE,
+        MAX_ENDPOINT_RESPONSE_ENCODED_BYTES,
     )
 }
 
-/// The whole response envelope is measured, not just its result, so the bound
-/// is the size the client actually reads.
+/// Measures the whole response envelope, not just its result. The public
+/// bound leaves room for the frame prefixes added when the client reads it.
 fn response_within(
     boot_id: BootId,
     request_id: RequestId,
@@ -154,5 +158,27 @@ mod tests {
         };
         assert_eq!(*limit, 1024);
         assert!(*size > 1024);
+    }
+
+    #[test]
+    fn a_response_past_the_control_queue_limit_becomes_a_bounded_refusal() {
+        let message = response_message(
+            shepr_test_fixtures::fixed_boot_id(1),
+            "request-a".into(),
+            Ok(EndpointReply::PaneSelection {
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                text: "x".repeat(MAX_ENDPOINT_RESPONSE_ENCODED_BYTES + 1),
+            }),
+        );
+        let ServerMessage::ClientShellEndpointResponse {
+            result: Err(EndpointError::ResponseTooLarge { size, limit }),
+            ..
+        } = &message
+        else {
+            panic!("expected an error response, got {message:?}");
+        };
+        let bound = u64::try_from(MAX_ENDPOINT_RESPONSE_ENCODED_BYTES).expect("bound fits u64");
+        assert_eq!(*limit, bound);
+        assert!(*size > bound);
     }
 }

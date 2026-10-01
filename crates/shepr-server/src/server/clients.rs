@@ -197,6 +197,10 @@ impl<K: Copy + Into<ClientId>> Index<&K> for ClientRegistry {
 }
 
 impl ClientRegistry {
+    pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
+        self.connections.contains_key(&(*client_id).into())
+    }
+
     pub(crate) fn get<K: Copy + Into<ClientId>>(&self, client_id: &K) -> Option<&ClientConnection> {
         self.connections.get(&(*client_id).into())
     }
@@ -773,10 +777,6 @@ impl ClientId {
 
 #[cfg(test)]
 impl ClientRegistry {
-    pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
-        self.connections.contains_key(&(*client_id).into())
-    }
-
     /// Sets the foreground client without recording activity, as a fixture
     /// that has not been through the activity paths needs.
     pub(crate) fn set_foreground_client_id(&mut self, client_id: Option<ClientId>) {

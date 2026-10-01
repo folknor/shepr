@@ -891,6 +891,7 @@ pub fn format_key_combo(binding: KeyCombo) -> String {
 
     let key = match code {
         KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char('+') => "plus".to_string(),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Enter => "enter".to_string(),
         KeyCode::Esc => "esc".to_string(),
@@ -1230,6 +1231,22 @@ prefix = "ö"
         assert_eq!(
             parse_key_combo("ampersand"),
             Some((KeyCode::Char('&'), KeyModifiers::empty()))
+        );
+        assert_eq!(
+            parse_key_combo("plus"),
+            Some((KeyCode::Char('+'), KeyModifiers::empty()))
+        );
+        assert_eq!(
+            format_key_combo((KeyCode::Char('+'), KeyModifiers::empty())),
+            "plus"
+        );
+        assert_eq!(
+            parse_key_combo("ctrl+plus"),
+            Some((KeyCode::Char('+'), KeyModifiers::CONTROL))
+        );
+        assert_eq!(
+            format_key_combo((KeyCode::Char('+'), KeyModifiers::CONTROL)),
+            "ctrl+plus"
         );
     }
 

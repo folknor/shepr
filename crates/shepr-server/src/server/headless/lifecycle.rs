@@ -337,6 +337,13 @@ impl HeadlessServer {
         }
         info!("server shutdown initiated");
 
+        // Resolve worker slots and hand every held reply to its client's
+        // FIFO control lane before queuing the shutdown notice. The shutdown
+        // flush barrier must cover the notice without making earlier replies
+        // unreachable to clients that leave when they receive it.
+        self.resolve_pending_endpoint_replies_for_shutdown();
+        self.flush_endpoint_replies();
+
         // Send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {
             reason: Some(shepr_protocol::ShutdownReason::Message(

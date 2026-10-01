@@ -2350,6 +2350,106 @@ fn deferred_copy_input_is_bounded() {
 }
 
 #[test]
+fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
+    for unsent in [false, true] {
+        for operation in [b"w".as_slice(), b"/LIVE\r".as_slice()] {
+            for queued in [b"w".as_slice(), b"yx".as_slice(), b"\rx".as_slice()] {
+                let mut state =
+                    ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+                state.set_snapshot(Box::new(snapshot()));
+                let mut pane_surface = surface();
+                pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+                    offset_from_bottom: 0,
+                    max_offset_from_bottom: 10,
+                    viewport_rows: 2,
+                    history_origin: shepr_vt::AbsRow(0),
+                });
+                state.set_pane_surface(pane_surface);
+                state.compose(106, 20).expect("composed frame");
+                let mut enter = ClientShellInput::default();
+                assert!(state.enter_copy_mode(&mut enter));
+                let operation = state.handle_input_bytes(operation);
+                let [ClientShellAction::Endpoint { request, .. }] = &operation.actions[..] else {
+                    panic!("expected one copy request");
+                };
+                let request_id = request.id.clone();
+                let buffered = state.handle_input_bytes(queued);
+                assert!(buffered.actions.is_empty());
+                assert!(buffered.requests.is_empty());
+                assert!(!state.copy_input_queue.is_empty());
+
+                assert!(if unsent {
+                    state.cancel_unsent_endpoint_request(&request_id)
+                } else {
+                    state.cancel_endpoint_request(&request_id)
+                });
+
+                assert!(state.pending_requests.is_empty());
+                assert!(!state.copy_operation_in_flight);
+                assert!(state.copy_operation_queue.is_empty());
+                assert!(state.copy_input_queue.is_empty());
+                assert!(state.pane_scroll_in_flight.is_empty());
+                assert!(state.pane_scroll_queued.is_empty());
+                assert_eq!(state.mode, ClientShellMode::Copy);
+                assert!(
+                    !state
+                        .copy_mode
+                        .as_ref()
+                        .expect("copy mode")
+                        .copy_after_search
+                );
+                // Cancellation leaves the copy session usable for newly typed input.
+                let next = state.handle_input_bytes(b"w");
+                assert!(matches!(
+                    next.actions.as_slice(),
+                    [ClientShellAction::Endpoint { .. }]
+                ));
+                assert!(state.copy_operation_in_flight);
+                assert_eq!(state.pending_requests.len(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut enter));
+    let old = state.handle_input_bytes(b"w");
+    let [ClientShellAction::Endpoint { request, .. }] = &old.actions[..] else {
+        panic!("expected one copy request");
+    };
+    let old_id = request.id.clone();
+    state.handle_input_bytes(b"q");
+    assert!(state.enter_copy_mode(&mut enter));
+    let current = state.handle_input_bytes(b"w");
+    let [ClientShellAction::Endpoint { request, .. }] = &current.actions[..] else {
+        panic!("expected one copy request");
+    };
+    let current_id = request.id.clone();
+    state.handle_input_bytes(b"l");
+    let generation = state.copy_session_generation;
+
+    state.cancel_unsent_endpoint_request(&old_id);
+
+    assert_eq!(state.copy_session_generation, generation);
+    assert!(state.copy_operation_in_flight);
+    assert_eq!(state.copy_input_queue.len(), 1);
+    assert!(state.pending_requests.contains_key(current_id.as_str()));
+}
+
+#[test]
 fn copy_operation_does_not_capture_input_after_focus_moves() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

@@ -323,6 +323,9 @@ pub struct Terminal {
     events: Arc<Mutex<Vec<TerminalEvent>>>,
     scanner: Scanner,
     max_scrollback: usize,
+    /// History capacity in lines. It grows with the resize budget, decreases
+    /// only after a primary-screen width change (never below the content held)
+    /// or an explicit primary-history purge, and never on a height change.
     history_lines: usize,
     default_palette: [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
     cell: Option<shepr_core::geometry::CellPx>,
@@ -730,16 +733,14 @@ impl Terminal {
         } else {
             self.rows.begin(&self.term);
             // A shorter screen pushes its top lines into history.
-            self.rows.count_pushed(self.term.screen_lines());
+            self.rows
+                .count_pushed(self.term.screen_lines().saturating_sub(screen_lines));
         }
 
-        // The byte budget buys fewer lines at a wider width. Grow the line
-        // limit before reflowing into more lines; afterwards lower it at most
-        // to the history already held, never below it: dropping history that
-        // fit before the resize would make a zoom/unzoom cycle, or attaching
-        // from a wider client, destroy scrollback for good. The cost is that
-        // a widened pane holds more than its byte budget until it narrows
-        // again (or its history is cleared).
+        // Grow capacity before reflow. A height change never lowers it:
+        // growing the height pulls history onto the screen, and a capacity
+        // floor at the shrunken history would leave no room to put those
+        // lines back on the next shrink, recycling the oldest retained rows.
         let budget_lines = scrollback_lines(self.max_scrollback, columns);
         if budget_lines > self.history_lines {
             self.set_history_lines(budget_lines);
@@ -748,9 +749,25 @@ impl Terminal {
             columns,
             screen_lines,
         });
-        let history_lines = budget_lines.max(self.term.history_size().min(self.history_lines));
-        if history_lines != self.history_lines {
-            self.set_history_lines(history_lines);
+        // The byte budget buys fewer lines at a wider width. After a width
+        // change on the primary screen (row ids are retired by the rewrap
+        // anyway), lower the capacity toward the new budget, but never below
+        // the lines held in history and on screen: dropping content that fit
+        // before would make a zoom/unzoom cycle destroy scrollback, and the
+        // screen lines must still fit when a later shrink pushes them back.
+        // A widened pane can thus hold more than its byte budget, bounded by
+        // the content it already had, until it narrows or its history is
+        // cleared. The alternate screen hides the primary history size, so
+        // the capacity is left alone there.
+        if columns_changed && !alternate {
+            let held = self
+                .term
+                .history_size()
+                .saturating_add(self.term.screen_lines());
+            let settled = budget_lines.max(held).min(self.history_lines);
+            if settled < self.history_lines {
+                self.set_history_lines(settled);
+            }
         }
         if rewraps {
             self.rows.observe(&self.term);

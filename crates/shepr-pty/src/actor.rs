@@ -32,8 +32,6 @@ pub struct PtyReadResult {
     pub core_broken: bool,
 }
 
-impl PtyReadResult {}
-
 type ReadCallback = Box<dyn FnMut(&[u8]) -> PtyReadResult + Send + 'static>;
 type ReaderExitCallback = Box<dyn FnOnce(ReaderExit) + Send + 'static>;
 /// Whether the terminal core has been broken by a panic on some other thread.

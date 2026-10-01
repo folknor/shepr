@@ -409,12 +409,14 @@ impl PendingEndpointActivation {
                 }
                 endpoints.set_surface_active(&self.target.endpoint_id, false);
                 if !self.source_available {
-                    return SurfaceActivationProgress::Rejected {
-                        message: self.rollback_error.clone().unwrap_or_else(|| {
-                            "the previous endpoint is no longer connected".into()
-                        }),
-                        source_release_rejected: false,
-                    };
+                    // Target-off is acknowledged, so its healthy transport is no longer an
+                    // uncertain owner. Finish unavailable instead of treating the response as
+                    // another rollback failure and closing that connection.
+                    let message = self.rollback_error.as_ref().map_or_else(
+                        || "no endpoint owns the presentation".to_owned(),
+                        |error| format!("{error}; no endpoint owns the presentation"),
+                    );
+                    return SurfaceActivationProgress::FinishedUnavailable { message };
                 }
                 if let Err(message) = self.start_source_restore(endpoints, now) {
                     return SurfaceActivationProgress::Rejected {

@@ -227,6 +227,12 @@ pub fn ssh_control_path_under(
     use std::fmt::Write as _;
     use std::os::unix::ffi::OsStrExt;
 
+    if runtime_dir.as_os_str().as_bytes().contains(&b'%') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "SSH runtime directory must not contain '%' because OpenSSH interprets percent sequences in ControlPath",
+        ));
+    }
     if !namespace.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -334,3 +340,19 @@ impl std::fmt::Display for UnsafeSshRuntimeDirectory {
 }
 
 impl std::error::Error for UnsafeSshRuntimeDirectory {}
+
+#[cfg(test)]
+mod tests {
+    use super::ssh_control_path_under;
+    use std::path::Path;
+
+    #[test]
+    fn ssh_control_path_rejects_percent_tokens_in_runtime_directory() {
+        for runtime_dir in [Path::new("/run/%h"), Path::new("/run/%%")] {
+            let error = ssh_control_path_under(runtime_dir, Path::new("/config/one"), "host")
+                .expect_err("OpenSSH would reinterpret percent sequences in ControlPath");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("percent sequences"));
+        }
+    }
+}

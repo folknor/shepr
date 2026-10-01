@@ -1,3 +1,4 @@
+use super::GitReadError;
 use super::config::{deps_current, read_config_for_status, upstream_full_ref};
 use super::discovery::{git_repo_root, git_worktree_info};
 use super::status::git_status_fingerprint;
@@ -9,6 +10,24 @@ fn upstream(root: &std::path::Path) -> (Option<String>, Vec<super::config::FileD
     let (_, config, deps) = read_config_for_status(&info, "main", &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
     (config.as_ref().and_then(upstream_full_ref), deps)
+}
+
+#[test]
+fn refused_git_config_environment_is_reported_as_such() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    let root = temp_test_dir("refused-git-config-environment");
+    write_fake_tracked_repo(&root);
+    env.set(shepr_core::env::EnvVar::GitConfigNoSystem, " true ");
+
+    let info = git_worktree_info(&root).expect("repository");
+    let mut errors = Vec::new();
+    let (_, config, _) = read_config_for_status(&info, "main", &mut errors);
+
+    assert!(config.is_none());
+    assert!(matches!(
+        errors.as_slice(),
+        [GitReadError::ConfigEnvironment { .. }]
+    ));
 }
 
 #[test]
