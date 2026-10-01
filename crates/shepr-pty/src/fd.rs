@@ -205,7 +205,6 @@ pub(crate) fn resize_pty_fd(
     fd: RawFd,
     geometry: shepr_core::geometry::PaneGeometry,
 ) -> std::io::Result<()> {
-    let geometry = geometry.clamped();
     let (pixel_width, pixel_height) = geometry.text_area_px().unwrap_or((0, 0));
     let size = libc::winsize {
         ws_row: geometry.rows(),

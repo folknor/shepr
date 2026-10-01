@@ -313,12 +313,7 @@ pub fn spawn_geometry(
     cols: u16,
     cell: Option<shepr_core::geometry::CellPx>,
 ) -> shepr_core::geometry::PaneGeometry {
-    shepr_core::geometry::PaneGeometry::new(
-        cols,
-        rows,
-        cell.map_or(0, |cell| cell.width.get()),
-        cell.map_or(0, |cell| cell.height.get()),
-    )
+    shepr_core::geometry::PaneGeometry::with_cell(cols, rows, cell)
 }
 
 #[cfg(test)]
@@ -356,10 +351,10 @@ mod tests {
             (split.rows(), split.cols()),
             geometry.pane_size(&layout, false, right).expect("size")
         );
-        assert_eq!(split.cell, cell);
+        assert_eq!(split.cell(), cell);
 
         // An unknown cell size leaves the pixel size out, not zero-sized.
-        assert_eq!(geometry.sole_pane_spawn_geometry(None).cell, None);
+        assert_eq!(geometry.sole_pane_spawn_geometry(None).cell(), None);
     }
 
     #[test]

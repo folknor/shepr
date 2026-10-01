@@ -710,10 +710,9 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, geometry: shepr_core::geometry::PaneGeometry) {
-        let geometry = geometry.clamped();
         let cols = geometry.cols();
         let rows = geometry.rows();
-        let cell = geometry.cell;
+        let cell = geometry.cell();
         let columns = usize::from(cols);
         let screen_lines = usize::from(rows);
         let columns_changed = columns != self.term.columns();

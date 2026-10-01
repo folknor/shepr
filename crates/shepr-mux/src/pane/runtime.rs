@@ -973,10 +973,9 @@ impl PaneRuntime {
         apply_pane_launch_env(&mut cmd, launch_env);
         let launch_purpose = launch_env.purpose();
         let teardown_tracker = Arc::clone(pane_teardowns);
-        // The clamped geometry is what the PTY, the terminal and the cached
-        // size all start from, so the first `TIOCSWINSZ` carries the pixel
-        // dimensions and a later `resize` to the same size is a no-op.
-        let geometry = geometry.clamped();
+        // One geometry is what the PTY, the terminal and the cached size all
+        // start from, so the first `TIOCSWINSZ` carries the pixel dimensions
+        // and a later `resize` to the same size is a no-op.
         let rows = geometry.rows();
         let cols = geometry.cols();
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
@@ -1107,7 +1106,7 @@ impl PaneRuntime {
     }
 
     pub fn grid_size(&self) -> shepr_core::geometry::GridSize {
-        self.current_size.get().grid
+        self.current_size.get().grid()
     }
 
     pub fn content_seq(&self) -> u64 {
@@ -1115,8 +1114,7 @@ impl PaneRuntime {
     }
 
     /// Resize if the dimensions actually changed.
-    pub fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) {
-        let size = geometry.clamped();
+    pub fn resize(&self, size: shepr_core::geometry::PaneGeometry) {
         if self.current_size.get() == size {
             return;
         }

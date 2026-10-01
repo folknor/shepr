@@ -12,11 +12,3 @@ Filed from the defect hunt over `crates/shepr-termio/src/`,
    claim touches a documented contract, the relevant `reference/` or `docs/`
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
-
-## INPLAT-017 - Structural: an under-minimum `PaneGeometry` can still be built directly
-
-`PaneGeometry` deserialization now clamps the pane grid. Residue: its fields are
-public, so a value built directly can still be below the minimum, and the
-defensive clamps in `shepr-pty/src/fd.rs` and `shepr-vt/src/lib.rs` stay
-necessary. Private fields with a clamping constructor would make an
-under-minimum pane grid unrepresentable.

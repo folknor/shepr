@@ -77,7 +77,7 @@ use super::color::color_query_format;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
 use super::{ColorQuery, ColorQueryTarget, RgbColor, TerminalEvent};
-use shepr_core::geometry::{GridSize, PaneGeometry};
+use shepr_core::geometry::PaneGeometry;
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
 /// `None` while no pixel geometry is known.
@@ -102,13 +102,11 @@ pub(super) fn geometry_for_terminal(
     rows: usize,
     cell: Option<shepr_core::geometry::CellPx>,
 ) -> PaneGeometry {
-    PaneGeometry {
-        grid: GridSize::clamped_pane(
-            u16::try_from(cols).unwrap_or(u16::MAX),
-            u16::try_from(rows).unwrap_or(u16::MAX),
-        ),
+    PaneGeometry::with_cell(
+        u16::try_from(cols).unwrap_or(u16::MAX),
+        u16::try_from(rows).unwrap_or(u16::MAX),
         cell,
-    }
+    )
 }
 
 /// Depths of alacritty's two keyboard-mode stacks, mirrored from the parser

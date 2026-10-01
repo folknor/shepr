@@ -614,7 +614,8 @@ mod tests {
         assert_eq!(candidates[0].terminal_id, pending_terminal);
         assert_eq!(candidates[0].pane_id, pending_pane);
         assert_eq!(
-            candidates[0].geometry.cell, None,
+            candidates[0].geometry.cell(),
+            None,
             "no cell size was recorded"
         );
 
@@ -630,7 +631,7 @@ mod tests {
             });
         let candidates = app.pending_agent_resume_candidates();
         assert_eq!(
-            candidates[0].geometry.cell,
+            candidates[0].geometry.cell(),
             shepr_core::geometry::CellPx::new(8, 16)
         );
 

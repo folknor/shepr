@@ -86,13 +86,14 @@ impl CellPx {
 
 /// Pane geometry with an optional cell-pixel size.
 ///
-/// Deserialization clamps the grid to the pane minimum. The public fields
-/// still permit callers to construct a below-minimum value directly.
+/// The fields are private and every constructor, deserialization included,
+/// clamps the grid to the pane minimum, so a value never holds a grid below
+/// it. The PTY and the emulator rely on that and apply no clamp of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "PaneGeometryRepr")]
 pub struct PaneGeometry {
-    pub grid: GridSize,
-    pub cell: Option<CellPx>,
+    grid: GridSize,
+    cell: Option<CellPx>,
 }
 
 #[derive(Deserialize)]
@@ -103,29 +104,36 @@ struct PaneGeometryRepr {
 
 impl From<PaneGeometryRepr> for PaneGeometry {
     fn from(received: PaneGeometryRepr) -> Self {
-        Self {
-            grid: received.grid,
-            cell: received.cell,
-        }
-        .clamped()
+        Self::with_cell(
+            received.grid.cols.get(),
+            received.grid.rows.get(),
+            received.cell,
+        )
     }
 }
 
 impl PaneGeometry {
+    /// A `cols` by `rows` grid, clamped to the pane minimum, whose cells
+    /// measure `width` by `height` pixels; pixel-less when either is zero.
     pub fn new(cols: u16, rows: u16, width: u32, height: u32) -> Self {
+        Self::with_cell(cols, rows, CellPx::new(width, height))
+    }
+
+    /// A `cols` by `rows` grid, clamped to the pane minimum, with an
+    /// already validated cell pixel size.
+    pub fn with_cell(cols: u16, rows: u16, cell: Option<CellPx>) -> Self {
         Self {
             grid: GridSize::clamped_pane(cols, rows),
-            cell: CellPx::new(width, height),
+            cell,
         }
     }
 
-    /// Clamp pane grids below the shared minimum. Deserialization applies this
-    /// boundary; callers that build values directly can reapply it.
-    pub fn clamped(self) -> Self {
-        Self {
-            grid: GridSize::clamped_pane(self.cols(), self.rows()),
-            cell: self.cell,
-        }
+    pub fn grid(self) -> GridSize {
+        self.grid
+    }
+
+    pub fn cell(self) -> Option<CellPx> {
+        self.cell
     }
 
     pub fn cols(self) -> u16 {
@@ -168,7 +176,7 @@ impl HostGeometry {
         let pane = PaneGeometry::new(cols, rows, width, height);
         Self {
             pane,
-            exact: exact && pane.cell.is_some(),
+            exact: exact && pane.cell().is_some(),
         }
     }
 
@@ -212,7 +220,7 @@ mod tests {
     fn geometry_rejects_zero_components() {
         assert!(GridSize::new(0, 24).is_none());
         assert!(CellPx::new(8, 0).is_none());
-        assert_eq!(PaneGeometry::new(80, 24, 8, 0).cell, None);
+        assert_eq!(PaneGeometry::new(80, 24, 8, 0).cell(), None);
         assert!(!HostGeometry::new(80, 24, 8, 0, true).exact);
     }
 
@@ -222,7 +230,12 @@ mod tests {
         assert_eq!((pane.cols(), pane.rows()), (PANE_MIN_COLS, PANE_MIN_ROWS));
         let generic = GridSize::clamped(0, 0);
         assert_eq!((generic.cols.get(), generic.rows.get()), (1, 1));
-        assert_eq!(pane.clamped(), pane);
+        let with_cell = PaneGeometry::with_cell(1, 0, CellPx::new(8, 16));
+        assert_eq!(
+            (with_cell.cols(), with_cell.rows()),
+            (PANE_MIN_COLS, PANE_MIN_ROWS)
+        );
+        assert_eq!(with_cell.cell(), CellPx::new(8, 16));
     }
 
     #[test]
