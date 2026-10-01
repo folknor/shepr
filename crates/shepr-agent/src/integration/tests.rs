@@ -1838,52 +1838,21 @@ fn omp_ask_and_approval_events_report_blocked_state() {
 /// Runs the bundled Kimi hook with `payload` on stdin and returns the request
 /// line it sent to a stand-in server socket, or `None` when it sent nothing.
 /// The hook needs python3; callers skip when [`python3_available`] is false.
-#[expect(
-    clippy::unwrap_in_result,
-    reason = "the expect calls are test preconditions (fixture setup), not the None path this function's return type communicates to callers"
-)]
 fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixListener;
-    use std::process::Stdio;
-
     fs::create_dir_all(base).expect("test precondition");
     let hook = base.join(KIMI_HOOK_INSTALL_NAME);
     fs::write(&hook, KIMI_HOOK_ASSET).expect("test precondition");
     let socket_path = base.join("s.sock");
-    let listener = UnixListener::bind(&socket_path).expect("test precondition");
-    listener.set_nonblocking(true).expect("test precondition");
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
-    let mut child = shepr_test_support::command_in_scratch("sh", "kimi-hook")
-        .arg(&hook)
-        .arg(action)
-        .env("SHEPR_ENV", "1")
-        .env("SHEPR_PANE_ID", "w1:p2")
-        .env("SHEPR_SOCKET_PATH", &socket_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("test precondition");
-    child
-        .stdin
-        .take()
-        .expect("test precondition")
-        .write_all(payload)
-        .expect("test precondition");
-    let status = child.wait().expect("test precondition");
-    assert!(status.success(), "the hook must never fail its caller");
-
-    // The hook has exited; a connection it made is still queued on the
-    // listener with its request buffered.
-    let (mut stream, _) = listener.accept().ok()?;
-    stream.set_nonblocking(false).expect("test precondition");
-    let mut request = String::new();
-    stream
-        .read_to_string(&mut request)
-        .expect("test precondition");
-    Some(request)
+    let mut command = shepr_test_support::command_in_scratch("sh", "kimi-hook");
+    command.arg(&hook).arg(action);
+    let capture = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
+    assert!(
+        capture.status.success(),
+        "the hook must never fail its caller"
+    );
+    capture.requests.into_iter().next()
 }
 
 fn python3_available() -> bool {
@@ -1929,51 +1898,20 @@ fn kimi_hook_reports_state_only_from_an_object_payload_naming_its_session() {
 /// hook's exit success, its stderr, and the request it sent to a stand-in
 /// server socket (if any).
 fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>, Option<String>) {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixListener;
-    use std::process::Stdio;
-
     fs::create_dir_all(base).expect("test precondition");
     let hook = base.join("hook.sh");
     fs::write(&hook, asset).expect("test precondition");
     let socket_path = base.join("s.sock");
-    let listener = UnixListener::bind(&socket_path).expect("test precondition");
-    listener.set_nonblocking(true).expect("test precondition");
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
-    let mut child = shepr_test_support::command_in_scratch("sh", "session-hook")
-        .arg(&hook)
-        .arg("session")
-        .env("SHEPR_ENV", "1")
-        .env("SHEPR_PANE_ID", "w1:p2")
-        .env("SHEPR_SOCKET_PATH", &socket_path)
-        .env("TMPDIR", base)
-        // Inherited agent variables change what these hooks report.
-        .env_remove("CURSOR_VERSION")
-        .env_remove("CODEX_THREAD_ID")
-        .env_remove("GROK_SESSION_ID")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("test precondition");
-    child
-        .stdin
-        .take()
-        .expect("test precondition")
-        .write_all(payload)
-        .expect("test precondition");
-    let output = child.wait_with_output().expect("test precondition");
-
-    let request = listener.accept().ok().map(|(mut stream, _)| {
-        stream.set_nonblocking(false).expect("test precondition");
-        let mut request = String::new();
-        stream
-            .read_to_string(&mut request)
-            .expect("test precondition");
-        request
-    });
-    (output.status.success(), output.stderr, request)
+    let mut command = shepr_test_support::command_in_scratch("sh", "session-hook");
+    command.arg(&hook).arg("session");
+    let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
+    (
+        output.status.success(),
+        output.stderr,
+        output.requests.into_iter().next(),
+    )
 }
 
 #[test]

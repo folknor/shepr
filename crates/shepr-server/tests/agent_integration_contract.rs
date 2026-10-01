@@ -1,30 +1,22 @@
 //! The agent integrations checked against the server's acceptance contract.
 //! Each shell hook asset runs through a scripted agent session against a fake
-//! API socket, and each plugin's pinned trace is loaded. Every report identity
-//! passes through the same parser used by the server handlers before the
-//! request is replayed into `TerminalState`.
+//! API socket, and each plugin's pinned trace is loaded. Every request is
+//! replayed whole through the server's own report handlers, on an App holding
+//! one pane.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::mpsc::{self, TryRecvError};
-use std::thread;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
-use shepr_agent::agent::resume::{
-    AgentSessionRef, PersistedAgentSession, normalize_session_start_source,
-};
+use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
 use shepr_agent::agent::{Agent, AgentSource};
 use shepr_agent::detect::AgentState;
-use shepr_api::schema::{Method, PaneAgentState, Request};
-use shepr_mux::terminal::state::{HookClockSample, TerminalState};
-use shepr_protocol::TerminalId;
-use shepr_server::app::App;
-use shepr_test_support::{IsolatedEnv, ScratchDir, command_in_scratch};
+use shepr_api::schema::Request;
+use shepr_mux::terminal::state::HookClockSample;
+use shepr_server::agent_report_test_support::AgentReportHarness;
+use shepr_test_support::{IsolatedEnv, ScratchDir, capture_hook, command_in_scratch};
 
 const PANE_ID: &str = "w1:p1";
 
@@ -150,29 +142,24 @@ const BUN_ASSETS: &[AssetContract] = &[
 
 #[test]
 fn every_bundled_agent_asset_replays_through_server_report_validation() {
-    let environment = IsolatedEnv::new();
-    // Hooks read these from the agent that runs them, and so would inherit
-    // them from an agent running this test: under Cursor the Claude hook stays
-    // silent, Grok's id overrides the scripted one, and inside a Codex thread
-    // the Codex hook drops every report for another session.
-    environment.remove("CURSOR_VERSION");
-    environment.remove("GROK_SESSION_ID");
-    environment.remove("CODEX_THREAD_ID");
+    let _environment = IsolatedEnv::new();
     let scratch = ScratchDir::new("agent-integration-contract");
     let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shepr-agent/src/integration");
     let assets = integration.join("assets");
 
     assert_asset_coverage(&assets);
-    let mut shell_results = Vec::new();
     for contract in SHELL_ASSETS {
+        let mut app = AgentReportHarness::new(scratch.path(), contract.agent, clock_sample(0))
+            .unwrap_or_else(|error| panic!("build App for {}: {error}", contract.asset));
         let script = assets.join(contract.asset);
         let requests = capture_shell_asset(
             &script,
             &shell_session_steps(contract),
             &scratch,
             contract.agent.label(),
+            app.pane_id(),
         );
-        shell_results.push((contract, PANE_ID.to_owned(), requests));
+        replay_and_assert_contract(contract, &mut app, &requests);
     }
 
     for (relative, agent, action) in [
@@ -193,6 +180,7 @@ fn every_bundled_agent_asset_replays_through_server_report_validation() {
             }],
             &scratch,
             "sessionless-state",
+            PANE_ID,
         );
         assert!(
             requests.is_empty(),
@@ -205,20 +193,24 @@ fn every_bundled_agent_asset_replays_through_server_report_validation() {
     // pin what each plugin sends to a trace in this file, and the trace is
     // what replays here.
     let traces = load_plugin_traces(&integration.join("contract_traces.toml"));
-    let mut bun_results = Vec::new();
     for contract in BUN_ASSETS {
         let name = bun_trace_name(contract.asset);
-        let requests = traces
+        let mut requests = traces
             .get(name)
             .unwrap_or_else(|| panic!("no trace {name} for {}", contract.asset))
             .clone();
-        let pane_id = requests
-            .first()
-            .and_then(|request| request.pointer("/params/pane_id"))
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("trace {name} names no pane"))
-            .to_owned();
-        bun_results.push((contract, pane_id, requests));
+        let mut app = AgentReportHarness::new(scratch.path(), contract.agent, clock_sample(0))
+            .unwrap_or_else(|error| panic!("build App for {}: {error}", contract.asset));
+        // Traces use a stub pane id; route each complete request to this App's
+        // real test pane before replay.
+        for request in &mut requests {
+            let pane_id = request
+                .pointer_mut("/params/pane_id")
+                .unwrap_or_else(|| panic!("trace {name} names no pane"));
+            assert!(pane_id.is_string(), "trace {name} pane id is not text");
+            *pane_id = Value::String(app.pane_id().to_owned());
+        }
+        replay_and_assert_contract(contract, &mut app, &requests);
     }
     assert_eq!(
         traces.keys().map(String::as_str).collect::<BTreeSet<_>>(),
@@ -228,10 +220,6 @@ fn every_bundled_agent_asset_replays_through_server_report_validation() {
             .collect::<BTreeSet<_>>(),
         "every plugin trace belongs to one plugin asset"
     );
-
-    for (contract, pane_id, requests) in shell_results.into_iter().chain(bun_results) {
-        replay_and_assert_contract(contract, &pane_id, &requests);
-    }
 }
 
 fn shell_session_steps(contract: &AssetContract) -> Vec<ShellStep> {
@@ -307,97 +295,28 @@ fn capture_shell_asset(
     steps: &[ShellStep],
     scratch: &ScratchDir,
     socket_label: &str,
+    pane_id: &str,
 ) -> Vec<Value> {
-    let socket_path = scratch.join(format!("{socket_label}.sock"));
-    match fs::remove_file(&socket_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => panic!("remove old test socket {}: {error}", socket_path.display()),
-    }
-    let listener = UnixListener::bind(&socket_path)
-        .unwrap_or_else(|error| panic!("bind test socket {}: {error}", socket_path.display()));
-    listener
-        .set_nonblocking(true)
-        .expect("make fake socket nonblocking");
-    let (stop, stopped) = mpsc::channel();
-    let server = thread::spawn(move || capture_socket_requests(&listener, &stopped));
-
-    for step in steps {
+    let mut requests = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let socket_path = scratch.join(format!("{socket_label}-{index}.sock"));
         // host-program-ok: the shipped agent hook is the shell script under test.
         let mut command = command_in_scratch("sh", "agent-integration-shell-asset");
-        command
-            .arg(script)
-            .env("SHEPR_ENV", "1")
-            .env("SHEPR_SOCKET_PATH", &socket_path)
-            .env("SHEPR_PANE_ID", PANE_ID)
-            .env("TMPDIR", scratch.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.arg(script);
         if let Some(action) = step.action {
             command.arg(action);
         }
-        let mut child = command.spawn().expect("start shell hook asset");
-        let mut stdin = child.stdin.take().expect("hook stdin is piped");
-        stdin
-            .write_all(step.input.to_string().as_bytes())
-            .expect("write scripted hook input");
-        stdin.write_all(b"\n").expect("finish scripted hook input");
-        drop(stdin);
-        let output = child.wait_with_output().expect("wait for shell hook");
+        let mut input = step.input.to_string().into_bytes();
+        input.push(b'\n');
+        let output = capture_hook(command, &socket_path, scratch.path(), pane_id, &input);
         assert!(
             output.status.success(),
             "{} exited unsuccessfully",
             script.display()
         );
-    }
-
-    stop.send(()).expect("stop fake API socket");
-    let requests = server.join().expect("join fake API socket thread");
-    fs::remove_file(&socket_path).expect("remove fake API socket");
-    requests
-}
-
-fn capture_socket_requests(listener: &UnixListener, stopped: &mpsc::Receiver<()>) -> Vec<Value> {
-    // A hook has connected and written its request before it exits, even when
-    // its reply wait times out, so the stop is honoured only once the backlog
-    // is empty. A panicking test drops the sender, which also ends the loop.
-    let mut requests = Vec::new();
-    loop {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .expect("set fake socket read deadline");
-                let mut line = String::new();
-                BufReader::new(stream.try_clone().expect("clone accepted stream"))
-                    .read_line(&mut line)
-                    .expect("read captured hook request");
-                assert!(line.ends_with('\n'), "hook request was not line framed");
-                requests.push(
-                    serde_json::from_str(&line).expect("decode captured hook request as JSON"),
-                );
-                // A hook whose reply wait already timed out has closed its
-                // end; its request is captured, and the reply has no reader.
-                if let Err(error) = stream.write_all(b"{}\n") {
-                    assert!(
-                        matches!(
-                            error.kind(),
-                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                        ),
-                        "write fake API reply: {error}"
-                    );
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                match stopped.try_recv() {
-                    Ok(()) | Err(TryRecvError::Disconnected) => break,
-                    Err(TryRecvError::Empty) => {}
-                }
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => panic!("accept fake API connection: {error}"),
-        }
+        requests.extend(output.requests.into_iter().map(|line| {
+            serde_json::from_str(&line).expect("decode captured hook request as JSON")
+        }));
     }
     requests
 }
@@ -420,13 +339,16 @@ fn load_plugin_traces(path: &Path) -> BTreeMap<String, Vec<Value>> {
         .collect()
 }
 
-fn replay_and_assert_contract(contract: &AssetContract, pane_id: &str, requests: &[Value]) {
+fn replay_and_assert_contract(
+    contract: &AssetContract,
+    app: &mut AgentReportHarness,
+    requests: &[Value],
+) {
     assert!(
         !requests.is_empty(),
         "{} emitted no requests",
         contract.asset
     );
-    let mut terminal = new_terminal(contract.agent);
     let session_ref = match contract.session {
         ContractSessionRef::Id(id) => AgentSessionRef::id(id),
         ContractSessionRef::Path(path) => AgentSessionRef::path(path),
@@ -440,11 +362,34 @@ fn replay_and_assert_contract(contract: &AssetContract, pane_id: &str, requests:
     .expect("supported agent session identity");
 
     for (index, request) in requests.iter().enumerate() {
-        replay_request(&mut terminal, pane_id, request, index).unwrap_or_else(|error| {
-            panic!("{} request {index} was rejected: {error}", contract.asset)
+        // The App accepts custom sources too; a bundled asset must report
+        // under its own official one.
+        let source = request
+            .pointer("/params/source")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{} request {index} names no source", contract.asset));
+        assert_eq!(
+            AgentSource::parse(source),
+            AgentSource::Official(contract.agent),
+            "{} request {index} used another source",
+            contract.asset
+        );
+        let request: Request = serde_json::from_value(request.clone()).unwrap_or_else(|error| {
+            panic!("{} request {index} is invalid: {error}", contract.asset)
         });
+        app.apply_request(request, clock_sample(index + 1))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} request {index} was rejected: {}",
+                    contract.asset,
+                    error.into_message()
+                )
+            });
     }
 
+    let terminal = app
+        .terminal_state()
+        .expect("the test pane keeps its terminal");
     assert_eq!(
         terminal.current_session_identity_for_persistence().as_ref(),
         Some(&expected_session),
@@ -474,105 +419,10 @@ fn replay_and_assert_contract(contract: &AssetContract, pane_id: &str, requests:
     }
 }
 
-fn replay_request(
-    terminal: &mut TerminalState,
-    pane_id: &str,
-    value: &Value,
-    index: usize,
-) -> Result<(), String> {
-    let request: Request = serde_json::from_value(value.clone())
-        .map_err(|error| format!("request did not match the API schema: {error}"))?;
-    let sample = clock_sample(index);
-    match request.method {
-        Method::PaneReportAgentSession(params) => {
-            validate_pane_id(&params.pane_id, pane_id)?;
-            let (source, agent_label, session_ref) = official_report_identity(
-                &params.source,
-                &params.agent,
-                params.agent_session_id,
-                params.agent_session_path,
-            )?;
-            let start_source =
-                normalize_session_start_source(params.session_start_source.as_deref());
-            let _mutation = terminal.set_agent_session_ref_for_typed_start_source_at(
-                source,
-                agent_label,
-                session_ref,
-                params.seq,
-                start_source,
-                sample,
-            );
-            Ok(())
-        }
-        Method::PaneReportAgent(params) => {
-            validate_pane_id(&params.pane_id, pane_id)?;
-            let (source, agent_label, session_ref) = official_report_identity(
-                &params.source,
-                &params.agent,
-                params.agent_session_id,
-                params.agent_session_path,
-            )?;
-            let _mutation = terminal.set_hook_report_at(
-                source,
-                agent_label,
-                agent_state(params.state),
-                session_ref,
-                params.seq,
-                sample,
-            );
-            Ok(())
-        }
-        other => Err(format!("unexpected API method {other:?}")),
-    }
-}
-
-/// The report identity as the server's handlers parse it. Bundled assets
-/// report under their own official source, never a custom one.
-fn official_report_identity(
-    source_text: &str,
-    agent_text: &str,
-    session_id: Option<String>,
-    session_path: Option<String>,
-) -> Result<(AgentSource, String, Option<AgentSessionRef>), String> {
-    let (source, agent_label, session_ref) =
-        App::parse_agent_report_identity(source_text, agent_text, session_id, session_path)
-            .map_err(shepr_api::error::ApiError::into_message)?;
-    if source.agent().is_none() {
-        return Err(format!(
-            "bundled asset used the custom source {source_text:?}"
-        ));
-    }
-    Ok((source, agent_label, session_ref))
-}
-
-fn validate_pane_id(pane_id: &str, expected: &str) -> Result<(), String> {
-    if pane_id == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "request targeted pane {pane_id:?}, expected {expected:?}"
-        ))
-    }
-}
-
-fn agent_state(state: PaneAgentState) -> AgentState {
-    match state {
-        PaneAgentState::Idle => AgentState::Idle,
-        PaneAgentState::Working => AgentState::Working,
-        PaneAgentState::Blocked => AgentState::Blocked,
-        PaneAgentState::Unknown => AgentState::Unknown,
-    }
-}
-
-fn new_terminal(agent: Agent) -> TerminalState {
-    let observed_at = Instant::now();
-    let mut terminal = TerminalState::new(TerminalId::alloc(), PathBuf::from("/"));
-    terminal.set_detected_agent_process_at(agent, observed_at);
-    terminal
-}
-
-fn clock_sample(index: usize) -> HookClockSample {
-    let step = u64::try_from(index + 1).expect("small request index");
+/// The server loop's clock for replay step `step`: the agent is detected at
+/// step 0 and request `n` lands at step `n + 1`, a millisecond apart.
+fn clock_sample(step: usize) -> HookClockSample {
+    let step = u64::try_from(step).expect("small replay step");
     let offset = Duration::from_millis(step);
     HookClockSample {
         monotonic: Instant::now() + offset,

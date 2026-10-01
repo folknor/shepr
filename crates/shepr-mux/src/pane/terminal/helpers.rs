@@ -378,13 +378,7 @@ pub(super) fn terminal_screen_row_into(
     scratch: &mut String,
     line: &mut String,
 ) {
-    line.clear();
-    terminal.visit_screen_row_text(y, scratch, |_, wide, text| {
-        if wide != shepr_vt::CellWide::SpacerTail {
-            line.push_str(text);
-        }
-    });
-    line.truncate(line.trim_end().len());
+    let _ = terminal_screen_row_into_inner::<false>(terminal, y, scratch, line);
 }
 
 pub(super) fn terminal_screen_row_into_with_seeded(
@@ -393,14 +387,34 @@ pub(super) fn terminal_screen_row_into_with_seeded(
     scratch: &mut String,
     line: &mut String,
 ) -> bool {
+    terminal_screen_row_into_inner::<true>(terminal, y, scratch, line)
+}
+
+// The const mode selects the VT visitor at compile time, so plain reads keep
+// using the unseeded path without a per-cell provenance check.
+#[inline(always)]
+fn terminal_screen_row_into_inner<const TRACK_SEEDED: bool>(
+    terminal: &shepr_vt::Terminal,
+    y: ScreenRow,
+    scratch: &mut String,
+    line: &mut String,
+) -> bool {
     line.clear();
-    let seeded = terminal
-        .visit_screen_row_text_with_seeded(y, scratch, |_, wide, text| {
+    let seeded = {
+        let mut visit = |_, wide, text: &str| {
             if wide != shepr_vt::CellWide::SpacerTail {
                 line.push_str(text);
             }
-        })
-        .is_some_and(|(_, seeded)| seeded);
+        };
+        if TRACK_SEEDED {
+            terminal
+                .visit_screen_row_text_with_seeded(y, scratch, &mut visit)
+                .is_some_and(|(_, seeded)| seeded)
+        } else {
+            terminal.visit_screen_row_text(y, scratch, &mut visit);
+            false
+        }
+    };
     line.truncate(line.trim_end().len());
     seeded
 }

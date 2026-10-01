@@ -313,12 +313,7 @@ async fn run_client_loop(
     // Channel shared by the stdin, resize and server reader threads.
     let (event_tx, event_rx) =
         tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
-    let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel::<
-        endpoint::EndpointSupervisorEvent,
-    >(ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY);
     let stdin_tx = event_tx.clone();
-
-    let endpoint_commands = endpoint::commands::EndpointCommands::default();
 
     // Arm reply tracking only after the corresponding query was written successfully.
     let host_color_query_sent = query_host_terminal_theme(&mut state.output_writer);
@@ -438,8 +433,6 @@ async fn run_client_loop(
             state.present_chrome_through_freeze(frame);
         }
     }
-    let next_surface_serial = 1_u64;
-    let scheduled_activation = None;
     let selection = endpoint::selection::EndpointSelectionTracker::new(
         machines
             .iter()
@@ -447,25 +440,18 @@ async fn run_client_loop(
             .collect(),
     );
 
-    let client_timer = timer::ClientLoopTimer::new();
-    let mut client_loop = ClientLoop {
+    let mut client_loop = ClientLoop::new(
         state,
         local_failure_policy,
         should_quit,
         write_stream,
         supervisors,
-        endpoint_commands,
-        next_surface_serial,
-        scheduled_activation,
         selection,
-        client_timer,
         reported_cell_size,
         event_tx,
         event_rx,
-        supervisor_tx,
-        supervisor_rx,
         will_query_host_cell_size,
-    };
+    );
     client_loop.run().await
 }
 
@@ -511,6 +497,46 @@ async fn wait_for_client_timer(deadline: Option<std::time::Instant>) {
 }
 
 impl ClientLoop {
+    /// The one construction `run_client_loop` and the loop tests share. It takes
+    /// what the caller has already wired up (the event channel the input,
+    /// resize and transport threads hold a sender of, the shared cell size,
+    /// the endpoints) and starts the loop's own state itself, so a test drives
+    /// a loop that begins exactly as production's does.
+    fn new(
+        state: ClientState,
+        local_failure_policy: endpoint::LocalFailurePolicy,
+        should_quit: Arc<AtomicBool>,
+        write_stream: endpoint::EndpointRegistry,
+        supervisors: endpoint::EndpointSupervisors,
+        selection: endpoint::selection::EndpointSelectionTracker,
+        reported_cell_size: Arc<AtomicCellSize>,
+        event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+        event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
+        will_query_host_cell_size: bool,
+    ) -> Self {
+        let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel::<
+            endpoint::EndpointSupervisorEvent,
+        >(ENDPOINT_SUPERVISOR_EVENT_QUEUE_CAPACITY);
+        Self {
+            state,
+            local_failure_policy,
+            should_quit,
+            write_stream,
+            supervisors,
+            endpoint_commands: endpoint::commands::EndpointCommands::default(),
+            next_surface_serial: 1,
+            scheduled_activation: None,
+            selection,
+            client_timer: timer::ClientLoopTimer::new(),
+            reported_cell_size,
+            event_tx,
+            event_rx,
+            supervisor_tx,
+            supervisor_rx,
+            will_query_host_cell_size,
+        }
+    }
+
     fn next_timer_deadline(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
         earliest_client_timer_deadline([
             self.state.shell.next_timer_deadline(),
@@ -1499,26 +1525,19 @@ mod client_timer_tests {
         let supervisors = endpoint::EndpointSupervisors::new(config.paths(), &[], now)
             .expect("test precondition: no configured supervisors");
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
-        let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel(1);
         (
-            ClientLoop {
-                state: ClientState::test_new(),
-                local_failure_policy: endpoint::LocalFailurePolicy::Reconnect,
-                should_quit: Arc::new(AtomicBool::new(false)),
+            ClientLoop::new(
+                ClientState::test_new(),
+                endpoint::LocalFailurePolicy::Reconnect,
+                Arc::new(AtomicBool::new(false)),
                 write_stream,
                 supervisors,
-                endpoint_commands: endpoint::commands::EndpointCommands::default(),
-                next_surface_serial: 1,
-                scheduled_activation: None,
-                selection: endpoint::selection::EndpointSelectionTracker::new(Vec::new()),
-                client_timer: timer::ClientLoopTimer::new(),
-                reported_cell_size: Arc::new(AtomicCellSize::new()),
-                event_tx: event_tx.clone(),
+                endpoint::selection::EndpointSelectionTracker::new(Vec::new()),
+                Arc::new(AtomicCellSize::new()),
+                event_tx.clone(),
                 event_rx,
-                supervisor_tx,
-                supervisor_rx,
-                will_query_host_cell_size: false,
-            },
+                false,
+            ),
             event_tx,
         )
     }

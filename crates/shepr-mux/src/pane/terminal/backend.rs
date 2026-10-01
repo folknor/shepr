@@ -355,13 +355,11 @@ impl PaneTerminal {
         if !ansi.ends_with('\n') {
             core.terminal.write(b"\r\n");
         }
-        let mut scratch = String::new();
-        let mut text = String::new();
+        // Mark every retained row, including blank rows. A live write
+        // replaces the cell flags with the cursor template, so later output
+        // into one of these blank rows becomes live detection evidence.
         for row in 0..core.terminal.total_rows() {
-            terminal_screen_row_into(&core.terminal, ScreenRow(row), &mut scratch, &mut text);
-            if !text.trim().is_empty() {
-                core.terminal.mark_screen_row_seeded(ScreenRow(row));
-            }
+            core.terminal.mark_screen_row_seeded(ScreenRow(row));
         }
         // Restored history must never answer the live child, nor surface as
         // live clipboard writes, directory reports or title and colour
@@ -1108,6 +1106,34 @@ impl PaneTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writing_into_a_blank_seeded_row_makes_it_live() {
+        let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 0));
+        pane.seed_history_ansi("saved first row\r\n\r\nsaved third row");
+
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("terminal core");
+        let mut scratch = String::new();
+        let mut row_text = String::new();
+        let seeded = terminal_screen_row_into_with_seeded(
+            &core.terminal,
+            ScreenRow(1),
+            &mut scratch,
+            &mut row_text,
+        );
+        assert!(seeded, "the blank restored row is marked seeded");
+        assert!(row_text.is_empty());
+
+        core.terminal.write(b"\x1b[2;1Hlive in restored blank row");
+        let seeded = terminal_screen_row_into_with_seeded(
+            &core.terminal,
+            ScreenRow(1),
+            &mut scratch,
+            &mut row_text,
+        );
+        assert!(!seeded, "output written into it makes the row live");
+        assert_eq!(row_text, "live in restored blank row");
+    }
 
     #[test]
     fn resize_returns_queued_replies_before_its_own() {

@@ -53,12 +53,9 @@ impl App {
         success(ResponseResult::Ok {})
     }
 
-    /// The identity of an agent report, as both report handlers accept it:
-    /// the parsed source, the normalized agent label and the validated
-    /// session reference. Public so the agent integration contract test
-    /// replays bundled assets through this parser rather than a copy of it.
-    #[doc(hidden)]
-    pub fn parse_agent_report_identity(
+    /// Parses the identity shared by both report handlers: source, normalized
+    /// agent label and validated session reference.
+    fn parse_agent_report_identity(
         source_text: &str,
         agent_text: &str,
         id: Option<String>,
@@ -114,17 +111,10 @@ fn parse_report_session_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
     use std::path::Path;
-    use std::process::Stdio;
-    use std::time::Duration;
 
-    use crate::app::AppPolicy;
-    use crate::test_support::{IsolatedEnv, ScratchDir, WorkspaceFixture as _};
+    use crate::test_support::{IsolatedEnv, ScratchDir};
     use shepr_api::schema::{Method, Request};
-    use shepr_config::Config;
-    use shepr_mux::workspace::Workspace;
 
     #[test]
     fn missing_session_ref_is_distinct_from_invalid_supplied_ref() {
@@ -190,9 +180,7 @@ mod tests {
 
     #[test]
     fn broken_agent_asset_is_rejected_by_the_report_handler() {
-        let environment = IsolatedEnv::new();
-        // The Claude hook stays silent under Cursor, which runs Claude hooks.
-        environment.remove("CURSOR_VERSION");
+        let _environment = IsolatedEnv::new();
         let scratch = ScratchDir::new("agent-report-handler-mutation");
         let asset = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../shepr-agent/src/integration/assets/claude/shepr-agent-state.sh");
@@ -202,30 +190,38 @@ mod tests {
         let broken_path = scratch.join("broken-claude-state.sh");
         std::fs::write(&broken_path, broken).expect("write broken asset copy in scratch");
 
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), AppPolicy::Test, api_rx);
-        app.state.workspaces = vec![Workspace::test_new("agent-report-contract")];
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].root_pane();
-        let public_pane_id = app.public_pane_id(0, pane_id).expect("test pane id");
-
-        let request = capture_broken_asset_request(&broken_path, &scratch, public_pane_id.as_str());
+        let detected = shepr_mux::terminal::state::HookClockSample {
+            monotonic: std::time::Instant::now(),
+            wall: std::time::SystemTime::now(),
+        };
+        let mut app = crate::agent_report_test_support::AgentReportHarness::new(
+            scratch.path(),
+            shepr_agent::agent::Agent::Claude,
+            detected,
+        )
+        .expect("build report handler App");
+        let request = capture_broken_asset_request(&broken_path, &scratch, app.pane_id());
         std::fs::remove_file(&broken_path).expect("remove broken asset copy");
         let request: Request = serde_json::from_value(request).expect("parse captured API request");
-        let Method::PaneReportAgentSession(params) = request.method else {
-            panic!("broken asset did not report a session");
-        };
+        assert!(matches!(&request.method, Method::PaneReportAgentSession(_)));
 
         let error = app
-            .handle_pane_report_agent_session(params)
+            .apply_request(
+                request,
+                shepr_mux::terminal::state::HookClockSample {
+                    monotonic: detected.monotonic + std::time::Duration::from_millis(1),
+                    wall: detected.wall + std::time::Duration::from_millis(1),
+                },
+            )
             .expect_err("report handler rejects an official source with another agent label");
         assert_eq!(error.code, ApiErrorCode::InvalidAgent);
         assert!(error.into_message().contains("does not match"));
-        assert!(app.state.terminals.values().all(|terminal| {
-            terminal
+        assert!(
+            app.terminal_state()
+                .expect("the test pane keeps its terminal")
                 .current_session_identity_for_persistence()
                 .is_none()
-        }));
+        );
     }
 
     fn capture_broken_asset_request(
@@ -234,84 +230,33 @@ mod tests {
         pane_id: &str,
     ) -> serde_json::Value {
         let socket_path = scratch.join("report-handler.sock");
-        let listener = UnixListener::bind(&socket_path).expect("bind fake API socket");
-        listener
-            .set_nonblocking(true)
-            .expect("make fake API socket nonblocking");
         // host-program-ok: the shipped agent hook is the shell script under test.
         let mut command = shepr_test_support::command_in_scratch("sh", "agent-report-handler");
-        command
-            .arg(script)
-            .arg("session")
-            .env("SHEPR_ENV", "1")
-            .env("SHEPR_SOCKET_PATH", &socket_path)
-            .env("SHEPR_PANE_ID", pane_id)
-            .env("TMPDIR", scratch.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = command.spawn().expect("start broken Claude asset");
-        let mut stdin = child.stdin.take().expect("hook stdin is piped");
-        stdin
-            .write_all(
-                serde_json::json!({
-                    "hook_event_name": "SessionStart",
-                    "session_id": "claude-contract-session",
-                    "source": "startup",
-                })
-                .to_string()
-                .as_bytes(),
-            )
-            .expect("write scripted Claude event");
-        stdin
-            .write_all(b"\n")
-            .expect("finish scripted Claude event");
-        drop(stdin);
-
-        // A hook that exits without connecting (no python3, say) must fail the
-        // test rather than block it; one that connected before exiting is
-        // still in the backlog.
-        let mut exited = false;
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(!exited, "broken Claude asset exited without reporting");
-                    exited = child
-                        .try_wait()
-                        .expect("poll broken Claude asset")
-                        .is_some();
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(error) => panic!("accept fake API connection: {error}"),
-            }
-        };
-        stream
-            .set_nonblocking(false)
-            .expect("make API stream blocking");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("set API request deadline");
-        let mut line = String::new();
-        BufReader::new(stream.try_clone().expect("clone API stream"))
-            .read_line(&mut line)
-            .expect("read captured API request");
-        // A hook whose reply wait already timed out has closed its end.
-        if let Err(error) = stream.write_all(b"{}\n") {
-            assert!(
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                ),
-                "answer fake API request: {error}"
-            );
-        }
-        let output = child.wait_with_output().expect("wait for broken asset");
+        command.arg(script).arg("session");
+        let mut input = serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "claude-contract-session",
+            "source": "startup",
+        })
+        .to_string()
+        .into_bytes();
+        input.push(b'\n');
+        let output = shepr_test_support::capture_hook(
+            command,
+            &socket_path,
+            scratch.path(),
+            pane_id,
+            &input,
+        );
         assert!(
             output.status.success(),
             "broken Claude asset exited unsuccessfully"
         );
-        std::fs::remove_file(&socket_path).expect("remove fake API socket");
+        let line = output
+            .requests
+            .into_iter()
+            .next()
+            .expect("broken asset sent a request");
         serde_json::from_str(&line).expect("decode captured API request")
     }
 }

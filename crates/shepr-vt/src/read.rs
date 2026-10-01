@@ -38,18 +38,12 @@ impl Terminal {
         &self,
         y: ScreenRow,
         scratch: &mut String,
-        mut visit: impl FnMut(u16, CellWide, &str),
+        visit: impl FnMut(u16, CellWide, &str),
     ) -> Option<(RowWrap, bool)> {
-        let line = self.screen_line(y)?;
-        let grid = self.term.grid();
-        let row = &grid[line];
         let mut saw_seeded = false;
         let mut saw_unseeded = false;
         let mut live = false;
-        for (x, cell) in row[..].iter().take(grid.columns()).enumerate() {
-            let Ok(x) = u16::try_from(x) else {
-                break;
-            };
+        let wrap = self.visit_screen_row_text_inner(y, scratch, visit, |cell| {
             let is_seeded = cell.flags.contains(SEEDED_ROW);
             let reflow_spacer = cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
             if is_seeded {
@@ -61,10 +55,8 @@ impl Terminal {
                 saw_unseeded = true;
                 live |= !cell.is_empty();
             }
-            cell_text_into(cell, scratch);
-            visit(x, cell_wide(cell), scratch.as_str());
-        }
-        Some((self.row_wrap(line), saw_seeded && !live))
+        })?;
+        Some((wrap, saw_seeded && !live))
     }
 
     /// Visits the cells of screen row `y` without allocating: `visit` gets
@@ -78,7 +70,21 @@ impl Terminal {
         &self,
         y: ScreenRow,
         scratch: &mut String,
+        visit: impl FnMut(u16, CellWide, &str),
+    ) -> Option<RowWrap> {
+        self.visit_screen_row_text_inner(y, scratch, visit, |_| {})
+    }
+
+    // Keep the per-cell hook statically dispatched. The ordinary row visitor
+    // passes a known no-op, so optimized readers add no per-cell test or
+    // dynamic dispatch on hot paths.
+    #[inline(always)]
+    fn visit_screen_row_text_inner(
+        &self,
+        y: ScreenRow,
+        scratch: &mut String,
         mut visit: impl FnMut(u16, CellWide, &str),
+        mut on_cell: impl FnMut(&Cell),
     ) -> Option<RowWrap> {
         let line = self.screen_line(y)?;
         let grid = self.term.grid();
@@ -88,6 +94,7 @@ impl Terminal {
             let Ok(x) = u16::try_from(x) else {
                 break;
             };
+            on_cell(cell);
             cell_text_into(cell, scratch);
             visit(x, cell_wide(cell), scratch.as_str());
         }

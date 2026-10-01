@@ -98,6 +98,9 @@ use shepr_core::env::{ChildEnv, EnvVar, is_registered_name};
 use shepr_core::socket_path::fits_unix_socket_path;
 
 pub mod fixture;
+mod hook_capture;
+
+pub use hook_capture::{HookCapture, INHERITED_AGENT_VARIABLES, capture_hook};
 
 /// The environment variable naming where scratch trees are sited instead of
 /// the workspace's `target/t`.

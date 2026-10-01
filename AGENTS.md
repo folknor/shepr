@@ -131,7 +131,7 @@ orientation, and nothing checks them:
 - `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing.
 - `shepr-vt`: terminal emulation and read formatting.
 - `shepr-pty`: PTY process launch and IO.
-- `shepr-test-support`: shared environment isolation and scratch directories for tests.
+- `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: detection manifests and agent integrations.
 - `shepr-config`: configuration parsing and validation.
 - `shepr-protocol`: compact wire types and codec; it depends on `shepr-config`
