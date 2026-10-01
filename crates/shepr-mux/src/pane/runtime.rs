@@ -870,15 +870,14 @@ impl PtySetup<'_> {
                             "failed to kill pane child after PTY actor startup failed"
                         );
                     }
-                    match child.wait() {
-                        Ok(status) => {
-                            crate::logging::pane_exited(pane_id.raw(), &status);
-                        }
-                        Err(wait_err) => {
-                            crate::logging::pane_exit_failed(pane_id.raw(), &wait_err.to_string());
-                        }
-                    }
-                    startup_child_liveness.mark_wait_completed();
+                    // Startup is synchronous on its caller. Keep a delayed
+                    // child exit from stalling the server loop by handing it
+                    // to the child watcher's detached reaper.
+                    super::child_watcher::reap_after_actor_startup_failure(
+                        pane_id,
+                        child,
+                        startup_child_liveness,
+                    );
                     return Err(err);
                 }
             };
@@ -1599,7 +1598,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn parser_writer_does_not_retain_cwd_state_after_runtime_drop() {
+    async fn output_writer_does_not_keep_runtime_cwd_alive() {
+        // Guards the ownership rule on `PaneOutputWriter`: it holds only the
+        // terminal, so a field sharing another runtime handle (cwd here) fails
+        // this. It says nothing about the PTY reader's `PaneReadEffects`,
+        // which does hold cwd for as long as the reader runs; this fixture
+        // starts no reader.
         let runtime = PaneRuntime::test_with_screen_bytes(80, 24, b"");
         let cwd = Arc::downgrade(&runtime.cwd);
         let writer = runtime.output_writer();

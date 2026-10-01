@@ -705,11 +705,7 @@ mod tests {
     }
 
     fn test_app(config: &shepr_config::ServerConfig) -> super::super::App {
-        super::super::App::new(
-            config,
-            crate::app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
-        )
+        super::super::App::new(config, crate::app::AppPolicy::Test)
     }
 
     fn wait_for_git_refresh(app: &mut super::super::App) {

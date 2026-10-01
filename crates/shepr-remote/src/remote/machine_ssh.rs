@@ -5,36 +5,17 @@ use crate::limits::BRIDGE_NAME_LABEL_CHARS;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_remote_candidate_mismatch,
-    is_ssh_link_failure, judge_remote_server, remote_server_status,
+    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, failed_before_remote_result,
+    is_remote_candidate_mismatch, judge_remote_server, remote_server_status,
     resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
 
-/// Checks, without prompting, that the configured machine can be served: SSH
-/// works, a matching shepr and sibling `shepr-server` pair is found, and whether a
-/// server already running there is this build. A stopped server is
-/// [`MachineSshCheck::Ready`], since the bridge starts one on attach. A running
-/// server of another build comes back as [`MachineSshCheck::DifferentBuild`] when it
-/// can be restarted. No SSH command starts once `deadline` has passed, and each is
-/// cut short at it.
-///
-/// The executable comes from the on-disk metadata cache when it is there and still
-/// verifies (one round trip instead of full discovery). One that no longer verifies
-/// is dropped, and full discovery runs; what discovery finds is recorded, so the
-/// connector that follows does not repeat the round trips.
-pub fn check_machine_ssh(
-    paths: &shepr_config::AppPaths,
-    target: &SshTarget,
-    deadline: std::time::Instant,
-) -> io::Result<MachineSshCheck> {
-    MachineProbe::default().check(paths, target, deadline)
-}
-
-/// One machine's executable resolution and server validation. Disk metadata is an
+/// One machine's executable resolution and preflight server validation. Disk metadata is an
 /// untrusted hint until the installed client and sibling have been verified. A
 /// verified hint is reused during this process; only evidence about that executable
 /// invalidates it. Discovery itself owns the rule for retaining completed round
-/// trips across link failures and clearing them after authentication or host-key errors.
+/// trips across transient network failures and authentication waits, and clearing them
+/// after SSH process failures such as authentication rejection or host-key errors.
 #[derive(Default)]
 pub(crate) struct MachineProbe {
     executable: ProbeExecutable,
@@ -79,8 +60,20 @@ impl MachineProbe {
         )
     }
 
-    /// The IO seam keeps the resolution and failure transitions identical for
-    /// startup and reconnect, and lets tests supply remote results without SSH.
+    fn resolve_remote(
+        &mut self,
+        ssh: &RemoteSsh,
+        cache: &SshMetadataCache,
+    ) -> io::Result<RemoteExecutable> {
+        self.resolve(
+            cache,
+            |candidate| verify_remote_shepr(ssh, candidate),
+            |progress| resume_installed_remote_shepr_discovery(ssh, progress),
+        )
+    }
+
+    /// The IO seam keeps preflight resolution and server-judgment failures in one
+    /// state machine, and lets tests supply remote results without SSH.
     fn advance_with(
         &mut self,
         cache: &SshMetadataCache,
@@ -116,7 +109,9 @@ impl MachineProbe {
                         self.executable = ProbeExecutable::Verified(cached.clone());
                         return Ok(cached);
                     }
-                    Err(error) if is_ssh_link_failure(&error) => return Err(error),
+                    // A failure before any remote result says nothing about the
+                    // cached executable, so the hint is kept for the next attempt.
+                    Err(error) if failed_before_remote_result(&error) => return Err(error),
                     Err(error) if !is_remote_candidate_mismatch(&error) => return Err(error),
                     Ok(false) | Err(_) => self.invalidate(cache),
                 }
@@ -187,13 +182,13 @@ pub struct MachineSshStream {
 /// Connects one configured SSH machine repeatedly. The machine set is fixed at
 /// launch, so a connector lives as long as its client.
 ///
-/// It keeps the managed SSH config and its own `MachineProbe`, the same state
-/// machine the startup check uses. Each connection attempt queries the remote
-/// server's status and judges its build before starting a bridge, which costs
-/// one SSH round trip per attempt; the handshake still checks the identity of
-/// the server actually reached, since it can change between the probe and the
-/// bridge. Partial discovery survives link failures so a slow host can be
-/// resolved over several bounded attempts.
+/// It keeps the managed SSH config and its own `MachineProbe` for executable
+/// resolution. Startup preflight uses the same resolution and then judges the
+/// running server; a background connection starts the bridge directly and lets
+/// the handshake reject a server of another build. A verified executable is
+/// reused on reconnect, so an ordinary reconnect needs one SSH bridge round trip.
+/// Partial discovery survives transient network failures and authentication waits
+/// so a slow host can be resolved over several bounded attempts.
 pub struct MachineSshConnector {
     paths: shepr_config::AppPaths,
     label: MachineLabel,
@@ -350,8 +345,7 @@ impl MachineSshConnector {
         ssh.set_attempt_deadline(Some(deadline));
         let ssh = &*ssh;
 
-        let (remote, check) = probe.advance(ssh, &metadata_cache)?;
-        ensure_machine_ready(target, check)?;
+        let remote = probe.resolve_remote(ssh, &metadata_cache)?;
         match Self::attempt(
             &self.paths,
             &self.label,
@@ -365,8 +359,7 @@ impl MachineSshConnector {
             Err(error) if probe.observe_failure(&metadata_cache, &error) => {
                 // The remote command proved the path stale after probing. Resolve
                 // once more within the same deadline, through the same state machine.
-                let (remote, check) = probe.advance(ssh, &metadata_cache)?;
-                ensure_machine_ready(target, check)?;
+                let remote = probe.resolve_remote(ssh, &metadata_cache)?;
                 Self::attempt(
                     &self.paths,
                     &self.label,
@@ -423,22 +416,6 @@ impl MachineSshConnector {
             stream,
             bridge: MachineSshBridge { bridge },
         })
-    }
-}
-
-/// Startup can offer a restart for this result. A running client's background
-/// attempt cannot ask for consent, so it reports the same finding as a typed
-/// compatibility failure. The server is left running in both cases.
-fn ensure_machine_ready(target: &SshTarget, check: MachineSshCheck) -> io::Result<()> {
-    match check {
-        MachineSshCheck::Ready => Ok(()),
-        MachineSshCheck::DifferentBuild(server) => {
-            Err(super::server_lifecycle::remote_server_compatibility_error(
-                target.as_str(),
-                Some(&server.version),
-                Some(&server.build_id),
-            ))
-        }
     }
 }
 
@@ -556,8 +533,8 @@ mod tests {
             "a runtime root that can return remains retryable: {error}"
         );
         assert!(
-            !super::is_ssh_link_failure(&error),
-            "a missing local runtime root is not a dropped SSH link"
+            !failed_before_remote_result(&error),
+            "a missing local runtime root is not an SSH failure"
         );
         assert!(
             super::super::SshFailureDiagnostic::from_error(&error).needs_attention(),
@@ -632,6 +609,27 @@ mod tests {
     }
 
     #[test]
+    fn a_verified_executable_skips_ssh_resolution_on_reconnect() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-check-reconnect");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/cached/shepr"))
+            .expect("test precondition");
+        let mut probe = MachineProbe::default();
+        let first = probe
+            .resolve(&cache, |_| Ok(true), |_| panic!("verified cache"))
+            .expect("first connection verifies the cached executable");
+        let reconnect = probe
+            .resolve(
+                &cache,
+                |_| panic!("a reconnect reuses the verified executable"),
+                |_| panic!("a reconnect does not rediscover the executable"),
+            )
+            .expect("reconnect reuses the verified executable");
+        assert_eq!(reconnect, first);
+    }
+
+    #[test]
     fn a_stale_cached_executable_is_dropped_and_discovery_is_recorded() {
         let scratch = shepr_test_support::ScratchDir::new("machine-check-stale");
         let cache = cache_in(&scratch);
@@ -654,8 +652,8 @@ mod tests {
     }
 
     #[test]
-    fn a_link_failure_while_verifying_keeps_the_cache_and_skips_discovery() {
-        let scratch = shepr_test_support::ScratchDir::new("machine-check-link");
+    fn a_failure_before_a_remote_result_keeps_the_cache_and_skips_discovery() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-check-no-remote-result");
         let cache = cache_in(&scratch);
         cache
             .store(&executable("/cached/shepr"))
@@ -663,9 +661,9 @@ mod tests {
         let error = resolve_remote_shepr(
             &cache,
             |_| Err(io::Error::from(io::ErrorKind::TimedOut)),
-            || panic!("a link failure says nothing about the cached path"),
+            || panic!("no remote result says nothing about the cached path"),
         )
-        .expect_err("link failure");
+        .expect_err("no remote result");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(cache.load(), Some(executable("/cached/shepr")));
     }
@@ -685,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_discovery_is_cached_before_a_server_probe_failure_and_reused() {
+    fn preflight_reuses_verified_discovery_after_a_server_probe_failure() {
         let scratch = shepr_test_support::ScratchDir::new("machine-probe-server-link");
         let cache = cache_in(&scratch);
         let mut probe = MachineProbe::default();
@@ -706,7 +704,7 @@ mod tests {
                 |_| panic!("already discovered"),
                 |_| Ok(MachineSshCheck::Ready),
             )
-            .expect("next attempt only probes server presence");
+            .expect("next preflight check only probes server presence");
         assert_eq!(remote, executable("/found/shepr"));
         assert_eq!(check, MachineSshCheck::Ready);
     }
@@ -765,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn a_server_status_exec_failure_invalidates_the_same_hint_as_a_bridge_failure() {
+    fn a_preflight_server_status_exec_failure_invalidates_the_candidate() {
         let scratch = shepr_test_support::ScratchDir::new("machine-probe-status-exec");
         let cache = cache_in(&scratch);
         let mut probe = MachineProbe::default();
@@ -830,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn server_mismatch_has_one_judgment_and_does_not_invalidate_the_install() {
+    fn preflight_server_mismatch_does_not_invalidate_the_install() {
         let scratch = shepr_test_support::ScratchDir::new("machine-probe-server-build");
         let cache = cache_in(&scratch);
         let mut probe = MachineProbe::default();
@@ -847,11 +845,7 @@ mod tests {
                 |remote| judge_remote_server("build.example", remote, &status),
             )
             .expect("startup can offer a restart");
-        assert!(matches!(&check, MachineSshCheck::DifferentBuild(_)));
-        let target = SshTarget::parse("build.example").expect("test precondition");
-        let error = ensure_machine_ready(&target, check).expect_err("background needs attention");
-        assert!(crate::SshFailureDiagnostic::from_error(&error).is_remote_compatibility());
-        assert!(!probe.observe_failure(&cache, &error));
+        assert!(matches!(check, MachineSshCheck::DifferentBuild(_)));
         assert_eq!(cache.load(), Some(executable("/found/shepr")));
     }
 
@@ -888,7 +882,8 @@ mod tests {
     }
 
     #[test]
-    fn machine_probe_resumes_links_and_presence_waits_but_restarts_after_ssh_rejection() {
+    fn machine_probe_resumes_network_failures_and_authentication_waits_but_restarts_after_ssh_rejection()
+     {
         let failures = [
             (io::Error::from(io::ErrorKind::TimedOut), 1),
             (

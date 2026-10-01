@@ -85,11 +85,9 @@ mod tests {
     use shepr_test_support::{IsolatedEnv, ScratchDir};
 
     fn app() -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         )
     }
 

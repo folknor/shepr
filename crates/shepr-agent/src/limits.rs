@@ -73,23 +73,6 @@ pub(crate) const FOREGROUND_CHILD_PID_LIMIT: usize = 2_048;
 /// amortizes reads without allocating in proportion to the entire child list.
 pub(crate) const PROC_CHILDREN_READ_BUFFER_BYTES: usize = 4096;
 
-/// Maximum time allowed for an agent's `--version` command. Version commands
-/// should start quickly; the timeout accommodates slow startup while stopping
-/// an installer from waiting indefinitely on a broken executable.
-pub(crate) const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Delay between nonblocking version-probe polls. This keeps timeout response
-/// prompt without busy polling.
-pub(crate) const VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-/// Maximum version-probe stdout bytes retained in memory. This is ample for a
-/// version banner while bounding output from a misbehaving executable.
-pub(crate) const MAX_VERSION_PROBE_OUTPUT: usize = 64 * 1024;
-
-/// Bytes read from a version-probe pipe per syscall. A fixed chunk keeps stack
-/// use bounded while avoiding a syscall for every small portion of a banner.
-pub(crate) const VERSION_PROBE_READ_BUFFER_BYTES: usize = 4096;
-
 /// Maximum byte length of an agent session ID accepted from hook reports or
 /// saved state. This leaves ample room for opaque IDs while bounding persisted
 /// and command-line data.

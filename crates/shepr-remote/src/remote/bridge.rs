@@ -253,25 +253,11 @@ fn remove_bridge_socket(path: &Path, identity: &shepr_platform::ipc::SocketFileI
     if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity) {
         tracing::warn!(%error, socket = %path.display(), "could not remove remote bridge socket");
     }
-    remove_bridge_socket_lock(path);
-}
-
-/// Removes the startup-lock sidecar of a bridge socket. Bridge socket paths
-/// carry a random token (`shepr_platform::remote_bridge_endpoint_path`), so no
-/// later binder ever locks this path, and the sidecar would otherwise pile up
-/// in the runtime directory, one per bridge ever started. Every caller runs
-/// while the bridge still holds the lock, so no other binder can own it. A
-/// bridge killed before this runs is reclaimed by the owner sweep in
-/// `shepr_platform::ipc::sweep_abandoned_single_use_sockets`.
-pub(crate) fn remove_bridge_socket_lock(path: &Path) {
-    let lock = shepr_platform::ipc::socket_startup_lock_path(path);
-    match std::fs::remove_file(&lock) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            tracing::warn!(%error, lock = %lock.display(), "could not remove remote bridge socket lock");
-        }
-    }
+    // Bridge socket paths carry a random token, so no later binder ever locks
+    // this path and the sidecar would otherwise pile up, one per bridge ever
+    // started. The bridge still holds the lock here. A bridge killed before
+    // this runs is reclaimed by the platform's dead-owner sweep.
+    shepr_platform::release_single_use_socket_lock(path);
 }
 
 /// Owns the newly bound socket until the bridge itself is ready to own cleanup.
@@ -606,10 +592,12 @@ pub(crate) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
 // limits-exempt: remote exit 255 is remapped to 254 to keep it apart from SSH failures.
 pub(crate) const REMAPPED_REMOTE_255_EXIT_CODE: i32 = 254;
 
-/// Whether `error` came from ssh or the link rather than from a remote command
-/// (the remote was never reached, the link was lost, or ssh refused the host
-/// key or the credentials), so nothing is known about the remote install.
-pub(crate) fn is_ssh_link_failure(error: &io::Error) -> bool {
+/// Whether `error` came from ssh, the link or a bounded command timeout rather
+/// than from a remote command: the remote was never reached, the link was
+/// lost, ssh itself failed for any reason (host key and credentials included),
+/// or the command ran out of time. Nothing is then known about the remote
+/// install.
+pub(crate) fn failed_before_remote_result(error: &io::Error) -> bool {
     super::SshFailureDiagnostic::from_error(error).failed_before_remote_result()
 }
 

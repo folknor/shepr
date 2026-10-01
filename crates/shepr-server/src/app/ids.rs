@@ -95,7 +95,6 @@ mod tests {
         let mut app = super::App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
         );
         app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         app.state.ensure_test_terminals();

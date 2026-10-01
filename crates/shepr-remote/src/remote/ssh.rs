@@ -93,17 +93,9 @@ impl Drop for ManagedSshConfigDirectory {
 /// Removes a temporary ssh config directory. Absent is already removed: the
 /// exit sweep and an owner still dropping can both reach the same directory.
 /// Any other failure leaves the directory in the runtime directory, which is
-/// logged with its path since nothing retries it.
+/// logged with its path; dead-owner sweeps retry conservative cleanup.
 fn remove_managed_config_directory(path: &Path) {
-    match fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => tracing::warn!(
-            %error,
-            path = %path.display(),
-            "could not remove temporary ssh config directory"
-        ),
-    }
+    shepr_platform::release_remote_ssh_config_dir(path);
 }
 
 /// Files the SSH machinery leaves in the private profile runtime directory while it runs:
@@ -131,7 +123,7 @@ impl TeardownResource {
                         "could not remove ssh bridge socket at exit"
                     );
                 }
-                remove_bridge_socket_lock(path);
+                shepr_platform::release_single_use_socket_lock(path);
             }
             Self::Directory(path) => remove_managed_config_directory(path),
         }

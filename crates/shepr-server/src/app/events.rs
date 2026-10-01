@@ -335,11 +335,9 @@ mod pane_exit_event_tests {
     use shepr_mux::workspace::Workspace;
 
     fn app_with_workspaces(names: &[&str]) -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         );
         app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         app.state.ensure_test_terminals();
@@ -431,11 +429,9 @@ mod runtime_generation_tests {
     #[tokio::test]
     async fn discarded_and_replaced_runtimes_cannot_remove_a_restored_pane() {
         let _env = IsolatedEnv::new();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
@@ -507,11 +503,9 @@ mod runtime_generation_tests {
     #[tokio::test]
     async fn stale_runtime_cannot_forward_clipboard_or_update_detector_and_cwd() {
         let _env = IsolatedEnv::new();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();

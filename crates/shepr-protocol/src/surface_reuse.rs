@@ -673,6 +673,7 @@ mod tests {
     fn cell(symbol: &str) -> CellData {
         CellData {
             symbol: symbol.into(),
+            grid_width: crate::GridCellWidth::Grapheme,
             fg: WireColor::Reset,
             bg: WireColor::Reset,
             style: WireStyle::default(),

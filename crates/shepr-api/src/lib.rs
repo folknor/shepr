@@ -10,6 +10,7 @@ pub mod server_stop;
 mod status;
 mod stop;
 
+pub use limits::MAX_ACTIVE_CONNECTIONS;
 pub use server::ServerHandle;
 pub use server::start_server;
 pub use status::{RuntimeStatus, read_runtime_status_at};

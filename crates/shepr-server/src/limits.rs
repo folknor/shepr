@@ -50,14 +50,13 @@ pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 pub(crate) const MAX_WORKER_COMPLETION_BACKLOG: usize = 8;
 /// Limit API requests per loop pass so client and scheduled work still get service.
 pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
-/// Bound queued API requests. Each API connection queues one request and waits
-/// for its answer, and the API listener serves as many connections at once as
-/// this holds, so a responsive loop never fills it. Requests whose connection
-/// gave up waiting stay queued, so only a loop stalled past the API request
-/// timeout fills it; producers then refuse new requests with
-/// `server_unavailable` at once instead of growing the queue. A refused agent
-/// hook report is dropped, as it is when the server is down.
-pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = 64;
+/// Bound queued API requests to the number of active API connections. Each
+/// connection has at most one request in the queue at a time. Requests whose
+/// connection gave up waiting stay queued, so a stalled loop can fill the
+/// queue; producers then refuse new requests with `server_unavailable` at
+/// once instead of growing it. A refused agent hook report is dropped, as it
+/// is when the server is down.
+pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = shepr_api::MAX_ACTIVE_CONNECTIONS;
 /// Limit server events per loop pass so API and scheduled work still get service.
 pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
 
@@ -123,6 +122,14 @@ pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration:
 /// memory before it tries the backlog again. Readiness stays set meanwhile, so
 /// without the rest the loop would spin on the same failing accept.
 pub(crate) const CLIENT_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
+/// Maximum accepted client connections with active transport threads. A
+/// transport thread performs the handshake and then reads until disconnect,
+/// so holding admission for its lifetime bounds both handshake workers and
+/// connected client reader threads.
+pub(crate) const MAX_ACTIVE_CLIENT_CONNECTIONS: usize = 64;
+/// Bound queued client connection-limit refusals so the accept loop never
+/// waits for a peer or grows refusal work without limit.
+pub(crate) const CLIENT_HANDSHAKE_REFUSAL_QUEUE_CAPACITY: usize = 16;
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Bound endpoint boot identifiers above the size of generated IDs.

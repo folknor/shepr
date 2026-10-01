@@ -370,11 +370,7 @@ mod tests {
 
     #[test]
     fn snapshot_state_fields_follow_ids_not_positions() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
-        );
+        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
         let mut first = shepr_mux::workspace::Workspace::test_new("first");
         // `test_new` always sets a custom name for identification; clear it
         // so only `second` below is actually custom-named, which is what

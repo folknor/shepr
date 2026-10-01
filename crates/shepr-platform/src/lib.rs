@@ -13,6 +13,7 @@ mod host;
 pub mod ipc;
 mod limits;
 pub mod logging;
+mod owned_runtime;
 mod private_file;
 mod process;
 mod process_identity;
@@ -33,6 +34,7 @@ pub use host::{
     begin_cli_output, child_command, detach_server_daemon_command, hostname, launch_executable,
     take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
 };
+pub use owned_runtime::{release_remote_ssh_config_dir, release_single_use_socket_lock};
 pub use private_file::{create_private_file, sync_directory};
 pub use process::{
     ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,

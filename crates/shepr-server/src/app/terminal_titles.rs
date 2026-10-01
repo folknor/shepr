@@ -67,12 +67,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_keeps_latest_raw_title_and_reports_stripped_changes() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &ServerConfig::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-        );
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
@@ -143,12 +138,7 @@ mod tests {
 
     #[tokio::test]
     async fn syncing_pending_titles_preserves_sidebar_render_impact() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &ServerConfig::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-        );
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();

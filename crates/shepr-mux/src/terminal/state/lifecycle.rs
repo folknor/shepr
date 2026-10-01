@@ -8,6 +8,13 @@ pub(super) struct EffectiveAgent<'a> {
 }
 
 impl TerminalState {
+    fn fallback_not_older_than_hook(&self) -> bool {
+        self.hook_authority.as_ref().is_none_or(|authority| {
+            self.fallback_observed_at
+                .is_some_and(|observed_at| authority.reported_at <= observed_at)
+        })
+    }
+
     /// The arbitration table has three rows:
     /// - a live full-lifecycle source supplies identity and state;
     /// - other effective hooks supply identity and state, except that a newer
@@ -22,7 +29,7 @@ impl TerminalState {
                 &authority.source,
                 &authority.agent_label,
             );
-            (!full || (known == self.detected_agent && self.recent_agent_process_exit.is_none()))
+            (!full || (known == self.detected_agent && self.process_evidence.exit().is_none()))
                 .then_some((authority, known, full))
         });
         match hook {
@@ -45,7 +52,8 @@ impl TerminalState {
             }
             None => {
                 let known_agent = self
-                    .recent_agent_process_exit
+                    .process_evidence
+                    .exit()
                     .is_none()
                     .then_some(self.detected_agent)
                     .flatten();
@@ -75,10 +83,6 @@ impl TerminalState {
     }
 
     pub fn full_lifecycle_hook_authority_active(&self) -> bool {
-        self.live_full_lifecycle_hook_authority()
-    }
-
-    pub(super) fn live_full_lifecycle_hook_authority(&self) -> bool {
         self.effective_agent().full_lifecycle_hook
     }
 }

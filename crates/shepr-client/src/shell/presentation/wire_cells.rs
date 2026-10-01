@@ -2,10 +2,11 @@
 //! (`patch_style`) and replacing a region with what a ratatui renderer drew into a scratch
 //! buffer (`overwrite`). `FrameData` is the composition target throughout; pane cells never
 //! pass through ratatui, so underline shapes, hyperlinks and wide-glyph tails stay in their
-//! wire form. Both use the one width rule output uses (`shepr_termio::blit::text_width`).
+//! wire form. Pane cells carry their terminal grid width; chrome cells keep the
+//! grapheme rule in `shepr_termio::blit::text_width`.
 
 use super::*;
-use shepr_protocol::{CellData, WireColor, WireStyleFlags};
+use shepr_protocol::{CellData, GridCellWidth, WireColor, WireStyleFlags};
 
 /// Wire flag for each single-bit ratatui modifier that has one. Underline is not here: it
 /// is a typed shape on the wire and is handled apart.
@@ -108,6 +109,7 @@ pub(super) fn patch_rect(frame: &mut FrameData, rect: Rect, patch: StylePatch) {
 pub(in crate::shell) fn blank(cell: &mut CellData) {
     cell.symbol.clear();
     cell.symbol.push(' ');
+    cell.grid_width = GridCellWidth::Grapheme;
     cell.skip = false;
     cell.hyperlink = None;
 }
@@ -122,10 +124,12 @@ pub(in crate::shell) fn blank(cell: &mut CellData) {
 /// pane surfaces mark wide tails with empty symbols, ratatui buffers with space
 /// continuations. An empty-symbol cell no glyph reaches is an orphaned tail; on the
 /// destination side one that sits right after a covered cell is blanked too, since the
-/// glyph it belonged to is being replaced.
+/// glyph it belonged to is being replaced. `grid_width` preserves pane grid widths and
+/// selects grapheme sizing for chrome cells.
 pub(in crate::shell) fn split_glyph_cells<'a>(
     len: usize,
     symbol: impl Fn(usize) -> &'a str,
+    grid_width: impl Fn(usize) -> GridCellWidth,
     covered: &[bool],
     blank_covered: bool,
 ) -> Vec<usize> {
@@ -140,7 +144,12 @@ pub(in crate::shell) fn split_glyph_cells<'a>(
             x += 1;
             continue;
         }
-        let end = (x + shepr_termio::blit::text_width(text).max(1)).min(len);
+        let width = match grid_width(x) {
+            GridCellWidth::Grapheme => shepr_termio::blit::text_width(text).max(1),
+            GridCellWidth::One => 1,
+            GridCellWidth::Two => 2,
+        };
+        let end = x.saturating_add(width).min(len);
         let covered_count = covered[x..end].iter().filter(|covered| **covered).count();
         if covered_count != 0 && covered_count != end - x {
             out.extend((x..end).filter(|index| covered[*index] == blank_covered));
@@ -199,12 +208,14 @@ pub(super) fn overwrite(frame: &mut FrameData, rects: &[Rect], scratch: &Buffer)
         let underlying_remnants = split_glyph_cells(
             width,
             move |x| underlying[x].symbol.as_str(),
+            move |x| underlying[x].grid_width,
             &covered,
             false,
         );
         let scratch_remnants = split_glyph_cells(
             width,
             move |x| scratch_at(scratch, x, y).map_or(" ", ratatui::buffer::Cell::symbol),
+            |_| GridCellWidth::Grapheme,
             &covered,
             true,
         );
@@ -246,6 +257,7 @@ mod tests {
     fn cell(symbol: &str) -> CellData {
         CellData {
             symbol: symbol.to_owned(),
+            grid_width: GridCellWidth::Grapheme,
             fg: WireColor::Reset,
             bg: WireColor::Reset,
             style: shepr_protocol::WireStyle::default(),
@@ -549,6 +561,22 @@ mod tests {
         scratch.set_string(1, 0, "#", Style::default());
         overwrite(&mut frame, &[Rect::new(1, 0, 1, 1)], &scratch);
         assert_eq!(text(&frame), "a# d");
+    }
+
+    #[test]
+    fn overlay_edge_after_narrow_vs16_cell_keeps_the_pane_glyph() {
+        let mut frame = frame("  ");
+        frame.cells[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
+        frame.cells[0].grid_width = GridCellWidth::One;
+        frame.cells[1].grid_width = GridCellWidth::One;
+        let mut scratch = blank_scratch(2, 1);
+        scratch.set_string(1, 0, "x", Style::default());
+
+        overwrite(&mut frame, &[Rect::new(1, 0, 1, 1)], &scratch);
+
+        assert_eq!(frame.cells[0].symbol, "\u{26a0}\u{fe0f}");
+        assert_eq!(frame.cells[0].grid_width, GridCellWidth::One);
+        assert_eq!(frame.cells[1].symbol, "x");
     }
 
     #[test]

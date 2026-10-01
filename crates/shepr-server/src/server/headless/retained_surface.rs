@@ -660,6 +660,7 @@ mod tests {
     fn cell(symbol: &str) -> shepr_protocol::CellData {
         shepr_protocol::CellData {
             symbol: symbol.to_owned(),
+            grid_width: shepr_protocol::GridCellWidth::Grapheme,
             fg: shepr_protocol::WireColor::Reset,
             bg: shepr_protocol::WireColor::Reset,
             style: shepr_protocol::WireStyle::default(),
@@ -670,11 +671,7 @@ mod tests {
 
     #[test]
     fn retained_resolution_uses_the_typed_baseline_identity() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
-        );
+        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
         let workspace = shepr_mux::workspace::Workspace::test_new("typed-baseline");
         let pane_id = workspace.root_pane();
         app.state.workspaces.push(workspace);
@@ -736,11 +733,7 @@ mod tests {
 
     #[test]
     fn retained_scrollbar_does_not_invent_a_gutter_at_the_pane_border() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
-        );
+        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
         app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         app.state.settings.pane_scrollbars = true;
         app.state.settings.pane_outer_borders = true;
@@ -819,11 +812,7 @@ mod tests {
 
     #[test]
     fn retained_layout_is_reused_for_recipients_with_the_same_workspace_and_size() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
-        );
+        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
         let workspace = shepr_mux::workspace::Workspace::test_new("retained-layout-cache");
         let workspace_id = workspace.id.clone();
         app.state.workspaces.push(workspace);

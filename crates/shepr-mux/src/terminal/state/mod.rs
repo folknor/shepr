@@ -160,6 +160,9 @@ pub struct TerminalState {
     pub fallback_state: AgentState,
     fallback_visible_blocker: bool,
     fallback_observed_at: Option<Instant>,
+    // State authority and resume ownership can belong to different sources.
+    // These pane-wide output slots are written by source machine effects;
+    // per-source copies would create competing owners and equality invariants.
     pub hook_authority: Option<HookAuthority>,
     pub persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
@@ -167,7 +170,7 @@ pub struct TerminalState {
     hook_sources: HashMap<String, HookSourceState>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
-    recent_agent_process_exit: Option<RecentAgentProcessExit>,
+    process_evidence: AgentProcessEvidence,
     pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
     pub restore_error: Option<RestoreFailure>,
 }
@@ -204,6 +207,3 @@ impl From<Instant> for HookClockSample {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

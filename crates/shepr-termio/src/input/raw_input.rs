@@ -354,32 +354,80 @@ impl<P: HostReplyPolicy> RawInputFramer<P> {
     }
 }
 
+/// The sole owner of framing holds. Reply preferences are independent of input.
+#[derive(Default)]
+enum Held {
+    #[default]
+    None,
+    /// An ordinary incomplete escape/key prefix ends at the next idle flush,
+    /// which releases a parseable key or drops the prefix. An outstanding
+    /// host query or Escape disambiguation may transition it to the respective
+    /// one-flush HostReplyPrefix or MouseWait state instead.
+    Sequence,
+    /// An incomplete mouse report ends at the first idle flush: SGR becomes
+    /// MouseTail, while other prefixes are released as keys or dropped. Host
+    /// Escape disambiguation may first transition it to MouseWait.
+    MousePrefix,
+    /// Legacy rxvt Alt+arrow may start with two Escapes. The first Escape is
+    /// released at the first idle flush, or as soon as bytes rule the key out.
+    DoubledEscape,
+    /// A valid incomplete UTF-8 scalar (optionally preceded by Escape) survives
+    /// idle flushes by design. Continuation or invalid input ends it; storage
+    /// is at most one incomplete scalar plus the optional Escape.
+    Utf8,
+    /// A possible host reply prefix gets one extra idle flush, then is released
+    /// or becomes a bounded discarded tail. New queries do not extend it.
+    HostReplyPrefix,
+    /// After releasing Escape, inspect the next input for an orphaned mouse
+    /// tail. A non-tail ends this marker; an incomplete tail is bounded by
+    /// MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES and becomes MouseTail on idle flush.
+    EscapeReleased,
+    /// With host Escape disambiguation, a mouse prefix gets one extra flush
+    /// using DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS. Non-continuation ends
+    /// the wait early. Its length is just the already-buffered prefix length.
+    MouseWait { prefix_len: usize },
+    /// Discard only a valid continuation of this timed-out mouse prefix.
+    /// Invalid input or a final byte ends it; prefix plus tail is bounded by
+    /// MAX_DISCARDED_CONTROL_TAIL_BYTES. Idle alone cannot validate a report.
+    MouseTail { prefix: Vec<u8> },
+    /// Deliver at the terminator, cut at MAX_PENDING_PASTE_BYTES, or close
+    /// after PASTE_STALL_TIMEOUT without progress when input next arrives.
+    /// The byte limit is checked on each read, before holding its body again.
+    /// Scanning resumes with overlap so a split terminator is not missed.
+    Paste {
+        scanned: usize,
+        last_progress: std::time::Instant,
+    },
+    /// A continuing cut paste must stay discarded through its terminator,
+    /// regardless of byte or flush count, so pasted text cannot become keys.
+    /// Retain only a proper terminator suffix. PASTE_STALL_TIMEOUT without
+    /// progress ends the discard when input next arrives.
+    PasteTail { last_progress: std::time::Instant },
+    /// An incomplete control string, including OSC 10/11, ends at its
+    /// terminator, the first idle flush, or MAX_DISCARDED_CONTROL_TAIL_BYTES
+    /// received bytes (including the introducer). Timeout or the byte bound
+    /// transitions to ControlTail with a fresh tail budget, retaining a split
+    /// string terminator without charging its already-received Escape twice.
+    ControlString { family: ControlStringFamily },
+    /// Discard through the family terminator or at most
+    /// MAX_DISCARDED_CONTROL_TAIL_BYTES tail bytes, charged as they arrive.
+    /// Ordinary tails also end on an implausible idle flush. Host CSI tails
+    /// ignore idle by design but retain their cumulative byte bound.
+    /// `charged` counts bytes still in the buffer already charged to `bytes`.
+    ControlTail {
+        family: ControlStringFamily,
+        bytes: usize,
+        charged: usize,
+    },
+}
+
 #[derive(Default)]
 struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
     buffer: Vec<u8>,
-    discard_until: Option<ControlStringFamily>,
-    discarded_tail_bytes: usize,
-    // Keep the discarded prefix separate from continuation bytes awaiting validation.
-    timed_out_mouse_prefix: Option<Vec<u8>>,
-    lone_escape_recently_flushed: bool,
+    held: Held,
     host_replies: P,
-    held_pending_host_reply_esc: bool,
     split_coalesced_escape: bool,
     host_escape_disambiguation_active: bool,
-    /// Set when a mouse report prefix outlived keyboard timing while the host
-    /// sends Escape disambiguated: the prefix's length, kept for one longer
-    /// wait (`held_input_flush_timeout_ms`) in case its tail arrives late. Any
-    /// input that does not continue it releases the prefix as a key.
-    awaiting_mouse_tail_after: Option<usize>,
-    /// How many bytes of a held, unterminated bracketed paste have already
-    /// been searched for the terminator, so a paste arriving in many reads is
-    /// not rescanned from the start on every one.
-    paste_terminator_scanned: usize,
-    /// When bytes last arrived while a paste was held or its tail discarded.
-    paste_last_progress: Option<std::time::Instant>,
-    /// Dropping the rest of a paste cut at `MAX_PENDING_PASTE_BYTES` until its
-    /// terminator arrives.
-    discarding_paste_tail: bool,
 }
 
 impl<P: HostReplyPolicy> RawInputByteFramer<P> {
@@ -398,52 +446,37 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     fn push_at(&mut self, data: &[u8], now: std::time::Instant) -> Vec<Vec<u8>> {
         let mut chunks = self.give_up_stalled_paste(now);
         self.buffer.extend_from_slice(data);
-        if let Some(prefix_len) = self.awaiting_mouse_tail_after.take()
-            && !continues_escape_sequence(&self.buffer)
-        {
-            // The prefix already outlived keyboard timing, and what followed
-            // is not its tail: it was a key.
-            chunks.push(self.buffer.drain(..prefix_len).collect());
+        if let Held::MouseWait { prefix_len } = self.held {
+            self.held = Held::Sequence;
+            if !continues_escape_sequence(&self.buffer) {
+                chunks.push(self.buffer.drain(..prefix_len).collect());
+            }
         }
         chunks.extend(self.drain_available_chunks());
-        self.paste_last_progress = if self.holding_paste() {
-            match self.paste_last_progress {
-                Some(last) if data.is_empty() => Some(last),
-                _ => Some(now),
+        match &mut self.held {
+            Held::Paste { last_progress, .. } | Held::PasteTail { last_progress }
+                if !data.is_empty() =>
+            {
+                *last_progress = now;
             }
-        } else {
-            None
-        };
+            _ => {}
+        }
         chunks
     }
 
-    /// A bracketed paste is held waiting for its terminator, or the tail of a
-    /// cut paste is being dropped.
-    fn holding_paste(&self) -> bool {
-        self.discarding_paste_tail || self.buffer.starts_with(BRACKETED_PASTE_START)
-    }
-
-    /// Stop waiting for the terminator of a paste that has received nothing for
-    /// `PASTE_STALL_TIMEOUT`. A held paste is delivered as a complete paste (it
-    /// stays bracketed, so the pane still treats it as pasted text); a tail
-    /// being dropped stops being dropped. Called before new input is appended,
-    /// so that input is framed on its own instead of joining the paste.
     fn give_up_stalled_paste(&mut self, now: std::time::Instant) -> Vec<Vec<u8>> {
-        let Some(last) = self.paste_last_progress else {
-            return Vec::new();
+        let last = match self.held {
+            Held::Paste { last_progress, .. } | Held::PasteTail { last_progress } => last_progress,
+            _ => return Vec::new(),
         };
         if now.saturating_duration_since(last) < PASTE_STALL_TIMEOUT {
             return Vec::new();
         }
-        self.paste_last_progress = None;
-        self.paste_terminator_scanned = 0;
-        if self.discarding_paste_tail {
+        let was_tail = matches!(self.held, Held::PasteTail { .. });
+        self.held = Held::None;
+        if was_tail {
             tracing::warn!("bracketed paste terminator never arrived; resuming input");
-            self.discarding_paste_tail = false;
             self.buffer.clear();
-            return Vec::new();
-        }
-        if !self.buffer.starts_with(BRACKETED_PASTE_START) {
             return Vec::new();
         }
         tracing::warn!(
@@ -455,42 +488,47 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         vec![paste]
     }
 
-    /// Whether the buffer holds a bracketed paste whose terminator has not
-    /// arrived. Searches only the bytes added since the last call (plus room
-    /// for a terminator split across reads).
     fn pending_paste_is_unterminated(&mut self) -> bool {
         if !self.buffer.starts_with(BRACKETED_PASTE_START) {
-            self.paste_terminator_scanned = 0;
             return false;
         }
-        let search_from = self
-            .paste_terminator_scanned
+        let scanned = match self.held {
+            Held::Paste { scanned, .. } => scanned,
+            _ => 0,
+        };
+        let search_from = scanned
             .saturating_sub(BRACKETED_PASTE_END.len() - 1)
             .max(BRACKETED_PASTE_START.len())
             .min(self.buffer.len());
         if find_subsequence(&self.buffer[search_from..], BRACKETED_PASTE_END).is_some() {
-            self.paste_terminator_scanned = 0;
+            self.held = Held::None;
             return false;
         }
-        self.paste_terminator_scanned = self.buffer.len();
+        let last_progress = match self.held {
+            Held::Paste { last_progress, .. } => last_progress,
+            _ => std::time::Instant::now(),
+        };
+        self.held = Held::Paste {
+            scanned: self.buffer.len(),
+            last_progress,
+        };
         true
     }
 
-    /// Close a held paste that outgrew `MAX_PENDING_PASTE_BYTES`: deliver what
-    /// arrived as one complete paste and drop the rest up to its terminator.
     fn cut_oversized_paste(&mut self) -> Vec<u8> {
         tracing::warn!(
             len = self.buffer.len(),
             max = MAX_PENDING_PASTE_BYTES,
             "bracketed paste exceeds the held-paste limit; delivering its head and dropping the rest"
         );
-        // Keep a terminator prefix split across reads so the tail discard
-        // still recognises it.
         let split = self.buffer.len() - partial_suffix_len(&self.buffer, BRACKETED_PASTE_END);
         let mut paste: Vec<u8> = self.buffer.drain(..split).collect();
         paste.extend_from_slice(BRACKETED_PASTE_END);
-        self.paste_terminator_scanned = 0;
-        self.discarding_paste_tail = true;
+        let last_progress = match self.held {
+            Held::Paste { last_progress, .. } => last_progress,
+            _ => std::time::Instant::now(),
+        };
+        self.held = Held::PasteTail { last_progress };
         paste
     }
 
@@ -498,14 +536,12 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     /// at its ESC introducer stitches back together instead of leaking.
     fn host_color_query_sent(&mut self) {
         self.host_replies.color_query_sent();
-        self.held_pending_host_reply_esc = false;
     }
 
     /// Same hold window as `host_color_query_sent`, for the XTWINOPS cell size
     /// reply.
     fn host_cell_size_query_sent(&mut self) {
         self.host_replies.cell_size_query_sent();
-        self.held_pending_host_reply_esc = false;
     }
 
     fn enable_host_color_scheme_change_tracking(&mut self) {
@@ -527,7 +563,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     }
 
     fn held_input_flush_timeout_ms(&self) -> i32 {
-        if self.awaiting_mouse_tail_after.is_some() {
+        if matches!(self.held, Held::MouseWait { .. }) {
             DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
         } else {
             RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
@@ -550,33 +586,31 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
 
-        // Idle is not evidence that a paste has ended either; the retained
-        // bytes may be the start of the terminator.
-        if self.discarding_paste_tail {
+        if matches!(self.held, Held::PasteTail { .. }) {
             return chunks;
         }
 
-        // Idle is not evidence that a mouse report has ended. The continuation
-        // stays bounded and is released if it cannot complete a valid report.
-        if self.timed_out_mouse_prefix.is_some() {
+        if matches!(self.held, Held::MouseTail { .. }) {
             return chunks;
         }
 
-        if let Some(family) = self.discard_until {
+        if let Held::ControlTail { family, bytes, .. } = self.held {
             if family == ControlStringFamily::HostReplyCsi {
                 return chunks;
             }
             let keep_split_st = self.buffer.last() == Some(&ESC);
             let keep_discarding = plausible_control_string_tail(family, &self.buffer);
-            self.discarded_tail_bytes = self.discarded_tail_bytes.saturating_add(self.buffer.len());
             self.buffer.clear();
-            if keep_discarding && self.discarded_tail_bytes <= MAX_DISCARDED_CONTROL_TAIL_BYTES {
+            self.held = Held::None;
+            if keep_discarding && bytes < MAX_DISCARDED_CONTROL_TAIL_BYTES {
                 if keep_split_st {
                     self.buffer.push(ESC);
                 }
-            } else {
-                self.discard_until = None;
-                self.discarded_tail_bytes = 0;
+                self.held = Held::ControlTail {
+                    family,
+                    bytes,
+                    charged: self.buffer.len(),
+                };
             }
             return chunks;
         }
@@ -590,7 +624,10 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         // tail. Keep it for one longer wait; `push_at` releases it as a key if
         // other input follows. A finished mouse wait also counts as this
         // prefix's one-flush host reply hold, so the two holds never stack.
-        let mouse_wait_served = self.awaiting_mouse_tail_after.take().is_some();
+        let mouse_wait_served = matches!(self.held, Held::MouseWait { .. });
+        if mouse_wait_served {
+            self.held = Held::Sequence;
+        }
         if !mouse_wait_served
             && self.host_escape_disambiguation_active
             && could_continue_as_mouse_report(&self.buffer)
@@ -599,11 +636,13 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 len = self.buffer.len(),
                 "holding a possible mouse report prefix for its delayed tail"
             );
-            self.awaiting_mouse_tail_after = Some(self.buffer.len());
+            self.held = Held::MouseWait {
+                prefix_len: self.buffer.len(),
+            };
             return chunks;
         }
 
-        if self.lone_escape_recently_flushed && self.buffer.starts_with(b"[<") {
+        if matches!(self.held, Held::EscapeReleased) && self.buffer.starts_with(b"[<") {
             tracing::debug!(
                 len = self.buffer.len(),
                 "discarding incomplete orphaned SGR mouse tail after input timeout"
@@ -611,7 +650,6 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             let mut prefix = vec![ESC];
             prefix.append(&mut self.buffer);
             self.retain_timed_out_mouse_prefix(prefix);
-            self.lone_escape_recently_flushed = false;
             return chunks;
         }
 
@@ -625,9 +663,6 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             return chunks;
         }
 
-        // Held without a deadline here: a paste that stops arriving is given up
-        // by `give_up_stalled_paste` when input next arrives, and one that
-        // keeps growing is cut at `MAX_PENDING_PASTE_BYTES`.
         if self.pending_paste_is_unterminated() {
             tracing::trace!(
                 len = self.buffer.len(),
@@ -636,24 +671,9 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             return chunks;
         }
 
-        if starts_with_incomplete_default_color_response(&self.buffer) {
-            tracing::trace!(
-                len = self.buffer.len(),
-                "waiting for host color response terminator"
-            );
-            return chunks;
-        }
-
         if self.split_coalesced_escape
             && could_be_incomplete_doubled_escape_key_sequence(&self.buffer)
         {
-            // `ESC ESC` cannot distinguish two Escape presses from a legacy
-            // rxvt Alt+arrow (`ESC ESC [ A`) split across reads. Keep this
-            // prefix through one normal idle flush so a split tail can arrive;
-            // a shorter window would reject tails arriving after it. Bytes
-            // that rule out the sequence are released earlier in
-            // `drain_available_chunks`. Other outstanding host-reply holds
-            // are handled below.
             chunks.push(vec![ESC]);
             self.buffer.drain(..1);
         }
@@ -661,13 +681,13 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         if self.host_replies.awaiting_cell_size_or_appearance()
             && self.buffer.as_slice() == b"\x1b["
         {
-            if !self.held_pending_host_reply_esc && !mouse_wait_served {
-                self.held_pending_host_reply_esc = true;
+            if !matches!(self.held, Held::HostReplyPrefix) && !mouse_wait_served {
+                self.held = Held::HostReplyPrefix;
                 tracing::trace!("holding incomplete host CSI reply one flush");
                 return chunks;
             }
             self.host_replies.clear_cell_size_and_appearance();
-            self.held_pending_host_reply_esc = false;
+            self.held = Held::Sequence;
         }
 
         if self.host_replies.awaiting_cell_size()
@@ -678,16 +698,15 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 "discarding incomplete host cell size report after input timeout"
             );
             self.host_replies.clear_cell_size();
-            self.held_pending_host_reply_esc = false;
-            self.discard_until = Some(ControlStringFamily::HostReplyCsi);
-            self.discarded_tail_bytes = 0;
-            self.buffer.clear();
+            self.begin_control_tail(ControlStringFamily::HostReplyCsi);
             return chunks;
         }
 
         if starts_with_incomplete_host_color_scheme_report(&self.buffer) {
-            if self.host_replies.awaiting_appearance() && !self.held_pending_host_reply_esc {
-                self.held_pending_host_reply_esc = true;
+            if self.host_replies.awaiting_appearance()
+                && !matches!(self.held, Held::HostReplyPrefix)
+            {
+                self.held = Held::HostReplyPrefix;
                 tracing::trace!(
                     len = self.buffer.len(),
                     "holding incomplete host color scheme report one flush"
@@ -699,43 +718,37 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 "discarding incomplete host color scheme report after input timeout"
             );
             self.host_replies.clear_appearance();
-            self.held_pending_host_reply_esc = false;
-            self.discard_until = Some(ControlStringFamily::HostReplyCsi);
-            self.discarded_tail_bytes = 0;
-            self.buffer.clear();
+            self.begin_control_tail(ControlStringFamily::HostReplyCsi);
             return chunks;
         }
 
-        if let Some(ControlString::Incomplete { family }) = control_string(&self.buffer) {
+        if let Held::ControlString { family } = self.held {
             tracing::debug!(
                 len = self.buffer.len(),
                 "discarding incomplete host control string after input timeout"
             );
             // This intentionally gives host control replies precedence over legacy
             // Alt forms like Alt+] after timeout, so later reply tails cannot leak.
-            self.discard_until = Some(family);
-            self.discarded_tail_bytes = 0;
-            self.buffer.clear();
+            self.begin_control_tail(family);
             return chunks;
         }
 
         if self.buffer.as_slice() == [ESC] {
             if self.host_replies.awaiting_reply()
-                && !self.held_pending_host_reply_esc
+                && !matches!(self.held, Held::HostReplyPrefix)
                 && !mouse_wait_served
             {
-                self.held_pending_host_reply_esc = true;
+                self.held = Held::HostReplyPrefix;
                 tracing::trace!("holding lone escape one flush while awaiting host reply");
                 return chunks;
             }
             // No continuation arrived; give up the window so Escape is not delayed again.
             self.host_replies.clear_all();
-            self.held_pending_host_reply_esc = false;
             tracing::warn!(
                 len = self.buffer.len(),
                 "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
             );
-            self.lone_escape_recently_flushed = true;
+            self.held = Held::EscapeReleased;
             chunks.push(std::mem::take(&mut self.buffer));
             return chunks;
         }
@@ -743,6 +756,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         if let Ok(text) = std::str::from_utf8(&self.buffer)
             && parse_terminal_key_sequence(text).is_some()
         {
+            self.held = Held::None;
             chunks.push(std::mem::take(&mut self.buffer));
             return chunks;
         }
@@ -753,6 +767,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 len = self.buffer.len(),
                 "waiting for UTF-8 continuation bytes"
             );
+            self.held = Held::Utf8;
             return chunks;
         }
 
@@ -762,6 +777,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 len = self.buffer.len(),
                 "waiting for escaped UTF-8 continuation bytes"
             );
+            self.held = Held::Utf8;
             return chunks;
         }
 
@@ -769,7 +785,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             len = self.buffer.len(),
             "dropping incomplete raw input buffer after timeout"
         );
-        self.lone_escape_recently_flushed = false;
+        self.held = Held::None;
         // `drain_available_chunks` consumed complete and malformed heads one
         // event at a time. Reaching this point means the only remaining bytes
         // are the incomplete trailing sequence, which idle timeout discards.
@@ -777,20 +793,38 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         chunks
     }
 
+    fn begin_control_tail(&mut self, family: ControlStringFamily) {
+        let keep_st =
+            family != ControlStringFamily::HostReplyCsi && self.buffer.last() == Some(&ESC);
+        self.buffer.clear();
+        if keep_st {
+            self.buffer.push(ESC);
+        }
+        self.held = Held::ControlTail {
+            family,
+            bytes: 0,
+            charged: self.buffer.len(),
+        };
+    }
+
     fn retain_timed_out_mouse_prefix(&mut self, prefix: Vec<u8>) {
-        self.timed_out_mouse_prefix = (prefix.len() < MAX_DISCARDED_CONTROL_TAIL_BYTES
-            && plausible_sgr_mouse_prefix(&prefix))
-        .then_some(prefix);
+        self.held = if prefix.len() < MAX_DISCARDED_CONTROL_TAIL_BYTES
+            && plausible_sgr_mouse_prefix(&prefix)
+        {
+            Held::MouseTail { prefix }
+        } else {
+            Held::None
+        };
     }
 
     fn drain_available_chunks(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = Vec::new();
 
         loop {
-            if self.discarding_paste_tail {
+            if matches!(self.held, Held::PasteTail { .. }) {
                 if let Some(end) = find_subsequence(&self.buffer, BRACKETED_PASTE_END) {
                     self.buffer.drain(..end + BRACKETED_PASTE_END.len());
-                    self.discarding_paste_tail = false;
+                    self.held = Held::None;
                     continue;
                 }
                 let keep = partial_suffix_len(&self.buffer, BRACKETED_PASTE_END);
@@ -799,7 +833,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 break;
             }
 
-            if let Some(prefix) = &self.timed_out_mouse_prefix {
+            if let Held::MouseTail { prefix } = &self.held {
                 match classify_sgr_mouse_continuation(prefix, &self.buffer) {
                     SgrMouseContinuation::Incomplete => break,
                     SgrMouseContinuation::Complete(len) => {
@@ -807,39 +841,50 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                     }
                     SgrMouseContinuation::Invalid => {}
                 }
-                self.timed_out_mouse_prefix = None;
+                self.held = Held::None;
             }
 
-            if self.lone_escape_recently_flushed {
+            if matches!(self.held, Held::EscapeReleased) {
                 if starts_with_incomplete_orphaned_sgr_mouse_tail(&self.buffer) {
                     break;
                 }
                 if discard_complete_orphaned_sgr_mouse_tail(&mut self.buffer) {
-                    self.lone_escape_recently_flushed = false;
+                    self.held = Held::None;
                     continue;
                 }
-                self.lone_escape_recently_flushed = false;
+                self.held = Held::None;
             }
 
-            if let Some(family) = self.discard_until {
-                if family == ControlStringFamily::HostReplyCsi {
-                    if discard_host_reply_csi_tail(&mut self.buffer, &mut self.discarded_tail_bytes)
-                    {
-                        self.discard_until = None;
-                        self.discarded_tail_bytes = 0;
+            if let Held::ControlTail {
+                family,
+                bytes,
+                charged,
+            } = &mut self.held
+            {
+                if *family == ControlStringFamily::HostReplyCsi {
+                    if discard_host_reply_csi_tail(&mut self.buffer, bytes) {
+                        self.held = Held::None;
                         continue;
                     }
                     break;
                 }
-                let Some(terminator_len) =
-                    control_string_terminator_for_family(&self.buffer, family)
-                else {
-                    break;
-                };
-                self.buffer.drain(..terminator_len);
-                self.discard_until = None;
-                self.discarded_tail_bytes = 0;
-                continue;
+                let remaining = MAX_DISCARDED_CONTROL_TAIL_BYTES.saturating_sub(*bytes);
+                let inspected = self.buffer.len().min(charged.saturating_add(remaining));
+                if let Some(len) =
+                    control_string_terminator_for_family(&self.buffer[..inspected], *family)
+                {
+                    self.buffer.drain(..len);
+                    self.held = Held::None;
+                    continue;
+                }
+                *bytes = bytes.saturating_add(inspected.saturating_sub(*charged));
+                *charged = inspected;
+                if *bytes >= MAX_DISCARDED_CONTROL_TAIL_BYTES {
+                    self.buffer.drain(..inspected);
+                    self.held = Held::None;
+                    continue;
+                }
+                break;
             }
 
             if self.split_coalesced_escape
@@ -847,6 +892,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 && !starts_with_complete_key_sequence(&self.buffer)
             {
                 if could_be_incomplete_doubled_escape_key_sequence(&self.buffer) {
+                    self.held = Held::DoubledEscape;
                     break;
                 }
                 chunks.push(vec![ESC]);
@@ -863,10 +909,41 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             }
 
             let Some((event, consumed)) = extract_one_event(&self.buffer) else {
+                if let Some(ControlString::Incomplete { family }) = control_string(&self.buffer) {
+                    if self.buffer.len() >= MAX_DISCARDED_CONTROL_TAIL_BYTES {
+                        let keep_st = self.buffer[MAX_DISCARDED_CONTROL_TAIL_BYTES - 1] == ESC;
+                        self.buffer.drain(..MAX_DISCARDED_CONTROL_TAIL_BYTES);
+                        if keep_st {
+                            self.buffer.insert(0, ESC);
+                        }
+                        self.held = Held::ControlTail {
+                            family,
+                            bytes: 0,
+                            charged: usize::from(keep_st),
+                        };
+                        continue;
+                    }
+                    self.held = Held::ControlString { family };
+                } else if starts_with_incomplete_utf8_char(&self.buffer)
+                    || self.buffer.first() == Some(&ESC)
+                        && starts_with_incomplete_utf8_char(&self.buffer[1..])
+                {
+                    self.held = Held::Utf8;
+                } else if self.has_pending_incomplete_mouse_sequence()
+                    && !matches!(self.held, Held::MouseWait { .. })
+                {
+                    self.held = Held::MousePrefix;
+                } else if !self.buffer.is_empty()
+                    && !matches!(self.held, Held::HostReplyPrefix | Held::MouseWait { .. })
+                {
+                    self.held = Held::Sequence;
+                } else if self.buffer.is_empty() && !matches!(self.held, Held::EscapeReleased) {
+                    self.held = Held::None;
+                }
                 break;
             };
             self.host_replies.observe(&event);
-            self.held_pending_host_reply_esc = false;
+            self.held = Held::None;
             chunks.push(self.buffer[..consumed].to_vec());
             self.buffer.drain(..consumed);
         }
@@ -1136,15 +1213,6 @@ fn parse_host_keyboard_probe_response(buffer: &[u8]) -> Option<HostKeyboardProbe
         }
         _ => None,
     }
-}
-
-fn starts_with_incomplete_default_color_response(buffer: &[u8]) -> bool {
-    matches!(
-        control_string(buffer),
-        Some(ControlString::Incomplete {
-            family: ControlStringFamily::Osc
-        })
-    ) && matches!(buffer.get(..5), Some(b"\x1b]10;" | b"\x1b]11;"))
 }
 
 fn starts_with_incomplete_host_color_scheme_report(buffer: &[u8]) -> bool {
@@ -2626,7 +2694,7 @@ mod tests {
             let mut rest = tail[split..].to_vec();
             rest.extend_from_slice(b"x\x1b[A");
             assert_eq!(framer.push(&rest), vec![b"x".to_vec(), b"\x1b[A".to_vec()]);
-            assert!(framer.timed_out_mouse_prefix.is_none());
+            assert!(!matches!(framer.held, Held::MouseTail { .. }));
             assert!(!framer.has_pending_input());
         }
     }
@@ -2644,7 +2712,7 @@ mod tests {
             assert!(framer.push(b"\x1b[<3").is_empty());
             assert!(framer.flush_timeout().is_empty());
             assert_eq!(framer.push(tail).concat(), tail);
-            assert!(framer.timed_out_mouse_prefix.is_none());
+            assert!(!matches!(framer.held, Held::MouseTail { .. }));
         }
     }
 
@@ -2668,7 +2736,7 @@ mod tests {
             let mut expected = b"5;28;".to_vec();
             expected.extend_from_slice(suffix);
             assert_eq!(chunks.concat(), expected);
-            assert!(framer.timed_out_mouse_prefix.is_none());
+            assert!(!matches!(framer.held, Held::MouseTail { .. }));
             assert_eq!(framer.push(b"123M").concat(), b"123M");
         }
     }
@@ -2683,7 +2751,7 @@ mod tests {
         let mut valid_tail = vec![b'0'; remaining - 2];
         valid_tail.extend_from_slice(b"1M");
         assert!(framer.push(&valid_tail).is_empty()); // complete exactly at limit
-        assert!(framer.timed_out_mouse_prefix.is_none());
+        assert!(!matches!(framer.held, Held::MouseTail { .. }));
 
         for length in [remaining, remaining + 1024] {
             let mut framer = RawInputByteFramer::default();
@@ -2691,7 +2759,7 @@ mod tests {
             assert!(framer.flush_timeout().is_empty());
             let tail = vec![b'0'; length];
             assert_eq!(framer.push(&tail).concat(), tail);
-            assert!(framer.timed_out_mouse_prefix.is_none());
+            assert!(!matches!(framer.held, Held::MouseTail { .. }));
             assert_eq!(framer.push(b"1Mtext").concat(), b"1Mtext");
         }
 
@@ -2703,7 +2771,7 @@ mod tests {
         assert!(framer.flush_timeout().is_empty());
         tail.extend_from_slice(b"01M");
         assert_eq!(framer.push(b"01M").concat(), tail);
-        assert!(framer.timed_out_mouse_prefix.is_none());
+        assert!(!matches!(framer.held, Held::MouseTail { .. }));
     }
 
     #[test]
@@ -2940,6 +3008,41 @@ mod tests {
     }
 
     #[test]
+    fn paste_variants_end_at_the_byte_or_stall_bound() {
+        let start = std::time::Instant::now();
+        let mut framer = RawInputByteFramer::for_host_input();
+        assert!(framer.push_at(BRACKETED_PASTE_START, start).is_empty());
+        assert!(
+            framer
+                .push_at(&vec![b'a'; MAX_PENDING_PASTE_BYTES], start)
+                .is_empty()
+        );
+        assert!(matches!(framer.held, Held::Paste { .. }));
+        assert_eq!(framer.push_at(b"b", start).len(), 1);
+        assert!(matches!(framer.held, Held::PasteTail { .. }));
+        assert_eq!(
+            framer.push_at(b"x", start + PASTE_STALL_TIMEOUT),
+            vec![b"x".to_vec()]
+        );
+        assert!(matches!(framer.held, Held::None));
+
+        let mut stalled = RawInputByteFramer::for_host_input();
+        assert!(stalled.push_at(b"\x1b[200~body", start).is_empty());
+        assert!(matches!(stalled.held, Held::Paste { .. }));
+        assert!(
+            stalled
+                .push_at(b"", start + PASTE_STALL_TIMEOUT / 2)
+                .is_empty()
+        );
+        assert!(stalled.flush_timeout().is_empty());
+        assert_eq!(
+            stalled.push_at(b"x", start + PASTE_STALL_TIMEOUT),
+            vec![b"\x1b[200~body\x1b[201~".to_vec(), b"x".to_vec()]
+        );
+        assert!(matches!(stalled.held, Held::None));
+    }
+
+    #[test]
     fn oversized_unterminated_paste_is_cut_and_its_tail_dropped() {
         let mut framer = RawInputByteFramer::for_host_input();
         let block = vec![b'a'; 1024 * 1024];
@@ -2968,13 +3071,42 @@ mod tests {
     fn cut_paste_whose_terminator_never_comes_releases_input_after_a_stall() {
         let mut framer = RawInputByteFramer::for_host_input();
         let start = std::time::Instant::now();
-        framer.discarding_paste_tail = true;
+        framer.held = Held::PasteTail {
+            last_progress: start,
+        };
 
         assert!(framer.push_at(b"more paste", start).is_empty());
         assert_eq!(
             framer.push_at(b"y", start + PASTE_STALL_TIMEOUT),
             vec![b"y".to_vec()]
         );
+    }
+
+    #[test]
+    fn continuing_cut_paste_tail_outlives_byte_and_idle_flush_counts() {
+        let mut framer = RawInputByteFramer::for_host_input();
+        let start = std::time::Instant::now();
+        framer.held = Held::PasteTail {
+            last_progress: start,
+        };
+        let block = vec![b'a'; MAX_PENDING_PASTE_BYTES];
+
+        // More discarded bytes than the held-paste limit do not make the
+        // remainder safe to deliver as keys. Progress prevents stall expiry.
+        for _ in 0..4 {
+            assert!(framer.push_at(&block, start).is_empty());
+            for _ in 0..256 {
+                assert!(framer.flush_timeout().is_empty());
+            }
+            assert!(matches!(framer.held, Held::PasteTail { .. }));
+            assert!(framer.buffer.is_empty());
+        }
+
+        assert!(framer.push_at(b"tail\x1b[20", start).is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert_eq!(framer.push_at(b"1~x", start), vec![b"x".to_vec()]);
+        assert!(!matches!(framer.held, Held::PasteTail { .. }));
+        assert!(!framer.has_pending_input());
     }
 
     #[test]
@@ -3008,6 +3140,27 @@ mod tests {
             framer.push(&"好".as_bytes()[1..]),
             vec!["好".as_bytes().to_vec()]
         );
+    }
+
+    #[test]
+    fn incomplete_utf8_survives_repeated_idle_flushes_with_or_without_escape() {
+        for escaped in [false, true] {
+            let mut framer = RawInputByteFramer::for_host_input();
+            let mut complete = Vec::new();
+            if escaped {
+                complete.push(ESC);
+            }
+            complete.extend_from_slice("好".as_bytes());
+            let split = complete.len() - 1;
+
+            assert!(framer.push(&complete[..split]).is_empty());
+            for _ in 0..256 {
+                assert!(framer.flush_timeout().is_empty());
+                assert!(framer.has_pending_input());
+            }
+            assert_eq!(framer.push(&complete[split..]), vec![complete]);
+            assert!(!framer.has_pending_input());
+        }
     }
 
     #[test]
@@ -3206,6 +3359,168 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_default_color_replies_enter_bounded_discard_on_idle() {
+        for prefix in [b"\x1b]10;".as_slice(), b"\x1b]11;".as_slice()] {
+            let mut framer = RawInputByteFramer::default();
+            framer.host_color_query_sent();
+            assert!(framer.push(prefix).is_empty());
+            assert!(matches!(framer.held, Held::ControlString { .. }));
+            assert!(framer.flush_timeout().is_empty());
+            assert!(matches!(framer.held, Held::ControlTail { .. }));
+            assert!(framer.push(b"rgb:1111/2222/3333\x1b").is_empty());
+            assert!(framer.flush_timeout().is_empty());
+            assert_eq!(framer.push(b"\\x"), vec![b"x".to_vec()]);
+            assert!(matches!(framer.held, Held::None));
+        }
+    }
+
+    #[test]
+    fn incomplete_control_strings_reach_the_byte_bound_without_idle() {
+        for prefix in [
+            b"\x1b]10;".as_slice(),
+            b"\x1b]11;".as_slice(),
+            b"\x1b]".as_slice(),
+            b"\x1bP".as_slice(),
+            b"\x1b_".as_slice(),
+            b"\x1b^".as_slice(),
+            b"\x1bX".as_slice(),
+        ] {
+            let mut framer = RawInputByteFramer::default();
+            assert!(framer.push(prefix).is_empty());
+            for _ in prefix.len()..MAX_DISCARDED_CONTROL_TAIL_BYTES - 1 {
+                assert!(framer.push(b"1").is_empty());
+                assert!(matches!(framer.held, Held::ControlString { .. }));
+                assert!(framer.buffer.len() < MAX_DISCARDED_CONTROL_TAIL_BYTES);
+            }
+            assert!(framer.push(b"1").is_empty());
+            assert!(matches!(framer.held, Held::ControlTail { bytes: 0, .. }));
+            assert!(framer.buffer.is_empty());
+            for _ in 0..MAX_DISCARDED_CONTROL_TAIL_BYTES - 1 {
+                assert!(framer.push(b"2").is_empty());
+                assert!(matches!(framer.held, Held::ControlTail { .. }));
+                assert!(framer.buffer.len() < MAX_DISCARDED_CONTROL_TAIL_BYTES);
+            }
+            assert!(framer.push(b"2").is_empty());
+            assert!(matches!(framer.held, Held::None));
+            assert_eq!(framer.push(b"x"), vec![b"x".to_vec()]);
+        }
+    }
+
+    #[test]
+    fn one_read_can_exhaust_both_control_budgets_and_preserve_overflow() {
+        for prefix in [b"\x1b]11;".as_slice(), b"\x1bP".as_slice()] {
+            let mut framer = RawInputByteFramer::default();
+            assert!(framer.push(prefix).is_empty());
+            let initial_remaining = MAX_DISCARDED_CONTROL_TAIL_BYTES - prefix.len();
+            let burst = vec![b'1'; initial_remaining + MAX_DISCARDED_CONTROL_TAIL_BYTES + 3];
+            assert_eq!(framer.push(&burst).concat(), b"111");
+            assert!(matches!(framer.held, Held::None));
+            assert!(!framer.has_pending_input());
+        }
+    }
+
+    #[test]
+    fn control_tail_budget_is_charged_on_push_and_not_again_on_idle() {
+        for prefix in [b"\x1b]".as_slice(), b"\x1bP".as_slice()] {
+            let mut framer = RawInputByteFramer::default();
+            assert!(framer.push(prefix).is_empty());
+            assert!(framer.flush_timeout().is_empty());
+            let first = vec![b'1'; MAX_DISCARDED_CONTROL_TAIL_BYTES - 1];
+            assert!(framer.push(&first).is_empty());
+            assert!(matches!(framer.held, Held::ControlTail { bytes, .. }
+                if bytes == first.len()));
+            assert_eq!(framer.push(b"2x"), vec![b"x".to_vec()]);
+            assert!(matches!(framer.held, Held::None));
+        }
+
+        let mut framer = RawInputByteFramer::default();
+        assert!(framer.push(b"\x1b]").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert!(framer.push(b"123\x1b").is_empty());
+        for _ in 0..4 {
+            assert!(framer.flush_timeout().is_empty());
+            assert!(matches!(framer.held, Held::ControlTail { bytes: 4, .. }));
+        }
+        assert_eq!(framer.push(b"\\x"), vec![b"x".to_vec()]);
+    }
+
+    #[test]
+    fn control_tail_preserves_split_st_at_the_initial_byte_bound() {
+        let mut framer = RawInputByteFramer::default();
+        let mut prefix = b"\x1bP".to_vec();
+        prefix.resize(MAX_DISCARDED_CONTROL_TAIL_BYTES - 1, b'a');
+        prefix.push(ESC);
+        assert!(framer.push(&prefix).is_empty());
+        assert!(matches!(framer.held, Held::ControlTail { .. }));
+        assert_eq!(framer.buffer, vec![ESC]);
+        assert_eq!(framer.push(b"\\x"), vec![b"x".to_vec()]);
+        assert!(matches!(framer.held, Held::None));
+    }
+
+    #[test]
+    fn implausible_control_tail_ends_at_idle() {
+        for prefix in [b"\x1b]".as_slice(), b"\x1bP".as_slice()] {
+            let mut framer = RawInputByteFramer::default();
+            assert!(framer.push(prefix).is_empty());
+            assert!(framer.flush_timeout().is_empty());
+            assert!(framer.push(b"a").is_empty());
+            assert!(framer.flush_timeout().is_empty());
+            assert!(matches!(framer.held, Held::None));
+            assert_eq!(framer.push(b"x"), vec![b"x".to_vec()]);
+        }
+    }
+
+    #[test]
+    fn key_prefix_holds_end_at_their_idle_flush_counts() {
+        let mut ordinary = RawInputByteFramer::for_host_input();
+        assert!(ordinary.push(b"\x1b[").is_empty());
+        assert!(matches!(ordinary.held, Held::Sequence));
+        assert_eq!(ordinary.flush_timeout(), vec![b"\x1b[".to_vec()]);
+        assert!(matches!(ordinary.held, Held::None));
+
+        let mut doubled = RawInputByteFramer::for_host_input();
+        assert!(doubled.push(b"\x1b\x1b").is_empty());
+        assert!(matches!(doubled.held, Held::DoubledEscape));
+        assert_eq!(doubled.flush_timeout().concat(), b"\x1b\x1b");
+        assert!(!doubled.has_pending_input());
+        assert!(matches!(doubled.held, Held::EscapeReleased));
+        assert_eq!(doubled.push(b"x"), vec![b"x".to_vec()]);
+        assert!(matches!(doubled.held, Held::None));
+
+        let mut host = RawInputByteFramer::for_host_input();
+        host.host_color_query_sent();
+        assert!(host.push(b"\x1b").is_empty());
+        assert!(host.flush_timeout().is_empty());
+        assert!(matches!(host.held, Held::HostReplyPrefix));
+        host.host_color_query_sent();
+        host.host_cell_size_query_sent();
+        assert_eq!(host.flush_timeout(), vec![b"\x1b".to_vec()]);
+        assert!(!host.has_pending_input());
+    }
+
+    #[test]
+    fn mouse_prefix_holds_end_at_their_idle_flush_counts() {
+        let mut sgr = RawInputByteFramer::for_host_input();
+        assert!(sgr.push(b"\x1b[<3").is_empty());
+        assert!(matches!(sgr.held, Held::MousePrefix));
+        assert!(sgr.flush_timeout().is_empty());
+        assert!(matches!(sgr.held, Held::MouseTail { .. }));
+        assert!(!sgr.has_pending_input());
+
+        let mut delayed = RawInputByteFramer::for_host_input();
+        delayed.set_host_escape_disambiguation_active(true);
+        assert!(delayed.push(b"\x1b[").is_empty());
+        assert!(delayed.flush_timeout().is_empty());
+        assert!(matches!(delayed.held, Held::MouseWait { .. }));
+        assert_eq!(
+            delayed.held_input_flush_timeout_ms(),
+            DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
+        );
+        assert_eq!(delayed.flush_timeout(), vec![b"\x1b[".to_vec()]);
+        assert!(matches!(delayed.held, Held::None));
+    }
+
+    #[test]
     fn raw_input_byte_framer_discards_split_control_string_after_timeout() {
         let mut framer = RawInputByteFramer::default();
 
@@ -3385,10 +3700,12 @@ mod tests {
         assert!(framer.push(b"\x1b[6;21").is_empty());
         assert!(framer.flush_timeout().is_empty());
         assert!(framer.push(&[b'1'; 64]).is_empty());
+        assert!(matches!(framer.held, Held::ControlTail { bytes: 64, .. }));
         assert_eq!(
             framer.push(&[b'2'; 67]),
             vec![b"2".to_vec(), b"2".to_vec(), b"2".to_vec()]
         );
+        assert!(matches!(framer.held, Held::None));
     }
 
     #[test]

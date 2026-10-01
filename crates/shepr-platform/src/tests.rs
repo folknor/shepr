@@ -206,22 +206,26 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
         .expect("current process identity")
         .tag(0);
 
-    let stale_config = runtime.join(format!("shepr-ssh-{dead_tag}"));
+    let stale_config = runtime.join("shepr-ssh-0000000000000001");
     std::fs::create_dir(&stale_config).expect("test precondition");
     std::fs::set_permissions(&stale_config, std::fs::Permissions::from_mode(0o700))
         .expect("test precondition");
     std::fs::write(stale_config.join("config"), b"Host *\n").expect("test precondition");
     let untagged_config = runtime.join("shepr-ssh-0123456789abcdef");
     std::fs::create_dir(&untagged_config).expect("test precondition");
-    let live_config = runtime.join(format!("shepr-ssh-{live_tag}"));
+    let live_config = runtime.join("shepr-ssh-0000000000000002");
     std::fs::create_dir(&live_config).expect("test precondition");
 
     for (name, tag) in [
+        ("shepr-ssh-0000000000000001", dead_tag.as_str()),
+        ("shepr-ssh-0000000000000002", live_tag.as_str()),
         (".s0000000000000001", dead_tag.as_str()),
         (".s0000000000000002", live_tag.as_str()),
     ] {
         let staging = runtime.join(name);
-        std::fs::create_dir(&staging).expect("test precondition");
+        if !staging.try_exists().expect("stat test fixture") {
+            std::fs::create_dir(&staging).expect("test precondition");
+        }
         std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))
             .expect("test precondition");
         let mut marker = std::fs::OpenOptions::new()

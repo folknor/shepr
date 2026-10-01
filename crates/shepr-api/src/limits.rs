@@ -41,7 +41,7 @@ pub(crate) const INITIAL_REQUEST_READ_CHUNK_BYTES: usize = 8 * 1024;
 
 /// Maximum concurrently served API connections. This bounds worker threads
 /// and request-owned stream state while allowing several clients and hooks.
-pub(crate) const MAX_ACTIVE_CONNECTIONS: usize = 64;
+pub const MAX_ACTIVE_CONNECTIONS: usize = 64;
 
 /// Maximum busy connections queued for request-ID extraction; additional
 /// refusals are sent immediately so the accept loop stays available.

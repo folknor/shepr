@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1-2 chars).
     pub symbol: String,
+    /// Grid width of this cell, or grapheme-based width for client chrome.
+    pub grid_width: GridCellWidth,
     /// Foreground color.
     pub fg: WireColor,
     /// Background color.
@@ -19,11 +21,26 @@ pub struct CellData {
     pub hyperlink: Option<u32>,
 }
 
+/// Width semantics for one cell in the terminal grid.
+///
+/// Variant order is part of the positional wire format. Pane renderers report
+/// the terminal grid width directly; Ratatui chrome keeps grapheme sizing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GridCellWidth {
+    /// Use the displayed grapheme's width, as Ratatui chrome does.
+    Grapheme,
+    /// The cell occupies one terminal grid column.
+    One,
+    /// The cell occupies two terminal grid columns.
+    Two,
+}
+
 impl CellData {
     /// An unstyled space: the cell of an empty surface.
     pub fn blank() -> Self {
         Self {
             symbol: " ".to_owned(),
+            grid_width: GridCellWidth::Grapheme,
             fg: WireColor::Reset,
             bg: WireColor::Reset,
             style: WireStyle::default(),
@@ -149,5 +166,24 @@ impl FrameData {
         let index = u32::try_from(self.hyperlinks.len()).ok()?;
         self.hyperlinks.push(uri.to_owned());
         Some(index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_width_wire_value_uses_one_byte() {
+        for grid_width in [
+            GridCellWidth::Grapheme,
+            GridCellWidth::One,
+            GridCellWidth::Two,
+        ] {
+            assert_eq!(
+                crate::codec::encoded_len(&grid_width).expect("width encoding"),
+                1
+            );
+        }
     }
 }

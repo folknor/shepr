@@ -12,7 +12,6 @@ mod opencode_config;
 mod registry;
 mod targets;
 mod types;
-mod version;
 
 pub use actions::install_present_integrations;
 pub use env::AgentIntegrationPaths;
@@ -30,7 +29,6 @@ const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
 const KIMI_CONFIG_BLOCK_BEGIN: &str = "# >>> shepr kimi integration";
 const KIMI_CONFIG_BLOCK_END: &str = "# <<< shepr kimi integration";
-const KIMI_MIN_VERSION: &str = "0.14.0";
 const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
 const DEVIN_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";

@@ -1121,32 +1121,6 @@ fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
 }
 
 #[test]
-fn server_daemon_command_clears_superseded_socket_overrides() {
-    let env = IsolatedEnv::new();
-    env.set(EnvVar::SheprSocketPath, "/tmp/inherited.sock");
-    env.set(EnvVar::SheprClientSocketPath, "/tmp/inherited-client.sock");
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-    let command = build_server_daemon_command(
-        &PathBuf::from("/tmp/shepr-test"),
-        Path::new("/"),
-        Some(Path::new("/home/test")),
-        &paths,
-    );
-    let envs: Vec<_> = command.get_envs().collect();
-
-    // The API override outranks the client one, so the child gets the API
-    // override as resolved and the superseded client override is removed.
-    assert!(envs.iter().any(|(key, value)| {
-        *key == OsStr::new(EnvVar::SheprSocketPath.name())
-            && *value == Some(OsStr::new("/tmp/inherited.sock"))
-    }));
-    assert!(envs.iter().any(|(key, value)| {
-        *key == OsStr::new(EnvVar::SheprClientSocketPath.name()) && value.is_none()
-    }));
-}
-
-#[test]
 fn server_daemon_command_passes_current_dir_as_startup_cwd() {
     let expected = Path::new("/home/test");
     let paths = shepr_config::AppPaths::test_default();

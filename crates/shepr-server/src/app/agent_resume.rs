@@ -464,11 +464,9 @@ mod tests {
     use crate::test_support::*;
 
     fn test_app() -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         )
     }
 
@@ -495,8 +493,7 @@ mod tests {
                 "[session]\nstartup_per_agent_delay_ms = {delay_ms}"
             ))
             .expect("test precondition");
-            let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut app = App::new(&config, crate::app::AppPolicy::Test, api_rx);
+            let mut app = App::new(&config, crate::app::AppPolicy::Test);
             app.state.workspaces = (0..4)
                 .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
                 .collect();

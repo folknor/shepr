@@ -171,12 +171,16 @@ pub fn run_server(
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // App restore is the last expensive startup step before the client
-        // listener appears. Platform binding combines stale-socket handling
-        // with acquiring its own lock, so this handoff leaves a short race for
-        // a listener that does not use the startup lock.
-        drop(client_socket_startup_lock);
-
-        let mut server = match HeadlessServer::new(app, api_rx, Some(_api_server), stop_requested) {
+        // listener appears. The reservation passes into the bind, so the
+        // startup lock is held without a gap from before restore until the
+        // listener stops.
+        let mut server = match HeadlessServer::new(
+            app,
+            api_rx,
+            Some(_api_server),
+            stop_requested,
+            client_socket_startup_lock,
+        ) {
             Ok(server) => server,
             Err(err) => return Err(startup_error(ServerSocket::Client, err)),
         };
@@ -253,7 +257,7 @@ fn log_panics() {
 }
 
 /// Installs or updates the agent hooks on this host in a detached thread, so
-/// the file IO and any agent version probe stay off the startup path. The
+/// the file IO stays off the startup path. The
 /// agent config locations are read from the environment here, before the
 /// thread starts. Every outcome goes to the log; nothing here can fail the
 /// launch. A server that stops while the thread runs leaves at most a
@@ -360,7 +364,7 @@ fn lease_error(error: io::Error) -> RunServerError {
 }
 
 #[cfg(test)]
-mod startup_cwd_tests {
+mod client_socket_reservation_and_startup_cwd_tests {
     use super::*;
 
     #[test]
@@ -414,6 +418,21 @@ mod startup_cwd_tests {
             "the launcher must keep seeing API-first startup"
         );
         drop(startup_lock);
+    }
+
+    #[test]
+    fn client_socket_reservation_can_be_consumed_by_the_platform_binder() {
+        let scratch = shepr_test_support::ScratchDir::new("client-reservation-bind");
+        let path = scratch.join("client.sock");
+        let reservation = reserve_client_socket_startup_lock(&path).expect("reserve socket");
+        let (_listener, _lock, _identity) =
+            shepr_platform::ipc::bind_private_socket_with_lock(reservation)
+                .expect("bind reserved socket");
+        let error = reserve_client_socket_startup_lock(&path)
+            .err()
+            .expect("still locked");
+        let busy = shepr_platform::ipc::SocketBusy::from_io(&error).expect("busy");
+        assert_eq!(busy.path(), path.as_path());
     }
 
     fn resolve(raw: &std::ffi::OsStr) -> Option<PathBuf> {

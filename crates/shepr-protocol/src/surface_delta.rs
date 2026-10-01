@@ -43,6 +43,44 @@ fn metadata_fits(surface: &PaneSurfaceFrame) -> bool {
             .all(|split| split.path.len() <= MAX_SURFACE_SPLIT_PATH)
 }
 
+fn unchanged_plan(
+    last: &PaneSurfaceFrame,
+    surface: &PaneSurfaceFrame,
+    baseline: &super::surface_reuse::Baseline<'_>,
+) -> Option<SurfaceDeltaPlan> {
+    if !baseline.accepts_surface(surface)
+        || surface.projection_revision != last.projection_revision
+        || surface.frame != last.frame
+        || surface.panes != last.panes
+        || surface.splits != last.splits
+    {
+        return None;
+    }
+    let update = baseline.update(surface, Vec::new(), last);
+    Some(SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(
+        update,
+    )))
+}
+
+fn unchanged_message(
+    last: &PaneSurfaceFrame,
+    surface: &PaneSurfaceFrame,
+    baseline: &super::surface_reuse::Baseline<'_>,
+) -> SurfaceDeltaPlan {
+    let update = baseline.update(surface, Vec::new(), last);
+    SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(update))
+}
+
+fn projection_metadata_is_unchanged(last: &PaneSurfaceFrame, surface: &PaneSurfaceFrame) -> bool {
+    surface.projection_revision == last.projection_revision
+        && surface.frame.width == last.frame.width
+        && surface.frame.height == last.frame.height
+        && surface.frame.cursor == last.frame.cursor
+        && surface.frame.hyperlinks == last.frame.hyperlinks
+        && surface.panes == last.panes
+        && surface.splits == last.splits
+}
+
 /// Copies each span into a row-major grid of `width` x `height` cells.
 ///
 /// Every span is checked against the shared span rule before any cell is
@@ -135,34 +173,41 @@ pub fn message(
     last: &PaneSurfaceFrame,
     surface: &PaneSurfaceFrame,
 ) -> Result<SurfaceDeltaPlan, SurfaceDeltaError> {
-    let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
-    else {
-        return Ok(SurfaceDeltaPlan::Full);
-    };
     let baseline = super::surface_reuse::Baseline::new(
         &last.boot_id,
         last.projection_revision,
         last.surface_revision,
     );
+    let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
+    else {
+        return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
+    };
     if !baseline.accepts_surface(surface)
         || last.frame.width != surface.frame.width
         || last.frame.height != surface.frame.height
         || last.frame.cells.len() != expected_cells
-        || !metadata_fits(surface)
     {
-        return Ok(SurfaceDeltaPlan::Full);
+        return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
     }
-    // Every cell has a string length prefix, two color discriminants, a skip
-    // byte and a hyperlink option tag: at least five bytes, even ignoring its
-    // symbol and style. This lower bound avoids another full-grid serialization
-    // pass on this per-client path while guaranteeing any chosen cell delta is
-    // smaller. It may miss useful deltas on small grids or when most of the full
-    // message consists of metadata.
-    let full_size = expected_cells.saturating_mul(5);
+    // Every cell has a string length prefix, a grid-width discriminant, two
+    // color discriminants, a skip byte and a hyperlink option tag: at least six
+    // bytes, even ignoring its symbol and style. This lower bound avoids another
+    // full-grid serialization pass on this per-client path while guaranteeing
+    // any chosen cell delta is smaller. It may miss useful deltas on small grids
+    // or when most of the full message consists of metadata.
+    let full_size = expected_cells.saturating_mul(6);
     let Some(rows) = changed_rows(&last.frame.cells, &surface.frame.cells, surface.frame.width)
     else {
         return Ok(SurfaceDeltaPlan::Full);
     };
+    // The cell scan already established an unchanged grid. Check the compact
+    // metadata conditions before cloning any projection metadata into an update.
+    if rows.is_empty() && projection_metadata_is_unchanged(last, surface) {
+        return Ok(unchanged_message(last, surface, &baseline));
+    }
+    if !metadata_fits(surface) {
+        return Ok(SurfaceDeltaPlan::Full);
+    }
     let spans = rows
         .into_iter()
         .map(|row| PaneSurfacePatchRow {
@@ -173,20 +218,7 @@ pub fn message(
         .collect();
     let update = baseline.update(surface, spans, last);
     // Metadata-only updates always retain the grid. Counting potentially large
-    // projection metadata cannot improve this choice. An unchanged result is
-    // reported separately so the caller can avoid sending it without comparing
-    // the cell grid a second time.
-    if update.spans.is_empty()
-        && matches!(
-            &update.meta,
-            Some(super::SurfaceMeta::Patch(meta))
-                if meta.panes.is_empty() && meta.cursor == last.frame.cursor
-        )
-    {
-        return Ok(SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(
-            update,
-        )));
-    }
+    // projection metadata cannot improve this choice.
     let metadata_only = update.spans.is_empty();
     let message = ServerMessage::SurfaceUpdate(update);
     if metadata_only {
@@ -256,6 +288,48 @@ mod tests {
         let last = surface();
         let mut next = last.clone();
         next.surface_revision = super::super::SurfaceRevision::new(2);
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
+        ));
+    }
+
+    #[test]
+    fn unchanged_surface_with_oversized_metadata_is_reported_before_full_fallback() {
+        let mut last = surface();
+        last.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
+        ));
+    }
+
+    #[test]
+    fn changed_surface_with_oversized_metadata_still_uses_the_full_surface() {
+        let mut last = surface();
+        last.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.frame.cells[0].symbol = "x".into();
+
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Full
+        ));
+    }
+
+    #[test]
+    fn unchanged_surface_with_invalid_grid_is_reported_before_full_fallback() {
+        let mut last = surface();
+        last.frame.width = u16::MAX;
+        last.frame.height = 1;
+        last.frame.cells.clear();
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+
         assert!(matches!(
             message(&last, &next).expect("planning"),
             SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))

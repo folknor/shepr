@@ -268,6 +268,7 @@ mod tests {
             cells: vec![
                 CellData {
                     symbol: "H".into(),
+                    grid_width: GridCellWidth::Grapheme,
                     fg: WireColor::from_ratatui(Color::Red),
                     bg: WireColor::from_ratatui(Color::Black),
                     style: WireStyle::from_ratatui_modifier(Modifier::BOLD),
@@ -276,6 +277,7 @@ mod tests {
                 },
                 CellData {
                     symbol: "i".into(),
+                    grid_width: GridCellWidth::Grapheme,
                     fg: WireColor::from_ratatui(Color::Green),
                     bg: WireColor::from_ratatui(Color::Reset),
                     style: WireStyle::from_ratatui_modifier(Modifier::ITALIC),
@@ -284,6 +286,7 @@ mod tests {
                 },
                 CellData {
                     symbol: "!".into(),
+                    grid_width: GridCellWidth::Grapheme,
                     fg: WireColor::from_ratatui(Color::Rgb(255, 128, 0)),
                     bg: WireColor::from_ratatui(Color::Indexed(220)),
                     style: WireStyle {
@@ -295,6 +298,7 @@ mod tests {
                 },
                 CellData {
                     symbol: " ".into(),
+                    grid_width: GridCellWidth::Grapheme,
                     fg: WireColor::from_ratatui(Color::Reset),
                     bg: WireColor::from_ratatui(Color::Reset),
                     style: WireStyle::default(),
@@ -303,6 +307,7 @@ mod tests {
                 },
                 CellData {
                     symbol: "→".into(), // multi-byte grapheme
+                    grid_width: GridCellWidth::One,
                     fg: WireColor::from_ratatui(Color::Cyan),
                     bg: WireColor::from_ratatui(Color::Blue),
                     style: WireStyle::from_ratatui_modifier(Modifier::REVERSED),
@@ -311,6 +316,7 @@ mod tests {
                 },
                 CellData {
                     symbol: "\u{1F980}".into(), // emoji, wide grapheme cluster
+                    grid_width: GridCellWidth::Two,
                     fg: WireColor::from_ratatui(Color::Yellow),
                     bg: WireColor::from_ratatui(Color::Magenta),
                     style: WireStyle::default(),
@@ -381,6 +387,7 @@ mod tests {
                 y: 4,
                 cells: vec![CellData {
                     symbol: "x".into(),
+                    grid_width: GridCellWidth::One,
                     fg: WireColor::Indexed(1),
                     bg: WireColor::Rgb(0, 0, 2),
                     style: WireStyle::from_ratatui_modifier(Modifier::BOLD | Modifier::ITALIC),
@@ -524,6 +531,7 @@ mod tests {
                 } else {
                     format!("{:03}", i % 1000)
                 },
+                grid_width: GridCellWidth::Grapheme,
                 fg: WireColor::from_ratatui(Color::Rgb(
                     u8::try_from(i % 256).unwrap_or(u8::MAX),
                     u8::try_from((i / 256) % 256).unwrap_or(u8::MAX),

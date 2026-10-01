@@ -1,7 +1,6 @@
 use super::random::unpredictable_token;
 use super::*;
 use shepr_core::socket_path::{UNIX_SOCKET_PATH_MAX, fits_unix_socket_path};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -22,105 +21,17 @@ pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths 
 /// bridges do not share a small per-process allocation limit. Callers remove
 /// it when done; the managed SSH owner also registers normal process-exit
 /// cleanup. Each creation first sweeps leftovers of hard-killed owners: only
-/// current-uid directories whose name records a process `/proc` proves has
-/// exited. Untagged directories (created when the owner identity could not be
+/// current-uid directories whose locked marker records a process `/proc` proves
+/// has exited. Unmarked directories (created when the owner identity could not be
 /// read) are retained because their owner cannot be established.
 pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
-
     validate_ssh_runtime_dir(runtime_dir)?;
-    let owner = match super::process_identity::ProcessIdentity::current() {
-        Ok(owner) => Some(owner),
-        Err(error) => {
-            tracing::debug!(%error, "could not record SSH config owner identity; stale directories will be retained");
-            None
-        }
-    };
-    sweep_stale_remote_ssh_config_dirs(runtime_dir);
-    for _ in 0..super::limits::RANDOM_NAME_ATTEMPTS {
-        let token = unpredictable_token()?;
-        let name = match owner {
-            Some(owner) => format!("shepr-ssh-{}", owner.tag(token)),
-            None => format!("shepr-ssh-{token:016x}"),
-        };
-        let dir = runtime_dir.join(name);
-        match std::fs::DirBuilder::new()
-            .mode(super::limits::PRIVATE_DIRECTORY_MODE)
-            .create(&dir)
-        {
-            Ok(()) => return Ok(dir),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
-        }
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "could not allocate a private shepr ssh config directory",
-    ))
-}
-
-fn sweep_stale_remote_ssh_config_dirs(runtime_dir: &Path) {
-    let entries = match std::fs::read_dir(runtime_dir) {
-        Ok(entries) => entries,
-        Err(error) => {
-            tracing::debug!(path = %runtime_dir.display(), error = %error, "could not scan SSH config runtime directory");
-            return;
-        }
-    };
-    let uid = super::effective_uid();
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let name = entry.file_name();
-        let Some(tag) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix("shepr-ssh-"))
-        else {
-            continue;
-        };
-        let Some((owner, _token)) = super::process_identity::ProcessIdentity::parse_tag(tag) else {
-            continue;
-        };
-        let path = entry.path();
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if !metadata.file_type().is_dir()
-            || metadata.uid() != uid
-            || !ssh_config_dir_contents_owned(&path, uid)
-            || !owner.is_provably_gone()
-        {
-            continue;
-        }
-        if let Err(error) = std::fs::remove_dir_all(&path) {
-            tracing::warn!(
-                path = %path.display(),
-                error = %error,
-                "failed to remove stale SSH config directory"
-            );
-        }
-    }
-}
-
-fn ssh_config_dir_contents_owned(path: &Path, uid: u32) -> bool {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return false;
-    };
-    let mut config_seen = false;
-    for entry in entries {
-        let Ok(entry) = entry else { return false };
-        if entry.file_name() != "config" || config_seen {
-            return false;
-        }
-        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
-            return false;
-        };
-        if !metadata.file_type().is_file() || metadata.uid() != uid {
-            return false;
-        }
-        config_seen = true;
-    }
-    true
+    super::owned_runtime::OwnedRuntimeEntry::create_directory(
+        runtime_dir,
+        super::owned_runtime::RuntimeKind::SshConfig,
+    )
+    .map(super::owned_runtime::OwnedRuntimeEntry::into_path)
+    .map_err(super::owned_runtime::RuntimeCreateError::into_io)
 }
 
 /// Choose an endpoint socket path in shepr's private runtime directory. The

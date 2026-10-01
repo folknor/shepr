@@ -11,15 +11,29 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use shepr_protocol::{CellData, FrameData};
+use shepr_protocol::{CellData, FrameData, GridCellWidth};
 use shepr_termio::blit::symbol_width;
 
-/// Blanks `cell` in place: a space in its own style, no skip, no link.
+/// Blanks `cell` in place: a space in its own style, no skip, no link. The
+/// space is one column wide whatever the cell held, so a blanked wide pane
+/// lead no longer claims the column after it.
 fn blank(cell: &mut CellData) {
     cell.symbol.clear();
     cell.symbol.push(' ');
+    cell.grid_width = GridCellWidth::Grapheme;
     cell.skip = false;
     cell.hyperlink = None;
+}
+
+/// Whether `cell` occupies two columns: a pane cell by the grid width its
+/// terminal reported (a narrow VS16 cell is one column whatever its glyph),
+/// a chrome cell by its glyph.
+fn is_wide(cell: &CellData) -> bool {
+    match cell.grid_width {
+        GridCellWidth::Grapheme => symbol_width(&cell.symbol) > 1,
+        GridCellWidth::One => false,
+        GridCellWidth::Two => true,
+    }
 }
 
 /// Replaces the frame cells from `(x, y)` rightwards with `cells`, clipped to
@@ -44,13 +58,11 @@ pub(super) fn put_run(frame: &mut FrameData, x: u16, y: u16, cells: &[CellData])
     let row_start = usize::from(y) * width;
     let row_end = row_start + width;
 
-    if start > row_start
-        && frame.cells[start].symbol.is_empty()
-        && symbol_width(&frame.cells[start - 1].symbol) > 1
+    if start > row_start && frame.cells[start].symbol.is_empty() && is_wide(&frame.cells[start - 1])
     {
         blank(&mut frame.cells[start - 1]);
     }
-    let last_was_wide = symbol_width(&frame.cells[end - 1].symbol) > 1;
+    let last_was_wide = is_wide(&frame.cells[end - 1]);
     for (slot, cell) in frame.cells[start..end].iter_mut().zip(cells) {
         slot.clone_from(cell);
     }
@@ -180,6 +192,17 @@ mod tests {
         let mut whole = frame("a漢~d");
         put_run(&mut whole, 1, 0, &[cell("#"), cell("#")]);
         assert_eq!(text(&whole), "a##d");
+    }
+
+    #[test]
+    fn put_run_blanks_a_split_pane_glyph_by_its_grid_width() {
+        // A pane's wide lead whose tail is replaced loses its two-column claim.
+        let mut wide = frame("a漢~d");
+        wide.cells[1].grid_width = GridCellWidth::Two;
+        wide.cells[2].grid_width = GridCellWidth::One;
+        put_run(&mut wide, 2, 0, &[cell("#")]);
+        assert_eq!(text(&wide), "a #d");
+        assert_eq!(wide.cells[1].grid_width, GridCellWidth::Grapheme);
     }
 
     #[test]

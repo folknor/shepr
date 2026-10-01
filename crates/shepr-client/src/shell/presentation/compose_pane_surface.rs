@@ -34,6 +34,7 @@ pub(super) fn compose_pane_surface(target: &mut FrameData, source: &FrameData, a
             let target_remnants = split_glyph_cells(
                 target_width,
                 move |x| target_view[x].symbol.as_str(),
+                move |x| target_view[x].grid_width,
                 &target_covered,
                 false,
             );
@@ -44,6 +45,7 @@ pub(super) fn compose_pane_surface(target: &mut FrameData, source: &FrameData, a
                 split_glyph_cells(
                     source_width,
                     move |x| source_row[x].symbol.as_str(),
+                    move |x| source_row[x].grid_width,
                     &source_covered,
                     true,
                 )
@@ -90,6 +92,7 @@ mod tests {
                 } else {
                     c.to_string()
                 },
+                grid_width: shepr_protocol::GridCellWidth::Grapheme,
                 fg: WireColor::Reset,
                 bg: WireColor::Reset,
                 style: shepr_protocol::WireStyle::default(),
@@ -143,6 +146,24 @@ mod tests {
         let source = frame("a漢~");
         compose_pane_surface(&mut target, &source, Rect::new(0, 0, 2, 1));
         assert_eq!(text(&target), "a ..");
+    }
+
+    #[test]
+    fn pane_clip_edge_uses_grid_width_for_narrow_vs16_cells() {
+        let mut target = frame("..");
+        let mut source = frame("  ");
+        source.cells[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
+        source.cells[0].grid_width = shepr_protocol::GridCellWidth::One;
+        source.cells[1].grid_width = shepr_protocol::GridCellWidth::One;
+
+        compose_pane_surface(&mut target, &source, Rect::new(0, 0, 1, 1));
+
+        assert_eq!(target.cells[0].symbol, "\u{26a0}\u{fe0f}");
+        assert_eq!(
+            target.cells[0].grid_width,
+            shepr_protocol::GridCellWidth::One
+        );
+        assert_eq!(target.cells[1].symbol, ".");
     }
 
     #[test]

@@ -130,23 +130,16 @@ impl ServerAddress {
         }
     }
 
-    /// Applies the resolved socket selectors to a daemon child command.
+    /// Clears inherited socket selectors from a daemon child command.
     /// The local launcher requires its runtime address before it spawns the
-    /// daemon. A client socket override selects the client endpoint of an
-    /// existing server and cannot be inherited by a new daemon.
+    /// daemon, so a child must never inherit selectors for an existing server.
     pub fn apply_to_child_command(&self, command: &mut Command) {
-        match self.source {
-            AddressSource::Runtime | AddressSource::ClientOverride => {
-                command
-                    .env_remove(EnvVar::SheprSocketPath)
-                    .env_remove(EnvVar::SheprClientSocketPath);
-            }
-            AddressSource::ApiOverride => {
-                command
-                    .env(EnvVar::SheprSocketPath, &self.api_socket)
-                    .env_remove(EnvVar::SheprClientSocketPath);
-            }
-        }
+        // The launcher refuses an override address before it builds this
+        // command, and clearing both selectors is the right environment for a
+        // daemon regardless, so there is nothing to check here.
+        command
+            .env_remove(EnvVar::SheprSocketPath)
+            .env_remove(EnvVar::SheprClientSocketPath);
     }
 }
 
@@ -288,28 +281,6 @@ mod tests {
                     *key == std::ffi::OsStr::new(variable.name()) && value.is_none()
                 }),
                 "{variable} must not be inherited as a socket override"
-            );
-        }
-    }
-
-    #[test]
-    fn client_socket_override_is_not_inherited_by_daemon_child() {
-        let address = ServerAddress::resolve_paths(
-            Path::new("/run/user/1/shepr"),
-            None,
-            Some(Path::new("/x/work-client.sock")),
-        );
-        let mut command = shepr_test_support::command_in_scratch("shepr", "address-env");
-
-        address.apply_to_child_command(&mut command);
-
-        let envs: Vec<_> = command.get_envs().collect();
-        for variable in [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath] {
-            assert!(
-                envs.iter().any(|(key, value)| {
-                    *key == std::ffi::OsStr::new(variable.name()) && value.is_none()
-                }),
-                "{variable} must not be inherited by a daemon child"
             );
         }
     }

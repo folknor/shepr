@@ -20,7 +20,7 @@ impl TerminalState {
             hook_sources: HashMap::new(),
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
-            recent_agent_process_exit: None,
+            process_evidence: AgentProcessEvidence::default(),
             pending_agent_resume_plan: None,
             restore_error: None,
         }

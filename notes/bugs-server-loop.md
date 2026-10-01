@@ -12,35 +12,29 @@ Filed from the defect hunt over `crates/shepr-server/src/server/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SLOOP-016 - The client socket reservation is released before the real bind
+## SLOOP-028 - The connection-limit refusal can be lost, and its counter is process-wide
 
-Bootstrap now checks the client socket lock and liveness after the lease and
-API bind but before restore, so a held client socket is refused before any
-shell spawns, while the listener stays unpublished for the API-first startup
-transition. (The claim that a `ping` waits out the restore was wrong: the API
-answers it on its connection thread.) Residue: the reservation in
-`headless/bootstrap.rs` is released before the platform binder reacquires its
-lock, so a listener can race into that gap. Closing it needs a shepr-platform
-IPC helper that hands the held lock to the binder.
+Lateral, `server/client_accept.rs`. Client connections are capped and an
+over-cap client gets `HandshakeRefusal::ConnectionLimit`. But
+`reject_busy_client` writes the preamble and refusal and drops the stream
+without reading the client's preamble and hello, so a client that writes its
+hello after the close can get EPIPE and report a lost connection instead of the
+limit (it retries either way). A bounded read of the hello, or `shutdown(Write)`
+and a short drain, makes the message reliable. Separately, the admission counter
+`ACTIVE_CLIENT_CONNECTIONS` is a process-wide static shared by every
+`HeadlessServer` in the process, in-process test servers included; hold it on
+the server. Also: `HeadlessServer::new` binds the client socket at the path the
+startup reservation carries; a `debug_assert_eq!` that this equals
+`client_socket_path(&app.paths)` was removed (debug asserts are disallowed), so
+pin that equality with a bootstrap test instead.
 
-## SLOOP-025 - The API queue capacity matches the connection cap only by value
+## SLOOP-029 - An Unchanged plan's metadata skips the size check
 
-Lateral. `API_REQUEST_CHANNEL_CAPACITY` (shepr-server `limits.rs`) equals
-`MAX_ACTIVE_CONNECTIONS` (shepr-api, `pub(crate)`), and its doc relies on that:
-each API connection carries one request, so a responsive loop never fills the
-queue. Nothing ties the two; export the connection cap and derive the capacity
-from it. Smaller hygiene from the same wave: the test-only `App::new` still takes
-an unbounded API receiver it ignores (about 40 test call sites pass one), and
-the client socket reservation tests in `headless/bootstrap.rs` sit in a module
-named `startup_cwd_tests`.
-
-## SLOOP-026 - Client socket accepts start one thread per connection with no cap
-
-Lateral, `server/client_accept.rs`. Each accepted client socket gets its own
-handshake thread. The handshake deadline bounds each thread's life but not how
-many run at once, so a local connection flood can start threads without limit
-for the length of the deadline. Cap concurrent handshakes and refuse beyond it,
-as the API server does with its connection cap.
+Lateral, `server/render_stream.rs`. When `recompute_pending` is set, an
+Unchanged plan for an invalid grid or oversized metadata is still sent as an
+empty `SurfaceUpdate`. That is intended, but its metadata comes from
+`baseline.update` without the `metadata_fits` check the other paths apply.
+Confirm the metadata can never exceed the wire limits on that path, or check it.
 
 ## SLOOP-004 - A slow client turns every drain of its render slot into a full render for everyone
 

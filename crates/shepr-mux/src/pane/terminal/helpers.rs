@@ -215,11 +215,14 @@ pub(super) fn terminal_collect_dirty_patch(
             );
             let symbol =
                 terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch).to_owned();
-            patch_cells.push(paint.into_cell(symbol));
+            patch_cells.push(paint.into_cell(symbol, terminal_grid_width(basic.wide)));
             x = x.saturating_add(1);
         }
         while x < area_width {
-            patch_cells.push(CellPaint::blank(default_fg, default_bg).into_cell(" ".to_owned()));
+            patch_cells.push(
+                CellPaint::blank(default_fg, default_bg)
+                    .into_cell(" ".to_owned(), GridCellWidth::One),
+            );
             x += 1;
         }
         patch_rows.push((y, patch_cells));
@@ -465,6 +468,15 @@ pub(super) fn terminal_buffer_symbol_into<'a>(
     symbol_scratch.as_str()
 }
 
+pub(super) fn terminal_grid_width(wide: shepr_vt::CellWide) -> GridCellWidth {
+    match wide {
+        shepr_vt::CellWide::Narrow
+        | shepr_vt::CellWide::SpacerHead
+        | shepr_vt::CellWide::SpacerTail => GridCellWidth::One,
+        shepr_vt::CellWide::Wide => GridCellWidth::Two,
+    }
+}
+
 /// The colours and text style of one pane cell, as the wire carries them.
 /// Underline colour (SGR 58) has no wire form and is not read.
 #[derive(Clone, Copy)]
@@ -485,9 +497,10 @@ impl CellPaint {
         }
     }
 
-    pub(super) fn into_cell(self, symbol: String) -> CellData {
+    pub(super) fn into_cell(self, symbol: String, grid_width: GridCellWidth) -> CellData {
         CellData {
             symbol,
+            grid_width,
             fg: self.fg,
             bg: self.bg,
             style: self.style,
@@ -497,9 +510,16 @@ impl CellPaint {
     }
 
     /// Overwrites `cell` completely, keeping its symbol allocation.
-    pub(super) fn write_cell(self, cell: &mut CellData, symbol: &str, hyperlink: Option<u32>) {
+    pub(super) fn write_cell(
+        self,
+        cell: &mut CellData,
+        symbol: &str,
+        grid_width: GridCellWidth,
+        hyperlink: Option<u32>,
+    ) {
         cell.symbol.clear();
         cell.symbol.push_str(symbol);
+        cell.grid_width = grid_width;
         cell.fg = self.fg;
         cell.bg = self.bg;
         cell.style = self.style;

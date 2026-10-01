@@ -102,7 +102,6 @@ mod tests {
         let mut app = super::super::App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            tokio::sync::mpsc::unbounded_channel().1,
         );
         let ws = Workspace::test_new("test");
         let pane_id = ws.root_pane();

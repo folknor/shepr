@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -85,6 +85,13 @@ pub struct SocketStartupLock {
     socket_path: PathBuf,
 }
 
+impl SocketStartupLock {
+    /// The socket path this lock reserves.
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+}
+
 impl Drop for SocketStartupLock {
     fn drop(&mut self) {
         tracing::info!(
@@ -160,7 +167,7 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
 
 /// Takes an exclusive `flock` on `file`, waiting for another holder when
 /// `blocking` and returning `WouldBlock` otherwise.
-fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()> {
+pub(crate) fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()> {
     let mut operation = libc::LOCK_EX;
     if !blocking {
         operation |= libc::LOCK_NB;
@@ -227,6 +234,15 @@ pub fn bind_private_socket(
     path: &Path,
 ) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
     let startup_lock = acquire_socket_startup_lock(path)?;
+    bind_private_socket_with_lock(startup_lock)
+}
+
+/// Binds while retaining a reservation acquired before expensive startup work.
+/// The path comes from the guard, so a lock for another socket cannot be used.
+pub fn bind_private_socket_with_lock(
+    startup_lock: SocketStartupLock,
+) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
+    let path = startup_lock.socket_path.as_path();
     prepare_socket_path(path)?;
     let listener = bind_private_local_listener(path)?;
     let identity = socket_file_identity(path)?;
@@ -260,10 +276,9 @@ pub fn bind_single_use_private_socket(
     match bound {
         Ok((listener, identity)) => Ok((listener, startup_lock, identity)),
         Err(error) => {
-            if listener_bound {
-                remove_single_use_file(path, "socket");
+            if !listener_bound || super::owned_runtime::remove_file(path) {
+                super::release_single_use_socket_lock(path);
             }
-            remove_single_use_file(&socket_startup_lock_path(path), "socket lock");
             drop(startup_lock);
             Err(error)
         }
@@ -275,48 +290,14 @@ pub fn bind_single_use_private_socket(
 fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
     let parent = socket_parent(socket_path)?;
     super::create_private_directory_all(parent)?;
-    let lock_path = socket_startup_lock_path(socket_path);
-    let file = match fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(&lock_path)
-    {
-        Ok(file) => file,
+    let entry = match super::owned_runtime::OwnedRuntimeEntry::create_socket(socket_path) {
+        Ok(entry) => entry,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            tracing::info!(
-                event = "ipc.socket_lock",
-                subsystem = "ipc",
-                outcome = "busy",
-                path = %socket_path.display(),
-                "single-use socket lock already exists"
-            );
             return Err(SocketBusy::error(socket_path));
         }
         Err(error) => return Err(error),
     };
-    if let Err(error) = flock_exclusive(&file, false) {
-        drop(file);
-        remove_single_use_file(&lock_path, "socket lock");
-        return Err(error);
-    }
-    // Written only once locked, so a sweep that reads a complete identity
-    // also finds the lock of a live owner held. Without a readable identity
-    // the sidecar stays unmarked, and the sweep never removes an unmarked one.
-    match super::process_identity::ProcessIdentity::current() {
-        Ok(owner) => {
-            if let Err(error) = (&file).write_all(owner.tag(0).as_bytes()) {
-                drop(file);
-                remove_single_use_file(&lock_path, "socket lock");
-                return Err(error);
-            }
-        }
-        Err(error) => {
-            tracing::debug!(%error, "could not record single-use socket owner identity; a leaked socket will be retained");
-        }
-    }
+    let file = entry.into_hold();
     tracing::info!(
         event = "ipc.socket_lock",
         subsystem = "ipc",
@@ -330,19 +311,6 @@ fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartu
     })
 }
 
-/// Removes a file of a single-use socket that this process owns. Absence is
-/// success; any other failure leaves a file in the runtime directory, which is
-/// worth a line naming it.
-fn remove_single_use_file(path: &Path, what: &str) {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "could not remove single-use {what}");
-        }
-    }
-}
-
 /// Removes the sockets and lock sidecars that [`bind_single_use_private_socket`]
 /// owners left in `dir` when they were killed before their teardown ran.
 ///
@@ -353,84 +321,7 @@ fn remove_single_use_file(path: &Path, what: &str) {
 /// because its owner cannot be established. Sidecars of shared socket paths
 /// are never written to, so they never qualify.
 pub fn sweep_abandoned_single_use_sockets(dir: &Path) {
-    let uid = super::effective_uid();
-    let Ok(dir_metadata) = fs::symlink_metadata(dir) else {
-        return;
-    };
-    if !dir_metadata.file_type().is_dir()
-        || dir_metadata.uid() != uid
-        || dir_metadata.permissions().mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
-    {
-        return;
-    }
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) => {
-            tracing::debug!(path = %dir.display(), error = %error, "could not scan single-use socket directory");
-            return;
-        }
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let name = entry.file_name();
-        let Some(socket_name) = name.to_str().and_then(|name| name.strip_suffix(".lock")) else {
-            continue;
-        };
-        if socket_name.is_empty() {
-            continue;
-        }
-        reclaim_abandoned_single_use_socket(&entry.path(), &dir.join(socket_name), uid);
-    }
-}
-
-fn reclaim_abandoned_single_use_socket(lock_path: &Path, socket_path: &Path, uid: u32) {
-    // O_NONBLOCK keeps a FIFO that happens to end in `.lock` from stalling
-    // the open; anything but a regular file is refused just below.
-    let Ok(mut file) = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(lock_path)
-    else {
-        return;
-    };
-    let Ok(metadata) = file.metadata() else {
-        return;
-    };
-    if !metadata.is_file()
-        || metadata.uid() != uid
-        || metadata.len() > super::limits::SINGLE_USE_SOCKET_OWNER_MAX_BYTES
-    {
-        return;
-    }
-    let mut marker = String::new();
-    if file.read_to_string(&mut marker).is_err() {
-        return;
-    }
-    let Some((owner, 0)) = super::process_identity::ProcessIdentity::parse_tag(&marker) else {
-        return;
-    };
-    // A held lock means a live owner, whatever `/proc` says. Holding it
-    // through the removals keeps a concurrent sweep off the same files.
-    if !owner.is_provably_gone() || flock_exclusive(&file, false).is_err() {
-        return;
-    }
-    // The name must still be the inode just inspected.
-    let Ok(current) = fs::symlink_metadata(lock_path) else {
-        return;
-    };
-    if current.dev() != metadata.dev() || current.ino() != metadata.ino() {
-        return;
-    }
-    match fs::symlink_metadata(socket_path) {
-        Ok(socket) if socket.file_type().is_socket() && socket.uid() == uid => {
-            remove_single_use_file(socket_path, "socket");
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        // Anything else at the socket path, or a failed stat, leaves both
-        // files alone.
-        Ok(_) | Err(_) => return,
-    }
-    remove_single_use_file(lock_path, "socket lock");
+    super::owned_runtime::OwnedRuntimeEntry::sweep(dir, super::owned_runtime::RuntimeKind::Socket);
 }
 
 /// The sidecar file [`acquire_socket_startup_lock`] locks for `socket_path`.
@@ -763,210 +654,18 @@ fn socket_parent(path: &Path) -> io::Result<&Path> {
 }
 
 fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<LocalListener, StagedBindError> {
-    use std::os::unix::fs::DirBuilderExt as _;
-
-    // Without a readable identity the directory is staged unmarked, and the
-    // sweep never removes an unmarked directory.
-    let owner = super::process_identity::ProcessIdentity::current()
-        .inspect_err(|error| {
-            tracing::debug!(%error, "could not record socket staging owner identity; a leaked staging directory will be retained");
-        })
-        .ok();
-    sweep_stale_socket_staging_dirs(parent);
-    let mut last_error = None;
-    for _ in 0..super::limits::RANDOM_NAME_ATTEMPTS {
-        // A compact random name keeps staging usable for socket paths near
-        // the socket path limit.
-        let staging_token =
-            super::random::unpredictable_token().map_err(StagedBindError::RandomSource)?;
-        let staging_name = format!(".s{staging_token:016x}");
-        let staging_dir = parent.join(staging_name);
-        // A name somebody else already created is never used: the directory
-        // must be ours and fresh for the 0700 guarantee to hold.
-        match fs::DirBuilder::new()
-            .mode(super::limits::PRIVATE_DIRECTORY_MODE)
-            .create(&staging_dir)
-        {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                last_error = Some(err);
-                continue;
+    use super::owned_runtime::{OwnedRuntimeEntry, RuntimeCreateError, RuntimeKind};
+    let entry =
+        OwnedRuntimeEntry::create_directory(parent, RuntimeKind::Staging).map_err(|error| {
+            match error {
+                RuntimeCreateError::RandomSource(error) => StagedBindError::RandomSource(error),
+                RuntimeCreateError::Io(error) => StagedBindError::Unavailable(error),
             }
-            Err(err) => return Err(StagedBindError::Unavailable(err)),
-        }
-        if let Some(owner) = owner
-            && let Err(error) = write_staging_owner_marker(&staging_dir, owner)
-        {
-            remove_staging_directory(&staging_dir, Some(owner));
-            return Err(StagedBindError::Unavailable(error));
-        }
-        let staged = staging_dir.join("s");
-        let result = bind_staged_and_link(&staged, path);
-        // The staged name is absent when binding it failed, so NotFound is the
-        // expected outcome there. Anything else leaks a private directory in
-        // the runtime directory, which an operator needs to see.
-        remove_staging_entry(&staged);
-        remove_staging_directory(&staging_dir, owner);
-        return result;
-    }
-    Err(StagedBindError::Unavailable(last_error.unwrap_or_else(
-        || {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "no free staging directory name",
-            )
-        },
-    )))
-}
-
-const STAGING_OWNER_MARKER: &str = ".owner";
-
-fn write_staging_owner_marker(
-    staging_dir: &Path,
-    owner: super::process_identity::ProcessIdentity,
-) -> io::Result<()> {
-    let mut marker = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(staging_dir.join(STAGING_OWNER_MARKER))?;
-    marker.write_all(owner.tag(0).as_bytes())?;
-    Ok(())
-}
-
-fn remove_staging_entry(path: &Path) -> bool {
-    match fs::remove_file(path) {
-        Ok(()) => true,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-        Err(error) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %error,
-                "failed to remove socket staging entry"
-            );
-            false
-        }
-    }
-}
-
-/// Removes a staging directory and its marker. When the directory itself
-/// cannot be removed, the marker is written back so a later sweep can still
-/// prove the directory abandoned.
-fn remove_staging_directory(
-    staging_dir: &Path,
-    owner: Option<super::process_identity::ProcessIdentity>,
-) {
-    let marker_may_be_missing = remove_staging_entry(&staging_dir.join(STAGING_OWNER_MARKER));
-    let error = match fs::remove_dir(staging_dir) {
-        Ok(()) => return,
-        // A concurrent sweep removed it first.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
-        Err(error) => error,
-    };
-    if marker_may_be_missing
-        && let Some(owner) = owner
-        && let Err(restore_error) = write_staging_owner_marker(staging_dir, owner)
-    {
-        tracing::warn!(
-            path = %staging_dir.display(),
-            error = %restore_error,
-            "failed to restore socket staging owner marker"
-        );
-    }
-    tracing::warn!(
-        path = %staging_dir.display(),
-        error = %error,
-        "failed to remove socket staging directory"
-    );
-}
-
-/// Remove only private staging directories whose marker records a process
-/// that `/proc` proves has exited. An unmarked directory (staged while the
-/// owner identity was unreadable, or whose marker is not yet written) is
-/// retained because its owner cannot be established.
-fn sweep_stale_socket_staging_dirs(parent: &Path) {
-    let uid = super::effective_uid();
-    let Ok(parent_metadata) = fs::symlink_metadata(parent) else {
-        return;
-    };
-    if !parent_metadata.file_type().is_dir()
-        || parent_metadata.uid() != uid
-        || parent_metadata.permissions().mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
-    {
-        return;
-    }
-    let entries = match fs::read_dir(parent) {
-        Ok(entries) => entries,
-        Err(error) => {
-            tracing::debug!(path = %parent.display(), error = %error, "could not scan socket staging parent");
-            return;
-        }
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let name = entry.file_name();
-        let Some(token) = name.to_str().and_then(|name| name.strip_prefix(".s")) else {
-            continue;
-        };
-        if token.len() != 16 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            continue;
-        }
-        let staging_dir = entry.path();
-        let Ok(directory_metadata) = fs::symlink_metadata(&staging_dir) else {
-            continue;
-        };
-        if !directory_metadata.file_type().is_dir()
-            || directory_metadata.uid() != uid
-            || directory_metadata.permissions().mode() & 0o7777
-                != super::limits::PRIVATE_DIRECTORY_MODE
-        {
-            continue;
-        }
-        let marker_path = staging_dir.join(STAGING_OWNER_MARKER);
-        let Ok(marker_metadata) = fs::symlink_metadata(&marker_path) else {
-            continue;
-        };
-        if !marker_metadata.file_type().is_file()
-            || marker_metadata.uid() != uid
-            || marker_metadata.permissions().mode() & 0o777 != 0o600
-        {
-            continue;
-        }
-        let Ok(marker) = fs::read_to_string(&marker_path) else {
-            continue;
-        };
-        let Some((owner, 0)) = super::process_identity::ProcessIdentity::parse_tag(&marker) else {
-            continue;
-        };
-        if !owner.is_provably_gone() || !staging_contents_are_owned(&staging_dir, uid) {
-            continue;
-        }
-        remove_staging_entry(&staging_dir.join("s"));
-        remove_staging_directory(&staging_dir, Some(owner));
-    }
-}
-
-fn staging_contents_are_owned(staging_dir: &Path, uid: u32) -> bool {
-    let Ok(entries) = fs::read_dir(staging_dir) else {
-        return false;
-    };
-    let mut marker_seen = false;
-    for entry in entries {
-        let Ok(entry) = entry else { return false };
-        let name = entry.file_name();
-        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
-            return false;
-        };
-        if metadata.uid() != uid {
-            return false;
-        }
-        match name.to_str() {
-            Some(STAGING_OWNER_MARKER) if metadata.file_type().is_file() => marker_seen = true,
-            Some("s") if metadata.file_type().is_socket() => {}
-            _ => return false,
-        }
-    }
-    marker_seen
+        })?;
+    let staged = entry.path().join("s");
+    let result = bind_staged_and_link(&staged, path);
+    entry.release();
+    result
 }
 
 fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<LocalListener, StagedBindError> {
@@ -1280,6 +979,47 @@ mod tests {
         assert!(!exists(&taken));
     }
 
+    #[test]
+    fn held_socket_reservation_binds_without_releasing_its_lock() {
+        let scratch = shepr_test_support::ScratchDir::new("socket-reservation-handoff");
+        let path = scratch.join("client.sock");
+        let reservation = acquire_socket_startup_lock(&path).expect("reserve socket");
+        assert!(!path.try_exists().expect("unpublished socket"));
+        let before = fs::symlink_metadata(socket_startup_lock_path(&path)).expect("lock inode");
+        let (listener, lock, identity) =
+            bind_private_socket_with_lock(reservation).expect("bind reserved socket");
+        let after =
+            fs::symlink_metadata(socket_startup_lock_path(&path)).expect("lock inode after bind");
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert_busy_at(
+            &acquire_socket_startup_lock(&path)
+                .err()
+                .expect("lock still held"),
+            &path,
+        );
+        drop(listener);
+        remove_socket_file_if_owned(&path, &identity).expect("cleanup socket");
+        drop(lock);
+        let _next = acquire_socket_startup_lock(&path).expect("lock released at teardown");
+    }
+
+    #[test]
+    fn reserved_socket_bind_refuses_a_listener_that_ignores_the_lock() {
+        let scratch = shepr_test_support::ScratchDir::new("socket-reservation-race");
+        let path = scratch.join("client.sock");
+        let reservation = acquire_socket_startup_lock(&path).expect("reserve socket");
+        let _racer = std::os::unix::net::UnixListener::bind(&path).expect("uncooperative listener");
+        let identity = socket_file_identity(&path).expect("racer identity");
+        let error = bind_private_socket_with_lock(reservation)
+            .err()
+            .expect("live listener refused");
+        assert_busy_at(&error, &path);
+        assert_eq!(
+            socket_file_identity(&path).expect("racer retained"),
+            identity
+        );
+    }
+
     /// The runtime-directory sweep reclaims the socket and lock of a single-use
     /// bind whose owner is provably gone, and nothing else: not a live owner's,
     /// not an unmarked sidecar, not a dead-marked one whose lock is still
@@ -1301,6 +1041,11 @@ mod tests {
             let socket = runtime.join(name);
             drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind"));
             fs::write(socket_startup_lock_path(&socket), marker).expect("test precondition");
+            fs::set_permissions(
+                socket_startup_lock_path(&socket),
+                fs::Permissions::from_mode(0o600),
+            )
+            .expect("private marker");
             socket
         };
         let dead = stale_socket("shepr-s-a.0000000000000001.sock", dead_tag.as_bytes());
@@ -1310,6 +1055,25 @@ mod tests {
             dead_tag.as_bytes(),
         )
         .expect("test precondition");
+        fs::set_permissions(
+            socket_startup_lock_path(&dead_no_socket),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("private marker");
+        let live_without_lock = stale_socket("live-unlocked.sock", live_tag.as_bytes());
+        let malformed = stale_socket("malformed.sock", b"invalid");
+        let oversized = stale_socket(
+            "oversized.sock",
+            &vec![
+                b'x';
+                usize::try_from(super::super::limits::RUNTIME_OWNER_MAX_BYTES)
+                    .expect("limit fits usize")
+                    + 1
+            ],
+        );
+        let unexpected = stale_socket("unexpected.sock", dead_tag.as_bytes());
+        fs::remove_file(&unexpected).expect("remove fixture socket");
+        fs::write(&unexpected, b"regular file").expect("unexpected socket content");
         let unmarked = stale_socket("shepr-s-c.0000000000000003.sock", b"");
         let held = stale_socket("shepr-s-d.0000000000000004.sock", dead_tag.as_bytes());
         let _held_lock =
@@ -1338,7 +1102,15 @@ mod tests {
                 path.display()
             );
         }
-        for path in [&unmarked, &held, &live] {
+        for path in [
+            &unmarked,
+            &held,
+            &live,
+            &live_without_lock,
+            &malformed,
+            &oversized,
+            &unexpected,
+        ] {
             assert!(exists(path), "{} retained", path.display());
             assert!(
                 exists(&socket_startup_lock_path(path)),

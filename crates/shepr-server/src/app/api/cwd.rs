@@ -49,12 +49,9 @@ mod tests {
     #[tokio::test]
     async fn workspace_create_refuses_a_relative_cwd_before_spawning() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
-
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         );
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;

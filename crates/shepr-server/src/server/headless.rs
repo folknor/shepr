@@ -39,7 +39,7 @@ use crate::server::pane_input::apply_client_pane_input_events;
 use crate::server::socket_paths::client_socket_path;
 use shepr_mux::events::AppEvent;
 use shepr_platform::ipc::{
-    LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket,
+    LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket_with_lock,
     remove_socket_file_if_owned,
 };
 use shepr_protocol::{FrameData, ServerMessage};
@@ -196,22 +196,27 @@ impl HeadlessServer {
     /// Creates and starts the headless server.
     ///
     /// This:
-    /// 1. Locks and prepares the client socket path (cleaning up stale sockets)
+    /// 1. Prepares the client socket path (cleaning up stale sockets) under
+    ///    the startup lock bootstrap reserved before restore, so no other
+    ///    binder can take the path between that reservation and this bind
     /// 2. Binds the private client socket listener
     /// 3. Returns the server ready to run
     ///
-    /// A client socket another server holds comes back as the
+    /// The listener path is published only here, so launchers see the API
+    /// socket first and wait until the server can accept clients. A live
+    /// listener found while preparing the path comes back as the
     /// [`shepr_platform::ipc::SocketBusy`] refusal naming it; [`run_server`]
     /// turns that into [`RunServerError::AlreadyRunning`].
-    pub fn new(
+    pub(super) fn new(
         app: app::App,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
         api_server: Option<shepr_api::ServerHandle>,
         stop_requested: Arc<shepr_api::ServerStopSignal>,
+        client_socket_reservation: SocketStartupLock,
     ) -> io::Result<Self> {
-        let client_path = client_socket_path(&app.paths);
+        let client_path = client_socket_reservation.socket_path().to_path_buf();
         let (listener, client_socket_startup_lock, client_socket_identity) =
-            bind_private_socket(&client_path)?;
+            bind_private_socket_with_lock(client_socket_reservation)?;
         info!(path = %client_path.display(), "client protocol socket listening");
 
         // Accept all queued connections when the listener becomes readable.

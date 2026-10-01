@@ -1,12 +1,106 @@
 use std::io;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::{Arc, OnceLock};
 
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
+use crate::limits::{
+    CLIENT_HANDSHAKE_REFUSAL_QUEUE_CAPACITY, CLIENT_WRITE_STALL_TIMEOUT,
+    MAX_ACTIVE_CLIENT_CONNECTIONS,
+};
 use crate::server::client_transport::{self, ServerEvent};
 use crate::server::clients::ClientRegistry;
-use shepr_platform::ipc::LocalListener;
+use shepr_platform::ipc::{LocalListener, LocalStream};
+
+static ACTIVE_CLIENT_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+
+struct ConnectionAdmission<'a> {
+    active: &'a AtomicUsize,
+}
+
+impl<'a> ConnectionAdmission<'a> {
+    fn try_acquire(active: &'a AtomicUsize) -> Option<Self> {
+        active
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_ACTIVE_CLIENT_CONNECTIONS).then_some(count + 1)
+            })
+            .ok()?;
+        Some(Self { active })
+    }
+}
+
+impl Drop for ConnectionAdmission<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn busy_client_refuser() -> Option<&'static SyncSender<LocalStream>> {
+    static REFUSER: OnceLock<Option<SyncSender<LocalStream>>> = OnceLock::new();
+    REFUSER.get_or_init(spawn_busy_client_refuser).as_ref()
+}
+
+fn spawn_busy_client_refuser() -> Option<SyncSender<LocalStream>> {
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<LocalStream>(CLIENT_HANDSHAKE_REFUSAL_QUEUE_CAPACITY);
+    let spawned = std::thread::Builder::new()
+        .name("shepr-client-refuser".into())
+        .spawn(move || {
+            for stream in receiver {
+                reject_busy_client(&stream);
+            }
+        });
+    match spawned {
+        Ok(_) => Some(sender),
+        Err(err) => {
+            warn!(error = %err, "client connection refuser thread unavailable; excess connections will close");
+            None
+        }
+    }
+}
+
+fn hand_off_busy_connection(stream: LocalStream) {
+    let Some(refuser) = busy_client_refuser() else {
+        debug!("client connection limit refusal worker unavailable; closing excess connection");
+        return;
+    };
+    match refuser.try_send(stream) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_stream)) => {
+            debug!("client connection limit refusal queue full; closing excess connection");
+        }
+        Err(TrySendError::Disconnected(_stream)) => {
+            warn!("client connection limit refusal worker stopped; closing excess connection");
+        }
+    }
+}
+
+fn reject_busy_client(stream: &LocalStream) {
+    let limit = u32::try_from(MAX_ACTIVE_CLIENT_CONNECTIONS).unwrap_or(u32::MAX);
+    let welcome = shepr_protocol::ServerMessage::EndpointWelcome(
+        shepr_protocol::endpoint::EndpointServerWelcome::refused(
+            shepr_protocol::HandshakeRefusal::ConnectionLimit(limit),
+        ),
+    );
+    let framed = match shepr_protocol::encode_message(&welcome) {
+        Ok(framed) => framed,
+        Err(err) => {
+            error!(error = %err, "failed to encode client connection limit refusal");
+            return;
+        }
+    };
+    let preamble = shepr_protocol::preamble::local_preamble();
+    let mut response = Vec::with_capacity(preamble.len() + framed.len());
+    response.extend_from_slice(&preamble);
+    response.extend_from_slice(&framed);
+    if let Err(err) =
+        shepr_platform::write_client_stream(stream, &response, CLIENT_WRITE_STALL_TIMEOUT)
+    {
+        debug!(error = %err, "failed to send client connection limit refusal");
+    }
+}
 
 /// Whether an accept failure belongs to the one pending connection it tried to
 /// take (accept(2): the peer went away, or an interrupted call), leaving the
@@ -29,7 +123,7 @@ pub(crate) fn accept_resources_exhausted(err: &io::Error) -> bool {
     )
 }
 
-/// Accepts one pending thin-client connection and starts its handshake reader.
+/// Accepts one pending thin-client connection and starts its bounded transport worker.
 ///
 /// `Ok` means the caller may accept again: a connection was taken (and maybe
 /// refused), or accept failed for that one connection only. `WouldBlock` means
@@ -74,26 +168,35 @@ pub(crate) fn accept_client_connection(
         }
     }
 
+    let Some(admission) = ConnectionAdmission::try_acquire(&ACTIVE_CLIENT_CONNECTIONS) else {
+        hand_off_busy_connection(stream);
+        return Ok(());
+    };
+
     let client_id = clients.allocate_client_id();
 
     let should_quit = Arc::clone(should_quit);
     let server_event_tx = server_event_tx.clone();
     // The listener is nonblocking for accept only, leaving this stream
     // blocking for the handshake thread's deadline reader.
-    std::thread::spawn(move || {
-        if let Err(err) = client_transport::handle_client_handshake(
-            stream,
-            client_id,
-            &server_event_tx,
-            &should_quit,
-        ) {
-            debug!(
-                ?client_id,
-                error = %err,
-                "client handshake failed"
-            );
-        }
-    });
+    let spawned = std::thread::Builder::new()
+        .name("shepr-client-transport".into())
+        .spawn(move || {
+            // The handshake handler becomes the connection reader, so retain
+            // the admission slot until the client disconnects.
+            let _admission = admission;
+            if let Err(err) = client_transport::handle_client_handshake(
+                stream,
+                client_id,
+                &server_event_tx,
+                &should_quit,
+            ) {
+                debug!(?client_id, error = %err, "client transport failed");
+            }
+        });
+    if let Err(err) = spawned {
+        warn!(?client_id, error = %err, "failed to start client transport worker");
+    }
 
     Ok(())
 }
@@ -101,6 +204,30 @@ pub(crate) fn accept_client_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_connection_admission_caps_handshake_workers_and_releases_slots() {
+        let active = AtomicUsize::new(0);
+        let mut admissions = (0..MAX_ACTIVE_CLIENT_CONNECTIONS)
+            .map(|_| ConnectionAdmission::try_acquire(&active).expect("available slot"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            active.load(Ordering::Acquire),
+            MAX_ACTIVE_CLIENT_CONNECTIONS
+        );
+        assert!(ConnectionAdmission::try_acquire(&active).is_none());
+
+        drop(admissions.pop());
+        let replacement = ConnectionAdmission::try_acquire(&active).expect("released slot");
+        assert_eq!(
+            active.load(Ordering::Acquire),
+            MAX_ACTIVE_CLIENT_CONNECTIONS
+        );
+        drop(replacement);
+        drop(admissions);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn accept_failures_are_classified_so_descriptor_pressure_never_stops_the_server() {

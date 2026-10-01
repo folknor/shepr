@@ -59,6 +59,56 @@ pub(super) fn spawn(
     });
 }
 
+/// Reap a child whose PTY actor could not be started. There is no pane runtime
+/// for the normal watcher to own, but the failed launch still needs its child
+/// collected without waiting on the synchronous startup caller.
+pub(super) fn reap_after_actor_startup_failure(
+    pane_id: PaneId,
+    child: std::process::Child,
+    child_liveness: Arc<ChildLiveness>,
+) {
+    reap_on_detached_thread(child, move |result| {
+        match result {
+            Ok(status) => crate::logging::pane_exited(pane_id.raw(), &status),
+            Err(err) => crate::logging::pane_exit_failed(pane_id.raw(), &err.to_string()),
+        }
+        child_liveness.mark_wait_completed();
+    });
+}
+
+type ReaperCompletion = Box<dyn FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static>;
+
+/// Wait on a child away from the task or synchronous caller that gives it up.
+/// If the system cannot create the reaper thread, finish the wait inline so
+/// the child is still collected.
+fn reap_on_detached_thread(
+    child: std::process::Child,
+    on_wait: impl FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static,
+) {
+    let pid = child.id();
+    let on_wait: ReaperCompletion = Box::new(on_wait);
+    let work = Arc::new(std::sync::Mutex::new(Some((child, on_wait))));
+    let thread_work = Arc::clone(&work);
+    let spawned = std::thread::Builder::new()
+        .name("shepr-pane-reaper".into())
+        .spawn(move || {
+            let Some((mut child, on_wait)) = shepr_vt::lock_auxiliary(&thread_work).take() else {
+                return;
+            };
+            on_wait(child.wait());
+        });
+    if let Err(err) = spawned {
+        tracing::warn!(
+            pid,
+            error = %err,
+            "could not start a reaper for a pane child; waiting inline"
+        );
+        if let Some((mut child, on_wait)) = shepr_vt::lock_auxiliary(&work).take() {
+            on_wait(child.wait());
+        }
+    }
+}
+
 /// Owns the pane child while its watcher awaits the pidfd. If the watcher is
 /// dropped before it reaps (the runtime shutting down while the child still
 /// runs), the child is handed to a detached thread that waits for it, so it
@@ -76,24 +126,29 @@ impl Drop for UnreapedChild {
         let Some(mut child) = self.0.take() else {
             return;
         };
-        if let Ok(None) = child.try_wait() {
-            let spawned = std::thread::Builder::new()
-                .name("shepr-pane-reaper".into())
-                .spawn(move || {
-                    // The pane is gone, so its exit status has no reader; only
-                    // a failed reap (a possible zombie) is worth a line.
-                    if let Err(err) = child.wait() {
-                        tracing::warn!(
-                            pid = child.id(),
-                            error = %err,
-                            "could not reap an abandoned pane child"
-                        );
-                    }
-                });
-            if let Err(err) = spawned {
-                tracing::warn!(error = %err, "could not start a reaper for an abandoned pane child");
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    pid = child.id(),
+                    error = %err,
+                    "could not check an abandoned pane child before reaping"
+                );
             }
         }
+        // The pane is gone, so its exit status has no reader; only a failed
+        // reap (a possible zombie) is worth a line.
+        let pid = child.id();
+        reap_on_detached_thread(child, move |result| {
+            if let Err(err) = result {
+                tracing::warn!(
+                    pid,
+                    error = %err,
+                    "could not reap an abandoned pane child"
+                );
+            }
+        });
     }
 }
 

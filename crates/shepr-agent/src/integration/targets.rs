@@ -27,10 +27,9 @@ use super::{
     ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, CLAUDE_HOOK_INSTALL_NAME,
     CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_INSTALL_NAME, CURSOR_HOOK_INSTALL_NAME,
     DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
-    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, KIMI_MIN_VERSION,
-    MASTRACODE_HOOK_INSTALL_NAME, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME,
-    OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
-    PI_EXTENSION_INSTALL_NAME,
+    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME, MASTRACODE_HOOK_INSTALL_NAME,
+    OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_ASSET,
+    OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC, PI_EXTENSION_INSTALL_NAME,
 };
 
 // Install order for targets that register the hook in an agent config: read,
@@ -243,7 +242,6 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
     outcome = outcome.with_artifact(ArtifactRole::Config, config_path);
-    outcome = outcome.with_notice(format!("requires kimi code {KIMI_MIN_VERSION} or newer"));
     Ok(outcome)
 }
 

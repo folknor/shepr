@@ -192,7 +192,7 @@ fn progress_survives_link_and_authentication_wait_timeouts_but_not_ssh_failures(
     let error = progress
         .advance(&mut timed_out)
         .expect_err("probe times out");
-    assert!(is_ssh_link_failure(&error));
+    assert!(crate::SshFailureDiagnostic::from_error(&error).failed_before_remote_result());
     assert!(progress.has_progress());
     assert!(progress.advance(&mut timed_out).is_ok());
     assert_eq!(
@@ -233,7 +233,7 @@ fn progress_survives_link_and_authentication_wait_timeouts_but_not_ssh_failures(
     failed.fail_other_at = vec![3];
     let mut progress = DiscoveryProgress::default();
     let error = progress.advance(&mut failed).expect_err("probe fails");
-    assert!(!is_ssh_link_failure(&error));
+    assert!(!crate::SshFailureDiagnostic::from_error(&error).failed_before_remote_result());
     assert!(!progress.has_progress());
     assert!(progress.advance(&mut failed).is_ok());
     assert_eq!(
@@ -286,24 +286,24 @@ fn ssh_output(code: i32, stderr: &str) -> Output {
 }
 
 #[test]
-fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
+fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
     let lost = command_failed(
         "remote SSH connection failed",
         &ssh_output(255, "Connection reset by peer"),
     );
-    assert!(is_ssh_link_failure(&lost));
+    assert!(crate::SshFailureDiagnostic::from_error(&lost).failed_before_remote_result());
     assert_eq!(
         lost.to_string(),
         "remote SSH connection failed: Connection reset by peer"
     );
     let remote = command_failed("remote binary discovery failed", &ssh_output(1, "boom"));
-    assert!(!is_ssh_link_failure(&remote));
+    assert!(!crate::SshFailureDiagnostic::from_error(&remote).failed_before_remote_result());
     assert_eq!(remote.to_string(), "remote binary discovery failed: boom");
     // A `command -v` lookup whose ssh failed is not "no shepr on PATH".
     assert!(path_lookup_result(&ssh_output(1, "")).is_ok_and(|path| path.is_none()));
     let error = path_lookup_result(&ssh_output(255, "Connection timed out"))
         .expect_err("ssh failure is not a lookup result");
-    assert!(is_ssh_link_failure(&error));
+    assert!(crate::SshFailureDiagnostic::from_error(&error).failed_before_remote_result());
 
     // And discovery keeps its progress across it.
     struct LinkDrop(FakeHost);

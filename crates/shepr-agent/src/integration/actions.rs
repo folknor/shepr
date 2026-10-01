@@ -1,12 +1,10 @@
 use std::io;
 
 use crate::agent::IntegrationTarget;
-use crate::limits::VERSION_PROBE_TIMEOUT;
 
 use super::env::AgentIntegrationPaths;
 use super::registry::{action_label, agent_present, install_operation, integration_status};
 use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
-use super::version::{agent_version_requirement, enforce_agent_version};
 
 /// Installs or updates shepr's hooks for every supported agent present on
 /// this host when a release server launches. Dev servers skip installation
@@ -19,8 +17,7 @@ use super::version::{agent_version_requirement, enforce_agent_version};
 /// through `tracing`: a target that cannot be checked or installed is logged
 /// and the others still run, and nothing here fails the caller.
 ///
-/// This does file IO and may run an agent's `--version` probe (bounded by a
-/// timeout), so a server calls it off its startup path.
+/// This does file IO, so a server calls it off its startup path.
 pub fn install_present_integrations(paths: &AgentIntegrationPaths, build_profile: &str) {
     // Use the caller's compiled profile, never the inherited pane environment:
     // a dev server can be launched from a release pane and vice versa.
@@ -37,9 +34,6 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths, build_profile
             Ok(Some(output)) => {
                 for message in output.messages {
                     tracing::info!(integration = label, "{message}");
-                }
-                for warning in output.warnings {
-                    tracing::warn!(integration = label, "{warning}");
                 }
             }
             Ok(None) => {}
@@ -100,10 +94,6 @@ fn install_target_inner(
     paths: &AgentIntegrationPaths,
     target: IntegrationTarget,
 ) -> io::Result<InstallOutput> {
-    let version_warning = match agent_version_requirement(target) {
-        Some(requirement) => enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)?,
-        None => None,
-    };
     // Agent processes do not honor Shepr's config lock. If an agent changes a
     // config after the install read it, reload the config and retry once.
     let outcome = match install_operation(paths, target) {
@@ -114,7 +104,6 @@ fn install_target_inner(
     };
     Ok(InstallOutput {
         messages: install_messages(action_label(target), outcome),
-        warnings: version_warning.into_iter().collect(),
     })
 }
 

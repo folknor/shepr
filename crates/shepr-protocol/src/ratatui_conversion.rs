@@ -2,7 +2,10 @@
 //! semantic wire frames. Pane cells do not use it: they are written straight
 //! into `FrameData`.
 
-use crate::{CellData, CursorState, FrameData, SurfaceRect, WireColor, WireStyle, WireStyleFlags};
+use crate::{
+    CellData, CursorState, FrameData, GridCellWidth, SurfaceRect, WireColor, WireStyle,
+    WireStyleFlags,
+};
 use std::collections::HashMap;
 
 impl WireColor {
@@ -96,6 +99,7 @@ impl CellData {
     pub fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self {
         Self {
             symbol: cell.symbol().to_owned(),
+            grid_width: GridCellWidth::Grapheme,
             fg: WireColor::from_ratatui(cell.fg),
             bg: WireColor::from_ratatui(cell.bg),
             style: WireStyle::from_ratatui_modifier(cell.modifier),

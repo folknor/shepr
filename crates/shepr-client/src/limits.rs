@@ -168,22 +168,25 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
 ///
 /// The budget is the same for every attempt, including one that has to run full
-/// discovery of the remote executable. Most attempts do not: a reconnect queries the
-/// remote server's status and launches the bridge from the remembered executable.
-/// The managed ssh config makes every command after the first reuse one shared
-/// connection (ControlMaster), so only one cold connect is paid.
+/// discovery of the remote executable. With a valid disk hint, the first connection
+/// uses two SSH round trips: one to verify the installed client and sibling server,
+/// then one to start the bridge and carry the handshake. The handshake checks the
+/// running server's identity, so the connector does not issue a separate server-status
+/// query. Once the executable is verified, an ordinary reconnect uses only the bridge
+/// round trip and handshake.
 /// The case that can overrun is a cache miss or a stale remembered path on a slow link
-/// without connection sharing, where each of discovery's several round trips, a status
-/// probe per candidate, and the bridge each need their own cold connect.
+/// without connection sharing, where each of discovery's several round trips and the
+/// bridge each need their own cold connect.
 /// That case is handled by resuming, not by a larger budget: the machine connector
-/// keeps what discovery completed when an attempt ends on a timeout or other link
-/// failure (any other error clears it) and the next attempt continues from there, and it
-/// keeps a freshly discovered executable when only the bridge ran out of time. No
-/// discovery round trip may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget
-/// exceeds it by `shepr_core::limits::SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
+/// keeps completed discovery steps when an attempt ends on a transient network failure
+/// or a full-round-trip timeout that may be waiting for authentication. SSH process
+/// failures and remote command errors clear that progress. It also keeps a freshly
+/// discovered executable when only the bridge ran out of time. No discovery round trip
+/// may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget exceeds it by
+/// `shepr_core::limits::SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
 /// completes at least one, and discovery finishes after a bounded number of attempts;
-/// after that the server status query, the bridge and the handshake need to fit one
-/// attempt, as on every ordinary reconnect. A larger discovery budget would stretch the retry bound exactly where
+/// after that the bridge and the handshake need to fit one attempt, as on every
+/// ordinary reconnect. A larger discovery budget would stretch the retry bound exactly where
 /// the link is slowest, and would still fail on an even slower link.
 pub(super) const ATTEMPT_BUDGET: Duration = shepr_core::limits::SSH_CONNECTION_ATTEMPT_BUDGET;
 

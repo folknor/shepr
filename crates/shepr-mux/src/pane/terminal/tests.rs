@@ -1819,6 +1819,34 @@ fn multi_codepoint_emoji_render_without_losing_text() {
 }
 
 #[test]
+fn pane_frame_carries_narrow_vs16_grid_width_followed_by_a_space() {
+    let mut terminal = shepr_vt::Terminal::new(3, 1, 0);
+    terminal.write("\u{26a0}\u{fe0f} Z".as_bytes());
+    let pane = PaneTerminal::new(terminal);
+
+    let frame = render_frame(&pane, 3, 1);
+
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "\u{26a0}\u{fe0f}");
+    assert_eq!(frame_cell(&frame, 0, 0).grid_width, GridCellWidth::One);
+    assert_eq!(frame_cell(&frame, 1, 0).symbol, " ");
+    assert_eq!(frame_cell(&frame, 1, 0).grid_width, GridCellWidth::One);
+    assert_eq!(frame_cell(&frame, 2, 0).symbol, "Z");
+    assert_eq!(frame_cell(&frame, 2, 0).grid_width, GridCellWidth::One);
+}
+
+#[test]
+fn pane_frame_carries_narrow_vs16_grid_width_at_the_row_edge() {
+    let mut terminal = shepr_vt::Terminal::new(1, 1, 0);
+    terminal.write("\u{26a0}\u{fe0f}".as_bytes());
+    let pane = PaneTerminal::new(terminal);
+
+    let frame = render_frame(&pane, 1, 1);
+
+    assert_eq!(frame_cell(&frame, 0, 0).symbol, "\u{26a0}\u{fe0f}");
+    assert_eq!(frame_cell(&frame, 0, 0).grid_width, GridCellWidth::One);
+}
+
+#[test]
 fn halfwidth_katakana_voiced_marks_render() {
     let mut terminal = shepr_vt::Terminal::new(40, 1, 0);
     terminal.write("ｱｲｳｴｵ ｶﾞｷﾞｸﾞｹﾞｺﾞ ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ".as_bytes());

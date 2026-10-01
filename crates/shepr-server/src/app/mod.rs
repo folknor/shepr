@@ -447,12 +447,7 @@ mod tests {
 
     impl App {
         /// Test constructor: the app's files live in a fresh scratch directory.
-        pub(crate) fn new(
-            config: &ServerConfig,
-            policy: AppPolicy,
-            // Ignored: the app holds no API channel.
-            _api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
-        ) -> Self {
+        pub(crate) fn new(config: &ServerConfig, policy: AppPolicy) -> Self {
             use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
             let scratch = crate::test_support::ScratchDir::new("app");
             let paths = shepr_config::AppPaths::test_at(&scratch);
@@ -515,12 +510,7 @@ mod tests {
     }
 
     fn test_app() -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &ServerConfig::default(),
-            crate::app::AppPolicy::Test,
-            api_rx,
-        );
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
         app.state.settings.default_shell = exiting_test_command().into();
         app
     }
@@ -668,9 +658,8 @@ mod tests {
     fn theme_uses_configured_name() {
         let mut config = ServerConfig::default();
         config.theme.name = Some("tokyo-night".to_string());
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let app = App::new(&config, crate::app::AppPolicy::Test, api_rx);
+        let app = App::new(&config, crate::app::AppPolicy::Test);
 
         assert_eq!(app.state.settings.palette, state::Palette::tokyo_night());
     }

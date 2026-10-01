@@ -5,7 +5,6 @@ use super::env::*;
 use super::registry::*;
 use super::targets::*;
 use super::types::*;
-use super::version::*;
 use super::*;
 
 use std::fs;
@@ -14,7 +13,6 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::agent::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
-use crate::limits::VERSION_PROBE_TIMEOUT;
 use shepr_core::env::EnvVar;
 use shepr_test_support::IsolatedEnv;
 
@@ -28,85 +26,6 @@ fn install_path(outcome: &InstallOutcome, role: ArtifactRole) -> PathBuf {
         .expect("expected install artifact")
         .path
         .clone()
-}
-
-#[test]
-fn extract_version_triple_parses_common_outputs() {
-    assert_eq!(extract_version_triple("0.14.0"), Some((0, 14, 0)));
-    assert_eq!(extract_version_triple("v1.2.3"), Some((1, 2, 3)));
-    assert_eq!(
-        extract_version_triple("kimi-code 0.14.0 (linux/x64)"),
-        Some((0, 14, 0))
-    );
-    assert_eq!(extract_version_triple("0.14"), Some((0, 14, 0)));
-    assert_eq!(extract_version_triple("0.14.1-beta.2"), Some((0, 14, 1)));
-    assert_eq!(extract_version_triple("no version here"), None);
-    assert_eq!(extract_version_triple(""), None);
-}
-
-#[test]
-fn extract_version_triple_orders_versions() {
-    let old = extract_version_triple("0.12.1").expect("test precondition");
-    let min = extract_version_triple(KIMI_MIN_VERSION).expect("test precondition");
-    let new = extract_version_triple("0.15.0").expect("test precondition");
-    assert!(old < min);
-    assert!(min <= min);
-    assert!(min < new);
-}
-
-#[test]
-fn agent_version_requirement_only_set_for_kimi() {
-    let requirement = agent_version_requirement(crate::agent::IntegrationTarget::Kimi)
-        .expect("kimi must have a version requirement");
-    assert_eq!(requirement.binary, "kimi");
-    assert_eq!(requirement.min_version, KIMI_MIN_VERSION);
-    assert!(agent_version_requirement(crate::agent::IntegrationTarget::Claude).is_none());
-    assert!(agent_version_requirement(crate::agent::IntegrationTarget::Codex).is_none());
-}
-
-#[test]
-fn enforce_agent_version_warns_when_binary_missing() {
-    let requirement = AgentVersionRequirement {
-        label: "kimi code",
-        binary: "shepr-test-binary-that-does-not-exist",
-        args: &["--version"],
-        min_version: "0.14.0",
-    };
-    let warning = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
-        .expect("missing binary must not fail the install")
-        .expect("missing binary must produce a warning");
-    let warning_text = warning.to_string();
-    assert!(warning_text.contains("could not run"));
-    assert!(warning_text.contains("0.14.0"));
-}
-
-#[test]
-fn enforce_agent_version_rejects_old_version() {
-    let requirement = AgentVersionRequirement {
-        label: "kimi code",
-        binary: "echo",
-        args: &["0.12.1"],
-        min_version: "0.14.0",
-    };
-    let err = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
-        .expect_err("old version must fail the install");
-    let message = err.to_string();
-    assert!(message.contains("0.12.1"));
-    assert!(message.contains("0.14.0"));
-    assert!(message.contains("upgrade"));
-}
-
-#[test]
-fn enforce_agent_version_accepts_current_version() {
-    let requirement = AgentVersionRequirement {
-        label: "kimi code",
-        binary: "echo",
-        args: &["0.14.0"],
-        min_version: "0.14.0",
-    };
-    let result = enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)
-        .expect("matching version must not fail the install");
-    assert!(result.is_none(), "matching version must not warn");
 }
 
 fn kimi_hook_command(hook_path: &Path, action: &str) -> String {
@@ -3026,7 +2945,6 @@ fn install_messages_name_every_artifact() {
         );
         let install_output = install_target(&paths, target).expect("install succeeds");
         assert_eq!(install_output.messages, installed, "{target:?}");
-        assert!(install_output.warnings.is_empty(), "{target:?}");
         assert_eq!(
             status_of(target),
             IntegrationStatusKind::Current,
@@ -3035,26 +2953,10 @@ fn install_messages_name_every_artifact() {
     }
 }
 
-/// The notices and the wordings that only some targets print.
+/// The wordings that only some targets print.
 #[test]
 fn install_messages_keep_target_specific_lines() {
     let path = Path::new("/shepr-test/file");
-    let outcome = InstallOutcome::default()
-        .with_artifact(ArtifactRole::Config, path.to_path_buf())
-        .with_notice(format!("requires kimi code {KIMI_MIN_VERSION} or newer"));
-    let messages: Vec<String> = outcome
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.role.install_message("kimi", &artifact.path))
-        .chain(outcome.notices.iter().cloned())
-        .collect();
-    assert_eq!(
-        messages,
-        vec![
-            "ensured kimi config at /shepr-test/file".to_string(),
-            format!("requires kimi code {KIMI_MIN_VERSION} or newer"),
-        ]
-    );
     assert_eq!(
         ArtifactRole::UpdatedHooks.install_message("cursor", path),
         "updated cursor hooks at /shepr-test/file"

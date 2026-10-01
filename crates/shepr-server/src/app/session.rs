@@ -917,11 +917,9 @@ mod tests {
     use super::*;
 
     fn test_app() -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         App::new(
             &shepr_config::ServerConfig::default(),
             super::super::AppPolicy::Test,
-            api_rx,
         )
     }
 

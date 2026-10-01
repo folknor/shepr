@@ -581,6 +581,12 @@ pub(crate) fn handshake_error(
         | ClientError::ConnectionLost(error)
         | ClientError::HostTerminal(error)
         | ClientError::Protocol(FramingError::Io(error)) => error,
+        // A full server frees a slot when another client disconnects, so this
+        // refusal is retried like a server shutting down while connecting,
+        // never parked as an incompatibility.
+        ClientError::HandshakeRejected {
+            error: error @ shepr_protocol::HandshakeRefusal::ConnectionLimit(_),
+        } => std::io::Error::new(std::io::ErrorKind::ConnectionAborted, error),
         ClientError::HandshakeRejected { error, .. } => {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
         }
@@ -938,6 +944,22 @@ mod tests {
         );
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
         assert!(shepr_remote::SshFailureDiagnostic::from_error(&rejected).needs_attention());
+    }
+
+    #[test]
+    fn a_full_server_refusal_is_retried_and_names_the_limit() {
+        let full = handshake_error(
+            crate::ClientError::HandshakeRejected {
+                error: shepr_protocol::HandshakeRefusal::ConnectionLimit(64),
+            },
+            None,
+        );
+        assert_eq!(full.kind(), std::io::ErrorKind::ConnectionAborted);
+        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&full).needs_attention());
+        assert!(
+            full.to_string().contains("limit of 64 client connections"),
+            "{full}"
+        );
     }
 
     #[test]

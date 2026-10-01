@@ -25,10 +25,10 @@ pub(super) const RANDOM_NAME_ATTEMPTS: u32 = 16;
 /// error line.
 pub(super) const BOOT_LOG_TAIL_BYTES: u64 = 4096;
 
-/// Largest single-use socket lock sidecar the abandoned-socket sweep reads.
+/// Largest owner marker the runtime artifact sweep reads.
 /// An owner identity tag is well under this, so anything larger is not a
 /// marker and is left alone unread.
-pub(super) const SINGLE_USE_SOCKET_OWNER_MAX_BYTES: u64 = 128;
+pub(super) const RUNTIME_OWNER_MAX_BYTES: u64 = 128;
 
 /// Polling interval while waiting for clipboard helper children.
 /// The interval keeps exit detection responsive without a busy loop.
@@ -84,3 +84,12 @@ pub(super) const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// Number of rotated log generations kept beside the current log.
 /// A prior generation preserves recent context without unbounded disk growth.
 pub(super) const DEFAULT_RETAINED_LOG_FILES: usize = 1;
+
+/// Private marker file mode.
+pub(super) const RUNTIME_MARKER_MODE: u32 = 0o600;
+
+/// Permission bits including special bits.
+pub(super) const PERMISSION_BITS: u32 = 0o7777;
+
+/// Hex digits in a random runtime entry token.
+pub(super) const RUNTIME_TOKEN_HEX_BYTES: usize = 16;

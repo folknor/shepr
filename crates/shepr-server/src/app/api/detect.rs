@@ -142,11 +142,9 @@ mod tests {
     use shepr_api::schema::{AppMethod, AppRequest, PaneTarget};
 
     fn app_with_pane(name: &str) -> (App, shepr_core::layout::PaneId) {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
-            api_rx,
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(name)];
         app.state.ensure_test_terminals();

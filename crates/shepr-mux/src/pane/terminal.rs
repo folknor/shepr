@@ -18,7 +18,7 @@ use tracing::{debug, error, warn};
 use unicode_width::UnicodeWidthStr;
 
 use shepr_core::layout::PaneId;
-use shepr_protocol::{CellData, FrameData, WireColor, WireStyle, WireStyleFlags};
+use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyle, WireStyleFlags};
 use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
 use super::cursor::decscusr_cursor_shape;

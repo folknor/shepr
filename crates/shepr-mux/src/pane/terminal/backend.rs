@@ -962,18 +962,18 @@ impl PaneTerminal {
                     None
                 };
                 let cell = &mut frame.cells[row_start + x];
-                paint.write_cell(cell, symbol, hyperlink);
+                paint.write_cell(cell, symbol, terminal_grid_width(basic.wide), hyperlink);
                 x += 1;
             }
             for cell in &mut frame.cells[row_start + x..row_start + usize::from(area.width)] {
-                blank.write_cell(cell, " ", None);
+                blank.write_cell(cell, " ", GridCellWidth::One, None);
             }
             rows_drawn += 1;
         }
         for y in rows_drawn..area.height {
             let row_start = usize::from(area.y + y) * frame_width + usize::from(area.x);
             for cell in &mut frame.cells[row_start..row_start + usize::from(area.width)] {
-                blank.write_cell(cell, " ", None);
+                blank.write_cell(cell, " ", GridCellWidth::One, None);
             }
         }
         // A full render draws every row whatever its dirty flag says, so it

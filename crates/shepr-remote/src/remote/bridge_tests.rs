@@ -230,7 +230,7 @@ fn bridge_on_a_held_socket_names_the_path() {
         error.to_string().contains(&socket.display().to_string()),
         "{error}"
     );
-    assert!(is_ssh_link_failure(&error));
+    assert!(failed_before_remote_result(&error));
     // The refused start must leave the holder's socket and lock alone.
     let lock = shepr_platform::ipc::socket_startup_lock_path(&socket);
     assert!(socket.try_exists().expect("stat bridge socket"));
@@ -300,12 +300,12 @@ fn exit_status(code: i32) -> std::process::ExitStatus {
 }
 
 #[test]
-fn only_ssh_own_exit_code_counts_as_a_link_failure() {
+fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
     let link = ssh_bridge_exit_error(
         exit_status(SSH_OWN_FAILURE_EXIT_CODE),
         b"Connection refused",
     );
-    assert!(is_ssh_link_failure(&link));
+    assert!(failed_before_remote_result(&link));
     assert_eq!(link.kind(), io::ErrorKind::ConnectionAborted);
     assert_eq!(
         link.to_string(),
@@ -317,7 +317,7 @@ fn only_ssh_own_exit_code_counts_as_a_link_failure() {
         exit_status(REMAPPED_REMOTE_255_EXIT_CODE),
         b"remote bridge failed",
     );
-    assert!(!is_ssh_link_failure(&remapped));
+    assert!(!failed_before_remote_result(&remapped));
     let remapped_message = remapped.to_string();
     assert!(remapped_message.contains(&format!(
         "remote status {SSH_OWN_FAILURE_EXIT_CODE} is remapped to {REMAPPED_REMOTE_255_EXIT_CODE}"
@@ -326,16 +326,16 @@ fn only_ssh_own_exit_code_counts_as_a_link_failure() {
         "a native {REMAPPED_REMOTE_255_EXIT_CODE} is indistinguishable"
     )));
     let missing = ssh_bridge_exit_error(exit_status(127), b"sh: 1: exec: /old/shepr: not found");
-    assert!(!is_ssh_link_failure(&missing));
+    assert!(!failed_before_remote_result(&missing));
     assert_eq!(
         missing.to_string(),
         "remote command failed (exit status 127): sh: 1: exec: /old/shepr: not found"
     );
-    assert!(is_ssh_link_failure(&io::Error::new(
+    assert!(failed_before_remote_result(&io::Error::new(
         io::ErrorKind::TimedOut,
         "handshake timed out"
     )));
-    assert!(!is_ssh_link_failure(&io::Error::new(
+    assert!(!failed_before_remote_result(&io::Error::new(
         io::ErrorKind::UnexpectedEof,
         "closed before welcome"
     )));

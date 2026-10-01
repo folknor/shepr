@@ -217,8 +217,10 @@ impl DiscoveryProgress {
                 Ok(true) => return Ok(candidate.clone()),
                 Ok(false) => {}
                 // A wrong build or a failing probe at one path does not rule out a
-                // later candidate, such as the real binary behind a PATH shim.
-                Err(error) if !is_ssh_link_failure(&error) => {
+                // later candidate, such as the real binary behind a PATH shim. A
+                // failure before any remote result says nothing about this
+                // candidate, so it ends the pass with progress kept.
+                Err(error) if !failed_before_remote_result(&error) => {
                     if self.first_candidate_rejection.is_none() {
                         self.first_candidate_rejection = Some(error);
                     }

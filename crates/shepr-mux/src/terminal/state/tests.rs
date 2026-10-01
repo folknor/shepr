@@ -2467,11 +2467,11 @@ fn opencode_tui_selection_anchors_after_process_detection() {
         .entry("shepr:opencode".into())
         .or_default()
         .transition(HookSourceEvent::Release(
+            FullLifecycleHookSuppressionReason::AwaitingProcess,
             SuppressedFullLifecycleHookReport {
                 agent_label: "opencode".into(),
                 session_ref: None,
                 observed_at: Instant::now(),
-                reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
                 pending_start: None,
                 pending_replacement_report: None,
             },
@@ -3413,12 +3413,17 @@ fn stale_full_lifecycle_sessions_are_capped_per_source() {
     let mut terminal = test_terminal();
     let total = MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE + 3;
     for index in 0..total {
-        terminal.remember_stale_full_lifecycle_hook_session(
-            "shepr:codex".into(),
-            "codex".into(),
-            shepr_agent::agent::resume::AgentSessionRef::id(format!("session-{index}"))
+        terminal
+            .hook_sources
+            .entry("shepr:codex".into())
+            .or_default()
+            .transition(HookSourceEvent::Retire(StaleFullLifecycleHookSession {
+                agent_label: "codex".into(),
+                session_ref: shepr_agent::agent::resume::AgentSessionRef::id(format!(
+                    "session-{index}"
+                ))
                 .expect("test precondition"),
-        );
+            }));
     }
     let sessions = terminal.hook_sources["shepr:codex"].stale_sessions();
     assert_eq!(
