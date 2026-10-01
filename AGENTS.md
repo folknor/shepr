@@ -222,9 +222,13 @@ stays exported because every agent integration reports through it.
   older server rejects the request as invalid instead of ignoring the guard
   and stopping unconditionally. A server that replaced the observed one keeps
   running (exit status 3). The cross-build JSON control surface is the `ping`
-  response identity (`version`, `build_id`, `boot_id`) and the
+  response identity (`version`, `build_id`, `boot_id`), its `stopping` flag
+  (read as false when an older build omits it) and the
   `server.stop_if_boot` request; keep their literal JSON fixtures in the
-  `shepr-api` tests in sync with intentional wire changes.
+  `shepr-api` tests in sync with intentional wire changes. A launcher that
+  meets a server answering `stopping` treats it as no server and starts a
+  successor once its sockets go: the stopping server keeps them through its
+  final save but no longer accepts clients.
 
 ## Principles
 

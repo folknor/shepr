@@ -46,6 +46,12 @@ pub enum ResponseResult {
         /// Identifies this server process, which a build id cannot: a
         /// conditional `server.stop_if_boot` names the boot it expects.
         boot_id: String,
+        /// The server has begun stopping. Its sockets stay up until the final
+        /// session save is on disk, so a launcher waits for them to go rather
+        /// than attaching to a client socket that no longer accepts. Absent in
+        /// a pong from a build that predates it.
+        #[serde(default)]
+        stopping: bool,
     },
     /// The detector's input for one pane, including its OSC title and progress.
     DetectCapture {

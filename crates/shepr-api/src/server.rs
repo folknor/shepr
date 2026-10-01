@@ -424,6 +424,7 @@ fn handle_request(
                     version: shepr_protocol::build_version(),
                     build_id: shepr_protocol::BUILD_ID.to_owned(),
                     boot_id: shepr_protocol::BootId::for_this_process().to_string(),
+                    stopping: server_stop.is_requested(),
                 },
             };
             return crate::serialize_response_or_error_with_outcome(&id, &response);
@@ -961,7 +962,37 @@ mod tests {
         let parsed: SuccessResponse =
             serde_json::from_str(&response.body).expect("test precondition");
         assert_eq!(parsed.id, "req_1");
-        assert!(matches!(parsed.result, ResponseResult::Pong { .. }));
+        assert!(matches!(
+            parsed.result,
+            ResponseResult::Pong {
+                stopping: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ping_still_answers_after_a_stop_and_says_so() {
+        // A stopping server keeps its sockets until the final save is on disk;
+        // the pong is how a launcher tells it apart from one it can attach to.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let stop = running();
+        stop.request();
+        let response = handle_request(
+            Request {
+                id: "req_1".into(),
+                method: Method::Ping(crate::schema::PingParams::default()),
+            },
+            &tx,
+            &stop,
+        );
+
+        let parsed: SuccessResponse =
+            serde_json::from_str(&response.body).expect("test precondition");
+        assert!(matches!(
+            parsed.result,
+            ResponseResult::Pong { stopping: true, .. }
+        ));
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub struct RuntimeStatus {
     /// The server process's boot identity: what a conditional stop names to
     /// stop this instance and no other.
     pub boot_id: String,
+    /// The server has begun stopping and will not accept a new client.
+    pub stopping: bool,
 }
 
 pub fn read_runtime_status_at(
@@ -66,10 +68,12 @@ pub fn read_runtime_status_at(
             version,
             build_id,
             boot_id,
+            stopping,
         } => Ok(Some(RuntimeStatus {
             version: Some(version),
             build_id,
             boot_id,
+            stopping,
         })),
         result => Err(io::Error::other(format!(
             "server status request returned unexpected result: {result:?}"

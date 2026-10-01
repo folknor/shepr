@@ -66,7 +66,9 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
     // Preflight can inspect and restart a server from another build. Keep the
     // ping identity and guarded stop request bytes stable across those builds.
     const PING_REQUEST: &str = r#"{"id":"cross-build:ping","method":"ping","params":{}}"#;
-    const PONG_RESPONSE: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23"}}"#;
+    const PONG_RESPONSE: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23","stopping":false}}"#;
+    // What a build from before the stopping flag answers.
+    const PONG_RESPONSE_WITHOUT_STOPPING: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23"}}"#;
     const STOP_REQUEST: &str = r#"{"id":"cross-build:stop","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23"}}"#;
     const STOP_RESPONSE: &str = r#"{"id":"cross-build:stop","result":{"type":"ok"}}"#;
 
@@ -89,6 +91,7 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
             version: "0.1.2".into(),
             build_id: "0123456789abcdef".into(),
             boot_id: "17-23".into(),
+            stopping: false,
         },
     };
     assert_eq!(
@@ -97,6 +100,11 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
     );
     assert_eq!(
         serde_json::from_str::<SuccessResponse>(PONG_RESPONSE).expect("test precondition"),
+        pong_response
+    );
+    assert_eq!(
+        serde_json::from_str::<SuccessResponse>(PONG_RESPONSE_WITHOUT_STOPPING)
+            .expect("test precondition"),
         pong_response
     );
 
@@ -284,6 +292,7 @@ fn success_response_round_trips() {
             version: "0.1.2".into(),
             build_id: "0123456789abcdef".into(),
             boot_id: "17-23".into(),
+            stopping: true,
         },
     };
 

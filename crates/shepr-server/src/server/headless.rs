@@ -282,6 +282,12 @@ impl HeadlessServer {
     /// - Renders virtually and streams frames to clients
     pub async fn run(&mut self) -> io::Result<()> {
         crate::logging::startup("server");
+        // The fallible setup below returns before the loop, so it skips the
+        // final save; `Drop` still releases the lease and sockets in order. No
+        // save is owed: no client has connected and no event has been applied,
+        // so nothing has changed since bootstrap left the session on disk.
+        // Every failure inside the loop goes through `initiate_shutdown` and
+        // the save after it.
         let listener_fd = match &self.client_listener {
             LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
         };
@@ -634,6 +640,11 @@ impl HeadlessServer {
         self.app.retire_session_writer();
         self.release_sockets_after_save();
 
+        // A successor can start once the lease is free, while this process
+        // still logs to the same server log until it exits. That is safe: the
+        // log writer is built for several processes sharing one file (appends
+        // under a shared flock, and each record follows another process's
+        // rotation), so the two interleave lines and lose none.
         info!("headless server exiting");
         run_error.map_or(Ok(()), Err)
     }

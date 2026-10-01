@@ -146,10 +146,12 @@ fn runtime_status(
             version,
             build_id,
             boot_id,
+            stopping,
         } => Ok(crate::RuntimeStatus {
             version: Some(version),
             build_id,
             boot_id,
+            stopping,
         }),
         result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
     }

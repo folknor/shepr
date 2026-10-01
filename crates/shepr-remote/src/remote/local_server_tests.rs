@@ -17,6 +17,7 @@ fn status_of_build(build_id: &str) -> RuntimeStatus {
         version: Some("0.0.0".to_owned()),
         build_id: build_id.to_owned(),
         boot_id: "4242-1700000000".to_owned(),
+        stopping: false,
     }
 }
 
@@ -41,6 +42,16 @@ fn serve_status_once(
     listener: UnixListener,
     build_id: &'static str,
 ) -> std::thread::JoinHandle<()> {
+    serve_pong_once(listener, build_id, false)
+}
+
+/// Answers one status request the way a server of `build_id` would, saying
+/// whether it is stopping.
+fn serve_pong_once(
+    listener: UnixListener,
+    build_id: &'static str,
+    stopping: bool,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("test precondition");
         let mut request = String::new();
@@ -49,7 +60,7 @@ fn serve_status_once(
             .expect("test precondition");
         assert!(request.contains("ping"));
         let body = format!(
-            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\"}}}}\n"
+            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\",\"stopping\":{stopping}}}}}\n"
         );
         stream
             .write_all(body.as_bytes())
@@ -279,6 +290,24 @@ fn a_live_server_is_probed_for_its_status() {
     assert_eq!(status.build_id, shepr_protocol::BUILD_ID);
 }
 
+#[test]
+fn a_server_that_answers_it_is_stopping_is_not_running() {
+    // Its sockets stay up through its final save, but its client socket
+    // accepts nobody: attaching would hang on the handshake.
+    let dir = ScratchDir::new("probe-stopping");
+    let client = dir.join("s.sock");
+    let api = dir.join("a.sock");
+    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let server = serve_pong_once(
+        UnixListener::bind(&api).expect("test precondition"),
+        shepr_protocol::BUILD_ID,
+        true,
+    );
+    let probed = probe_server_at(&client, &api).expect("a stopping server probes");
+    server.join().expect("fake server thread");
+    assert!(matches!(probed, Probed::Stopping));
+}
+
 // ---------------------------------------------------------------------------
 // The server executable
 // ---------------------------------------------------------------------------
@@ -452,6 +481,23 @@ fn the_running_server_status_never_starts_a_server() {
     assert_eq!(status.build_id, other_build_id());
 }
 
+#[test]
+fn a_stopping_server_is_offered_no_restart() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let (client, api) = runtime_sockets(&paths);
+    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let server = serve_pong_once(
+        UnixListener::bind(&api).expect("test precondition"),
+        other_build_id(),
+        true,
+    );
+    let status = running_server_status(&paths).expect("a stopping server answers");
+    server.join().expect("fake server thread");
+    assert!(status.is_none(), "it is already going: {status:?}");
+    assert_nothing_was_launched(&paths);
+}
+
 // ---------------------------------------------------------------------------
 // Starting the daemon
 // ---------------------------------------------------------------------------
@@ -600,6 +646,36 @@ fn a_daemon_refused_by_a_leaving_holder_is_started_again_once_nothing_listens() 
     let status = result.expect("the second daemon owns the directory and answers");
     assert!(shepr_protocol::is_this_build(&status.build_id));
     assert_eq!(spawned, 2, "one restart, not one per poll");
+    assert!(
+        !group_is_gone(group.process_group()),
+        "the answering daemon is kept running"
+    );
+}
+
+#[test]
+fn a_stopping_occupant_is_outlasted_rather_than_attached_to() {
+    let dir = ScratchDir::new("launch-occupant-stopping");
+    let calls = Cell::new(0_u32);
+    let (result, spawned, group) =
+        launch_after_a_refused_first_daemon(&dir, Duration::from_secs(10), |spawned| {
+            calls.set(calls.get() + 1);
+            // The occupant answers that it is stopping while its final save
+            // runs, then its sockets go and the second daemon answers.
+            Ok(if calls.get() <= 3 {
+                Probed::Stopping
+            } else if spawned < 2 {
+                Probed::NoServer
+            } else {
+                Probed::Running(this_build())
+            })
+        });
+    let status = result.expect("the daemon started after the occupant left answers");
+    assert!(shepr_protocol::is_this_build(&status.build_id));
+    assert!(!status.stopping);
+    assert_eq!(
+        spawned, 2,
+        "the occupant's successor, not a daemon per poll"
+    );
     assert!(
         !group_is_gone(group.process_group()),
         "the answering daemon is kept running"

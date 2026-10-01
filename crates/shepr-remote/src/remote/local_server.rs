@@ -8,7 +8,9 @@
 //!    server that answers is used as it is (its build is checked below); one
 //!    that listens but does not answer, or whose socket is inaccessible or
 //!    served by another user, is a failure and never a reason to start a
-//!    second server.
+//!    second server. One that answers that it is stopping is treated as no
+//!    server: it keeps its sockets through its final save but accepts no
+//!    client, and the launch below outlasts it.
 //! 2. Only for the build profile's own runtime address: take the launch lock
 //!    in the runtime directory, so simultaneous first clients start one
 //!    server, and probe again under it.
@@ -76,7 +78,7 @@ pub fn ensure_running(
             return accept_running(paths, &status, build_check);
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
-        Probed::NoServer => {}
+        Probed::NoServer | Probed::Stopping => {}
     }
     require_own_runtime_address(paths)?;
     let server = server_executable()?;
@@ -90,6 +92,7 @@ pub fn ensure_running(
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
         Probed::NoServer => {}
+        Probed::Stopping => info!("the running server is stopping; launching its successor"),
     }
 
     info!(server = %server.display(), "no server running, starting the server daemon");
@@ -105,7 +108,9 @@ pub fn ensure_running(
 pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Option<RuntimeStatus>> {
     match probe_server(paths)? {
         Probed::Running(status) => Ok(Some(status)),
-        Probed::NoServer => Ok(None),
+        // Nothing to offer a restart for: it is already going, and the
+        // launch that follows outlasts it.
+        Probed::NoServer | Probed::Stopping => Ok(None),
         Probed::Unresponsive => Err(unresponsive_error(paths)),
     }
 }
@@ -122,6 +127,10 @@ enum Probed {
     Running(RuntimeStatus),
     /// Something listens but gave no status answer within the deadline.
     Unresponsive,
+    /// A server answered that it is stopping. Its client socket stays bound
+    /// until its final session save is on disk, but nothing accepts on it, so
+    /// it is not a server to attach to.
+    Stopping,
 }
 
 fn probe_server(paths: &shepr_config::AppPaths) -> io::Result<Probed> {
@@ -157,6 +166,7 @@ fn probe_server_at(client_socket: &Path, api_socket: &Path) -> io::Result<Probed
         shepr_platform::ipc::Liveness::Live => {}
     }
     match shepr_api::read_runtime_status_at(api_socket, STATUS_REQUEST_TIMEOUT) {
+        Ok(Some(status)) if status.stopping => Ok(Probed::Stopping),
         Ok(Some(status)) => Ok(Probed::Running(status)),
         Ok(None) => Ok(Probed::Unresponsive),
         Err(error) => Err(io::Error::new(
@@ -534,8 +544,9 @@ fn launch_daemon(
 /// daemon exiting because another server already holds the runtime is not a
 /// failure yet: the occupant is what the client will attach to, so polling
 /// goes on for it until the deadline. An occupant of another build that
-/// answers is returned for the caller's build-check policy. While nothing
-/// listens, such a daemon is started again every
+/// answers is returned for the caller's build-check policy; one that answers
+/// that it is stopping is never returned, only polled past until its sockets
+/// go. While nothing listens, such a daemon is started again every
 /// [`DAEMON_RESTART_INTERVAL`]: the holder may be a server that is still
 /// stopping, whose lease outlives its sockets, and the launch is then owed a
 /// daemon of its own once the lease is free.

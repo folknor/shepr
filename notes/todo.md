@@ -48,19 +48,3 @@ Do this the next time opencode or Kilo is in use.
 - If they are wrong, opencode/Kilo panes never show as blocked on a permission prompt; they read as working or idle while waiting on you.
 - To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
 
-## Server shutdown edges
-
-Surfaced while fixing the lease-versus-socket order at stop; none loses a
-session in normal use.
-
-- **A launch during the final save.** While the final session save runs, the
-  client socket is still bound but the loop no longer accepts, so a launcher
-  probing then gets an unusable-status or unresponsive error instead of
-  waiting for the socket to go.
-- **An early `run()` error skips the final save.** A listener error or a failed
-  signal-handler install ends through `Drop`, which releases the lease and
-  sockets in order but does not save the session first.
-- **The log outlives the lease.** After releasing the lease on a clean exit the
-  process keeps writing the server log in the data directory until it exits,
-  so a new server can briefly share that file with it.
-
