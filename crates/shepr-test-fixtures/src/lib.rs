@@ -28,7 +28,8 @@
 //!
 //! Any crate above the ones listed in this crate's `[dependencies]`. A crate
 //! this one depends on cannot, for the same second-copy reason; its own unit
-//! tests keep their `#[cfg(test)]` helpers.
+//! tests keep their `#[cfg(test)]` helpers. `brokkr.toml`'s
+//! `test-fixtures-only-above-its-closure` rule forbids those dev edges.
 
 mod child_io;
 mod config;

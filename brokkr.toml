@@ -788,6 +788,15 @@ from = "shepr-test-fixtures"
 allow = ["bytes", "serde", "shepr-config", "shepr-core", "shepr-protocol", "shepr-pty", "shepr-termio", "tokio"]
 kinds = ["normal"]
 
+# The dev-edge side of the rule above: every workspace crate the fixtures
+# reach, directly or through the crates in their allow list. Widening that
+# allow list widens this list by the new crate's own closure.
+[[dependency_rule]]
+name = "test-fixtures-only-above-its-closure"
+from = ["shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-termio", "shepr-vt"]
+forbid = "shepr-test-fixtures"
+kinds = ["dev"]
+
 [[dependency_rule]]
 name = "alacritty-terminal-only-in-shepr-vt"
 from = "*"
