@@ -108,7 +108,7 @@ impl App {
         ctx: &EndpointContext,
     ) -> HandlerResult {
         match command {
-            // The server loop answers the surface lease itself, before any
+            // The server loop answers the viewing request itself, before any
             // command reaches the app; reaching here is a routing bug.
             EndpointCommand::ClientShellSurfaceSet(_) => {
                 tracing::warn!("client_shell.surface.set routed to the app by mistake");
@@ -217,7 +217,7 @@ mod tests {
     use shepr_protocol::PublicPaneId;
 
     #[test]
-    fn the_surface_lease_answered_by_the_loop_is_reported_as_misrouted() {
+    fn the_viewing_request_answered_by_the_loop_is_reported_as_misrouted() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
@@ -227,7 +227,7 @@ mod tests {
             shepr_protocol::command::ClientShellSurfaceSetParams { active: true },
         ));
         assert!(matches!(
-            surface.expect_err("surface lease is answered by the loop"),
+            surface.expect_err("viewing request is answered by the loop"),
             EndpointError::Rejected(_)
         ));
         assert!(!app.state.should_quit);

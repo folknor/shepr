@@ -30,6 +30,7 @@ pub(crate) mod input_wire;
 mod limits;
 pub(crate) mod logging;
 mod loop_config;
+mod reconcile;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -42,8 +43,9 @@ mod transport;
 use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
 use loop_config::{ClientLoopConfig, ClientSettings};
+use reconcile::present_notice;
 use shell_runtime::*;
-use state::{ClientState, HostWriteFailure, Presentation};
+use state::{ClientState, HostWriteFailure};
 use transport::*;
 
 pub use shell::{ClientShellConfig, ClientShellState};
@@ -292,13 +294,11 @@ async fn run_client_loop(
         settings: config.settings,
         shell: Box::new(shell::ClientShellState::new_at(shell_config, launch_now)),
         repaint_pending: false,
-        // An unreachable Local owns nothing until a handoff proves an endpoint.
-        presentation: if local_unavailable {
-            Presentation::Unavailable
+        choice: if local_unavailable {
+            endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
         } else {
-            Presentation::Owned
+            endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local)
         },
-        deferred_local: None,
         draw_host_cursor,
         frame_write_failure: HostWriteFailure::default(),
         title_write_failure: HostWriteFailure::default(),
@@ -379,7 +379,10 @@ async fn run_client_loop(
         ) {
             Ok(transport) => {
                 let mut registry = endpoint::EndpointRegistry::new_at(transport, 1, launch_now);
-                registry.send(&ClientMessage::ClientShellFocus { focused: true });
+                registry.send_to(
+                    &endpoint::ClientEndpointId::Local,
+                    &ClientMessage::ClientShellFocus { focused: true },
+                );
                 registry
             }
             Err(error)
@@ -391,7 +394,8 @@ async fn run_client_loop(
                     &endpoint::ClientEndpointId::Local,
                     endpoint::ClientEndpointStatus::after_failure(&diagnostic),
                 );
-                state.presentation = Presentation::Unavailable;
+                state.choice =
+                    endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local);
                 initial_local_failure = Some(diagnostic);
                 local_unavailable = true;
                 endpoint::EndpointRegistry::empty()
@@ -433,28 +437,20 @@ async fn run_client_loop(
             if failure.needs_attention() {
                 warn!(endpoint = "local", error = %failure, "endpoint needs attention");
             }
-            present_handoff_unavailable(&mut state, format!("Local: {failure}"));
+            present_notice(&mut state, format!("Local: {failure}"));
         } else if let Some(frame) = state.shell.compose(
             state.reported_geometry.cols(),
             state.reported_geometry.rows(),
         ) {
-            state.present_chrome_through_freeze(frame);
+            state.present_chrome(frame);
         }
     }
-    let selection = endpoint::selection::EndpointSelectionTracker::new(
-        machines
-            .iter()
-            .map(|machine| machine.label.clone())
-            .collect(),
-    );
-
     let mut client_loop = ClientLoop::new(
         state,
         local_failure_policy,
         should_quit,
         write_stream,
         supervisors,
-        selection,
         reported_cell_size,
         event_tx,
         event_rx,
@@ -476,12 +472,7 @@ struct ClientLoop {
     write_stream: endpoint::EndpointRegistry,
     supervisors: endpoint::EndpointSupervisors,
     endpoint_commands: endpoint::commands::EndpointCommands,
-    next_surface_serial: u64,
-    /// An activation to handle before waiting for the next event: a shell pick, a handoff's
-    /// successor, a ready deferred Local selection or an automatic activation. Presentation
-    /// ownership itself lives in `ClientState::presentation`.
-    scheduled_activation: Option<ClientLoopEvent>,
-    selection: endpoint::selection::EndpointSelectionTracker,
+    next_view_serial: u64,
     client_timer: timer::ClientLoopTimer,
     reported_cell_size: Arc<AtomicCellSize>,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
@@ -514,7 +505,6 @@ impl ClientLoop {
         should_quit: Arc<AtomicBool>,
         write_stream: endpoint::EndpointRegistry,
         supervisors: endpoint::EndpointSupervisors,
-        selection: endpoint::selection::EndpointSelectionTracker,
         reported_cell_size: Arc<AtomicCellSize>,
         event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
         event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
@@ -527,9 +517,7 @@ impl ClientLoop {
             write_stream,
             supervisors,
             endpoint_commands: endpoint::commands::EndpointCommands::default(),
-            next_surface_serial: 1,
-            scheduled_activation: None,
-            selection,
+            next_view_serial: 1,
             client_timer: timer::ClientLoopTimer::new(),
             reported_cell_size,
             event_tx,
@@ -541,18 +529,15 @@ impl ClientLoop {
     fn next_timer_deadline(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
         earliest_client_timer_deadline([
             self.state.shell.next_timer_deadline(),
-            self.state
-                .presentation
-                .handoff()
-                .map(endpoint::PendingEndpointActivation::deadline),
+            self.state.choice.deadline(),
             self.endpoint_commands.next_deadline(),
             self.write_stream.next_service_deadline(now),
             self.supervisors.next_retry_deadline(),
         ])
     }
 
-    /// Waits for a quit request or scheduled activation at once, else the timer armed from
-    /// the earliest pending deadline as of `now` or the shared event queue.
+    /// Returns a quit request at once, else waits for the timer armed from the earliest
+    /// pending deadline as of `now` or the shared event queue.
     async fn wait_for_next_event(&mut self, now: std::time::Instant) -> ClientLoopEvent {
         let timer_deadline = self.next_timer_deadline(now).map(|deadline| {
             self.client_timer
@@ -563,9 +548,6 @@ impl ClientLoop {
         }
         if self.should_quit.load(Ordering::Acquire) {
             return ClientLoopEvent::Quit;
-        }
-        if let Some(event) = self.scheduled_activation.take() {
-            return event;
         }
 
         tokio::select! {
@@ -579,20 +561,7 @@ impl ClientLoop {
         while !self.should_quit.load(Ordering::Acquire) {
             // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
             let loop_now = std::time::Instant::now();
-            // Handoffs finish or roll back in many places; judge the requested selection once
-            // nothing is in flight, so a rolled-back target does not stay selected, and only
-            // then decide whether to start one automatically.
-            let handoff_busy =
-                self.state.presentation.handoff_in_flight() || self.state.deferred_local.is_some();
-            self.selection.settle(
-                handoff_busy || self.scheduled_activation.is_some(),
-                self.write_stream.active_id(),
-                active_endpoint_owns_presentation(&self.state.presentation, &self.write_stream),
-            );
-            if !handoff_busy && self.scheduled_activation.is_none() {
-                self.scheduled_activation =
-                    automatic_activation(&self.state, &self.write_stream, &self.selection);
-            }
+            self.reconcile(loop_now)?;
             let cell = shepr_protocol::ProtocolCellSize::from_host(
                 self.state.reported_geometry.cell_width(),
                 self.state.reported_geometry.cell_height(),
@@ -652,16 +621,10 @@ impl ClientLoop {
                 geometry.cell_width(),
                 geometry.cell_height(),
                 geometry.exact,
-                now,
             ),
             ClientLoopEvent::EndpointSupervisor(event) => {
                 self.handle_endpoint_supervisor(event, now)
             }
-            ClientLoopEvent::ActivateEndpoint {
-                endpoint_id,
-                target,
-                force,
-            } => self.handle_activate_endpoint(endpoint_id, target, force, now),
             ClientLoopEvent::ServerMessage {
                 endpoint_id,
                 generation,
@@ -685,7 +648,6 @@ impl ClientLoop {
             state,
             write_stream,
             endpoint_commands,
-            scheduled_activation,
             reported_cell_size,
             will_query_host_cell_size,
             ..
@@ -717,15 +679,7 @@ impl ClientLoop {
                 )
             })
             .flatten();
-        if finish_client_shell_input(
-            state,
-            outcome,
-            frame,
-            write_stream,
-            endpoint_commands,
-            scheduled_activation,
-            now,
-        )? {
+        if finish_client_shell_input(state, outcome, frame, write_stream, endpoint_commands, now)? {
             return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)
@@ -746,7 +700,6 @@ impl ClientLoop {
         cell_width_px: u32,
         cell_height_px: u32,
         pixel_geometry_exact: bool,
-        now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self {
             state,
@@ -776,23 +729,12 @@ impl ClientLoop {
         // pane area (with pane hits clipped to match) instead of dropping to the
         // machine-list placeholder.
         state.request_repaint();
-        if !resize_handoff(state, write_stream, now) {
-            let msg = client_shell_resize_message(
-                &state.shell,
-                state.reported_geometry.cols(),
-                state.reported_geometry.rows(),
-                cell_width_px,
-                cell_height_px,
-                pixel_geometry_exact,
-            );
-            // A failed send surfaces through the registry's failure list.
-            write_stream.send(&msg);
-        }
+        resize_views(state, write_stream);
         // The host has already reflowed the old frame; redraw the chrome at the new
         // size now rather than on the next input or surface. The pane cells are still
-        // the retained surface (clipped), so this is chrome and passes the freeze while
-        // nothing owns the presentation; otherwise the wrongly sized frame would stay up
-        // until a handoff ended it.
+        // the retained surface (clipped), so this is chrome and presents even while
+        // nothing is shown; otherwise the wrongly sized frame would stay up until a move
+        // committed.
         if let Some(frame) = state.shell.compose(
             state.reported_geometry.cols(),
             state.reported_geometry.rows(),
@@ -838,13 +780,13 @@ impl ClientLoop {
                     && shell.endpoint_is_active(&endpoint_id))
                 .then(|| format!("{}: {message}", shell.endpoint_label(&endpoint_id)));
                 if let Some(message) = unavailable {
-                    present_handoff_unavailable(state, message);
+                    present_notice(state, message);
                 } else if let Some(frame) = state.shell.compose(
                     state.reported_geometry.cols(),
                     state.reported_geometry.rows(),
                 ) {
                     // A status change is machine-list chrome; it must show even while
-                    // no endpoint owns presentation.
+                    // nothing is shown.
                     state.present_chrome(frame);
                 }
             }
@@ -883,7 +825,7 @@ impl ClientLoop {
                     {
                         let message =
                             format!("{}: {failure}", state.shell.endpoint_label(&endpoint_id));
-                        present_handoff_unavailable(state, message);
+                        present_notice(state, message);
                     } else if let Some(frame) = state.shell.compose(
                         state.reported_geometry.cols(),
                         state.reported_geometry.rows(),
@@ -912,43 +854,6 @@ impl ClientLoop {
         Ok(ClientLoopAction::NextEvent)
     }
 
-    fn handle_activate_endpoint(
-        &mut self,
-        endpoint_id: endpoint::ClientEndpointId,
-        target: Option<shell::ClientEndpointFocusTarget>,
-        force: bool,
-        now: std::time::Instant,
-    ) -> Result<ClientLoopAction, ClientError> {
-        let Self {
-            write_stream,
-            selection,
-            state,
-            endpoint_commands,
-            next_surface_serial,
-            scheduled_activation,
-            ..
-        } = self;
-        let generation = write_stream
-            .connection(&endpoint_id)
-            .map(|connection| connection.generation.get());
-        // A failed handoff rolls the selection back; see `endpoint::selection`.
-        if !selection.begin(&endpoint_id, generation) {
-            return Ok(ClientLoopAction::NextEvent);
-        }
-        begin_endpoint_activation(
-            state,
-            write_stream,
-            endpoint_commands,
-            next_surface_serial,
-            endpoint_id,
-            target,
-            force,
-            now,
-            scheduled_activation,
-        )?;
-        Ok(ClientLoopAction::NextEvent)
-    }
-
     fn handle_server_message(
         &mut self,
         endpoint_id: &endpoint::ClientEndpointId,
@@ -960,7 +865,6 @@ impl ClientLoop {
             write_stream,
             endpoint_commands,
             state,
-            scheduled_activation,
             local_failure_policy,
             ..
         } = self;
@@ -968,35 +872,34 @@ impl ClientLoop {
             return Ok(ClientLoopAction::NextEvent);
         }
         write_stream.received(endpoint_id, generation, now);
-        let endpoint_active = write_stream.active_id() == endpoint_id
-            && write_stream
-                .connection(endpoint_id)
-                .is_some_and(|connection| connection.surface_active);
-        let activation_message = state
-            .presentation
-            .handoff()
-            .is_some_and(|pending| pending.accepts_endpoint(endpoint_id, generation));
-        let buffer_surface_evidence = state
-            .presentation
-            .handoff()
-            .is_some_and(|pending| pending.buffers_surface_evidence_for(endpoint_id, generation));
+        let role = state.choice.role(endpoint_id);
+        let move_response = match message.as_ref() {
+            DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse {
+                boot_id,
+                request_id,
+                ..
+            }) => state
+                .choice
+                .preparing()
+                .is_some_and(|p| p.accepts_response(endpoint_id, generation, boot_id, request_id)),
+            _ => false,
+        };
+        // The in-flight command or a tombstoned one: a late response to a retired or timed-out
+        // command still reaches `receive_response` and consumes its tombstone.
         let command_response = match message.as_ref() {
             DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse {
                 boot_id,
                 request_id,
                 ..
-            }) => endpoint_commands.accepts_response(endpoint_id, generation, boot_id, request_id),
+            }) => {
+                endpoint_commands.response_kind(endpoint_id, generation, boot_id, request_id)
+                    != endpoint::commands::CommandResponseKind::Untracked
+            }
             _ => false,
         };
-        let presentation_decision = endpoint::PresentationGate::new(
-            endpoint_active,
-            state.presentation.owned(),
-            activation_message,
-            buffer_surface_evidence,
-            command_response,
-            state.presentation.frames_frozen(),
-        )
-        .decide(message.as_ref());
+        let presentation_decision =
+            endpoint::PresentationGate::new(role, move_response, command_response)
+                .decide(message.as_ref());
         if presentation_decision == endpoint::PresentationDecision::Drop {
             return Ok(ClientLoopAction::NextEvent);
         }
@@ -1004,19 +907,8 @@ impl ClientLoop {
             DecodedServerMessage::Wire(message) => message,
             DecodedServerMessage::PaneSurfacePatch(patch) => {
                 if presentation_decision == endpoint::PresentationDecision::Buffer {
-                    let progress = state
-                        .presentation
-                        .handoff_mut()
-                        .map(|pending| pending.receive_patch(endpoint_id, generation, &patch));
-                    if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                        && let Some(event) = complete_endpoint_activation(
-                            state,
-                            write_stream,
-                            endpoint_commands,
-                            now,
-                        )?
-                    {
-                        *scheduled_activation = Some(event);
+                    if let Some(pending) = state.choice.preparing_mut() {
+                        pending.receive_patch(endpoint_id, generation, &patch);
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
@@ -1082,19 +974,12 @@ impl ClientLoop {
         match message {
             ServerMessage::PaneSurface(surface) => {
                 if presentation_decision == endpoint::PresentationDecision::Buffer {
-                    let progress = state
-                        .presentation
-                        .handoff_mut()
-                        .map(|pending| pending.receive_surface(endpoint_id, generation, surface));
-                    if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                        && let Some(event) = complete_endpoint_activation(
-                            state,
-                            write_stream,
-                            endpoint_commands,
-                            now,
-                        )?
-                    {
-                        *scheduled_activation = Some(event);
+                    let size = state.shell.surface_size(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    );
+                    if let Some(pending) = state.choice.preparing_mut() {
+                        pending.receive_surface(endpoint_id, generation, surface, size);
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
@@ -1126,8 +1011,8 @@ impl ClientLoop {
                         state.reported_geometry.rows(),
                     )
                 {
-                    // The error banner is chrome; it must show while nothing owns the
-                    // presentation, like machine statuses do.
+                    // The error banner is chrome; it must show while nothing is shown,
+                    // like machine statuses do.
                     state.present_chrome(frame);
                 }
             }
@@ -1136,52 +1021,16 @@ impl ClientLoop {
                 request_id,
                 result,
             } => {
-                if let Some(pending) = state.presentation.handoff_mut().filter(|pending| {
-                    pending.accepts_response(endpoint_id, generation, &boot_id, &request_id)
-                }) {
-                    let progress = pending.receive_response_for_boot_at(
-                        endpoint_id,
-                        generation,
-                        &boot_id,
-                        &request_id,
-                        result,
-                        write_stream,
-                        now,
-                    );
-                    match progress {
-                        endpoint::SurfaceActivationProgress::Ready => {
-                            if let Some(event) = complete_endpoint_activation(
-                                state,
-                                write_stream,
-                                endpoint_commands,
-                                now,
-                            )? {
-                                *scheduled_activation = Some(event);
-                            }
-                        }
-                        endpoint::SurfaceActivationProgress::FinishedUnavailable { message } => {
-                            state.end_handoff(Presentation::Unavailable);
-                            present_handoff_unavailable(state, message);
-                        }
-                        endpoint::SurfaceActivationProgress::Rejected {
-                            message,
-                            source_release_rejected,
-                        } => {
-                            rollback_endpoint_activation(
-                                state,
-                                write_stream,
-                                &message,
-                                source_release_rejected,
-                                now,
-                            );
-                        }
-                        _ => {}
+                if presentation_decision == endpoint::PresentationDecision::Buffer {
+                    if let Some(pending) = state.choice.preparing_mut() {
+                        pending.receive_response(
+                            endpoint_id,
+                            generation,
+                            &boot_id,
+                            &request_id,
+                            result,
+                        );
                     }
-                    return Ok(ClientLoopAction::NextEvent);
-                }
-                if endpoint_commands.response_kind(endpoint_id, generation, &boot_id, &request_id)
-                    == endpoint::commands::CommandResponseKind::Untracked
-                {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 let completed = endpoint_commands.receive_response(
@@ -1227,7 +1076,6 @@ impl ClientLoop {
                     frame,
                     write_stream,
                     endpoint_commands,
-                    scheduled_activation,
                     now,
                 )? {
                     return Ok(ClientLoopAction::Exit);
@@ -1292,18 +1140,6 @@ impl ClientLoop {
                     )
                     .map_err(ClientError::HostTerminal)?;
             }
-            ServerMessage::PresentationReady(data) => {
-                let progress = state.presentation.handoff_mut().map(|activation| {
-                    activation.receive_presentation_effects_ready(endpoint_id, generation, &data)
-                });
-                if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                    && let Some(event) =
-                        complete_endpoint_activation(state, write_stream, endpoint_commands, now)?
-                {
-                    *scheduled_activation = Some(event);
-                }
-                return Ok(ClientLoopAction::NextEvent);
-            }
             ServerMessage::HealthPong | ServerMessage::EndpointWelcome(_) => {
                 return Ok(ClientLoopAction::NextEvent);
             }
@@ -1313,37 +1149,13 @@ impl ClientLoop {
                         .shell
                         .receive_restore_notice(endpoint_id, &snapshot.boot_id, kind);
                 }
-                let projection_pending = activation_message;
-                let activation_progress = activation_message
-                    .then(|| {
-                        state.presentation.handoff_mut().map(|pending| {
-                            pending.receive_snapshot(endpoint_id, generation, &snapshot)
-                        })
-                    })
-                    .flatten();
-                install_client_shell_snapshot(
-                    state,
-                    endpoint_id,
-                    snapshot,
-                    projection_pending,
-                    write_stream,
-                )?;
-                if matches!(
-                    activation_progress,
-                    Some(endpoint::SurfaceActivationProgress::Ready)
-                ) && let Some(event) =
-                    complete_endpoint_activation(state, write_stream, endpoint_commands, now)?
+                if role == endpoint::ConnectionRole::Target
+                    && let Some(pending) = state.choice.preparing_mut()
                 {
-                    *scheduled_activation = Some(event);
+                    pending.receive_snapshot(endpoint_id, generation, &snapshot);
                 }
+                install_client_shell_snapshot(state, endpoint_id, snapshot, role, write_stream)?;
                 write_stream.mark_ready(endpoint_id, generation);
-                // A snapshot that brings the selected endpoint's metadata makes it eligible
-                // for the automatic activation the loop judges before its next wait.
-                if endpoint_id.is_local()
-                    && let Some(event) = take_ready_local_activation(state, write_stream)
-                {
-                    *scheduled_activation = Some(event);
-                }
             }
             ServerMessage::SurfaceUpdate(_) => {
                 tracing::error!(
@@ -1382,63 +1194,12 @@ impl ClientLoop {
         let Self {
             client_timer,
             write_stream,
-            local_failure_policy,
             state,
             endpoint_commands,
-            supervisors,
-            scheduled_activation,
             ..
         } = self;
         client_timer.fired();
         write_stream.tick_health(now);
-        for failure in write_stream.take_failures() {
-            // `record_failure` removes the connection as it queues this failure, so `None` is
-            // expected for its generation. Retirement follows this batch and purges queued
-            // failures; handle_server_disconnected rejects later events without a live match.
-            if write_stream.connection(&failure.endpoint_id).is_some()
-                && !write_stream.accepts(&failure.endpoint_id, failure.generation)
-            {
-                continue;
-            }
-            warn!(
-                endpoint = %failure.endpoint_id.storage_key(),
-                error = %failure.message,
-                "endpoint transport failed"
-            );
-            if local_failure_policy.ends_client_for(&failure.endpoint_id) {
-                return Err(ClientError::ConnectionLost(io::Error::new(
-                    failure.kind,
-                    failure.message,
-                )));
-            }
-            if handle_endpoint_disconnect(
-                state,
-                write_stream,
-                endpoint_commands,
-                supervisors,
-                &failure.endpoint_id,
-                failure.generation,
-                now,
-                failure.kind,
-                &failure.message,
-            ) {
-                clear_endpoint_host_effects(state)?;
-            }
-        }
-        // A revoked transport changes the safe rollback destination. Handle those
-        // failures before applying a timeout to the remaining activation phase.
-        if let Some(endpoint_id) = state
-            .presentation
-            .handoff()
-            .filter(|activation| activation.expired(now))
-            .map(|activation| activation.target().clone())
-        {
-            let error = format!(
-                "{} did not produce a coherent surface in time",
-                state.shell.endpoint_label(&endpoint_id)
-            );
-            rollback_endpoint_activation(state, write_stream, &error, false, now);
-        }
         let expired_endpoints = endpoint_commands
             .expire(now)
             .into_iter()
@@ -1475,15 +1236,7 @@ impl ClientLoop {
                 .flatten();
             (outcome, frame)
         };
-        if finish_client_shell_input(
-            state,
-            outcome,
-            frame,
-            write_stream,
-            endpoint_commands,
-            scheduled_activation,
-            now,
-        )? {
+        if finish_client_shell_input(state, outcome, frame, write_stream, endpoint_commands, now)? {
             return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)
@@ -1551,7 +1304,6 @@ mod client_timer_tests {
                 Arc::new(AtomicBool::new(false)),
                 write_stream,
                 supervisors,
-                endpoint::selection::EndpointSelectionTracker::new(Vec::new()),
                 Arc::new(AtomicCellSize::new()),
                 event_tx.clone(),
                 event_rx,

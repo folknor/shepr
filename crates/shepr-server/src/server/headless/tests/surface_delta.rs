@@ -261,14 +261,12 @@ async fn a_navigation_renders_only_the_client_that_moved() {
 }
 
 #[tokio::test]
-async fn a_presentation_sync_renders_nobody() {
+async fn a_host_effects_replay_renders_nobody() {
     let mut pair = Pair::new();
     let epoch = pair.server.view_epoch;
-    let token = "sync-test".to_owned();
     pair.server
-        .handle_server_event(ServerEvent::ClientShellPresentationSync {
+        .handle_server_event(ServerEvent::ClientShellReplayHostEffects {
             client_id: ClientId::test_new(8),
-            token,
         });
     assert_eq!(pair.server.view_epoch, epoch);
     assert!(!pair.server.render_plan(false).has_full());

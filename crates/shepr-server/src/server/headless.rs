@@ -1211,7 +1211,7 @@ impl HeadlessServer {
                     }
                 }
             }
-            ServerEvent::ClientShellPresentationSync { client_id, token } => {
+            ServerEvent::ClientShellReplayHostEffects { client_id } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
                 };
@@ -1222,7 +1222,6 @@ impl HeadlessServer {
                 self.stream_host_mouse_capture_mode();
                 self.stream_shell_keyboard_mode();
                 self.sync_window_title();
-                self.send_to_client(client_id, &ServerMessage::PresentationReady(token));
             }
             ServerEvent::ClientShellPaneInput {
                 client_id,

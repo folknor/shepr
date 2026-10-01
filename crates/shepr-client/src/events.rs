@@ -22,12 +22,5 @@ pub(super) enum ClientLoopEvent {
         error: std::io::Error,
     },
     EndpointSupervisor(endpoint::EndpointSupervisorEvent),
-    ActivateEndpoint {
-        endpoint_id: endpoint::ClientEndpointId,
-        target: Option<shell::ClientEndpointFocusTarget>,
-        /// A superseded handoff deliberately starts a fresh target-on epoch even when source and
-        /// latest target have the same identity after restoration.
-        force: bool,
-    },
     Timer,
 }

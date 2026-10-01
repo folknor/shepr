@@ -167,8 +167,9 @@ pub(crate) enum ServerEvent {
     },
     /// A client-owned shell reported whether its outer terminal has focus.
     ClientShellFocus { client_id: ClientId, focused: bool },
-    /// The committed shell asks the server to replay presentation effects before input resumes.
-    ClientShellPresentationSync { client_id: ClientId, token: String },
+    /// A shell that just committed to showing this connection asks for its current mouse
+    /// capture, keyboard mode and title, which it dropped while preparing the connection.
+    ClientShellReplayHostEffects { client_id: ClientId },
     /// A client-owned shell invoked one endpoint operation through this connection.
     ClientShellEndpointRequest {
         client_id: ClientId,
@@ -653,10 +654,9 @@ fn client_read_loop_with_endpoint_controls(
                     command: Box::new(command),
                 }
             }
-            ClientMessage::PresentationSync(data) => ServerEvent::ClientShellPresentationSync {
-                client_id,
-                token: data,
-            },
+            ClientMessage::ReplayHostEffects => {
+                ServerEvent::ClientShellReplayHostEffects { client_id }
+            }
             ClientMessage::HealthPing => {
                 // This acknowledges transport liveness for this reader and
                 // writer, not responsiveness of the headless event loop. A

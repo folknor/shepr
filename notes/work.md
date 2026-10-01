@@ -4,36 +4,6 @@ The structural findings of the defect hunt, consolidated into one item per
 area. Each item replaces a class of patched invariants with a shape that cannot
 represent the failures. An item is removed entirely once its rewrite lands.
 
-## 1. Client endpoints: one endpoint choice, no exclusive surface lease
-
-Formerly CEND-014 and CEND-015.
-
-"Which endpoint" is held in six places: the registry's `active`,
-`Presentation` (`Owned` / `Handoff` / `Unavailable`), the selection tracker's
-`selected` / `attempt` / `failed`, `ClientState::deferred_local`,
-`ClientLoop::scheduled_activation`, and `PendingEndpointActivation::successor`.
-`ClientLoop::run` re-derives agreement every turn (`settle`, then
-`automatic_activation`), and `begin_endpoint_activation`,
-`complete_endpoint_activation`, `rollback_endpoint_activation` and
-`handle_endpoint_disconnect` each patch a subset. A rollback that tore down a
-healthy target connection (since fixed) and REJ-025 (a rollback that ends
-`Unavailable` leaves the source surface on) are consequences.
-
-The handoff protocol behind it (source-off first, six phases, rollback through
-target-off and source-on, successor intents, effects fence) exists to keep at
-most one server-side surface on and pane input ordered. It treats a
-server-side surface as an exclusive lease.
-
-Direction:
-
-- One owner for the endpoint choice: a single enum covering selected,
-  deferred, handing off from/to, and failed-on-generation.
-- Make surface activation idempotent per connection. The client chooses which
-  connection's frames to draw and where to send input; the server is told only
-  "viewing" or "not viewing", for its foreground and PTY size rules. The
-  rollback paths in `activation.rs` and their failure modes then disappear
-  rather than getting another round of patches.
-
 ## 2. Client shell: a request ledger and an explicit surface baseline
 
 Formerly CSHELL-018 and CSHELL-019.

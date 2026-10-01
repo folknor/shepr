@@ -2,11 +2,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use shepr_client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
-    PendingEndpointActivation, SurfaceActivationProgress,
+    ClientEndpointId, ClientEndpointStatus, EndpointChoice, EndpointRegistry, EndpointTransport,
+    view::{self, HostBaseline, StartOutcome},
 };
 use shepr_protocol::ServerMessage;
-use shepr_protocol::command::{ClientShellSurfaceSetParams, EndpointCommand};
 
 use crate::server::ClientId;
 use crate::server::client_transport::ServerEvent;
@@ -16,13 +15,6 @@ use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
 /// Maximum time an expected server control message may take in this test.
 const SERVER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
-
-fn recv_server_message(
-    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
-    expected: &str,
-) -> ServerMessage {
-    recv_server_message_until(receiver, Instant::now() + SERVER_RESPONSE_TIMEOUT, expected)
-}
 
 fn recv_server_message_until(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
@@ -102,36 +94,13 @@ fn lifecycle_geometry() -> shepr_protocol::TerminalGeometry {
     shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false)
 }
 
-fn begin_activation(
-    shell: &shepr_client::ClientShellState,
-    endpoints: &mut EndpointRegistry,
-    target: &ClientEndpointId,
-    serial: u64,
-) -> PendingEndpointActivation {
-    PendingEndpointActivation::prepare(
-        shell,
-        endpoints,
-        target,
-        None,
-        lifecycle_geometry(),
-        serial,
-        std::time::Instant::now(),
-    )
-    .and_then(|activation| activation.start_at(endpoints, std::time::Instant::now()))
-    .expect("test precondition")
-}
-
-/// A real two-server/client lifecycle harness. Both source-off and target-on traverse the
-/// production HeadlessServer endpoint request path; the client test only routes its emitted wire
-/// messages and never authors an acknowledgement, snapshot, or surface response. Snapshots are
-/// installed for the registry generation of the connection they arrived on, as the client loop
-/// installs them.
+/// Two real servers emit every acknowledgement, snapshot and surface used as evidence.
 #[tokio::test]
-async fn two_headless_servers_drive_atomic_endpoint_handoff() {
+async fn two_headless_servers_switch_endpoints_without_a_lease() {
     let mut source_server = headless_tests::test_headless_server();
     let _source_input =
         headless_tests::install_focused_test_runtime(&mut source_server, b"local source");
-    let (source_writer, source_control, _source_render) = headless_tests::test_client_writer();
+    let (source_writer, source_control, source_render) = headless_tests::test_client_writer();
     let source_client_id = ClientId::test_new(78);
     assert!(headless_tests::handle_server_event(
         &mut source_server,
@@ -205,356 +174,217 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         false,
         now,
     );
-    let mut activation = begin_activation(&shell, &mut endpoints, &target_id, 41);
-
-    // Route the source-off-first client messages through a second real HeadlessServer. Its
-    // typed response is the only source acknowledgement supplied to the activation state.
-    let mut source_release_request_id = None;
-    for message in std::mem::take(&mut *source_sent.lock().expect("test precondition")) {
-        match message {
-            shepr_protocol::ClientMessage::ClientShellFocus { focused } => {
-                assert!(headless_tests::handle_server_event(
-                    &mut source_server,
-                    ServerEvent::ClientShellFocus {
-                        client_id: source_client_id,
-                        focused,
-                    }
-                ));
-            }
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
-                boot_id,
-                request_id,
-                command,
-            } => {
-                if matches!(
-                    command,
-                    EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams {
-                        active: false
-                    })
-                ) {
-                    source_release_request_id = Some(request_id.clone());
-                }
-                assert!(headless_tests::handle_server_event(
-                    &mut source_server,
-                    ServerEvent::ClientShellEndpointRequest {
-                        client_id: source_client_id,
-                        boot_id,
-                        request_id,
-                        command: Box::new(command),
-                    }
-                ));
-            }
-            other => panic!("unexpected source lifecycle message: {other:?}"),
-        }
-    }
-    let source_release_request_id = source_release_request_id.expect("client source-off request");
-    let source_release_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    let (source_release_boot_id, source_release_result) = loop {
-        let message = recv_server_message_until(
-            &source_control,
-            source_release_deadline,
-            "source typed release acknowledgement",
-        );
-        match message {
-            ServerMessage::ClientShellEndpointResponse {
-                boot_id,
-                request_id,
-                result,
-            } if request_id == source_release_request_id => break (boot_id, result),
-            ServerMessage::EndpointSnapshot(_)
-            | ServerMessage::MouseCapture { .. }
-            | ServerMessage::ClientShellKeyboardReportAll { .. }
-            | ServerMessage::WindowTitle { .. }
-            | ServerMessage::ClientShellEndpointResponse { .. } => continue,
-            other => panic!("unexpected source release message: {other:?}"),
-        }
-    };
-    assert_eq!(
-        activation.receive_response_for_boot_at(
-            &ClientEndpointId::Local,
-            SOURCE_GENERATION,
-            &source_release_boot_id,
-            &source_release_request_id,
-            source_release_result,
-            &mut endpoints,
-            Instant::now(),
-        ),
-        SurfaceActivationProgress::Pending
-    );
-
-    headless_tests::dispatch_lifecycle_messages(
-        &mut target_server,
-        target_client_id,
-        std::mem::take(&mut *target_sent.lock().expect("test precondition")),
-    );
-    assert_eq!(
-        headless_tests::outer_terminal_focus(&target_server, target_client_id),
-        Some(true)
-    );
-    assert_eq!(
-        headless_tests::outer_terminal_focus(&source_server, source_client_id),
-        Some(false)
-    );
-    let ServerMessage::ClientShellEndpointResponse {
-        boot_id,
-        request_id,
-        result,
-    } = recv_server_message(&target_control, "target typed activation acknowledgement")
-    else {
-        panic!("expected target activation acknowledgement");
-    };
-    assert_eq!(
-        activation.receive_response_for_boot_at(
-            &target_id,
-            TARGET_GENERATION,
-            &boot_id,
-            &request_id,
-            result,
-            &mut endpoints,
-            Instant::now(),
-        ),
-        SurfaceActivationProgress::Pending
-    );
-
-    headless_tests::render_now(&mut target_server);
-    let coherent_snapshot = headless_tests::client_shell_snapshot(&target_control);
-    let snapshot_progress =
-        activation.receive_snapshot(&target_id, TARGET_GENERATION, &coherent_snapshot);
-    shell.set_endpoint_snapshot_for_generation(&target_id, TARGET_GENERATION, coherent_snapshot);
-    assert_eq!(snapshot_progress, SurfaceActivationProgress::Pending);
-    let ServerMessage::PaneSurface(coherent_surface) =
-        recv_render_server_message(&target_render, "target replacement surface")
-    else {
-        panic!("expected target pane surface");
-    };
-    assert_eq!(
-        activation.receive_surface(&target_id, TARGET_GENERATION, coherent_surface),
-        SurfaceActivationProgress::Ready
-    );
-
-    assert!(matches!(
-        activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
-        Ok(shepr_client::endpoint::ActivationCompletion::AwaitingPresentationSync {
-            endpoint,
-            ..
-        }) if endpoint == target_id
-    ));
-    // Pane input stays fenced from here to the effects fence because the handoff still owns
-    // the client's presentation; the registry only records that the target's surface is live.
-
-    let sync_request = target_sent
-        .lock()
-        .expect("test precondition")
-        .iter()
-        .find_map(|message| match message {
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
-                boot_id,
-                request_id,
-                command,
-            } => request_id.ends_with(":presentation-sync").then(|| {
-                (
-                    boot_id.clone(),
-                    request_id.clone(),
-                    Box::new(command.clone()),
-                )
-            }),
-            _ => None,
-        })
-        .expect("client presentation synchronization request");
-    assert!(headless_tests::handle_server_event(
-        &mut target_server,
-        ServerEvent::ClientShellEndpointRequest {
-            client_id: target_client_id,
-            boot_id: sync_request.0,
-            request_id: sync_request.1,
-            command: sync_request.2,
-        }
-    ));
-    let sync_response_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    let (sync_boot_id, sync_request_id, sync_result) = loop {
-        let message = recv_server_message_until(
-            &target_control,
-            sync_response_deadline,
-            "presentation synchronization acknowledgement",
-        );
-        if let ServerMessage::ClientShellEndpointResponse {
-            boot_id,
-            request_id,
-            result,
-        } = message
-            && request_id.ends_with(":presentation-sync")
-        {
-            break (boot_id, request_id, result);
-        }
-    };
-    assert_eq!(
-        activation.receive_response_for_boot_at(
-            &target_id,
-            TARGET_GENERATION,
-            &sync_boot_id,
-            &sync_request_id,
-            sync_result,
-            &mut endpoints,
-            Instant::now(),
-        ),
-        SurfaceActivationProgress::Pending
-    );
-    headless_tests::render_now(&mut target_server);
-    let sync_snapshot_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    let sync_snapshot = loop {
-        let message = recv_server_message_until(
-            &target_control,
-            sync_snapshot_deadline,
-            "presentation synchronization snapshot",
-        );
-        if let ServerMessage::EndpointSnapshot(snapshot) = message {
-            break *snapshot;
-        }
-    };
-    let sync_progress = activation.receive_snapshot(&target_id, TARGET_GENERATION, &sync_snapshot);
-    shell.set_endpoint_snapshot_for_generation(
-        &target_id,
-        TARGET_GENERATION,
-        Box::new(sync_snapshot),
-    );
-    assert_eq!(sync_progress, SurfaceActivationProgress::Pending);
-    let ServerMessage::PaneSurface(sync_surface) =
-        recv_render_server_message(&target_render, "presentation synchronization surface")
-    else {
-        panic!("expected synchronized target surface");
-    };
-    assert_eq!(
-        activation.receive_surface(&target_id, TARGET_GENERATION, sync_surface),
-        SurfaceActivationProgress::Ready
-    );
-    assert_eq!(
-        activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
-        Ok(shepr_client::endpoint::ActivationCompletion::AwaitingPresentationEffects)
-    );
-    let effects_token = target_sent
-        .lock()
-        .expect("test precondition")
-        .iter()
-        .find_map(|message| match message {
-            shepr_protocol::ClientMessage::PresentationSync(data) => Some(data.clone()),
-            _ => None,
-        })
-        .expect("client presentation effects fence");
-    assert!(!headless_tests::handle_server_event(
-        &mut target_server,
-        ServerEvent::ClientShellPresentationSync {
-            client_id: target_client_id,
-            token: effects_token.clone(),
-        }
-    ));
-    let mut replayed_mouse = false;
-    let mut replayed_keyboard = false;
-    let presentation_effects_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    loop {
-        match recv_server_message_until(
-            &target_control,
-            presentation_effects_deadline,
-            "presentation effects or readiness fence",
-        ) {
-            ServerMessage::MouseCapture { .. } => replayed_mouse = true,
-            ServerMessage::ClientShellKeyboardReportAll { .. } => replayed_keyboard = true,
-            ServerMessage::PresentationReady(data) => {
-                assert_eq!(data, effects_token);
-                assert_eq!(
-                    activation.receive_presentation_effects_ready(
-                        &target_id,
-                        TARGET_GENERATION,
-                        &data
-                    ),
-                    SurfaceActivationProgress::Ready
-                );
-                break;
-            }
-            ServerMessage::WindowTitle { .. } => {}
-            other => panic!("unexpected presentation fence message: {other:?}"),
-        }
-    }
-    assert!(replayed_mouse);
-    assert!(replayed_keyboard);
-    assert_eq!(
-        activation.complete_at(&mut shell, &mut endpoints, Instant::now()),
-        Ok(shepr_client::endpoint::ActivationCompletion::Activated)
-    );
-    assert_eq!(endpoints.active_id(), &target_id);
-    assert!(endpoints.active_surface_available());
-    assert!(shell.endpoint_is_active(&target_id));
-
-    target_sent.lock().expect("test precondition").clear();
-    let mut returning = begin_activation(&shell, &mut endpoints, &ClientEndpointId::Local, 42);
-    let returning_messages = std::mem::take(&mut *target_sent.lock().expect("test precondition"));
-    let returning_release_request_id = returning_messages
-        .iter()
-        .find_map(|message| match message {
-            shepr_protocol::ClientMessage::ClientShellEndpointRequest {
-                request_id,
-                command,
-                ..
-            } => matches!(
-                command,
-                EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams {
-                    active: false
-                })
-            )
-            .then(|| request_id.clone()),
-            _ => None,
-        })
-        .expect("client remote-off request");
-    headless_tests::dispatch_lifecycle_messages(
-        &mut target_server,
-        target_client_id,
-        returning_messages,
-    );
-    let returning_activation_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-    loop {
-        // Earlier responses from the first handoff may still be queued; only
-        // the answer to this activation's release request counts.
-        if let ServerMessage::ClientShellEndpointResponse {
-            boot_id,
-            request_id,
-            result,
-        } = recv_server_message_until(
-            &target_control,
-            returning_activation_deadline,
-            "returning activation acknowledgement",
-        ) && request_id == returning_release_request_id
-        {
-            // Returning to Local releases the remote best-effort and goes
-            // straight to activating Local, so Local never waits on this
-            // remote acknowledgement: the activation reports it as stale.
-            assert_eq!(
-                returning.receive_response_for_boot_at(
-                    &target_id,
-                    TARGET_GENERATION,
-                    &boot_id,
-                    &request_id,
-                    result,
-                    &mut endpoints,
-                    Instant::now(),
-                ),
-                SurfaceActivationProgress::Stale
-            );
-            break;
-        }
-    }
+    let mut choice = EndpointChoice::showing(ClientEndpointId::Local);
+    let mut serial = 41;
     headless_tests::dispatch_lifecycle_messages(
         &mut source_server,
         source_client_id,
-        std::mem::take(&mut *source_sent.lock().expect("test precondition")),
+        vec![shepr_protocol::ClientMessage::ClientShellFocus { focused: true }],
     );
     assert_eq!(
         headless_tests::outer_terminal_focus(&source_server, source_client_id),
-        Some(true),
-        "returning to Local must restore focus without a host focus event"
+        Some(true)
     );
-    assert_eq!(
-        headless_tests::outer_terminal_focus(&target_server, target_client_id),
-        Some(false)
-    );
+    let size = shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 };
+    let baseline = HostBaseline {
+        geometry: lifecycle_geometry(),
+        host_focused: true,
+        theme: &[],
+    };
+    for returning in [false, true] {
+        // The endpoint on screen before this pass's move is viewed and focused.
+        let (shown_server, shown_client) = if returning {
+            (&target_server, target_client_id)
+        } else {
+            (&source_server, source_client_id)
+        };
+        assert!(headless_tests::client_is_viewed(shown_server, shown_client));
+        assert_eq!(
+            headless_tests::outer_terminal_focus(shown_server, shown_client),
+            Some(true)
+        );
+        let (to, generation, server, client, control, render, sent, previous_sent) = if returning {
+            (
+                ClientEndpointId::Local,
+                SOURCE_GENERATION,
+                &mut source_server,
+                source_client_id,
+                &source_control,
+                &source_render,
+                &source_sent,
+                &target_sent,
+            )
+        } else {
+            (
+                target_id.clone(),
+                TARGET_GENERATION,
+                &mut target_server,
+                target_client_id,
+                &target_control,
+                &target_render,
+                &target_sent,
+                &source_sent,
+            )
+        };
+        // A non-viewed connection still supplies metadata; drain earlier control effects.
+        while control.try_recv().is_ok() {}
+        choice.select(to.clone(), None);
+        assert_eq!(
+            view::start_move(
+                &mut choice,
+                &mut endpoints,
+                &shell,
+                &baseline,
+                &mut serial,
+                Instant::now()
+            ),
+            StartOutcome::Started
+        );
+        // Nothing reaches the endpoint on screen when the move starts, so its server keeps
+        // the client viewed and focused (asserted at the top of this pass).
+        assert!(previous_sent.lock().expect("messages").is_empty());
+        let messages = std::mem::take(&mut *sent.lock().expect("messages"));
+        assert!(matches!(
+            messages.first(),
+            Some(shepr_protocol::ClientMessage::ClientShellResize { .. })
+        ));
+        assert!(matches!(
+            messages.last(),
+            Some(shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+                command: shepr_protocol::command::EndpointCommand::ClientShellSurfaceSet(
+                    shepr_protocol::command::ClientShellSurfaceSetParams { active: true }
+                ),
+                ..
+            })
+        ));
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, shepr_protocol::ClientMessage::ClientShellFocus { .. }))
+        );
+        headless_tests::dispatch_lifecycle_messages(server, client, messages);
+        headless_tests::render_now(server);
+        let mut ack = false;
+        let mut snapshot = false;
+        let deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
+        while !ack || !snapshot {
+            match recv_server_message_until(control, deadline, "view evidence") {
+                ServerMessage::ClientShellEndpointResponse {
+                    boot_id,
+                    request_id,
+                    result,
+                } if request_id.ends_with(":on") => {
+                    choice.preparing_mut().expect("preparing").receive_response(
+                        &to,
+                        generation,
+                        &boot_id,
+                        &request_id,
+                        result,
+                    );
+                    ack = true;
+                }
+                ServerMessage::EndpointSnapshot(s) => {
+                    choice
+                        .preparing_mut()
+                        .expect("preparing")
+                        .receive_snapshot(&to, generation, &s);
+                    shell.set_endpoint_snapshot_for_generation(&to, generation, s);
+                    snapshot = true;
+                }
+                _ => {}
+            }
+        }
+        let ServerMessage::PaneSurface(surface) =
+            recv_render_server_message(render, "view surface")
+        else {
+            panic!("expected full surface");
+        };
+        choice
+            .preparing_mut()
+            .expect("preparing")
+            .receive_surface(&to, generation, surface, size);
+        assert!(choice.preparing().expect("preparing").ready(size).is_some());
+        view::send_focus(&mut choice, &mut endpoints);
+        assert!(
+            view::commit_move(&mut choice, &mut endpoints, &mut shell, true, size)
+                .expect("commit")
+                .is_some()
+        );
+        assert_eq!(choice.shown(), Some(&to));
+        assert!(shell.endpoint_is_active(&to));
+        assert!(endpoints.viewed(&to));
+        let messages = std::mem::take(&mut *sent.lock().expect("messages"));
+        assert!(matches!(
+            messages.as_slice(),
+            [
+                shepr_protocol::ClientMessage::ClientShellFocus { focused: true },
+                shepr_protocol::ClientMessage::ReplayHostEffects
+            ]
+        ));
+        headless_tests::dispatch_lifecycle_messages(server, client, messages);
+        let mut mouse = false;
+        let mut keyboard = false;
+        let mut title = false;
+        let deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
+        while !mouse || !keyboard || !title {
+            match recv_server_message_until(control, deadline, "replayed host effects") {
+                ServerMessage::MouseCapture { .. } => mouse = true,
+                ServerMessage::ClientShellKeyboardReportAll { .. } => keyboard = true,
+                ServerMessage::WindowTitle { .. } => title = true,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            headless_tests::outer_terminal_focus(&source_server, source_client_id),
+            Some(true)
+        );
+        assert_eq!(
+            headless_tests::outer_terminal_focus(&target_server, target_client_id),
+            Some(true)
+        );
+        assert_eq!(
+            view::release_unwanted(&choice, &mut endpoints, &shell, &mut serial),
+            1
+        );
+        let messages = std::mem::take(&mut *previous_sent.lock().expect("messages"));
+        if returning {
+            headless_tests::dispatch_lifecycle_messages(
+                &mut target_server,
+                target_client_id,
+                messages,
+            );
+            assert_eq!(
+                headless_tests::outer_terminal_focus(&target_server, target_client_id),
+                Some(false)
+            );
+            assert!(!headless_tests::client_is_viewed(
+                &target_server,
+                target_client_id
+            ));
+            assert!(headless_tests::client_is_viewed(
+                &source_server,
+                source_client_id
+            ));
+        } else {
+            headless_tests::dispatch_lifecycle_messages(
+                &mut source_server,
+                source_client_id,
+                messages,
+            );
+            assert_eq!(
+                headless_tests::outer_terminal_focus(&source_server, source_client_id),
+                Some(false)
+            );
+            assert!(!headless_tests::client_is_viewed(
+                &source_server,
+                source_client_id
+            ));
+            assert!(headless_tests::client_is_viewed(
+                &target_server,
+                target_client_id
+            ));
+        }
+    }
     headless_tests::shutdown_test_runtimes(&mut source_server);
     headless_tests::shutdown_test_runtimes(&mut target_server);
 }

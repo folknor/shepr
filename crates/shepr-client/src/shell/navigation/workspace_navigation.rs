@@ -180,7 +180,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        // The runtime resolves explicit picks against presentation ownership. If it can use a
+        // The runtime resolves explicit picks against the shown endpoint. If it can use a
         // direct focus request, `focus_endpoint_target` records the pending highlight there.
         if self.focus_or_activate(
             target.endpoint_id.clone(),

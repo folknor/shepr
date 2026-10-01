@@ -1,20 +1,21 @@
-mod activation;
+mod choice;
 pub(crate) mod commands;
 mod health;
 mod local_failure;
 mod message_policy;
 mod registry;
-pub(crate) mod selection;
 mod supervisor;
+pub mod view;
 mod writer;
 
-pub use activation::*;
+pub use choice::*;
 pub(crate) use local_failure::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;
 pub use registry::{EndpointRegistry, EndpointTransport};
 pub use shepr_config::MachineLabel;
 pub(crate) use supervisor::*;
+pub use view::{HostBaseline, StartOutcome};
 pub(crate) use writer::{EndpointReadActivity, NativeEndpointTransport};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

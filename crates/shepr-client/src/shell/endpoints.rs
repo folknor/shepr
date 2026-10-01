@@ -201,7 +201,8 @@ impl ClientShellState {
     }
 
     /// A terminal normally starts focused. `None` means this host cannot report focus events,
-    /// not that the endpoint has no viewer; activation therefore sends an explicit true baseline.
+    /// not that the endpoint has no viewer; a move's commit therefore sends an explicit true
+    /// baseline.
     pub(crate) fn host_focus_baseline(&self) -> bool {
         self.outer_focused.unwrap_or(true)
     }

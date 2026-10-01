@@ -22,7 +22,7 @@ pub(crate) fn handle_server_event(
 ) -> bool {
     let changed = server.test_handle_server_event(event);
     // The loop flushes endpoint replies at the end of its pass. The cross-crate
-    // handoff tests drive renders themselves, so replies leave here at once.
+    // endpoint move tests drive renders themselves, so replies leave here at once.
     server.release_endpoint_replies(ReleaseMode::WithinBudget);
     changed
 }
@@ -39,6 +39,16 @@ pub(crate) fn outer_terminal_focus(
         .clients
         .get(&client_id)
         .and_then(|client| client.shell_state().outer_terminal_focus)
+}
+
+pub(crate) fn client_is_viewed(
+    server: &HeadlessServer,
+    client_id: crate::server::ClientId,
+) -> bool {
+    server
+        .clients
+        .get(&client_id)
+        .is_some_and(|client| client.shell_state().surface_active)
 }
 
 pub(crate) fn dispatch_lifecycle_messages(
@@ -74,6 +84,17 @@ pub(crate) fn dispatch_lifecycle_messages(
                 request_id,
                 command: Box::new(command),
             },
+            shepr_protocol::ClientMessage::ClientShellHostTheme { update } => {
+                crate::server::client_transport::ServerEvent::ClientShellHostTheme {
+                    client_id,
+                    update,
+                }
+            }
+            shepr_protocol::ClientMessage::ReplayHostEffects => {
+                crate::server::client_transport::ServerEvent::ClientShellReplayHostEffects {
+                    client_id,
+                }
+            }
             other => panic!("unhandled lifecycle message: {other:?}"),
         };
         server.test_handle_server_event(event);

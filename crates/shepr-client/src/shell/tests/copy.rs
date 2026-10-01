@@ -1416,7 +1416,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         modifiers: KeyModifiers::empty(),
     })]);
     // An explicit pick goes through the runtime, which knows whether the
-    // endpoint owns the presentation.
+    // endpoint is shown.
     assert!(matches!(
         outcome.actions.as_slice(),
         [ClientShellAction::ActivateEndpoint {

@@ -386,8 +386,8 @@ pub enum ClientMessage {
 
     /// Open a client-owned shell connection.
     EndpointHello(super::endpoint::EndpointClientHello),
-    /// Fence host presentation effects during endpoint activation.
-    PresentationSync(String),
+    /// Replay this viewed connection's current mouse capture, keyboard mode and title.
+    ReplayHostEffects,
     /// Check that a connected endpoint is responsive.
     HealthPing,
 }

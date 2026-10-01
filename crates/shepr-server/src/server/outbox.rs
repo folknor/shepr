@@ -660,7 +660,7 @@ struct Told {
 
 impl ClientOutbox {
     /// Forgets everything told, so the next `tell_*` of each value sends it
-    /// again (a surface activation or presentation sync replays them).
+    /// again (a surface activation or a host-effects replay requests them).
     pub(crate) fn forget_presentation(&mut self) {
         self.told = Told::default();
     }

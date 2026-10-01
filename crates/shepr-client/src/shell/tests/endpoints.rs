@@ -1442,8 +1442,8 @@ fn clicking_an_online_active_machine_row_toggles_its_collapse_state_and_reselect
         modifiers: KeyModifiers::empty(),
     })]);
 
-    // The targetless selection reaches the runtime, which drops it while this
-    // endpoint owns the presentation.
+    // The targetless selection reaches the runtime, where selecting the shown
+    // endpoint changes nothing.
     assert!(matches!(
         outcome.actions.as_slice(),
         [ClientShellAction::ActivateEndpoint {

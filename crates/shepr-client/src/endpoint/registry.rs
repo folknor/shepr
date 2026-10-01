@@ -22,7 +22,7 @@ pub trait EndpointTransport: Send {
 pub(crate) struct EndpointConnection {
     transport: Box<dyn EndpointTransport>,
     pub(crate) generation: shepr_protocol::ConnectionGeneration,
-    pub(crate) surface_active: bool,
+    pub(crate) viewed: bool,
     health: Option<EndpointHealth>,
     /// Frame arrivals as the reader thread stamps them; a connection that has one takes
     /// its health from it rather than from the client loop's processing.
@@ -46,7 +46,6 @@ pub(crate) enum EndpointSendOutcome {
 }
 
 pub struct EndpointRegistry {
-    active: ClientEndpointId,
     connections: HashMap<ClientEndpointId, EndpointConnection>,
     failures: Vec<EndpointTransportFailure>,
 }
@@ -54,7 +53,6 @@ pub struct EndpointRegistry {
 impl EndpointRegistry {
     pub(crate) fn empty() -> Self {
         Self {
-            active: ClientEndpointId::Local,
             connections: HashMap::new(),
             failures: Vec::new(),
         }
@@ -75,18 +73,12 @@ impl EndpointRegistry {
         matches!(endpoint_id, ClientEndpointId::Ssh(_))
     }
 
-    pub fn active_id(&self) -> &ClientEndpointId {
-        &self.active
-    }
-
-    /// Whether the active endpoint's connection holds a live surface. This is transport state
-    /// only: who owns the presentation, and so whether pane input may flow, is the client's
-    /// `Presentation`, which also requires `Owned` (see
-    /// `shell_runtime::active_endpoint_owns_presentation`).
-    pub fn active_surface_available(&self) -> bool {
+    /// Whether this endpoint's connection has been told it is viewed. False without a
+    /// connection.
+    pub fn viewed(&self, id: &ClientEndpointId) -> bool {
         self.connections
-            .get(&self.active)
-            .is_some_and(|connection| connection.surface_active)
+            .get(id)
+            .is_some_and(|connection| connection.viewed)
     }
 
     pub(crate) fn connection(&self, endpoint_id: &ClientEndpointId) -> Option<&EndpointConnection> {
@@ -98,17 +90,10 @@ impl EndpointRegistry {
         endpoint_id: ClientEndpointId,
         transport: impl EndpointTransport + 'static,
         generation: u64,
-        surface_active: bool,
+        viewed: bool,
         now: Instant,
     ) {
-        self.insert_with_activity(
-            endpoint_id,
-            transport,
-            generation,
-            surface_active,
-            None,
-            now,
-        );
+        self.insert_with_activity(endpoint_id, transport, generation, viewed, None, now);
     }
 
     pub(crate) fn insert_native(
@@ -116,7 +101,7 @@ impl EndpointRegistry {
         endpoint_id: ClientEndpointId,
         transport: NativeEndpointTransport,
         generation: u64,
-        surface_active: bool,
+        viewed: bool,
         now: Instant,
     ) {
         let read_activity = Some(transport.read_activity());
@@ -124,7 +109,7 @@ impl EndpointRegistry {
             endpoint_id,
             transport,
             generation,
-            surface_active,
+            viewed,
             read_activity,
             now,
         );
@@ -135,7 +120,7 @@ impl EndpointRegistry {
         endpoint_id: ClientEndpointId,
         transport: impl EndpointTransport + 'static,
         generation: u64,
-        surface_active: bool,
+        viewed: bool,
         read_activity: Option<Arc<EndpointReadActivity>>,
         now: Instant,
     ) {
@@ -145,7 +130,7 @@ impl EndpointRegistry {
             EndpointConnection {
                 transport: Box::new(transport),
                 generation: generation.into(),
-                surface_active,
+                viewed,
                 health,
                 read_activity,
                 detach_sent: false,
@@ -253,34 +238,77 @@ impl EndpointRegistry {
         }
     }
 
-    pub(crate) fn set_active(&mut self, endpoint_id: &ClientEndpointId) -> bool {
-        if !self
-            .connections
-            .get(endpoint_id)
-            .is_some_and(|connection| connection.surface_active)
-        {
-            return false;
-        }
-        self.active = endpoint_id.clone();
-        true
-    }
-
-    pub(crate) fn set_surface_active(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        active: bool,
-    ) -> bool {
+    /// Records whether the connection has been told it is viewed; returns whether that changed.
+    /// Outside tests only `view::turn_on` sets it, right before it sends the on request;
+    /// `release_unwanted_views` clears it the same way before the off request.
+    pub(crate) fn set_viewed(&mut self, endpoint_id: &ClientEndpointId, viewed: bool) -> bool {
         let Some(connection) = self.connections.get_mut(endpoint_id) else {
             return false;
         };
-        let changed = connection.surface_active != active;
-        connection.surface_active = active;
+        let changed = connection.viewed != viewed;
+        connection.viewed = viewed;
         changed
     }
 
-    pub(crate) fn send(&mut self, message: &ClientMessage) -> EndpointSendOutcome {
-        let endpoint_id = self.active.clone();
-        self.send_to(&endpoint_id, message)
+    /// Sends to every viewed connection (a resize, a theme update). Sends while iterating; a
+    /// failed send's endpoint id is collected (the only allocation, on the failure path) and
+    /// recorded after the traversal, because `record_failure` removes from the map being
+    /// iterated.
+    pub(crate) fn send_viewed(&mut self, message: &ClientMessage) {
+        let mut failures = Vec::new();
+        for (id, connection) in &mut self.connections {
+            if connection.viewed
+                && let Err(error) = connection.transport.send(message)
+            {
+                failures.push((id.clone(), error));
+            }
+        }
+        for (id, error) in failures {
+            self.record_failure(&id, &error);
+        }
+    }
+
+    /// One pass over the connections: every viewed connection that is not `wanted` and whose
+    /// boot id `boot_id_of` knows is marked not viewed, then sent focus-loss and the view-off
+    /// request (`client-shell-view:{serial}:off`, `*serial` advancing once per request). The
+    /// off acknowledgement is never awaited. A connection without a known boot id is skipped
+    /// and stays viewed for the next pass. Failed sends are recorded after the traversal as in
+    /// `send_viewed`. Returns how many connections were released. Allocates nothing when no
+    /// connection is viewed and unwanted.
+    pub(crate) fn release_unwanted_views<'a>(
+        &mut self,
+        wanted: impl Fn(&ClientEndpointId) -> bool,
+        boot_id_of: impl Fn(&ClientEndpointId) -> Option<&'a shepr_protocol::BootId>,
+        serial: &mut u64,
+    ) -> usize {
+        let mut failures = Vec::new();
+        let mut released = 0;
+        for (id, connection) in &mut self.connections {
+            if !connection.viewed || wanted(id) {
+                continue;
+            }
+            let Some(boot) = boot_id_of(id) else {
+                continue;
+            };
+            connection.viewed = false;
+            released += 1;
+            let request_id = format!("client-shell-view:{serial}:off").into();
+            *serial = serial.saturating_add(1);
+            let request = super::view::surface_interest_request(boot, request_id, false);
+            // A transport that failed the focus-loss is a lost connection; its server drops the
+            // view with it, so the release is not sent after it.
+            let sent = connection
+                .transport
+                .send(&ClientMessage::ClientShellFocus { focused: false })
+                .and_then(|()| connection.transport.send(&request));
+            if let Err(error) = sent {
+                failures.push((id.clone(), error));
+            }
+        }
+        for (id, error) in failures {
+            self.record_failure(&id, &error);
+        }
+        released
     }
 
     pub(crate) fn send_to(
@@ -464,19 +492,20 @@ mod tests {
             true,
             Instant::now(),
         );
-        assert!(registry.set_active(&ssh_id));
 
         assert_eq!(
-            registry.send(&ClientMessage::ClientShellFocus { focused: true }),
+            registry.send_to(&ssh_id, &ClientMessage::ClientShellFocus { focused: true }),
             EndpointSendOutcome::NotSent
         );
         assert!(registry.connection(&ssh_id).is_none());
         assert!(registry.connection(&ClientEndpointId::Local).is_some());
         assert_eq!(registry.take_failures()[0].endpoint_id, ssh_id);
 
-        assert!(registry.set_active(&ClientEndpointId::Local));
         assert_eq!(
-            registry.send(&ClientMessage::ClientShellFocus { focused: true }),
+            registry.send_to(
+                &ClientEndpointId::Local,
+                &ClientMessage::ClientShellFocus { focused: true }
+            ),
             EndpointSendOutcome::Sent
         );
         assert_eq!(local_sent.lock().expect("test precondition").len(), 1);
@@ -538,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnecting_active_identity_does_not_count_as_an_active_surface() {
+    fn a_reconnected_connection_is_not_viewed_until_told() {
         let mut registry = EndpointRegistry::new(
             FakeTransport {
                 sent: Arc::new(Mutex::new(Vec::new())),
@@ -557,11 +586,10 @@ mod tests {
             true,
             Instant::now(),
         );
-        assert!(registry.set_active(&ssh_id));
-        assert!(registry.active_surface_available());
+        assert!(registry.viewed(&ssh_id));
         registry.disconnect(&ssh_id);
         registry.insert(
-            ssh_id,
+            ssh_id.clone(),
             FakeTransport {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
@@ -570,7 +598,9 @@ mod tests {
             false,
             Instant::now(),
         );
-        assert!(!registry.active_surface_available());
+        assert!(!registry.viewed(&ssh_id));
+        registry.set_viewed(&ssh_id, true);
+        assert!(registry.viewed(&ssh_id));
     }
 
     #[test]
@@ -791,7 +821,10 @@ mod tests {
         );
         assert_eq!(registry.next_service_deadline(now), None);
         assert_eq!(
-            registry.send(&ClientMessage::ClientShellFocus { focused: true }),
+            registry.send_to(
+                &ClientEndpointId::Local,
+                &ClientMessage::ClientShellFocus { focused: true }
+            ),
             EndpointSendOutcome::NotSent
         );
         assert_eq!(registry.next_service_deadline(now), Some(now));
@@ -845,11 +878,11 @@ mod tests {
         );
 
         assert_eq!(
-            registry.send(&ClientMessage::Detach),
+            registry.send_to(&ClientEndpointId::Local, &ClientMessage::Detach),
             EndpointSendOutcome::Sent
         );
         assert_eq!(
-            registry.send(&ClientMessage::Detach),
+            registry.send_to(&ClientEndpointId::Local, &ClientMessage::Detach),
             EndpointSendOutcome::Sent
         );
         drop(registry);
@@ -871,5 +904,81 @@ mod tests {
         );
         assert!(registry.accepts(&ClientEndpointId::Local, 7));
         assert!(!registry.accepts(&ClientEndpointId::Local, 6));
+    }
+    #[test]
+    fn send_viewed_reaches_only_viewed_connections() {
+        let local = crate::tests::endpoint_choice::RecordingTransport::default();
+        let other = crate::tests::endpoint_choice::RecordingTransport::default();
+        let id = ClientEndpointId::Ssh(profile());
+        let mut registry = EndpointRegistry::new(local.clone(), 1);
+        registry.insert(id.clone(), other.clone(), 7, false, Instant::now());
+        let msg = ClientMessage::ClientShellFocus { focused: true };
+        registry.send_viewed(&msg);
+        assert_eq!(local.take(), vec![msg.clone()]);
+        assert!(other.take().is_empty());
+        registry.set_viewed(&id, true);
+        registry.send_viewed(&msg);
+        assert_eq!(local.take(), vec![msg.clone()]);
+        assert_eq!(other.take(), vec![msg]);
+    }
+    #[test]
+    fn send_viewed_records_a_failed_connection_and_still_reaches_the_rest() {
+        let local = crate::tests::endpoint_choice::RecordingTransport::default();
+        let other = crate::tests::endpoint_choice::RecordingTransport::default();
+        let id = ClientEndpointId::Ssh(profile());
+        let mut registry = EndpointRegistry::new(local.clone(), 1);
+        registry.insert(id.clone(), other.clone(), 7, true, Instant::now());
+        other.fail_next();
+        registry.send_viewed(&ClientMessage::ClientShellFocus { focused: true });
+        assert_eq!(local.take().len(), 1);
+        assert!(registry.connection(&id).is_none());
+        assert_eq!(registry.take_failures()[0].endpoint_id, id);
+    }
+    #[test]
+    fn release_unwanted_views_releases_every_resolvable_one_in_one_pass() {
+        let mut registry = EndpointRegistry::empty();
+        let boot = crate::tests::test_boot_id("boot");
+        let transports: Vec<_> = (0..4)
+            .map(|_| crate::tests::endpoint_choice::RecordingTransport::default())
+            .collect();
+        let ids: Vec<_> = (0..4)
+            .map(|n| {
+                ClientEndpointId::Ssh(
+                    crate::endpoint::MachineLabel::parse(format!("m{n}")).expect("machine"),
+                )
+            })
+            .collect();
+        for (id, transport) in ids.iter().zip(&transports) {
+            registry.insert(id.clone(), transport.clone(), 7, true, Instant::now());
+        }
+        let mut serial = 1;
+        assert_eq!(
+            registry.release_unwanted_views(
+                |id| id == &ids[3],
+                |id| (id != &ids[2]).then_some(&boot),
+                &mut serial
+            ),
+            2
+        );
+        assert_eq!(serial, 3);
+        for index in 0..2 {
+            assert!(!registry.viewed(&ids[index]));
+            assert!(matches!(
+                transports[index].take().as_slice(),
+                [
+                    ClientMessage::ClientShellFocus { focused: false },
+                    ClientMessage::ClientShellEndpointRequest {
+                        command: shepr_protocol::command::EndpointCommand::ClientShellSurfaceSet(
+                            shepr_protocol::command::ClientShellSurfaceSetParams { active: false }
+                        ),
+                        ..
+                    }
+                ]
+            ));
+        }
+        for index in 2..4 {
+            assert!(registry.viewed(&ids[index]));
+            assert!(transports[index].take().is_empty());
+        }
     }
 }

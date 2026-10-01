@@ -123,10 +123,8 @@ pub(super) const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// The window tolerates a burst of cancelled requests without unbounded per-endpoint growth.
 pub(super) const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
 
-/// Maximum time an endpoint surface activation may remain pending.
-///
-/// The timeout allows a slow endpoint to acknowledge activation without leaving input blocked.
-pub(super) const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a move may stay Preparing before it fails and the shown endpoint stays.
+pub(super) const ENDPOINT_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Endpoint heartbeat interval shared with the server's core timing policy.
 pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_core::limits::HEARTBEAT_INTERVAL;
 /// Expire an endpoint after this much transport silence, measured when the reader receives a

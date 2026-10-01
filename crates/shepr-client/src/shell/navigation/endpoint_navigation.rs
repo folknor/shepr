@@ -60,8 +60,7 @@ impl ClientShellState {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
-            // The runtime suppresses this while the endpoint owns the presentation, and uses it
-            // to cancel a handoff while this endpoint is still the displayed source.
+            // Selecting the shown endpoint cancels a move in progress.
             self.activate_endpoint(endpoint_id, outcome);
             outcome.repaint = true;
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
@@ -247,9 +246,8 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
-        // Only the runtime knows whether this endpoint still owns the presentation. Routing
-        // every explicit pick through it lets it focus an owned endpoint, re-prove an unavailable
-        // one, or retarget a handoff already in progress.
+        // The runtime resolves every explicit pick against the shown endpoint: focus it,
+        // prepare an unavailable endpoint, or retarget a move already in progress.
         outcome.actions.push(ClientShellAction::ActivateEndpoint {
             endpoint_id,
             target: Some(target),

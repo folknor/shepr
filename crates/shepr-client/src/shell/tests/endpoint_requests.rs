@@ -142,16 +142,11 @@ impl crate::endpoint::EndpointTransport for TestTransport {
 }
 
 #[test]
-fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
-    use crate::{
-        ClientLoopEvent, endpoint::EndpointRegistry, endpoint::commands::EndpointCommands,
-    };
+fn a_pick_is_applied_at_once_without_an_event_round_trip() {
+    use crate::endpoint::{EndpointChoice, EndpointRegistry, commands::EndpointCommands};
     let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
     let mut commands = EndpointCommands::default();
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    tx.try_send(ClientLoopEvent::Timer)
-        .expect("test precondition");
-    let mut scheduled = None;
+    let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
     let mut shell = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     crate::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
@@ -162,33 +157,52 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
         }],
         &mut commands,
         &mut endpoints,
-        &crate::Presentation::Owned,
+        &mut choice,
         &mut std::io::sink(),
         false,
         &mut shell,
-        &mut scheduled,
         std::time::Instant::now(),
     );
-    let next = scheduled.take().or_else(|| rx.try_recv().ok());
-    assert!(matches!(next, Some(ClientLoopEvent::ActivateEndpoint {
-        endpoint_id: ClientEndpointId::Local,
-        target: Some(ClientEndpointFocusTarget::Workspace(id)), ..
-    }) if id == "w1"));
-    assert!(matches!(rx.try_recv(), Ok(ClientLoopEvent::Timer)));
+    assert_eq!(
+        choice.pending_start().expect("waiting pick").to,
+        &ClientEndpointId::Local
+    );
+    assert!(choice.shown().is_none());
 }
 
 #[test]
-fn current_owned_targetless_pick_is_a_noop_but_unowned_pick_reproves() {
-    use crate::endpoint::commands::EndpointCommands;
-    use crate::{ClientLoopEvent, Presentation, endpoint::EndpointRegistry};
-
-    for (presentation, should_schedule) in [
-        (Presentation::Owned, false),
-        (Presentation::Unavailable, true),
-    ] {
+fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
+    use crate::endpoint::{EndpointChoice, EndpointRegistry, commands::EndpointCommands};
+    for shown in [false, true] {
         let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
         let mut commands = EndpointCommands::default();
-        let mut scheduled = None;
+        let mut choice = if shown {
+            EndpointChoice::showing(ClientEndpointId::Local)
+        } else {
+            // Nothing shown, and a proof of Local already failed on this generation: only an
+            // explicit pick may retry it there.
+            let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
+            choice.begin_preparing(
+                crate::endpoint::ViewLease {
+                    endpoint_id: ClientEndpointId::Local,
+                    generation: 1,
+                    boot_id: crate::tests::test_boot_id("boot-1"),
+                    minimum_revision: 1,
+                },
+                "client-shell-view:1:on".into(),
+                shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
+                std::time::Instant::now(),
+            );
+            choice.fail_move();
+            assert_eq!(
+                choice
+                    .pending_start()
+                    .expect("failed proof")
+                    .failed_generation,
+                Some(1)
+            );
+            choice
+        };
         let mut shell =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         crate::shell_runtime::dispatch_client_shell_actions(
@@ -198,40 +212,46 @@ fn current_owned_targetless_pick_is_a_noop_but_unowned_pick_reproves() {
             }],
             &mut commands,
             &mut endpoints,
-            &presentation,
+            &mut choice,
             &mut std::io::sink(),
             false,
             &mut shell,
-            &mut scheduled,
             std::time::Instant::now(),
         );
-        assert_eq!(
-            matches!(scheduled, Some(ClientLoopEvent::ActivateEndpoint { .. })),
-            should_schedule
-        );
+        if shown {
+            assert!(choice.pending_start().is_none());
+            assert_eq!(choice.shown(), Some(&ClientEndpointId::Local));
+        } else {
+            assert_eq!(
+                choice
+                    .pending_start()
+                    .expect("rearmed proof")
+                    .failed_generation,
+                None
+            );
+        }
     }
 }
 
 #[test]
-fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
+fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() {
     use crate::endpoint::EndpointRegistry;
     use crate::endpoint::commands::EndpointCommands;
 
     for fail_send in [false, true] {
         let (mut state, actions) = pending_request();
         let mut endpoints = EndpointRegistry::new(TestTransport { fail: fail_send }, 1);
-        endpoints.set_surface_active(&ClientEndpointId::Local, fail_send);
+        endpoints.set_viewed(&ClientEndpointId::Local, fail_send);
         let mut commands = EndpointCommands::default();
-        let mut scheduled = None;
+        let mut choice = crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local);
         let repaint = crate::shell_runtime::dispatch_client_shell_actions(
             actions,
             &mut commands,
             &mut endpoints,
-            &crate::Presentation::Owned,
+            &mut choice,
             &mut std::io::sink(),
             false,
             &mut state,
-            &mut scheduled,
             std::time::Instant::now(),
         );
         assert!(repaint);
@@ -288,18 +308,24 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
     assert!(cancelled.possibly_sent.is_empty());
     state.cancel_unsent_endpoint_request(&stale_id);
     assert!(state.visible_endpoint_notice.is_none());
-    assert!(!commands.accepts_response(
-        &ClientEndpointId::Local,
-        1,
-        &crate::tests::test_boot_id("boot-1"),
-        &stale_id
-    ));
-    assert!(commands.accepts_response(
-        &ClientEndpointId::Local,
-        2,
-        &crate::tests::test_boot_id("boot-1"),
-        &current_id
-    ));
+    assert_eq!(
+        commands.response_kind(
+            &ClientEndpointId::Local,
+            1,
+            &crate::tests::test_boot_id("boot-1"),
+            &stale_id
+        ),
+        crate::endpoint::commands::CommandResponseKind::Untracked
+    );
+    assert_eq!(
+        commands.response_kind(
+            &ClientEndpointId::Local,
+            2,
+            &crate::tests::test_boot_id("boot-1"),
+            &current_id
+        ),
+        crate::endpoint::commands::CommandResponseKind::Active
+    );
     assert!(state.pending_requests.contains_key(current_id.as_str()));
 }
 

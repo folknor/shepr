@@ -361,17 +361,6 @@ complete a handshake without restoring the link"). A Local server that accepts
 and then dies (a crash loop, or a stopping server that welcomes then sends
 `ServerShutdown`) is retried every `INITIAL_RETRY_DELAY` forever.
 
-## REJ-025 - A rollback that ends `Unavailable` leaves the source surface on
-
-Class: failure on failure (an activation that has already failed and is rolling
-back). Scope: client endpoints.
-
-An endpoint left `Unavailable` by `rollback_at` from `RestoringSource` (or from
-synchronizing the source) has had surface-on sent and never released; its server
-keeps this client's surface active (and the client in its PTY size and
-foreground decisions) while the client drops everything it sends.
-`ActivationRollback::Unavailable` releases nothing on the way out. See `notes/work.md` item 1.
-
 ## REJ-026 - The API's control path shares the admission pool with app-bound requests, so a stalled loop makes `server stop` fail
 
 Class: failure on failure (the app loop has already stalled). Scope: wire and

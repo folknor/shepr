@@ -172,26 +172,10 @@ impl EndpointCommands {
         cancelled
     }
 
-    pub(crate) fn accepts_response(
-        &self,
-        endpoint_id: &ClientEndpointId,
-        response_generation: u64,
-        response_boot_id: &str,
-        response_request_id: &str,
-    ) -> bool {
-        self.lanes
-            .get(endpoint_id)
-            .and_then(|lane| lane.in_flight.as_ref())
-            .is_some_and(|command| {
-                command.key.generation == response_generation
-                    && command.key.boot_id == response_boot_id
-                    && command.key.request_id == response_request_id
-            })
-    }
-
-    /// Retire the complete source lane at source-off. The in-flight request is tombstoned for a
-    /// late endpoint-local response; every queued request is cancelled before it can run in a
-    /// later presentation epoch. Other endpoint lanes are deliberately untouched.
+    /// Retire the complete lane when an endpoint stops being shown. The in-flight request is
+    /// tombstoned for a late endpoint-local response; every queued request is cancelled before
+    /// it can run while another endpoint is shown. Other endpoint lanes are deliberately
+    /// untouched.
     pub(crate) fn retire_lane(
         &mut self,
         endpoint_id: &ClientEndpointId,

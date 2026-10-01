@@ -13,6 +13,14 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    /// The client-side string-carrying message the framing tests use as a vehicle.
+    fn paste(text: String) -> ClientMessage {
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".parse().expect("test pane id"),
+            events: vec![crate::ClientPaneInputEvent::Paste(text)],
+        }
+    }
+
     #[test]
     fn client_surface_clamp_fits_server_geometry_limit() {
         let surface = ClientSurfaceSize {
@@ -605,7 +613,7 @@ mod tests {
                         i % 2 == 0,
                     ),
                 },
-                1 => ClientMessage::PresentationSync("x".repeat((i as usize % 50) + 1)),
+                1 => paste("x".repeat((i as usize % 50) + 1)),
                 2 => ClientMessage::ClientShellFocus {
                     focused: i % 2 == 0,
                 },
@@ -694,7 +702,7 @@ mod tests {
     #[test]
     fn framing_partial_read_reassembly() {
         // Simulate partial reads by using a reader that yields small chunks.
-        let msg = ClientMessage::PresentationSync("x".repeat(500));
+        let msg = paste("x".repeat(500));
         let mut full_buf = Vec::new();
         write_message(&mut full_buf, &msg).expect("test precondition");
 
@@ -997,13 +1005,29 @@ mod tests {
         u32::try_from(len).expect("test precondition")
     }
 
-    // PresentationSync and Clipboard are one variant-index byte followed by a
-    // 3-byte varint length for strings under 2 MiB (4 bytes from 2 MiB on).
-    const SYNC_ENVELOPE: usize = 4;
+    // Clipboard is one variant-index byte followed by a 3-byte varint length for strings
+    // under 2 MiB (4 bytes from 2 MiB on).
+    const CLIPBOARD_ENVELOPE: usize = 4;
+    // Everything in a `paste` message but its text, measured from an empty paste so no pane id
+    // or variant byte is counted by hand. The text's own length varint is one byte at length 0
+    // and three for the lengths these tests use (all below 2 MiB), hence the two extra bytes.
+    fn paste_envelope() -> usize {
+        codec::encoded_len(&paste(String::new())).expect("paste encoding") + 2
+    }
+    #[test]
+    fn replay_host_effects_roundtrips() {
+        let message = ClientMessage::ReplayHostEffects;
+        let mut bytes = Vec::new();
+        codec::encode_into(&mut bytes, &message).expect("encode replay");
+        assert_eq!(
+            codec::from_slice_exact::<ClientMessage>(&bytes).expect("decode replay"),
+            message
+        );
+    }
 
     #[test]
     fn a_message_at_the_frame_cap_is_one_plain_frame() {
-        let at_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - SYNC_ENVELOPE));
+        let at_limit = paste("x".repeat(MAX_FRAME_SIZE - paste_envelope()));
         assert_eq!(
             codec::encoded_len(&at_limit).expect("test precondition"),
             MAX_FRAME_SIZE
@@ -1021,7 +1045,7 @@ mod tests {
         let continued = frame_len(MAX_FRAME_SIZE) | (1 << 31);
         // One byte past the cap: a full continued frame and a one-byte final one.
         let over = ServerMessage::Clipboard {
-            data: "x".repeat(MAX_FRAME_SIZE - SYNC_ENVELOPE + 1),
+            data: "x".repeat(MAX_FRAME_SIZE - CLIPBOARD_ENVELOPE + 1),
         };
         let len = codec::encoded_len(&over).expect("test precondition");
         let frames = encode_message(&over).expect("test precondition");
@@ -1037,7 +1061,7 @@ mod tests {
         // Exactly two frames' worth: the second frame is full and final, with
         // no empty frame after it.
         let two_full = ServerMessage::Clipboard {
-            data: "x".repeat(2 * MAX_FRAME_SIZE - SYNC_ENVELOPE - 1),
+            data: "x".repeat(2 * MAX_FRAME_SIZE - CLIPBOARD_ENVELOPE - 1),
         };
         assert_eq!(
             codec::encoded_len(&two_full).expect("test precondition"),
@@ -1054,8 +1078,7 @@ mod tests {
 
     #[test]
     fn encode_frame_refuses_what_one_frame_cannot_carry() {
-        let over_limit =
-            ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE - SYNC_ENVELOPE + 1));
+        let over_limit = paste("x".repeat(MAX_FRAME_SIZE - paste_envelope() + 1));
         match encode_frame(&over_limit) {
             Err(FramingError::Oversized { claimed, max }) => {
                 assert_eq!(claimed, MAX_FRAME_SIZE + 1);
@@ -1067,7 +1090,7 @@ mod tests {
 
     #[test]
     fn a_limited_reader_refuses_a_message_past_its_cap() {
-        let over = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE));
+        let over = paste("x".repeat(MAX_FRAME_SIZE));
         let frames = encode_message(&over).expect("test precondition");
         let result: Result<ClientMessage, FramingError> =
             read_message_limited(&mut frames.as_slice(), MAX_CLIENT_MESSAGE_SIZE);
@@ -1129,7 +1152,7 @@ mod tests {
 
     #[test]
     fn single_frame_reader_rejects_a_continued_client_message() {
-        let message = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE));
+        let message = paste("x".repeat(MAX_FRAME_SIZE));
         let frames = encode_message(&message).expect("encode test message");
         let result: Result<ClientMessage, FramingError> =
             read_message_single_frame_limited(&mut frames.as_slice(), MAX_CLIENT_MESSAGE_SIZE);
@@ -1149,7 +1172,7 @@ mod tests {
             read_message(&mut frame.as_slice()).expect("test precondition");
         assert_eq!(decoded, msg);
 
-        let over_limit = ClientMessage::PresentationSync("x".repeat(MAX_FRAME_SIZE));
+        let over_limit = paste("x".repeat(MAX_FRAME_SIZE));
         assert!(matches!(
             encode_frame(&over_limit),
             Err(FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
@@ -1168,7 +1191,7 @@ mod tests {
             ClientMessage::ClientShellResize {
                 geometry: super::TerminalGeometry::new(200, 60, 8, 16, true),
             },
-            ClientMessage::PresentationSync("hello world".to_owned()),
+            paste("hello world".to_owned()),
             ClientMessage::ClientShellResize {
                 geometry: super::TerminalGeometry::new(100, 30, 8, 16, true),
             },

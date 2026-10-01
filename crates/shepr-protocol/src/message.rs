@@ -193,8 +193,6 @@ pub enum ServerMessage {
     EndpointWelcome(super::endpoint::EndpointServerWelcome),
     /// Current client-owned shell projection.
     EndpointSnapshot(Box<ClientShellSnapshot>),
-    /// Host presentation effects have crossed the activation fence.
-    PresentationReady(String),
     /// Response to a connection health probe.
     HealthPong,
 }

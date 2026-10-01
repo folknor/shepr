@@ -303,7 +303,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     request_active_surface(&mut server, 8, "synchronize-background-surface");
     let _ = background_control
         .recv()
-        .expect("background presentation synchronization response");
+        .expect("background view reassertion response");
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         focused_size
@@ -430,7 +430,7 @@ async fn unchanged_geometry_application_does_not_force_surface_recompute() {
 }
 
 #[tokio::test]
-async fn presentation_sync_epoch_replays_modes_and_title() {
+async fn replay_host_effects_replays_modes_and_title() {
     let mut server = test_headless_server();
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(63);
@@ -474,13 +474,11 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
     let _ = control_rx
         .recv()
         .expect("typed surface reassertion acknowledgement");
-    server.stream_host_mouse_capture_mode();
-    server.stream_shell_keyboard_mode();
-    server.sync_window_title();
+    server.test_handle_server_event(ServerEvent::ClientShellReplayHostEffects { client_id });
     assert_eq!(
         server.clients[&client_id].outbox.told_mouse_capture(),
         Some(true),
-        "the target mode is sent after, not during, the frozen handoff"
+        "the committed target replays its host mode"
     );
     assert_eq!(
         server.clients[&client_id].outbox.told_keyboard_report_all(),
@@ -502,5 +500,31 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
         message,
         ServerMessage::WindowTitle { title: Some(title) } if title == "target title"
     )));
+    assert!(
+        control_rx.try_recv().is_err(),
+        "no readiness message follows replay"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn replay_host_effects_is_ignored_by_a_non_viewed_connection() {
+    let mut server = test_headless_server();
+    let (writer, control, _render) = test_client_writer();
+    let client_id = ClientId::test_new(64);
+    server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        client_id,
+        surface_cols: 80,
+        surface_rows: 24,
+        cell_width_px: 8,
+        cell_height_px: 16,
+        pixel_mouse: false,
+        mouse_capture: true,
+        surface_active: false,
+        outbox: writer,
+    });
+    let _ = client_shell_snapshot(&control);
+    server.test_handle_server_event(ServerEvent::ClientShellReplayHostEffects { client_id });
+    assert!(control.try_recv().is_err());
     shutdown_test_runtimes(&mut server);
 }

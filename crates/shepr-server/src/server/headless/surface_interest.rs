@@ -2,11 +2,11 @@ use super::*;
 use crate::server::ClientId;
 
 impl HeadlessServer {
-    /// Apply a client-shell surface lease and return the resulting projection floor.
+    /// Set whether this connection is viewed and return the resulting projection floor.
     ///
     /// Every `active: true` request advances the floor, even if the server already considered
-    /// the connection active. That makes a new client activation epoch distinguishable from a
-    /// delayed same-boot PaneSurface that was prepared for an earlier epoch.
+    /// the connection viewed. That makes a new viewing epoch distinguishable from a delayed
+    /// same-boot PaneSurface that was prepared for an earlier epoch.
     pub(super) fn set_client_shell_surface_active(
         &mut self,
         client_id: ClientId,
@@ -54,13 +54,13 @@ impl HeadlessServer {
                 (changed, shell.projection_revision)
             };
             client.request_repaint();
-            // The client drops target effects while its old source frame is frozen. Reset the
-            // dedupe state whenever a viewer is (re)activated so the post-commit replay can
-            // produce mouse/keyboard modes and graphics even when runtime demand is unchanged.
+            // The client drops a target's effects until it commits. Reset the dedupe state
+            // whenever a viewer is (re)activated so the post-commit replay can produce
+            // mouse/keyboard modes and graphics even when runtime demand is unchanged.
             if active {
-                // Do not emit/cache a title during a frozen target activation.
+                // Do not emit/cache a title while a target is being prepared.
                 // A committed client explicitly requests the bounded replay
-                // after its coherent frame is visible.
+                // with ReplayHostEffects after its coherent frame is visible.
                 client.outbox.forget_presentation();
             }
             if !active {

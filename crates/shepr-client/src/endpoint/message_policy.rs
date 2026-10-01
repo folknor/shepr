@@ -1,131 +1,86 @@
+use super::ConnectionRole;
 use shepr_protocol::{ServerMessage, surface_reuse::DecodedServerMessage};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PresentationDecision {
     Apply,
     Drop,
+    /// Evidence for the move being prepared.
     Buffer,
 }
 
-/// Decides whether one endpoint message may affect the current presentation, belongs to a
-/// pending activation, or must be ignored.
+/// Classifies every inbound message by its sender's role. Connection-level messages always
+/// apply; frames apply for the shown endpoint and are evidence for the target; host effects
+/// and everything else belong to the shown endpoint alone. One role comparison per message.
 pub(crate) struct PresentationGate {
-    endpoint_active: bool,
-    presentation_owned: bool,
-    activation_pending: bool,
-    buffer_surface_evidence: bool,
+    role: ConnectionRole,
+    move_response: bool,
     command_response: bool,
-    frozen: bool,
 }
-
 impl PresentationGate {
-    pub(crate) fn new(
-        endpoint_active: bool,
-        presentation_owned: bool,
-        activation_pending: bool,
-        buffer_surface_evidence: bool,
-        command_response: bool,
-        frozen: bool,
-    ) -> Self {
+    /// `move_response`: the message answers the move's on or focus request. `command_response`:
+    /// it answers the in-flight command or a tombstoned one.
+    pub(crate) fn new(role: ConnectionRole, move_response: bool, command_response: bool) -> Self {
         Self {
-            endpoint_active,
-            presentation_owned,
-            activation_pending,
-            buffer_surface_evidence,
+            role,
+            move_response,
             command_response,
-            frozen,
         }
     }
-
     pub(crate) fn decide(&self, message: &DecodedServerMessage) -> PresentationDecision {
-        let message = match message {
-            DecodedServerMessage::Wire(message) => message,
-            DecodedServerMessage::PaneSurfacePatch(_) => return self.decide_surface(),
-        };
-        if matches!(
-            message,
-            ServerMessage::EndpointWelcome(_)
-                | ServerMessage::EndpointSnapshot(_)
-                | ServerMessage::PresentationReady(_)
-                | ServerMessage::HealthPong
-                | ServerMessage::ServerShutdown { .. }
-        ) {
-            return PresentationDecision::Apply;
-        }
-
-        let validated_sync = self.endpoint_active && self.activation_pending && !self.frozen;
-        let owns_presentation = self.endpoint_active && self.presentation_owned;
-        if is_presentation_effect(message) && !(owns_presentation || validated_sync) {
-            return PresentationDecision::Drop;
-        }
-
+        use ConnectionRole::*;
+        use PresentationDecision::*;
         match message {
-            ServerMessage::PaneSurface(_) => self.decide_surface(),
-            ServerMessage::ClientShellEndpointResponse { .. } if self.activation_pending => {
-                PresentationDecision::Buffer
+            DecodedServerMessage::Wire(
+                ServerMessage::EndpointWelcome(_)
+                | ServerMessage::EndpointSnapshot(_)
+                | ServerMessage::HealthPong
+                | ServerMessage::ServerShutdown { .. },
+            ) => Apply,
+            DecodedServerMessage::PaneSurfacePatch(_)
+            | DecodedServerMessage::Wire(ServerMessage::PaneSurface(_)) => match self.role {
+                Shown => Apply,
+                Target => Buffer,
+                Other => Drop,
+            },
+            DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse { .. }) => {
+                match self.role {
+                    Shown if self.command_response => Apply,
+                    Target if self.move_response => Buffer,
+                    _ => Drop,
+                }
             }
-            ServerMessage::ClientShellEndpointResponse { .. } if self.command_response => {
-                PresentationDecision::Apply
+            _ => {
+                if self.role == Shown {
+                    Apply
+                } else {
+                    Drop
+                }
             }
-            _ if self.endpoint_active => PresentationDecision::Apply,
-            _ => PresentationDecision::Drop,
         }
     }
-
-    /// Full surfaces and decoded patches share one rule. Those for the endpoint a handoff is
-    /// proving go into its evidence, which stays in lockstep with the connection's decoder
-    /// baseline.
-    fn decide_surface(&self) -> PresentationDecision {
-        if self.buffer_surface_evidence {
-            PresentationDecision::Buffer
-        } else if self.frozen {
-            PresentationDecision::Drop
-        } else if self.endpoint_active {
-            PresentationDecision::Apply
-        } else {
-            PresentationDecision::Drop
-        }
-    }
-}
-
-/// Host terminal state and clipboard writes belong to the displayed endpoint. The validated
-/// synchronization phase is the one exception to committed ownership: it replays effects after
-/// the target pair has been checked and before the server's ready fence.
-fn is_presentation_effect(message: &ServerMessage) -> bool {
-    matches!(
-        message,
-        ServerMessage::MouseCapture { .. }
-            | ServerMessage::ClientShellKeyboardReportAll { .. }
-            | ServerMessage::WindowTitle { .. }
-            | ServerMessage::Clipboard { .. }
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_protocol::{FrameData, PaneSurfaceFrame, PaneSurfacePatch};
-
-    /// A gate as the client loop builds it: an active endpoint owns the presentation unless a
-    /// handoff is in flight.
-    fn gate(
-        endpoint_active: bool,
-        activation_pending: bool,
-        command_response: bool,
-        frozen: bool,
-    ) -> PresentationGate {
-        PresentationGate::new(
-            endpoint_active,
-            endpoint_active && !activation_pending,
-            activation_pending,
-            activation_pending,
-            command_response,
-            frozen,
-        )
+    use ConnectionRole::*;
+    use PresentationDecision::*;
+    fn gate(role: ConnectionRole) -> PresentationGate {
+        PresentationGate::new(role, false, false)
     }
-
-    fn effects() -> [ServerMessage; 4] {
-        [
+    fn wire(message: ServerMessage) -> DecodedServerMessage {
+        DecodedServerMessage::Wire(message)
+    }
+    fn response() -> DecodedServerMessage {
+        wire(ServerMessage::ClientShellEndpointResponse {
+            boot_id: crate::tests::test_boot_id("boot"),
+            request_id: "request".into(),
+            result: Ok(shepr_protocol::command::EndpointReply::Done),
+        })
+    }
+    #[test]
+    fn target_effects_are_dropped_and_shown_effects_apply() {
+        for effect in [
             ServerMessage::MouseCapture {
                 enabled: true,
                 sgr_pixels: false,
@@ -137,96 +92,72 @@ mod tests {
             ServerMessage::Clipboard {
                 data: "text".into(),
             },
-        ]
-    }
-
-    #[test]
-    fn host_effects_need_an_owned_presentation_or_a_validated_sync() {
-        let owned = gate(true, false, false, false);
-        // Active in the registry, but nothing owns the presentation and no handoff runs.
-        let unowned = PresentationGate::new(true, false, false, false, false, false);
-        let validated_sync = PresentationGate::new(true, false, true, true, false, false);
-        for effect in effects() {
-            let effect = DecodedServerMessage::Wire(effect);
-            assert_eq!(owned.decide(&effect), PresentationDecision::Apply);
-            assert_eq!(unowned.decide(&effect), PresentationDecision::Drop);
-            assert_eq!(validated_sync.decide(&effect), PresentationDecision::Apply);
+        ] {
+            let effect = wire(effect);
+            assert_eq!(gate(Shown).decide(&effect), Apply);
+            assert_eq!(gate(Target).decide(&effect), Drop);
+            assert_eq!(gate(Other).decide(&effect), Drop);
         }
-        assert_eq!(
-            unowned.decide(&DecodedServerMessage::Wire(ServerMessage::PaneSurface(
-                surface()
-            ))),
-            PresentationDecision::Apply
-        );
     }
-
-    fn surface() -> PaneSurfaceFrame {
-        PaneSurfaceFrame {
+    #[test]
+    fn a_target_surface_is_buffered_and_an_other_surface_is_dropped() {
+        let surface = shepr_protocol::PaneSurfaceFrame {
             boot_id: crate::tests::test_boot_id("boot"),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            frame: FrameData {
-                cells: Vec::new(),
+            projection_revision: 1.into(),
+            surface_revision: 1.into(),
+            frame: shepr_protocol::FrameData {
+                cells: vec![],
                 width: 0,
                 height: 0,
                 cursor: None,
-                hyperlinks: Vec::new(),
+                hyperlinks: vec![],
             },
-            panes: Vec::new(),
-            splits: Vec::new(),
-        }
-    }
-
-    fn response(request_id: &str) -> ServerMessage {
-        ServerMessage::ClientShellEndpointResponse {
-            boot_id: crate::tests::test_boot_id("boot"),
-            request_id: request_id.into(),
-            result: Ok(shepr_protocol::command::EndpointReply::Done),
-        }
-    }
-
-    fn patch() -> PaneSurfacePatch {
-        PaneSurfacePatch {
-            boot_id: crate::tests::test_boot_id("boot"),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            base_surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(2),
-            rows: Vec::new(),
-            panes: Vec::new(),
+            panes: vec![],
+            splits: vec![],
+        };
+        let patch = shepr_protocol::PaneSurfacePatch {
+            boot_id: surface.boot_id.clone(),
+            projection_revision: 1.into(),
+            base_surface_revision: 1.into(),
+            surface_revision: 2.into(),
+            rows: vec![],
+            panes: vec![],
             cursor: None,
+        };
+        for message in [
+            wire(ServerMessage::PaneSurface(surface)),
+            DecodedServerMessage::PaneSurfacePatch(patch),
+        ] {
+            assert_eq!(gate(Shown).decide(&message), Apply);
+            assert_eq!(gate(Target).decide(&message), Buffer);
+            assert_eq!(gate(Other).decide(&message), Drop);
         }
     }
-
     #[test]
-    fn inactive_endpoint_control_applies_but_presentation_effects_drop() {
+    fn only_a_move_response_is_buffered_and_only_a_command_response_applies() {
+        let r = response();
+        for role in [Shown, Target, Other] {
+            assert_eq!(gate(role).decide(&r), Drop);
+        }
         assert_eq!(
-            gate(false, false, false, false)
-                .decide(&DecodedServerMessage::Wire(ServerMessage::HealthPong)),
-            PresentationDecision::Apply
+            PresentationGate::new(Target, true, false).decide(&r),
+            Buffer
         );
+        assert_eq!(PresentationGate::new(Shown, false, true).decide(&r), Apply);
+        assert_eq!(PresentationGate::new(Other, true, true).decide(&r), Drop);
+    }
+    #[test]
+    fn a_tombstoned_response_of_the_shown_endpoint_applies() {
         assert_eq!(
-            gate(false, false, false, false).decide(&DecodedServerMessage::Wire(
-                ServerMessage::WindowTitle {
-                    title: Some("remote".into()),
-                },
-            )),
-            PresentationDecision::Drop
-        );
-        assert_eq!(
-            gate(false, false, false, false).decide(&DecodedServerMessage::Wire(
-                ServerMessage::Clipboard {
-                    data: "text".into(),
-                },
-            )),
-            PresentationDecision::Drop
+            PresentationGate::new(Shown, false, true).decide(&response()),
+            Apply
         );
     }
-
     #[test]
-    fn inactive_restore_snapshot_applies_without_surface_activation() {
+    fn an_other_restore_snapshot_applies() {
         let snapshot = shepr_protocol::ClientShellSnapshot {
             boot_id: crate::tests::test_boot_id("restored"),
-            revision: shepr_protocol::ProjectionRevision::new(1),
+            revision: 1.into(),
             restore_notice: Some(shepr_protocol::SessionRestoreNotice {
                 unusable: None,
                 dropped_workspaces: 1,
@@ -235,61 +166,13 @@ mod tests {
             }),
             focused_workspace_id: None,
             focused_pane_id: None,
-            workspaces: Vec::new(),
-            panes: Vec::new(),
-            agents: Vec::new(),
+            workspaces: vec![],
+            panes: vec![],
+            agents: vec![],
         };
         assert_eq!(
-            gate(false, false, false, false).decide(&DecodedServerMessage::Wire(
-                ServerMessage::EndpointSnapshot(Box::new(snapshot)),
-            )),
-            PresentationDecision::Apply,
-        );
-    }
-
-    #[test]
-    fn activation_surfaces_and_responses_are_buffered() {
-        assert_eq!(
-            gate(false, true, false, false).decide(&DecodedServerMessage::Wire(
-                ServerMessage::PaneSurface(surface()),
-            )),
-            PresentationDecision::Buffer
-        );
-        assert_eq!(
-            gate(false, true, false, false)
-                .decide(&DecodedServerMessage::Wire(response("surface"))),
-            PresentationDecision::Buffer
-        );
-    }
-
-    #[test]
-    fn tracked_command_responses_apply_outside_the_active_presentation() {
-        assert_eq!(
-            gate(false, false, true, false)
-                .decide(&DecodedServerMessage::Wire(response("command"))),
-            PresentationDecision::Apply
-        );
-    }
-
-    #[test]
-    fn frozen_activation_drops_effects_and_buffers_surface_patches() {
-        let frozen = gate(true, true, false, true);
-        assert_eq!(
-            frozen.decide(&DecodedServerMessage::Wire(ServerMessage::MouseCapture {
-                enabled: true,
-                sgr_pixels: false,
-            })),
-            PresentationDecision::Drop
-        );
-        assert_eq!(
-            frozen.decide(&DecodedServerMessage::PaneSurfacePatch(patch())),
-            PresentationDecision::Buffer
-        );
-        assert_eq!(
-            gate(true, false, false, true).decide(&DecodedServerMessage::Wire(
-                ServerMessage::PaneSurface(surface()),
-            )),
-            PresentationDecision::Drop
+            gate(Other).decide(&wire(ServerMessage::EndpointSnapshot(Box::new(snapshot)))),
+            Apply
         );
     }
 }
