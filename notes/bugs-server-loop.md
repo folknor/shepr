@@ -12,24 +12,34 @@ Filed from the defect hunt over `crates/shepr-server/src/server/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SLOOP-003 - Requests still buffered at the stop are refused after the shutdown notice
+## SLOOP-016 - The client socket reservation is released before the real bind
 
-Held endpoint replies are now resolved and queued before `ServerShutdown` is
-broadcast, and a request already dequeued when the stop arrives gets its
-refusal first. Residue: requests still buffered in the server event receiver
-are refused during shutdown cleanup, after the notice, so a client that tears
-down on `ServerShutdown` may never read those refusals. The comment in
-`lifecycle.rs` states this ordering.
+Bootstrap now checks the client socket lock and liveness after the lease and
+API bind but before restore, so a held client socket is refused before any
+shell spawns, while the listener stays unpublished for the API-first startup
+transition. (The claim that a `ping` waits out the restore was wrong: the API
+answers it on its connection thread.) Residue: the reservation in
+`headless/bootstrap.rs` is released before the platform binder reacquires its
+lock, so a listener can race into that gap. Closing it needs a shepr-platform
+IPC helper that hands the held lock to the binder.
 
-## SLOOP-022 - The API request channel is unbounded
+## SLOOP-024 - Other unbounded server queues and per-request threads
 
-Lateral. The headless loop now drains at most a fixed batch of server events
-and API requests per pass, but the API receiver created in
-`shepr-server/src/app/mod.rs` is still an unbounded channel, so requests
-arriving faster than the loop handles them (an agent hook storm) grow the queue
-in memory without limit. Shutdown cleanup then refuses every accepted request
-one by one after closing the receiver, so a large backlog also lengthens
-shutdown.
+Lateral. The headless worker completion channel (`headless/worker.rs`) is
+unbounded, and checkout-root handling (`headless/endpoint_requests.rs`) starts a
+thread per request with no evident in-flight limit. Check whether either can
+grow without bound under a flood of client requests, and bound them if so.
+
+## SLOOP-025 - The API queue capacity matches the connection cap only by value
+
+Lateral. `API_REQUEST_CHANNEL_CAPACITY` (shepr-server `limits.rs`) equals
+`MAX_ACTIVE_CONNECTIONS` (shepr-api, `pub(crate)`), and its doc relies on that:
+each API connection carries one request, so a responsive loop never fills the
+queue. Nothing ties the two; export the connection cap and derive the capacity
+from it. Smaller hygiene from the same wave: the test-only `App::new` still takes
+an unbounded API receiver it ignores (about 40 test call sites pass one), and
+the client socket reservation tests in `headless/bootstrap.rs` sit in a module
+named `startup_cwd_tests`.
 
 ## SLOOP-004 - A slow client turns every drain of its render slot into a full render for everyone
 
@@ -55,18 +65,10 @@ Direction: make demand per client. A drained client should be rendered alone
 (full for it, nothing for the others), and a PTY change should go retained to
 every client that can take it.
 
-## SLOOP-016 - Structural: bootstrap restores before binding the client socket
-
-`headless/bootstrap.rs`: lease, then the API socket, then `App::with_paths`
-(restore spawns a fresh shell for every saved pane), and only then
-`HeadlessServer::new` binds the client socket. If the client socket is held by
-another server (the case `startup_error(ServerSocket::Client, ..)` exists for),
-a full session's shells were spawned, ran their rc files and are killed again.
-Binding both sockets before restoring would make the refusal free. The API
-socket also accepts during restore with nobody answering; a `ping` there waits
-out the restore.
-
 ## SLOOP-017 - Structural: three outbound routes with different ordering rules
+
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
 
 Outbound messages to a client take the control lane (FIFO, byte-capped, overflow
 closes the connection), the one-slot render lane (drained after control), and

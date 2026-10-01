@@ -46,6 +46,14 @@ pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 /// Limit API requests per loop pass so client and scheduled work still get service.
 pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
+/// Bound queued API requests. Each API connection queues one request and waits
+/// for its answer, and the API listener serves as many connections at once as
+/// this holds, so a responsive loop never fills it. Requests whose connection
+/// gave up waiting stay queued, so only a loop stalled past the API request
+/// timeout fills it; producers then refuse new requests with
+/// `server_unavailable` at once instead of growing the queue. A refused agent
+/// hook report is dropped, as it is when the server is down.
+pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = 64;
 /// Limit server events per loop pass so API and scheduled work still get service.
 pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
 

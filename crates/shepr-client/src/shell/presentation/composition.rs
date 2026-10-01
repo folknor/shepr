@@ -457,7 +457,7 @@ impl ClientShellState {
                         .bg(self.config.palette.accent)
                         .add_modifier(Modifier::BOLD);
                     // The whole row takes the hint's style; the text replaces the prefix
-                    // `set_stringn` actually wrote, whose extent is the overwritten rect
+                    // the shared text writer placed, whose extent is the overwritten rect
                     // (a wide glyph the text boundary splits is blanked).
                     patch_rect(
                         &mut frame,
@@ -465,11 +465,12 @@ impl ClientShellState {
                         StylePatch::from_style(hint_style),
                     );
                     let mut scratch = Buffer::empty(Rect::new(0, 0, cols, rows));
-                    let (written_to, _) = scratch.set_stringn(
+                    let written_to = super::render::put_text(
+                        &mut scratch,
                         0,
                         hint_row,
+                        cols,
                         " window too small for this popup · esc closes",
-                        usize::from(cols),
                         hint_style,
                     );
                     overwrite(

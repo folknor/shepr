@@ -228,11 +228,14 @@ the pane. A process whose own profile differs from that marker ignores both
 socket variables and resolves its own profile's runtime directory.
 `SHEPR_SOCKET_PATH` normally selects the API socket and derives the client
 socket. When both variables are set and the API path is exactly the profile's
-runtime `shepr.sock`, `SHEPR_CLIENT_SOCKET_PATH` selects the client socket. This
-keeps a nested client on a server started with only a client socket override.
-A non-runtime API path still takes precedence, so a user can set
-`SHEPR_SOCKET_PATH` inside a pane to select another server. The API variable
-stays exported because every agent integration reports through it.
+runtime `shepr.sock`, `SHEPR_CLIENT_SOCKET_PATH` selects the client socket.
+That is the pair a pane of a server started with only a client socket override
+exports, so `server stop` run in such a pane waits for that server's client
+socket to close. A socket override names an existing server: the TUI attaches
+to it but never starts a server there. A non-runtime API path still takes
+precedence, so a user can set `SHEPR_SOCKET_PATH` inside a pane to select
+another server. The API variable stays exported because every agent
+integration reports through it.
 
 - Socket variables with no marker (set by a user or a script) and ones with a
   matching marker still win over the runtime directory.

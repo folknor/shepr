@@ -1,6 +1,5 @@
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct TextEditor {
@@ -234,7 +233,7 @@ impl TextEditor {
         let mut start = self.cursor;
         let mut cells = 0;
         for (index, grapheme) in self.text[..self.cursor].grapheme_indices(true).rev() {
-            let next = cells + grapheme.width();
+            let next = cells + shepr_termio::blit::text_width(grapheme);
             if next >= usize::from(width) {
                 break;
             }
@@ -244,7 +243,7 @@ impl TextEditor {
         let mut end = self.cursor;
         let mut used = cells;
         for (index, grapheme) in self.text[self.cursor..].grapheme_indices(true) {
-            used += grapheme.width();
+            used += shepr_termio::blit::text_width(grapheme);
             if used > usize::from(width) {
                 break;
             }
@@ -271,7 +270,7 @@ pub(super) fn render(
     for x in area.x..area.right() {
         buffer[(x, area.y)].set_symbol(" ").set_style(style);
     }
-    buffer.set_stringn(area.x, area.y, text, usize::from(area.width), style);
+    super::render::put_text(buffer, area.x, area.y, area.width, text, style);
     Some(shepr_protocol::CursorState {
         x: area.x + cursor,
         y: area.y,
@@ -484,7 +483,7 @@ mod tests {
                 for width in [0, 1, 2, 3, 8, 80] {
                     let before = editor.clone();
                     let (visible, col) = editor.viewport(width);
-                    assert!(visible.width() <= usize::from(width));
+                    assert!(shepr_termio::blit::text_width(visible) <= usize::from(width));
                     assert!(width == 0 || col < width);
                     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 1));
                     let result = render(

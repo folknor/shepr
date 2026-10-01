@@ -80,24 +80,15 @@ impl ClientConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
         let provenance = ConfigProvenance::defaults();
         // Client document validation has no shell or working-directory lookup.
-        let resolution =
-            validated::ClientConfigResolution::parse(self, &provenance, &AppPaths::default());
-        resolution
-            .diagnostics
-            .into_iter()
-            .chain(resolution.path_diagnostics)
-            .collect()
+        validated::ClientConfigResolution::parse(self, &provenance).diagnostics
     }
 }
 
 #[cfg(test)]
 impl ServerConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
-        let resolution = validated::ServerConfigResolution::parse_document(
-            self,
-            &ConfigProvenance::defaults(),
-            &AppPaths::default(),
-        );
+        let resolution =
+            validated::ServerConfigResolution::parse_document(self, &AppPaths::default());
         resolution
             .diagnostics
             .into_iter()

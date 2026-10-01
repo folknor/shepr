@@ -68,7 +68,6 @@ use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus};
 use shepr_config::theme::Palette;

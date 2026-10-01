@@ -367,6 +367,43 @@ impl TileLayout {
         true
     }
 
+    /// Resolve a split by its exact child pane membership. Tree edits may move
+    /// the split to another path; changed children refuse the stale address.
+    pub fn split_path_for_children(
+        &self,
+        first_ids: &[PaneId],
+        second_ids: &[PaneId],
+    ) -> Option<Vec<SplitBranch>> {
+        fn same_members(node: &Node, expected: &[PaneId]) -> bool {
+            let mut actual = Vec::new();
+            collect_ids(node, &mut actual);
+            !expected.is_empty()
+                && actual.len() == expected.len()
+                && actual.iter().all(|id| expected.contains(id))
+                && expected.iter().all(|id| actual.contains(id))
+        }
+        fn find(
+            node: &Node,
+            first_ids: &[PaneId],
+            second_ids: &[PaneId],
+        ) -> Option<Vec<SplitBranch>> {
+            let Node::Split { first, second, .. } = node else {
+                return None;
+            };
+            if same_members(first, first_ids) && same_members(second, second_ids) {
+                return Some(Vec::new());
+            }
+            for (branch, child) in [(SplitBranch::First, first), (SplitBranch::Second, second)] {
+                if let Some(mut path) = find(child, first_ids, second_ids) {
+                    path.insert(0, branch);
+                    return Some(path);
+                }
+            }
+            None
+        }
+        find(&self.root, first_ids, second_ids)
+    }
+
     /// Set the ratio of a split node at the given path.
     pub fn set_ratio_at(&mut self, path: &[SplitBranch], ratio: f32) -> bool {
         set_ratio_at(&mut self.root, path, SplitRatio::clamped(ratio))
@@ -853,6 +890,44 @@ fn split_extent(total: u16, ratio: f32) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_identity_survives_path_change_but_refuses_changed_children() {
+        let first = PaneId::alloc();
+        let second = PaneId::alloc();
+        let other = PaneId::alloc();
+        let child = Node::Split {
+            direction: Direction::Horizontal,
+            ratio: SplitRatio::clamped(0.5),
+            first: Box::new(Node::Pane(first)),
+            second: Box::new(Node::Pane(second)),
+        };
+        let mut layout = TileLayout::from_saved(
+            Node::Split {
+                direction: Direction::Vertical,
+                ratio: SplitRatio::clamped(0.5),
+                first: Box::new(Node::Pane(other)),
+                second: Box::new(child),
+            },
+            first,
+        )
+        .expect("valid tree");
+        assert_eq!(
+            layout.split_path_for_children(&[first], &[second]),
+            Some(vec![SplitBranch::Second])
+        );
+        assert!(layout.close_pane(other));
+        assert_eq!(
+            layout.split_path_for_children(&[first], &[second]),
+            Some(vec![])
+        );
+        assert!(
+            layout
+                .split_pane(second, Direction::Vertical, 0.5)
+                .is_some()
+        );
+        assert_eq!(layout.split_path_for_children(&[first], &[second]), None);
+    }
 
     #[test]
     fn pane_id_allocation_stops_at_the_end_of_the_id_space_instead_of_wrapping() {

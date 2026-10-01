@@ -1138,7 +1138,6 @@ mod tests {
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
-            None,
             paths.clone(),
         );
         let data_dir = paths.data_dir().to_path_buf();
@@ -1189,13 +1188,11 @@ mod tests {
         let session_file = data_dir.join("session.json");
         std::fs::write(&session_file, &original).expect("test precondition");
 
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_paths(
             &config,
             &paths,
             lease,
             super::super::AppPolicy::Production,
-            api_rx,
             super::super::tests::test_clock(),
         );
         assert_eq!(
@@ -1254,7 +1251,6 @@ mod tests {
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
-            None,
             paths.clone(),
         );
         let data_dir = paths.data_dir().to_path_buf();
@@ -1263,13 +1259,11 @@ mod tests {
         let original = b"{ this is not a session".to_vec();
         std::fs::write(data_dir.join("session.json"), &original).expect("test precondition");
 
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_paths(
             &config,
             &paths,
             lease,
             super::super::AppPolicy::Production,
-            api_rx,
             super::super::tests::test_clock(),
         );
         let backups = data_dir.join("session-backups");
@@ -1301,18 +1295,15 @@ mod tests {
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
-            None,
             paths.clone(),
         );
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .expect("test session lease");
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_paths(
             &config,
             &paths,
             lease,
             super::super::AppPolicy::Production,
-            api_rx,
             super::super::tests::test_clock(),
         );
         assert_eq!(app.restore_notice, None);

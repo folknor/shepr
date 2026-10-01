@@ -13,7 +13,7 @@
 #                  kanagawa-lotus, rose-pine, rose-pine-dawn, vesper
 # name = "catppuccin"
 
-# Accent color for highlights, borders, and navigation UI.
+# Accent color for pane chrome.
 # Unset or empty uses the theme accent.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
 # This is an example override; theme.custom.accent takes precedence.

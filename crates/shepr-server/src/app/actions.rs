@@ -81,7 +81,4 @@ mod pane;
 mod workspace;
 
 #[cfg(test)]
-use shepr_core::layout::{NavDirection, find_in_direction};
-
-#[cfg(test)]
 mod tests;

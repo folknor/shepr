@@ -321,8 +321,9 @@ impl AppState {
         update == StateUpdate::Released
     }
 
-    /// Applies an `AppEvent` that carries state. State-level tests feed events
-    /// through this in place of the App event path.
+    /// State-level tests use this to exercise the pure reducer from an event.
+    /// It omits App event admission and runtime effects, so event-path behavior
+    /// must be tested through `App::handle_internal_event`.
     #[cfg(test)]
     pub(crate) fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
         self.handle_state_event(
@@ -335,38 +336,5 @@ impl AppState {
             )
             .expect("state event"),
         )
-    }
-
-    /// Removes a dead pane by id and returns the terminals it detached, whose
-    /// runtimes the caller must shut down. State-level tests use it in place
-    /// of the App event path.
-    #[cfg(test)]
-    #[must_use = "the detached terminals' runtimes must be shut down"]
-    pub(super) fn handle_pane_died(&mut self, pane_id: PaneId) -> Vec<shepr_protocol::TerminalId> {
-        let ws_idx = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.contains_pane(pane_id));
-
-        let Some(ws_idx) = ws_idx else {
-            // Expected, not a fault: a pane already removed because its PTY
-            // reader reported a broken terminal core gets a second PaneDied
-            // from the child watcher once the child is reaped.
-            tracing::debug!(pane = pane_id.raw(), "PaneDied for unknown pane");
-            return Vec::new();
-        };
-        // The pane was just found in this workspace, so a stale plan means
-        // the removal logic and the lookup above disagree.
-        match self.remove_pane(ws_idx, pane_id) {
-            PaneRemovalCommit::Removed(outcome) => outcome.detached_terminal_ids,
-            PaneRemovalCommit::Stale => {
-                tracing::warn!(
-                    pane = pane_id.raw(),
-                    workspace_index = ws_idx,
-                    "PaneDied removal went stale; the dead pane stays in the layout"
-                );
-                Vec::new()
-            }
-        }
     }
 }

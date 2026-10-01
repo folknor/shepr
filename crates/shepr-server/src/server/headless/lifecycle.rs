@@ -330,7 +330,7 @@ impl HeadlessServer {
         self.app.state.mark_session_dirty();
     }
 
-    /// Initiates terminal server shutdown from any quit source.
+    /// Marks terminal server shutdown from any quit source.
     pub(super) fn initiate_shutdown(&mut self) {
         if !self.lifecycle.begin_stopping() {
             return;
@@ -338,21 +338,11 @@ impl HeadlessServer {
         info!("server shutdown initiated");
 
         // Resolve worker slots and hand every held reply to its client's
-        // FIFO control lane before queuing the shutdown notice. The shutdown
+        // FIFO control lane before shutdown cleanup queues the notice. The
         // flush barrier must cover the notice without making earlier replies
-        // unreachable to clients that leave when they receive it.
+        // unreachable to clients that leave when they read it.
         self.resolve_pending_endpoint_replies_for_shutdown();
         self.flush_endpoint_replies();
-
-        // Send ServerShutdown to all connected clients.
-        let shutdown_msg = ServerMessage::ServerShutdown {
-            reason: Some(shepr_protocol::ShutdownReason::Message(
-                "server is shutting down".to_owned(),
-            )),
-        };
-        self.send_to_all_clients(&shutdown_msg);
-        self.queue_shutdown_flushes();
-
         self.app.state.should_quit = true;
     }
 
@@ -365,13 +355,21 @@ impl HeadlessServer {
     /// the previous save, or exit on the still-bound API socket and leave the
     /// user waiting out the startup timeout.
     pub(super) async fn complete_shutdown(&mut self) -> io::Result<()> {
-        // Completing is only legal once `initiate_shutdown` has told every
-        // client; before that, closing connections would drop them silently.
+        // Completing is only legal once `initiate_shutdown` marked the server
+        // stopping; this step settles queued requests before notifying clients.
         self.lifecycle
             .require_phase("completing shutdown", ShutdownPhase::Stopping)
             .map_err(io::Error::other)?;
         info!("completing server shutdown");
         self.reject_late_client_connections().await;
+
+        let shutdown_msg = ServerMessage::ServerShutdown {
+            reason: Some(shepr_protocol::ShutdownReason::Message(
+                "server is shutting down".to_owned(),
+            )),
+        };
+        self.send_to_all_clients(&shutdown_msg);
+        self.queue_shutdown_flushes();
 
         // Close the request channel and answer what is left in it.
         self.reject_queued_api_requests_for_shutdown();

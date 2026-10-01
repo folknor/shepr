@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 
 use shepr_core::env::EnvVar;
 
+use super::validated::{
+    ClientConfigResolution, ServerConfigResolution, ValidatedClientValues, ValidatedServerValues,
+};
 use super::{
     ClientConfig, ConfigDiagnostic, ConfigProvenance, ServerConfig, ValidatedClientConfig,
     ValidatedServerConfig,
@@ -418,152 +421,229 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-// The loaders share diagnostics and parsing, but deserialize and resolve only
-// the role's concrete schema. No program reads the other role's document.
-macro_rules! role_loader {
-    ($raw:ident, $validated:ident, $resolution:ident, $loaded:ident, $path:ident) => {
+trait ConfigResolution {
+    type Values;
+
+    fn append_diagnostics(&self, diagnostics: &mut Vec<ConfigDiagnostic>);
+    fn into_values(self) -> Option<Self::Values>;
+}
+
+impl ConfigResolution for ClientConfigResolution {
+    type Values = ValidatedClientValues;
+
+    fn append_diagnostics(&self, diagnostics: &mut Vec<ConfigDiagnostic>) {
+        diagnostics.extend(
+            self.diagnostics
+                .iter()
+                .cloned()
+                .map(ConfigDiagnostic::Validation),
+        );
+    }
+
+    fn into_values(self) -> Option<Self::Values> {
+        self.values
+    }
+}
+
+impl ConfigResolution for ServerConfigResolution {
+    type Values = ValidatedServerValues;
+
+    fn append_diagnostics(&self, diagnostics: &mut Vec<ConfigDiagnostic>) {
+        diagnostics.extend(
+            self.diagnostics
+                .iter()
+                .cloned()
+                .map(ConfigDiagnostic::Validation),
+        );
+        diagnostics.extend(
+            self.path_diagnostics
+                .iter()
+                .cloned()
+                .map(ConfigDiagnostic::Path),
+        );
+    }
+
+    fn into_values(self) -> Option<Self::Values> {
+        self.values
+    }
+}
+
 #[derive(Debug)]
-struct $loaded {
-    config: $raw,
+struct LoadedConfig<C, R> {
+    config: C,
     provenance: ConfigProvenance,
-    resolution: Option<super::validated::$resolution>,
+    resolution: Option<R>,
     diagnostics: Vec<ConfigDiagnostic>,
 }
-impl $loaded {
+
+impl<C: Default, R: ConfigResolution> LoadedConfig<C, R> {
     fn failed(diagnostics: Vec<ConfigDiagnostic>) -> Self {
-        Self { config: $raw::default(), provenance: ConfigProvenance::defaults(), resolution: None, diagnostics }
+        Self {
+            config: C::default(),
+            provenance: ConfigProvenance::defaults(),
+            resolution: None,
+            diagnostics,
+        }
     }
-    fn into_validated(self, paths: AppPaths) -> Result<$validated, Vec<ConfigDiagnostic>> {
-        if !self.diagnostics.is_empty() { return Err(self.diagnostics); }
-        match self.resolution.and_then(|resolution| resolution.values) {
-            Some(values) => Ok($validated::from_loaded(self.config, self.provenance, values, paths)),
-            None => Err(vec![ConfigDiagnostic::Validation("configuration resolution produced no values and no diagnostic".to_owned())]),
+
+    fn into_validated_with<V>(
+        self,
+        paths: AppPaths,
+        construct: impl FnOnce(C, ConfigProvenance, R::Values, AppPaths) -> V,
+    ) -> Result<V, Vec<ConfigDiagnostic>> {
+        if !self.diagnostics.is_empty() {
+            return Err(self.diagnostics);
+        }
+        match self.resolution.and_then(ConfigResolution::into_values) {
+            Some(values) => Ok(construct(self.config, self.provenance, values, paths)),
+            None => Err(vec![ConfigDiagnostic::Validation(
+                "configuration resolution produced no values and no diagnostic".to_owned(),
+            )]),
         }
     }
 }
-impl $raw {
-    /// Load a config for an application launch. Every path or validation
-    /// problem is fatal, so a default config from an unsuccessful parse is
-    /// never returned to runtime callers.
-    pub fn load_validated(paths: &AppPaths) -> Result<$validated, Vec<ConfigDiagnostic>> {
-        let path = paths.$path();
-        Self::load_from_path_with_paths(&path, paths).into_validated(paths.clone()).map_err(|diagnostics| {
-            diagnostics.into_iter().map(|diagnostic| diagnostic.with_file(&path)).collect()
+
+impl LoadedConfig<ClientConfig, ClientConfigResolution> {
+    fn into_validated(
+        self,
+        paths: AppPaths,
+    ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
+        self.into_validated_with(paths, ValidatedClientConfig::from_loaded)
+    }
+}
+
+impl LoadedConfig<ServerConfig, ServerConfigResolution> {
+    fn into_validated(
+        self,
+        paths: AppPaths,
+    ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
+        self.into_validated_with(paths, |config, _provenance, values, paths| {
+            ValidatedServerConfig::from_loaded(config, values, paths)
         })
     }
+}
 
-    fn load_from_path_with_paths(path: &Path, paths: &AppPaths) -> $loaded {
-        match read_optional_config(path) {
-            Ok(Some(content)) => Self::load_from_str_with_paths(&content, paths),
-            Ok(None) => {
-                let config = Self::default();
-                let provenance = ConfigProvenance::from_document(None);
-                let resolution =
-                    super::validated::$resolution::parse(&config, &provenance, paths);
-                let diagnostics = resolution
-                    .diagnostics
-                    .iter()
-                    .cloned()
-                    .map(ConfigDiagnostic::Validation)
-                    .chain(
-                        resolution
-                            .path_diagnostics
-                            .iter()
-                            .cloned()
-                            .map(ConfigDiagnostic::Path),
-                    )
-                    .collect();
-                $loaded {
-                    provenance,
-                    config,
-                    resolution: Some(resolution),
-                    diagnostics,
-                }
-            }
-            Err(err) => $loaded::failed(vec![ConfigDiagnostic::Read(err.to_string())]),
-        }
-    }
+fn resolve_client_config(
+    config: &ClientConfig,
+    provenance: &ConfigProvenance,
+    _paths: &AppPaths,
+) -> ClientConfigResolution {
+    ClientConfigResolution::parse(config, provenance)
+}
 
-    fn load_from_str_with_paths(content: &str, paths: &AppPaths) -> $loaded {
-        match content.parse::<toml::Table>() {
-            Ok(table) => {
-                let document = toml::Value::Table(table);
-                match deserialize_with_ignored::<$raw, _>(document.clone()) {
-                    Ok((config, ignored_keys)) => {
-                        let provenance = ConfigProvenance::from_document(Some(&document));
-                        let resolution =
-                            super::validated::$resolution::parse(&config, &provenance, paths);
-                        let (unknown_sections, unknown_diagnostics) =
-                            unknown_top_level_sections(&document, &ignored_keys);
-                        let mut diagnostics = unknown_diagnostics
-                            .into_iter()
-                            .map(ConfigDiagnostic::Unknown)
-                            .collect::<Vec<_>>();
-                        diagnostics.extend(unknown_config_key_diagnostics(
-                            ignored_keys
-                                .into_iter()
-                                .filter(|path| {
-                                    !matches!(path.as_slice(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
-                                })
-                                .collect(),
-                        ).into_iter().map(ConfigDiagnostic::Unknown));
-                        diagnostics.extend(
-                            resolution
-                                .diagnostics
-                                .iter()
-                                .cloned()
-                                .map(ConfigDiagnostic::Validation),
-                        );
-                        diagnostics.extend(
-                            resolution
-                                .path_diagnostics
-                                .iter()
-                                .cloned()
-                                .map(ConfigDiagnostic::Path),
-                        );
-                        $loaded {
-                            config,
-                            provenance,
-                            resolution: Some(resolution),
-                            diagnostics,
-                        }
-                    }
-                    Err(err) => {
-                        $loaded::failed(vec![ConfigDiagnostic::Parse(err.to_string())])
-                    }
-                }
+fn resolve_server_config(
+    config: &ServerConfig,
+    _provenance: &ConfigProvenance,
+    paths: &AppPaths,
+) -> ServerConfigResolution {
+    ServerConfigResolution::parse(config, paths)
+}
+
+fn load_config_from_path<C, R>(
+    path: &Path,
+    paths: &AppPaths,
+    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> R,
+) -> LoadedConfig<C, R>
+where
+    C: Default + serde::de::DeserializeOwned,
+    R: ConfigResolution,
+{
+    match read_optional_config(path) {
+        Ok(Some(content)) => load_config_from_str(&content, paths, resolve),
+        Ok(None) => {
+            let config = C::default();
+            let provenance = ConfigProvenance::from_document(None);
+            let resolution = resolve(&config, &provenance, paths);
+            let mut diagnostics = Vec::new();
+            resolution.append_diagnostics(&mut diagnostics);
+            LoadedConfig {
+                config,
+                provenance,
+                resolution: Some(resolution),
+                diagnostics,
             }
-            Err(err) => $loaded::failed(vec![ConfigDiagnostic::Parse(err.to_string())]),
         }
+        Err(error) => LoadedConfig::failed(vec![ConfigDiagnostic::Read(error.to_string())]),
     }
 }
 
+fn load_config_from_str<C, R>(
+    content: &str,
+    paths: &AppPaths,
+    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> R,
+) -> LoadedConfig<C, R>
+where
+    C: Default + serde::de::DeserializeOwned,
+    R: ConfigResolution,
+{
+    let table = match content.parse::<toml::Table>() {
+        Ok(table) => table,
+        Err(error) => {
+            return LoadedConfig::failed(vec![ConfigDiagnostic::Parse(error.to_string())]);
+        }
     };
+    let document = toml::Value::Table(table);
+    let (config, ignored_keys) = match deserialize_with_ignored::<C, _>(document.clone()) {
+        Ok(config) => config,
+        Err(error) => {
+            return LoadedConfig::failed(vec![ConfigDiagnostic::Parse(error.to_string())]);
+        }
+    };
+    let provenance = ConfigProvenance::from_document(Some(&document));
+    let resolution = resolve(&config, &provenance, paths);
+    let (unknown_sections, unknown_diagnostics) =
+        unknown_top_level_sections(&document, &ignored_keys);
+    let mut diagnostics = unknown_diagnostics
+        .into_iter()
+        .map(ConfigDiagnostic::Unknown)
+        .collect::<Vec<_>>();
+    diagnostics.extend(
+        unknown_config_key_diagnostics(
+            ignored_keys
+                .into_iter()
+                .filter(|path| {
+                    !matches!(path.as_slice(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
+                })
+                .collect(),
+        )
+        .into_iter()
+        .map(ConfigDiagnostic::Unknown),
+    );
+    resolution.append_diagnostics(&mut diagnostics);
+    LoadedConfig {
+        config,
+        provenance,
+        resolution: Some(resolution),
+        diagnostics,
+    }
 }
-role_loader!(
-    ClientConfig,
-    ValidatedClientConfig,
-    ClientConfigResolution,
-    LoadedClientConfig,
-    client_config_file
-);
-role_loader!(
-    ServerConfig,
-    ValidatedServerConfig,
-    ServerConfigResolution,
-    LoadedServerConfig,
-    server_config_file
-);
 
 pub fn load_client_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
-    ClientConfig::load_validated(paths)
+    let path = paths.client_config_file();
+    load_config_from_path(&path, paths, resolve_client_config)
+        .into_validated(paths.clone())
+        .map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.with_file(&path))
+                .collect()
+        })
 }
+
 pub fn load_server_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
-    ServerConfig::load_validated(paths)
+    let path = paths.server_config_file();
+    load_config_from_path(&path, paths, resolve_server_config)
+        .into_validated(paths.clone())
+        .map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.with_file(&path))
+                .collect()
+        })
 }
 
 fn unknown_top_level_sections(
@@ -676,23 +756,31 @@ where
 }
 
 #[cfg(test)]
-macro_rules! role_test_loader {
-    ($raw:ident, $loaded:ident) => {
-        #[cfg(test)]
-        impl $raw {
-            fn load_from_path(path: &Path) -> $loaded {
-                Self::load_from_path_with_paths(path, &AppPaths::default())
-            }
-            fn load_from_str(content: &str) -> $loaded {
-                Self::load_from_str_with_paths(content, &AppPaths::default())
-            }
-        }
-    };
+type LoadedClientConfig = LoadedConfig<ClientConfig, ClientConfigResolution>;
+#[cfg(test)]
+type LoadedServerConfig = LoadedConfig<ServerConfig, ServerConfigResolution>;
+
+#[cfg(test)]
+impl ClientConfig {
+    fn load_from_path(path: &Path) -> LoadedClientConfig {
+        load_config_from_path(path, &AppPaths::default(), resolve_client_config)
+    }
+
+    fn load_from_str(content: &str) -> LoadedClientConfig {
+        load_config_from_str(content, &AppPaths::default(), resolve_client_config)
+    }
 }
+
 #[cfg(test)]
-role_test_loader!(ClientConfig, LoadedClientConfig);
-#[cfg(test)]
-role_test_loader!(ServerConfig, LoadedServerConfig);
+impl ServerConfig {
+    fn load_from_path(path: &Path) -> LoadedServerConfig {
+        load_config_from_path(path, &AppPaths::default(), resolve_server_config)
+    }
+
+    fn load_from_str(content: &str) -> LoadedServerConfig {
+        load_config_from_str(content, &AppPaths::default(), resolve_server_config)
+    }
+}
 
 /// Absolute like resolved launch paths, and identical across calls, so two
 /// test configs compare equal.
@@ -812,6 +900,13 @@ mod tests {
                 .iter()
                 .any(|error| error.to_string().contains("server.toml"))
         );
+        assert!(errors.iter().all(|error| {
+            error
+                .to_string()
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("server.toml"))
+        }));
         std::fs::write(
             paths.server_config_file(),
             "[terminal]\ndefault_shell = '/bin/sh'\n",
@@ -828,6 +923,13 @@ mod tests {
                 .iter()
                 .any(|error| error.to_string().contains("client.toml"))
         );
+        assert!(errors.iter().all(|error| {
+            error
+                .to_string()
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("client.toml"))
+        }));
         std::fs::remove_file(paths.client_config_file()).expect("remove client fixture");
         assert!(load_client_validated(&paths).is_ok());
     }
@@ -1063,8 +1165,7 @@ sidebar_max_width = 36
         )
         .expect("write invalid config fixture");
 
-        let diagnostics =
-            ClientConfig::load_validated(&paths).expect_err("invalid fixture is refused");
+        let diagnostics = load_client_validated(&paths).expect_err("invalid fixture is refused");
         let messages = diagnostics
             .iter()
             .map(ToString::to_string)
@@ -1092,10 +1193,10 @@ sidebar_max_width = 36
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
 
         std::fs::write(&path, "[ui]\nsidebar_width = 0\n").expect("write bad config fixture");
-        assert!(ClientConfig::load_validated(&paths).is_err());
+        assert!(load_client_validated(&paths).is_err());
 
         std::fs::remove_file(&path).expect("remove config fixture");
-        let defaults = ClientConfig::load_validated(&paths).expect("missing config uses defaults");
+        let defaults = load_client_validated(&paths).expect("missing config uses defaults");
         assert!(defaults.validated_live_keybinds().is_ok());
         assert_eq!(defaults.palette(), &crate::theme::Palette::catppuccin());
 
@@ -1104,7 +1205,7 @@ sidebar_max_width = 36
             "[theme]\nname = \"nord\"\n[theme.custom]\naccent = \"#010203\"\n",
         )
         .expect("write valid themed config");
-        let themed = ClientConfig::load_validated(&paths).expect("valid theme loads");
+        let themed = load_client_validated(&paths).expect("valid theme loads");
         assert_eq!(themed.palette().accent, ratatui::style::Color::Rgb(1, 2, 3));
     }
 
@@ -1120,8 +1221,7 @@ sidebar_max_width = 36
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
         std::fs::write(&path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
 
-        let errors =
-            ServerConfig::load_validated(&paths).expect_err("home cwd needs absolute HOME");
+        let errors = load_server_validated(&paths).expect_err("home cwd needs absolute HOME");
         assert!(
             errors
                 .iter()
@@ -1165,7 +1265,7 @@ sidebar_max_width = 36
             "[terminal]\nnew_cwd = \"project\"\n",
         )
         .expect("write config fixture");
-        let config = ServerConfig::load_validated(&paths).expect("relative new_cwd validates");
+        let config = load_server_validated(&paths).expect("relative new_cwd validates");
         assert_eq!(
             config.terminal().new_cwd,
             crate::NewTerminalCwd::Path(launch.join("project"))
@@ -1175,7 +1275,7 @@ sidebar_max_width = 36
             "[terminal]\nnew_cwd = \"current\"\n",
         )
         .expect("write config fixture");
-        let config = ServerConfig::load_validated(&paths).expect("current new_cwd validates");
+        let config = load_server_validated(&paths).expect("current new_cwd validates");
         assert_eq!(config.terminal().new_cwd, crate::NewTerminalCwd::Current);
         assert_eq!(config.paths().current_dir(), Some(launch.as_path()));
 

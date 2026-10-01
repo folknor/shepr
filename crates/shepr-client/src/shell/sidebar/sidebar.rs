@@ -1,8 +1,4 @@
 use super::*;
-use ratatui::{
-    text::Line,
-    widgets::{Paragraph, Widget},
-};
 
 fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
     if palette.selection_bg == ratatui::style::Color::Reset {
@@ -128,9 +124,11 @@ pub(in crate::shell) fn render_workspace_rows(
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
         );
-        Paragraph::new(Line::from(spans)).render(
-            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
+        super::put_spans(
             buffer,
+            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
+            &spans,
+            Style::default(),
         );
     }
 

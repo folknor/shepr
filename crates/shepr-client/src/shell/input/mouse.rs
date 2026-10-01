@@ -546,6 +546,51 @@ impl ClientShellState {
         current_matches && pending_matches
     }
 
+    /// Capture the split's child identities from server surface coordinates.
+    /// Pane rectangles include their borders; inner rectangles do not.
+    fn split_child_panes(
+        &self,
+        path: &[shepr_core::geometry::SplitBranch],
+    ) -> Option<(
+        Vec<shepr_protocol::PublicPaneId>,
+        Vec<shepr_protocol::PublicPaneId>,
+    )> {
+        let surface = self.pane_surface.as_ref()?;
+        let split = surface.splits.iter().find(|split| split.path == path)?;
+        // Collapsed rectangles cannot establish which side owns a pane.
+        // Refuse to start a drag rather than construct an ambiguous identity.
+        if surface
+            .panes
+            .iter()
+            .any(|pane| pane.rect.width == 0 || pane.rect.height == 0)
+        {
+            return None;
+        }
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        for pane in &surface.panes {
+            let rect = pane.rect;
+            let area = split.area;
+            if rect.x < area.x
+                || rect.y < area.y
+                || rect.x.saturating_add(rect.width) > area.x.saturating_add(area.width)
+                || rect.y.saturating_add(rect.height) > area.y.saturating_add(area.height)
+            {
+                continue;
+            }
+            let in_first = match split.direction {
+                shepr_protocol::PaneSurfaceSplitDirection::Horizontal => rect.x < split.pos,
+                shepr_protocol::PaneSurfaceSplitDirection::Vertical => rect.y < split.pos,
+            };
+            if in_first {
+                first.push(pane.pane_id.clone());
+            } else {
+                second.push(pane.pane_id.clone());
+            }
+        }
+        (!first.is_empty() && !second.is_empty()).then_some((first, second))
+    }
+
     fn pane_split_ratio(hit: &PaneSplitHit, grab_offset: i32, point: (u16, u16)) -> f32 {
         let (pointer, origin, length) = match hit.direction {
             shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
@@ -649,22 +694,12 @@ impl ClientShellState {
             return None;
         }
 
-        {
-            let insert_index = before_workspace_id
-                .and_then(|target| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .position(|workspace| workspace.workspace_id == *target)
-                })
-                .unwrap_or(snapshot.workspaces.len());
-            Some(shepr_protocol::command::EndpointCommand::WorkspaceMove(
-                shepr_protocol::command::WorkspaceMoveParams {
-                    workspace_id: source.workspace_id.clone(),
-                    insert_index,
-                },
-            ))
-        }
+        Some(shepr_protocol::command::EndpointCommand::WorkspaceMove(
+            shepr_protocol::command::WorkspaceMoveParams {
+                workspace_id: source.workspace_id.clone(),
+                before_workspace_id: before_workspace_id.cloned(),
+            },
+        ))
     }
 
     pub(super) fn handle_mouse_with_accounting(
@@ -840,12 +875,16 @@ impl ClientShellState {
                     return;
                 }
                 Some(ClientChromeDrag::PaneSplit {
+                    first_panes,
+                    second_panes,
                     hit,
                     workspace_id,
                     grab_offset,
                     throttle,
                     ..
                 }) => {
+                    let first_panes = first_panes.clone();
+                    let second_panes = second_panes.clone();
                     let hit = hit.clone();
                     let workspace_id = workspace_id.clone();
                     let grab_offset = *grab_offset;
@@ -875,7 +914,8 @@ impl ClientShellState {
                             shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                 shepr_protocol::command::LayoutSetSplitRatioParams {
                                     workspace_id: workspace_id.clone(),
-                                    path: hit.path,
+                                    first_panes,
+                                    second_panes,
                                     ratio,
                                 },
                             ),
@@ -957,6 +997,8 @@ impl ClientShellState {
                         }
                     }
                     ClientChromeDrag::PaneSplit {
+                        first_panes,
+                        second_panes,
                         hit,
                         workspace_id,
                         grab_offset,
@@ -974,7 +1016,8 @@ impl ClientShellState {
                                 shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                     shepr_protocol::command::LayoutSetSplitRatioParams {
                                         workspace_id: workspace_id.clone(),
-                                        path: hit.path,
+                                        first_panes,
+                                        second_panes,
                                         ratio,
                                     },
                                 ),
@@ -1622,7 +1665,13 @@ impl ClientShellState {
                         shepr_protocol::PaneSurfaceSplitDirection::Horizontal => mouse.column,
                         shepr_protocol::PaneSurfaceSplitDirection::Vertical => mouse.row,
                     };
+                    let Some((first_panes, second_panes)) = self.split_child_panes(&hit.path)
+                    else {
+                        return;
+                    };
                     self.chrome_drag = Some(ClientChromeDrag::PaneSplit {
+                        first_panes,
+                        second_panes,
                         grab_offset: i32::from(hit.pos) - i32::from(pointer),
                         last_sent_ratio: None,
                         throttle: Throttle::new(crate::limits::MOUSE_DRAG_SEND_INTERVAL),
@@ -1894,6 +1943,8 @@ mod tests {
             state.pending_pane_surface = Some(split_surface(boot_id, 3, SplitBranch::Second));
         }
         state.chrome_drag = Some(ClientChromeDrag::PaneSplit {
+            first_panes: vec!["w1:p1".parse().expect("pane")],
+            second_panes: vec!["w1:p2".parse().expect("pane")],
             hit: PaneSplitHit {
                 direction: shepr_protocol::PaneSurfaceSplitDirection::Horizontal,
                 pos: 40,
@@ -1939,6 +1990,10 @@ mod tests {
                     &request.command,
                     shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(params)
                         if (params.ratio - 0.75).abs() < f32::EPSILON
+                            && params.first_panes
+                                == vec!["w1:p1".parse::<shepr_protocol::PublicPaneId>().expect("pane")]
+                            && params.second_panes
+                                == vec!["w1:p2".parse::<shepr_protocol::PublicPaneId>().expect("pane")]
                 )
         ));
     }

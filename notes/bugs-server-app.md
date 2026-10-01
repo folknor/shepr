@@ -29,24 +29,14 @@ is the same class. A fix would make the detector's process-exit release
 provisional (held until the shell survives a short grace period or a later
 tick confirms it).
 
-## SAPP-007 - Test-only reimplementations of production paths
+## SAPP-007 - The test event drain skips the headless server's forwarding
 
-Several `#[cfg(test)]` functions duplicate production logic with different
-semantics, and tests assert on the duplicate:
-
-- `AppState::handle_pane_died` / `remove_pane` (actions) vs the App's
-  `handle_internal_event_inner` removal.
-- `AppState::navigate_pane`, `swap_pane`, `resize_pane` (`actions/pane.rs`) vs
-  the endpoint handlers. `swap_pane` does not move focus; production
-  `handle_pane_swap` focuses the source pane.
-- `App::drain_internal_events*` (`runtime.rs`) vs
-  `drain_internal_events_with_forwarding*`, which also applies the checkpoint
-  hold, the signal-quit drop and the clipboard forwarding.
-- `App::start_pending_agent_resume_for_terminal` bypasses the schedule and the
-  directory-check gate.
-
-The hunter recommends deleting these and driving tests through the production
-entry points (the headless loop already has a test harness).
+The test-only pane removal, navigation, swap and resize helpers are gone, and
+tests drive the production event handler, the typed endpoint dispatcher and the
+scheduled resume pass. Residue: the test queue drain in `app/runtime.rs` still
+calls App event handling without the headless server's checkpoint hold,
+shutdown-signal drop and clipboard forwarding (documented there), and a test of
+the per-tick drain limit belongs in `server/headless/tests/`.
 
 ## SAPP-012 - Structural: the pane-exit checkpoint as a typed state machine
 
@@ -62,10 +52,3 @@ that some path forgot (a stale removal plan clearing the bookkeeping was one,
 since fixed). A typed enum (no checkpoint / requested gen N / saved gen N with
 snapshot / abandoned) would make that class unrepresentable; the hunter
 recommends the rewrite.
-
-## SAPP-013 - A production-compiled test harness
-
-`crate::agent_report_test_support` is a public, production-compiled test harness
-that builds its workspace with `Workspace::test_from_pane`, a production-visible
-`test_`-named constructor in shepr-mux. The module doc owns the choice; noted
-because AGENTS.md prefers seams over test surfaces in production crates.

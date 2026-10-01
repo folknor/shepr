@@ -165,15 +165,4 @@ impl AppState {
             .pane_state(pane_id)
             .map(|pane| pane.attached_terminal_id.clone())
     }
-
-    pub(crate) fn remove_pane(
-        &mut self,
-        workspace_index: usize,
-        pane_id: PaneId,
-    ) -> PaneRemovalCommit {
-        let Some(plan) = self.prepare_pane_removal(workspace_index, pane_id) else {
-            return PaneRemovalCommit::Stale;
-        };
-        self.commit_pane_removal(&plan)
-    }
 }

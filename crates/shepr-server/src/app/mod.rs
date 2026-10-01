@@ -88,7 +88,6 @@ pub struct App {
     pub(crate) terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
-    pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     /// When deferred agent resumes may be attempted; see `resume_schedule`.
@@ -132,12 +131,13 @@ pub struct App {
 pub(crate) use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT};
 
 impl App {
+    /// API requests reach the app through `HeadlessServer`, which owns their
+    /// bounded receiver; the app holds no API channel.
     pub(crate) fn with_paths(
         config: &shepr_config::ValidatedServerConfig,
         paths: &shepr_config::AppPaths,
         lease: shepr_mux::persist::DataDirLease,
         policy: AppPolicy,
-        api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         clock: AppClock,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
@@ -329,7 +329,6 @@ impl App {
             persist_pane_history: config.experimental().pane_history,
             last_render_at: None,
             last_presentation_at: None,
-            api_rx,
             policy,
             render_notify,
             pane_teardowns,
@@ -451,19 +450,19 @@ mod tests {
         pub(crate) fn new(
             config: &ServerConfig,
             policy: AppPolicy,
-            api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
+            // Ignored: the app holds no API channel.
+            _api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         ) -> Self {
             use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
             let scratch = crate::test_support::ScratchDir::new("app");
             let paths = shepr_config::AppPaths::test_at(&scratch);
             let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
                 config.clone(),
-                None,
                 paths.clone(),
             );
             let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
                 .expect("test session lease");
-            Self::with_paths(&config, &paths, lease, policy, api_rx, test_clock())
+            Self::with_paths(&config, &paths, lease, policy, test_clock())
         }
 
         /// Installs `runtime` for a pane in the same registry production uses.
@@ -537,7 +536,6 @@ mod tests {
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             ServerConfig::default(),
-            None,
             paths.clone(),
         );
         let data_dir = paths.data_dir().to_path_buf();
@@ -578,15 +576,7 @@ mod tests {
         let session_file = data_dir.join("session.json");
         std::fs::write(&session_file, &original).expect("write the saved session");
 
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::with_paths(
-            &config,
-            &paths,
-            lease,
-            AppPolicy::Production,
-            api_rx,
-            test_clock(),
-        );
+        let mut app = App::with_paths(&config, &paths, lease, AppPolicy::Production, test_clock());
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.terminals.len(), 1);
 

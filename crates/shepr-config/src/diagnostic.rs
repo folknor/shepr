@@ -17,7 +17,7 @@ impl ConfigDiagnostic {
             | Self::Validation(message)
             | Self::Path(message) => message,
         };
-        *message = format!("{message} ({})", path.display());
+        *message = format!("{}: {message}", path.display());
         self
     }
 
@@ -52,6 +52,7 @@ impl std::fmt::Display for ConfigDiagnostic {
 #[cfg(test)]
 mod tests {
     use super::ConfigDiagnostic;
+    use std::path::Path;
 
     #[test]
     fn display_adds_the_category_where_the_detail_lacks_it() {
@@ -85,5 +86,17 @@ mod tests {
         for (diagnostic, expected) in diagnostics {
             assert_eq!(diagnostic.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn file_path_stays_on_the_first_line_of_a_parse_error() {
+        let diagnostic =
+            ConfigDiagnostic::Parse("expected key\n --> 2:1\n  |\n2 | [broken\n  | ^".to_owned())
+                .with_file(Path::new("/config/client.toml"));
+
+        assert_eq!(
+            diagnostic.to_string(),
+            "config parse error: /config/client.toml: expected key\n --> 2:1\n  |\n2 | [broken\n  | ^"
+        );
     }
 }

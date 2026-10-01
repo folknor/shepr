@@ -30,14 +30,13 @@ impl ServerAddress {
         let api_socket_override = api_socket_override.filter(|path| *path != runtime_api.as_path());
         let client_socket_override =
             client_socket_override.filter(|path| *path != runtime_client.as_path());
-        // Panes export both resolved socket paths. When the server was
-        // selected only by a client-socket override, that also exports the
-        // profile's ordinary API socket. Keep the client override paired with
-        // it, while allowing a non-runtime SHEPR_SOCKET_PATH to select a
-        // different server even when both variables are set. Inherited values
-        // equal to the runtime paths are not overrides: they select no
-        // different address and must not block a nested client from starting
-        // its profile's server.
+        // A client socket override can pair a custom client socket with the
+        // profile's API socket. The TUI attaches through the client socket,
+        // and server stop waits for both resolved sockets to close. An
+        // override therefore names an existing server; the TUI will not start
+        // one there. A non-runtime API override still selects a different
+        // server when both variables are set. Inherited values equal to the
+        // runtime paths are not overrides.
         if let Some(api_socket) = api_socket_override {
             let api_socket = api_socket.to_path_buf();
             return Self {
@@ -243,9 +242,9 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_of_a_client_socket_server_keeps_its_client_socket() {
-        // A server started with only a client socket override exports the
-        // profile's ordinary API path beside it into every pane.
+    fn client_socket_override_pairs_with_the_runtime_api_socket() {
+        // A client can attach to an existing server and server stop can wait
+        // for it to release its separately selected client socket.
         let runtime = Path::new("/run/user/1/shepr");
         let address = ServerAddress::resolve_paths(
             runtime,

@@ -2,7 +2,7 @@
 //! (`patch_style`) and replacing a region with what a ratatui renderer drew into a scratch
 //! buffer (`overwrite`). `FrameData` is the composition target throughout; pane cells never
 //! pass through ratatui, so underline shapes, hyperlinks and wide-glyph tails stay in their
-//! wire form. Both use the one width rule output uses (`shepr_termio::blit::symbol_width`).
+//! wire form. Both use the one width rule output uses (`shepr_termio::blit::text_width`).
 
 use super::*;
 use shepr_protocol::{CellData, WireColor, WireStyleFlags};
@@ -140,7 +140,7 @@ pub(in crate::shell) fn split_glyph_cells<'a>(
             x += 1;
             continue;
         }
-        let end = (x + shepr_termio::blit::symbol_width(text).max(1)).min(len);
+        let end = (x + shepr_termio::blit::text_width(text).max(1)).min(len);
         let covered_count = covered[x..end].iter().filter(|covered| **covered).count();
         if covered_count != 0 && covered_count != end - x {
             out.extend((x..end).filter(|index| covered[*index] == blank_covered));
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn overwrite_uses_the_output_width_rule_for_halfwidth_katakana() {
         let voiced = "\u{ff76}\u{ff9e}";
-        assert_eq!(shepr_termio::blit::symbol_width(voiced), 2);
+        assert_eq!(shepr_termio::blit::text_width(voiced), 2);
         let mut frame = frame("a");
         frame.cells[0].symbol = voiced.to_owned();
         frame.cells.push(cell(""));
@@ -574,6 +574,24 @@ mod tests {
         scratch.set_string(0, 0, "#", Style::default());
         overwrite(&mut frame, &[Rect::new(0, 0, 1, 1)], &scratch);
         assert_eq!(text(&frame), "# ");
+    }
+
+    #[test]
+    fn overwrite_repairs_a_split_emoji_variation_glyph() {
+        let mut frame = FrameData {
+            cells: vec![cell("\u{2764}\u{fe0f}"), cell(""), cell("z")],
+            width: 3,
+            height: 1,
+            cursor: None,
+            hyperlinks: Vec::new(),
+        };
+        let mut scratch = blank_scratch(3, 1);
+        scratch.set_string(0, 0, "#", Style::default());
+
+        assert_eq!(shepr_termio::blit::text_width("\u{2764}\u{fe0f}"), 2);
+        overwrite(&mut frame, &[Rect::new(0, 0, 1, 1)], &scratch);
+
+        assert_eq!(text(&frame), "# z");
     }
 
     #[test]

@@ -137,8 +137,8 @@ pub(crate) fn client_shell_snapshot(
 
 pub(crate) fn test_headless_server() -> HeadlessServer {
     let config = shepr_config::ServerConfig::default();
-    let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test, api_rx);
+    let (_app_api_tx, app_api_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test, app_api_rx);
 
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
     // The server removes its socket when dropped.
@@ -152,6 +152,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         .set_nonblocking(ListenerNonblockingMode::Accept)
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
+    let (_api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     let (worker_tx, worker_rx) = worker::channel();
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
@@ -174,6 +175,8 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         host_shutdown_monitor: None,
         server_event_rx,
         server_event_tx,
+        api_request_rx,
+        shutdown_unregistered_clients: HashMap::new(),
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
         replaying_checkpointed_pane_exit: None,
@@ -545,11 +548,11 @@ fn assert_server_unavailable(
 #[tokio::test]
 async fn complete_shutdown_answers_queued_requests_and_closes_the_channel() {
     let mut server = test_headless_server();
-    let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    server.app.api_rx = api_rx;
+    let (api_tx, api_rx) = tokio::sync::mpsc::channel(1);
+    server.api_request_rx = api_rx;
 
     let (queued, queued_rx) = shutdown_test_request("queued");
-    api_tx.send(queued).expect("test precondition");
+    assert!(api_tx.try_send(queued).is_ok());
 
     server.initiate_shutdown();
     server
@@ -561,7 +564,7 @@ async fn complete_shutdown_answers_queued_requests_and_closes_the_channel() {
     // A request dispatched after cleanup fails at the sender, which the API
     // thread turns into `server_unavailable` at once.
     let (late, _late_rx) = shutdown_test_request("late");
-    assert!(api_tx.send(late).is_err());
+    assert!(api_tx.try_send(late).is_err());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -592,20 +595,174 @@ async fn an_endpoint_request_queued_at_shutdown_is_answered() {
         .await
         .expect("shutdown completes");
 
-    let (request_id, error) =
-        std::iter::from_fn(|| control.recv_timeout(Duration::from_millis(500)).ok())
-            .map(read_server_message)
-            .find_map(|message| match message {
+    let mut messages = Vec::new();
+    loop {
+        let message = read_server_message(
+            control
+                .recv_timeout(Duration::from_millis(500))
+                .expect("the queued refusal and shutdown notice are flushed"),
+        );
+        let shutdown = matches!(&message, ServerMessage::ServerShutdown { .. });
+        messages.push(message);
+        if shutdown {
+            break;
+        }
+    }
+    let refusal_index = messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
                 ServerMessage::ClientShellEndpointResponse {
                     request_id,
-                    result: Err(error),
+                    result: Err(shepr_protocol::command::EndpointError::ShuttingDown),
                     ..
-                } => Some((request_id, error)),
-                _ => None,
+                } if request_id == "at-stop"
+            )
+        })
+        .expect("the queued command is answered, not left to its timeout");
+    let shutdown_index = messages
+        .iter()
+        .position(|message| matches!(message, ServerMessage::ServerShutdown { .. }))
+        .expect("shutdown notice is delivered");
+    assert!(
+        refusal_index < shutdown_index,
+        "refusal must precede shutdown"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_queued_new_client_gets_its_endpoint_refusal_before_shutdown() {
+    let mut server = test_headless_server();
+    let client_id = ClientId::test_new(45);
+    let boot_id = server.client_shell_boot_id.clone();
+    let (writer, control, _render) = test_client_writer();
+    assert!(
+        server
+            .server_event_tx
+            .try_send(ServerEvent::ClientShellConnected {
+                client_id,
+                surface_cols: 80,
+                surface_rows: 23,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+                mouse_capture: false,
+                surface_active: true,
+                writer,
             })
-            .expect("the queued command is answered, not left to its timeout");
-    assert_eq!(request_id, "at-stop");
-    assert_eq!(error, shepr_protocol::command::EndpointError::ShuttingDown);
+            .is_ok()
+    );
+    assert!(
+        server
+            .server_event_tx
+            .try_send(ServerEvent::ClientShellEndpointRequest {
+                client_id,
+                boot_id,
+                request_id: "new-client-command".into(),
+                command: Box::new(EndpointCommand::PaneFocus(
+                    shepr_protocol::command::PaneTarget {
+                        pane_id: shepr_test_fixtures::id("w1:p1"),
+                    },
+                )),
+            })
+            .is_ok()
+    );
+
+    server.initiate_shutdown();
+    server
+        .complete_shutdown()
+        .await
+        .expect("shutdown settles the queued connection and command");
+
+    let mut messages = Vec::new();
+    loop {
+        let message = read_server_message(
+            control
+                .recv_timeout(Duration::from_millis(500))
+                .expect("the queued refusal and shutdown notice are flushed"),
+        );
+        let shutdown = matches!(&message, ServerMessage::ServerShutdown { .. });
+        messages.push(message);
+        if shutdown {
+            break;
+        }
+    }
+    let refusal_index = messages
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ServerMessage::ClientShellEndpointResponse {
+                    request_id,
+                    result: Err(shepr_protocol::command::EndpointError::ShuttingDown),
+                    ..
+                } if request_id == "new-client-command"
+            )
+        })
+        .expect("the queued command is refused");
+    let shutdown_index = messages
+        .iter()
+        .position(|message| matches!(message, ServerMessage::ServerShutdown { .. }))
+        .expect("the late client receives shutdown");
+    assert!(
+        refusal_index < shutdown_index,
+        "refusal must precede shutdown"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_dequeued_new_client_waits_for_queued_commands_before_shutdown() {
+    let mut server = test_headless_server();
+    let client_id = ClientId::test_new(46);
+    let (writer, control, _render) = test_client_writer();
+    server
+        .shutdown_unregistered_clients
+        .insert(client_id, writer);
+    assert!(
+        server
+            .server_event_tx
+            .try_send(ServerEvent::ClientShellEndpointRequest {
+                client_id,
+                boot_id: server.client_shell_boot_id.clone(),
+                request_id: "dequeued-client-command".into(),
+                command: Box::new(EndpointCommand::PaneFocus(
+                    shepr_protocol::command::PaneTarget {
+                        pane_id: shepr_test_fixtures::id("w1:p1"),
+                    },
+                )),
+            })
+            .is_ok()
+    );
+
+    server.initiate_shutdown();
+    server
+        .complete_shutdown()
+        .await
+        .expect("shutdown settles a selected connection before notifying it");
+
+    assert!(matches!(
+        read_server_message(
+            control
+                .recv_timeout(Duration::from_millis(500))
+                .expect("the endpoint refusal is flushed first")
+        ),
+        ServerMessage::ClientShellEndpointResponse {
+            request_id,
+            result: Err(shepr_protocol::command::EndpointError::ShuttingDown),
+            ..
+        } if request_id == "dequeued-client-command"
+    ));
+    assert!(matches!(
+        read_server_message(
+            control
+                .recv_timeout(Duration::from_millis(500))
+                .expect("the shutdown notice follows the refusal")
+        ),
+        ServerMessage::ServerShutdown { .. }
+    ));
     shutdown_test_runtimes(&mut server);
 }
 
@@ -662,32 +819,33 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
 fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
     let mut server = test_headless_server();
     server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("bounded-api")];
-    let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    server.app.api_rx = api_rx;
-
     let request_count = crate::limits::API_REQUEST_DRAIN_LIMIT + 2;
+    let (api_tx, api_rx) = tokio::sync::mpsc::channel(request_count);
+    server.api_request_rx = api_rx;
     let mut responses = Vec::with_capacity(request_count);
     for index in 0..request_count {
         let (respond_to, response_rx) = std::sync::mpsc::channel();
-        api_tx
-            .send(shepr_api::ApiRequestMessage {
-                request: shepr_api::schema::AppRequest {
-                    id: format!("bounded-{index}"),
-                    method: shepr_api::schema::AppMethod::DetectCapture(
-                        shepr_api::schema::PaneTarget {
-                            pane_id: format!("w999:p{index}"),
-                        },
-                    ),
-                },
-                respond_to,
-            })
-            .expect("test precondition");
+        assert!(
+            api_tx
+                .try_send(shepr_api::ApiRequestMessage {
+                    request: shepr_api::schema::AppRequest {
+                        id: format!("bounded-{index}"),
+                        method: shepr_api::schema::AppMethod::DetectCapture(
+                            shepr_api::schema::PaneTarget {
+                                pane_id: format!("w999:p{index}"),
+                            },
+                        ),
+                    },
+                    respond_to,
+                })
+                .is_ok()
+        );
         responses.push(response_rx);
     }
 
     server.drain_api_requests_with_shutdown_check();
     assert_eq!(
-        server.app.api_rx.len(),
+        server.api_request_rx.len(),
         request_count - crate::limits::API_REQUEST_DRAIN_LIMIT
     );
     for (index, response_rx) in responses
@@ -726,7 +884,7 @@ fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
             format!("pane w999:p{index} not found")
         );
     }
-    assert_eq!(server.app.api_rx.len(), 0);
+    assert_eq!(server.api_request_rx.len(), 0);
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1599,6 +1757,10 @@ async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdow
         "the pending slot holds the reply behind it"
     );
     server.initiate_shutdown();
+    server
+        .complete_shutdown()
+        .await
+        .expect("shutdown settles endpoint replies");
     let mut replies = Vec::new();
     while replies.len() < 2 {
         if let ServerMessage::ClientShellEndpointResponse {
@@ -3456,6 +3618,14 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     );
     server.app.state.set_bookmark_index(Some(0));
     let workspace_id = server.app.public_workspace_id(0).expect("workspace id");
+    let first_public = server
+        .app
+        .public_pane_id(0, first_pane)
+        .expect("first pane id");
+    let second_public = server
+        .app
+        .public_pane_id(0, second_pane)
+        .expect("second pane id");
 
     let (control, _) = connect_test_shell(&mut server, 65, 100, 30);
     let _ = control.recv().expect("snapshot");
@@ -3466,7 +3636,8 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
         shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
             shepr_protocol::command::LayoutSetSplitRatioParams {
                 workspace_id: workspace_id.clone(),
-                path: Vec::new(),
+                first_panes: vec![first_public],
+                second_panes: vec![second_public],
                 ratio: 0.8,
             },
         ),

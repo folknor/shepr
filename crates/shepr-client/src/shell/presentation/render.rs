@@ -1,4 +1,5 @@
 use super::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[path = "../overlays/overlays.rs"]
 mod overlays;
@@ -158,14 +159,14 @@ pub(super) fn render_mode_bar(
                         shepr_protocol::command::PaneCopySearchDirection::Forward => "/",
                         shepr_protocol::command::PaneCopySearchDirection::Backward => "?",
                     };
-                    buffer.set_stringn(bar.x, bar.y, " COPY ", usize::from(bar.width), mode_style);
+                    put_text(buffer, bar.x, bar.y, bar.width, " COPY ", mode_style);
                     let prefix = 8.min(bar.width);
                     if bar.width >= 8 {
-                        buffer.set_string(bar.x + 7, bar.y, marker, key);
+                        put_text(buffer, bar.x + 7, bar.y, 1, marker, key);
                     }
                     let footer = "  enter search  esc cancel";
                     let footer_width = if bar.width >= 50 {
-                        u16::try_from(footer.len()).unwrap_or(u16::MAX)
+                        display_width(footer)
                     } else {
                         0
                     };
@@ -185,7 +186,14 @@ pub(super) fn render_mode_bar(
                         cell.set_style(Style::default().fg(palette.panel_bg).bg(palette.text));
                     }
                     if footer_width > 0 {
-                        buffer.set_string(bar.right() - footer_width, bar.y, footer, base);
+                        put_text(
+                            buffer,
+                            bar.right() - footer_width,
+                            bar.y,
+                            footer_width,
+                            footer,
+                            base,
+                        );
                     }
                     return Some(bar);
                 }
@@ -234,12 +242,7 @@ pub(super) fn render_mode_bar(
             break;
         }
         let remaining = end - x;
-        buffer.set_stringn(x, bar.y, &text, usize::from(remaining), style);
-        x = x.saturating_add(
-            u16::try_from(UnicodeWidthStr::width(text.as_str()))
-                .unwrap_or(u16::MAX)
-                .min(remaining),
-        );
+        x = x.saturating_add(put_text(buffer, x, bar.y, remaining, &text, style));
     }
     Some(bar)
 }
@@ -316,21 +319,112 @@ pub(super) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str
     );
 }
 
-pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
-    if width == 0 || y >= buffer.area.bottom() || x >= buffer.area.right() {
-        return;
+pub(super) fn put_text(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    text: &str,
+    style: Style,
+) -> u16 {
+    if width == 0
+        || x < buffer.area.left()
+        || y < buffer.area.top()
+        || y >= buffer.area.bottom()
+        || x >= buffer.area.right()
+    {
+        return 0;
     }
-    buffer.set_stringn(x, y, text, width as usize, style);
+    let limit = usize::from(width.min(buffer.area.right().saturating_sub(x)));
+    let mut written = 0usize;
+    for grapheme in text.graphemes(true) {
+        if grapheme.contains(char::is_control) {
+            continue;
+        }
+        let grapheme_width = shepr_termio::blit::text_width(grapheme);
+        if grapheme_width == 0 {
+            continue;
+        }
+        if written.saturating_add(grapheme_width) > limit {
+            break;
+        }
+        let Ok(column_offset) = u16::try_from(written) else {
+            break;
+        };
+        let Some(column) = x.checked_add(column_offset) else {
+            break;
+        };
+        if let Some(cell) = buffer.cell_mut((column, y)) {
+            cell.set_symbol(grapheme).set_style(style);
+        }
+        for offset in 1..grapheme_width {
+            let Ok(offset) = u16::try_from(offset) else {
+                break;
+            };
+            let Some(continuation_column) = column.checked_add(offset) else {
+                break;
+            };
+            if let Some(cell) = buffer.cell_mut((continuation_column, y)) {
+                cell.set_symbol(" ").set_style(style);
+            }
+        }
+        written = written.saturating_add(grapheme_width);
+    }
+    u16::try_from(written).unwrap_or(u16::MAX)
 }
 
 pub(super) fn display_width(text: &str) -> u16 {
-    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
+    u16::try_from(shepr_termio::blit::text_width(text)).unwrap_or(u16::MAX)
+}
+
+pub(super) fn put_spans(
+    buffer: &mut Buffer,
+    area: Rect,
+    spans: &[ratatui::text::Span<'_>],
+    style: Style,
+) {
+    let area = area.intersection(buffer.area);
+    if area.is_empty() {
+        return;
+    }
+    buffer.set_style(area, style);
+    let mut x = area.x;
+    let mut remaining = area.width;
+    for span in spans {
+        let span_width = shepr_termio::blit::text_width(span.content.as_ref());
+        let written = put_text(
+            buffer,
+            x,
+            area.y,
+            remaining,
+            span.content.as_ref(),
+            span.style,
+        );
+        x = x.saturating_add(written);
+        remaining = remaining.saturating_sub(written);
+        if usize::from(written) < span_width || remaining == 0 {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use shepr_test_fixtures::ValidatedClientConfigFixture as _;
+
+    #[test]
+    fn put_spans_places_emoji_variation_titles_using_output_cell_width() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
+        let spans = [ratatui::text::Span::raw("\u{2764}\u{fe0f}agent")];
+
+        put_spans(&mut buffer, Rect::new(0, 0, 3, 1), &spans, Style::default());
+
+        assert_eq!(buffer[(0, 0)].symbol(), "\u{2764}\u{fe0f}");
+        assert_eq!(buffer[(1, 0)].symbol(), " ");
+        assert_eq!(buffer[(2, 0)].symbol(), "a");
+        assert_eq!(display_width("\u{2764}\u{fe0f}agent"), 7);
+    }
 
     #[test]
     fn navigate_mode_bar_uses_configured_action_keys() {

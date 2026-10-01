@@ -5,8 +5,7 @@ use shepr_protocol::command::{
 };
 
 use super::endpoint::{
-    EndpointEffects, Handled, HandlerError, HandlerResult, rejected, rejected_with_effects,
-    workspace_missing,
+    EndpointEffects, Handled, HandlerError, HandlerResult, rejected_with_effects, workspace_missing,
 };
 
 /// A workspace label as the server stores it: trimmed, and an empty one
@@ -111,15 +110,12 @@ impl App {
 
     pub(super) fn handle_workspace_move(&mut self, params: &WorkspaceMoveParams) -> HandlerResult {
         let index = self.endpoint_workspace(&params.workspace_id)?;
-        if params.insert_index > self.state.workspaces.len() {
-            return rejected(format!(
-                "insert_index {} is out of bounds",
-                params.insert_index
-            ));
-        }
-
-        // A no-op move (the workspace already sits there) still succeeds.
-        let changed = self.state.move_workspace(index, params.insert_index);
+        // Resolve the anchor against the live order, never a client's old slot.
+        let insert_index = match &params.before_workspace_id {
+            Some(anchor) => self.endpoint_workspace(anchor)?,
+            None => self.state.workspaces.len(),
+        };
+        let changed = self.state.move_workspace(index, insert_index);
         let effects = if changed {
             EndpointEffects {
                 shell_projection_changed: true,
@@ -371,7 +367,7 @@ mod tests {
         let handled = app
             .handle_workspace_move(&WorkspaceMoveParams {
                 workspace_id: moved_id.clone(),
-                insert_index: 3,
+                before_workspace_id: None,
             })
             .expect("the move succeeds");
 
@@ -385,14 +381,14 @@ mod tests {
     }
 
     #[test]
-    fn workspace_move_noop_leaves_the_order_unchanged_and_out_of_bounds_is_refused() {
+    fn workspace_move_noop_leaves_order_unchanged_and_missing_anchor_is_refused() {
         let mut app = app();
         app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         app.handle_workspace_move(&WorkspaceMoveParams {
             workspace_id: moved_id.clone(),
-            insert_index: 1,
+            before_workspace_id: app.public_workspace_id(1),
         })
         .expect("a no-op move succeeds");
         assert_eq!(
@@ -401,15 +397,51 @@ mod tests {
         );
         assert_eq!(app.state.workspaces[0].display_name(), "one");
 
-        let refused = app
-            .handle_workspace_move(&WorkspaceMoveParams {
+        let missing = shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero");
+        assert!(
+            app.handle_workspace_move(&WorkspaceMoveParams {
                 workspace_id: moved_id,
-                insert_index: 3,
+                before_workspace_id: Some(missing),
             })
-            .expect_err("past the end is refused");
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_client_workspace_move_follows_live_anchor_and_refuses_deleted_anchor() {
+        let mut app = app();
+        app.state.workspaces = vec![
+            Workspace::test_new("source"),
+            Workspace::test_new("middle"),
+            Workspace::test_new("anchor"),
+            Workspace::test_new("last"),
+        ];
+        let command = WorkspaceMoveParams {
+            workspace_id: app.public_workspace_id(0).expect("source"),
+            before_workspace_id: app.public_workspace_id(2),
+        };
+        // Another client moves the anchor after the first client's snapshot.
+        assert!(app.state.move_workspace(2, 4));
+        app.handle_workspace_move(&command)
+            .expect("live anchor resolves");
+        assert_eq!(app.state.workspaces[2].display_name(), "source");
+        assert_eq!(app.state.workspaces[3].display_name(), "anchor");
+        // Another client then closes the anchor. No other workspace substitutes.
+        app.state.workspaces.remove(3);
+        let order = app
+            .state
+            .workspaces
+            .iter()
+            .map(|ws| ws.display_name().clone())
+            .collect::<Vec<_>>();
+        assert!(app.handle_workspace_move(&command).is_err());
         assert_eq!(
-            refused.error,
-            EndpointError::Rejected("insert_index 3 is out of bounds".into())
+            app.state
+                .workspaces
+                .iter()
+                .map(|ws| ws.display_name().clone())
+                .collect::<Vec<_>>(),
+            order
         );
     }
 
@@ -502,7 +534,7 @@ mod tests {
         assert_eq!(
             app.handle_workspace_move(&WorkspaceMoveParams {
                 workspace_id: gone.clone(),
-                insert_index: 0,
+                before_workspace_id: None,
             })
             .expect_err("the workspace is gone")
             .error,

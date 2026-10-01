@@ -211,7 +211,7 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
             8,
             EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
                 workspace_id: a.clone(),
-                insert_index: 3,
+                before_workspace_id: None,
             }),
         )
         .is_ok()

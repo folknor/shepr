@@ -236,8 +236,12 @@ impl Workspace {
         workspace.valid_panes().then_some(workspace)
     }
 
-    /// Public so dependent test-fixture crates can build a workspace without
-    /// launching a PTY; the library has no test-only feature for that seam.
+    /// Builds a workspace around a caller supplied pane without launching a
+    /// PTY or discovering a Git identity. The server crate's unit tests need a
+    /// real workspace with no spawned process, and this crate's `cfg(test)`
+    /// does not reach a dependent crate's tests, so this constructor seam is
+    /// public. The test fixture crate cannot own it: mux's own tests depend on
+    /// that crate, so it cannot depend on mux.
     pub fn test_from_pane(
         label: Option<String>,
         identity_cwd: &Path,

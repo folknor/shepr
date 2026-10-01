@@ -2,10 +2,8 @@
 //! handlers the API dispatches `pane.report_agent` and
 //! `pane.report_agent_session` to.
 //!
-//! Production never builds one. It is public, and hidden from the docs,
-//! because the agent integration contract test lives outside this crate and
-//! replays whole hook requests through the real handlers rather than a copy of
-//! their dispatch; the library has no test-only feature for that. The `App`
+//! Test-only. The agent integration contract test replays whole hook requests
+//! through the real handlers rather than a copy of their dispatch. The `App`
 //! stays private to the harness, so a caller can do nothing to it that an API
 //! client could not: apply a report request, then read the pane's terminal
 //! state.
@@ -23,7 +21,7 @@ use crate::app::{App, AppClock, AppPolicy};
 
 /// An `App` with one workspace whose single pane has a terminal but no
 /// spawned process, which persists nothing.
-pub struct AgentReportHarness {
+pub(crate) struct AgentReportHarness {
     app: App,
     pane_id: String,
     terminal_id: shepr_protocol::TerminalId,
@@ -33,7 +31,7 @@ impl AgentReportHarness {
     /// Builds the harness with its data directory and paths below `root`.
     /// The pane starts with `agent` detected as its process at `at`, the
     /// observation that normally precedes an agent's hook reports.
-    pub fn new(
+    pub(crate) fn new(
         root: &Path,
         agent: shepr_agent::agent::Agent,
         at: HookClockSample,
@@ -41,23 +39,13 @@ impl AgentReportHarness {
         let paths = shepr_config::AppPaths::rooted_at(root, Some(root), Some(root));
         let config = shepr_config::ValidatedServerConfig::from_values(
             shepr_config::ServerConfig::default(),
-            None,
             paths.clone(),
         )
         .map_err(|errors| errors.join("; "))?;
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .map_err(|error| error.to_string())?;
-        // No request arrives through the API channel; requests are applied
-        // directly with `apply_request`.
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::with_paths(
-            &config,
-            &paths,
-            lease,
-            AppPolicy::Suspended,
-            api_rx,
-            app_clock(at),
-        );
+        // Requests are applied directly with `apply_request`.
+        let mut app = App::with_paths(&config, &paths, lease, AppPolicy::Suspended, app_clock(at));
 
         let pane = shepr_core::layout::PaneId::alloc();
         let terminal_id = shepr_protocol::TerminalId::alloc();
@@ -82,14 +70,18 @@ impl AgentReportHarness {
     }
 
     /// The public id of the single pane, for the requests' `pane_id`.
-    pub fn pane_id(&self) -> &str {
+    pub(crate) fn pane_id(&self) -> &str {
         &self.pane_id
     }
 
     /// Applies one agent-report request through the handler the API
     /// dispatches it to, with the App's clock at `at`, as the server loop sets
     /// it at the start of each iteration. Any other method is refused.
-    pub fn apply_request(&mut self, request: Request, at: HookClockSample) -> Result<(), ApiError> {
+    pub(crate) fn apply_request(
+        &mut self,
+        request: Request,
+        at: HookClockSample,
+    ) -> Result<(), ApiError> {
         self.app.set_clock(app_clock(at));
         match request.method {
             Method::PaneReportAgent(params) => {
@@ -107,7 +99,7 @@ impl AgentReportHarness {
     }
 
     /// The single pane's terminal state, `None` only if a handler removed it.
-    pub fn terminal_state(&self) -> Option<&TerminalState> {
+    pub(crate) fn terminal_state(&self) -> Option<&TerminalState> {
         self.app.state.terminals.get(&self.terminal_id)
     }
 }

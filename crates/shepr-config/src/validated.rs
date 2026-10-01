@@ -431,16 +431,11 @@ fn machine_label_diagnostics(machines: &[super::MachineConfig]) -> Vec<String> {
 #[derive(Debug, Clone)]
 pub(crate) struct ClientConfigResolution {
     pub(crate) diagnostics: Vec<String>,
-    pub(crate) path_diagnostics: Vec<String>,
     pub(crate) values: Option<ValidatedClientValues>,
 }
 
 impl ClientConfigResolution {
-    pub(crate) fn parse(
-        config: &ClientConfig,
-        provenance: &ConfigProvenance,
-        _paths: &AppPaths,
-    ) -> Self {
+    pub(crate) fn parse(config: &ClientConfig, provenance: &ConfigProvenance) -> Self {
         let keybind_validation = config.compute_keybind_validation(|field| {
             provenance.key_is_configured(&format!("keys.{field}"))
         });
@@ -482,9 +477,7 @@ impl ClientConfigResolution {
             ));
         }
         diagnostics.extend(machine_label_diagnostics(&config.machines));
-        let path_diagnostics = Vec::new();
-
-        let values = if diagnostics.is_empty() && path_diagnostics.is_empty() {
+        let values = if diagnostics.is_empty() {
             match (
                 keybind_validation.live,
                 palette,
@@ -513,7 +506,6 @@ impl ClientConfigResolution {
 
         Self {
             diagnostics,
-            path_diagnostics,
             values,
         }
     }
@@ -577,9 +569,8 @@ impl ValidatedClientConfig {
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        let resolution = ClientConfigResolution::parse(&config, &provenance, &paths);
-        let mut diagnostics = resolution.diagnostics;
-        diagnostics.extend(resolution.path_diagnostics);
+        let resolution = ClientConfigResolution::parse(&config, &provenance);
+        let diagnostics = resolution.diagnostics;
         if !diagnostics.is_empty() {
             return Err(diagnostics);
         }
@@ -644,11 +635,7 @@ pub(crate) struct ServerConfigResolution {
 }
 
 impl ServerConfigResolution {
-    pub(crate) fn parse(
-        config: &super::ServerConfig,
-        _provenance: &ConfigProvenance,
-        paths: &AppPaths,
-    ) -> Self {
+    pub(crate) fn parse(config: &super::ServerConfig, paths: &AppPaths) -> Self {
         Self::parse_with_terminal(
             config,
             ValidatedTerminalConfig::parse(&config.terminal, paths),
@@ -725,29 +712,17 @@ pub struct ValidatedServerConfig {
 
 impl ValidatedServerConfig {
     /// Validate server values against the launch context. A launch loader also
-    /// checks unknown document keys before constructing this value.
-    pub fn from_values(
-        config: super::ServerConfig,
-        source: Option<&str>,
-        paths: AppPaths,
-    ) -> Result<Self, Vec<String>> {
-        let document = source
-            .map(|source| {
-                source
-                    .parse::<toml::Table>()
-                    .map(toml::Value::Table)
-                    .map_err(|error| vec![format!("config parse error: {error}")])
-            })
-            .transpose()?;
-        let provenance = ConfigProvenance::from_document(document.as_ref());
-        let resolution = ServerConfigResolution::parse(&config, &provenance, &paths);
+    /// checks unknown document keys before constructing this value. Server
+    /// validation has no fields that depend on the source document.
+    pub fn from_values(config: super::ServerConfig, paths: AppPaths) -> Result<Self, Vec<String>> {
+        let resolution = ServerConfigResolution::parse(&config, &paths);
         let mut errors = resolution.diagnostics;
         errors.extend(resolution.path_diagnostics);
         if !errors.is_empty() {
             return Err(errors);
         }
         match resolution.values {
-            Some(values) => Ok(Self::from_loaded(config, provenance, values, paths)),
+            Some(values) => Ok(Self::from_loaded(config, values, paths)),
             None => Err(vec![
                 "configuration resolution produced no values and no diagnostics".to_owned(),
             ]),
@@ -755,7 +730,6 @@ impl ValidatedServerConfig {
     }
     pub(crate) fn from_loaded(
         config: super::ServerConfig,
-        _provenance: ConfigProvenance,
         values: ValidatedServerValues,
         paths: AppPaths,
     ) -> Self {
@@ -796,23 +770,11 @@ impl ValidatedClientConfig {
     pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
         Ok(self.live_keybinds())
     }
-
-    pub fn test_from_config_with_paths(
-        config: ClientConfig,
-        source: Option<&str>,
-        paths: AppPaths,
-    ) -> Self {
-        Self::from_values(config, source, paths).expect("test config is valid")
-    }
 }
 
 #[cfg(test)]
 impl ServerConfigResolution {
-    pub(crate) fn parse_document(
-        config: &super::ServerConfig,
-        _provenance: &ConfigProvenance,
-        paths: &AppPaths,
-    ) -> Self {
+    pub(crate) fn parse_document(config: &super::ServerConfig, paths: &AppPaths) -> Self {
         let terminal = ValidatedTerminalConfig::parse_new_cwd(&config.terminal.new_cwd, paths)
             .map(|new_cwd| ValidatedTerminalConfig {
                 default_shell: "/bin/sh".into(),
@@ -826,12 +788,8 @@ impl ServerConfigResolution {
 
 #[cfg(test)]
 impl ValidatedServerConfig {
-    pub fn new(
-        config: super::ServerConfig,
-        _provenance: ConfigProvenance,
-        paths: AppPaths,
-    ) -> Result<Self, Vec<String>> {
-        Self::from_values(config, None, paths)
+    pub fn new(config: super::ServerConfig, paths: AppPaths) -> Result<Self, Vec<String>> {
+        Self::from_values(config, paths)
     }
 }
 
@@ -869,11 +827,10 @@ mod tests {
         config.server.headless_rows = 31;
         config.ui.window_title = "{hostname}: {workspace}".to_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
-        let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
-        let validated = ValidatedServerConfig::new(config, provenance, paths)
-            .expect("test configuration is valid");
+        let validated =
+            ValidatedServerConfig::new(config, paths).expect("test configuration is valid");
 
         assert_eq!(
             validated.headless_size(),
@@ -896,10 +853,9 @@ mod tests {
             .expect("the shared grid budget fits in u16 rows");
         config.server.headless_cols = cols;
         config.server.headless_rows = rows;
-        let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
-        let validated = ValidatedServerConfig::new(config, provenance, paths)
+        let validated = ValidatedServerConfig::new(config, paths)
             .expect("the exact shared terminal cell budget is valid");
 
         assert_eq!(
@@ -917,11 +873,10 @@ mod tests {
         std::fs::create_dir_all(&configured_cwd).expect("create home cwd");
         let mut config = ServerConfig::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
-        let provenance = ConfigProvenance::defaults();
         let paths = AppPaths::rooted_at(scratch.path(), Some(&home), Some(scratch.path()));
 
-        let validated = ValidatedServerConfig::new(config, provenance, paths)
-            .expect("test configuration is valid");
+        let validated =
+            ValidatedServerConfig::new(config, paths).expect("test configuration is valid");
 
         assert_eq!(
             validated.terminal().new_cwd,
@@ -938,12 +893,8 @@ mod tests {
         for (path, expected) in [("", "must not be empty"), ("missing", "unavailable")] {
             let mut config = ServerConfig::default();
             config.terminal.new_cwd = NewTerminalCwdConfig::Path(path.to_owned());
-            let error = ValidatedServerConfig::new(
-                config.clone(),
-                ConfigProvenance::defaults(),
-                paths.clone(),
-            )
-            .expect_err("invalid cwd must fail config parsing");
+            let error = ValidatedServerConfig::new(config.clone(), paths.clone())
+                .expect_err("invalid cwd must fail config parsing");
             assert!(
                 error.iter().any(|message| message.contains(expected)),
                 "expected {expected:?} in {error:?}"
@@ -960,9 +911,8 @@ mod tests {
         config.terminal.default_shell = scratch.join("missing/zsh").to_string_lossy().into_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("missing-cwd".to_owned());
 
-        let errors =
-            ValidatedServerConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
-                .expect_err("both invalid terminal paths should be reported");
+        let errors = ValidatedServerConfig::new(config.clone(), paths)
+            .expect_err("both invalid terminal paths should be reported");
 
         assert!(
             errors
@@ -1002,12 +952,8 @@ mod tests {
         ] {
             let mut config = ServerConfig::default();
             config.terminal.default_shell = shell.to_string_lossy().into_owned();
-            let error = ValidatedServerConfig::new(
-                config.clone(),
-                ConfigProvenance::defaults(),
-                paths.clone(),
-            )
-            .expect_err("an unusable configured shell fails the launch");
+            let error = ValidatedServerConfig::new(config.clone(), paths.clone())
+                .expect_err("an unusable configured shell fails the launch");
             assert!(
                 error.iter().any(|message| message.contains(expected)),
                 "expected {expected:?} in {error:?}"
@@ -1027,9 +973,8 @@ mod tests {
         let mut config = ServerConfig::default();
         config.terminal.default_shell = configured_shell.clone();
 
-        let validated =
-            ValidatedServerConfig::new(config.clone(), ConfigProvenance::defaults(), paths)
-                .expect("a configured shell takes precedence over inherited SHELL");
+        let validated = ValidatedServerConfig::new(config.clone(), paths)
+            .expect("a configured shell takes precedence over inherited SHELL");
 
         assert_eq!(validated.terminal().default_shell, configured_shell);
     }
@@ -1043,9 +988,7 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("validated-config-inherited-shell");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
         let config = ServerConfig::default();
-        let validate = || {
-            ValidatedServerConfig::new(config.clone(), ConfigProvenance::defaults(), paths.clone())
-        };
+        let validate = || ValidatedServerConfig::new(config.clone(), paths.clone());
 
         let zsh = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("SHELL", &zsh);

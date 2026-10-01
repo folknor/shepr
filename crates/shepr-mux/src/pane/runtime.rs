@@ -86,24 +86,38 @@ impl SyncTimeoutRender {
 /// take the probe on the event loop and do the /proc read where the save runs.
 pub struct PaneCwdProbe {
     child_liveness: Arc<ChildLiveness>,
-    remembered: Arc<Mutex<Option<std::path::PathBuf>>>,
+    reported: Arc<Mutex<Option<ReportedCwd>>>,
+    remembered: Arc<Mutex<Option<PersistedCwd>>>,
 }
 
 impl PaneCwdProbe {
-    /// The shell's usable /proc cwd right now, or `None` when the shell has
-    /// been reaped (its numeric PID may belong to another process by now),
-    /// the cwd cannot be confirmed as a usable directory, or the read failed. A successful
-    /// read is remembered for the pane's later saves. Persistence observations
-    /// must not change OSC authority or follow-cwd behavior, so nothing else is
-    /// touched.
+    /// The best cwd known for this save. A usable /proc read is arbitrated
+    /// against OSC 7 exactly as it is for a live pane, then remembered. If the
+    /// child is gone or its cwd cannot be used, retain the saved observation
+    /// rather than replacing it with an unavailable process path.
     pub fn read(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_liveness.live_pid()?;
-        let cwd = super::process_probe::usable_process_cwd(pid)?;
+        let Some(pid) = self.child_liveness.live_pid() else {
+            return self.remembered_cwd();
+        };
+        let Some(shell_cwd) = super::process_probe::usable_process_cwd(pid) else {
+            return self.remembered_cwd();
+        };
         if self.child_liveness.live_pid() != Some(pid) {
-            return None;
+            return self.remembered_cwd();
         }
-        *shepr_vt::lock_auxiliary(&self.remembered) = Some(cwd.clone());
+        let reported = shepr_vt::lock_auxiliary(&self.reported).clone();
+        let cwd = ReportedCwd::resolve(reported.as_ref(), Some(shell_cwd))?;
+        *shepr_vt::lock_auxiliary(&self.remembered) = Some(PersistedCwd {
+            path: cwd.clone(),
+            report_generation: reported.map(|reported| reported.generation),
+        });
         Some(cwd)
+    }
+
+    fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
+        let reported = shepr_vt::lock_auxiliary(&self.reported);
+        let remembered = shepr_vt::lock_auxiliary(&self.remembered);
+        remembered_cwd_for_save(reported.clone(), remembered.clone())
     }
 }
 
@@ -113,7 +127,11 @@ impl PaneCwdProbe {
 /// The child watcher continues until
 /// it reaps the child, handing it to a reaper thread if that async watcher is
 /// dropped. An armed synchronized-output timer may finish its flush after the
-/// runtime is dropped.
+/// runtime is dropped. The timer holds effects weakly while asleep, but its
+/// blocking flush is not cancellable once started. A late flush can tick the
+/// detached terminal, request a redundant render wake, and queue
+/// runtime-generation events; the app rejects those events after the pane
+/// runtime is removed or replaced.
 pub struct PaneRuntime {
     generation: crate::events::RuntimeGeneration,
     pane_id: PaneId,
@@ -123,11 +141,13 @@ pub struct PaneRuntime {
     child_liveness: Arc<ChildLiveness>,
     teardown_tracker: Arc<super::teardown::PaneTeardownTracker>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
-    persistence_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
+    persistence_cwd: Arc<Mutex<Option<PersistedCwd>>>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
-    // Only detection is aborted directly; the child watcher must reap, and
-    // synchronized-output timers hold effects weakly while sleeping.
+    // Detection is aborted directly. The child watcher must reap, and a
+    // synchronized-output timer's already-started blocking flush cannot be
+    // cancelled here; it may tick a detached terminal, and its runtime events
+    // are rejected by generation after removal.
     detect_handle: Option<tokio::task::AbortHandle>,
 }
 
@@ -163,7 +183,7 @@ impl PaneOutputWriter {
         }
     }
 
-    /// Return immediately if a snapshot or another mutation holds the core.
+    /// Return immediately if the core is busy or poisoned.
     pub fn try_begin(&self) -> Option<PaneOutputWrite<'_>> {
         Some(PaneOutputWrite {
             writer: self,
@@ -213,6 +233,16 @@ pub enum WheelRouting {
 struct ReportedCwd {
     path: std::path::PathBuf,
     shell_cwd_at_report: Option<std::path::PathBuf>,
+    generation: u64,
+}
+
+/// A save's last cwd observation and the OSC 7 report current when it read
+/// /proc. The generation lets a report that arrived later replace this older
+/// fallback even when the next /proc read is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PersistedCwd {
+    path: std::path::PathBuf,
+    report_generation: Option<u64>,
 }
 
 impl ReportedCwd {
@@ -231,6 +261,27 @@ impl ReportedCwd {
             (Some(shell_cwd), _) => Some(shell_cwd),
             (None, reported) => reported.map(|reported| reported.path.clone()),
         }
+    }
+}
+
+fn remembered_cwd_for_save(
+    reported: Option<ReportedCwd>,
+    persisted: Option<PersistedCwd>,
+) -> Option<std::path::PathBuf> {
+    match (reported, persisted) {
+        (Some(reported), Some(persisted)) => {
+            let report_is_newer = persisted
+                .report_generation
+                .is_none_or(|generation| reported.generation > generation);
+            if report_is_newer {
+                Some(reported.path)
+            } else {
+                ReportedCwd::resolve(Some(&reported), Some(persisted.path))
+            }
+        }
+        (Some(reported), None) => Some(reported.path),
+        (None, Some(persisted)) => Some(persisted.path),
+        (None, None) => None,
     }
 }
 
@@ -272,6 +323,7 @@ fn publish_reported_cwd(
         // A repeated report is not a new event, but it is fresh evidence
         // that the path is current wherever the shell now is.
         last.shell_cwd_at_report = shell_cwd_at_report;
+        last.generation = last.generation.saturating_add(1);
         return;
     }
     // The dedupe slot is updated only once the event is queued: if the shared
@@ -284,9 +336,13 @@ fn publish_reported_cwd(
         cwd: cwd.clone(),
     }) {
         Ok(()) => {
+            let generation = last_reported
+                .as_ref()
+                .map_or(0, |last| last.generation.saturating_add(1));
             *last_reported = Some(ReportedCwd {
                 path: cwd.into_path_buf(),
                 shell_cwd_at_report,
+                generation,
             });
         }
         Err(err) => {
@@ -538,6 +594,9 @@ impl PaneReadEffects {
                     None => {
                         // The weak reference keeps the pane alive only while
                         // the timer is actively flushing, not while it sleeps.
+                        // Once queued, this blocking flush cannot be aborted.
+                        // It may tick a detached terminal; late events are
+                        // rejected by generation after runtime removal.
                         tokio::task::spawn_blocking(move || {
                             current_effects.flush_expired_synchronized_output();
                         });
@@ -1267,25 +1326,21 @@ impl PaneRuntime {
         )
     }
 
-    /// The cwd a save can use without a /proc read: the last one a save
-    /// observed, else the shell's latest OSC 7 report. A save's capture takes
-    /// this on the event loop and lets [`PaneCwdProbe::read`] improve on it
-    /// where the save runs.
+    /// The cwd a save can use without a /proc read, using the same OSC 7
+    /// arbitration as [`Self::cwd`]. A save's capture takes this on the event
+    /// loop and lets [`PaneCwdProbe::read`] refresh it where the save runs.
     pub fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        shepr_vt::lock_auxiliary(&self.persistence_cwd)
-            .clone()
-            .or_else(|| {
-                shepr_vt::lock_auxiliary(&self.reported_cwd)
-                    .as_ref()
-                    .map(|reported| reported.path.clone())
-            })
+        let reported = shepr_vt::lock_auxiliary(&self.reported_cwd);
+        let persisted = shepr_vt::lock_auxiliary(&self.persistence_cwd);
+        remembered_cwd_for_save(reported.clone(), persisted.clone())
     }
 
-    /// What another thread needs to read this shell's live cwd (see
+    /// What another thread needs to resolve this pane's best saved cwd (see
     /// [`PaneCwdProbe`]); taking it reads nothing.
     pub fn cwd_probe(&self) -> PaneCwdProbe {
         PaneCwdProbe {
             child_liveness: Arc::clone(&self.child_liveness),
+            reported: Arc::clone(&self.reported_cwd),
             remembered: Arc::clone(&self.persistence_cwd),
         }
     }
@@ -1462,6 +1517,18 @@ mod tests {
         }
     }
 
+    /// Poisons the core by panicking on another thread while it holds the
+    /// mutex; the join reports that panic instead of catching it here.
+    fn poison_terminal_core(writer: &PaneOutputWriter) {
+        let terminal = std::sync::Arc::clone(&writer.terminal);
+        let outcome: std::thread::Result<()> = std::thread::spawn(move || {
+            let _core = terminal.core.lock().expect("test core starts unpoisoned");
+            panic!("poison core for writer test");
+        })
+        .join();
+        assert!(outcome.is_err(), "the core mutex must be poisoned");
+    }
+
     #[tokio::test]
     async fn output_writer_holds_the_core_without_announcing_an_unwritten_mutation() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
@@ -1474,6 +1541,15 @@ mod tests {
         writer.try_begin().expect("unlocked core").write(b"hello");
         assert!(runtime.content_seq() > before);
         assert!(runtime.visible_text().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn output_writer_try_begin_returns_none_for_a_poisoned_core() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
+        let writer = runtime.output_writer();
+        poison_terminal_core(&writer);
+
+        assert!(writer.try_begin().is_none());
     }
 
     #[tokio::test]
@@ -1695,6 +1771,7 @@ mod tests {
         let report = |path: &str, shell: Option<&str>| ReportedCwd {
             path: path.into(),
             shell_cwd_at_report: shell.map(Into::into),
+            generation: 0,
         };
         let shell = |path: &str| Some(std::path::PathBuf::from(path));
 
@@ -1737,6 +1814,7 @@ mod tests {
         *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
             path: cwd.clone(),
             shell_cwd_at_report: Some("/stale".into()),
+            generation: 0,
         });
 
         // The test runtime has no shell, so the fresh sample is unreadable.
@@ -1754,6 +1832,7 @@ mod tests {
             Some(ReportedCwd {
                 path: cwd,
                 shell_cwd_at_report: None,
+                generation: 1,
             })
         );
     }
@@ -1811,6 +1890,7 @@ mod tests {
         *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
             path: cwd.clone(),
             shell_cwd_at_report: None,
+            generation: 0,
         });
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
@@ -1823,6 +1903,7 @@ mod tests {
         let reported = ReportedCwd {
             path: reported_path.clone(),
             shell_cwd_at_report: Some(shell_cwd.clone()),
+            generation: 0,
         };
         let read_foreground_group = Cell::new(false);
 
@@ -2289,11 +2370,14 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
-        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(saved.clone());
+        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(PersistedCwd {
+            path: saved.clone(),
+            report_generation: None,
+        });
         // A different live process now owns the exited shell's numeric PID.
         runtime.child_liveness.set_pid_for_test(std::process::id());
         runtime.child_liveness.mark_wait_completed();
-        assert_eq!(runtime.cwd_probe().read(), None);
+        assert_eq!(runtime.cwd_probe().read(), Some(saved.clone()));
         assert_eq!(runtime.remembered_cwd(), Some(saved));
         *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = None;
         assert_eq!(runtime.remembered_cwd(), None);
@@ -2336,15 +2420,99 @@ mod tests {
         let deleted_link = shepr_agent::detect::process_cwd(pid).expect("read unlinked cwd");
         assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
 
-        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(remembered.clone());
+        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(PersistedCwd {
+            path: remembered.clone(),
+            report_generation: Some(0),
+        });
         *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
             path: reported.clone(),
             shell_cwd_at_report: None,
+            generation: 0,
         });
 
-        assert_eq!(runtime.cwd_probe().read(), None);
+        assert_eq!(runtime.cwd_probe().read(), Some(remembered.clone()));
         assert_eq!(runtime.remembered_cwd(), Some(remembered));
         assert_eq!(runtime.cwd(), Some(reported));
+    }
+
+    #[tokio::test]
+    async fn save_fallback_prefers_a_report_newer_than_its_last_probe() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let scratch = crate::test_support::ScratchDir::new("cwd-save-report-order");
+        let probed = scratch.join("probed");
+        let reported = scratch.join("reported");
+        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(PersistedCwd {
+            path: probed,
+            report_generation: Some(3),
+        });
+        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+            path: reported.clone(),
+            shell_cwd_at_report: Some(scratch.join("shell")),
+            generation: 4,
+        });
+
+        assert_eq!(runtime.remembered_cwd(), Some(reported.clone()));
+        // Checkpoint captures use this probe too. With no live shell, it must
+        // preserve the same current fallback as an ordinary save.
+        assert_eq!(runtime.cwd_probe().read(), Some(reported));
+    }
+
+    #[test]
+    fn save_fallback_keeps_a_probe_that_observed_the_shell_after_an_old_report() {
+        let reported = ReportedCwd {
+            path: "/logical/old".into(),
+            shell_cwd_at_report: Some("/physical/old".into()),
+            generation: 3,
+        };
+        let persisted = PersistedCwd {
+            path: "/physical/new".into(),
+            report_generation: Some(3),
+        };
+
+        assert_eq!(
+            remembered_cwd_for_save(Some(reported), Some(persisted)),
+            Some("/physical/new".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn save_probe_keeps_the_logical_osc_path_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        struct ChildGuard(std::process::Child);
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                self.0.kill().ok();
+                self.0.wait().ok();
+            }
+        }
+
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let scratch = crate::test_support::ScratchDir::new("cwd-save-symlink");
+        let physical = scratch.join("physical");
+        let logical = scratch.join("logical");
+        std::fs::create_dir(&physical).expect("create physical cwd");
+        symlink(&physical, &logical).expect("create logical cwd symlink");
+        let child = ChildGuard(
+            fixture::command(&[Step::Sleep(std::time::Duration::from_secs(30))])
+                .current_dir(&physical)
+                .spawn()
+                .expect("spawn process in cwd"),
+        );
+        let pid = child.0.id();
+        let shell_cwd = shepr_agent::detect::process_cwd(pid).expect("read shell cwd");
+        assert_eq!(shell_cwd, physical);
+        runtime.child_liveness.set_pid_for_test(pid);
+        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+            path: logical.clone(),
+            shell_cwd_at_report: Some(shell_cwd),
+            generation: 0,
+        });
+
+        assert_eq!(runtime.cwd(), Some(logical.clone()));
+        assert_eq!(runtime.cwd_probe().read(), Some(logical.clone()));
+        assert_eq!(runtime.remembered_cwd(), Some(logical));
     }
 
     #[tokio::test]

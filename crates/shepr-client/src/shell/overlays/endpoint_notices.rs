@@ -24,8 +24,8 @@ fn render_notification_card(
     // anywhere on the card dismisses it.
     let content_width = body
         .lines()
-        .map(unicode_width::UnicodeWidthStr::width)
-        .chain([unicode_width::UnicodeWidthStr::width(title)])
+        .map(shepr_termio::blit::text_width)
+        .chain([shepr_termio::blit::text_width(title)])
         .max()
         .unwrap_or(0)
         .saturating_add(6);
@@ -95,7 +95,7 @@ pub(super) fn render_lifecycle_banner(
     }
     let (symbol, state, color) = endpoint_status_presentation(status, palette);
     let text = format!("{symbol} {label} · {state}");
-    let width = u16::try_from(unicode_width::UnicodeWidthStr::width(text.as_str()) + 2)
+    let width = u16::try_from(shepr_termio::blit::text_width(&text) + 2)
         .unwrap_or(u16::MAX)
         .min(area.width);
     let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);

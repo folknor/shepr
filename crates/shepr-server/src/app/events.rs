@@ -328,6 +328,95 @@ impl App {
 }
 
 #[cfg(test)]
+mod pane_exit_event_tests {
+    use super::*;
+    use crate::test_support::WorkspaceFixture as _;
+    use shepr_core::layout::Direction;
+    use shepr_mux::workspace::Workspace;
+
+    fn app_with_workspaces(names: &[&str]) -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &shepr_config::ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+            api_rx,
+        );
+        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        app.state.ensure_test_terminals();
+        if !app.state.workspaces.is_empty() {
+            app.state.set_bookmark_index(Some(0));
+        }
+        app
+    }
+
+    fn report_pane_exit(app: &mut App, pane_id: PaneId) {
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: shepr_platform::ChildExitReason::Exited,
+        });
+    }
+
+    #[test]
+    fn pane_exit_removes_its_workspace_through_the_app_event_path() {
+        let mut app = app_with_workspaces(&["a", "dying", "c"]);
+        app.state.set_bookmark_index(Some(2));
+        let pane_id = app.state.workspaces[1].root_pane();
+        let terminal_id = app.state.workspaces[1]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
+        app.state.session_dirty = false;
+
+        report_pane_exit(&mut app, pane_id);
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(
+            app.state.workspaces[app.state.bookmark_index().expect("active")].display_name(),
+            "c"
+        );
+        assert!(!app.state.terminals.contains_key(&terminal_id));
+        assert!(app.state.session_dirty);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pane_exit_clears_the_bookmark_when_it_removes_the_last_workspace() {
+        let mut app = app_with_workspaces(&["only"]);
+        let pane_id = app.state.workspaces[0].root_pane();
+
+        report_pane_exit(&mut app, pane_id);
+
+        assert!(app.state.workspaces.is_empty());
+        assert_eq!(app.state.bookmark, None);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pane_exit_keeps_a_workspace_that_still_has_a_pane() {
+        let mut app = app_with_workspaces(&["test"]);
+        let second_id = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.ensure_test_terminals();
+
+        report_pane_exit(&mut app, second_id);
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].panes().len(), 1);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pane_exit_for_an_unknown_pane_is_a_noop() {
+        let mut app = app_with_workspaces(&["test"]);
+        let fake_id = shepr_test_fixtures::fixed_pane_id(9999);
+
+        report_pane_exit(&mut app, fake_id);
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        app.state.assert_invariants_for_test();
+    }
+}
+
+#[cfg(test)]
 impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         self.handle_internal_event_with_render_demand(ev) != RenderDemand::None

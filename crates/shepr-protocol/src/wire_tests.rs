@@ -138,7 +138,7 @@ mod tests {
             EndpointCommand, EndpointError, EndpointReply, LayoutSetSplitRatioParams,
             PaneCopyMotion, PaneCopyMotionParams, PaneDirection, PaneLineMotion, PaneSplitParams,
             PaneSwapParams, PaneTextPoint, PaneTextRange, PaneWordMotion, SplitDirection,
-            WorkspaceCreateParams, WorkspaceCreateSource,
+            WorkspaceCreateParams, WorkspaceCreateSource, WorkspaceMoveParams,
         };
         use crate::{PublicPaneId, WorkspaceId};
 
@@ -151,8 +151,17 @@ mod tests {
             }),
             EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
                 workspace_id: workspace.clone(),
-                path: vec![SplitBranch::First, SplitBranch::Second],
+                first_panes: vec![pane.clone()],
+                second_panes: vec!["w1:p2".parse()?],
                 ratio: 0.6,
+            }),
+            EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
+                workspace_id: workspace.clone(),
+                before_workspace_id: Some("w2".parse()?),
+            }),
+            EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
+                workspace_id: workspace.clone(),
+                before_workspace_id: None,
             }),
             EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
                 source: WorkspaceCreateSource::Cwd("/tmp/x".into()),

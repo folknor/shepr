@@ -7,7 +7,6 @@
 //! no field is skipped or flattened, and every id is typed.
 
 use serde::{Deserialize, Serialize};
-use shepr_core::geometry::SplitBranch;
 
 use crate::{AgentStatus, PublicPaneId, WorkspaceId};
 
@@ -74,7 +73,8 @@ pub struct WorkspaceCheckoutRootParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceMoveParams {
     pub workspace_id: WorkspaceId,
-    pub insert_index: usize,
+    /// Insert before this workspace, or at the end when absent.
+    pub before_workspace_id: Option<WorkspaceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +137,9 @@ pub struct PaneZoomParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
     pub workspace_id: WorkspaceId,
-    pub path: Vec<SplitBranch>,
+    /// Exact pane membership of the two children, captured when dragging starts.
+    pub first_panes: Vec<PublicPaneId>,
+    pub second_panes: Vec<PublicPaneId>,
     pub ratio: f32,
 }
 

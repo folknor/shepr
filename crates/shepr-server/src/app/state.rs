@@ -456,7 +456,7 @@ mod tests {
             Some(scratch.path()),
             Some(scratch.path()),
         );
-        let config = shepr_config::ValidatedServerConfig::from_values(values, None, paths)
+        let config = shepr_config::ValidatedServerConfig::from_values(values, paths)
             .expect("shell resolves");
         assert_eq!(
             AppSettings::from_config(&config).default_shell,

@@ -12,31 +12,10 @@ Filed from the defect hunt over `crates/shepr-client/src/shell.rs` and
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CSHELL-008 - Two width models in one sidebar row
-
-`sidebar_tokens.rs` budgets and truncates with `unicode_width`;
-`agent_sidebar.rs::put_text` and `display_width` use
-`shepr_vt::unicode_display_units` / `unicode_text_width` (its tests assert
-`display_width("\u{263a}\u{fe0f}") == 1` "matches terminal");
-`render.rs::put_text` uses ratatui `set_stringn` (`unicode_width`); and
-`wire_cells.rs` says "Both use the one width rule output uses
-(`shepr_termio::blit::symbol_width`)" while its glyph repair runs over chrome
-ratatui laid out under a different rule. Agent titles routinely contain emoji and
-VS16 sequences; a token budgeted at one width and drawn or repaired at another
-truncates wrongly or leaves a blank continuation cell. Use one width function
-everywhere chrome text is measured.
-
-## CSHELL-009 - Index- and path-addressed layout commands race other clients
-
-Where: `workspace_move_command` (`insert_index` from the client's snapshot
-order) and the split drag (`LayoutSetSplitRatio { path }`). Several TUI clients
-can share a server. A workspace created, closed or moved by another client
-between this client's snapshot and its command makes `insert_index` name a
-different slot, and the server applies it. The `topology_signature` check guards
-only against this client's own stale surface. Addressing by identity ("before
-workspace X", a split named by its child pane ids) would close it.
-
 ## CSHELL-018 - Structural: a request ledger instead of per-feature in-flight bookkeeping
+
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
 
 In-flight state is spread across `pending_requests`, `pane_scroll_in_flight`,
 `pane_scroll_queued`, `pane_scroll_targets`, `copy_operation_in_flight`,
@@ -50,6 +29,9 @@ by construction.
 
 ## CSHELL-019 - Structural: surface baseline versus presentable surface
 
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
+
 The shell keeps `pane_surface` and `pending_pane_surface` with revision rules in
 three places (`set_pane_surface`, `install_pane_surface`,
 `apply_pane_surface_patch`), and the reader in `lib.rs` keeps its own baseline.
@@ -58,3 +40,23 @@ the reader), and a separately chosen presentable pair (snapshot plus surface at
 the same revision). The patch-rejection finding filed in
 `notes/bugs-rejected-candidates.md` then cannot happen, and `Applied`/`Rejected`
 regain their meaning.
+
+## CSHELL-029 - The presentation topology signature ignores pane placement
+
+Lateral. The client's topology signature, used to check that a split drag still
+matches the surface it started on, does not cover where panes sit, so a pane
+swap by another client leaves it unchanged. Split commands are now addressed by
+child pane ids and the server refuses one whose children changed, so a stale
+drag can no longer move another split; the local check is just weaker than its
+name suggests. Include placement in the signature, or document what it covers.
+The split drag also infers each child's panes from geometry
+(`split_child_panes` classifies rects against the split position, and refuses
+a collapsed rectangle); carrying the child pane ids in `PaneSurfaceSplit` would
+remove the inference.
+
+## CSHELL-030 - A control character in a sidebar title span ends the row early
+
+Lateral. `put_spans` stops when `written < text_width(span)`, but `put_text`
+skips control and zero-width graphemes that `text_width` may still count, so a
+single control character in an agent title span cuts off the rest of the row.
+Measure and draw with the same skip rule.

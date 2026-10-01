@@ -406,10 +406,10 @@ fn finish_api_response(
     Ok(())
 }
 
-/// Answers `ping` and both stop methods on this thread and hands every other
-/// method to the app loop as an [`AppRequest`]. The match is the one routing
-/// classification: a method the app answers has an [`AppMethod`] arm, and
-/// nothing else reaches the app.
+/// Answers `ping` and both stop methods on this connection thread, including
+/// while App is restoring, and hands every other method to the app loop as an
+/// [`AppRequest`]. The match is the one routing classification: a method the
+/// app answers has an [`AppMethod`] arm, and nothing else reaches the app.
 fn handle_request(
     request: Request,
     api_tx: &ApiRequestSender,
@@ -596,13 +596,23 @@ fn dispatch_to_app_result(
     api_tx: &ApiRequestSender,
 ) -> crate::error::ApiResult {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
-    if let Err(err) = api_tx.send(ApiRequestMessage {
+    let request_id = request.id.clone();
+    if let Err(err) = api_tx.try_send(ApiRequestMessage {
         request,
         respond_to,
     }) {
+        let message = match err {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                "server is busy handling API requests; retry later"
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                "API request handler is unavailable"
+            }
+        };
+        tracing::debug!(request_id, %message, "API request was not queued");
         return Err(crate::error::ApiError::new(
             crate::error::ApiErrorCode::ServerUnavailable,
-            format!("failed to dispatch request: {err}"),
+            message,
         ));
     }
 
@@ -913,7 +923,7 @@ mod tests {
     #[test]
     fn unknown_method_returns_invalid_request_response() {
         let (mut client, server) = local_stream_pair("unknown-api-request");
-        let (api_tx, mut api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let (api_tx, mut api_rx) = mpsc::channel::<ApiRequestMessage>(1);
         client
             .write_all(b"{\"id\":\"unknown\",\"method\":\"nope\",\"params\":{}}\n")
             .expect("test precondition");
@@ -932,7 +942,7 @@ mod tests {
     #[test]
     fn ordinary_api_request_still_uses_normal_connection_path() {
         let (mut client, server) = local_stream_pair("ordinary-api-request");
-        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let (api_tx, _api_rx) = mpsc::channel::<ApiRequestMessage>(1);
         client
             .write_all(b"{\"id\":\"ordinary\",\"method\":\"ping\",\"params\":{}}\n")
             .expect("test precondition");
@@ -949,7 +959,7 @@ mod tests {
 
     #[test]
     fn ping_request_returns_pong() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(1);
         let response = handle_request(
             Request {
                 id: "req_1".into(),
@@ -975,7 +985,7 @@ mod tests {
     fn ping_still_answers_after_a_stop_and_says_so() {
         // A stopping server keeps its sockets until the final save is on disk;
         // the pong is how a launcher tells it apart from one it can attach to.
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(1);
         let stop = running();
         stop.request();
         let response = handle_request(
@@ -997,7 +1007,7 @@ mod tests {
 
     #[test]
     fn server_stop_control_bypasses_app_channel() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(1);
         let stop = running();
         let response = handle_request(
             Request {
@@ -1023,7 +1033,7 @@ mod tests {
 
     #[test]
     fn ping_reports_the_boot_id_a_conditional_stop_must_match() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(1);
         let ping = handle_request(
             Request {
                 id: "ping".into(),
@@ -1068,8 +1078,52 @@ mod tests {
     }
 
     #[test]
+    fn a_full_api_request_queue_refuses_without_waiting_or_dropping_queued_work() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let (respond_to, _response_rx) = std::sync::mpsc::channel();
+        assert!(
+            tx.try_send(ApiRequestMessage {
+                request: AppRequest {
+                    id: "already-queued".into(),
+                    method: AppMethod::DetectCapture(crate::schema::PaneTarget {
+                        pane_id: "w1:p1".into(),
+                    }),
+                },
+                respond_to,
+            })
+            .is_ok()
+        );
+
+        let response = dispatch_to_app(
+            AppRequest {
+                id: "overflow".into(),
+                method: AppMethod::DetectCapture(crate::schema::PaneTarget {
+                    pane_id: "w1:p2".into(),
+                }),
+            },
+            &tx,
+        );
+        let response: serde_json::Value =
+            serde_json::from_str(&response.body).expect("test precondition");
+
+        assert_eq!(response["id"], "overflow");
+        assert_eq!(response["error"]["code"], "server_unavailable");
+        assert_eq!(
+            response["error"]["message"],
+            "server is busy handling API requests; retry later"
+        );
+        assert_eq!(
+            rx.try_recv()
+                .expect("the queued request remains available")
+                .request
+                .id,
+            "already-queued"
+        );
+    }
+
+    #[test]
     fn request_dispatches_to_app_channel() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(1);
         let thread =
             std::thread::spawn(move || handle_request(detect_capture("req_2"), &tx, &running()));
 
@@ -1109,7 +1163,7 @@ mod tests {
             (r#"["not-an-object"]"#, ""),
         ];
         for (request, expected_id) in cases {
-            let (api_tx, mut api_rx) = mpsc::unbounded_channel();
+            let (api_tx, mut api_rx) = mpsc::channel(1);
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
             handle_connection(server, &api_tx, &running()).expect("test precondition");

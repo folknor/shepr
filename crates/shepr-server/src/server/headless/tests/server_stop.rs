@@ -59,7 +59,6 @@ fn idle_server_stop_subprocess_entry_point() {
     let paths = shepr_config::AppPaths::test_at(&scratch);
     let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
         shepr_config::ServerConfig::default(),
-        None,
         paths.clone(),
     );
 

@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_support::*;
-use ratatui::layout::Rect;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::Direction;
 use shepr_mux::workspace::Workspace;
@@ -19,24 +18,28 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
     state
 }
 
-/// Records `area` as every workspace's layout area and returns the focused
-/// workspace's visible panes laid out in it.
-fn test_view(state: &mut AppState, area: Rect) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
-    state.test_record_all_workspace_areas(area);
-    state
-        .bookmark_index()
-        .and_then(|ws_idx| state.workspaces.get(ws_idx))
-        .map_or_default(|workspace| {
-            state
-                .pane_geometry_in(area)
-                .visible_panes(workspace.layout(), workspace.zoomed())
-        })
-        .into_iter()
-        .map(|mut pane| {
-            pane.inner_rect = shepr_mux::workspace::pane_inner_rect(pane.rect, pane.borders);
-            pane
-        })
-        .collect()
+fn app_from_state(state: AppState) -> crate::app::App {
+    let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = crate::app::App::new(
+        &shepr_config::ServerConfig::default(),
+        crate::app::AppPolicy::Test,
+        api_rx,
+    );
+    app.state = state;
+    app.state
+        .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 20));
+    app
+}
+
+fn send_endpoint_command(
+    app: &mut crate::app::App,
+    command: shepr_protocol::command::EndpointCommand,
+) {
+    let context = crate::app::EndpointContext {
+        requester_geometry: None,
+    };
+    let outcome = app.handle_endpoint_command_with_render(command, &context);
+    assert!(outcome.result.is_ok(), "endpoint command should succeed");
 }
 
 fn toggle_focused_zoom(state: &mut AppState) {
@@ -64,7 +67,10 @@ fn pane_removal_command_returns_the_removed_container_scope() {
     assert_eq!(state.workspaces[0].pane_count(), 1);
     assert!(state.workspaces[0].contains_pane(second_pane));
 
-    let PaneRemovalCommit::Removed(outcome) = state.remove_pane(0, second_pane) else {
+    let plan = state
+        .prepare_pane_removal(0, second_pane)
+        .expect("test precondition");
+    let PaneRemovalCommit::Removed(outcome) = state.commit_pane_removal(&plan) else {
         panic!("final pane removal must commit");
     };
     assert_eq!(outcome.removal.scope, PaneRemovalScope::Workspace);
@@ -395,84 +401,6 @@ fn closing_another_workspace_keeps_the_bookmark() {
     state.assert_invariants_for_test();
 }
 
-#[test]
-fn pane_died_last_pane_removes_workspace() {
-    let mut state = app_with_workspaces(&["a", "b"]);
-    let pane_id = *state.workspaces[0]
-        .panes()
-        .keys()
-        .next()
-        .expect("test precondition");
-
-    let _detached = state.handle_pane_died(pane_id);
-
-    assert_eq!(state.workspaces.len(), 1);
-    assert_eq!(state.workspaces[0].custom_name.as_deref(), Some("b"));
-    state.assert_invariants_for_test();
-}
-
-#[test]
-fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
-    let mut state = app_with_workspaces(&["a", "dying", "c"]);
-    state.set_bookmark_index(Some(2));
-    let pane_id = state.workspaces[1].root_pane();
-    let terminal_id = state
-        .terminal_id_for_pane(1, pane_id)
-        .expect("test precondition");
-    state.session_dirty = false;
-
-    let detached = state.handle_pane_died(pane_id);
-
-    assert_eq!(state.workspaces.len(), 2);
-    assert_eq!(
-        state.workspaces[state.bookmark_index().expect("active")].display_name(),
-        "c"
-    );
-    assert!(!state.terminals.contains_key(&terminal_id));
-    assert_eq!(detached, std::slice::from_ref(&terminal_id));
-    assert!(state.session_dirty);
-    state.assert_invariants_for_test();
-}
-
-#[test]
-fn pane_died_last_workspace_clears_the_bookmark() {
-    let mut state = app_with_workspaces(&["only"]);
-    let pane_id = *state.workspaces[0]
-        .panes()
-        .keys()
-        .next()
-        .expect("test precondition");
-
-    let _detached = state.handle_pane_died(pane_id);
-
-    assert!(state.workspaces.is_empty());
-    assert_eq!(state.bookmark, None);
-    state.assert_invariants_for_test();
-}
-
-#[test]
-fn pane_died_multi_pane_keeps_workspace() {
-    let mut state = app_with_workspaces(&["test"]);
-    let second_id = state.workspaces[0].test_split(Direction::Horizontal);
-    state.ensure_test_terminals();
-
-    let _detached = state.handle_pane_died(second_id);
-
-    assert_eq!(state.workspaces.len(), 1);
-    assert_eq!(state.workspaces[0].panes().len(), 1);
-    state.assert_invariants_for_test();
-}
-
-#[test]
-fn pane_died_unknown_pane_is_noop() {
-    let mut state = app_with_workspaces(&["test"]);
-    let fake_id = shepr_test_fixtures::fixed_pane_id(9999);
-
-    assert!(state.handle_pane_died(fake_id).is_empty());
-
-    assert_eq!(state.workspaces.len(), 1);
-    state.assert_invariants_for_test();
-}
 #[test]
 fn state_changed_updates_pane() {
     let mut state = app_with_workspaces(&["test"]);
@@ -840,82 +768,88 @@ fn toggle_zoom_single_pane_noop() {
 }
 
 #[test]
-fn navigate_pane_changes_focus_while_zoomed() {
+fn pane_focus_direction_changes_focus_while_zoomed_through_endpoint() {
     let mut state = app_with_workspaces(&["test"]);
     let root = state.workspaces[0].root_pane();
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].focus_pane(root);
     state.workspaces[0].set_zoomed(true);
-    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let mut app = app_from_state(state);
+    let pane_id = app.public_pane_id(0, root).expect("test precondition");
 
-    assert_eq!(view.len(), 1);
-    assert_eq!(view[0].id, root);
+    send_endpoint_command(
+        &mut app,
+        shepr_protocol::command::EndpointCommand::PaneFocusDirection(
+            shepr_protocol::command::PaneFocusDirectionParams {
+                pane_id,
+                direction: shepr_protocol::command::PaneDirection::Right,
+            },
+        ),
+    );
 
-    state.navigate_pane(0, NavDirection::Right);
-    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
-
-    assert!(state.workspaces[0].zoomed());
-    assert_eq!(state.workspaces[0].focused_pane_id(), right);
-    assert_eq!(view.len(), 1);
-    assert_eq!(view[0].id, right);
-    assert!(view[0].inner_rect.x > view[0].rect.x);
+    let workspace = &app.state.workspaces[0];
+    assert!(workspace.zoomed());
+    assert_eq!(workspace.focused_pane_id(), right);
+    let visible = app
+        .state
+        .pane_geometry_in(ratatui::layout::Rect::new(0, 0, 100, 20))
+        .visible_panes(workspace.layout(), workspace.zoomed());
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, right);
 }
 
 #[test]
-fn swap_pane_direction_preserves_focus_and_swaps_layout_cells() {
+fn pane_swap_direction_focuses_the_named_source_even_when_another_pane_had_focus() {
     let mut state = app_with_workspaces(&["test"]);
     let root = state.workspaces[0].root_pane();
     let right = state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].focus_pane(root);
-    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
-    let rect_of = |view: &[shepr_mux::workspace::PaneChromeInfo], pane_id| {
-        view.iter()
-            .find(|info| info.id == pane_id)
-            .expect("test precondition")
-            .rect
-    };
-    let before_root_rect = rect_of(&view, root);
-    let before_right_rect = rect_of(&view, right);
+    state.workspaces[0].focus_pane(right);
+    let mut app = app_from_state(state);
+    let pane_id = app.public_pane_id(0, root).expect("test precondition");
 
-    assert!(state.swap_pane(0, NavDirection::Right));
-    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
+    send_endpoint_command(
+        &mut app,
+        shepr_protocol::command::EndpointCommand::PaneSwap(
+            shepr_protocol::command::PaneSwapParams::Direction {
+                pane_id,
+                direction: shepr_protocol::command::PaneDirection::Right,
+            },
+        ),
+    );
 
-    assert_eq!(state.workspaces[0].focused_pane_id(), root);
-    assert_eq!(rect_of(&view, root), before_right_rect);
-    assert_eq!(rect_of(&view, right), before_root_rect);
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
+    assert_eq!(
+        app.state.workspaces[0].layout().pane_ids(),
+        vec![right, root]
+    );
 }
 
 #[test]
-fn swap_pane_direction_stays_zoomed_and_mutates_hidden_layout() {
+fn pane_swap_direction_mutates_hidden_layout_while_zoomed_through_endpoint() {
     let mut state = app_with_workspaces(&["test"]);
     let root = state.workspaces[0].root_pane();
     let right = state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].focus_pane(root);
     state.workspaces[0].set_zoomed(true);
-    test_view(&mut state, Rect::new(0, 0, 100, 20));
+    let mut app = app_from_state(state);
+    let pane_id = app.public_pane_id(0, root).expect("test precondition");
 
-    assert!(state.swap_pane(0, NavDirection::Right));
-    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
+    send_endpoint_command(
+        &mut app,
+        shepr_protocol::command::EndpointCommand::PaneSwap(
+            shepr_protocol::command::PaneSwapParams::Direction {
+                pane_id,
+                direction: shepr_protocol::command::PaneDirection::Right,
+            },
+        ),
+    );
 
-    assert!(state.workspaces[0].zoomed());
-    assert_eq!(state.workspaces[0].focused_pane_id(), root);
-    assert_eq!(view.len(), 1);
-    assert_eq!(view[0].id, root);
-
-    state.workspaces[0].set_zoomed(false);
-    let view = test_view(&mut state, Rect::new(0, 0, 100, 20));
-    let root_rect = view
-        .iter()
-        .find(|info| info.id == root)
-        .expect("test precondition")
-        .rect;
-    let right_rect = view
-        .iter()
-        .find(|info| info.id == right)
-        .expect("test precondition")
-        .rect;
-
-    assert!(root_rect.x > right_rect.x);
+    assert!(app.state.workspaces[0].zoomed());
+    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
+    assert_eq!(
+        app.state.workspaces[0].layout().pane_ids(),
+        vec![right, root]
+    );
 }
 
 #[test]
@@ -924,8 +858,11 @@ fn close_pane_removes_from_workspace() {
     let closed = state.workspaces[0].test_split(Direction::Horizontal);
     state.ensure_test_terminals();
     assert_eq!(state.workspaces[0].panes().len(), 2);
+    let plan = state
+        .prepare_pane_removal(0, closed)
+        .expect("test precondition");
     assert!(matches!(
-        state.remove_pane(0, closed),
+        state.commit_pane_removal(&plan),
         PaneRemovalCommit::Removed(_)
     ));
     assert_eq!(state.workspaces[0].panes().len(), 1);
@@ -979,8 +916,11 @@ fn close_pane_removes_unattached_terminal_state() {
         .terminal_id_for_pane(0, pane_id)
         .expect("test precondition");
 
+    let plan = state
+        .prepare_pane_removal(0, pane_id)
+        .expect("test precondition");
     assert!(matches!(
-        state.remove_pane(0, pane_id),
+        state.commit_pane_removal(&plan),
         PaneRemovalCommit::Removed(_)
     ));
 
@@ -1037,8 +977,11 @@ fn close_pane_last_pane_closes_the_panes_own_workspace_not_the_bookmarked_one() 
     state.set_bookmark_index(Some(0));
 
     let pane_id = state.workspaces[1].root_pane();
+    let plan = state
+        .prepare_pane_removal(1, pane_id)
+        .expect("test precondition");
     assert!(matches!(
-        state.remove_pane(1, pane_id),
+        state.commit_pane_removal(&plan),
         PaneRemovalCommit::Removed(_)
     ));
 

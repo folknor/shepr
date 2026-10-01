@@ -571,18 +571,25 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     writer.flush()
 }
 
-/// Terminal column width of one cell's symbol: the one width rule output uses to skip the
-/// cells a wide glyph covers, and client composition uses to find glyph extents.
+/// Terminal column width of text under Ratatui's grapheme width rule, including the
+/// halfwidth voiced marks terminals display in their own cells.
+pub fn text_width(text: &str) -> usize {
+    text.width().saturating_add(
+        text.chars()
+            .filter(|character| matches!(character, '\u{ff9e}' | '\u{ff9f}'))
+            .count(),
+    )
+}
+
+/// Terminal column width of one cell's symbol: the width rule output uses to skip the cells a
+/// wide glyph covers, and client composition uses to find glyph extents.
 pub fn cell_width(cell: &CellData) -> usize {
     symbol_width(&cell.symbol)
 }
 
-/// Terminal column width of `symbol`; see [`cell_width`].
+/// Terminal column width of `symbol`; see [`text_width`] and [`cell_width`].
 pub fn symbol_width(symbol: &str) -> usize {
-    if shepr_vt::is_halfwidth_katakana_voiced_grapheme(symbol) {
-        return 2;
-    }
-    symbol.width()
+    text_width(symbol)
 }
 
 #[derive(Clone, Copy)]
@@ -971,6 +978,14 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn text_width_matches_unicode_graphemes_and_terminal_voiced_marks() {
+        assert_eq!(text_width("\u{2764}\u{fe0f}agent"), 7);
+        assert_eq!(text_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"), 2);
+        assert_eq!(text_width("ｶﾞx"), 3);
+        assert_eq!(text_width("aﾞ"), 2);
     }
 
     fn linked_cell(symbol: &str, index: u32) -> CellData {

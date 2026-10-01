@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ratatui::layout::Rect;
 
 use super::AppState;
-use shepr_core::layout::{Direction, NavDirection};
+use shepr_core::layout::Direction;
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_mux::persist::snapshot::*;
 use shepr_mux::terminal::TerminalState;
@@ -19,6 +19,30 @@ fn state_with_workspaces(names: &[&str]) -> AppState {
         state.set_bookmark_index(Some(0));
     }
     state
+}
+
+fn app_from_state(state: AppState) -> crate::app::App {
+    let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = crate::app::App::new(
+        &shepr_config::ServerConfig::default(),
+        crate::app::AppPolicy::Test,
+        api_rx,
+    );
+    app.state = state;
+    app.state
+        .test_record_all_workspace_areas(Rect::new(0, 0, 106, 20));
+    app
+}
+
+fn send_endpoint_command(
+    app: &mut crate::app::App,
+    command: shepr_protocol::command::EndpointCommand,
+) {
+    let context = crate::app::EndpointContext {
+        requester_geometry: None,
+    };
+    let outcome = app.handle_endpoint_command_with_render(command, &context);
+    assert!(outcome.result.is_ok(), "endpoint command should succeed");
 }
 
 fn refresh_test_view(state: &mut AppState, area: Rect) {
@@ -271,10 +295,20 @@ fn capture_contract_tracks_focus_navigation() {
     let root = state.workspaces[0].root_pane();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
+    let mut app = app_from_state(state);
+    let pane_id = app.public_pane_id(0, root).expect("test precondition");
 
-    state.navigate_pane(0, NavDirection::Right);
+    send_endpoint_command(
+        &mut app,
+        shepr_protocol::command::EndpointCommand::PaneFocusDirection(
+            shepr_protocol::command::PaneFocusDirectionParams {
+                pane_id,
+                direction: shepr_protocol::command::PaneDirection::Right,
+            },
+        ),
+    );
 
-    let snapshot = capture_from_state(&state);
+    let snapshot = capture_from_state(&app.state);
     assert_eq!(snapshot.workspaces[0].focused, Some(second.raw()));
     assert_ne!(snapshot.workspaces[0].focused, Some(root.raw()));
 }
@@ -283,31 +317,45 @@ fn capture_contract_tracks_focus_navigation() {
 fn capture_contract_tracks_resize_ratio_changes() {
     let mut state = state_with_workspaces(&["one"]);
     let root = state.workspaces[0].root_pane();
-    state.workspaces[0].test_split(Direction::Horizontal);
-    state.workspaces[0].focus_pane(root);
+    let right = state.workspaces[0].test_split(Direction::Horizontal);
+    state.workspaces[0].focus_pane(right);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
-    let before = capture_from_state(&state);
+    let mut app = app_from_state(state);
+    let pane_id = app.public_pane_id(0, root).expect("test precondition");
+    let before = capture_from_state(&app.state);
 
-    state.resize_pane(0, NavDirection::Right);
+    send_endpoint_command(
+        &mut app,
+        shepr_protocol::command::EndpointCommand::PaneResize(
+            shepr_protocol::command::PaneResizeParams {
+                pane_id,
+                direction: shepr_protocol::command::PaneDirection::Right,
+            },
+        ),
+    );
 
-    let after = capture_from_state(&state);
+    let after = capture_from_state(&app.state);
     let before_ratio = root_split_ratio(&before.workspaces[0]).expect("test precondition");
     let after_ratio = root_split_ratio(&after.workspaces[0]).expect("test precondition");
     assert_ne!(before_ratio, after_ratio);
+    assert_eq!(after.workspaces[0].focused, Some(right.raw()));
 }
 
 #[test]
 fn capture_contract_tracks_pane_closure() {
     let mut state = state_with_workspaces(&["one"]);
-    state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.workspaces[0].test_split(Direction::Horizontal);
+    let mut app = app_from_state(state);
+    let pane_id = app.public_pane_id(0, second).expect("test precondition");
 
-    let focused = state.workspaces[0].focused_pane_id();
-    assert!(matches!(
-        state.remove_pane(0, focused),
-        crate::app::actions::PaneRemovalCommit::Removed(_)
-    ));
+    send_endpoint_command(
+        &mut app,
+        shepr_protocol::command::EndpointCommand::PaneClose(shepr_protocol::command::PaneTarget {
+            pane_id,
+        }),
+    );
 
-    let snapshot = capture_from_state(&state);
+    let snapshot = capture_from_state(&app.state);
     let workspace = &snapshot.workspaces[0];
     assert_eq!(workspace.panes.len(), 1);
     assert!(matches!(workspace.layout, LayoutSnapshot::Pane(_)));
@@ -344,7 +392,7 @@ fn capture_contract_tracks_public_id_counters() {
 }
 
 #[tokio::test]
-async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
+async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
     let old_scratch = crate::test_support::ScratchDir::new("persist-cwd-old");
     let old = std::fs::canonicalize(old_scratch.path()).expect("test precondition");
     let scratch = crate::test_support::ScratchDir::new("persist-cwd");
@@ -417,9 +465,10 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
             .next()
             .expect("test precondition")
             .cwd,
-        new
+        old,
+        "the report arrived after the shell moved, so it wins, as for the live cwd"
     );
-    assert_eq!(before.workspaces[0].identity_cwd, new);
+    assert_eq!(before.workspaces[0].identity_cwd, old);
     assert_eq!(
         runtimes.values().next().expect("test precondition").cwd(),
         Some(old.clone())
@@ -444,9 +493,9 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
             .next()
             .expect("test precondition")
             .cwd,
-        new
+        old
     );
-    assert_eq!(after.workspaces[0].identity_cwd, new);
+    assert_eq!(after.workspaces[0].identity_cwd, old);
     assert_eq!(
         runtimes.values().next().expect("test precondition").cwd(),
         Some(old)

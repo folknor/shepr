@@ -19,3 +19,12 @@ non-interactive shell often lacks the user's interactive `PATH` additions, so th
 probe fails, logs a warning and installs anyway. Matches the doc ("a warning when
 the version cannot be determined (install proceeds)"); noted because the warning
 appears on every install on such hosts.
+
+## AGNT-019 - Integration comments name the contract test by its old path
+
+Lateral. The server's agent integration contract test moved from the
+integration test `tests/agent_integration_contract.rs` into the crate as the
+`cfg(test)` module `agent_integration_contract_tests`. Comments in
+`crates/shepr-agent/src/integration/` (`mod.rs`, `contract_traces.toml`,
+`contract_traces.ts`) still call it the server crate's `agent_integration_contract`
+test. Update them.

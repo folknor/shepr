@@ -14,16 +14,37 @@ impl App {
             return rejected("ratio must be finite");
         }
         let ws_idx = self.endpoint_workspace(&params.workspace_id)?;
+        let resolve_children = |ids: &[shepr_protocol::PublicPaneId]| {
+            ids.iter()
+                .map(|id| {
+                    let (workspace, pane) = self.endpoint_pane(id)?;
+                    if workspace != ws_idx {
+                        return Err(shepr_protocol::command::EndpointError::Rejected(
+                            "split pane belongs to another workspace".into(),
+                        ));
+                    }
+                    Ok(pane)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let first = resolve_children(&params.first_panes)?;
+        let second = resolve_children(&params.second_panes)?;
+        let Some(path) = self.state.workspaces[ws_idx]
+            .layout()
+            .split_path_for_children(&first, &second)
+        else {
+            return rejected("split children not found");
+        };
         let area = shepr_mux::workspace::layout_rect(self.state.workspace_layout_area(ws_idx));
         let Some(current_ratio) = self.state.workspaces.get(ws_idx).and_then(|workspace| {
             workspace
                 .layout()
                 .splits(area)
                 .into_iter()
-                .find(|split| split.path == params.path)
+                .find(|split| split.path == path)
                 .map(|split| split.ratio)
         }) else {
-            return rejected("split path not found");
+            return rejected("split children not found");
         };
         let next_ratio = shepr_core::layout::SplitRatio::clamped(params.ratio).get();
         // Both sides went through the same clamp, so a repeat of the stored
@@ -34,9 +55,9 @@ impl App {
                 .state
                 .workspaces
                 .get_mut(ws_idx)
-                .is_some_and(|workspace| workspace.set_split_ratio_at(&params.path, params.ratio));
+                .is_some_and(|workspace| workspace.set_split_ratio_at(&path, params.ratio));
             if !set {
-                return rejected("split path not found");
+                return rejected("split children not found");
             }
             self.state.mark_session_dirty();
         }
@@ -77,7 +98,20 @@ mod tests {
     fn params(app: &App, ratio: f32) -> LayoutSetSplitRatioParams {
         LayoutSetSplitRatioParams {
             workspace_id: app.public_workspace_id(0).expect("test precondition"),
-            path: vec![],
+            first_panes: app.state.workspaces[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20))
+                .first()
+                .and_then(|pane| app.public_pane_id(0, pane.id))
+                .into_iter()
+                .collect(),
+            second_panes: app.state.workspaces[0]
+                .layout()
+                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20))
+                .get(1)
+                .and_then(|pane| app.public_pane_id(0, pane.id))
+                .into_iter()
+                .collect(),
             ratio,
         }
     }
@@ -104,6 +138,34 @@ mod tests {
     }
 
     #[test]
+    fn stale_client_split_command_refuses_a_replacement_at_the_same_path() {
+        let mut app = app_with_workspace();
+        app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let stale = params(&app, 0.72);
+        // A second client splits a child, replacing the old root's membership.
+        app.state.workspaces[0].test_split(Direction::Vertical);
+        app.state.ensure_test_terminals();
+        let area = shepr_core::geometry::Rect::new(0, 0, 100, 20);
+        let before = app.state.workspaces[0]
+            .layout()
+            .splits(area)
+            .iter()
+            .map(|split| split.ratio)
+            .collect::<Vec<_>>();
+        assert!(app.handle_layout_set_split_ratio(&stale).is_err());
+        assert_eq!(
+            app.state.workspaces[0]
+                .layout()
+                .splits(area)
+                .iter()
+                .map(|split| split.ratio)
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
     fn layout_set_split_ratio_rejects_missing_split_and_bad_ratios() {
         let mut app = app_with_workspace();
 
@@ -113,7 +175,7 @@ mod tests {
             .expect_err("a one-pane workspace has no split");
         assert_eq!(
             missing.error,
-            EndpointError::Rejected("split path not found".into())
+            EndpointError::Rejected("split children not found".into())
         );
         let bad_ratio_params = params(&app, f32::NAN);
         let bad_ratio = app

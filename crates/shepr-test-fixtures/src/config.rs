@@ -78,34 +78,24 @@ pub trait ValidatedServerConfigFixture: Sized {
     /// The default config on [`AppPathsFixture::test_default`] paths.
     fn test_default() -> Self;
 
-    /// `config`, validated on [`AppPathsFixture::test_default`] paths.
-    /// `source` is the document the values stand for; see
-    /// `ValidatedServerConfig::from_values`. An invalid config is a broken test and
-    /// panics.
-    fn test_from_config(config: ServerConfig, source: Option<&str>) -> Self;
+    /// `config`, validated on [`AppPathsFixture::test_default`] paths. An
+    /// invalid config is a broken test and panics.
+    fn test_from_config(config: ServerConfig) -> Self;
 
     /// As [`Self::test_from_config`], on `paths`.
-    fn test_from_config_with_paths(
-        config: ServerConfig,
-        source: Option<&str>,
-        paths: AppPaths,
-    ) -> Self;
+    fn test_from_config_with_paths(config: ServerConfig, paths: AppPaths) -> Self;
 }
 
 impl ValidatedServerConfigFixture for ValidatedServerConfig {
     fn test_default() -> Self {
-        Self::test_from_config(ServerConfig::default(), None)
+        Self::test_from_config(ServerConfig::default())
     }
 
-    fn test_from_config(config: ServerConfig, source: Option<&str>) -> Self {
-        Self::test_from_config_with_paths(config, source, AppPaths::test_default())
+    fn test_from_config(config: ServerConfig) -> Self {
+        Self::test_from_config_with_paths(config, AppPaths::test_default())
     }
 
-    fn test_from_config_with_paths(
-        mut config: ServerConfig,
-        source: Option<&str>,
-        paths: AppPaths,
-    ) -> Self {
+    fn test_from_config_with_paths(mut config: ServerConfig, paths: AppPaths) -> Self {
         // `from_values` reads `SHELL` and `PATH` even with an explicit shell.
         // This fixed absolute path makes both values irrelevant for default
         // fixtures; callers testing a relative shell must isolate their env.
@@ -114,6 +104,6 @@ impl ValidatedServerConfigFixture for ValidatedServerConfig {
         if config.terminal.default_shell.trim().is_empty() {
             config.terminal.default_shell = FIXTURE_SHELL.to_owned();
         }
-        Self::from_values(config, source, paths).expect("test config is valid")
+        Self::from_values(config, paths).expect("test config is valid")
     }
 }

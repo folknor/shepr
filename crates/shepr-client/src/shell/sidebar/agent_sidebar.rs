@@ -4,8 +4,6 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
-    text::Line,
-    widgets::{Paragraph, Widget},
 };
 use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId};
 
@@ -423,56 +421,26 @@ pub(super) fn render_agent_row(
                     .saturating_sub(u16::try_from(indent).unwrap_or(u16::MAX)),
             ),
         ));
-        Paragraph::new(Line::from(spans)).style(row_style).render(
+        super::render::put_spans(
+            buffer,
             Rect::new(
                 rect.x,
                 rect.y + u16::try_from(index).unwrap_or(u16::MAX),
                 rect.width,
                 1,
             ),
-            buffer,
+            &spans,
+            row_style,
         );
     }
 }
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
-    let mut offset = 0usize;
-    // The cell holding the last drawn character, so zero-width characters
-    // (combining marks, joiners, variation selectors) join that cell.
-    let mut last_column = None;
-    for (unit, char_width) in shepr_vt::unicode_display_units(text) {
-        let char_width = usize::from(char_width);
-        if char_width == 0 {
-            if !unit.chars().all(char::is_control)
-                && let Some(cell) = last_column.and_then(|column| buffer.cell_mut((column, y)))
-            {
-                let mut symbol = cell.symbol().to_owned();
-                symbol.push_str(unit);
-                cell.set_symbol(&symbol);
-            }
-            continue;
-        }
-        if offset.saturating_add(char_width) > usize::from(width) {
-            break;
-        }
-        let Ok(column_offset) = u16::try_from(offset) else {
-            break;
-        };
-        let Some(column) = x.checked_add(column_offset) else {
-            break;
-        };
-        if let Some(cell) = buffer.cell_mut((column, y)) {
-            cell.set_symbol(unit).set_style(style);
-            last_column = Some(column);
-        } else {
-            last_column = None;
-        }
-        offset = offset.saturating_add(char_width);
-    }
+    super::render::put_text(buffer, x, y, width, text, style);
 }
 
 fn display_width(text: &str) -> usize {
-    shepr_vt::unicode_text_width(text)
+    shepr_termio::blit::text_width(text)
 }
 
 #[cfg(test)]
@@ -523,17 +491,29 @@ mod tests {
 
         put_text(&mut buffer, 0, 0, 3, "x\u{ff9e}y", Style::default());
 
-        assert_eq!(buffer[(0, 0)].symbol(), "x");
-        assert_eq!(buffer[(1, 0)].symbol(), "\u{ff9e}");
+        assert_eq!(buffer[(0, 0)].symbol(), "x\u{ff9e}");
+        assert_eq!(buffer[(1, 0)].symbol(), " ");
         assert_eq!(buffer[(2, 0)].symbol(), "y");
     }
 
     #[test]
-    fn display_width_matches_terminal_codepoints_and_voiced_marks() {
-        assert_eq!(display_width("\u{263a}\u{fe0f}"), 1);
+    fn emoji_title_width_matches_outer_terminal_graphemes() {
+        let title = "\u{2764}\u{fe0f}agent";
+        assert_eq!(display_width(title), 7);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
+        put_text(&mut buffer, 0, 0, 3, "\u{2764}\u{fe0f}x", Style::default());
+        assert_eq!(buffer[(0, 0)].symbol(), "\u{2764}\u{fe0f}");
+        assert_eq!(buffer[(1, 0)].symbol(), " ");
+        assert_eq!(buffer[(2, 0)].symbol(), "x");
+    }
+
+    #[test]
+    fn display_width_matches_outer_terminal_emoji_and_voiced_marks() {
+        assert_eq!(display_width("\u{263a}\u{fe0f}"), 2);
         assert_eq!(
             display_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"),
-            6
+            2
         );
         assert_eq!(display_width("ｶﾞx"), 3);
     }

@@ -930,8 +930,9 @@ fn a_rejected_focus_command_moves_nobody() {
 
 #[test]
 fn commands_that_only_change_state_in_place_navigate_nobody() {
-    let (mut app, root, _right) = app_with_two_panes();
+    let (mut app, root, right) = app_with_two_panes();
     let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let right_public = app.public_pane_id(0, right).expect("test precondition");
     let workspace_id = app.public_workspace_id(0).expect("test precondition");
     let commands = [
         EndpointCommand::PaneInputSet(PaneInputSetParams {
@@ -943,7 +944,7 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
             label: Some("x".into()),
         }),
         EndpointCommand::PaneResize(PaneResizeParams {
-            pane_id: root_public,
+            pane_id: root_public.clone(),
             direction: PaneDirection::Right,
         }),
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
@@ -952,12 +953,13 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
         }),
         EndpointCommand::LayoutSetSplitRatio(shepr_protocol::command::LayoutSetSplitRatioParams {
             workspace_id: workspace_id.clone(),
-            path: vec![],
+            first_panes: vec![root_public],
+            second_panes: vec![right_public],
             ratio: 0.4,
         }),
         EndpointCommand::WorkspaceMove(shepr_protocol::command::WorkspaceMoveParams {
             workspace_id,
-            insert_index: 0,
+            before_workspace_id: None,
         }),
     ];
 

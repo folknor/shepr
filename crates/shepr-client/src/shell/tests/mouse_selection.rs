@@ -113,10 +113,15 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
 }
 
 #[test]
-fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
+fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
+    let mut second = pane_surface.panes[0].clone();
+    second.pane_id = test_pane_id("w1:p2");
+    second.rect.x = 40;
+    second.inner_rect.x = 40;
+    pane_surface.panes.push(second);
     pane_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
         pos: 40,
@@ -156,6 +161,11 @@ fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
     replacement.workspaces[0].label = "updated".into();
     let mut replacement_surface = surface();
     replacement_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
+    let mut second = replacement_surface.panes[0].clone();
+    second.pane_id = test_pane_id("w1:p2");
+    second.rect.x = 40;
+    second.inner_rect.x = 40;
+    replacement_surface.panes.push(second);
     replacement_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
         pos: 40,
@@ -191,11 +201,8 @@ fn pane_split_drag_uses_projected_handle_and_stable_workspace_path() {
         &request.command,
         EndpointCommand::LayoutSetSplitRatio(params)
             if params.workspace_id == "w1"
-                && params.path
-                    == vec![
-                        shepr_core::geometry::SplitBranch::First,
-                        shepr_core::geometry::SplitBranch::Second,
-                    ]
+                && params.first_panes == vec![test_pane_id("w1:p1")]
+                && params.second_panes == vec![test_pane_id("w1:p2")]
                 && (params.ratio - 0.6).abs() < f32::EPSILON
     ));
     let release =

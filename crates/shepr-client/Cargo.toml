@@ -15,7 +15,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 unicode-segmentation = { workspace = true }
-unicode-width = { workspace = true }
 
 shepr-agent = { path = "../shepr-agent" }
 shepr-config = { path = "../shepr-config" }

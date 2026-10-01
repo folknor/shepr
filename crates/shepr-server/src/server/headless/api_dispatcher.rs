@@ -26,7 +26,7 @@ impl super::HeadlessServer {
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 break;
             }
-            let Ok(msg) = self.app.api_rx.try_recv() else {
+            let Ok(msg) = self.api_request_rx.try_recv() else {
                 break;
             };
             changed |= self.handle_api_request_with_shutdown_check(msg);
@@ -35,10 +35,10 @@ impl super::HeadlessServer {
     }
 
     pub(super) fn reject_queued_api_requests_for_shutdown(&mut self) {
-        self.app.api_rx.close();
+        self.api_request_rx.close();
         // Closing first makes this exhaustive cleanup finite: every request
         // already accepted gets a refusal, and no new request can extend it.
-        while let Ok(msg) = self.app.api_rx.try_recv() {
+        while let Ok(msg) = self.api_request_rx.try_recv() {
             self.reject_api_request_for_shutdown(&msg);
         }
     }

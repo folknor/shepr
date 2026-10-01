@@ -47,6 +47,18 @@ HostReplyEsc, .. }` where each variant gives a byte bound and a flush-count boun
 would make "every hold ends" a type-level property. The file is
 upstream-tracked, so this rewrite cuts against porting upstream fixes.
 
+## INPLAT-020 - A pane cell holding an emoji with VS16 may hide the next character
+
+Lateral, suspected and pre-existing, `shepr-termio/src/blit.rs`. The terminal
+core (alacritty) lays out the warning sign followed by VS16 (`\u{26a0}\u{fe0f}`)
+as one narrow cell with the variation selector attached, and the next character
+in the following cell. The blitter measures that cell's symbol by the grapheme
+width rule (2 columns) and skips the following cell, so the next character would
+never reach the outer terminal. Check with a pane that runs
+`printf '\342\232\240\357\270\217x\n'`. If confirmed, pane cells should be placed
+by the grid cell's own wide flag rather than by measuring their symbol, while
+chrome keeps the grapheme rule.
+
 ## INPLAT-017 - Structural: an under-minimum `PaneGeometry` can still be built directly
 
 `PaneGeometry` deserialization now clamps the pane grid. Residue: its fields are
@@ -54,12 +66,3 @@ public, so a value built directly can still be below the minimum, and the
 defensive clamps in `shepr-pty/src/fd.rs` and `shepr-vt/src/lib.rs` stay
 necessary. Private fields with a clamping constructor would make an
 under-minimum pane grid unrepresentable.
-
-## INPLAT-019 - A held second Escape can wait for the next key while a host colour reply is pending
-
-Lateral, `shepr-termio/src/input/raw_input.rs` (the idle flush) and
-`crates/shepr-client/src/input.rs`. With a host colour reply pending, an idle
-flush can emit the first Escape of a doubled `ESC ESC` and retain the second.
-The client schedules another idle timeout only when a flush emits no chunks,
-so the retained Escape waits for further terminal input and can combine with a
-later key. Both files are upstream-tracked.

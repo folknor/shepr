@@ -66,7 +66,6 @@ fn already_running_subprocess_entry_point() {
     let paths = shepr_config::AppPaths::test_at(&scratch);
     let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
         shepr_config::ServerConfig::default(),
-        None,
         paths.clone(),
     );
     let api_socket = shepr_api::socket_path(&paths);
@@ -110,7 +109,6 @@ fn refuse_a_held_data_dir_lease() {
     let paths = shepr_config::AppPaths::test_at(&scratch);
     let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
         shepr_config::ServerConfig::default(),
-        None,
         paths.clone(),
     );
     // What a running server holds: the lease on the data directory.

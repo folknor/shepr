@@ -180,9 +180,11 @@ fn flush_idle_input(
     if stdin_read_ready(stdin_fd, timeout_ms) != Some(false) {
         return true;
     }
-    let had_pending = framer.has_pending_input();
     let chunks = framer.flush_timeout_framed();
-    let held_escape = had_pending && chunks.is_empty();
+    // A timeout flush can emit a prefix and still retain its remainder. Give
+    // those bytes their follow-up flush too; emitted chunks do not mean the
+    // framer is empty.
+    let has_pending_after_flush = framer.has_pending_input();
     let sgr_pixels = pending_mode.unwrap_or_else(|| host_sgr_pixels_active.load(Ordering::Acquire));
     if !framer.has_pending_input() {
         *pending_mode = None;
@@ -192,7 +194,7 @@ fn flush_idle_input(
     {
         return false;
     }
-    if held_escape
+    if has_pending_after_flush
         && stdin_read_ready(stdin_fd, framer.held_input_flush_timeout_ms()) == Some(false)
     {
         let chunks = framer.flush_timeout_framed();
@@ -503,14 +505,13 @@ mod tests {
         );
         let mut chunks = Vec::new();
         if gap >= first_wait {
-            let had_pending = framer.has_pending_input();
             let flushed = framer.flush_timeout_framed();
-            let held = had_pending && flushed.is_empty();
+            let has_pending_after_flush = framer.has_pending_input();
             chunks.extend(raw_bytes(flushed));
             let second_wait = std::time::Duration::from_millis(
                 u64::try_from(framer.held_input_flush_timeout_ms()).unwrap_or_default(),
             );
-            if held && gap >= first_wait + second_wait {
+            if has_pending_after_flush && gap >= first_wait + second_wait {
                 chunks.extend(raw_bytes(framer.flush_timeout_framed()));
             }
         }
@@ -619,6 +620,20 @@ mod tests {
                 "binding {binding:?} must not stay held behind a pending host reply"
             );
         }
+    }
+
+    #[test]
+    fn host_reply_idle_flush_reschedules_after_emitting_first_doubled_escape() {
+        let mut framer = HostFramer::for_host_input();
+        framer.host_color_query_sent();
+        assert!(framer.push_framed(b"\x1b\x1b").is_empty());
+
+        // The first idle flush emits one ESC while the host-reply hold retains
+        // the second. The retained ESC must get another timeout before `x`.
+        assert_eq!(
+            reader_chunks_across_gap(&mut framer, false, std::time::Duration::from_secs(1), b"x"),
+            vec![b"\x1b".to_vec(), b"\x1b".to_vec(), b"x".to_vec()]
+        );
     }
 
     #[test]

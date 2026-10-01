@@ -276,11 +276,11 @@ pub enum DirectionSnapshot {
 /// Where a pane sits in a snapshot: workspace index, pane number.
 type PaneKey = (usize, u32);
 
-/// The live shell cwd reads a capture left for whoever writes the snapshot.
+/// The live cwd probe reads a capture left for whoever writes the snapshot.
 /// Reading a cwd is a /proc access per pane, which the event loop should not
 /// pay per save, so a capture records the best cwd it knows without one and
-/// hands over a [`PaneCwdProbe`](crate::pane::PaneCwdProbe) per running pane; [`resolve`] applies what
-/// the probes read.
+/// hands over a [`PaneCwdProbe`](crate::pane::PaneCwdProbe) per runtime; [`resolve`]
+/// applies the same OSC 7 and /proc arbitration used by live panes.
 ///
 /// [`resolve`]: Self::resolve
 #[derive(Default)]
@@ -289,9 +289,8 @@ pub struct PendingCwds {
 }
 
 impl PendingCwds {
-    /// Reads every probe and stores the result in `snapshot`: a pane's cwd
-    /// where its shell could be read, and each affected workspace's identity
-    /// cwd, which follows its root pane.
+    /// Reads every probe and stores the best result in `snapshot`, then updates
+    /// each affected workspace's identity cwd from its root pane.
     pub fn resolve(self, snapshot: &mut SessionSnapshot) {
         let mut touched = Vec::new();
         for ((workspace, pane), probe) in self.probes {
@@ -325,8 +324,8 @@ fn root_pane_cwd(workspace: &WorkspaceSnapshot) -> Option<PathBuf> {
         .map(|pane| pane.cwd.clone())
 }
 
-/// Capture the current app state into a serializable snapshot, with every
-/// running pane's cwd read now. A save uses [`capture_deferred`] instead.
+/// Capture the current app state into a serializable snapshot, refreshing each
+/// runtime's cwd now. A save uses [`capture_deferred`] instead.
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -351,8 +350,8 @@ pub fn capture(
 }
 
 /// Capture the current app state without reading any shell's /proc cwd: the
-/// snapshot holds the cwd each pane is known to have, and the returned
-/// [`PendingCwds`] improves on it where the snapshot is written.
+/// snapshot holds each pane's best known cwd, and the returned [`PendingCwds`]
+/// refreshes it where the snapshot is written.
 pub fn capture_deferred(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -886,9 +885,9 @@ pub fn capture_pending_history_for_snapshot(
     Some(PendingHistory { workspaces })
 }
 
-/// Captures current cwd probes for a previously captured session layout.
-/// Exited panes have no probe, and live panes keep their checkpoint workspace
-/// and pane keys even if removals changed the current workspace indexes.
+/// Captures cwd probes for a previously captured session layout. A probe keeps
+/// the best known cwd if its child has exited, and live panes keep their
+/// checkpoint workspace and pane keys even if removals changed workspace indexes.
 pub fn capture_pending_cwds_for_snapshot(
     snapshot: &SessionSnapshot,
     terminal_ids: &HashMap<(usize, u32), TerminalId>,

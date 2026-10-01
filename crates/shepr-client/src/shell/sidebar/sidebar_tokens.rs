@@ -11,7 +11,7 @@ pub(super) use self::tokens::{
     AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
 
 use shepr_config::theme::Palette;
 
@@ -58,7 +58,7 @@ impl<'de> serde::Deserialize<'de> for SectionSplit {
 }
 
 pub(super) fn display_width(text: &str) -> usize {
-    UnicodeWidthStr::width(text)
+    shepr_termio::blit::text_width(text)
 }
 
 fn truncate_end(text: &str, max_width: usize) -> String {
@@ -74,13 +74,13 @@ fn truncate_end(text: &str, max_width: usize) -> String {
 
     let mut prefix = String::new();
     let mut width = 0usize;
-    for character in text.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if width + character_width > max_width.saturating_sub(1) {
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = display_width(grapheme);
+        if width.saturating_add(grapheme_width) > max_width.saturating_sub(1) {
             break;
         }
-        prefix.push(character);
-        width += character_width;
+        prefix.push_str(grapheme);
+        width = width.saturating_add(grapheme_width);
     }
     format!("{prefix}…")
 }
@@ -350,5 +350,34 @@ mod split_tests {
             shepr_core::layout::MAX_SPLIT_RATIO
         );
         assert_eq!(SectionSplit::from_drag(f32::NAN), SectionSplit::DEFAULT);
+    }
+
+    #[test]
+    fn agent_title_budget_and_truncation_keep_emoji_variation_sequences_whole() {
+        let title = "\u{2764}\u{fe0f}agent";
+        let token = super::ResolvedToken {
+            kind: super::ResolvedTokenKind::TerminalTitle(title.to_owned()),
+            style: shepr_config::SidebarTokenStyle::default(),
+        };
+        let palette = super::Palette::default();
+        let spans = super::resolved_token_spans(
+            &[token],
+            super::super::StatusGlyph {
+                text: "●",
+                style: ratatui::style::Style::default(),
+            },
+            super::TokenStyles {
+                state_text: ratatui::style::Style::default(),
+                primary: ratatui::style::Style::default(),
+                secondary: ratatui::style::Style::default(),
+                terminal_title: ratatui::style::Style::default(),
+            },
+            &palette,
+            3,
+        );
+
+        assert_eq!(super::display_width(title), 7);
+        assert_eq!(spans[0].content.as_ref(), "\u{2764}\u{fe0f}…");
+        assert_eq!(super::display_width(spans[0].content.as_ref()), 3);
     }
 }

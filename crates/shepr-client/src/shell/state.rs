@@ -135,6 +135,8 @@ pub(super) enum ClientChromeDrag {
         target: Option<(Option<shepr_protocol::WorkspaceId>, u16)>,
     },
     PaneSplit {
+        first_panes: Vec<shepr_protocol::PublicPaneId>,
+        second_panes: Vec<shepr_protocol::PublicPaneId>,
         hit: PaneSplitHit,
         workspace_id: shepr_protocol::WorkspaceId,
         grab_offset: i32,

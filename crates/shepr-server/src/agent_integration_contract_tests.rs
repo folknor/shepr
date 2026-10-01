@@ -2,20 +2,21 @@
 //! Each shell hook asset runs through a scripted agent session against a fake
 //! API socket, and each plugin's pinned trace is loaded. Every request is
 //! replayed whole through the server's own report handlers, on an App holding
-//! one pane.
+//! one pane. It is a unit test of this crate so the harness that reaches those
+//! handlers stays test-only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::agent_report_test_support::AgentReportHarness;
 use serde_json::Value;
 use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
 use shepr_agent::agent::{Agent, AgentSource};
 use shepr_agent::detect::AgentState;
 use shepr_api::schema::Request;
 use shepr_mux::terminal::state::HookClockSample;
-use shepr_server::agent_report_test_support::AgentReportHarness;
 use shepr_test_support::{IsolatedEnv, ScratchDir, capture_hook, command_in_scratch};
 
 const PANE_ID: &str = "w1:p1";

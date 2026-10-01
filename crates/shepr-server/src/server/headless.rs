@@ -169,6 +169,11 @@ pub struct HeadlessServer {
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
     server_event_tx: mpsc::Sender<ServerEvent>,
+    /// Bounded requests received by the JSON API listener.
+    api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
+    /// New client writers dequeued after stopping, held until their queued
+    /// commands receive refusals before the shutdown notice is sent.
+    shutdown_unregistered_clients: HashMap<ClientId, crate::server::client_transport::ClientWriter>,
     /// Acknowledgements for shutdown frames queued to client writer threads.
     shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// Pane exits held until their pre-removal session checkpoint reaches disk.
@@ -202,6 +207,7 @@ impl HeadlessServer {
     /// turns that into [`RunServerError::AlreadyRunning`].
     pub fn new(
         app: app::App,
+        api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
         api_server: Option<shepr_api::ServerHandle>,
         stop_requested: Arc<shepr_api::ServerStopSignal>,
     ) -> io::Result<Self> {
@@ -251,6 +257,8 @@ impl HeadlessServer {
             host_shutdown_monitor: None,
             server_event_rx,
             server_event_tx,
+            api_request_rx,
+            shutdown_unregistered_clients: HashMap::new(),
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
             replaying_checkpointed_pane_exit: None,
@@ -479,7 +487,7 @@ impl HeadlessServer {
                     // A `server.stop` from the API sets the latch on another
                     // thread; this is what wakes an idle loop to act on it.
                     () = stop_signal.notified() => LoopEvent::Timer,
-                    maybe_api = self.app.api_rx.recv() => match maybe_api {
+                    maybe_api = self.api_request_rx.recv() => match maybe_api {
                         Some(msg) => LoopEvent::Api(Box::new(msg)),
                         None => LoopEvent::Timer,
                     },
@@ -515,8 +523,8 @@ impl HeadlessServer {
 
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 // This request was already dequeued when the stop arrived.
-                // Queue its refusal before initiate_shutdown broadcasts the
-                // notice that can make a client stop reading its control lane.
+                // Queue its refusal now; shutdown cleanup broadcasts the
+                // notice after it settles events still waiting in the channel.
                 if let LoopEvent::ServerEvent(ServerEvent::ClientShellEndpointRequest {
                     client_id,
                     boot_id,
@@ -540,21 +548,7 @@ impl HeadlessServer {
                         writer,
                         ..
                     }) => {
-                        if let Ok(message) =
-                            Self::frame_server_message(&ServerMessage::ServerShutdown {
-                                reason: Some(shepr_protocol::ShutdownReason::Message(
-                                    "server is shutting down".to_owned(),
-                                )),
-                            })
-                        {
-                            // A closed writer means the client already left;
-                            // there is nothing to flush for it.
-                            if writer.control.send(message).is_err() {
-                                debug!(?client_id, "client left before its shutdown notice");
-                            } else {
-                                self.shutdown_flushes.push(writer.flush());
-                            }
-                        }
+                        self.shutdown_unregistered_clients.insert(client_id, writer);
                     }
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
@@ -829,42 +823,82 @@ impl HeadlessServer {
     }
 
     /// Closes the server event channel and settles what is left in it: a
-    /// client that connected too late is sent the shutdown notice, and an
-    /// endpoint command still queued is answered with the shutdown refusal
-    /// rather than left to its client's command timeout. Replies already held
-    /// when shutdown began were queued before its notice; these requests still
-    /// in the receiver are refused after it. Everything else is moot once the
-    /// server stops.
+    /// client that connected too late gets its shutdown notice, and an
+    /// endpoint command still queued gets the shutdown refusal rather than
+    /// being left to its client's command timeout. This runs before connected
+    /// clients receive their notice, so queued refusals stay readable.
     async fn reject_late_client_connections(&mut self) {
+        let mut unregistered_clients = std::mem::take(&mut self.shutdown_unregistered_clients);
         self.server_event_rx.close();
         while let Some(event) = self.server_event_rx.recv().await {
             match event {
                 ServerEvent::ClientShellConnected {
                     client_id, writer, ..
                 } => {
-                    let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
-                        reason: Some(shepr_protocol::ShutdownReason::Message(
-                            "server is shutting down".to_owned(),
-                        )),
-                    }) else {
-                        continue;
-                    };
-                    // A closed writer means the client already left; there is
-                    // nothing to flush for it.
-                    if writer.control.send(message).is_err() {
-                        debug!(?client_id, "late client left before its shutdown notice");
-                    } else {
-                        self.shutdown_flushes.push(writer.flush());
-                    }
+                    unregistered_clients.insert(client_id, writer);
                 }
                 ServerEvent::ClientShellEndpointRequest {
                     client_id,
                     boot_id,
                     request_id,
                     ..
-                } => self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id),
+                } => {
+                    if self.clients.contains_key(&client_id) {
+                        self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id);
+                    } else if let Some(writer) = unregistered_clients.get(&client_id) {
+                        self.reject_unregistered_endpoint_request_for_shutdown(
+                            client_id, writer, boot_id, request_id,
+                        );
+                    }
+                }
                 _ => {}
             }
+        }
+        for (client_id, writer) in unregistered_clients {
+            self.send_shutdown_to_unregistered_client(client_id, &writer);
+        }
+    }
+
+    fn reject_unregistered_endpoint_request_for_shutdown(
+        &mut self,
+        client_id: ClientId,
+        writer: &crate::server::client_transport::ClientWriter,
+        boot_id: shepr_protocol::BootId,
+        request_id: shepr_protocol::RequestId,
+    ) {
+        let response = crate::server::client_commands::error_message(
+            boot_id,
+            request_id,
+            shepr_protocol::command::EndpointError::ShuttingDown,
+        );
+        let Ok(message) = Self::frame_server_message(&response) else {
+            return;
+        };
+        if writer.control.send(message).is_err() {
+            debug!(?client_id, "late client left before its endpoint refusal");
+        } else {
+            self.shutdown_flushes.push(writer.flush());
+        }
+    }
+
+    fn send_shutdown_to_unregistered_client(
+        &mut self,
+        client_id: ClientId,
+        writer: &crate::server::client_transport::ClientWriter,
+    ) {
+        let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
+            reason: Some(shepr_protocol::ShutdownReason::Message(
+                "server is shutting down".to_owned(),
+            )),
+        }) else {
+            return;
+        };
+        // A closed writer means the client already left; there is no flush to
+        // wait for in that case.
+        if writer.control.send(message).is_err() {
+            debug!(?client_id, "late client left before its shutdown notice");
+        } else {
+            self.shutdown_flushes.push(writer.flush());
         }
     }
 
@@ -980,7 +1014,7 @@ impl HeadlessServer {
     /// Broken connections are tracked and cleaned up.
     ///
     /// Each client gets its own copy of the framed bytes. That is deliberate:
-    /// the only caller is `initiate_shutdown`, once per server lifetime.
+    /// the only caller is `complete_shutdown`, once per server lifetime.
     /// Render output never goes through here; each client's frame or patch is
     /// diffed against that client's own baseline (`render_and_stream`,
     /// `render_retained_pane_surface_and_stream`), so there is no shared frame

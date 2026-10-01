@@ -23,22 +23,3 @@ Residue: a full render still builds the grid and compares it with the last one
 (`last.frame == surface.frame`), a full send still clones it for the committed
 baseline, projection decoding keeps one copy for its separate consumer, and the
 conservative lower bound can pass over a delta that would have paid.
-
-## WIRECFG-015 - The per-role config loaders keep plumbing only for symmetry
-
-Lateral from the client and server config split, `crates/shepr-config/src/`.
-The `role_loader!` macro in `io.rs` generates `ClientConfig::load_validated` and
-`ServerConfig::load_validated`, which duplicate the free `load_client_validated`
-and `load_server_validated` (the only ones used outside the crate); its body is
-unindented and rustfmt does not format macro bodies, so a small trait or two
-plain functions would read better. `ServerConfigResolution::parse`,
-`ValidatedServerConfig::from_loaded` and the test-only `ValidatedServerConfig::new`
-take a provenance they ignore, and `ValidatedServerConfig::from_values` parses
-one only to reject unparseable TOML; `ClientConfigResolution` takes an unused
-`_paths` and always returns empty `path_diagnostics`. The test-only
-`ValidatedClientConfig::test_from_config_with_paths` has no caller.
-`ConfigDiagnostic::with_file` appends the file path after the whole message, so
-for a multi-line TOML parse error it lands after the caret diagram; put it on
-the first line. The `server.toml` template says the theme accent is for
-"highlights, borders, and navigation UI", but on the server it colours only
-pane chrome.

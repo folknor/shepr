@@ -455,49 +455,6 @@ impl App {
         }
         self.start_pending_agent_resumes(now)
     }
-
-    pub(crate) fn start_pending_agent_resume_for_terminal(
-        &mut self,
-        terminal_id: &shepr_protocol::TerminalId,
-        rows: u16,
-        cols: u16,
-    ) -> bool {
-        if self.terminal_runtimes.get(terminal_id).is_some() {
-            return false;
-        }
-        let Some((pane_id, cwd, plan)) = self.state.workspaces.iter().find_map(|ws| {
-            ws.layout().pane_ids().into_iter().find_map(|pane_id| {
-                let pane = ws.panes().get(&pane_id)?;
-                if &pane.attached_terminal_id != terminal_id {
-                    return None;
-                }
-                let terminal = self.state.terminals.get(terminal_id)?;
-                Some((
-                    pane_id,
-                    terminal.cwd().to_path_buf(),
-                    terminal.pending_agent_resume_plan.clone()?,
-                ))
-            })
-        }) else {
-            return false;
-        };
-
-        // Runs one attempt directly, outside the schedule, to test the attempt.
-        let outcome = self.start_pending_agent_resume(
-            pane_id,
-            terminal_id,
-            &cwd,
-            &plan,
-            shepr_mux::workspace::spawn_geometry(rows, cols, None),
-            directory_available(&cwd),
-            self.clock.now,
-        );
-        let changed = outcome != AttemptOutcome::Retryable;
-        if changed {
-            self.state.mark_session_dirty();
-        }
-        changed
-    }
 }
 
 #[cfg(test)]
@@ -820,7 +777,11 @@ mod tests {
                 false,
                 Instant::now(),
             );
-            app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80);
+            app.state
+                .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
+            report_test_host_theme(&mut app);
+            let now = Instant::now();
+            assert!(app.start_pending_agent_resumes_inline_for_test(now));
             assert!(app.terminal_runtimes.get(&terminal_id).is_none());
             let terminal = &app.state.terminals[&terminal_id];
             assert!(terminal.pending_agent_resume_plan.is_none());
@@ -830,7 +791,7 @@ mod tests {
             assert_eq!(terminal.detected_agent, None);
             assert_eq!(terminal.effective_known_agent(), None);
             assert!(!app.has_pending_agent_resumes());
-            assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80));
+            assert!(!app.start_pending_agent_resumes_inline_for_test(now));
         }
     }
 

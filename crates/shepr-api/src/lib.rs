@@ -69,7 +69,9 @@ pub struct ApiRequestMessage {
     pub respond_to: std::sync::mpsc::Sender<error::ApiResult>,
 }
 
-pub type ApiRequestSender = mpsc::UnboundedSender<ApiRequestMessage>;
+/// The bounded queue from socket connection threads to the app loop. A full
+/// queue refuses the request with `server_unavailable` instead of waiting.
+pub type ApiRequestSender = mpsc::Sender<ApiRequestMessage>;
 
 pub fn socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
     crate::server_stop::active_api_socket_path(paths)

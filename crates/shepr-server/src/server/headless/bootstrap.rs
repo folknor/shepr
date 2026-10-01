@@ -137,7 +137,7 @@ pub fn run_server(
     shepr_agent::detect::manifest::compile_bundled_manifests();
     spawn_integration_install();
 
-    let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (api_tx, api_rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
     // Start the JSON API socket server.
@@ -147,25 +147,36 @@ pub fn run_server(
             Err(err) => return Err(startup_error(ServerSocket::Api, err)),
         };
 
+    // A held lock or live path fails before App::with_paths can spawn shells.
+    // Hold the client socket's startup lock while restore launches saved panes.
+    // Do not bind its listener yet so launchers continue to see the API-first
+    // startup transition and wait until the server can accept clients.
+    let client_socket_startup_lock = reserve_client_socket_startup_lock(&client_socket)
+        .map_err(|error| startup_error(ServerSocket::Client, error))?;
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
 
-    let result = rt.block_on(async {
+    let result = rt.block_on(async move {
         // Create the App (with AppState, event channels, etc.).
         let mut app = app::App::with_paths(
             config,
             paths,
             lease,
             app::AppPolicy::Production,
-            api_rx,
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
-        // Create the headless server.
-        let mut server = match HeadlessServer::new(app, Some(_api_server), stop_requested) {
+        // App restore is the last expensive startup step before the client
+        // listener appears. Platform binding combines stale-socket handling
+        // with acquiring its own lock, so this handoff leaves a short race for
+        // a listener that does not use the startup lock.
+        drop(client_socket_startup_lock);
+
+        let mut server = match HeadlessServer::new(app, api_rx, Some(_api_server), stop_requested) {
             Ok(server) => server,
             Err(err) => return Err(startup_error(ServerSocket::Client, err)),
         };
@@ -194,6 +205,39 @@ pub fn run_server(
     crate::logging::shutdown("server");
     result
 }
+
+fn reserve_client_socket_startup_lock(path: &std::path::Path) -> io::Result<SocketStartupLock> {
+    let startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(path)?;
+    match shepr_platform::ipc::probe(path) {
+        shepr_platform::ipc::Liveness::Live => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            ClientSocketAlreadyLive {
+                path: path.to_path_buf(),
+            },
+        )),
+        shepr_platform::ipc::Liveness::Unreachable(error) => Err(error),
+        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => {
+            Ok(startup_lock)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ClientSocketAlreadyLive {
+    path: PathBuf,
+}
+
+impl std::fmt::Display for ClientSocketAlreadyLive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "client socket is already live at {}",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for ClientSocketAlreadyLive {}
 
 /// Makes every panic reach the server log through `tracing`, then runs the
 /// previous hook (the default one prints to stderr). A client-spawned server
@@ -277,16 +321,26 @@ fn startup_cwd_from_env_value(
     })
 }
 
-/// Classifies a failure binding `socket`. Only the busy refusal from
-/// `shepr_platform::ipc`, which names the path another server holds, means a
-/// server is already running; any other error, including an unrelated
-/// `AddrInUse`, stays an IO failure. The refusal is recorded in the server log
-/// as well: a daemonized server's stderr goes nowhere.
+/// Classifies a socket failure. A platform busy refusal, or a live client
+/// listener found during preflight, means another server owns that path; any
+/// other error, including an unrelated `AddrInUse`, stays an IO failure. The
+/// refusal is recorded in the server log as well: a daemonized server's stderr
+/// goes nowhere.
 fn startup_error(socket: ServerSocket, error: io::Error) -> RunServerError {
-    let Some(busy) = shepr_platform::ipc::SocketBusy::from_io(&error) else {
+    let path = shepr_platform::ipc::SocketBusy::from_io(&error)
+        .map(|busy| busy.path().to_path_buf())
+        .or_else(|| {
+            if socket != ServerSocket::Client {
+                return None;
+            }
+            error
+                .get_ref()?
+                .downcast_ref::<ClientSocketAlreadyLive>()
+                .map(|busy| busy.path.clone())
+        });
+    let Some(path) = path else {
         return RunServerError::Io(error);
     };
-    let path = busy.path().to_path_buf();
     tracing::error!(%socket, path = %path.display(), "another server already listens on the socket");
     RunServerError::AlreadyRunning { socket, path }
 }
@@ -308,6 +362,59 @@ fn lease_error(error: io::Error) -> RunServerError {
 #[cfg(test)]
 mod startup_cwd_tests {
     use super::*;
+
+    #[test]
+    fn client_socket_reservation_refuses_an_existing_server_before_restore() {
+        let scratch = shepr_test_support::ScratchDir::new("client-socket-reservation");
+        let path = scratch.join("client.sock");
+        let (_listener, _lock, _identity) =
+            shepr_platform::ipc::bind_private_socket(&path).expect("hold client socket");
+
+        let error = match reserve_client_socket_startup_lock(&path) {
+            Ok(_) => panic!("a running server owns the client startup lock"),
+            Err(error) => error,
+        };
+
+        let busy = shepr_platform::ipc::SocketBusy::from_io(&error)
+            .expect("reservation preserves the busy socket error");
+        assert_eq!(busy.path(), path.as_path());
+    }
+
+    #[test]
+    fn client_socket_reservation_refuses_a_live_listener_without_its_lock() {
+        let scratch = shepr_test_support::ScratchDir::new("unlocked-client-socket");
+        let path = scratch.join("client.sock");
+        let (listener, lock, _identity) =
+            shepr_platform::ipc::bind_private_socket(&path).expect("hold client socket");
+        drop(lock);
+
+        let error = match reserve_client_socket_startup_lock(&path) {
+            Ok(_) => panic!("a live listener makes the client socket busy"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            startup_error(ServerSocket::Client, error),
+            RunServerError::AlreadyRunning { socket: ServerSocket::Client, path: found }
+                if found == path
+        ));
+        drop(listener);
+    }
+
+    #[test]
+    fn client_socket_reservation_does_not_publish_its_listener_path() {
+        let scratch = shepr_test_support::ScratchDir::new("unpublished-client-socket");
+        let path = scratch.join("client.sock");
+
+        let startup_lock =
+            reserve_client_socket_startup_lock(&path).expect("reserve an unused client socket");
+
+        assert!(
+            !path.try_exists().expect("stat the client socket path"),
+            "the launcher must keep seeing API-first startup"
+        );
+        drop(startup_lock);
+    }
 
     fn resolve(raw: &std::ffi::OsStr) -> Option<PathBuf> {
         startup_cwd_from_env_value(shepr_core::env::resolve_path(
