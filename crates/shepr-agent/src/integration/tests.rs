@@ -1837,7 +1837,7 @@ fn omp_ask_and_approval_events_report_blocked_state() {
 
 /// Runs the bundled Kimi hook with `payload` on stdin and returns the request
 /// line it sent to a stand-in server socket, or `None` when it sent nothing.
-/// The hook needs python3; callers skip when [`python3_available`] is false.
+/// The hook needs python3; callers check [`require_python3`] first.
 fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     fs::create_dir_all(base).expect("test precondition");
     let hook = base.join(KIMI_HOOK_INSTALL_NAME);
@@ -1855,23 +1855,27 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     capture.requests.into_iter().next()
 }
 
-fn python3_available() -> bool {
+/// Fails the test when python3 is missing, rather than letting it pass without
+/// running: the python hook assets are the subject, and python3 is a
+/// development dependency of shepr (the gate's script checks run on it too).
+fn require_python3() {
     // host-program-ok: the shipped python hook assets are the subject
-    shepr_test_support::command_in_scratch("python3", "python3-probe")
+    let present = shepr_test_support::command_in_scratch("python3", "python3-probe")
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success());
+    assert!(
+        present,
+        "python3 is not installed; it is a development dependency of shepr"
+    );
 }
 
 #[test]
 fn kimi_hook_reports_state_only_from_an_object_payload_naming_its_session() {
     let env = IsolatedEnv::new();
-    if !python3_available() {
-        eprintln!("skipping: python3 is not installed");
-        return;
-    }
+    require_python3();
     let base = unique_base(&env);
 
     // A payload that is not a JSON object names no session, and a state report
@@ -1917,10 +1921,7 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
 #[test]
 fn session_hooks_ignore_non_object_payloads_quietly() {
     let env = IsolatedEnv::new();
-    if !python3_available() {
-        eprintln!("skipping: python3 is not installed");
-        return;
-    }
+    require_python3();
     let base = unique_base(&env);
     let hooks: [(&str, &str, &[u8]); 8] = [
         (

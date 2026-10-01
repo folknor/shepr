@@ -142,7 +142,8 @@ allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 
 [profile.release]
-# The gate never builds release, so a release binary should still panic on
+# The gate never builds release, by decision: `brokkr check` has no release
+# sweep. This is what stands in for one, so a release binary still panics on
 # overflow instead of silently wrapping like the default release profile.
 overflow-checks = true
 
