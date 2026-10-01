@@ -17,10 +17,10 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn local(paths: &shepr_config::AppPaths) -> Self {
-        Self::for_socket(crate::socket_path(paths))
+        Self::for_socket(paths.server_address().socket().to_path_buf())
     }
 
-    /// A client for the API socket at `socket_path`, resolved by the caller
+    /// A JSON API client for the server socket at `socket_path`, resolved by the caller
     /// at the process edge.
     pub fn for_socket(socket_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -140,11 +140,13 @@ fn runtime_status(
             build_id,
             boot_id,
             stopping,
+            starting,
         } => Ok(crate::RuntimeStatus {
             version: Some(version),
             build_id,
             boot_id,
             stopping,
+            starting,
         }),
         result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
     }

@@ -37,10 +37,8 @@ pub struct PaneSpawnHandles {
     /// Counts this app's pane session teardowns, so its exit waits on them
     /// and on no other app's.
     pub pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
-    /// Resolved API socket passed into every pane launched by this app.
-    pub api_socket_path: PathBuf,
-    /// Resolved client socket passed into every pane launched by this app.
-    pub client_socket_path: PathBuf,
+    /// Resolved server socket passed into every pane launched by this app.
+    pub socket_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,12 +286,8 @@ impl Workspace {
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
-        let launch_env = PaneLaunchEnv::from_extra_with_socket_paths(
-            Vec::new(),
-            spawn.api_socket_path.clone(),
-            spawn.client_socket_path.clone(),
-        )
-        .with_pane_id(PublicPaneId::new(&id, 1));
+        let launch_env = PaneLaunchEnv::from_extra(Vec::new(), spawn.socket_path.clone())
+            .with_pane_id(PublicPaneId::new(&id, 1));
         let (layout, root_pane) = TileLayout::new();
         let runtime = PaneRuntime::spawn(
             root_pane,
@@ -393,12 +387,8 @@ impl Workspace {
         pane_number: usize,
         spawn: &PaneSpawnHandles,
     ) -> PaneLaunchEnv {
-        PaneLaunchEnv::from_extra_with_socket_paths(
-            Vec::new(),
-            spawn.api_socket_path.clone(),
-            spawn.client_socket_path.clone(),
-        )
-        .with_pane_id(PublicPaneId::new(&self.id, pane_number))
+        PaneLaunchEnv::from_extra(Vec::new(), spawn.socket_path.clone())
+            .with_pane_id(PublicPaneId::new(&self.id, pane_number))
     }
 
     pub fn next_public_pane_number(&self) -> usize {

@@ -4,8 +4,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::server::headless::{RunServerError, ServerSocket, run_server};
-use crate::server::socket_paths::client_socket_path;
+use crate::server::headless::{RunServerError, run_server};
 use crate::test_support::{
     AppPathsFixture as _, IsolatedEnv, ScratchDir, ValidatedServerConfigFixture as _,
 };
@@ -18,7 +17,7 @@ const ENTRY_POINT: &str =
 
 #[test]
 fn run_server_refuses_a_busy_socket_or_data_dir_lease_as_already_running() {
-    for held in ["api", "client", "data_dir"] {
+    for held in ["socket", "data_dir"] {
         let output = shepr_test_support::command_in_scratch(
             std::env::current_exe().expect("test executable"),
             "already-running",
@@ -54,12 +53,11 @@ fn already_running_subprocess_entry_point() {
     let Some(marker) = std::env::var_os(CHILD_MARKER) else {
         return;
     };
-    let busy = match marker.to_str() {
-        Some("api") => ServerSocket::Api,
-        Some("client") => ServerSocket::Client,
+    match marker.to_str() {
+        Some("socket") => {}
         Some("data_dir") => return refuse_a_held_data_dir_lease(),
         other => panic!("unknown {CHILD_MARKER} value {other:?}"),
-    };
+    }
 
     let _env = IsolatedEnv::new();
     let scratch = ScratchDir::new("already-running-server");
@@ -68,40 +66,32 @@ fn already_running_subprocess_entry_point() {
         shepr_config::ServerConfig::default(),
         paths.clone(),
     );
-    let api_socket = shepr_api::socket_path(&paths);
-    let client_socket = client_socket_path(&paths);
-    let held_path = match busy {
-        ServerSocket::Api => &api_socket,
-        ServerSocket::Client => &client_socket,
-    };
+    let socket = paths.server_address().socket();
     // What a running server holds: the startup lock and a live listener.
-    let _held = shepr_platform::ipc::bind_private_socket(held_path).expect("hold the socket");
+    let _held = shepr_platform::ipc::bind_private_socket(socket).expect("hold the socket");
 
     let ready = AtomicBool::new(false);
     let error = run_server(&config, &paths, |_| ready.store(true, Ordering::Relaxed))
         .expect_err("a server holding the socket refuses the second");
 
     match error {
-        RunServerError::AlreadyRunning { socket, path } => {
-            assert_eq!(socket, busy);
-            assert_eq!(&path, held_path);
+        RunServerError::AlreadyRunning { path } => {
+            assert_eq!(path, socket);
         }
-        other => panic!("expected AlreadyRunning for the {busy}, got {other:?}"),
+        other => panic!("expected AlreadyRunning, got {other:?}"),
     }
     assert!(
         !ready.load(Ordering::Relaxed),
         "a refused server never reports ready"
     );
-    if busy == ServerSocket::Client {
-        // The API socket bound before the refusal is released with it.
-        assert!(
-            !api_socket.try_exists().expect("stat the api socket"),
-            "the refused server left its api socket behind"
-        );
-    }
+    // The lease the refused server took before its bind went with it.
+    assert!(
+        shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).is_ok(),
+        "the refused server kept the data-directory lease"
+    );
 }
 
-/// The data-directory lease is taken before either socket, so a server that
+/// The data-directory lease is taken before the socket, so a server that
 /// finds it held refuses without binding anything.
 fn refuse_a_held_data_dir_lease() {
     let _env = IsolatedEnv::new();
@@ -129,11 +119,10 @@ fn refuse_a_held_data_dir_lease() {
         !ready.load(Ordering::Relaxed),
         "a refused server never reports ready"
     );
-    for socket in [shepr_api::socket_path(&paths), client_socket_path(&paths)] {
-        assert!(
-            !socket.try_exists().expect("stat the socket"),
-            "the refused server bound {}",
-            socket.display()
-        );
-    }
+    let socket = paths.server_address().socket();
+    assert!(
+        !socket.try_exists().expect("stat the socket"),
+        "the refused server bound {}",
+        socket.display()
+    );
 }

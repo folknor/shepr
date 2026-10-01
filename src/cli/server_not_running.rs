@@ -3,13 +3,13 @@ use std::path::Path;
 use shepr_api::schema::{ErrorBody, ErrorResponse};
 
 /// Builds the friendly `server_not_running` ErrorResponse shown when no
-/// server is listening on the resolved API socket.
+/// server is listening on the resolved server socket.
 pub(super) fn response(
     request_id: &str,
     socket_path: &Path,
     paths: &shepr_config::AppPaths,
 ) -> ErrorResponse {
-    // The local API client's socket is `paths.server_address().api_socket()`,
+    // The local API client's socket is `paths.server_address().socket()`,
     // so this command names the server that was not found, including the
     // current profile's executable and any socket override.
     let attach_command = super::target::attach_command(paths);

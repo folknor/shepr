@@ -67,7 +67,7 @@ fn idle_server_stop_subprocess_entry_point() {
         let result = run_server(&config, &paths, |ready| {
             // The stop goes out once the server is up and has nothing else
             // to do, so only the stop request itself can wake its loop.
-            let api_socket = ready.api_socket.clone();
+            let socket = ready.socket.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(200));
                 let request = shepr_api::schema::Request {
@@ -76,7 +76,7 @@ fn idle_server_stop_subprocess_entry_point() {
                         shepr_api::schema::ServerStopParams::default(),
                     ),
                 };
-                shepr_api::client::ApiClient::for_socket(api_socket)
+                shepr_api::client::ApiClient::for_socket(socket)
                     .request(&request)
                     .expect("the server accepts the stop");
             });

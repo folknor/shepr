@@ -18,6 +18,7 @@ fn status_of_build(build_id: &str) -> RuntimeStatus {
         build_id: build_id.to_owned(),
         boot_id: "4242-1700000000".to_owned(),
         stopping: false,
+        starting: false,
     }
 }
 
@@ -42,25 +43,33 @@ fn serve_status_once(
     listener: UnixListener,
     build_id: &'static str,
 ) -> std::thread::JoinHandle<()> {
-    serve_pong_once(listener, build_id, false)
+    serve_pong_once(listener, build_id, false, false)
 }
 
 /// Answers one status request the way a server of `build_id` would, saying
-/// whether it is stopping.
+/// whether it is stopping or starting. Bare connects that send nothing are
+/// liveness probes, not requests, and are skipped.
 fn serve_pong_once(
     listener: UnixListener,
     build_id: &'static str,
     stopping: bool,
+    starting: bool,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("test precondition");
-        let mut request = String::new();
-        BufReader::new(stream.try_clone().expect("test precondition"))
-            .read_line(&mut request)
-            .expect("test precondition");
-        assert!(request.contains("ping"));
+        let mut stream = loop {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut request)
+                .expect("request");
+            if request.is_empty() {
+                continue;
+            }
+            assert!(request.contains("ping"));
+            break stream;
+        };
         let body = format!(
-            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\",\"stopping\":{stopping}}}}}\n"
+            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\",\"stopping\":{stopping},\"starting\":{starting}}}}}\n"
         );
         stream
             .write_all(body.as_bytes())
@@ -204,8 +213,7 @@ fn assert_group_dies(group: u32) {
 #[test]
 fn probing_a_missing_socket_finds_no_server() {
     let dir = ScratchDir::new("probe-missing");
-    let probed = probe_server_at(&dir.join("s.sock"), &dir.join("a.sock"))
-        .expect("an absent socket is not an error");
+    let probed = probe_server_at(&dir.join("s.sock")).expect("an absent socket is not an error");
     assert!(matches!(probed, Probed::NoServer));
 }
 
@@ -214,8 +222,7 @@ fn probing_a_stale_socket_finds_no_server() {
     let dir = ScratchDir::new("probe-stale");
     let path = dir.join("s.sock");
     drop(UnixListener::bind(&path).expect("test precondition"));
-    let probed =
-        probe_server_at(&path, &dir.join("a.sock")).expect("a stale socket is not an error");
+    let probed = probe_server_at(&path).expect("a stale socket is not an error");
     assert!(matches!(probed, Probed::NoServer));
 }
 
@@ -231,10 +238,9 @@ fn probing_an_inaccessible_socket_is_an_error_not_absence() {
     std::fs::set_permissions(&parent, permissions).expect("restrict directory permissions");
 
     let path = parent.join("s.sock");
-    let api = dir.join("a.sock");
     let probe = std::thread::spawn(move || {
         drop_dac_capabilities_on_this_thread();
-        probe_server_at(&path, &api)
+        probe_server_at(&path)
     })
     .join();
 
@@ -255,7 +261,7 @@ fn a_regular_file_at_the_socket_path_is_an_error_not_absence() {
     let dir = ScratchDir::new("probe-regular-file");
     let path = dir.join("s.sock");
     std::fs::write(&path, b"not a socket").expect("test precondition");
-    let error = match probe_server_at(&path, &dir.join("a.sock")) {
+    let error = match probe_server_at(&path) {
         Ok(_) => panic!("a non-socket must not read as absence"),
         Err(error) => error,
     };
@@ -266,107 +272,100 @@ fn a_regular_file_at_the_socket_path_is_an_error_not_absence() {
 fn a_listener_without_a_status_answer_is_unresponsive() {
     let dir = ScratchDir::new("probe-unresponsive");
     let path = dir.join("s.sock");
-    let api = dir.join("a.sock");
     let _listener = UnixListener::bind(&path).expect("test precondition");
-    let _api_listener = UnixListener::bind(&api).expect("test precondition");
-    let probed = probe_server_at(&path, &api).expect("a live socket probes");
+    let probed = probe_server_at(&path).expect("a live socket probes");
     assert!(matches!(probed, Probed::Unresponsive));
 }
 
 #[test]
-fn a_client_socket_left_after_api_release_is_still_shutting_down() {
-    let dir = ScratchDir::new("probe-api-released");
-    let client = dir.join("client.sock");
-    let api = dir.join("api.sock");
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
-
-    let probed = probe_server_at(&client, &api).expect("the released API socket is not an error");
-
-    assert!(matches!(probed, Probed::Releasing));
-}
-
-#[test]
-fn an_api_socket_live_before_the_client_socket_is_a_startup_transition() {
-    let dir = ScratchDir::new("probe-api-first");
-    let client = dir.join("client.sock");
-    let api = dir.join("api.sock");
-    let _api_listener = UnixListener::bind(&api).expect("test precondition");
-
-    let probed = probe_server_at(&client, &api).expect("the live API socket is a transition");
-
-    assert!(matches!(probed, Probed::Starting));
-}
-
-#[test]
-fn launch_waits_for_the_client_socket_after_api_release() {
-    let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, _api) = runtime_sockets(&paths);
-    let client_listener = UnixListener::bind(&client).expect("test precondition");
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-    let wait_paths = paths.clone();
-    let waiter = std::thread::spawn(move || {
-        let timeout = Duration::from_secs(1);
-        let result =
-            wait_for_server_sockets_to_settle_until(&wait_paths, Instant::now() + timeout, timeout);
-        finished_tx.send(result).expect("send the wait result");
-    });
-
-    assert!(
-        finished_rx.recv_timeout(Duration::from_millis(75)).is_err(),
-        "a live client socket must keep launch waiting after API release"
+fn a_socket_answering_starting_is_a_startup_transition() {
+    let dir = ScratchDir::new("probe-starting");
+    let socket = dir.join("server.sock");
+    let server = serve_pong_once(
+        UnixListener::bind(&socket).expect("bind"),
+        shepr_protocol::BUILD_ID,
+        false,
+        true,
     );
-    drop(client_listener);
-    finished_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("the transition completes when the client socket disappears")
-        .expect("shutdown sockets cleared");
-    waiter.join().expect("test waiter thread");
+    assert!(matches!(
+        probe_server_at(&socket).expect("probe"),
+        Probed::Starting
+    ));
+    server.join().expect("server");
+}
+
+/// Answers starting until the test releases it, skipping liveness connects.
+fn serve_starting_until_released(
+    path: &Path,
+) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let listener = UnixListener::bind(path).expect("bind starting socket");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let (release, stop) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        while stop.try_recv().is_err() {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .expect("read bound");
+                    let mut request = String::new();
+                    BufReader::new(stream.try_clone().expect("clone"))
+                        .read_line(&mut request)
+                        .expect("request");
+                    if request.is_empty() {
+                        continue;
+                    }
+                    let body = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":shepr_protocol::BUILD_ID,"boot_id":"test","starting":true}});
+                    writeln!(stream, "{body}").expect("pong");
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("accept: {error}"),
+            }
+        }
+    });
+    (release, thread)
 }
 
 #[test]
 fn repeated_socket_transitions_share_one_wait_deadline() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, api) = runtime_sockets(&paths);
-    let client_listener = UnixListener::bind(&client).expect("bind the first transition socket");
+    let paths = shepr_config::AppPaths::resolve().expect("paths");
+    let socket = runtime_socket(&paths);
+    let (release, server) = serve_starting_until_released(&socket);
     let timeout = Duration::from_millis(500);
     let deadline = Instant::now() + timeout;
-    let release_client = std::thread::spawn(move || {
+    let releaser = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(350));
-        drop(client_listener);
+        release.send(()).expect("release");
+        server.join().expect("server");
     });
-
-    wait_for_server_sockets_to_settle_until(&paths, deadline, timeout)
-        .expect("the first transition ends when both sockets are absent");
-    release_client
-        .join()
-        .expect("release the first transition socket");
-
-    let api_listener = UnixListener::bind(&api).expect("bind a new starting transition");
+    wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
+        .expect("first transition ends");
+    releaser.join().expect("release");
+    std::fs::remove_file(&socket).expect("remove stale socket");
+    let (release, server) = serve_starting_until_released(&socket);
     let second_wait = Instant::now();
-    let error = wait_for_server_sockets_to_settle_until(&paths, deadline, timeout)
-        .expect_err("the second transition must use the first transition's deadline");
+    let error = wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
+        .expect_err("shared deadline");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(
-        second_wait.elapsed() < Duration::from_millis(225),
-        "the second wait got a fresh timeout: {:?}",
-        second_wait.elapsed()
-    );
-    drop(api_listener);
+    release.send(()).expect("release");
+    server.join().expect("server");
+    assert!(second_wait.elapsed() < Duration::from_millis(225));
 }
 
 #[test]
 fn a_live_server_is_probed_for_its_status() {
     let dir = ScratchDir::new("probe-running");
-    let client = dir.join("s.sock");
-    let api = dir.join("a.sock");
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = dir.join("server.sock");
     let server = serve_status_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         shepr_protocol::BUILD_ID,
     );
-    let probed = probe_server_at(&client, &api).expect("a live server probes");
+    let probed = probe_server_at(&socket).expect("a live server probes");
     server.join().expect("fake server thread");
     let Probed::Running(status) = probed else {
         panic!("a live server that answers is running");
@@ -377,18 +376,17 @@ fn a_live_server_is_probed_for_its_status() {
 
 #[test]
 fn a_server_that_answers_it_is_stopping_is_not_running() {
-    // Its sockets stay up through its final save, but its client socket
-    // accepts nobody: attaching would hang on the handshake.
+    // Its socket stays up through its final save, but it accepts no TUI
+    // connection, so it is not a server to attach to.
     let dir = ScratchDir::new("probe-stopping");
-    let client = dir.join("s.sock");
-    let api = dir.join("a.sock");
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = dir.join("server.sock");
     let server = serve_pong_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         shepr_protocol::BUILD_ID,
         true,
+        false,
     );
-    let probed = probe_server_at(&client, &api).expect("a stopping server probes");
+    let probed = probe_server_at(&socket).expect("a stopping server probes");
     server.join().expect("fake server thread");
     assert!(matches!(probed, Probed::Stopping));
 }
@@ -553,10 +551,9 @@ fn the_running_server_status_never_starts_a_server() {
     );
     assert_nothing_was_launched(&paths);
 
-    let (client, api) = runtime_sockets(&paths);
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = runtime_socket(&paths);
     let server = serve_status_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
     );
     let status = running_server_status(&paths)
@@ -570,12 +567,12 @@ fn the_running_server_status_never_starts_a_server() {
 fn a_stopping_server_is_offered_no_restart() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, api) = runtime_sockets(&paths);
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = runtime_socket(&paths);
     let server = serve_pong_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
         true,
+        false,
     );
     let status = running_server_status(&paths).expect("a stopping server answers");
     server.join().expect("fake server thread");
@@ -717,10 +714,10 @@ fn launch_after_a_refused_first_daemon(
 
 #[test]
 fn a_daemon_refused_by_a_leaving_holder_is_started_again_once_nothing_listens() {
-    let dir = ScratchDir::new("launch-lease-outlives-sockets");
+    let dir = ScratchDir::new("launch-lease-outlives-socket");
     let (result, spawned, group) =
         launch_after_a_refused_first_daemon(&dir, Duration::from_secs(10), |spawned| {
-            // The holder's sockets are already gone; the second daemon, which
+            // The holder's socket is already gone; the second daemon, which
             // finds the lease free, is what answers.
             Ok(if spawned < 2 {
                 Probed::NoServer
@@ -745,7 +742,7 @@ fn a_stopping_occupant_is_outlasted_rather_than_attached_to() {
         launch_after_a_refused_first_daemon(&dir, Duration::from_secs(10), |spawned| {
             calls.set(calls.get() + 1);
             // The occupant answers that it is stopping while its final save
-            // runs, then its sockets go and the second daemon answers.
+            // runs, then its socket goes and the second daemon answers.
             Ok(if calls.get() <= 3 {
                 Probed::Stopping
             } else if spawned < 2 {
@@ -960,14 +957,10 @@ fn a_symlinked_boot_log_refuses_the_launch_before_spawning() {
 // Rendezvous
 // ---------------------------------------------------------------------------
 
-/// Client and API sockets of the default runtime address, with the runtime
-/// directory created.
-fn runtime_sockets(paths: &shepr_config::AppPaths) -> (PathBuf, PathBuf) {
-    std::fs::create_dir_all(paths.runtime_dir()).expect("create the runtime directory");
-    (
-        paths.server_address().client_socket().to_path_buf(),
-        shepr_api::socket_path(paths),
-    )
+/// The server socket with its runtime directory created.
+fn runtime_socket(paths: &shepr_config::AppPaths) -> PathBuf {
+    std::fs::create_dir_all(paths.runtime_dir()).expect("create runtime");
+    paths.server_address().socket().to_path_buf()
 }
 
 fn assert_nothing_was_launched(paths: &shepr_config::AppPaths) {
@@ -1003,9 +996,8 @@ fn a_socket_override_never_starts_a_server() {
 fn a_listener_that_does_not_answer_is_never_replaced() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, api) = runtime_sockets(&paths);
-    let _listener = UnixListener::bind(&client).expect("test precondition");
-    let _api_listener = UnixListener::bind(&api).expect("test precondition");
+    let socket = runtime_socket(&paths);
+    let _listener = UnixListener::bind(&socket).expect("test precondition");
 
     let error = ensure_running(
         &paths,
@@ -1021,10 +1013,9 @@ fn a_listener_that_does_not_answer_is_never_replaced() {
 fn a_running_server_of_this_build_is_used_without_a_launch() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, api) = runtime_sockets(&paths);
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = runtime_socket(&paths);
     let server = serve_status_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         shepr_protocol::BUILD_ID,
     );
 
@@ -1038,10 +1029,9 @@ fn a_running_server_of_this_build_is_used_without_a_launch() {
 fn a_running_server_of_another_build_is_refused_before_attaching() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, api) = runtime_sockets(&paths);
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = runtime_socket(&paths);
     let server = serve_status_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
     );
 
@@ -1056,15 +1046,13 @@ fn a_running_server_of_another_build_is_refused_before_attaching() {
 #[test]
 fn a_mismatched_server_at_a_socket_override_is_not_promised_a_restart() {
     let env = IsolatedEnv::new();
-    let api = env.path().join("custom-api.sock");
-    env.set(EnvVar::SheprSocketPath, &api);
+    let socket = env.path().join("custom.sock");
+    env.set(EnvVar::SheprSocketPath, &socket);
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let client = paths.server_address().client_socket().to_path_buf();
     let server = serve_status_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
     );
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
 
     let error = ensure_running(&paths, Duration::from_secs(1), BuildCheck::BeforeAttach)
         .expect_err("a different build remains incompatible at an override");
@@ -1083,22 +1071,22 @@ fn a_mismatched_server_at_a_socket_override_is_not_promised_a_restart() {
 }
 
 #[test]
-fn the_bridge_leaves_a_running_mismatch_to_the_handshake() {
+fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-    let (client, api) = runtime_sockets(&paths);
-    let _client_listener = UnixListener::bind(&client).expect("test precondition");
+    let socket = runtime_socket(&paths);
     let server = serve_status_once(
-        UnixListener::bind(&api).expect("test precondition"),
+        UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
     );
 
-    ensure_running(
+    let status = ensure_running(
         &paths,
         Duration::from_secs(1),
         BuildCheck::AtClientHandshake,
     )
     .expect("the typed handshake reports the mismatch, not the launcher");
+    assert_eq!(status.build_id, other_build_id());
     server.join().expect("fake server thread");
     assert_nothing_was_launched(&paths);
 }
@@ -1156,4 +1144,31 @@ fn server_daemon_runs_in_home_not_the_launch_directory() {
     );
     assert_eq!(command.get_current_dir(), Some(working_dir.as_path()));
     assert_ne!(command.get_current_dir(), Some(launch_dir.as_path()));
+}
+
+#[test]
+fn a_vanished_server_reads_as_gone_not_unresponsive() {
+    let scratch = ScratchDir::new("remote-vanished");
+    let socket = scratch.join("server.sock");
+    let listener = UnixListener::bind(&socket).expect("bind");
+    let path = socket.clone();
+    let server = std::thread::spawn(move || {
+        loop {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("request");
+            if line.is_empty() {
+                continue;
+            }
+            drop(listener);
+            std::fs::remove_file(path).expect("remove socket");
+            break;
+        }
+    });
+    assert!(matches!(
+        probe_server_at(&socket).expect("probe"),
+        Probed::NoServer
+    ));
+    server.join().expect("server");
 }

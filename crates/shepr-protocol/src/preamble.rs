@@ -14,12 +14,15 @@
 //! The layout never depends on the codec, so any two builds can read each
 //! other's preamble and report exactly which builds met.
 //!
-//! The server writes its preamble as soon as it accepts a connection and
-//! then reads the client's; the client writes its preamble and hello, then
-//! reads the server's. Each side therefore always receives the other's
-//! identity, even when the other side is about to hang up on a mismatch.
+//! The client writes its preamble and hello together before reading
+//! anything, so the server reads first: a socket shared with line-based JSON
+//! peers must not speak before it knows who connected. The server then
+//! answers a recognisable preamble of any build with its own, including when
+//! it refuses the connection, so each side learns the other's identity. On
+//! another build's preamble the server writes its own and closes without
+//! decoding the hello, whose layout is that build's.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 /// Marks the start of a shepr client-protocol connection.
 pub const PREAMBLE_MAGIC: [u8; 8] = *b"SHEPRBID";
@@ -72,10 +75,11 @@ impl std::error::Error for PreambleError {}
 
 /// This build's preamble.
 pub fn local_preamble() -> [u8; PREAMBLE_LEN] {
-    encode(super::limits::BUILD_ID)
+    preamble_for(super::limits::BUILD_ID)
 }
 
-fn encode(build_id: &str) -> [u8; PREAMBLE_LEN] {
+/// Encodes the given build identity in the fixed-size raw preamble.
+pub fn preamble_for(build_id: &str) -> [u8; PREAMBLE_LEN] {
     let mut preamble = [0u8; PREAMBLE_LEN];
     let (magic, id) = preamble.split_at_mut(PREAMBLE_MAGIC.len());
     magic.copy_from_slice(&PREAMBLE_MAGIC);
@@ -86,12 +90,6 @@ fn encode(build_id: &str) -> [u8; PREAMBLE_LEN] {
         *slot = byte;
     }
     preamble
-}
-
-/// Writes this build's preamble and flushes.
-pub fn write_preamble<W: Write>(writer: &mut W) -> io::Result<()> {
-    writer.write_all(&local_preamble())?;
-    writer.flush()
 }
 
 /// Reads the peer's preamble and accepts it only if it is this exact build.
@@ -119,7 +117,7 @@ fn check_against(received: &[u8; PREAMBLE_LEN], ours: &str) -> Result<(), Preamb
     if magic != PREAMBLE_MAGIC {
         return Err(PreambleError::NotShepr);
     }
-    if *received == encode(ours) && super::is_identifiable_build_id(ours) {
+    if *received == preamble_for(ours) && super::is_identifiable_build_id(ours) {
         return Ok(());
     }
     let build_id = id
@@ -141,16 +139,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preamble_for_names_the_given_build() {
+        let bytes = preamble_for("0123456789abcdef");
+        assert_eq!(&bytes[..PREAMBLE_MAGIC.len()], &PREAMBLE_MAGIC);
+        assert_eq!(&bytes[PREAMBLE_MAGIC.len()..], b"0123456789abcdef");
+    }
+
+    #[test]
     fn own_preamble_is_accepted() {
-        let mut bytes = Vec::new();
-        write_preamble(&mut bytes).expect("test precondition");
+        let bytes = local_preamble();
         assert_eq!(bytes.len(), PREAMBLE_LEN);
         read_preamble(&mut bytes.as_slice()).expect("same build");
     }
 
     #[test]
     fn different_build_is_named() {
-        let other = encode("00000000deadbeef");
+        let other = preamble_for("00000000deadbeef");
         match read_preamble(&mut other.as_slice()) {
             Err(PreambleError::DifferentBuild(peer)) => {
                 assert_eq!(peer.build_id, "00000000deadbeef");
@@ -168,7 +172,7 @@ mod tests {
 
     #[test]
     fn different_build_id_is_a_mismatch() {
-        let other = encode("ffffffffffffffff");
+        let other = preamble_for("ffffffffffffffff");
         if super::super::limits::BUILD_ID == "ffffffffffffffff" {
             return;
         }
@@ -183,14 +187,14 @@ mod tests {
     #[test]
     fn an_unidentifiable_build_matches_no_peer_not_even_itself() {
         let unidentifiable = "unidentifiable--";
-        let received = encode(unidentifiable);
+        let received = preamble_for(unidentifiable);
         match check_against(&received, unidentifiable) {
             Err(PreambleError::DifferentBuild(peer)) => {
                 assert_eq!(peer.build_id, unidentifiable);
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
-        assert!(check_against(&encode("0123456789abcdef"), "0123456789abcdef").is_ok());
+        assert!(check_against(&preamble_for("0123456789abcdef"), "0123456789abcdef").is_ok());
     }
 
     #[test]

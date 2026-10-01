@@ -1,4 +1,4 @@
-//! Typed endpoint operations a client shell sends over the client socket, and
+//! Typed endpoint operations a client shell sends over the server socket, and
 //! the replies it gets back.
 //!
 //! This is the client shell's whole vocabulary: the server dispatches an

@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 
-// Stopping a server only connects to sockets (the API socket, to stop or
-// probe a server); it never binds one. Binding goes through
+// Stopping a server only connects to its socket (to stop or probe it); it
+// never binds one. Binding goes through
 // `ipc::bind_private_local_listener` in the server and API, and the peer check
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
@@ -40,9 +40,9 @@ pub enum ServerStopError {
     TimedOut {
         label: String,
         timeout: Duration,
-        reachable: Vec<PathBuf>,
+        socket: PathBuf,
     },
-    /// The server no longer answers, or its sockets disappeared, but a process
+    /// The server no longer answers, or its socket disappeared, but a process
     /// still holds the data directory lease.
     LeaseHeld {
         label: String,
@@ -123,16 +123,12 @@ impl std::fmt::Display for ServerStopError {
             Self::TimedOut {
                 label,
                 timeout,
-                reachable,
+                socket,
             } => write!(
                 f,
-                "{label} did not stop within {}ms; sockets are still reachable at {}",
+                "{label} did not stop within {}ms; the socket at {} is still reachable",
                 timeout.as_millis(),
-                reachable
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                socket.display()
             ),
             Self::LeaseHeld {
                 label,
@@ -140,7 +136,7 @@ impl std::fmt::Display for ServerStopError {
                 path,
             } => write!(
                 f,
-                "the data directory lease at {} was still held {}ms after {label} stopped answering or its sockets disappeared; another process may still be using it",
+                "the data directory lease at {} was still held {}ms after {label} stopped answering or its socket disappeared; another process may still be using it",
                 path.display(),
                 timeout.as_millis()
             ),
@@ -191,10 +187,6 @@ impl From<ServerStopError> for String {
     }
 }
 
-pub fn active_api_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
-    paths.server_address().api_socket().to_path_buf()
-}
-
 /// Stops the server the resolved address names, whatever its build. This never
 /// launches a server: with none listening it fails with
 /// [`ServerStopError::NotRunning`].
@@ -203,7 +195,7 @@ pub fn active_api_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
 /// stop is conditional: the server checks the identity itself, in the same
 /// request that stops it, and refuses with [`ServerStopError::BootMismatch`]
 /// when it is a different boot. After accepting the request, this function
-/// waits for that boot to stop answering, for both server sockets to stop
+/// waits for that boot to stop answering, for the server socket to stop
 /// accepting connections, and for the data-directory lease to be released. It
 /// reports another boot that answers during shutdown as
 /// [`ServerStopError::OccupantChanged`]. Nothing here reads the status before
@@ -228,11 +220,9 @@ fn stop_active_server_with_timeout(
     timeout: Duration,
 ) -> Result<(), ServerStopError> {
     let address = paths.server_address();
-    let socket_path = address.api_socket().to_path_buf();
-    let client_socket_path = address.client_socket().to_path_buf();
+    let socket_path = address.socket().to_path_buf();
     stop_socket_with_timeout(
         &socket_path,
-        &[socket_path.clone(), client_socket_path],
         Some((&paths.data_dir_lease_path(), STOP_LEASE_WAIT_TIMEOUT)),
         timeout,
         "server",
@@ -241,13 +231,12 @@ fn stop_active_server_with_timeout(
 }
 
 /// Stops the server at `socket_path` and waits for the named boot to stop
-/// answering and its sockets to stop accepting connections when the request is
-/// conditional, or for `stopped_socket_paths` to disappear otherwise. With
+/// answering and its socket to stop accepting connections when the request is
+/// conditional, or for the socket to disappear otherwise. With
 /// `lease` (the lease file and how long to wait for it), it also waits for the
 /// data-directory lease to become available.
 fn stop_socket_with_timeout(
     socket_path: &Path,
-    stopped_socket_paths: &[PathBuf],
     lease: Option<(&Path, Duration)>,
     timeout: Duration,
     label: &str,
@@ -271,23 +260,16 @@ fn stop_socket_with_timeout(
             BootStopWait::TimedOut => false,
         }
     } else {
-        wait_until_stopped_until(stopped_socket_paths, deadline).map_err(|source| {
-            ServerStopError::Io {
-                context: format!("could not check whether {label} stopped"),
-                source,
-            }
+        wait_until_stopped_until(socket_path, deadline).map_err(|source| ServerStopError::Io {
+            context: format!("could not check whether {label} stopped"),
+            source,
         })?
     };
     if !stopped {
-        let reachable =
-            reachable_socket_paths(stopped_socket_paths).map_err(|source| ServerStopError::Io {
-                context: format!("could not check whether {label} stopped"),
-                source,
-            })?;
         return Err(ServerStopError::TimedOut {
             label: label.into(),
             timeout,
-            reachable,
+            socket: socket_path.to_path_buf(),
         });
     }
     let mut socket_deadline = deadline;
@@ -330,13 +312,12 @@ fn stop_socket_with_timeout(
                 path: lease_path.into(),
             });
         }
-        // Lease release may consume its separate budget before the final
-        // endpoint disappears, so retain the later deadline for that wait.
+        // Lease release may consume its separate budget before the socket
+        // disappears, so retain the later deadline for that wait.
         socket_deadline = socket_deadline.max(lease_deadline);
     }
     if let Some(expected_boot_id) = expected_boot_id {
-        match wait_until_sockets_stopped_or_new_boot(
-            stopped_socket_paths,
+        match wait_until_socket_stopped_or_new_boot(
             socket_path,
             expected_boot_id,
             socket_deadline,
@@ -351,16 +332,10 @@ fn stop_socket_with_timeout(
                 });
             }
             BootStopWait::TimedOut => {
-                let reachable = reachable_socket_paths(stopped_socket_paths).map_err(|source| {
-                    ServerStopError::Io {
-                        context: format!("could not check whether {label} stopped"),
-                        source,
-                    }
-                })?;
                 return Err(ServerStopError::TimedOut {
                     label: label.into(),
                     timeout,
-                    reachable,
+                    socket: socket_path.to_path_buf(),
                 });
             }
         }
@@ -386,17 +361,10 @@ fn stop_socket_with_timeout(
                         });
                     }
                     BootStopWait::TimedOut => {
-                        let reachable =
-                            reachable_socket_paths(stopped_socket_paths).map_err(|source| {
-                                ServerStopError::Io {
-                                    context: format!("could not check whether {label} stopped"),
-                                    source,
-                                }
-                            })?;
                         return Err(ServerStopError::TimedOut {
                             label: label.into(),
                             timeout,
-                            reachable,
+                            socket: socket_path.to_path_buf(),
                         });
                     }
                 }
@@ -427,9 +395,9 @@ fn wait_for_lease_release(lease_path: &Path, deadline: Instant) -> io::Result<bo
 }
 
 // Flock has no nonintrusive ownership query. This brief exclusive probe can
-// race a server start before its sockets bind; the client launcher retries a
+// race a server start before its socket bind; the client launcher retries a
 // daemon that loses the probe. Keeping it lets a stop detect a successor that
-// acquired the lease before either endpoint appeared.
+// acquired the lease before the socket appeared.
 fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
     match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
         Ok(_free) => Ok(true),
@@ -438,9 +406,8 @@ fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
     }
 }
 
-// Boot identity guards an occupant, not an endpoint lifetime. An API boot
-// that vanished can leave the client endpoint bound, or be replaced while
-// the lease wait runs. Completion therefore also uses ServerLifetime presence.
+// The boot probe says which process answers; the socket check says whether
+// anything listens. Both must hold for a conditional stop to be complete.
 enum BootProbe {
     Gone,
     Expected,
@@ -502,35 +469,30 @@ fn wait_until_boot_stops(
     }
 }
 
-/// A conditional stop is complete for launchers only when the socket pair is
-/// gone too. Under the shared lifetime rule, the server retires its lease
-/// and API endpoint before its client endpoint, so the API boot can stop
-/// answering while the launcher's first
-/// socket is still live. Keep checking the API identity during that interval
-/// so a replacement is reported promptly.
-fn wait_until_sockets_stopped_or_new_boot(
-    socket_paths: &[PathBuf],
-    api_socket_path: &Path,
+/// Waits for the socket to go while checking that a successor has not taken
+/// the address during lease retirement or socket removal.
+fn wait_until_socket_stopped_or_new_boot(
+    socket_path: &Path,
     expected_boot_id: &str,
     deadline: Instant,
     label: &str,
 ) -> Result<BootStopWait, ServerStopError> {
     loop {
-        match probe_boot(api_socket_path, expected_boot_id, label, deadline)? {
+        match probe_boot(socket_path, expected_boot_id, label, deadline)? {
             BootProbe::Gone | BootProbe::Expected => {}
             BootProbe::Changed(actual_boot_id) => {
                 return Ok(BootStopWait::Changed(actual_boot_id));
             }
         }
-        let sockets_stopped =
-            server_sockets_are_stopped(socket_paths).map_err(|source| ServerStopError::Io {
+        let socket_stopped =
+            server_socket_is_stopped(socket_path).map_err(|source| ServerStopError::Io {
                 context: format!("could not check whether {label} stopped"),
                 source,
             })?;
-        if sockets_stopped {
+        if socket_stopped {
             return Ok(BootStopWait::Gone);
         }
-        // clock-io-ok: polls server sockets while the named process exits.
+        // clock-io-ok: polls the server socket while the named process exits.
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Ok(BootStopWait::TimedOut);
@@ -650,7 +612,7 @@ fn send_stop_request(
 }
 
 fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> ServerStopError {
-    match server_socket_is_live(socket_path) {
+    match shepr_platform::ipc::socket_is_live(socket_path) {
         Ok(false) => ServerStopError::NotRunning {
             label: label.into(),
             path: socket_path.into(),
@@ -691,64 +653,28 @@ fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
     )
 }
 
-/// Whether a server socket has a live listener. Absent and stale paths mean
-/// no listener; inaccessible paths remain errors because they do not prove
-/// that starting or stopping another server is safe. The launcher and stop
-/// share this mapping so a successful conditional stop satisfies the
-/// launcher's socket-presence check.
-pub fn server_socket_is_live(socket_path: &Path) -> std::io::Result<bool> {
-    shepr_platform::ipc::ServerLifetime::endpoint_is_live(socket_path)
+/// Whether the server socket has no listener. Errors never prove absence.
+fn server_socket_is_stopped(socket: &Path) -> io::Result<bool> {
+    shepr_platform::ipc::socket_is_live(socket).map(|live| !live)
 }
 
-fn is_running_at(socket_path: &Path) -> std::io::Result<bool> {
-    server_socket_is_live(socket_path)
-}
-
-/// Whether every server endpoint socket has no listener: the `Gone` presence
-/// of the shared server lifetime rule, which the launcher also waits for.
-/// Errors never prove absence.
-pub fn server_sockets_are_stopped<P: AsRef<Path>>(socket_paths: &[P]) -> std::io::Result<bool> {
-    for path in socket_paths {
-        if server_socket_is_live(path.as_ref())? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn wait_until_stopped_until(socket_paths: &[PathBuf], deadline: Instant) -> std::io::Result<bool> {
+fn wait_until_stopped_until(socket_path: &Path, deadline: Instant) -> io::Result<bool> {
     loop {
-        // clock-io-ok: polls another process's sockets while it exits.
+        // clock-io-ok: polls another process's socket while it exits.
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return server_sockets_are_stopped(socket_paths);
-        }
-        if server_sockets_are_stopped(socket_paths)? {
+        if server_socket_is_stopped(socket_path)? {
             return Ok(true);
+        }
+        if remaining.is_zero() {
+            return Ok(false);
         }
         std::thread::sleep(STOP_WAIT_POLL.min(remaining));
     }
 }
 
-fn reachable_socket_paths(socket_paths: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
-    let mut reachable = Vec::new();
-    for path in socket_paths {
-        if is_running_at(path)? {
-            reachable.push(path.clone());
-        }
-    }
-    Ok(reachable)
-}
-
-#[cfg(test)]
-fn running_from_liveness(liveness: shepr_platform::ipc::Liveness) -> std::io::Result<bool> {
-    shepr_platform::ipc::ServerLifetime::liveness(liveness)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_core::env::EnvVar;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::io::{BufRead, BufReader, Write};
     use std::sync::atomic::Ordering;
@@ -759,6 +685,19 @@ mod tests {
         let env = IsolatedEnv::new();
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
         (env, paths)
+    }
+
+    #[test]
+    fn stop_error_display_names_the_one_reachable_socket() {
+        let error = ServerStopError::TimedOut {
+            label: "test server".into(),
+            timeout: Duration::from_millis(75),
+            socket: PathBuf::from("/run/test.sock"),
+        };
+        assert_eq!(
+            error.to_string(),
+            "test server did not stop within 75ms; the socket at /run/test.sock is still reachable"
+        );
     }
 
     #[test]
@@ -818,7 +757,7 @@ mod tests {
     #[test]
     fn stop_times_out_when_socket_stays_open_without_response() {
         let (_env, paths) = isolated_config_env();
-        let socket_path = paths.server_address().api_socket().to_path_buf();
+        let socket_path = paths.server_address().socket().to_path_buf();
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener =
@@ -856,27 +795,6 @@ mod tests {
         assert!(matches!(err, ServerStopError::TimedOut { .. }), "{err}");
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
-    }
-
-    #[test]
-    fn the_active_socket_is_the_build_runtime_socket() {
-        let (_env, paths) = isolated_config_env();
-        assert_eq!(
-            active_api_socket_path(&paths),
-            paths.runtime_dir().join("shepr.sock")
-        );
-    }
-
-    #[test]
-    fn env_socket_override_selects_the_active_socket() {
-        let env = IsolatedEnv::new();
-        env.set(EnvVar::SheprSocketPath, "/tmp/explicit.sock");
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        assert_eq!(
-            active_api_socket_path(&paths),
-            PathBuf::from("/tmp/explicit.sock")
-        );
     }
 
     /// Answers every request at `socket_path` with `reply` and records each
@@ -929,7 +847,7 @@ mod tests {
     #[test]
     fn a_conditional_stop_refused_by_another_boot_reports_the_changed_occupant() {
         let (_env, paths) = isolated_config_env();
-        let socket_path = paths.server_address().api_socket().to_path_buf();
+        let socket_path = paths.server_address().socket().to_path_buf();
         let (keep_running, handle) = serve_reply(
             &socket_path,
             "{\"id\":\"cli:server:stop\",\"error\":{\"code\":\"server_boot_mismatch\",\"message\":\"this server is boot 9-9\"}}\n",
@@ -1005,13 +923,12 @@ mod tests {
 
         let error = stop_socket_with_timeout(
             &socket_path,
-            std::slice::from_ref(&socket_path),
             None,
             Duration::from_secs(2),
             "test server",
             Some("old-boot"),
         )
-        .expect_err("a new boot must be reported instead of waiting for its sockets");
+        .expect_err("a new boot must be reported instead of waiting for its socket");
 
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
@@ -1032,7 +949,7 @@ mod tests {
     #[test]
     fn an_unconditional_stop_sends_no_expected_boot_and_never_reads_the_build() {
         let (_env, paths) = isolated_config_env();
-        let socket_path = paths.server_address().api_socket().to_path_buf();
+        let socket_path = paths.server_address().socket().to_path_buf();
         let (keep_running, handle) = serve_reply(
             &socket_path,
             "{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n",
@@ -1062,7 +979,7 @@ mod tests {
         assert!(
             !paths
                 .server_address()
-                .api_socket()
+                .socket()
                 .try_exists()
                 .expect("test precondition"),
             "a stop must not create a server socket"
@@ -1072,7 +989,7 @@ mod tests {
     #[test]
     fn stop_fails_when_socket_remains_reachable_after_timeout() {
         let (_env, paths) = isolated_config_env();
-        let socket_path = paths.server_address().api_socket().to_path_buf();
+        let socket_path = paths.server_address().socket().to_path_buf();
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener =
@@ -1108,7 +1025,7 @@ mod tests {
             .expect_err("still-running server should fail");
 
         assert!(
-            matches!(&err, ServerStopError::TimedOut { reachable, .. } if reachable.contains(&socket_path)),
+            matches!(&err, ServerStopError::TimedOut { socket, .. } if socket == &socket_path),
             "{err}"
         );
         keep_running.store(false, Ordering::Relaxed);
@@ -1133,136 +1050,97 @@ mod tests {
     }
 
     #[test]
-    fn socket_liveness_maps_absent_and_stale_to_stopped() {
-        assert!(
-            !running_from_liveness(shepr_platform::ipc::Liveness::Absent).expect("absent status")
-        );
-        assert!(
-            !running_from_liveness(shepr_platform::ipc::Liveness::Stale).expect("stale status")
-        );
-        assert!(running_from_liveness(shepr_platform::ipc::Liveness::Live).expect("live status"));
-
-        let error = running_from_liveness(shepr_platform::ipc::Liveness::Unreachable(
-            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        ))
-        .expect_err("unreachable sockets remain transport errors");
-        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn server_socket_presence_uses_the_shared_liveness_rule() {
-        let scratch = ScratchDir::new("server-socket-presence");
-        let socket_path = scratch.join("server.sock");
-        assert!(!server_socket_is_live(&socket_path).expect("an absent socket is stopped"));
-        assert!(server_sockets_are_stopped(&[socket_path.as_path()]).expect("no listener"));
-
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path)
-            .expect("bind the test server socket");
-        assert!(server_socket_is_live(&socket_path).expect("a listener is live"));
-        assert!(!server_sockets_are_stopped(&[socket_path.as_path()]).expect("listener is live"));
-        drop(listener);
-        assert!(!server_socket_is_live(&socket_path).expect("a stale socket is stopped"));
-        assert!(server_sockets_are_stopped(&[socket_path.as_path()]).expect("stale is stopped"));
-    }
-
-    #[test]
-    fn a_conditional_stop_waits_for_the_client_socket_to_disappear() {
-        let scratch = ScratchDir::new("stop-client-socket");
-        let api_socket = scratch.join("api.sock");
-        let client_socket = scratch.join("client.sock");
-        let api_listener =
-            std::os::unix::net::UnixListener::bind(&api_socket).expect("bind the test API socket");
-        let client_listener = std::os::unix::net::UnixListener::bind(&client_socket)
-            .expect("bind the test client socket");
-        let api_thread = std::thread::spawn(move || {
-            let (mut stream, _) = api_listener.accept().expect("accept the stop request");
+    fn a_conditional_stop_waits_for_the_socket_to_disappear() {
+        let scratch = ScratchDir::new("stop-socket");
+        let path = scratch.join("server.sock");
+        // Answers the stop, then keeps listening without answering a ping.
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind socket");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let answer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("stop");
             let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("clone the test stream"))
+            BufReader::new(stream.try_clone().expect("clone"))
                 .read_line(&mut request)
-                .expect("read the stop request");
-            assert!(request.contains("server.stop_if_boot"), "{request}");
+                .expect("request");
+            assert!(request.contains("server.stop_if_boot"));
             stream
                 .write_all(b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n")
-                .expect("answer the stop request");
+                .expect("answer");
+            held_tx.send(listener).expect("retain listener");
         });
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let stop_api_socket = api_socket.clone();
-        let stop_paths = vec![api_socket, client_socket];
-        let stop_thread = std::thread::spawn(move || {
-            let result = stop_socket_with_timeout(
-                &stop_api_socket,
-                &stop_paths,
-                None,
-                Duration::from_secs(2),
-                "test server",
-                Some("old-boot"),
-            );
-            finished_tx.send(result).expect("send the stop result");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let stop = std::thread::spawn(move || {
+            done_tx
+                .send(stop_socket_with_timeout(
+                    &path,
+                    None,
+                    Duration::from_secs(2),
+                    "test server",
+                    Some("old-boot"),
+                ))
+                .expect("result");
         });
-
-        assert!(
-            finished_rx.recv_timeout(Duration::from_millis(75)).is_err(),
-            "the stop must wait while the launcher-visible client socket is live"
-        );
-        drop(client_listener);
-        finished_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("the stop completes when its sockets disappear")
-            .expect("the named server stopped");
-        api_thread.join().expect("test API thread");
-        stop_thread.join().expect("test stop thread");
-    }
-
-    #[test]
-    fn a_conditional_stop_uses_the_lease_deadline_for_the_last_socket() {
-        let scratch = ScratchDir::new("stop-lease-client-socket");
-        let api_socket = scratch.join("api.sock");
-        let client_socket = scratch.join("client.sock");
-        let lease_path = scratch.join("session.lock");
-        let api_listener =
-            std::os::unix::net::UnixListener::bind(&api_socket).expect("bind the test API socket");
-        let client_listener = std::os::unix::net::UnixListener::bind(&client_socket)
-            .expect("bind the test client socket");
-        let held =
-            shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("hold the lease");
-        let api_thread = std::thread::spawn(move || {
-            let (mut stream, _) = api_listener.accept().expect("accept the stop request");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("clone the test stream"))
-                .read_line(&mut request)
-                .expect("read the stop request");
-            stream
-                .write_all(b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n")
-                .expect("answer the stop request");
-        });
-
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let stop_api_socket = api_socket.clone();
-        let stop_paths = vec![api_socket, client_socket];
-        let stop_thread = std::thread::spawn(move || {
-            let result = stop_socket_with_timeout(
-                &stop_api_socket,
-                &stop_paths,
-                Some((&lease_path, Duration::from_millis(300))),
-                Duration::from_millis(75),
-                "test server",
-                Some("old-boot"),
-            );
-            finished_tx.send(result).expect("send the stop result");
-        });
-        api_thread.join().expect("test API thread");
-
-        std::thread::sleep(Duration::from_millis(125));
-        drop(held);
-        assert!(
-            finished_rx.recv_timeout(Duration::from_millis(75)).is_err(),
-            "the socket wait must continue while the lease deadline remains"
-        );
-        drop(client_listener);
-        finished_rx
+        let held = held_rx
             .recv_timeout(Duration::from_secs(1))
-            .expect("the socket wait completes when the client endpoint disappears")
-            .expect("the named server stopped");
-        stop_thread.join().expect("test stop thread");
+            .expect("listener retained");
+        assert!(done_rx.recv_timeout(Duration::from_millis(75)).is_err());
+        drop(held);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stop completes")
+            .expect("stopped");
+        answer.join().expect("answer thread");
+        stop.join().expect("stop thread");
+    }
+
+    #[test]
+    fn a_conditional_stop_uses_the_lease_deadline_for_the_socket() {
+        let scratch = ScratchDir::new("stop-lease-socket");
+        let path = scratch.join("server.sock");
+        let lease_path = scratch.join("session.lock");
+        let held_lease =
+            shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("lease");
+        // Answers the stop, then keeps listening without answering a ping.
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind socket");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let answer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("stop");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut request)
+                .expect("request");
+            stream
+                .write_all(b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n")
+                .expect("answer");
+            held_tx.send(listener).expect("retain listener");
+        });
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let stop = std::thread::spawn(move || {
+            done_tx
+                .send(stop_socket_with_timeout(
+                    &path,
+                    Some((&lease_path, Duration::from_millis(500))),
+                    Duration::from_millis(75),
+                    "test server",
+                    Some("old-boot"),
+                ))
+                .expect("result");
+        });
+        let held = held_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("listener retained");
+        assert!(done_rx.recv_timeout(Duration::from_millis(125)).is_err());
+        drop(held_lease);
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(75)).is_err(),
+            "lease release alone must not finish the stop"
+        );
+        drop(held);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stop completes")
+            .expect("stopped");
+        answer.join().expect("answer thread");
+        stop.join().expect("stop thread");
     }
 }

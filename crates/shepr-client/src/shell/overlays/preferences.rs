@@ -9,7 +9,7 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 use serde::{Deserialize, Serialize};
 
 /// Sidebar chrome changed by hand, remembered by the client across launches.
-/// One file per local client socket, whichever endpoint is presented.
+/// One file per local server socket, whichever endpoint is presented.
 ///
 /// Three of these values also have `[ui]` config keys (`sidebar_width`,
 /// `sidebar_start_collapsed`, `agent_panel_sort`). The documented key wins:

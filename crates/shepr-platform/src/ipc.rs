@@ -25,127 +25,86 @@ pub enum Liveness {
     Unreachable(io::Error),
 }
 
-/// The common lifetime contract for the two server endpoints. Startup takes
-/// the data lease, binds the API, reserves the client path, restores panes,
-/// then binds the client listener. Shutdown retains endpoints through the
-/// final save, retires the lease, removes the API, then removes the client.
-/// Socket absence alone permits a launch attempt; the lease remains the
-/// authority that prevents two owners, including before either socket binds.
-pub struct ServerLifetime;
-
-/// Resources reserved before restoring panes. Field order also retires the
-/// lease before the API when an unused reservation is dropped.
-pub struct ReservedServer<L, A> {
-    lease: L,
-    api: A,
-    client: SocketStartupLock,
+/// Whether a listener answers at `path`. `Absent | Stale` is `false`, `Live`
+/// is `true`, and `Unreachable` is the error: an inaccessible path never
+/// proves absence or permits a successor.
+pub fn socket_is_live(path: &Path) -> io::Result<bool> {
+    match probe(path) {
+        Liveness::Absent | Liveness::Stale => Ok(false),
+        Liveness::Live => Ok(true),
+        Liveness::Unreachable(error) => Err(error),
+    }
 }
 
-impl ServerLifetime {
-    pub fn reserve<L, A, E>(
-        acquire_lease: impl FnOnce() -> Result<L, E>,
-        bind_api: impl FnOnce(&L) -> Result<A, E>,
-        reserve_client: impl FnOnce() -> Result<SocketStartupLock, E>,
-    ) -> Result<ReservedServer<L, A>, E> {
-        Self::in_resource_order(
-            acquire_lease,
-            |lease| lease.and_then(|lease| bind_api(&lease).map(|api| (lease, api))),
-            |resources| {
-                resources.and_then(|(lease, api)| match reserve_client() {
-                    Ok(client) => Ok(ReservedServer { lease, api, client }),
-                    Err(error) => {
-                        Self::release(
-                            &mut (Some(lease), Some(api)),
-                            |resources| drop(resources.0.take()),
-                            |resources| drop(resources.1.take()),
-                            |_| {},
-                        );
-                        Err(error)
-                    }
-                })
-            },
+/// Whether an `accept` failure belongs to the one pending connection (it was
+/// aborted, failed its protocol setup, was refused by a security module, or
+/// the call was interrupted), so the listener retries at once. Every other
+/// failure, descriptor and memory exhaustion included, is the listener's own
+/// and calls for a backoff before the next attempt.
+pub fn accept_failed_for_one_connection(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Interrupted
+        || matches!(
+            error.raw_os_error(),
+            Some(libc::ECONNABORTED | libc::EPROTO | libc::EPERM)
         )
-    }
-
-    pub fn release<C>(
-        context: &mut C,
-        retire_lease: impl FnOnce(&mut C),
-        remove_api: impl FnOnce(&mut C),
-        remove_client: impl FnOnce(&mut C),
-    ) {
-        Self::in_resource_order(
-            || {
-                retire_lease(context);
-                context
-            },
-            |context| {
-                remove_api(context);
-                context
-            },
-            remove_client,
-        );
-    }
-
-    // One ordering primitive drives both acquisition and release. Passing the
-    // preceding result to the next step prevents independently scheduled steps.
-    fn in_resource_order<L, A, C>(
-        lease: impl FnOnce() -> L,
-        api: impl FnOnce(L) -> A,
-        client: impl FnOnce(A) -> C,
-    ) -> C {
-        client(api(lease()))
-    }
-
-    /// An inaccessible endpoint never proves absence or permits a successor.
-    pub fn endpoint_is_live(path: &Path) -> io::Result<bool> {
-        Self::liveness(probe(path))
-    }
-
-    pub fn liveness(value: Liveness) -> io::Result<bool> {
-        match value {
-            Liveness::Absent | Liveness::Stale => Ok(false),
-            Liveness::Live => Ok(true),
-            Liveness::Unreachable(error) => Err(error),
-        }
-    }
-
-    pub fn observe<T>(
-        api_live: bool,
-        client_live: bool,
-        status: Option<(T, bool)>,
-    ) -> ServerPresence<T> {
-        match (api_live, client_live) {
-            (false, false) => ServerPresence::Gone,
-            (true, false) => ServerPresence::Starting,
-            (false, true) => ServerPresence::Releasing,
-            (true, true) => match status {
-                Some((identity, true)) => ServerPresence::Stopping(identity),
-                Some((identity, false)) => ServerPresence::Running(identity),
-                None => ServerPresence::Unresponsive,
-            },
-        }
-    }
 }
 
-impl<L, A> ReservedServer<L, A> {
-    pub fn restore_and_bind<T, S, E>(
-        self,
-        restore: impl FnOnce(L) -> T,
-        bind_client: impl FnOnce(T, A, SocketStartupLock) -> Result<S, E>,
-    ) -> Result<S, E> {
-        let app = restore(self.lease);
-        bind_client(app, self.api, self.client)
-    }
+/// A peer's first byte, observed without consuming it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FirstByte {
+    Byte(u8),
+    /// The peer hung up before sending anything.
+    Closed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServerPresence<T> {
-    Gone,
-    Starting,
-    Running(T),
-    Stopping(T),
-    Releasing,
-    Unresponsive,
+/// Waits until `deadline` for the peer's first byte and returns it without
+/// consuming it, so whoever serves the stream reads it from byte zero. A
+/// deadline at or before now polls once without waiting. A passed deadline
+/// with nothing to read is `io::ErrorKind::TimedOut`.
+pub fn peek_first_byte(stream: &LocalStream, deadline: Instant) -> io::Result<FirstByte> {
+    // clock-io-ok: the public entry point supplies the real socket clock.
+    peek_first_byte_with_clock(stream, deadline, &Instant::now)
+}
+
+fn peek_first_byte_with_clock(
+    stream: &LocalStream,
+    deadline: Instant,
+    now: &dyn Fn() -> Instant,
+) -> io::Result<FirstByte> {
+    let fd = stream.as_raw_fd();
+    loop {
+        let timeout = super::child_io::poll_timeout_until(deadline, now()).unwrap_or(0);
+        match super::child_io::poll_fd_readable(fd, timeout) {
+            Ok(true) => {}
+            Ok(false) => return Err(io::ErrorKind::TimedOut.into()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+        let mut byte = 0u8;
+        // SAFETY: one writable byte lives on the stack and the borrowed stream
+        // keeps the descriptor open throughout this non-consuming call.
+        let count = unsafe {
+            libc::recv(
+                fd,
+                (&raw mut byte).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        match count {
+            0 => return Ok(FirstByte::Closed),
+            1 => return Ok(FirstByte::Byte(byte)),
+            _ => {
+                let error = io::Error::last_os_error();
+                match error.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    io::ErrorKind::WouldBlock if now() < deadline => continue,
+                    io::ErrorKind::WouldBlock => return Err(io::ErrorKind::TimedOut.into()),
+                    _ => return Err(error),
+                }
+            }
+        }
+    }
 }
 
 /// Another process already holds a server socket path: its startup lock, a
@@ -206,13 +165,6 @@ pub struct SocketFileIdentity {
 pub struct SocketStartupLock {
     _lock: FlockLock,
     socket_path: PathBuf,
-}
-
-impl SocketStartupLock {
-    /// The socket path this lock reserves.
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
-    }
 }
 
 impl Drop for SocketStartupLock {
@@ -315,7 +267,7 @@ pub(crate) fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()>
 /// The lock file has `.lock` appended to the socket path, so it shares the
 /// socket's parent directory without counting against the socket path limit
 /// (`shepr_core::socket_path`).
-pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
+fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
     socket_parent(socket_path)?;
     let lock_path = socket_startup_lock_path(socket_path);
     let lock = match acquire_flock_lock(&lock_path, false) {
@@ -360,9 +312,9 @@ pub fn bind_private_socket(
     bind_private_socket_with_lock(startup_lock)
 }
 
-/// Binds while retaining a reservation acquired before expensive startup work.
-/// The path comes from the guard, so a lock for another socket cannot be used.
-pub fn bind_private_socket_with_lock(
+/// Binds the path a held startup lock reserves, keeping the lock. The path
+/// comes from the guard, so a lock for another socket cannot be used.
+fn bind_private_socket_with_lock(
     startup_lock: SocketStartupLock,
 ) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
     let path = startup_lock.socket_path.as_path();
@@ -450,7 +402,7 @@ pub fn sweep_abandoned_single_use_sockets(dir: &Path) {
     super::owned_runtime::OwnedRuntimeEntry::sweep_socket_sidecars(dir);
 }
 
-/// The sidecar file [`acquire_socket_startup_lock`] locks for `socket_path`.
+/// The sidecar file [`bind_private_socket`] locks for `socket_path`.
 /// It normally outlives the lock (see [`SocketStartupLock`]); only an owner
 /// whose socket path is single-use, such as a randomly named SSH bridge
 /// socket bound with [`bind_single_use_private_socket`], may remove it, since
@@ -990,103 +942,137 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn server_lifetime_observes_all_endpoint_transitions_and_stopping_identity() {
+    fn bind_private_socket_is_owner_only_from_the_moment_it_is_reachable() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = shepr_test_support::ScratchDir::new("hb");
+        let path = dir.join("server.sock");
+
+        let (listener, startup_lock, _) = bind_private_socket(&path).expect("bind");
+        let mode = fs::metadata(&path)
+            .expect("socket exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        // The staging directory is gone; only the socket and persistent lock remain.
+        let entries = fs::read_dir(&dir)
+            .expect("test precondition")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_entries = ["server.sock", "server.sock.lock"]
+            .map(std::ffi::OsString::from)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(entries, expected_entries);
+        // The linked name reaches the listener.
+        assert!(connect_local_stream(&path).is_ok());
+        assert!(listener.accept().is_ok());
+        // A second server never replaces a socket that is already there.
+        let err = bind_private_socket(&path)
+            .err()
+            .expect("startup lock is held");
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+
+        drop(listener);
+        drop(startup_lock);
+    }
+
+    #[test]
+    fn peek_first_byte_returns_the_byte_without_consuming_it() {
+        use std::io::Write;
+        let (mut peer, mut stream) = LocalStream::pair().expect("pair");
+        peer.write_all(b"Shepr").expect("bytes");
+        let now = Instant::now();
         assert_eq!(
-            ServerLifetime::observe::<()>(false, false, None),
-            ServerPresence::Gone
+            peek_first_byte_with_clock(&stream, now, &|| now).expect("peek"),
+            FirstByte::Byte(b'S')
         );
+        let mut bytes = [0; 5];
+        stream.read_exact(&mut bytes).expect("unconsumed");
+        assert_eq!(&bytes, b"Shepr");
+    }
+
+    #[test]
+    fn peek_first_byte_reports_a_peer_that_closed_silently() {
+        let (peer, stream) = LocalStream::pair().expect("pair");
+        drop(peer);
+        let now = Instant::now();
         assert_eq!(
-            ServerLifetime::observe::<()>(true, false, None),
-            ServerPresence::Starting
-        );
-        assert_eq!(
-            ServerLifetime::observe::<()>(false, true, None),
-            ServerPresence::Releasing
-        );
-        assert_eq!(
-            ServerLifetime::observe::<()>(true, true, None),
-            ServerPresence::Unresponsive
-        );
-        assert_eq!(
-            ServerLifetime::observe(true, true, Some(("boot", false))),
-            ServerPresence::Running("boot")
-        );
-        assert_eq!(
-            ServerLifetime::observe(true, true, Some(("boot", true))),
-            ServerPresence::Stopping("boot")
+            peek_first_byte_with_clock(&stream, now, &|| now).expect("peek"),
+            FirstByte::Closed
         );
     }
 
     #[test]
-    fn server_lifetime_orders_reservation_restore_bind_and_release() {
-        use std::cell::RefCell;
-        let scratch = shepr_test_support::ScratchDir::new("lifetime-order");
-        let path = scratch.join("client.sock");
-        let steps = RefCell::new(Vec::new());
-        let reserved = ServerLifetime::reserve(
-            || {
-                steps.borrow_mut().push("lease");
-                Ok::<_, io::Error>(())
-            },
-            |_| {
-                steps.borrow_mut().push("api");
-                Ok(())
-            },
-            || {
-                steps.borrow_mut().push("reserve");
-                acquire_socket_startup_lock(&path)
-            },
-        )
-        .expect("reservation");
-        let (_listener, _lock, identity) = reserved
-            .restore_and_bind(
-                |_| {
-                    steps.borrow_mut().push("restore");
-                    assert!(
-                        !path
-                            .try_exists()
-                            .expect("client not published before restore")
-                    );
-                    assert!(acquire_socket_startup_lock(&path).is_err());
-                },
-                |_, _, lock| {
-                    steps.borrow_mut().push("bind");
-                    bind_private_socket_with_lock(lock)
-                },
-            )
-            .expect("bind reserved client");
+    fn peek_first_byte_times_out_on_a_silent_peer() {
+        let (_peer, stream) = LocalStream::pair().expect("pair");
+        let now = Instant::now();
         assert_eq!(
-            *steps.borrow(),
-            ["lease", "api", "reserve", "restore", "bind"]
+            peek_first_byte_with_clock(&stream, now, &|| now)
+                .expect_err("silent")
+                .kind(),
+            io::ErrorKind::TimedOut
         );
-        let mut releases = Vec::new();
-        ServerLifetime::release(
-            &mut releases,
-            |steps| steps.push("lease"),
-            |steps| steps.push("api"),
-            |steps| steps.push("client"),
-        );
-        assert_eq!(releases, ["lease", "api", "client"]);
-        remove_socket_file_if_owned(&path, &identity).expect("cleanup");
     }
 
     #[test]
-    fn failed_client_reservation_retires_lease_before_api() {
-        use std::cell::RefCell;
-        struct Resource<'a>(&'a RefCell<Vec<&'static str>>, &'static str);
-        impl Drop for Resource<'_> {
-            fn drop(&mut self) {
-                self.0.borrow_mut().push(self.1);
-            }
+    fn peek_first_byte_with_a_passed_deadline_polls_once() {
+        use std::io::Write;
+        let (mut peer, stream) = LocalStream::pair().expect("pair");
+        let now = Instant::now();
+        let deadline = now - Duration::from_secs(1);
+        assert_eq!(
+            peek_first_byte_with_clock(&stream, deadline, &|| now)
+                .expect_err("silent")
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        peer.write_all(b"{").expect("byte");
+        assert_eq!(
+            peek_first_byte_with_clock(&stream, deadline, &|| now).expect("ready"),
+            FirstByte::Byte(b'{')
+        );
+    }
+
+    #[test]
+    fn accept_failures_are_classified_so_descriptor_pressure_never_stops_the_server() {
+        for errno in [libc::ECONNABORTED, libc::EPROTO, libc::EPERM, libc::EINTR] {
+            assert!(accept_failed_for_one_connection(
+                &io::Error::from_raw_os_error(errno)
+            ));
         }
-        let dropped = RefCell::new(Vec::new());
-        let result = ServerLifetime::reserve(
-            || Ok(Resource(&dropped, "lease")),
-            |_| Ok(Resource(&dropped, "api")),
-            || Err(io::Error::other("reservation refused")),
+        for errno in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::EBADF,
+            libc::EINVAL,
+            libc::ENOTSOCK,
+        ] {
+            assert!(!accept_failed_for_one_connection(
+                &io::Error::from_raw_os_error(errno)
+            ));
+        }
+    }
+
+    #[test]
+    fn socket_is_live_maps_absent_and_stale_to_false_and_unreachable_to_an_error() {
+        let scratch = shepr_test_support::ScratchDir::new("socket-liveness");
+        let socket = scratch.join("server.sock");
+        assert!(!socket_is_live(&socket).expect("absent"));
+        let listener = LocalListener::bind(&socket).expect("bind");
+        assert!(socket_is_live(&socket).expect("live"));
+        drop(listener);
+        assert!(!socket_is_live(&socket).expect("stale"));
+        let file = scratch.join("regular");
+        fs::write(&file, b"file").expect("file");
+        assert_eq!(
+            socket_is_live(&file).expect_err("not a socket").kind(),
+            io::ErrorKind::AlreadyExists
         );
-        assert!(result.is_err());
-        assert_eq!(*dropped.borrow(), ["lease", "api"]);
     }
 
     #[test]

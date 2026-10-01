@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 ///
 /// The latch alone is not enough: an idle server loop waits with no deadline,
 /// so a stop that only set it would go unobserved until unrelated work woke
-/// the loop, and `server.stop` would time out waiting for sockets to close.
+/// the loop, and `server.stop` would time out waiting for the socket to close.
 /// [`Notify`] keeps a permit when nobody is waiting yet, so a request made
 /// between two waits still wakes the next one.
 #[derive(Debug, Default)]

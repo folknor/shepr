@@ -40,8 +40,7 @@ struct RestoreRuntimeContext<'a> {
     now: std::time::Instant,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     shell_config: crate::pane::PaneShellConfig<'a>,
-    api_socket_path: &'a std::path::Path,
-    client_socket_path: &'a std::path::Path,
+    socket_path: &'a std::path::Path,
     resume_agents_on_restore: bool,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -124,8 +123,7 @@ pub fn restore(
     geometry: crate::workspace::PaneGeometry,
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
-    api_socket_path: &std::path::Path,
-    client_socket_path: &std::path::Path,
+    socket_path: &std::path::Path,
     resume_agents_on_restore: bool,
     events: &mpsc::Sender<AppEvent>,
     render_notify: &Arc<Notify>,
@@ -178,8 +176,7 @@ pub fn restore(
             now,
             host_theme,
             shell_config,
-            api_socket_path,
-            client_socket_path,
+            socket_path,
             resume_agents_on_restore,
             events: events.clone(),
             render_notify: Arc::clone(render_notify),
@@ -587,12 +584,9 @@ fn restore_workspace(
             );
             return None;
         };
-        let launch_env = PaneLaunchEnv::from_extra_with_socket_paths(
-            Vec::new(),
-            runtime_context.api_socket_path.to_path_buf(),
-            runtime_context.client_socket_path.to_path_buf(),
-        )
-        .with_pane_id(pane_id);
+        let launch_env =
+            PaneLaunchEnv::from_extra(Vec::new(), runtime_context.socket_path.to_path_buf())
+                .with_pane_id(pane_id);
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
                 saved_pane,
@@ -955,9 +949,8 @@ mod tests {
         std::time::Instant::now()
     }
 
-    /// A resolved socket pair for restored test panes; nothing listens on it.
-    const TEST_API_SOCKET: &str = "/run/user/1000/shepr-test.sock";
-    const TEST_CLIENT_SOCKET: &str = "/run/user/1000/shepr-test-client.sock";
+    /// A resolved server socket for restored test panes; nothing listens on it.
+    const TEST_SOCKET: &str = "/run/user/1000/shepr-test.sock";
 
     fn restore_test_path(name: &str) -> PathBuf {
         RESTORE_TEST_SCRATCH.with(|scratch| scratch.join(name))
@@ -1082,8 +1075,7 @@ mod tests {
             test_geometry(5, 40),
             4096,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1163,8 +1155,7 @@ mod tests {
                     },
                     false,
                 ),
-                std::path::Path::new(TEST_API_SOCKET),
-                std::path::Path::new(TEST_CLIENT_SOCKET),
+                std::path::Path::new(TEST_SOCKET),
                 resume,
                 &events,
                 &Arc::new(Notify::new()),
@@ -1363,8 +1354,7 @@ mod tests {
             test_geometry(5, 40),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1854,8 +1844,7 @@ mod tests {
                     },
                     false,
                 ),
-                std::path::Path::new(TEST_API_SOCKET),
-                std::path::Path::new(TEST_CLIENT_SOCKET),
+                std::path::Path::new(TEST_SOCKET),
                 false,
                 &events,
                 &Arc::new(Notify::new()),
@@ -1957,8 +1946,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -2037,8 +2025,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -2193,8 +2180,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -2260,8 +2246,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             true,
             &events,
             &Arc::new(Notify::new()),
@@ -2330,8 +2315,7 @@ mod tests {
                 test_geometry(24, 80),
                 0,
                 crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-                std::path::Path::new(TEST_API_SOCKET),
-                std::path::Path::new(TEST_CLIENT_SOCKET),
+                std::path::Path::new(TEST_SOCKET),
                 false,
                 &events,
                 &Arc::new(Notify::new()),
@@ -2386,8 +2370,7 @@ mod tests {
             test_geometry(5, 40),
             4096,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &render_notify,
@@ -2434,8 +2417,7 @@ mod tests {
             test_geometry(5, 40),
             4096,
             crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-            std::path::Path::new(TEST_API_SOCKET),
-            std::path::Path::new(TEST_CLIENT_SOCKET),
+            std::path::Path::new(TEST_SOCKET),
             false,
             &events,
             &render_notify,
@@ -2484,8 +2466,7 @@ mod tests {
                 test_geometry(5, 80),
                 4096,
                 crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-                std::path::Path::new(TEST_API_SOCKET),
-                std::path::Path::new(TEST_CLIENT_SOCKET),
+                std::path::Path::new(TEST_SOCKET),
                 false,
                 &events,
                 &Arc::new(Notify::new()),

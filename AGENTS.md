@@ -38,9 +38,9 @@ Kept:
 - Git status in the sidebar (branch, ahead/behind)
 - Mouse selection, copy mode, keybinding help, window title templating
 - The JSON API over the server socket. The TUI does not act on workspaces
-  or panes through it: it sends typed client-socket commands
-  (`shepr_protocol::command::EndpointCommand`), none of which is an API
-  method. The CLI is local-only: every
+  or panes through it: it sends typed commands on the TUI's connection to
+  the server socket (`shepr_protocol::command::EndpointCommand`), none of
+  which is an API method. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
   configured machine. `status`, `server stop`, `detect capture` and `detect explain
   <PANE>` talk to the local server over its socket; `detect explain --file`
@@ -157,7 +157,9 @@ orientation, and nothing checks them:
 - `shepr-config`: configuration parsing and validation.
 - `shepr-protocol`: compact wire types and codec; it depends on `shepr-config`
   for the grid and input-batch limits the two share.
-- `shepr-api`: JSON API schema, client and server transport.
+- `shepr-api`: JSON API schema and client, and the server socket: its listener
+  tells JSON requests from TUI connections and hands the latter to the server's
+  client protocol.
 - `shepr-termio`: terminal input and copy mode.
 - `shepr-remote`: configured machines and SSH connections.
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
@@ -215,58 +217,54 @@ server: one that is reached anyway is refused with guidance naming the current
 profile's entry point (`shepr` for release, the running executable path for
 dev).
 
-Run it with plain `brokkr run -- [<command>]`, including from inside a pane
+Run it with `brokkr run --debug -- [<command>]`, including from inside a pane
 of the installed server. The TUI is always refused inside a pane of a server
 of its own profile, so a dev TUI runs from a release pane and not from a dev
 one. The dev client launches the `shepr-server` beside it
 in `target/debug`, which `brokkr run` does not build: build it first with
-`brokkr run shepr-server -- --version`, or through `brokkr check`. Every pane exports
-`SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` as its server resolved them,
-which normally win over the per-profile runtime directory, and also
-`SHEPR_BUILD_PROFILE`, the profile (`release` or `dev`) of the server that owns
-the pane. A process whose own profile differs from that marker ignores both
-socket variables and resolves its own profile's runtime directory.
-`SHEPR_SOCKET_PATH` normally selects the API socket and derives the client
-socket. When both variables are set and the API path is exactly the profile's
-runtime `shepr.sock`, `SHEPR_CLIENT_SOCKET_PATH` selects the client socket.
-That is the pair a pane of a server started with only a client socket override
-exports, so `server stop` run in such a pane waits for that server's client
-socket to close. A socket override names an existing server: the TUI attaches
-to it but never starts a server there. A non-runtime API path still takes
-precedence, so a user can set `SHEPR_SOCKET_PATH` inside a pane to select
-another server. The API variable stays exported because every agent
-integration reports through it.
+`brokkr run --debug shepr-server -- --version`, or through `brokkr check`.
+Every pane exports `SHEPR_SOCKET_PATH` as its server resolved it, which normally wins over the
+per-profile runtime directory, and also `SHEPR_BUILD_PROFILE`, the profile
+(`release` or `dev`) of the server that owns the pane. A process whose own
+profile differs from that marker ignores the socket variable and resolves its
+own profile's runtime directory. `SHEPR_SOCKET_PATH` selects the server socket.
+A socket override names an existing server: the TUI attaches to it but never
+starts a server there. A non-runtime path in `SHEPR_SOCKET_PATH` selects another
+server, so a user can set it inside a pane. The variable stays exported because
+every agent integration reports through it.
 
-- Socket variables with no marker (set by a user or a script) and ones with a
-  matching marker still win over the runtime directory.
+- The socket variable with no marker (set by a user or a script), or with a
+  matching marker, still wins over the runtime directory.
 - A marker that is neither `release` nor `dev` fails the launch.
-- The saved layout is not affected by the overrides, only the sockets are.
+- The saved layout is not affected by the override, only the socket is.
 - `server stop` stops whatever server answers, whatever its build, with every
   pane in it. Its hidden `--expect-boot <boot id>` makes the stop conditional:
   the client sends `server.stop_if_boot` with the id from `status server`, and
   the server compares it with its own boot. The distinct method name means an
   older server rejects the request as invalid instead of ignoring the guard
   and stopping unconditionally. A server that replaced the observed one,
-  at any point while the stop waits for the sockets and the lease to go, keeps
+  at any point while the stop waits for the socket and the lease to go, keeps
   running and is reported (exit status 3).
 - The cross-build JSON control surface is the `ping` response identity
-  (`version`, `build_id`, `boot_id`), its `stopping` flag (read as false when
-  an older build omits it) and the `server.stop_if_boot` request; keep their
-  literal JSON fixtures in the `shepr-api` tests in sync with intentional
-  wire changes.
-- One lifetime rule, `ServerLifetime` in `crates/shepr-platform/src/ipc.rs`,
-  orders a server's resources and tells the launcher and `server stop` what
-  they observe. Startup takes the data-directory lease, binds the API socket,
-  reserves the client socket, restores panes, then binds the client socket
-  through that reservation. Shutdown keeps both sockets through the final
-  save, then retires the lease, removes the API socket and removes the client
-  socket last. Only the API socket live reads as starting, only the client
-  socket as releasing, neither as gone, and both as running, stopping or
-  unresponsive by the `ping` answer. A launcher waits through starting and
-  releasing, treats a server answering `stopping` as no server (it no longer
-  accepts clients), and starts a successor once both sockets are gone. Socket
-  absence only permits a launch attempt: the lease decides which contender
-  owns the data directory, even before either socket exists.
+  (`version`, `build_id`, `boot_id`), its `stopping` and `starting` flags
+  (each read as false when an older build omits it) and the
+  `server.stop_if_boot` request; keep their literal JSON fixtures in the
+  `shepr-api` tests in sync with intentional wire changes.
+- Startup and shutdown follow one order, written in `run_server` and in
+  `HeadlessServer::release_socket_after_save`. Startup takes the data-directory
+  lease, binds the server socket, restores panes, then opens the client
+  protocol. The socket is live and answers `ping` from the moment it is bound,
+  with `starting: true` until the client protocol opens; a TUI connection
+  before that is refused as transient. Shutdown keeps the socket through the
+  final save, retires the lease, then removes the socket. A socket that is
+  absent or stale reads as gone, a live one answers by `ping` as starting,
+  running (the default) or stopping, and a live one that does not answer reads
+  as unresponsive unless it has gone by the time the answer is missed, which
+  reads as gone. A launcher waits through starting, treats a server answering
+  `stopping` as no server (it no longer accepts clients), and starts a
+  successor once the socket is gone. Socket absence only permits a launch
+  attempt: the lease decides which contender owns the data directory, even
+  before the socket exists.
 
 ## Principles
 

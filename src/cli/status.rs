@@ -1,6 +1,5 @@
 use serde::Serialize;
 
-use shepr_api as api;
 use shepr_api::client::ApiClientError;
 use shepr_api::schema::{ClientStatusJson, ServerStatusJson};
 use shepr_remote::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_flag};
@@ -235,7 +234,7 @@ fn server_status_json(
             build_id: Some(build_id.clone()),
             boot_id: Some(boot_id.clone()),
             compatible: build_compatible_bool(server),
-            socket: api::socket_path(paths).display().to_string(),
+            socket: paths.server_address().socket().display().to_string(),
             restart_needed: restart_needed_bool(server),
         },
         ServerRuntimeStatus::NotRunning => ServerStatusJson {
@@ -244,7 +243,7 @@ fn server_status_json(
             build_id: None,
             boot_id: None,
             compatible: None,
-            socket: api::socket_path(paths).display().to_string(),
+            socket: paths.server_address().socket().display().to_string(),
             restart_needed: false,
         },
     }

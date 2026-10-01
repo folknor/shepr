@@ -349,11 +349,11 @@ impl HeadlessServer {
     /// Completes the shutdown sequence, answer every outstanding API request,
     /// and close client connections after their shutdown frames are flushed.
     ///
-    /// Socket files are not removed here but in `release_sockets_after_save`,
-    /// once the session is on disk: while either socket file exists a new
-    /// `shepr` sees this server and does not start a daemon that would restore
-    /// the previous save, or exit on the still-bound API socket and leave the
-    /// user waiting out the startup timeout.
+    /// The socket file is not removed here but in `release_socket_after_save`,
+    /// once the session is on disk: while it exists a new `shepr` sees this
+    /// server and does not start a daemon that would restore the previous
+    /// save, or exit on the still-bound socket and leave the user waiting out
+    /// the startup timeout.
     pub(super) async fn complete_shutdown(&mut self) -> io::Result<()> {
         // Completing is only legal once `initiate_shutdown` marked the server
         // stopping; this step settles queued requests before notifying clients.
@@ -419,48 +419,28 @@ impl HeadlessServer {
         }
     }
 
-    /// Runs the shared `ServerLifetime` release rule after the final save.
-    /// Retiring the writer waits for any save still in flight before releasing
-    /// its lease. Socket absence can then permit a launch attempt without
-    /// sending the successor into a lease held by this server's retiring writer.
-    /// Every exit runs this, including error and unwind exits through `Drop`;
-    /// each step is idempotent.
-    pub(super) fn release_sockets_after_save(&mut self) {
-        self.release_sockets_after_save_observed(|| {});
+    /// The shutdown half of the server's one resource order: the final save
+    /// is on disk, then the lease is retired, then the socket goes, so a
+    /// launcher that sees the socket vanish and starts a daemon meets a free
+    /// lease. Retiring the writer waits for any save still in flight before
+    /// releasing its lease, so the successor is never sent into a lease held
+    /// by this server's retiring writer. Dropping the API handle removes the
+    /// socket file. Every exit runs this, including error and unwind exits
+    /// through `Drop`; each step is idempotent.
+    pub(super) fn release_socket_after_save(&mut self) {
+        self.release_socket_after_save_observed(|| {});
     }
 
-    /// [`Self::release_sockets_after_save`], running `before_client_socket_removal`
-    /// at the moment the client socket is about to go, which is when a
+    /// [`Self::release_socket_after_save`], running `before_socket_removal`
+    /// at the moment the server socket is about to go, which is when a
     /// launcher watching for it would act. Tests observe the lease there.
-    pub(super) fn release_sockets_after_save_observed(
+    pub(super) fn release_socket_after_save_observed(
         &mut self,
-        before_client_socket_removal: impl FnOnce(),
+        before_socket_removal: impl FnOnce(),
     ) {
-        shepr_platform::ipc::ServerLifetime::release(
-            self,
-            |server| server.app.retire_session_writer(),
-            |server| drop(server._api_server.take()),
-            |server| {
-                before_client_socket_removal();
-                server.cleanup_sockets();
-            },
-        );
-    }
-
-    /// Removes socket files created by the server. A removal failure is
-    /// logged, not returned: this runs on the way out (final shutdown and
-    /// `Drop`), where no caller could act on it.
-    pub(super) fn cleanup_sockets(&self) {
-        if let Err(err) =
-            remove_socket_file_if_owned(&self.client_socket_path, &self.client_socket_identity)
-            && err.kind() != io::ErrorKind::NotFound
-        {
-            warn!(
-                path = %self.client_socket_path.display(),
-                error = %err,
-                "failed to remove client socket on shutdown"
-            );
-        }
+        self.app.retire_session_writer();
+        before_socket_removal();
+        drop(self._api_server.take());
     }
 }
 
@@ -521,16 +501,25 @@ mod phase_tests {
     }
 
     #[test]
-    fn the_lease_is_free_by_the_time_the_client_socket_goes() {
-        // What a launcher that sees the client socket vanish and starts a
+    fn the_lease_is_free_by_the_time_the_socket_goes() {
+        // What a launcher that sees the server socket vanish and starts a
         // daemon would meet, observed at exactly that moment. `Drop` and
         // every stop path run this same sequence.
         let mut server = super::super::tests::test_headless_server();
         let data_dir = server.app.paths.data_dir().to_path_buf();
-        let socket = server.client_socket_path.clone();
+        let socket = server.app.paths.server_address().socket().to_path_buf();
+        let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        server._api_server = Some(
+            shepr_api::start_server(
+                tx,
+                Arc::clone(server.lifecycle.stop_signal()),
+                &server.app.paths,
+            )
+            .expect("real server socket"),
+        );
         let mut lease_free = None;
         let mut socket_present = None;
-        server.release_sockets_after_save_observed(|| {
+        server.release_socket_after_save_observed(|| {
             socket_present = Some(socket.try_exists().is_ok_and(|present| present));
             lease_free = Some(shepr_mux::persist::DataDirLease::acquire(&data_dir).is_ok());
         });

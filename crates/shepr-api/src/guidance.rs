@@ -5,9 +5,9 @@ use std::path::Path;
 /// The context needed to render one operator-facing next step.
 #[derive(Clone, Copy)]
 pub enum OperatorGuidance<'a> {
-    /// A server API socket has no listening server.
+    /// A server socket has no listening server.
     ServerNotRunning {
-        /// The API socket that was checked.
+        /// The server socket that was checked.
         socket_path: &'a Path,
         /// Command that starts or attaches to this server.
         attach_command: &'a str,

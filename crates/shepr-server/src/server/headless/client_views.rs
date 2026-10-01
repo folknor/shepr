@@ -636,7 +636,7 @@ mod tests {
             Some(GeometrySource::Headless)
         );
 
-        let first = clients.allocate_client_id();
+        let first = ClientId::test_new(1);
         let mut first_client = client(true, true);
         first_client.shell_state_mut().location.focused_workspace_id = Some(workspace_id.clone());
         clients.insert(first, first_client);
@@ -646,7 +646,7 @@ mod tests {
         );
 
         // With a second presenter, the current viewers decide the source.
-        let second = clients.allocate_client_id();
+        let second = ClientId::test_new(2);
         let mut second_client = client(true, true);
         second_client
             .shell_state_mut()

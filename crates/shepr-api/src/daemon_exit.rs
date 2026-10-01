@@ -34,7 +34,7 @@ pub const FAILED_EXIT_CODE: i32 = 1;
 pub enum DaemonExit {
     /// The server stopped cleanly.
     Clean,
-    /// Another server already holds the sockets or the data directory.
+    /// Another server already holds the socket or the data directory.
     AlreadyRunning,
     /// The configuration or the paths it resolves were refused.
     ConfigRefused,

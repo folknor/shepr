@@ -13,9 +13,12 @@ pub struct RuntimeStatus {
     pub boot_id: String,
     /// The server has begun stopping and will not accept a new client.
     pub stopping: bool,
+    /// The server has bound its socket but is still restoring panes, and does
+    /// not accept a TUI connection yet.
+    pub starting: bool,
 }
 
-pub fn read_runtime_status_at(
+pub(crate) fn read_runtime_status_at(
     socket_path: &Path,
     timeout: Duration,
 ) -> io::Result<Option<RuntimeStatus>> {
@@ -51,7 +54,7 @@ pub fn read_runtime_status_at(
 
 /// Launch and conditional stop read the same identity and classify a lost
 /// status answer identically. A missing status answer does not prove absence;
-/// callers must still observe the endpoint lifetime before launching.
+/// callers must still check whether the socket is live before launching.
 pub(crate) fn read_runtime_status_until(
     socket_path: &Path,
     deadline: Instant,
@@ -90,59 +93,56 @@ pub(crate) fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool
     }
 }
 
-/// Presence of one two-socket server, including its status identity when it
-/// answers. The lifetime contract lives in the platform layer; status supplies
-/// the boot identity and stopping latch, never a second absence predicate.
-pub type ServerPresence = shepr_platform::ipc::ServerPresence<RuntimeStatus>;
+/// Presence of the server socket and its readiness for TUI connections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerPresence {
+    /// No live listener at the socket, including one that went away while its
+    /// status answer was awaited.
+    Gone,
+    /// Live, answering `starting`: still restoring panes.
+    Starting,
+    /// Live and accepting TUI connections.
+    Running(RuntimeStatus),
+    /// Live, answering `stopping` (which wins over `starting`).
+    Stopping,
+    /// Live before and after a status request that got no answer.
+    Unresponsive,
+}
 
-pub fn read_server_presence_at(
-    client_socket: &Path,
-    api_socket: &Path,
-    timeout: Duration,
-) -> io::Result<ServerPresence> {
-    use shepr_platform::ipc::ServerLifetime;
-    let endpoint_is_live = |path: &Path| {
-        crate::server_stop::server_socket_is_live(path).map_err(|error| {
+/// Probes liveness, then asks for status, then probes liveness again when the
+/// status request got no answer, so a server that finished shutting down
+/// between the two reads as gone rather than unresponsive. A liveness probe
+/// that cannot decide is the error.
+pub fn read_server_presence_at(socket: &Path, timeout: Duration) -> io::Result<ServerPresence> {
+    let live = || {
+        shepr_platform::ipc::socket_is_live(socket).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!(
                     "cannot tell whether a shepr server listens at {}: {error}",
-                    path.display()
+                    socket.display()
                 ),
             )
         })
     };
-    let client_live = endpoint_is_live(client_socket)?;
-    if !client_live {
-        return Ok(ServerLifetime::observe(
-            endpoint_is_live(api_socket)?,
-            false,
-            None,
-        ));
+    if !live()? {
+        return Ok(ServerPresence::Gone);
     }
-    let status = read_runtime_status_at(api_socket, timeout).map_err(|error| {
+    let status = read_runtime_status_at(socket, timeout).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
                 "the shepr server at {} did not give a usable status answer: {error}",
-                client_socket.display()
+                socket.display()
             ),
         )
     })?;
     match status {
-        Some(status) => {
-            let stopping = status.stopping;
-            Ok(ServerLifetime::observe(
-                true,
-                true,
-                Some((status, stopping)),
-            ))
-        }
-        None => Ok(ServerLifetime::observe(
-            endpoint_is_live(api_socket)?,
-            true,
-            None,
-        )),
+        Some(status) if status.stopping => Ok(ServerPresence::Stopping),
+        Some(status) if status.starting => Ok(ServerPresence::Starting),
+        Some(status) => Ok(ServerPresence::Running(status)),
+        None if !live()? => Ok(ServerPresence::Gone),
+        None => Ok(ServerPresence::Unresponsive),
     }
 }
 
@@ -150,6 +150,94 @@ pub fn read_server_presence_at(
 mod tests {
     use super::*;
     use std::io::{BufRead as _, BufReader};
+
+    fn pong_presence(stopping: bool, starting: bool) -> ServerPresence {
+        use std::io::Write;
+        let scratch = shepr_test_support::ScratchDir::new("presence-pong");
+        let socket = scratch.join("server.sock");
+        let listener = shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind");
+        let server = std::thread::spawn(move || {
+            loop {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().expect("clone"))
+                    .read_line(&mut line)
+                    .expect("request");
+                if line.is_empty() {
+                    continue;
+                }
+                let response = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":"0123456789abcdef","boot_id":"test","stopping":stopping,"starting":starting}});
+                writeln!(stream, "{response}").expect("pong");
+                break;
+            }
+        });
+        let presence = read_server_presence_at(&socket, Duration::from_secs(1)).expect("presence");
+        server.join().expect("server");
+        presence
+    }
+
+    #[test]
+    fn a_dead_socket_is_gone() {
+        let scratch = shepr_test_support::ScratchDir::new("presence-dead");
+        let socket = scratch.join("server.sock");
+        assert_eq!(
+            read_server_presence_at(&socket, Duration::from_millis(30)).expect("absent"),
+            ServerPresence::Gone
+        );
+        drop(shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind stale"));
+        assert_eq!(
+            read_server_presence_at(&socket, Duration::from_millis(30)).expect("stale"),
+            ServerPresence::Gone
+        );
+    }
+
+    #[test]
+    fn a_starting_pong_is_starting() {
+        assert_eq!(pong_presence(false, true), ServerPresence::Starting);
+    }
+
+    #[test]
+    fn stopping_wins_over_starting() {
+        assert_eq!(pong_presence(true, true), ServerPresence::Stopping);
+    }
+
+    #[test]
+    fn a_silent_listener_is_unresponsive() {
+        let scratch = shepr_test_support::ScratchDir::new("presence-silent");
+        let socket = scratch.join("server.sock");
+        let _listener = shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind");
+        assert_eq!(
+            read_server_presence_at(&socket, Duration::from_millis(30)).expect("presence"),
+            ServerPresence::Unresponsive
+        );
+    }
+
+    #[test]
+    fn a_listener_that_vanishes_before_answering_is_gone() {
+        let scratch = shepr_test_support::ScratchDir::new("presence-vanished");
+        let socket = scratch.join("server.sock");
+        let listener = shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind");
+        let path = socket.clone();
+        let server = std::thread::spawn(move || {
+            loop {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                let mut reader = BufReader::new(stream);
+                reader.read_line(&mut line).expect("request");
+                if line.is_empty() {
+                    continue;
+                }
+                drop(listener);
+                std::fs::remove_file(path).expect("remove socket before closing request");
+                break;
+            }
+        });
+        assert_eq!(
+            read_server_presence_at(&socket, Duration::from_secs(1)).expect("presence"),
+            ServerPresence::Gone
+        );
+        server.join().expect("server");
+    }
 
     #[test]
     fn launch_and_stop_share_status_transport_failure_classification() {

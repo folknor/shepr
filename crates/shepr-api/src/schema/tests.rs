@@ -66,7 +66,7 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
     // Preflight can inspect and restart a server from another build. Keep the
     // ping identity and guarded stop request bytes stable across those builds.
     const PING_REQUEST: &str = r#"{"id":"cross-build:ping","method":"ping","params":{}}"#;
-    const PONG_RESPONSE: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23","stopping":false}}"#;
+    const PONG_RESPONSE: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23","stopping":false,"starting":false}}"#;
     // What a build from before the stopping flag answers.
     const PONG_RESPONSE_WITHOUT_STOPPING: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23"}}"#;
     const STOP_REQUEST: &str = r#"{"id":"cross-build:stop","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23"}}"#;
@@ -92,6 +92,7 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
             build_id: "0123456789abcdef".into(),
             boot_id: "17-23".into(),
             stopping: false,
+            starting: false,
         },
     };
     assert_eq!(
@@ -236,7 +237,7 @@ fn removed_uncalled_methods_are_rejected() {
     }
 }
 
-/// A client shell's commands cross the client socket as
+/// A client shell's commands cross the server socket as
 /// `shepr_protocol::command::EndpointCommand`; none of them is a JSON API
 /// method.
 #[test]
@@ -293,6 +294,7 @@ fn success_response_round_trips() {
             build_id: "0123456789abcdef".into(),
             boot_id: "17-23".into(),
             stopping: true,
+            starting: false,
         },
     };
 
@@ -314,4 +316,16 @@ fn error_response_round_trips() {
     let json = serde_json::to_string(&response).expect("test precondition");
     let restored: ErrorResponse = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, response);
+}
+
+#[test]
+fn a_pong_from_a_build_without_starting_reads_as_not_starting() {
+    let response: SuccessResponse = serde_json::from_str(r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23","stopping":false}}"#).expect("pong without starting");
+    assert!(matches!(
+        response.result,
+        ResponseResult::Pong {
+            starting: false,
+            ..
+        }
+    ));
 }

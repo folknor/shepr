@@ -126,13 +126,9 @@ env_vocabulary! {
     /// The table test below pins the name and kind of every variant.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum EnvVar {
-        /// `SHEPR_SOCKET_PATH`: the API socket of the server to target. Written
+        /// `SHEPR_SOCKET_PATH`: the socket of the server to target. Written
         /// into every pane as the socket of the server that owns it.
         SheprSocketPath => "SHEPR_SOCKET_PATH",
-        /// `SHEPR_CLIENT_SOCKET_PATH`: the client socket to target when
-        /// `SHEPR_SOCKET_PATH` is not set. Written by the remote bridge into
-        /// the client it spawns.
-        SheprClientSocketPath => "SHEPR_CLIENT_SOCKET_PATH",
         /// `SHEPR_PANE_ID`: the public id of the pane a process runs in,
         /// written into every managed pane.
         SheprPaneId => "SHEPR_PANE_ID",
@@ -356,7 +352,7 @@ impl EnvVar {
             Self::Home | Self::XdgConfigHome | Self::XdgStateHome | Self::XdgRuntimeDir => {
                 EnvKind::AbsolutePath
             }
-            Self::SheprSocketPath | Self::SheprClientSocketPath => EnvKind::SelectorPath,
+            Self::SheprSocketPath => EnvKind::SelectorPath,
             Self::SshConnection
             | Self::SshTty
             | Self::VscodeIpcHookCli
@@ -963,11 +959,6 @@ mod tests {
         use EnvKind::{AbsolutePath, Flag, Handoff, Path, Presence, Raw, SelectorPath, Text};
         let table: &[(EnvVar, &str, EnvKind)] = &[
             (EnvVar::SheprSocketPath, "SHEPR_SOCKET_PATH", SelectorPath),
-            (
-                EnvVar::SheprClientSocketPath,
-                "SHEPR_CLIENT_SOCKET_PATH",
-                SelectorPath,
-            ),
             (EnvVar::SheprPaneId, "SHEPR_PANE_ID", Text),
             (EnvVar::SheprEnv, "SHEPR_ENV", Text),
             (EnvVar::SheprBuildProfile, "SHEPR_BUILD_PROFILE", Text),
@@ -1286,10 +1277,7 @@ mod tests {
             .copied()
             .filter(|var| var.kind() == EnvKind::SelectorPath)
             .collect();
-        assert_eq!(
-            selectors,
-            [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath]
-        );
+        assert_eq!(selectors, [EnvVar::SheprSocketPath]);
         for var in selectors {
             let error = resolve(var, Some(OsStr::new(""))).expect_err("an empty selector refuses");
             assert_eq!(error.refusal, EnvRefusal::EmptySelector);

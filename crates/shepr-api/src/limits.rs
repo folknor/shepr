@@ -43,8 +43,11 @@ pub(crate) const INITIAL_REQUEST_READ_CHUNK_BYTES: usize = 8 * 1024;
 /// and request-owned stream state while allowing several clients and hooks.
 pub const MAX_ACTIVE_CONNECTIONS: usize = 64;
 
-/// Maximum busy connections queued for request-ID extraction; additional
-/// refusals are sent immediately so the accept loop stays available.
+/// Maximum connections queued for the refuser thread, of either kind: over a
+/// kind's admission limit, or over the classification limit with no first
+/// byte yet. With the queue full, a known API connection is refused at once
+/// without its request ID and any other connection is closed, so the accept
+/// loop stays available.
 pub(crate) const BUSY_REFUSAL_QUEUE: usize = 16;
 
 /// First accept-loop retry delay. The short pause avoids a tight error loop
@@ -56,19 +59,35 @@ pub(crate) const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 pub(crate) const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 
 /// Maximum time a server stop waits for the named server to stop answering, or
-/// for both sockets to disappear when the stop was not conditional.
+/// for the socket to disappear when the stop was not conditional.
 pub(crate) const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Maximum time a server stop waits for a data-directory lease after the
-/// stopped server no longer answers or its sockets are gone. The server
-/// releases its lease before removing its sockets; a later holder may be a new
+/// stopped server no longer answers or its socket is gone. The server
+/// releases its lease before removing its socket; a later holder may be a new
 /// process using the same data directory.
 pub(crate) const STOP_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Per-request deadline while polling the server's boot identity after a stop.
 pub(crate) const STOP_STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
-/// Poll interval while waiting for a server to stop answering or its sockets
+/// Poll interval while waiting for a server to stop answering or its socket
 /// to disappear. It bounds shutdown detection latency without rapid repeated
 /// probes.
 pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// Maximum concurrently served TUI connections, admitted separately from API
+/// connections. A TUI connection's thread performs the handshake and then
+/// reads until disconnect, holding its admission throughout, so this bounds
+/// both handshake workers and connected client reader threads.
+pub(crate) const MAX_ACTIVE_CLIENT_CONNECTIONS: usize = 64;
+
+/// Maximum connection threads that exist only to wait for a peer's first byte,
+/// which decides whether it is an API or a TUI connection. Over it, the
+/// refuser waits a short bound for the byte instead, so silent peers cannot
+/// make the server refuse a peer whose own kind has room.
+pub(crate) const MAX_UNCLASSIFIED_CONNECTIONS: usize = 64;
+
+/// Overall bound on reading a refused TUI connection's preamble and hello, so
+/// an excess client cannot monopolize the refuser.
+pub(crate) const BUSY_CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);

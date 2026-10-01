@@ -624,6 +624,7 @@ mod tests {
             build_id: build_id.into(),
             boot_id: boot_id.into(),
             stopping: false,
+            starting: false,
         }
     }
 

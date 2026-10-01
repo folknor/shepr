@@ -14,6 +14,9 @@ pub enum HandshakeRefusal {
     /// The server already serves its limit of active client connections,
     /// the value carried. Transient: a connection frees a slot when it ends.
     ConnectionLimit(u32),
+    /// The server has bound its socket but is still restoring panes.
+    /// Transient: it accepts clients once its panes are restored.
+    ServerStarting,
 }
 
 impl std::fmt::Display for HandshakeRefusal {
@@ -21,6 +24,9 @@ impl std::fmt::Display for HandshakeRefusal {
         match self {
             Self::ExpectedHello => f.write_str("expected a handshake as the first message"),
             Self::InvalidSurface(message) => f.write_str(message),
+            Self::ServerStarting => f.write_str(
+                "the server is still starting; it accepts clients once its panes are restored",
+            ),
             Self::ConnectionLimit(limit) => write!(
                 f,
                 "the server is already serving its limit of {limit} client connections"

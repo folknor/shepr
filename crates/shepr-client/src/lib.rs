@@ -1,7 +1,8 @@
-//! Thin client mode - connects to the server's client socket.
+//! Thin client mode - connects to the server socket.
 //!
 //! The client:
-//! - Connects to `shepr-client.sock`, checks the build preamble, then sends terminal geometry
+//! - Connects to `shepr.sock`, sends the build preamble and terminal geometry, then reads
+//!   the server's preamble
 //! - Sets up the real terminal (raw mode, mouse capture, keyboard enhancements)
 //! - Receives surface messages, composes them with the client shell chrome and blits the
 //!   result to the terminal (diff against last frame)
@@ -79,7 +80,7 @@ fn run_launched_client(
     paths: &shepr_config::AppPaths,
 ) -> Result<ClientExit, ClientRunError> {
     let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
-    let socket_path = paths.server_address().client_socket().to_path_buf();
+    let socket_path = paths.server_address().socket().to_path_buf();
     let shell_config = shell::ClientShellConfig::from_validated_config(config)
         .with_local_endpoint(paths.state_dir(), &socket_path)?;
     let mouse_capture = settings.mouse_capture_active();
@@ -419,7 +420,7 @@ async fn run_client_loop(
             .flatten();
         let generation = seeded_failure.map_or(connected_generation, |_| Some(1));
         supervisors.add_local(
-            config.paths.server_address().client_socket().to_path_buf(),
+            config.paths.server_address().socket().to_path_buf(),
             generation,
             launch_now,
         );

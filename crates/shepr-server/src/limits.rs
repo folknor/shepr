@@ -89,8 +89,6 @@ pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 /// hold the handshake thread open. The deadline leaves room for OS timer slack,
 /// thread scheduling, and cleanup overhead.
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
-/// Bound an excess client without monopolizing the refusal queue.
-pub(crate) const CLIENT_LIMIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
 /// Maximum time a client stream writer may make no progress before disconnecting it.
 pub(crate) const CLIENT_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// First retry after automatic workspace creation fails, such as when the
@@ -120,18 +118,6 @@ pub(crate) const MAX_ENDPOINT_RESPONSE_ENCODED_BYTES: usize =
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Poll spacing while that transport thread waits for the flush.
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(5);
-/// How long the client listener rests after an accept ran out of descriptors or
-/// memory before it tries the backlog again. Readiness stays set meanwhile, so
-/// without the rest the loop would spin on the same failing accept.
-pub(crate) const CLIENT_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(250);
-/// Maximum accepted client connections with active transport threads. A
-/// transport thread performs the handshake and then reads until disconnect,
-/// so holding admission for its lifetime bounds both handshake workers and
-/// connected client reader threads.
-pub(crate) const MAX_ACTIVE_CLIENT_CONNECTIONS: usize = 64;
-/// Bound queued client connection-limit refusals so the accept loop never
-/// waits for a peer or grows refusal work without limit.
-pub(crate) const CLIENT_HANDSHAKE_REFUSAL_QUEUE_CAPACITY: usize = 16;
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Bound endpoint boot identifiers above the size of generated IDs.

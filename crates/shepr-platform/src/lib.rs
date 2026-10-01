@@ -40,7 +40,9 @@ pub use process::{
     ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,
 };
 pub use random::unpredictable_token;
-pub use remote_bridge_io::{RemoteBridgeOutcome, RemoteBridgeWake, forward_remote_bridge_stdio};
+pub use remote_bridge_io::{
+    RemoteBridgeOutcome, RemoteBridgeWake, answer_remote_bridge, forward_remote_bridge_stdio,
+};
 pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{
     RemoteSshConfigPaths, create_remote_ssh_config_dir, remote_bridge_endpoint_path,

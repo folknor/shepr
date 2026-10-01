@@ -2,11 +2,11 @@
 //!
 //! The server:
 //! - Does not enter raw mode or read stdin
-//! - Creates and listens on the API and client sockets
+//! - Serves one socket for the JSON API and TUI clients
 //! - Initializes AppState and all PTYs from session restore or fresh state
 //! - Runs the main event loop (drain events, drain API requests, scheduled tasks)
 //! - Renders virtual surfaces directly to wire-cell frames in memory
-//! - Accepts client connections on the client socket
+//! - Accepts TUI connections after pane restore
 //! - Streams frames to connected clients after each render
 //! - Routes client input events through the existing input pipeline
 //! - Continues running after client disconnect
@@ -16,14 +16,12 @@
 use crate::server::ClientId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use tokio::io::unix::{AsyncFd, AsyncFdReadyGuard};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -31,17 +29,11 @@ use base64::Engine;
 
 use crate::app::{self, RenderDemand};
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
-use crate::server::client_accept::{self, accept_client_connection};
 use crate::server::client_shell::render_pane_surface as render_client_shell_pane_surface;
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{ClientConnection, ClientRegistry, ClientShellState, render_targets};
 use crate::server::pane_input::apply_client_pane_input_events;
-use crate::server::socket_paths::client_socket_path;
 use shepr_mux::events::AppEvent;
-use shepr_platform::ipc::{
-    LocalListener, SocketFileIdentity, SocketStartupLock, bind_private_socket_with_lock,
-    remove_socket_file_if_owned,
-};
 use shepr_protocol::{FrameData, ServerMessage};
 
 mod api_dispatcher;
@@ -55,7 +47,7 @@ mod retained_surface;
 mod surface_interest;
 mod worker;
 
-pub use bootstrap::{RunServerError, ServerReady, ServerSocket, run_server};
+pub use bootstrap::{RunServerError, ServerReady, run_server};
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
 /// Samples the clock app state reads. App code never reads the clock itself
@@ -74,15 +66,13 @@ pub(super) fn sample_app_clock() -> app::AppClock {
 // ---------------------------------------------------------------------------
 
 /// Events that the headless server event loop can process.
-enum LoopEvent<'a> {
+enum LoopEvent {
     Timer,
     Internal(AppEvent),
     Api(Box<shepr_api::ApiRequestMessage>),
     ServerEvent(ServerEvent),
     WorkerCompletion(worker::WorkerCompletion),
     RenderRequested,
-    ClientListenerReady(AsyncFdReadyGuard<'a, ListenerFd>),
-    ClientListenerError(io::Error),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -99,14 +89,6 @@ struct PendingCheckpointedPaneExit {
     checkpoint_generation: u64,
 }
 
-struct ListenerFd(RawFd);
-
-impl AsRawFd for ListenerFd {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Headless server
 // ---------------------------------------------------------------------------
@@ -114,12 +96,8 @@ impl AsRawFd for ListenerFd {
 /// The headless server - runs the shepr event loop without a real terminal.
 pub struct HeadlessServer {
     app: app::App,
-    /// Kept alive only for its `Drop` impl, which tears down the JSON API socket server.
+    /// Kept alive only for its `Drop` impl, which tears down the server socket listener.
     _api_server: Option<shepr_api::ServerHandle>,
-    client_listener: LocalListener,
-    active_client_connections: Arc<std::sync::atomic::AtomicUsize>,
-    client_socket_path: PathBuf,
-    client_socket_identity: SocketFileIdentity,
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: shepr_protocol::BootId,
@@ -189,84 +167,36 @@ pub struct HeadlessServer {
     worker_rx: tokio::sync::mpsc::UnboundedReceiver<worker::WorkerCompletion>,
     checkout_root_runner: worker::CheckoutRootRunner,
     resume_cwd_checks_in_flight: HashSet<(shepr_protocol::TerminalId, PathBuf)>,
-    // Kept after the listener so it is released only after socket cleanup and listener drop.
-    _client_socket_startup_lock: SocketStartupLock,
 }
 
 impl HeadlessServer {
-    /// Creates and starts the headless server.
-    ///
-    /// This:
-    /// 1. Prepares the client socket path (cleaning up stale sockets) under
-    ///    the startup lock bootstrap reserved before restore, so no other
-    ///    binder can take the path between that reservation and this bind
-    /// 2. Binds the private client socket listener
-    /// 3. Returns the server ready to run
-    ///
-    /// The listener path is published only here, so launchers see the API
-    /// socket first and wait until the server can accept clients. A live
-    /// listener found while preparing the path comes back as the
-    /// [`shepr_platform::ipc::SocketBusy`] refusal naming it; [`run_server`]
-    /// turns that into [`RunServerError::AlreadyRunning`].
+    /// Creates the server once panes are restored: builds the server event
+    /// channel and, given the socket's handle (tests pass `None`), opens its
+    /// TUI gate with the client transport handler. From then on `ping`
+    /// answers without `starting` and TUI connections are served.
     pub(super) fn new(
-        mut app: app::App,
+        app: app::App,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
-        mut api_server: Option<shepr_api::ServerHandle>,
+        api_server: Option<shepr_api::ServerHandle>,
         stop_requested: Arc<shepr_api::ServerStopSignal>,
-        client_socket_reservation: SocketStartupLock,
-    ) -> io::Result<Self> {
-        let client_path = client_socket_reservation.socket_path().to_path_buf();
-        let (listener, client_socket_startup_lock, client_socket_identity) =
-            match bind_private_socket_with_lock(client_socket_reservation) {
-                Ok(bound) => bound,
-                Err(error) => {
-                    shepr_platform::ipc::ServerLifetime::release(
-                        &mut (&mut app, &mut api_server),
-                        |(app, _)| app.retire_session_writer(),
-                        |(_, api)| drop(api.take()),
-                        |_| {},
-                    );
-                    return Err(error);
-                }
-            };
-        info!(path = %client_path.display(), "client protocol socket listening");
-
-        // Accept all queued connections when the listener becomes readable.
-        if let Err(error) = listener.set_nonblocking(true) {
-            shepr_platform::ipc::ServerLifetime::release(
-                &mut (&mut app, &mut api_server),
-                |(app, _)| app.retire_session_writer(),
-                |(_, api)| drop(api.take()),
-                |_| {
-                    if let Err(cleanup_error) =
-                        remove_socket_file_if_owned(&client_path, &client_socket_identity)
-                        && cleanup_error.kind() != io::ErrorKind::NotFound
-                    {
-                        warn!(
-                            path = %client_path.display(),
-                            error = %cleanup_error,
-                            "failed to remove client socket after listener setup failed"
-                        );
-                    }
-                },
-            );
-            drop(listener);
-            drop(client_socket_startup_lock);
-            return Err(error);
-        }
-
+    ) -> Self {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
 
         let (worker_tx, worker_rx) = worker::channel();
 
-        Ok(Self {
+        if let Some(api) = &api_server {
+            api.client_gate().open(Arc::new(
+                crate::server::client_transport::ClientTransportHandler {
+                    server_event_tx: server_event_tx.clone(),
+                    should_quit: Arc::clone(&stop_requested),
+                    ids: crate::server::clients::ClientIdAllocator::default(),
+                },
+            ));
+        }
+        Self {
             app,
             _api_server: api_server,
-            client_listener: listener,
-            client_socket_path: client_path,
-            client_socket_identity,
-            active_client_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             clients: ClientRegistry::default(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
             shell_session_cache: None,
@@ -291,8 +221,7 @@ impl HeadlessServer {
             worker_rx,
             checkout_root_runner: worker::default_checkout_root_runner(),
             resume_cwd_checks_in_flight: HashSet::new(),
-            _client_socket_startup_lock: client_socket_startup_lock,
-        })
+        }
     }
 
     /// Hands the app a fresh clock sample and returns its monotonic half.
@@ -314,14 +243,11 @@ impl HeadlessServer {
     pub async fn run(&mut self) -> io::Result<()> {
         crate::logging::startup("server");
         // The fallible setup below returns before the loop, so it skips the
-        // final save; `Drop` still releases the lease and sockets in order. No
+        // final save; `Drop` still releases the lease and socket in order. No
         // save is owed: no client has connected and no event has been applied,
         // so nothing has changed since bootstrap left the session on disk.
         // Every failure inside the loop goes through `initiate_shutdown` and
         // the save after it.
-        let listener_fd = self.client_listener.as_fd().as_raw_fd();
-        let client_listener_ready = AsyncFd::new(ListenerFd(listener_fd))?;
-
         // Register SIGINT handler for graceful shutdown.
         let stop_requested = Arc::clone(self.lifecycle.stop_signal());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
@@ -330,10 +256,6 @@ impl HeadlessServer {
 
         let mut render_demand = RenderDemand::Full;
         let mut run_error = None;
-        // Set while the client listener rests after running out of descriptors
-        // or memory; its readiness is left set, so it is not polled until then.
-        let mut client_accept_paused_until: Option<Instant> = None;
-
         loop {
             // If shutdown has been initiated, complete it and exit.
             if self.lifecycle.phase() == ShutdownPhase::Stopping {
@@ -496,10 +418,6 @@ impl HeadlessServer {
                 .map_or(next_deadline, |cwd| {
                     Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
                 });
-            client_accept_paused_until = client_accept_paused_until.filter(|until| *until > now);
-            let next_deadline = client_accept_paused_until.map_or(next_deadline, |until| {
-                Some(next_deadline.map_or(until, |current| current.min(until)))
-            });
             let stop_signal = Arc::clone(self.lifecycle.stop_signal());
             // A capped drain leaves queued work in its receiver. The matching
             // receive branch stays ready and starts another pass immediately.
@@ -529,13 +447,6 @@ impl HeadlessServer {
                     // whatever save waited for it.
                     () = self.app.session_saver.save_finished().notified() => LoopEvent::Timer,
                     _ = self.app.render_notify.notified() => LoopEvent::RenderRequested,
-                    ready = client_listener_ready.readable(),
-                        if client_accept_paused_until.is_none() => {
-                        match ready {
-                            Ok(guard) => LoopEvent::ClientListenerReady(guard),
-                            Err(err) => LoopEvent::ClientListenerError(err),
-                        }
-                    },
                 }
             };
             // The wait above can last until the next deadline; dispatch reads
@@ -574,10 +485,6 @@ impl HeadlessServer {
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
                     LoopEvent::Api(msg) => self.reject_api_request_for_shutdown(&msg),
-                    LoopEvent::ClientListenerError(err) => {
-                        tracing::error!(error = %err, "client listener readiness failed");
-                        run_error.get_or_insert(err);
-                    }
                     // A worker completion and a client endpoint request land
                     // here: the shutdown flush answers a pending reply with
                     // the shutdown refusal.
@@ -613,37 +520,6 @@ impl HeadlessServer {
                         render_demand.join(RenderDemand::Partial);
                     }
                 }
-                LoopEvent::ClientListenerReady(mut ready) => {
-                    // Keep readiness set while accepts succeed. `try_io` clears
-                    // it only when accept observes WouldBlock, so a hard error
-                    // cannot strand connections still waiting in the backlog.
-                    loop {
-                        if self.lifecycle.stop_requested(self.app.state.should_quit) {
-                            break;
-                        }
-                        match ready.try_io(|_| self.accept_client_connection()) {
-                            Err(_) => break,
-                            Ok(Ok(())) => {}
-                            // Out of descriptors or memory: leave the backlog
-                            // queued and readiness set, and try again later.
-                            Ok(Err(err)) if client_accept::accept_resources_exhausted(&err) => {
-                                client_accept_paused_until =
-                                    Some(event_time + crate::limits::CLIENT_ACCEPT_RETRY_DELAY);
-                                break;
-                            }
-                            Ok(Err(err)) => {
-                                run_error.get_or_insert(err);
-                                self.initiate_shutdown();
-                                break;
-                            }
-                        }
-                    }
-                }
-                LoopEvent::ClientListenerError(err) => {
-                    tracing::error!(error = %err, "client listener readiness failed");
-                    run_error.get_or_insert(err);
-                    self.initiate_shutdown();
-                }
             }
         }
 
@@ -665,7 +541,7 @@ impl HeadlessServer {
         }
         // The save and the teardown wait can each take seconds.
         self.refresh_app_clock();
-        self.release_sockets_after_save();
+        self.release_socket_after_save();
 
         // A successor can start once the lease is free, while this process
         // still logs to the same server log until it exits. That is safe: the
@@ -813,17 +689,6 @@ impl HeadlessServer {
         // keeps the departed client's size.
         self.reapply_controlled_shell_workspace_geometry(true);
         true
-    }
-
-    /// Accepts one client connection from the non-blocking listener.
-    fn accept_client_connection(&mut self) -> io::Result<()> {
-        accept_client_connection(
-            &self.client_listener,
-            &mut self.clients,
-            &self.active_client_connections,
-            self.lifecycle.stop_signal(),
-            &self.server_event_tx,
-        )
     }
 
     /// Drains server events from the dedicated channel.
@@ -1764,10 +1629,10 @@ fn client_pane_input_has_interaction(events: &[shepr_protocol::ClientPaneInputEv
 
 impl Drop for HeadlessServer {
     fn drop(&mut self) {
-        // The lease before the sockets, as on a clean exit; see
-        // `release_sockets_after_save`. Without this the sockets went first
+        // The lease before the socket, as on a clean exit; see
+        // `release_socket_after_save`. Without this the socket went first
         // and the lease with the fields dropped after this body.
-        self.release_sockets_after_save();
+        self.release_socket_after_save();
     }
 }
 

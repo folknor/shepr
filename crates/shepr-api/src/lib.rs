@@ -11,12 +11,10 @@ mod status;
 mod stop;
 
 pub use limits::MAX_ACTIVE_CONNECTIONS;
-pub use server::ServerHandle;
 pub use server::start_server;
-pub use status::{RuntimeStatus, ServerPresence, read_runtime_status_at, read_server_presence_at};
+pub use server::{ClientGate, ClientProtocolHandler, ConnectionSlot, ServerHandle};
+pub use status::{RuntimeStatus, ServerPresence, read_server_presence_at};
 pub use stop::ServerStopSignal;
-
-use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
@@ -73,10 +71,6 @@ pub struct ApiRequestMessage {
 /// The bounded queue from socket connection threads to the app loop. A full
 /// queue refuses the request with `server_unavailable` instead of waiting.
 pub type ApiRequestSender = mpsc::Sender<ApiRequestMessage>;
-
-pub fn socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
-    crate::server_stop::active_api_socket_path(paths)
-}
 
 #[cfg(test)]
 mod tests {

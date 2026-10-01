@@ -13,7 +13,7 @@ fix pass. Each falls in one of three classes:
   stalled, a panic in a helper thread, a lost terminal event.
 
 An entry confirmed as rejected owes its rule-3 comment at the code site. An entry
-the owner keeps moves to its scope's `notes/bugs-*.md` under its existing ID.
+the owner keeps moves to `notes/todo.md` under "Open defects".
 
 1. An entry is removed entirely when completely resolved. No historical record
    stays here.
@@ -196,7 +196,7 @@ the endpoint connection on `Rejected`.
   `Rejected` and the connection is torn down.
 
 The client code explicitly allows these orders, so its handling must not fail the
-connection. Fix direction: CSHELL-019.
+connection. Fix direction: `notes/work.md` item 2.
 
 ## REJ-012 - A failed remove leaves the layout's placeholder as the root
 
@@ -344,7 +344,7 @@ it viewed, and `app_client_count` (git refresh cadence). Claims broken: the
 transport's pattern that every reader exit tells the loop, and the `HealthPing`
 comment. Send `ClientDisconnected` on that `break` (and the encode-failure
 `break` above it); structurally, make the writer queue's `close_connection` the
-one place that reports the disconnect. See SLOOP-017.
+one place that reports the disconnect. See `notes/work.md` item 4.
 
 ## REJ-022 - Sends that fail during shutdown re-apply geometry on a stopping server
 
@@ -399,7 +399,7 @@ An endpoint left `Unavailable` by `rollback_at` from `RestoringSource` (or from
 synchronizing the source) has had surface-on sent and never released; its server
 keeps this client's surface active (and the client in its PTY size and
 foreground decisions) while the client drops everything it sends.
-`ActivationRollback::Unavailable` releases nothing on the way out. See CEND-014.
+`ActivationRollback::Unavailable` releases nothing on the way out. See `notes/work.md` item 1.
 
 ## REJ-026 - The API's control path shares the admission pool with app-bound requests, so a stalled loop makes `server stop` fail
 
@@ -424,7 +424,7 @@ id and could answer `ping` and both stop methods there. Structural fix: admit by
 method class (a small reserve for control methods, or read the line before
 admission and cap only app-bound methods).
 
-## REJ-027 - A stop that was never delivered is reported as a timeout with "sockets still reachable"
+## REJ-027 - A stop that was never delivered is reported as a timeout with "socket still reachable"
 
 Class: failure on failure (the server closed without answering). Scope: wire and
 config.
@@ -433,7 +433,7 @@ config.
 an accepted stop. The server also closes without answering when the connection
 thread fails to spawn, when the peer-credential check refuses, or when the
 request line is oversized. A stop never delivered then waits out the full 15 s and
-reports `TimedOut` with "sockets are still reachable", which misnames the failure.
+reports `TimedOut` with "the socket at <path> is still reachable", which misnames the failure.
 
 ## REJ-028 - An unterminated OSC 10/11 reply holds host input with no bound or timeout
 
@@ -457,8 +457,7 @@ control input"; other incomplete control strings go through the bounded
 `PASTE_STALL_TIMEOUT`. Trigger: a terminal or multiplexer that drops the tail of
 a long reply; the client looks hung until Ctrl+G. Fix: hold only while
 `awaiting_reply()` is true, for one flush (as `held_pending_host_reply_esc`
-does), then fall through to the `ControlString::Incomplete` branch. The file is
-upstream-tracked; check upstream herdr first. See INPLAT-016.
+does), then fall through to the `ControlString::Incomplete` branch.
 
 ## REJ-029 - A keyboard-protocol write that fails part way leaves the push/pop bookkeeping wrong
 

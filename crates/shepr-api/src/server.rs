@@ -1,58 +1,39 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::limits::{
-    ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, BUSY_REFUSAL_QUEUE, BUSY_REQUEST_ID_TIMEOUT,
-    INITIAL_REQUEST_READ_CHUNK_BYTES, INITIAL_REQUEST_TIMEOUT, MAX_ACTIVE_CONNECTIONS,
+    BUSY_REQUEST_ID_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES, MAX_ACTIVE_CONNECTIONS,
     MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
     AppMethod, AppRequest, ErrorResponse, Method, MethodTraits, Request, ResponseResult,
     SuccessResponse,
 };
-use crate::{ApiRequestMessage, ApiRequestSender, socket_path};
+use crate::{ApiRequestMessage, ApiRequestSender};
 use shepr_platform::ipc::{
     LocalStream, LocalStreamDeadlineReader, SocketFileIdentity, SocketStartupLock,
-    bind_private_socket, is_connection_closed_error, peer_is_same_user,
-    remove_socket_file_if_owned, socket_file_identity,
+    bind_private_socket, is_connection_closed_error, remove_socket_file_if_owned,
+    socket_file_identity,
 };
 
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
     "timed out waiting for app response; the request may still run, so its outcome is unknown";
 
-struct ConnectionAdmission {
-    active: Arc<AtomicUsize>,
-}
-
-impl ConnectionAdmission {
-    fn try_acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
-        active
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_ACTIVE_CONNECTIONS).then_some(count + 1)
-            })
-            .ok()?;
-        Some(Self {
-            active: Arc::clone(active),
-        })
-    }
-}
-
-impl Drop for ConnectionAdmission {
-    fn drop(&mut self) {
-        self.active.fetch_sub(1, Ordering::Release);
-    }
-}
+mod client_protocol;
+mod listener;
+pub use client_protocol::{ClientGate, ClientProtocolHandler, ConnectionSlot};
 
 pub struct ServerHandle {
     thread: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
+    gate: ClientGate,
     // Declared last so it is released only after `drop` has removed the
     // socket file and joined the listener: a racing server cannot claim the
     // path while this one still owns it.
@@ -73,23 +54,29 @@ impl Drop for ServerHandle {
         if let Err(err) = self.remove_socket_file_if_owned()
             && err.kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %self.path.display(), error = %err, "failed to remove api socket on shutdown");
+            warn!(path = %self.path.display(), error = %err, "failed to remove server socket on shutdown");
         }
 
         if let Some(thread) = self.thread.take() {
             if woke {
                 // Bounded by one accept-failure backoff (at most a second).
                 if thread.join().is_err() {
-                    warn!("api listener thread panicked");
+                    warn!("server listener thread panicked");
                 }
             } else {
-                debug!("api listener not woken; leaving its thread to process exit");
+                debug!("server listener not woken; leaving its thread to process exit");
             }
         }
     }
 }
 
 impl ServerHandle {
+    /// The gate through which the server installs its TUI protocol once its
+    /// panes are restored; until then `ping` answers `starting`.
+    pub fn client_gate(&self) -> ClientGate {
+        self.gate.clone()
+    }
+
     pub fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
         remove_socket_file_if_owned(&self.path, &self.identity)
     }
@@ -106,7 +93,7 @@ impl ServerHandle {
         match shepr_platform::ipc::connect_local_stream(&self.path) {
             Ok(_stream) => true,
             Err(err) => {
-                debug!(error = %err, "could not wake api listener for shutdown");
+                debug!(error = %err, "could not wake server listener for shutdown");
                 false
             }
         }
@@ -118,62 +105,27 @@ pub fn start_server(
     server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
-    let path = socket_path(paths);
+    let path = paths.server_address().socket().to_path_buf();
     let (listener, startup_lock, identity) = bind_private_socket(&path)?;
-    info!(path = %path.display(), "api server listening");
-
+    info!(path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
-    let listener_running = Arc::clone(&running);
-    let active_connections = Arc::new(AtomicUsize::new(0));
-    let connection_admission = Arc::clone(&active_connections);
-    // The listener thread must outlive any single accept or spawn failure.
-    // Nothing restarts it, and while the client socket stays up the server
-    // looks alive to autodetection, so a dead API listener leaves a server
-    // that refuses attaches (its status probe fails) and every CLI call and
-    // agent hook fails until someone kills it by hand. Transient errors such
-    // as EMFILE/ENFILE (one fd and thread per connection, plus PTYs) or
-    // ECONNABORTED are therefore logged and retried with a bounded backoff.
-    let busy_refuser = spawn_busy_refuser();
-    let thread = spawn_listener_thread(listener, listener_running, move |stream| {
-        // Dropping the stream closes the refused connection; that is not an
-        // accept failure, so it does not feed the backoff.
-        match peer_is_same_user(&stream) {
-            Ok(true) => {}
-            Ok(false) => {
-                warn!("api connection from another user refused");
-                return Ok(());
-            }
-            Err(err) => {
-                warn!(error = %err, "api connection peer credentials unavailable; refused");
-                return Ok(());
-            }
-        }
-        let Some(admission) = ConnectionAdmission::try_acquire(&connection_admission) else {
-            hand_off_busy_connection(busy_refuser.as_ref(), stream);
-            return Ok(());
-        };
-        let api_tx = api_tx.clone();
-        let server_stop = Arc::clone(&server_stop);
-        // `std::thread::spawn` panics when the OS refuses a new thread, which
-        // would take the listener down with it. On failure the closure (and
-        // the accepted stream) is dropped, which closes that one connection;
-        // the client sees EOF and the listener keeps serving.
-        std::thread::Builder::new()
-            .name("shepr-api-conn".into())
-            .spawn(move || {
-                let _admission = admission;
-                if let Err(err) = handle_connection(stream, &api_tx, &server_stop) {
-                    warn!(error = %err, "api connection failed");
-                }
-            })
-            .map(|_| ())
-    });
-
+    let gate = ClientGate::default();
+    // Nothing restarts the listener, and a dead one leaves a server that
+    // answers neither the CLI, agent hooks nor TUI attaches: it must outlive
+    // every accept and spawn failure.
+    let thread = listener::start_listener(
+        listener,
+        Arc::clone(&running),
+        api_tx,
+        server_stop,
+        gate.clone(),
+    )?;
     Ok(ServerHandle {
         thread: Some(thread),
         path,
         identity,
         running,
+        gate,
         _startup_lock: startup_lock,
     })
 }
@@ -192,49 +144,9 @@ fn request_id_from_line(line: &str) -> String {
     }
 }
 
-/// Starts the one thread that answers connections over the limit, so reading
-/// their request IDs never holds up the accept loop. The thread ends when the
-/// returned sender (owned by the listener) is dropped. `None` when the thread
-/// could not be spawned; refusals then carry no request ID.
-fn spawn_busy_refuser() -> Option<std::sync::mpsc::SyncSender<LocalStream>> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<LocalStream>(BUSY_REFUSAL_QUEUE);
-    let spawned = std::thread::Builder::new()
-        .name("shepr-api-busy".into())
-        .spawn(move || {
-            for stream in rx {
-                reject_busy_connection(stream);
-            }
-        });
-    match spawned {
-        Ok(_) => Some(tx),
-        Err(err) => {
-            warn!(error = %err, "api busy refuser thread unavailable; refusals carry no request id");
-            None
-        }
-    }
-}
-
-/// Called on the accept loop for a connection over the limit: queue it for
-/// the refuser thread, or refuse it at once when that queue is full.
-fn hand_off_busy_connection(
-    refuser: Option<&std::sync::mpsc::SyncSender<LocalStream>>,
-    stream: LocalStream,
-) {
-    let Some(refuser) = refuser else {
-        send_busy_refusal(stream, "");
-        return;
-    };
-    match refuser.try_send(stream) {
-        Ok(()) => {}
-        Err(
-            std::sync::mpsc::TrySendError::Full(stream)
-            | std::sync::mpsc::TrySendError::Disconnected(stream),
-        ) => send_busy_refusal(stream, ""),
-    }
-}
-
-/// Refuses a connection over the limit, echoing the caller's request ID when
-/// its request line arrives within a short bound. Runs on the refuser thread.
+/// Refuses an API connection over the limit, echoing the caller's request ID
+/// when its request line arrives within a short bound. Runs on the refuser
+/// thread, or inline on a classification thread that found the limit full.
 fn reject_busy_connection(mut stream: LocalStream) {
     // clock-io-ok: the bound covers a real socket read of the request line.
     let deadline = Instant::now() + BUSY_REQUEST_ID_TIMEOUT;
@@ -260,85 +172,20 @@ fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
     }
 }
 
-/// Runs the accept loop on its own thread, handing each accepted connection
-/// to `serve`, whose error (a failed thread spawn) feeds the backoff.
-fn spawn_listener_thread(
-    listener: shepr_platform::ipc::LocalListener,
-    running: Arc<AtomicBool>,
-    mut serve: impl FnMut(LocalStream) -> io::Result<()> + Send + 'static,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut backoff = AcceptBackoff::default();
-        for stream in listener.incoming() {
-            // Checked for every accept outcome, errors included, so the
-            // shutdown wake-up in `ServerHandle::drop` ends the loop even
-            // while accepts are failing.
-            if !running.load(Ordering::Acquire) {
-                break;
-            }
-            match stream {
-                Ok(stream) => match serve(stream) {
-                    Ok(()) => backoff.recovered(),
-                    Err(err) => backoff.failed("api connection thread spawn failed", &err),
-                },
-                Err(err) => backoff.failed("api listener accept failed", &err),
-            }
-        }
-        debug!("api server thread exiting");
-    })
-}
-
-/// Retry pacing for the API listener after an accept or spawn failure.
-///
-/// Errors like EMFILE persist until some fd is released, and a blocking
-/// `accept` returns them immediately, so retrying without a pause would spin
-/// a core. The delay doubles per consecutive failure up to a cap and resets on
-/// the next successful accept. Only the first failure of a streak is logged at
-/// error level, so a long outage does not flood the log.
-#[derive(Default)]
-struct AcceptBackoff {
-    delay: Option<Duration>,
-    failures: u64,
-}
-
-impl AcceptBackoff {
-    fn failed(&mut self, what: &'static str, err: &io::Error) {
-        self.failures = self.failures.saturating_add(1);
-        if self.failures == 1 {
-            error!(error = %err, "{what}; retrying");
-        } else {
-            debug!(error = %err, failures = self.failures, "{what}; retrying");
-        }
-        let delay = self
-            .delay
-            .map_or(ACCEPT_BACKOFF_MIN, |delay| delay.saturating_mul(2))
-            .min(ACCEPT_BACKOFF_MAX);
-        self.delay = Some(delay);
-        std::thread::sleep(delay);
-    }
-
-    fn recovered(&mut self) {
-        if self.failures > 0 {
-            info!(
-                failures = self.failures,
-                "api listener recovered after accept failures"
-            );
-        }
-        self.delay = None;
-        self.failures = 0;
-    }
-}
-
+/// Serves one API connection. `deadline` bounds the request line and is
+/// counted from accept, so classifying the connection does not extend it.
 fn handle_connection(
     mut stream: LocalStream,
+    deadline: Instant,
     api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
+    gate: &ClientGate,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(error = %err, "api connection write timeout unavailable");
     }
 
-    let Some(line) = read_initial_request_line(&mut stream)? else {
+    let Some(line) = read_request_line_until(&mut stream, deadline)? else {
         return Ok(());
     };
 
@@ -375,7 +222,7 @@ fn handle_connection(
         method_traits.routine,
     );
 
-    let response = handle_request(request, api_tx, server_stop);
+    let response = handle_request(request, api_tx, server_stop, gate);
     finish_api_response(&mut stream, &request_id, method_traits, &response)
 }
 
@@ -413,6 +260,7 @@ fn handle_request(
     request: Request,
     api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
+    gate: &ClientGate,
 ) -> crate::error::EncodedApiResponse {
     let Request { id, method } = request;
     let method = match method {
@@ -424,6 +272,7 @@ fn handle_request(
                     build_id: shepr_protocol::BUILD_ID.to_owned(),
                     boot_id: shepr_protocol::BootId::for_this_process().to_string(),
                     stopping: server_stop.is_requested(),
+                    starting: !gate.is_open(),
                 },
             };
             return crate::serialize_response_or_error_with_outcome(&id, &response);
@@ -477,11 +326,6 @@ fn stop_server(
         result: ResponseResult::Ok {},
     };
     crate::serialize_response_or_error_with_outcome(id, &response)
-}
-
-fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option<String>> {
-    // clock-io-ok: the bound covers a real socket read of the request line.
-    read_request_line_until(stream, Instant::now() + INITIAL_REQUEST_TIMEOUT)
 }
 
 /// Reads the connection's one request line with blocking reads bounded by an
@@ -642,10 +486,9 @@ fn error_response_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_test_support::{IsolatedEnv, ScratchDir};
-    use std::fs;
+    use shepr_test_support::ScratchDir;
     use std::io::{BufRead, BufReader, Read};
-    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
     use tokio::sync::mpsc;
 
     fn running() -> crate::ServerStopSignal {
@@ -681,26 +524,15 @@ mod tests {
         (client, server)
     }
 
-    #[test]
-    fn connection_admission_caps_workers_and_releases_slots() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let mut admissions = (0..MAX_ACTIVE_CONNECTIONS)
-            .map(|_| ConnectionAdmission::try_acquire(&active).expect("available slot"))
-            .collect::<Vec<_>>();
-
-        assert_eq!(active.load(Ordering::Acquire), MAX_ACTIVE_CONNECTIONS);
-        assert!(ConnectionAdmission::try_acquire(&active).is_none());
-
-        drop(admissions.pop());
-        let replacement = ConnectionAdmission::try_acquire(&active).expect("released slot");
-        assert_eq!(active.load(Ordering::Acquire), MAX_ACTIVE_CONNECTIONS);
-        drop(replacement);
-        drop(admissions);
-        assert_eq!(active.load(Ordering::Acquire), 0);
+    fn read_initial_request_line(stream: &mut LocalStream) -> io::Result<Option<String>> {
+        read_request_line_until(
+            stream,
+            Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
+        )
     }
 
     #[test]
-    fn a_full_connection_limit_sends_endpoint_busy() {
+    fn an_excess_api_connection_is_refused_with_its_request_id() {
         let (mut client, server) = local_stream_pair("connection-limit-refusal");
         client
             .write_all(br#"{"id":"busy-request","method":"ping","params":{}}"#)
@@ -715,39 +547,6 @@ mod tests {
         assert_eq!(response.id, "busy-request");
         assert_eq!(response.error.code, "endpoint_busy");
         assert!(response.error.message.contains("64 active connections"));
-    }
-
-    /// The accept loop never waits for a refused caller's request line: with
-    /// the refuser's queue full the refusal goes out at once, without an ID.
-    #[test]
-    fn a_full_refusal_queue_refuses_at_once_without_reading() {
-        let (mut client, server) = local_stream_pair("connection-limit-queue-full");
-        let (refuser, _queue) = std::sync::mpsc::sync_channel::<LocalStream>(0);
-
-        let started = Instant::now();
-        hand_off_busy_connection(Some(&refuser), server);
-        assert!(started.elapsed() < BUSY_REQUEST_ID_TIMEOUT);
-
-        let response: ErrorResponse =
-            serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
-        assert_eq!(response.id, "");
-        assert_eq!(response.error.code, "endpoint_busy");
-    }
-
-    /// A queued refusal is answered by the refuser thread with the caller's ID.
-    #[test]
-    fn the_busy_refuser_thread_echoes_the_request_id() {
-        let (mut client, server) = local_stream_pair("connection-limit-refuser-thread");
-        let refuser = spawn_busy_refuser().expect("spawn refuser");
-        hand_off_busy_connection(Some(&refuser), server);
-        client
-            .write_all(b"{\"id\":\"queued-request\",\"method\":\"ping\",\"params\":{}}\n")
-            .expect("write busy request");
-
-        let response: ErrorResponse =
-            serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
-        assert_eq!(response.id, "queued-request");
-        assert_eq!(response.error.code, "endpoint_busy");
     }
 
     #[test]
@@ -817,80 +616,40 @@ mod tests {
     #[test]
     fn dropping_the_handle_stops_the_listener_thread() {
         let path = unique_test_path("listener-drop");
-        let startup_lock =
-            shepr_platform::ipc::acquire_socket_startup_lock(&path).expect("test precondition");
-        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
-        let identity = socket_file_identity(&path).expect("test precondition");
+        let (listener, startup_lock, identity) = bind_private_socket(&path).expect("bind");
         let running = Arc::new(AtomicBool::new(true));
-        // The serve closure lives exactly as long as the listener thread.
-        let alive = Arc::new(());
-        let thread_alive = Arc::clone(&alive);
-        let thread = spawn_listener_thread(listener, Arc::clone(&running), move |_stream| {
-            let _ = &thread_alive;
-            Ok(())
-        });
+        let gate = ClientGate::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let thread = listener::start_listener(
+            listener,
+            Arc::clone(&running),
+            tx,
+            Arc::default(),
+            gate.clone(),
+        )
+        .expect("listener thread");
+        let alive = Arc::clone(&running);
         let handle = ServerHandle {
             thread: Some(thread),
             path: path.clone(),
             identity,
             running,
+            gate,
             _startup_lock: startup_lock,
         };
-        let refusal = shepr_platform::ipc::acquire_socket_startup_lock(&path)
-            .err()
-            .expect("a live handle keeps the socket path locked");
-        let busy = shepr_platform::ipc::SocketBusy::from_io(&refusal)
-            .expect("the refusal is a busy socket naming its path");
-        assert_eq!(busy.path(), path);
-
-        drop(handle);
-        shepr_platform::ipc::acquire_socket_startup_lock(&path)
-            .expect("the lock is released with the handle");
-
+        let refusal = bind_private_socket(&path).err().expect("path stays locked");
         assert_eq!(
-            Arc::strong_count(&alive),
-            1,
-            "listener thread must have exited"
+            shepr_platform::ipc::SocketBusy::from_io(&refusal)
+                .expect("busy")
+                .path(),
+            path
         );
-        assert!(
-            !path.try_exists().expect("stat socket file"),
-            "socket file must be removed"
-        );
-    }
-
-    #[test]
-    fn socket_path_prefers_explicit_env_override() {
-        let env = IsolatedEnv::new();
-        let unique = env.path().join("override.sock");
-        env.set(shepr_core::env::EnvVar::SheprSocketPath, &unique);
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-        assert_eq!(socket_path(&paths), unique);
-    }
-
-    #[test]
-    fn socket_path_defaults_to_runtime_dir() {
-        let env = IsolatedEnv::new();
-        env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
-
-        assert_eq!(socket_path(&paths), paths.runtime_dir().join("shepr.sock"));
-    }
-
-    #[test]
-    fn api_socket_is_bound_owner_only() {
-        let dir = ScratchDir::new("socket-perms");
-        let path = dir.join("api.sock");
-        let listener =
-            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
-
-        let mode = fs::metadata(&path)
-            .expect("test precondition")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600);
-
-        drop(listener);
+        drop(handle);
+        assert_eq!(Arc::strong_count(&alive), 1, "listener has exited");
+        assert!(!path.try_exists().expect("socket removed"));
+        let (_listener, _lock, identity) =
+            bind_private_socket(&path).expect("released lock and listener");
+        remove_socket_file_if_owned(&path, &identity).expect("cleanup");
     }
 
     #[test]
@@ -927,7 +686,14 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(server, &api_tx, &running()).expect("test precondition");
+        handle_connection(
+            server,
+            Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
+            &api_tx,
+            &running(),
+            &ClientGate::default(),
+        )
+        .expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -946,7 +712,14 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(server, &api_tx, &running()).expect("test precondition");
+        handle_connection(
+            server,
+            Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
+            &api_tx,
+            &running(),
+            &ClientGate::default(),
+        )
+        .expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -965,6 +738,7 @@ mod tests {
             },
             &tx,
             &running(),
+            &ClientGate::default(),
         );
 
         let parsed: SuccessResponse =
@@ -981,7 +755,7 @@ mod tests {
 
     #[test]
     fn ping_still_answers_after_a_stop_and_says_so() {
-        // A stopping server keeps its sockets until the final save is on disk;
+        // A stopping server keeps its socket until the final save is on disk;
         // the pong is how a launcher tells it apart from one it can attach to.
         let (tx, _rx) = mpsc::channel(1);
         let stop = running();
@@ -993,6 +767,7 @@ mod tests {
             },
             &tx,
             &stop,
+            &ClientGate::default(),
         );
 
         let parsed: SuccessResponse =
@@ -1014,6 +789,7 @@ mod tests {
             },
             &tx,
             &stop,
+            &ClientGate::default(),
         );
 
         let response: serde_json::Value =
@@ -1022,7 +798,12 @@ mod tests {
         assert_eq!(response["result"]["type"], "ok");
         assert!(stop.is_requested());
 
-        let rejected = handle_request(detect_capture("after_stop"), &tx, &stop);
+        let rejected = handle_request(
+            detect_capture("after_stop"),
+            &tx,
+            &stop,
+            &ClientGate::default(),
+        );
         let rejected: serde_json::Value =
             serde_json::from_str(&rejected.body).expect("test precondition");
         assert_eq!(rejected["error"]["code"], "server_unavailable");
@@ -1039,6 +820,7 @@ mod tests {
             },
             &tx,
             &running(),
+            &ClientGate::default(),
         );
         let ping: SuccessResponse = serde_json::from_str(&ping.body).expect("test precondition");
         let ResponseResult::Pong { boot_id, .. } = ping.result else {
@@ -1060,6 +842,7 @@ mod tests {
                 },
                 &tx,
                 stop,
+                &ClientGate::default(),
             );
             serde_json::from_str::<serde_json::Value>(&response.body).expect("test precondition")
         };
@@ -1122,8 +905,14 @@ mod tests {
     #[test]
     fn request_dispatches_to_app_channel() {
         let (tx, mut rx) = mpsc::channel(1);
-        let thread =
-            std::thread::spawn(move || handle_request(detect_capture("req_2"), &tx, &running()));
+        let thread = std::thread::spawn(move || {
+            handle_request(
+                detect_capture("req_2"),
+                &tx,
+                &running(),
+                &ClientGate::default(),
+            )
+        });
 
         let msg = rx.blocking_recv().expect("test precondition");
         assert_eq!(msg.request.id, "req_2");
@@ -1164,7 +953,14 @@ mod tests {
             let (api_tx, mut api_rx) = mpsc::channel(1);
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
-            handle_connection(server, &api_tx, &running()).expect("test precondition");
+            handle_connection(
+                server,
+                Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
+                &api_tx,
+                &running(),
+                &ClientGate::default(),
+            )
+            .expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)

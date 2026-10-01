@@ -26,7 +26,7 @@ pub(crate) fn auto_detect_launch<T>(
     server_ready_timeout: Duration,
     run_client: impl FnOnce(&shepr_config::ValidatedClientConfig, &shepr_config::AppPaths) -> T,
 ) -> io::Result<T> {
-    let socket_path = paths.server_address().client_socket().to_path_buf();
+    let socket_path = paths.server_address().socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
     // The running server is checked whether or not machines are

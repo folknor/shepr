@@ -184,3 +184,12 @@ impl RemoteBridgeWake {
         }
     }
 }
+
+/// Answers a bridge client directly through the bridge's byte-stream stdout.
+pub fn answer_remote_bridge(bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::fd::AsFd as _;
+    // stdout-handoff-ok: fd 1 is taken over whole, not written as text.
+    let mut stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned()?);
+    stdout.write_all(bytes)?;
+    stdout.flush()
+}

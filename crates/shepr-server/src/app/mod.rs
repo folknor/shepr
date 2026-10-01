@@ -195,8 +195,7 @@ impl App {
             // attaches), and each restored pane starts at its own size in
             // it. The saved host theme supplies colours until a live client
             // reports its own.
-            let api_socket_path = shepr_api::socket_path(&paths);
-            let client_socket_path = crate::server::socket_paths::client_socket_path(&paths);
+            let socket_path = paths.server_address().socket().to_path_buf();
             let restored = shepr_mux::persist::restore(
                 &snap,
                 history.as_ref(),
@@ -206,8 +205,7 @@ impl App {
                     &settings.default_shell,
                     settings.login_shell,
                 ),
-                &api_socket_path,
-                &client_socket_path,
+                &socket_path,
                 config.session().resume_agents_on_restore,
                 &event_tx,
                 &render_notify,
@@ -356,8 +354,7 @@ impl App {
             render_notify: Arc::clone(&self.render_notify),
             render_dirty: Arc::clone(&self.render_dirty),
             pane_teardowns: Arc::clone(&self.pane_teardowns),
-            api_socket_path: shepr_api::socket_path(&self.paths),
-            client_socket_path: crate::server::socket_paths::client_socket_path(&self.paths),
+            socket_path: self.paths.server_address().socket().to_path_buf(),
         }
     }
 

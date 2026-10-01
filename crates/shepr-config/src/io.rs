@@ -196,7 +196,7 @@ impl AppPaths {
             runtime_dir: root.join("runtime"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
-            server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None, None),
+            server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None),
         }
     }
 }
@@ -264,19 +264,16 @@ fn resolve_paths_from_env(
     current_dir_origin: CurrentDirOrigin,
 ) -> Result<AppPaths, Vec<String>> {
     let mut target_env_diagnostics = Vec::new();
-    let mut api_socket_override =
+    let mut socket_override =
         socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
-    let mut client_socket_override =
-        socket_path_override(EnvVar::SheprClientSocketPath, &mut target_env_diagnostics);
     // A pane names the profile of the server that owns it next to the socket
-    // variables it exports. A process of another profile started in that pane
-    // would otherwise follow them to the wrong server, so it drops them. With
-    // no marker the variables came from a user or a script and apply as given.
+    // variable it exports. A process of another profile started in that pane
+    // would otherwise follow it to the wrong server, so it drops it. With
+    // no marker the variable came from a user or a script and applies as given.
     match shepr_core::env::read_text(EnvVar::SheprBuildProfile) {
         Ok(Some(marker)) => match BuildProfile::from_marker(&marker) {
             Some(owner) if owner != profile => {
-                api_socket_override = None;
-                client_socket_override = None;
+                socket_override = None;
             }
             Some(_) => {}
             None => target_env_diagnostics.push(format!(
@@ -347,11 +344,8 @@ fn resolve_paths_from_env(
         (Some(config_dir), Some(state_dir), Some(xdg_runtime_dir), Some(runtime_dir))
             if diagnostics.is_empty() =>
         {
-            let server_address = super::ServerAddress::resolve_paths(
-                &runtime_dir,
-                api_socket_override.as_deref(),
-                client_socket_override.as_deref(),
-            );
+            let server_address =
+                super::ServerAddress::resolve_paths(&runtime_dir, socket_override.as_deref());
             // The saved layout sits beside the shared state directory under the
             // profile's directory name: the state directory itself for release.
             let data_dir = state_dir.with_file_name(profile.app_dir_name());
@@ -1290,70 +1284,24 @@ sidebar_max_width = 36
     }
 
     #[test]
-    fn socket_path_overrides_resolve_independently() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.remove(EnvVar::SheprSocketPath);
-        env.remove(EnvVar::SheprClientSocketPath);
-
-        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
-        let paths = AppPaths::resolve().expect("API socket override resolves");
-        assert_eq!(
-            paths.server_address().api_socket(),
-            env.path().join("api.sock")
-        );
-        assert_eq!(
-            paths.server_address().client_socket(),
-            crate::derive_client_socket_from_api_socket(&env.path().join("api.sock"))
-        );
-
-        env.set(
-            EnvVar::SheprClientSocketPath,
-            env.path().join("ignored-client.sock"),
-        );
-        let paths = AppPaths::resolve().expect("API override keeps precedence when both are set");
-        let expected_client =
-            crate::derive_client_socket_from_api_socket(&env.path().join("api.sock"));
-        assert_eq!(
-            paths.server_address().client_socket(),
-            expected_client.as_path()
-        );
-
-        env.remove(EnvVar::SheprSocketPath);
-        env.set(
-            EnvVar::SheprClientSocketPath,
-            env.path().join("client.sock"),
-        );
-        let paths = AppPaths::resolve().expect("client socket override resolves");
-        assert_eq!(
-            paths.server_address().api_socket(),
-            paths.runtime_dir().join("shepr.sock")
-        );
-        assert_eq!(
-            paths.server_address().client_socket(),
-            env.path().join("client.sock")
-        );
-    }
-
-    #[test]
     fn invalid_socket_environment_fails_resolution() {
         let env = shepr_test_support::IsolatedEnv::new();
-        for variable in [EnvVar::SheprSocketPath, EnvVar::SheprClientSocketPath] {
-            for (value, expected) in [
-                ("", "set but empty"),
-                ("rel.sock", "absolute path"),
-                (" /abs.sock", "whitespace"),
-            ] {
-                env.set(variable, value);
-                let errors = AppPaths::resolve().expect_err("invalid socket override");
-                assert!(
-                    errors
-                        .iter()
-                        .any(|error| error.contains(variable.name()) && error.contains(expected)),
-                    "{variable}={value:?}: {errors:?}"
-                );
-            }
-            env.remove(variable);
+        let variable = EnvVar::SheprSocketPath;
+        for (value, expected) in [
+            ("", "set but empty"),
+            ("rel.sock", "absolute path"),
+            (" /abs.sock", "whitespace"),
+        ] {
+            env.set(variable, value);
+            let errors = AppPaths::resolve().expect_err("invalid socket override");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains(variable.name()) && error.contains(expected)),
+                "{variable}={value:?}: {errors:?}"
+            );
         }
+        env.remove(variable);
     }
 
     #[test]
@@ -1371,24 +1319,16 @@ sidebar_max_width = 36
         assert_eq!(release.data_dir(), release.state_dir());
         assert_eq!(release.runtime_dir(), runtime.join("shepr"));
         assert_eq!(
-            release.server_address().api_socket(),
+            release.server_address().socket(),
             runtime.join("shepr/shepr.sock")
-        );
-        assert_eq!(
-            release.server_address().client_socket(),
-            runtime.join("shepr/shepr-client.sock")
         );
 
         // Dev: its own runtime and saved layout, distinct sockets.
         assert_eq!(dev.data_dir(), state.join("shepr-dev"));
         assert_eq!(dev.runtime_dir(), runtime.join("shepr-dev"));
         assert_eq!(
-            dev.server_address().api_socket(),
+            dev.server_address().socket(),
             runtime.join("shepr-dev/shepr.sock")
-        );
-        assert_eq!(
-            dev.server_address().client_socket(),
-            runtime.join("shepr-dev/shepr-client.sock")
         );
 
         // Both config files, the shared state directory (with the client state
@@ -1402,16 +1342,13 @@ sidebar_max_width = 36
     }
 
     #[test]
-    fn socket_overrides_beat_the_profile_runtime_directory() {
+    fn a_socket_override_beats_the_profile_runtime_directory() {
         let env = shepr_test_support::IsolatedEnv::new();
         env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
         for profile in [BuildProfile::Release, BuildProfile::Dev] {
             let paths = resolve_paths_from_env(profile, CurrentDirOrigin::Process)
                 .expect("override resolves");
-            assert_eq!(
-                paths.server_address().api_socket(),
-                env.path().join("api.sock")
-            );
+            assert_eq!(paths.server_address().socket(), env.path().join("api.sock"));
             assert_eq!(
                 paths.runtime_dir().file_name(),
                 Some(std::ffi::OsStr::new(profile.app_dir_name()))
@@ -1420,28 +1357,21 @@ sidebar_max_width = 36
     }
 
     #[test]
-    fn socket_overrides_with_a_matching_marker_win() {
+    fn a_socket_override_with_a_matching_marker_wins() {
         let env = shepr_test_support::IsolatedEnv::new();
         env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
         for profile in [BuildProfile::Release, BuildProfile::Dev] {
             env.set(EnvVar::SheprBuildProfile, profile.marker());
             let paths = resolve_paths_from_env(profile, CurrentDirOrigin::Process)
                 .expect("override resolves");
-            assert_eq!(
-                paths.server_address().api_socket(),
-                env.path().join("api.sock")
-            );
+            assert_eq!(paths.server_address().socket(), env.path().join("api.sock"));
         }
     }
 
     #[test]
-    fn socket_overrides_with_another_profiles_marker_are_ignored() {
+    fn a_socket_override_with_another_profiles_marker_is_ignored() {
         let env = shepr_test_support::IsolatedEnv::new();
         env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
-        env.set(
-            EnvVar::SheprClientSocketPath,
-            env.path().join("client.sock"),
-        );
         for (profile, owner) in [
             (BuildProfile::Dev, BuildProfile::Release),
             (BuildProfile::Release, BuildProfile::Dev),
@@ -1450,14 +1380,7 @@ sidebar_max_width = 36
             let paths =
                 resolve_paths_from_env(profile, CurrentDirOrigin::Process).expect("paths resolve");
             let runtime = env.path().join("runtime").join(profile.app_dir_name());
-            assert_eq!(
-                paths.server_address().api_socket(),
-                runtime.join("shepr.sock")
-            );
-            assert_eq!(
-                paths.server_address().client_socket(),
-                runtime.join("shepr-client.sock")
-            );
+            assert_eq!(paths.server_address().socket(), runtime.join("shepr.sock"));
         }
     }
 

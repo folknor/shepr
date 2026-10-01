@@ -1,12 +1,9 @@
-use std::fs;
-
 use super::*;
 use crate::test_support::*;
 use std::time::Duration;
 
 use crate::server::client_transport::{ClientWriter, RenderLaneReceiver};
 use bytes::Bytes;
-use shepr_platform::ipc::{bind_local_listener, socket_file_identity};
 use shepr_protocol::MAX_FRAME_SIZE;
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::surface_reuse::DecodedServerMessage;
@@ -105,24 +102,6 @@ mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 
-#[tokio::test]
-async fn client_listener_readiness_wakes_for_new_connection() {
-    let socket_path = crate::test_support::ScratchDir::new("listener-ready").join("client.sock");
-    let listener = bind_local_listener(&socket_path).expect("bind test listener");
-    listener
-        .set_nonblocking(true)
-        .expect("set listener nonblocking");
-    let listener_fd = listener.as_fd().as_raw_fd();
-    let ready = tokio::io::unix::AsyncFd::new(ListenerFd(listener_fd)).expect("register listener");
-    let _client = shepr_platform::ipc::connect_local_stream(&socket_path).expect("connect client");
-    let readiness = tokio::time::timeout(Duration::from_millis(500), ready.readable())
-        .await
-        .expect("listener should become readable")
-        .expect("listener readiness failed");
-    drop(readiness);
-    assert!(listener.accept().is_ok());
-}
-
 pub(crate) fn client_shell_snapshot(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Box<shepr_protocol::ClientShellSnapshot> {
@@ -141,16 +120,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test);
 
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
-    // The server removes its socket when dropped.
-    let socket_path = crate::test_support::ScratchDir::new("headless").join("client.sock");
-    let client_socket_startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(&socket_path)
-        .expect("test socket startup lock");
-    let listener = bind_local_listener(&socket_path).expect("bind test listener");
-    let client_socket_identity =
-        socket_file_identity(&socket_path).expect("test listener socket identity");
-    listener
-        .set_nonblocking(true)
-        .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let (_api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     let (worker_tx, worker_rx) = worker::channel();
@@ -159,10 +128,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     HeadlessServer {
         app,
         _api_server: None,
-        client_listener: listener,
-        client_socket_path: socket_path,
-        client_socket_identity,
-        active_client_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         clients: ClientRegistry::default(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
         shell_session_cache: None,
@@ -187,7 +152,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         worker_rx,
         checkout_root_runner: worker::default_checkout_root_runner(),
         resume_cwd_checks_in_flight: HashSet::new(),
-        _client_socket_startup_lock: client_socket_startup_lock,
     }
 }
 
@@ -2231,11 +2195,8 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     server.render_and_stream();
     assert!(control.try_recv().is_err());
 
-    let cwd = server
-        .client_socket_path
-        .parent()
-        .expect("socket directory")
-        .to_path_buf();
+    let scratch = ScratchDir::new("headless-cwd");
+    let cwd = scratch.path().to_path_buf();
     server
         .app
         .handle_internal_event(shepr_mux::events::AppEvent::TerminalCwdReported {
@@ -4957,45 +4918,6 @@ async fn a_surface_larger_than_one_frame_crosses_in_parts() {
         .contains("too large")
     );
     shutdown_test_runtimes(&mut server);
-}
-
-#[test]
-fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let dir = crate::test_support::ScratchDir::new("hb");
-    let path = dir.join("client.sock");
-
-    let (listener, startup_lock, _) =
-        shepr_platform::ipc::bind_private_socket(&path).expect("bind");
-    let mode = fs::metadata(&path)
-        .expect("socket exists")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600);
-    // The staging directory is gone; only the socket and persistent lock remain.
-    let entries = fs::read_dir(&dir)
-        .expect("test precondition")
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_entries = ["client.sock", "client.sock.lock"]
-        .map(std::ffi::OsString::from)
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(entries, expected_entries);
-    // The linked name reaches the listener.
-    assert!(shepr_platform::ipc::connect_local_stream(&path).is_ok());
-    assert!(listener.accept().is_ok());
-    // A second server never replaces a socket that is already there.
-    let err = shepr_platform::ipc::bind_private_socket(&path)
-        .err()
-        .expect("startup lock is held");
-    assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
-
-    drop(listener);
-    drop(startup_lock);
 }
 
 #[tokio::test]

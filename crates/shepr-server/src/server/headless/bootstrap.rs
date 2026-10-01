@@ -1,31 +1,13 @@
 use super::*;
 
-/// Which of the server's two sockets another server already holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServerSocket {
-    /// The JSON API socket.
-    Api,
-    /// The binary client-protocol socket.
-    Client,
-}
-
-impl std::fmt::Display for ServerSocket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Api => "api socket",
-            Self::Client => "client socket",
-        })
-    }
-}
-
 /// Why [`run_server`] refused to start or stopped with an error. The server
 /// prints nothing itself: the binary renders this and picks the exit status.
 #[derive(Debug)]
 pub enum RunServerError {
     /// Another server already listens on `path`.
-    AlreadyRunning { socket: ServerSocket, path: PathBuf },
+    AlreadyRunning { path: PathBuf },
     /// Another server already holds the lease on this profile's data
-    /// directory, the canonical `directory`. The lease is taken before either
+    /// directory, the canonical `directory`. The lease is taken before the
     /// socket is bound.
     DataDirHeld { directory: PathBuf },
     /// Startup or the event loop failed.
@@ -35,9 +17,9 @@ pub enum RunServerError {
 impl std::fmt::Display for RunServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AlreadyRunning { socket, path } => write!(
+            Self::AlreadyRunning { path } => write!(
                 f,
-                "another server listens on the {socket} ({})",
+                "another server listens on the socket ({})",
                 path.display()
             ),
             Self::DataDirHeld { directory } => write!(
@@ -66,12 +48,11 @@ impl From<io::Error> for RunServerError {
 }
 
 /// Where a started server listens and logs, handed to the `on_ready` callback
-/// of [`run_server`] once both sockets are bound. Its `Display` form is the
-/// operator notice a foreground server shows.
+/// of [`run_server`] once the socket is bound and the TUI gate is open. Its
+/// `Display` form is the operator notice a foreground server shows.
 #[derive(Clone, Debug)]
 pub struct ServerReady {
-    pub api_socket: PathBuf,
-    pub client_socket: PathBuf,
+    pub socket: PathBuf,
     pub log_file: PathBuf,
     /// Why the server runs without file logging, when `log_file` could not be
     /// opened at startup.
@@ -84,8 +65,7 @@ impl std::fmt::Display for ServerReady {
             f,
             "the shepr server is running; you can use any shepr CLI command in another terminal."
         )?;
-        writeln!(f, "api socket: {}", self.api_socket.display())?;
-        writeln!(f, "client socket: {}", self.client_socket.display())?;
+        writeln!(f, "socket: {}", self.socket.display())?;
         match &self.log_file_unavailable {
             None => writeln!(f, "logs: {}", self.log_file.display())?,
             Some(unavailable) => writeln!(
@@ -102,9 +82,15 @@ impl std::fmt::Display for ServerReady {
     }
 }
 
-/// Run the headless server. This is the entry point called from main.rs.
+/// Runs the headless server, in this order: take the data-directory lease;
+/// start file logging, the detection manifests and the integration installer;
+/// bind the socket, which answers `ping` as `starting` from then on; build the
+/// runtime; restore panes; build [`HeadlessServer`], which opens the TUI gate;
+/// report ready; run the loop. Shutdown keeps the socket through the final
+/// save, retires the lease, then removes the socket
+/// (`HeadlessServer::release_socket_after_save`).
 ///
-/// `on_ready` runs once, after both sockets are bound and before the event
+/// `on_ready` runs once, after the TUI gate is open and before the event
 /// loop starts; the binary uses it to tell a foreground operator where the
 /// server listens. It runs on the tokio runtime, so it must not block.
 pub fn run_server(
@@ -112,8 +98,7 @@ pub fn run_server(
     paths: &shepr_config::AppPaths,
     on_ready: impl FnOnce(&ServerReady),
 ) -> Result<(), RunServerError> {
-    let api_socket = shepr_api::socket_path(paths);
-    let client_socket = client_socket_path(paths);
+    let socket = paths.server_address().socket().to_path_buf();
 
     // The startup-cwd hint stays in this process's environment; every child
     // launch path scrubs it instead of the server unsetting it here.
@@ -124,33 +109,34 @@ pub fn run_server(
     let (api_tx, api_rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
-    let reserved = shepr_platform::ipc::ServerLifetime::reserve(
-        || shepr_mux::persist::DataDirLease::acquire(data_dir).map_err(lease_error),
-        |_| {
-            // A log file that cannot be opened does not stop the server; the ready
-            // notice says so instead of naming a log that is not being written.
-            let file_logging = shepr_platform::logging::init_file_logging(
-                data_dir,
-                shepr_platform::logging::SERVER_LOG_FILE,
-            )?;
-            if file_logging.unavailable.is_none() {
-                log_panics();
-            }
-            // Compile the bundled detection manifests off the tokio loop, before App
-            // restores PTYs whose detection workers consult them, and after logging
-            // starts, so a bundled manifest that fails to compile reaches the log.
-            shepr_agent::detect::manifest::compile_bundled_manifests();
-            spawn_integration_install();
-
-            let api = shepr_api::start_server(api_tx.clone(), Arc::clone(&stop_requested), paths)
-                .map_err(|error| startup_error(ServerSocket::Api, error))?;
-            Ok((api, file_logging))
-        },
-        || {
-            reserve_client_socket_startup_lock(&client_socket)
-                .map_err(|error| startup_error(ServerSocket::Client, error))
-        },
+    // Field order releases the lease before the socket on startup failure.
+    struct Reserved {
+        lease: shepr_mux::persist::DataDirLease,
+        api: shepr_api::ServerHandle,
+        file_logging: shepr_platform::logging::FileLoggingOutcome,
+    }
+    let lease = shepr_mux::persist::DataDirLease::acquire(data_dir).map_err(lease_error)?;
+    // A log file that cannot be opened does not stop the server; the ready
+    // notice says so instead of naming a log that is not being written.
+    let file_logging = shepr_platform::logging::init_file_logging(
+        data_dir,
+        shepr_platform::logging::SERVER_LOG_FILE,
     )?;
+    if file_logging.unavailable.is_none() {
+        log_panics();
+    }
+    // Compile the bundled detection manifests off the tokio loop, before App
+    // restores PTYs whose detection workers consult them, and after logging
+    // starts, so a bundled manifest that fails to compile reaches the log.
+    shepr_agent::detect::manifest::compile_bundled_manifests();
+    spawn_integration_install();
+    let api = shepr_api::start_server(api_tx, Arc::clone(&stop_requested), paths)
+        .map_err(startup_error)?;
+    let reserved = Reserved {
+        lease,
+        api,
+        file_logging,
+    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -158,36 +144,26 @@ pub fn run_server(
         .map_err(io::Error::other)?;
 
     let result = rt.block_on(async move {
-        let (mut server, file_logging) = reserved.restore_and_bind(
-            |lease| {
-                let mut app = app::App::with_paths(
-                    config,
-                    paths,
-                    lease,
-                    app::AppPolicy::Production,
-                    super::sample_app_clock(),
-                );
-                seed_startup_workspace_if_empty(&mut app, startup_cwd);
-                app
-            },
-            |app, (api, file_logging), reservation| {
-                HeadlessServer::new(app, api_rx, Some(api), stop_requested, reservation)
-                    .map(|server| (server, file_logging))
-                    .map_err(|error| startup_error(ServerSocket::Client, error))
-            },
-        )?;
-
+        let Reserved {
+            lease,
+            api,
+            file_logging,
+        } = reserved;
+        let mut app = app::App::with_paths(
+            config,
+            paths,
+            lease,
+            app::AppPolicy::Production,
+            super::sample_app_clock(),
+        );
+        seed_startup_workspace_if_empty(&mut app, startup_cwd);
+        let mut server = HeadlessServer::new(app, api_rx, Some(api), stop_requested);
         let ready = ServerReady {
-            api_socket,
-            client_socket,
+            socket,
             log_file: data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
             log_file_unavailable: file_logging.unavailable,
         };
-        info!(
-            api_socket = %ready.api_socket.display(),
-            client_socket = %ready.client_socket.display(),
-            "shepr server started"
-        );
+        info!(socket = %ready.socket.display(), "shepr server started");
         on_ready(&ready);
 
         server.run().await.map_err(|error| {
@@ -201,37 +177,6 @@ pub fn run_server(
     crate::logging::shutdown("server");
     result
 }
-
-fn reserve_client_socket_startup_lock(path: &std::path::Path) -> io::Result<SocketStartupLock> {
-    let startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(path)?;
-    if shepr_platform::ipc::ServerLifetime::endpoint_is_live(path)? {
-        Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            ClientSocketAlreadyLive {
-                path: path.to_path_buf(),
-            },
-        ))
-    } else {
-        Ok(startup_lock)
-    }
-}
-
-#[derive(Debug)]
-struct ClientSocketAlreadyLive {
-    path: PathBuf,
-}
-
-impl std::fmt::Display for ClientSocketAlreadyLive {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "client socket is already live at {}",
-            self.path.display()
-        )
-    }
-}
-
-impl std::error::Error for ClientSocketAlreadyLive {}
 
 /// Makes every panic reach the server log through `tracing`, then runs the
 /// previous hook (the default one prints to stderr). A client-spawned server
@@ -315,28 +260,17 @@ fn startup_cwd_from_env_value(
     })
 }
 
-/// Classifies a socket failure. A platform busy refusal, or a live client
-/// listener found during preflight, means another server owns that path; any
-/// other error, including an unrelated `AddrInUse`, stays an IO failure. The
-/// refusal is recorded in the server log as well: a daemonized server's stderr
-/// goes nowhere.
-fn startup_error(socket: ServerSocket, error: io::Error) -> RunServerError {
-    let path = shepr_platform::ipc::SocketBusy::from_io(&error)
-        .map(|busy| busy.path().to_path_buf())
-        .or_else(|| {
-            if socket != ServerSocket::Client {
-                return None;
-            }
-            error
-                .get_ref()?
-                .downcast_ref::<ClientSocketAlreadyLive>()
-                .map(|busy| busy.path.clone())
-        });
-    let Some(path) = path else {
+/// Classifies a socket bind failure. A platform busy refusal means another
+/// server owns the path; any other error, including an unrelated `AddrInUse`,
+/// stays an IO failure. The refusal is recorded in the server log as well: a
+/// daemonized server's stderr goes nowhere.
+fn startup_error(error: io::Error) -> RunServerError {
+    let Some(busy) = shepr_platform::ipc::SocketBusy::from_io(&error) else {
         return RunServerError::Io(error);
     };
-    tracing::error!(%socket, path = %path.display(), "another server already listens on the socket");
-    RunServerError::AlreadyRunning { socket, path }
+    let path = busy.path().to_path_buf();
+    tracing::error!(path = %path.display(), "another server already listens on the socket");
+    RunServerError::AlreadyRunning { path }
 }
 
 /// Classifies a failure taking the data-directory lease. Only the
@@ -354,124 +288,78 @@ fn lease_error(error: io::Error) -> RunServerError {
 }
 
 #[cfg(test)]
-mod client_socket_reservation_and_startup_cwd_tests {
+mod startup_tests {
     use super::*;
 
-    #[test]
-    fn client_socket_reservation_refuses_an_existing_server_before_restore() {
-        let scratch = shepr_test_support::ScratchDir::new("client-socket-reservation");
-        let path = scratch.join("client.sock");
-        let (_listener, _lock, _identity) =
-            shepr_platform::ipc::bind_private_socket(&path).expect("hold client socket");
-
-        let error = match reserve_client_socket_startup_lock(&path) {
-            Ok(_) => panic!("a running server owns the client startup lock"),
-            Err(error) => error,
-        };
-
-        let busy = shepr_platform::ipc::SocketBusy::from_io(&error)
-            .expect("reservation preserves the busy socket error");
-        assert_eq!(busy.path(), path.as_path());
-    }
-
-    #[test]
-    fn client_socket_reservation_refuses_a_live_listener_without_its_lock() {
-        let scratch = shepr_test_support::ScratchDir::new("unlocked-client-socket");
-        let path = scratch.join("client.sock");
-        let (listener, lock, _identity) =
-            shepr_platform::ipc::bind_private_socket(&path).expect("hold client socket");
-        drop(lock);
-
-        let error = match reserve_client_socket_startup_lock(&path) {
-            Ok(_) => panic!("a live listener makes the client socket busy"),
-            Err(error) => error,
-        };
-
-        assert!(matches!(
-            startup_error(ServerSocket::Client, error),
-            RunServerError::AlreadyRunning { socket: ServerSocket::Client, path: found }
-                if found == path
-        ));
-        drop(listener);
-    }
-
-    #[test]
-    fn client_socket_reservation_does_not_publish_its_listener_path() {
-        let scratch = shepr_test_support::ScratchDir::new("unpublished-client-socket");
-        let path = scratch.join("client.sock");
-
-        let startup_lock =
-            reserve_client_socket_startup_lock(&path).expect("reserve an unused client socket");
-
-        assert!(
-            !path.try_exists().expect("stat the client socket path"),
-            "the launcher must keep seeing API-first startup"
-        );
-        drop(startup_lock);
-    }
-
-    #[test]
-    fn client_socket_reservation_can_be_consumed_by_the_platform_binder() {
-        let scratch = shepr_test_support::ScratchDir::new("client-reservation-bind");
-        let path = scratch.join("client.sock");
-        let reservation = reserve_client_socket_startup_lock(&path).expect("reserve socket");
-        let (_listener, _lock, _identity) =
-            shepr_platform::ipc::bind_private_socket_with_lock(reservation)
-                .expect("bind reserved socket");
-        let error = reserve_client_socket_startup_lock(&path)
-            .err()
-            .expect("still locked");
-        let busy = shepr_platform::ipc::SocketBusy::from_io(&error).expect("busy");
-        assert_eq!(busy.path(), path.as_path());
-    }
-
     #[tokio::test]
-    async fn bootstrap_reservation_binds_the_resolved_client_socket() {
+    async fn bootstrap_opens_the_gate_after_restore() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
+        use std::io::Write;
         let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("bootstrap-client-path");
+        let scratch = shepr_test_support::ScratchDir::new("bootstrap-gate");
         let paths = shepr_config::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
             paths.clone(),
         );
-        let expected = client_socket_path(&paths);
-        let (api_tx, api_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).expect("lease");
+        let (tx, rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
-        let reserved = shepr_platform::ipc::ServerLifetime::reserve(
-            || shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).map_err(lease_error),
-            |_| {
-                shepr_api::start_server(api_tx, Arc::clone(&stop), &paths)
-                    .map_err(RunServerError::from)
-            },
-            || reserve_client_socket_startup_lock(&expected).map_err(RunServerError::from),
-        )
-        .expect("reserve bootstrap resources");
-        let server = reserved
-            .restore_and_bind(
-                |lease| {
-                    app::App::with_paths(
-                        &config,
-                        &paths,
-                        lease,
-                        app::AppPolicy::Test,
-                        super::super::sample_app_clock(),
-                    )
-                },
-                |app, api, reservation| {
-                    HeadlessServer::new(app, api_rx, Some(api), stop, reservation)
-                },
-            )
-            .expect("bind through bootstrap reservation");
-        assert_eq!(
-            server.client_socket_path,
-            client_socket_path(&server.app.paths)
+        let api =
+            shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("socket before restore");
+        let client = shepr_api::client::ApiClient::for_socket(paths.server_address().socket());
+        assert!(client.status().expect("starting pong").starting);
+        let app = app::App::with_paths(
+            &config,
+            &paths,
+            lease,
+            app::AppPolicy::Test,
+            super::super::sample_app_clock(),
         );
-        assert_eq!(server.client_socket_path, expected);
-        let _client = shepr_platform::ipc::connect_local_stream(&expected)
-            .expect("the resolved client path has the listener");
+        assert!(
+            client
+                .status()
+                .expect("restore alone leaves gate closed")
+                .starting
+        );
+        let server = HeadlessServer::new(app, rx, Some(api), stop);
+        assert!(!client.status().expect("ready pong").starting);
+        let mut peer = shepr_platform::ipc::connect_local_stream(paths.server_address().socket())
+            .expect("TUI connect");
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("deadline");
+        peer.write_all(&shepr_protocol::preamble::local_preamble())
+            .expect("identity");
+        shepr_protocol::write_message(
+            &mut peer,
+            &shepr_protocol::ClientMessage::EndpointHello(
+                shepr_protocol::endpoint::EndpointClientHello {
+                    geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, true),
+                    mouse_capture: true,
+                    surface_active: true,
+                },
+            ),
+        )
+        .expect("hello");
+        shepr_protocol::preamble::read_preamble(&mut peer).expect("server identity");
+        let welcome: shepr_protocol::ServerMessage =
+            shepr_protocol::read_message(&mut peer).expect("welcome");
+        assert_eq!(
+            welcome,
+            shepr_protocol::ServerMessage::EndpointWelcome(
+                shepr_protocol::endpoint::EndpointServerWelcome::Accepted
+            )
+        );
+        drop(peer);
         drop(server);
-        assert!(!expected.try_exists().expect("client path released"));
+        assert!(
+            !paths
+                .server_address()
+                .socket()
+                .try_exists()
+                .expect("stat the socket"),
+            "dropping the server removes its socket"
+        );
     }
 
     fn resolve(raw: &std::ffi::OsStr) -> Option<PathBuf> {

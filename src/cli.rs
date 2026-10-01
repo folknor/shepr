@@ -270,14 +270,12 @@ fn ensure_server_build_matches(
     Err(CliError::Response(response))
 }
 
-/// Whether the local API socket is definitely absent or stale. Other probe
+/// Whether the local server socket is definitely absent or stale. Other probe
 /// failures remain transport errors because they do not establish liveness.
 pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> CliResult<bool> {
-    match shepr_platform::ipc::probe(socket_path) {
-        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => Ok(true),
-        shepr_platform::ipc::Liveness::Live => Ok(false),
-        shepr_platform::ipc::Liveness::Unreachable(error) => Err(error.into()),
-    }
+    shepr_platform::ipc::socket_is_live(socket_path)
+        .map(|live| !live)
+        .map_err(Into::into)
 }
 
 /// Classify a socket failure before it reaches the CLI printer.

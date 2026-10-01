@@ -16,10 +16,26 @@ pub(crate) struct ClientPaneIdentity {
     pub(crate) pane_id: shepr_core::layout::PaneId,
 }
 
-/// Identity of a connection accepted by this server. Only the registry's
+/// Identity of a connection accepted by this server. Only the shared
 /// allocator mints production values; disconnecting never reuses one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClientId(u64);
+
+/// Shared allocator for transport threads; identities are never reused.
+#[derive(Clone)]
+pub(crate) struct ClientIdAllocator(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl Default for ClientIdAllocator {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)))
+    }
+}
+
+impl ClientIdAllocator {
+    pub(crate) fn allocate(&self) -> ClientId {
+        ClientId(self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
 
 /// Monotonic ordering of accepted client activity within one server run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -154,7 +170,6 @@ pub(crate) struct RenderTarget {
 /// clipboard writes from panes that no client views.
 pub(crate) struct ClientRegistry {
     connections: HashMap<ClientId, ClientConnection>,
-    next_client_id: u64,
     foreground_client_id: Option<ClientId>,
     geometry_controllers: HashMap<WorkspaceId, ClientId>,
     next_activity_stamp: u64,
@@ -164,7 +179,6 @@ impl Default for ClientRegistry {
     fn default() -> Self {
         Self {
             connections: HashMap::new(),
-            next_client_id: 1,
             foreground_client_id: None,
             geometry_controllers: HashMap::new(),
             next_activity_stamp: 1,
@@ -240,12 +254,6 @@ impl ClientRegistry {
 
     pub(crate) fn iter(&self) -> std::collections::hash_map::Iter<'_, ClientId, ClientConnection> {
         self.connections.iter()
-    }
-
-    pub(crate) fn allocate_client_id(&mut self) -> ClientId {
-        let id = self.next_client_id;
-        self.next_client_id = self.next_client_id.saturating_add(1);
-        ClientId(id)
     }
 
     pub(crate) fn allocate_activity_stamp(&mut self) -> ActivityStamp {
@@ -828,8 +836,9 @@ mod tests {
     #[test]
     fn registry_owns_foreground_and_geometry_arbitration() {
         let mut registry = ClientRegistry::default();
-        let first_id = registry.allocate_client_id();
-        let second_id = registry.allocate_client_id();
+        let ids = ClientIdAllocator::default();
+        let first_id = ids.allocate();
+        let second_id = ids.allocate();
         assert_eq!(
             (first_id, second_id),
             (ClientId::test_new(1), ClientId::test_new(2))
@@ -867,7 +876,8 @@ mod tests {
     #[test]
     fn removing_a_client_closes_transport_handles_still_cloned_by_its_reader() {
         let mut registry = ClientRegistry::default();
-        let client_id = registry.allocate_client_id();
+        let ids = ClientIdAllocator::default();
+        let client_id = ids.allocate();
         let (writer, control_rx, render_rx) = ClientWriter::test_pair();
         let reader_control = writer.control.clone();
         registry.insert(

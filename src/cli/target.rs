@@ -52,7 +52,7 @@ pub(super) fn attach_command(paths: &shepr_config::AppPaths) -> String {
 }
 
 pub(super) fn socket_label(context: &CliContext) -> String {
-    shepr_api::socket_path(context).display().to_string()
+    context.server_address().socket().display().to_string()
 }
 
 #[cfg(test)]

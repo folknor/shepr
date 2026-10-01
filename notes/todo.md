@@ -1,7 +1,6 @@
 # Later
 
-Recurring chores and checks that wait for the situation to come up, not
-defects to hunt.
+Recurring chores and checks that wait for the situation to come up.
 
 ## Confirm the opencode/Kilo permission-dialog labels
 
@@ -24,6 +23,37 @@ persistence, the server save and checkpoint paths, and
 `spawn_with_initial_history`. Either keep it, and make it a plain
 `server.toml` setting rather than an experimental one, or remove it along with
 the history file and its restore path.
+
+# Open defects
+
+## A cancelled provisional process-exit release can freeze the detector
+
+Formerly PRUN-020. `terminal/state/` in shepr-mux (`ProvisionalProcessExit`,
+`source/detection.rs`). A detector process-exit release is held for
+`AGENT_PROCESS_EXIT_RELEASE_GRACE` and cancelled by new process evidence or an
+ownership change. A cancelled marker is cleared only by a later detector update
+that names an agent. Until then every detector observation without an agent is
+dropped, the deferred withdrawal is never applied, and a later exit or
+confirmation is ignored. If ownership was replaced during the window (a custom
+hook commit, say) and no agent process comes back, the pane's detector state
+stays frozen. Bound it: once the grace has elapsed, clear a cancelled marker and
+apply its deferred withdrawal without the release. Related, smaller: during the
+window the dying agent's late hook reports are admitted as live because process
+evidence stays available, so the sidebar can briefly show them before
+confirmation clears the authority; and `DetectionTask::provisional_release` is
+not cleared on a detector reset (harmless, since the terminal ignores a
+confirmation for an exit it already resolved).
+
+## Pane spawn does blocking filesystem work on the server event loop
+
+Formerly TCORE-004, filed as a design observation rather than a broken claim.
+`PtyCommand::to_std_command` stats the requested cwd (`usable_directory`) and
+walks `PATH` (`resolve_executable` with `classify_candidate`, a `stat` plus
+`access` per candidate) on the calling thread, and the parent's
+`Command::spawn` waits for the child's chdir and exec. Every pane spawn and
+restore runs this on the server's event loop, so a hung mount in the cwd,
+`HOME` or any `PATH` entry stalls the whole server, not just resume. This is
+wider than the note in `agent_resume.rs` acknowledges.
 
 # Possible capabilities
 

@@ -31,7 +31,7 @@ pub(super) fn command() -> Command {
         .subcommand(
             Command::new(COMMAND_CLIENT)
                 .hide(true)
-                .about("Connect to a running server's client socket"),
+                .about("Connect to a running server"),
         )
         .subcommand(
             Command::new(COMMAND_REMOTE_CLIENT_BRIDGE)

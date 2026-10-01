@@ -187,10 +187,14 @@ mod tests {
     fn handshake_against_shutdown() -> ClientError {
         let (mut client, mut server) = socket_pair("shutdown-endpoint");
         let peer = std::thread::spawn(move || {
-            shepr_protocol::preamble::write_preamble(&mut server).expect("test precondition");
+            use std::io::Write as _;
+            // The server reads the client's opening before it writes anything.
             shepr_protocol::preamble::read_preamble(&mut server).expect("client preamble");
             let _hello: ClientMessage =
                 shepr_protocol::read_message(&mut server).expect("test precondition");
+            server
+                .write_all(&shepr_protocol::preamble::local_preamble())
+                .expect("test precondition");
             shepr_protocol::write_message(
                 &mut server,
                 &ServerMessage::ServerShutdown {
@@ -211,10 +215,13 @@ mod tests {
         use std::io::Write as _;
         let (mut client, mut server) = socket_pair(name);
         let peer = std::thread::spawn(move || {
-            shepr_protocol::preamble::write_preamble(&mut server).expect("test precondition");
+            // The server reads the client's opening before it writes anything.
             shepr_protocol::preamble::read_preamble(&mut server).expect("client preamble");
             let _hello: ClientMessage =
                 shepr_protocol::read_message(&mut server).expect("test precondition");
+            server
+                .write_all(&shepr_protocol::preamble::local_preamble())
+                .expect("test precondition");
             server
                 .write_all(&welcome_frames)
                 .expect("test precondition: the client reads the welcome");

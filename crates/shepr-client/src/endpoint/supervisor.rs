@@ -76,9 +76,9 @@ impl EndpointSupervisorEvent {
 type OwnedConnector = Box<shepr_remote::MachineSshConnector>;
 
 enum ConnectTarget {
-    /// The Local server's client socket, and the guidance a build mismatch on
+    /// The Local server socket, and the guidance a build mismatch on
     /// it names: the plain `shepr` and `shepr server stop` commands, plus the
-    /// socket overrides in effect. Resolved once from the client's paths, so the diagnostic every retry shows is the one the launch check
+    /// socket override in effect. Resolved once from the client's paths, so the diagnostic every retry shows is the one the launch check
     /// would have printed.
     Local {
         path: PathBuf,
@@ -581,11 +581,14 @@ pub(crate) fn handshake_error(
         | ClientError::ConnectionLost(error)
         | ClientError::HostTerminal(error)
         | ClientError::Protocol(FramingError::Io(error)) => error,
-        // A full server frees a slot when another client disconnects, so this
-        // refusal is retried like a server shutting down while connecting,
-        // never parked as an incompatibility.
+        // A full server frees a slot when another client disconnects, and a
+        // starting server accepts clients once its panes are restored, so
+        // both refusals are retried like a server shutting down while
+        // connecting, never parked as an incompatibility.
         ClientError::HandshakeRejected {
-            error: error @ shepr_protocol::HandshakeRefusal::ConnectionLimit(_),
+            error:
+                error @ (shepr_protocol::HandshakeRefusal::ConnectionLimit(_)
+                | shepr_protocol::HandshakeRefusal::ServerStarting),
         } => std::io::Error::new(std::io::ErrorKind::ConnectionAborted, error),
         ClientError::HandshakeRejected { error, .. } => {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
@@ -963,6 +966,18 @@ mod tests {
     }
 
     #[test]
+    fn a_starting_server_refusal_is_retried() {
+        let starting = handshake_error(
+            crate::ClientError::HandshakeRejected {
+                error: shepr_protocol::HandshakeRefusal::ServerStarting,
+            },
+            None,
+        );
+        assert_eq!(starting.kind(), std::io::ErrorKind::ConnectionAborted);
+        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&starting).needs_attention());
+    }
+
+    #[test]
     fn early_end_of_stream_and_shutdown_during_handshake_are_transient() {
         let eof = handshake_error(
             crate::ClientError::Protocol(shepr_protocol::FramingError::UnexpectedEof),
@@ -1016,7 +1031,7 @@ mod tests {
         let now = Instant::now();
         let mut supervisors =
             EndpointSupervisors::new(&paths, &[], now).expect("test precondition");
-        supervisors.add_local(paths.server_address().client_socket().into(), None, now);
+        supervisors.add_local(paths.server_address().socket().into(), None, now);
         let ConnectTarget::Local {
             mismatch_guidance, ..
         } = &supervisors.endpoints[&ClientEndpointId::Local].target

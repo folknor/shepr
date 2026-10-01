@@ -120,7 +120,7 @@ impl SshStdioBridge {
                                     error = %err,
                                     target = %target.as_str(),
                                     socket = %thread_socket.display(),
-                                    "remote bridge failed to prepare client socket"
+                                    "remote bridge failed to prepare the accepted stream"
                                 );
                                 continue;
                             }

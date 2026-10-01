@@ -1,4 +1,3 @@
-pub(crate) mod client_accept;
 pub(crate) mod client_commands;
 pub(crate) mod client_shell;
 pub(crate) mod client_transport;
@@ -8,7 +7,6 @@ pub(crate) use clients::ClientId;
 pub mod headless;
 pub(crate) mod pane_input;
 pub(crate) mod render_stream;
-pub mod socket_paths;
 
 #[cfg(test)]
 mod netside_tests;

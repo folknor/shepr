@@ -14,7 +14,7 @@ mod validated;
 mod window_title;
 
 pub use self::address::ServerAddress;
-pub use self::address::{derive_client_socket_from_api_socket, operator_entrypoint};
+pub use self::address::operator_entrypoint;
 pub use self::agent::ConfigAgent;
 pub use self::limits::{
     DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,

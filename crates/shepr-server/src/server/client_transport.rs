@@ -1,6 +1,8 @@
-//! Blocking client socket transport for the headless server.
+//! Blocking transport for TUI connections to the headless server.
 //!
-//! This module owns the thin-client handshake, read loop, and writer loop.
+//! The server socket's listener (`shepr_api`) hands each TUI connection to
+//! [`ClientTransportHandler`] from byte zero. This module owns the thin-client
+//! handshake, read loop, and writer loop.
 //! It converts socket I/O into [`ServerEvent`] values consumed by
 //! `HeadlessServer`.
 
@@ -10,7 +12,7 @@ use std::io::{self, Write};
 use std::net::Shutdown;
 use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -26,6 +28,32 @@ use crate::limits::{
     CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS, CLIENT_WRITE_STALL_TIMEOUT,
     HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
 };
+
+/// The server's client protocol, installed into the listener's gate once
+/// panes are restored. Each TUI connection gets a fresh client id and runs
+/// its handshake and read loop on the listener's connection thread, holding
+/// its admission slot until it ends.
+pub(crate) struct ClientTransportHandler {
+    pub(crate) server_event_tx: mpsc::Sender<ServerEvent>,
+    pub(crate) should_quit: Arc<shepr_api::ServerStopSignal>,
+    pub(crate) ids: crate::server::clients::ClientIdAllocator,
+}
+
+impl shepr_api::ClientProtocolHandler for ClientTransportHandler {
+    fn serve(&self, stream: LocalStream, slot: shepr_api::ConnectionSlot, accepted: Instant) {
+        let _slot = slot;
+        let client_id = self.ids.allocate();
+        if let Err(error) = handle_client_handshake(
+            stream,
+            client_id,
+            accepted + HANDSHAKE_TIMEOUT,
+            &self.server_event_tx,
+            &self.should_quit,
+        ) {
+            debug!(?client_id, %error, "client transport failed");
+        }
+    }
+}
 
 /// Why a client shell's geometry is refused, if it is. The limits are the
 /// protocol's own (`MAX_SURFACE_DIMENSION`, `MAX_SURFACE_CELLS`,
@@ -485,12 +513,18 @@ fn classify_input_event_size(
 
 /// Handles the client handshake on a blocking thread.
 ///
-/// Reads the endpoint hello, validates its surface geometry, sends the welcome
-/// accepting the connection, and then forwards client messages to the server event channel. Any other
-/// first message is refused.
+/// Reads the client's preamble first, since the client speaks first, and
+/// answers a recognisable preamble of any build with this build's. A client of
+/// another build is closed there, without decoding its hello. A client of this
+/// build then has its endpoint hello read and its surface geometry validated,
+/// and is sent the welcome accepting the connection; its messages are then
+/// forwarded to the server event channel. Any other first message is refused.
+/// `deadline` bounds reading the preamble and hello together and is counted
+/// from accept, so classification time is part of the handshake budget.
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: ClientId,
+    deadline: Instant,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
 ) -> io::Result<()> {
@@ -498,54 +532,48 @@ pub(crate) fn handle_client_handshake(
         return Ok(());
     }
 
-    // The server listener uses accept-only nonblocking mode, so accepted
-    // streams are already blocking. Keep the handshake reads in that mode;
-    // framed writes opt into nonblocking mode when their bounded writer starts.
+    // Accepted streams start blocking (classification peeks without changing
+    // the mode). The bounded preamble write below switches the stream to
+    // nonblocking; the handshake reads still work because the deadline reader
+    // polls for readiness before every read.
 
-    // The build-identity preamble goes out first, before anything is read, so
-    // a client of any other build learns which build it reached even though
-    // this side hangs up on it below. Probes that connect and close at once
-    // (socket liveness checks) make this write fail; that is not an error.
-    if let Err(error) = shepr_protocol::preamble::write_preamble(&mut stream) {
-        debug!(
-            ?client_id,
-            %error,
-            "client left before the build-identity preamble"
-        );
-        return Ok(());
-    }
-
-    // The client's preamble and hello are read against one overall deadline.
-    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(
-        &mut stream,
-        // clock-io-ok: the deadline bounds real socket reads of the handshake.
-        std::time::Instant::now() + HANDSHAKE_TIMEOUT,
-    );
-    match shepr_protocol::preamble::read_preamble(&mut reader) {
-        Ok(()) => {}
+    // The client's preamble and hello are read against one overall deadline,
+    // counted from accept. The client speaks first, so nothing is written
+    // until its preamble has been read.
+    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(&mut stream, deadline);
+    let foreign = match shepr_protocol::preamble::read_preamble(&mut reader) {
+        Ok(()) => None,
         Err(shepr_protocol::preamble::PreambleError::UnexpectedEof) => {
             debug!(?client_id, "client disconnected before handshake");
             return Ok(());
         }
         Err(shepr_protocol::preamble::PreambleError::Io(error)) => {
-            debug!(
-                ?client_id,
-                %error,
-                "failed to read client preamble"
-            );
+            debug!(?client_id, %error, "failed to read client preamble");
             return Ok(());
         }
-        Err(error) => {
-            // The client reports the mismatch from this server's preamble;
-            // nothing it sends after a foreign preamble can be decoded.
-            warn!(
-                ?client_id,
-                %error,
-                "rejecting client connection"
-            );
+        Err(error @ shepr_protocol::preamble::PreambleError::NotShepr) => {
+            warn!(?client_id, %error, "rejecting client connection");
             return Ok(());
         }
+        Err(error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_)) => Some(error),
+    };
+    // A recognisable preamble of any build is answered with this build's, so
+    // a client of another build learns which build it reached.
+    if let Err(error) = shepr_platform::write_client_stream(
+        &stream,
+        &shepr_protocol::preamble::local_preamble(),
+        CLIENT_WRITE_STALL_TIMEOUT,
+    ) {
+        debug!(?client_id, %error, "client left before the build-identity preamble");
+        return Ok(());
     }
+    if let Some(error) = foreign {
+        // The client reports the mismatch from this server's preamble;
+        // nothing it sends after a foreign preamble can be decoded.
+        warn!(?client_id, %error, "rejecting client connection");
+        return Ok(());
+    }
+    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(&mut stream, deadline);
     let hello = shepr_protocol::read_handshake_message::<_, ClientMessage>(&mut reader);
     let hello: ClientMessage = match hello {
         Ok(msg) => msg,
@@ -1161,7 +1189,9 @@ mod tests {
     /// Plays the client side of the opening: sends this build's preamble and
     /// `hello`, then consumes the server's preamble.
     fn open_as_client(client_stream: &mut LocalStream, hello: &ClientMessage) {
-        shepr_protocol::preamble::write_preamble(client_stream).expect("write client preamble");
+        client_stream
+            .write_all(&shepr_protocol::preamble::local_preamble())
+            .expect("write client preamble");
         shepr_protocol::write_message(client_stream, hello).expect("write hello");
         shepr_protocol::preamble::read_preamble(client_stream).expect("server preamble");
     }
@@ -1542,6 +1572,36 @@ mod tests {
     }
 
     #[test]
+    fn a_foreign_client_is_answered_with_the_server_identity_through_the_gate() {
+        use crate::test_support::AppPathsFixture as _;
+        use std::io::Read;
+        let scratch = shepr_test_support::ScratchDir::new("foreign-gate");
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        let stop = Arc::new(shepr_api::ServerStopSignal::default());
+        let api = shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("shared socket");
+        let (server_event_tx, mut events) = mpsc::channel(4);
+        api.client_gate().open(Arc::new(ClientTransportHandler {
+            server_event_tx,
+            should_quit: stop,
+            ids: crate::server::clients::ClientIdAllocator::default(),
+        }));
+        let mut peer = shepr_platform::ipc::connect_local_stream(paths.server_address().socket())
+            .expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bound");
+        let mut foreign = shepr_protocol::preamble::local_preamble();
+        let last = foreign.last_mut().expect("identity byte");
+        *last = if *last == b'0' { b'1' } else { b'0' };
+        peer.write_all(&foreign).expect("foreign identity");
+        shepr_protocol::preamble::read_preamble(&mut peer).expect("server identity");
+        let mut rest = Vec::new();
+        peer.read_to_end(&mut rest).expect("closed without welcome");
+        assert!(rest.is_empty());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
     fn foreign_build_preamble_gets_the_server_identity_and_no_session() {
         use std::io::Read as _;
 
@@ -1554,6 +1614,7 @@ mod tests {
             handle_client_handshake(
                 server_stream,
                 ClientId::test_new(45),
+                Instant::now() + HANDSHAKE_TIMEOUT,
                 &server_event_tx,
                 &handshake_quit,
             )
@@ -1634,6 +1695,7 @@ mod tests {
             handle_client_handshake(
                 server_stream,
                 ClientId::test_new(43),
+                Instant::now() + HANDSHAKE_TIMEOUT,
                 &server_event_tx,
                 &handshake_quit,
             )

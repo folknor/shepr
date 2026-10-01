@@ -37,7 +37,7 @@ pub(crate) const BOOT_LOG_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Time allowed for the SSH command that stops a remote server. The remote
 /// `server stop` itself waits up to its own stop deadline for the server to
-/// close its sockets; this covers that plus the connection.
+/// close its socket; this covers that plus the connection.
 pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// How many times one machine is offered a restart. A server that was replaced

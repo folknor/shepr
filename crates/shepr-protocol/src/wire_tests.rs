@@ -254,10 +254,16 @@ mod tests {
 
     #[test]
     fn server_welcome_with_error_roundtrip() -> TestResult {
-        let msg = ServerMessage::EndpointWelcome(crate::endpoint::EndpointServerWelcome::refused(
+        for reason in [
             crate::HandshakeRefusal::ExpectedHello,
-        ));
-        assert_eq!(roundtrip(&msg)?, msg);
+            crate::HandshakeRefusal::ConnectionLimit(64),
+            crate::HandshakeRefusal::ServerStarting,
+        ] {
+            let msg = ServerMessage::EndpointWelcome(
+                crate::endpoint::EndpointServerWelcome::refused(reason),
+            );
+            assert_eq!(roundtrip(&msg)?, msg);
+        }
         Ok(())
     }
 

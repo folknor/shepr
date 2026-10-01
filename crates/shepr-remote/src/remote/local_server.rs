@@ -4,16 +4,10 @@
 //! The server is the `shepr-server` executable installed beside the running
 //! `shepr`. A launch is:
 //!
-//! 1. Probe the client socket and ask a live listener for its status. A live
-//!    server that answers is used as it is (its build is checked below); one
-//!    that listens but does not answer while its API socket is still live, or
-//!    whose socket is inaccessible or served by another user, is a failure and
-//!    never a reason to start a second server. One that answers that it is
-//!    stopping, or has released its API socket while the client socket remains,
-//!    is waited out until both sockets are gone. If the API socket is live
-//!    before the client socket appears, the launcher waits for that transition
-//!    to finish too. These states come from the shared `ServerLifetime` rule,
-//!    through the API presence reader.
+//! 1. Probe the server socket and ask a live listener for status. Gone permits
+//!    launch, Starting and Stopping are waited out, Running carries the build
+//!    identity, and Unresponsive is a failure. An inaccessible socket or a
+//!    listener served by another user never permits a successor.
 //! 2. Only for the build profile's own runtime address: take the launch lock
 //!    in the runtime directory, so simultaneous first clients start one
 //!    server, and probe again under it.
@@ -57,15 +51,18 @@ const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
 /// directory.
 const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
 
-/// A direct client checks the build before attaching. An SSH bridge leaves the
-/// check to the client's typed protocol handshake so mismatch errors retain it.
+/// A direct client checks the build before attaching. An SSH bridge accepts a
+/// running server of another build and answers the client with that build's
+/// preamble itself, so the client still reports a typed mismatch.
 #[derive(Clone, Copy)]
 pub enum BuildCheck {
     BeforeAttach,
     AtClientHandshake,
 }
 
-/// Ensures a server is listening, with the caller's build-check policy.
+/// Ensures a server is listening, with the caller's build-check policy, and
+/// returns the status of the server it accepted: the one probed, or the one
+/// it launched and verified.
 ///
 /// A server this call starts is verified to be this build before it returns,
 /// whatever the policy: the policy governs only a server that was already
@@ -74,34 +71,34 @@ pub fn ensure_running(
     paths: &shepr_config::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
-) -> io::Result<()> {
+) -> io::Result<RuntimeStatus> {
     match probe_server(paths)? {
         Probed::Running(status) => {
             info!("server already running");
-            return accept_running(paths, &status, build_check);
+            return accept_running(paths, status, build_check);
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
-        Probed::NoServer | Probed::Starting | Probed::Stopping | Probed::Releasing => {}
+        Probed::NoServer | Probed::Starting | Probed::Stopping => {}
     }
     require_own_runtime_address(paths)?;
     let server = server_executable()?;
 
     let _lock = acquire_launch_lock(paths, timeout.saturating_add(LAUNCH_LOCK_WAIT_GRACE))?;
-    // One budget covers every endpoint transition while this client owns the
+    // One budget covers every socket transition while this client owns the
     // launch lock; a server that repeatedly starts and releases cannot reset it.
-    // clock-io-ok: the launch budget measures real elapsed waiting on sockets
+    // clock-io-ok: the launch budget measures real elapsed waiting on the socket
     let transition_deadline = Instant::now() + timeout;
     // A client that held the lock before us may have finished its launch.
     loop {
         match probe_server(paths)? {
             Probed::Running(status) => {
                 info!("server started by another client");
-                return accept_running(paths, &status, build_check);
+                return accept_running(paths, status, build_check);
             }
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
             Probed::NoServer => break,
-            Probed::Starting | Probed::Stopping | Probed::Releasing => {
-                info!("the server sockets are in transition; waiting for them to settle");
+            Probed::Starting | Probed::Stopping => {
+                info!("the server socket is in transition; waiting for it to settle");
                 // clock-io-ok: the launch budget measures real elapsed waiting
                 if transition_deadline
                     .saturating_duration_since(Instant::now())
@@ -109,28 +106,28 @@ pub fn ensure_running(
                 {
                     return Err(server_transition_timeout(paths, timeout));
                 }
-                wait_for_server_sockets_to_settle_until(paths, transition_deadline, timeout)?;
+                wait_for_server_socket_to_settle_until(paths, transition_deadline, timeout)?;
             }
         }
     }
 
     info!(server = %server.display(), "no server running, starting the server daemon");
     let status = launch_daemon(paths, &server, timeout)?;
-    accept_running(paths, &status, build_check)
+    accept_running(paths, status, build_check)
 }
 
 /// What is running at the local server address, without ever starting a server:
 /// the status of a stable server that answers, or `None` when no restartable
-/// server is present or an endpoint transition is in progress. The pre-TUI
-/// restart offer reads a different-build server through this. A live API
+/// server is present or the server is starting or stopping. The pre-TUI
+/// restart offer reads a different-build server through this. A live
 /// listener that does not answer, or a socket that cannot be judged, is an
 /// error, as it is for a launch.
 pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Option<RuntimeStatus>> {
     match probe_server(paths)? {
         Probed::Running(status) => Ok(Some(status)),
         // There is no stable server status to offer; the launch that follows
-        // resolves endpoint transitions under the profile lock.
-        Probed::NoServer | Probed::Starting | Probed::Stopping | Probed::Releasing => Ok(None),
+        // resolves the transition under the profile lock.
+        Probed::NoServer | Probed::Starting | Probed::Stopping => Ok(None),
         Probed::Unresponsive => Err(unresponsive_error(paths)),
     }
 }
@@ -141,72 +138,55 @@ pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Optio
 
 /// What a probe of the local server found.
 enum Probed {
-    /// Neither endpoint has a live listener.
+    /// The socket has no live listener.
     NoServer,
-    /// The API endpoint is live, but the client endpoint is absent or stale.
-    /// Wait for startup to finish or for both sockets to disappear.
+    /// The socket answers that the server is still restoring.
     Starting,
     /// A server listens and answered a status request.
     Running(RuntimeStatus),
     /// Something listens but gave no status answer within the deadline.
     Unresponsive,
-    /// A server answered that it is stopping. Its client socket stays bound
-    /// until its final session save is on disk, but nothing accepts on it, so
-    /// it is not a server to attach to.
+    /// The server is stopping and no longer accepts TUI connections.
     Stopping,
-    /// The API socket no longer has a listener, but the client socket is
-    /// still live. Wait for that final socket to go before starting a server.
-    Releasing,
 }
 
 fn probe_server(paths: &shepr_config::AppPaths) -> io::Result<Probed> {
-    probe_server_at(
-        paths.server_address().client_socket(),
-        &shepr_api::socket_path(paths),
-    )
+    probe_server_at(paths.server_address().socket())
 }
 
-/// Probes the client socket, and follows a live one with a bounded status
-/// request on the API socket rather than trusting that a connect succeeded.
-///
-/// A client socket that is absent or stale proves absence only when the API
-/// socket is absent or stale too. An unreachable socket (permission, a
-/// non-socket in the way, a symlink loop) and a listener served by another user
-/// are errors: neither proves absence, so neither may lead to a second server.
-/// The status request itself checks who serves the API socket before writing
-/// to it.
-fn probe_server_at(client_socket: &Path, api_socket: &Path) -> io::Result<Probed> {
+/// Probes the server socket, and follows a live one with a bounded status
+/// request rather than trusting that a connect succeeded. An unreachable
+/// socket (permission, a non-socket in the way, a symlink loop) and a listener
+/// served by another user are errors: neither proves absence, so neither may
+/// lead to a second server. The status request itself checks who serves the
+/// socket before writing to it.
+fn probe_server_at(socket: &Path) -> io::Result<Probed> {
     use shepr_api::ServerPresence;
     Ok(
-        match shepr_api::read_server_presence_at(client_socket, api_socket, STATUS_REQUEST_TIMEOUT)?
-        {
+        match shepr_api::read_server_presence_at(socket, STATUS_REQUEST_TIMEOUT)? {
             ServerPresence::Gone => Probed::NoServer,
             ServerPresence::Starting => Probed::Starting,
             ServerPresence::Running(status) => Probed::Running(status),
-            ServerPresence::Stopping(_) => Probed::Stopping,
-            ServerPresence::Releasing => Probed::Releasing,
+            ServerPresence::Stopping => Probed::Stopping,
             ServerPresence::Unresponsive => Probed::Unresponsive,
         },
     )
 }
 
-/// Waits through a server transition until both endpoint sockets disappear or
+/// Waits through a server transition until the server socket disappears or
 /// a different stable probe result appears. The launcher holds its profile
 /// lock while waiting, so another shepr client cannot start a competing
 /// successor in this interval.
-fn wait_for_server_sockets_to_settle_until(
+fn wait_for_server_socket_to_settle_until(
     paths: &shepr_config::AppPaths,
     deadline: Instant,
     timeout: Duration,
 ) -> io::Result<()> {
-    // clock-io-ok: bounds a wait on another process's real sockets.
+    // clock-io-ok: bounds a wait on another process's real socket.
     loop {
-        if server_sockets_are_stopped(paths)? {
-            return Ok(());
-        }
-        let probed = probe_server(paths)?;
-        if matches!(&probed, Probed::Running(_) | Probed::Unresponsive) {
-            return Ok(());
+        match probe_server(paths)? {
+            Probed::NoServer | Probed::Running(_) | Probed::Unresponsive => return Ok(()),
+            Probed::Starting | Probed::Stopping => {}
         }
         // clock-io-ok: the same real-socket wait.
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -221,25 +201,17 @@ fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) 
     io::Error::new(
         io::ErrorKind::TimedOut,
         format!(
-            "the shepr server at {} did not release its sockets within {}ms",
-            paths.server_address().client_socket().display(),
+            "the shepr server at {} did not finish starting or release its socket within {}ms",
+            paths.server_address().socket().display(),
             timeout.as_millis()
         ),
     )
 }
 
-fn server_sockets_are_stopped(paths: &shepr_config::AppPaths) -> io::Result<bool> {
-    let address = paths.server_address();
-    shepr_api::server_stop::server_sockets_are_stopped(&[
-        address.client_socket(),
-        address.api_socket(),
-    ])
-}
-
 fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
     io::Error::other(format!(
         "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
-        paths.server_address().client_socket().display(),
+        paths.server_address().socket().display(),
         build_mismatch_guidance(paths)
     ))
 }
@@ -247,15 +219,15 @@ fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
 /// Applies the caller's policy to a running server's build.
 fn accept_running(
     paths: &shepr_config::AppPaths,
-    status: &RuntimeStatus,
+    status: RuntimeStatus,
     build_check: BuildCheck,
-) -> io::Result<()> {
+) -> io::Result<RuntimeStatus> {
     if shepr_protocol::is_this_build(&status.build_id) {
-        return Ok(());
+        return Ok(status);
     }
     match build_check {
-        BuildCheck::BeforeAttach => Err(running_build_mismatch(paths, status)),
-        BuildCheck::AtClientHandshake => Ok(()),
+        BuildCheck::BeforeAttach => Err(running_build_mismatch(paths, &status)),
+        BuildCheck::AtClientHandshake => Ok(status),
     }
 }
 
@@ -290,15 +262,12 @@ fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> io::Result<()>
     if address.is_runtime_address() {
         return Ok(());
     }
-    let selected_by = address.override_variable().map_or_else(
-        || "a socket override".to_owned(),
-        |variable| variable.to_string(),
-    );
+    let selected_by = EnvVar::SheprSocketPath;
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
             "no shepr server is running at {}, which {selected_by} selects. A client starts a server only for its own runtime address ({}); a socket override names a server that is already running.",
-            address.client_socket().display(),
+            address.socket().display(),
             paths.runtime_dir().display()
         ),
     ))
@@ -484,8 +453,8 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
 /// Takes the launch lock of the profile's runtime directory, polling without
 /// blocking for at most `wait`.
 ///
-/// The lock is keyed to the profile, not to a socket pair: socket overrides
-/// move only the sockets, so every server of one profile competes for the same
+/// The lock is keyed to the profile, not to a socket path: socket overrides
+/// move only the socket, so every server of one profile competes for the same
 /// data directory lease anyway.
 fn acquire_launch_lock(paths: &shepr_config::AppPaths, wait: Duration) -> io::Result<FlockLock> {
     shepr_platform::create_private_directory_all(paths.runtime_dir()).map_err(|error| {
@@ -607,10 +576,10 @@ fn launch_daemon(
 /// failure yet: the occupant is what the client will attach to, so polling
 /// goes on for it until the deadline. An occupant of another build that
 /// answers is returned for the caller's build-check policy; one that answers
-/// that it is stopping is never returned, only polled past until its sockets
+/// that it is stopping is never returned, only polled past until its socket
 /// go. While nothing listens, such a daemon is started again every
 /// [`DAEMON_RESTART_INTERVAL`]: the holder may be a server that is still
-/// starting before its API bind, or one that has released its sockets and
+/// starting before its socket bind, or one that has released its socket and
 /// still holds its lease. The launch is owed a daemon of its own once the
 /// lease is free.
 fn launch_with(
@@ -733,9 +702,9 @@ fn launch_with(
             return Err(boot_timeout(files, timeout, exited.is_some()));
         }
         // The daemon gave way and nothing listens, so what it met was not a
-        // server that will answer: a holder still booting before its API bind,
-        // or an older server that released sockets before its lease. This
-        // build's shared lifetime rule retires the lease first. Retry; the
+        // server that will answer: a holder still booting before its socket
+        // bind, or an older server that released its socket before its lease.
+        // A server of this build retires its lease first. Retry; the
         // lease keeps from ever sharing the directory with the holder. A
         // holder that is a live, healthy server listens, which the probe
         // above turns into an answer instead of reaching here.
