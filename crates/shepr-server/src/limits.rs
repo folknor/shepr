@@ -44,6 +44,10 @@ pub(crate) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Limit app events per loop pass so clients still get service.
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
+/// Limit API requests per loop pass so client and scheduled work still get service.
+pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
+/// Limit server events per loop pass so API and scheduled work still get service.
+pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
 
 /// First session-save retry: prompt recovery without a busy loop.
 pub(crate) const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
@@ -69,7 +73,7 @@ pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 /// Total time a client gets to deliver its complete handshake frame.
 ///
 /// This is a single deadline across every read of the hello, not a per-read idle
-/// timeout: `shepr_platform::ipc::DeadlineReader` polls for readiness with only
+/// timeout: `shepr_platform::ipc::LocalStreamDeadlineReader` polls for readiness with only
 /// the time left before each read, so a peer trickling bytes cannot
 /// hold the handshake thread open. The deadline leaves room for OS timer slack,
 /// thread scheduling, and cleanup overhead.

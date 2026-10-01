@@ -400,6 +400,45 @@ fn start_word_drag(state: &mut ClientShellState) -> String {
 }
 
 #[test]
+fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
+    let mut state = word_drag_state(false);
+    let request_id = start_word_drag(&mut state);
+    assert!(state.word_selection_gesture.is_some());
+    // The first click also asked to focus the pane; that unrelated request
+    // stays pending and is not part of this assertion.
+    state.pending_requests.retain(|id, _| id == &request_id);
+
+    let outcome = state.handle_endpoint_result_at(
+        "replacement-boot",
+        &request_id,
+        Err(ClientShellEndpointError::Server(
+            shepr_protocol::command::EndpointError::StaleBoot,
+        )),
+        std::time::Instant::now(),
+    );
+
+    assert!(outcome.repaint);
+    assert!(state.pending_requests.is_empty());
+    assert!(state.word_selection_gesture.is_none());
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
+fn disconnecting_a_pending_word_row_read_does_not_show_an_interrupted_action_notice() {
+    let mut state = word_drag_state(false);
+    let request_id = start_word_drag(&mut state);
+    // The first click also asked to focus the pane; a generic action does show
+    // the interrupted notice, so leave only the word read pending.
+    state.pending_requests.retain(|id, _| id == &request_id);
+
+    state.mark_endpoint_disconnected(&crate::endpoint::ClientEndpointId::Local);
+
+    assert!(state.pending_requests.is_empty());
+    assert!(state.word_selection_gesture.is_none());
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
 fn double_click_drag_selects_whole_words_in_both_directions() {
     let mut state = word_drag_state(false);
     let initial = start_word_drag(&mut state);

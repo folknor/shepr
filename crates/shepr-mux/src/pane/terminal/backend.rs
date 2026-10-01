@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use super::super::teardown::ChildLiveness;
 use super::*;
+use shepr_protocol::MAX_SURFACE_HYPERLINKS;
 
 impl PaneTerminal {
     /// Construct a terminal that belongs to no pane: for tests, and for the
@@ -59,6 +62,8 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("host theme update");
             return;
         };
+        // The server filters identical host themes before dispatching this
+        // update, so each call installs a new set of pane defaults.
         core.content_revision = core.content_revision.wrapping_add(2);
         core.host_terminal_theme = theme;
         if !has_default_color_override(&core.terminal) {
@@ -87,9 +92,13 @@ impl PaneTerminal {
                 return None;
             }
         };
-        core.content_revision = core.content_revision.wrapping_add(2);
         let color_scheme = appearance;
         let previous = core.terminal.set_color_scheme(color_scheme);
+        // Only a change of the stored scheme, including one between unknown
+        // and known, can change the pane; repeating the current one cannot.
+        if previous != color_scheme {
+            core.content_revision = core.content_revision.wrapping_add(2);
+        }
 
         let transitioned = matches!(
             (previous, color_scheme),
@@ -918,6 +927,7 @@ impl PaneTerminal {
         }
         let blank = CellPaint::blank(default_fg, default_bg);
         let mut symbol_scratch = String::new();
+        let mut hyperlink_indices: Option<HashMap<String, u32>> = None;
         let mut rows_drawn = 0u16;
         for row in render_state.iter_rows().take(usize::from(area.height)) {
             let row_start = usize::from(area.y + rows_drawn) * frame_width + usize::from(area.x);
@@ -943,7 +953,11 @@ impl PaneTerminal {
                         .viewport_hyperlink_uri(x, ViewportRow(row.y()))
                         .ok()
                         .flatten()
-                        .and_then(|uri| frame.intern_hyperlink(&uri))
+                        .and_then(|uri| {
+                            let indices = hyperlink_indices
+                                .get_or_insert_with(|| seed_hyperlink_indices(frame));
+                            intern_render_hyperlink(frame, indices, uri)
+                        })
                 } else {
                     None
                 };
@@ -1018,6 +1032,41 @@ fn terminal_screen_row_has_text(
         }
     });
     has_text
+}
+
+fn seed_hyperlink_indices(frame: &FrameData) -> HashMap<String, u32> {
+    let mut indices = HashMap::with_capacity(frame.hyperlinks.len().min(MAX_SURFACE_HYPERLINKS));
+    for (index, uri) in frame.hyperlinks.iter().enumerate() {
+        let Ok(index) = u32::try_from(index) else {
+            break;
+        };
+        indices.entry(uri.clone()).or_insert(index);
+    }
+    indices
+}
+
+fn intern_render_hyperlink(
+    frame: &mut FrameData,
+    indices: &mut HashMap<String, u32>,
+    uri: String,
+) -> Option<u32> {
+    if frame.hyperlinks.last().is_some_and(|known| known == &uri) {
+        return frame
+            .hyperlinks
+            .len()
+            .checked_sub(1)
+            .and_then(|index| u32::try_from(index).ok());
+    }
+    if let Some(index) = indices.get(&uri) {
+        return Some(*index);
+    }
+    if frame.hyperlinks.len() >= MAX_SURFACE_HYPERLINKS {
+        return None;
+    }
+    let index = u32::try_from(frame.hyperlinks.len()).ok()?;
+    frame.hyperlinks.push(uri.clone());
+    indices.insert(uri, index);
+    Some(index)
 }
 
 #[cfg(test)]

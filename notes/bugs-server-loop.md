@@ -21,7 +21,20 @@ are refused during shutdown cleanup, after the notice, so a client that tears
 down on `ServerShutdown` may never read those refusals. The comment in
 `lifecycle.rs` states this ordering.
 
+## SLOOP-022 - The API request channel is unbounded
+
+Lateral. The headless loop now drains at most a fixed batch of server events
+and API requests per pass, but the API receiver created in
+`shepr-server/src/app/mod.rs` is still an unbounded channel, so requests
+arriving faster than the loop handles them (an agent hook storm) grow the queue
+in memory without limit. Shutdown cleanup then refuses every accepted request
+one by one after closing the receiver, so a large backlog also lengthens
+shutdown.
+
 ## SLOOP-004 - A slow client turns every drain of its render slot into a full render for everyone
+
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
 
 Claims broken: the closing comment of `render_and_stream`
 (`headless/render.rs`): "Full-frame recovery is tracked per connection. A slow
@@ -41,15 +54,6 @@ puts every peer on the full path at its drain rate.
 Direction: make demand per client. A drained client should be rendered alone
 (full for it, nothing for the others), and a PTY change should go retained to
 every client that can take it.
-
-## SLOOP-013 - Server-event and API drains are unbounded
-
-`drain_server_events` and `drain_api_requests_with_shutdown_check` drain until
-empty, while internal events are capped at `APP_EVENT_DRAIN_LIMIT` "so clients
-still get service". Producers refill from other threads while the loop drains,
-so a pane-input flood from several clients, or an agent hook storm on the API,
-can postpone rendering and the scheduled tasks for as long as it lasts. Bound
-both like the internal one.
 
 ## SLOOP-016 - Structural: bootstrap restores before binding the client socket
 
@@ -73,6 +77,9 @@ ordering, size policy, flush barriers and disconnect reporting would remove the
 class.
 
 ## SLOOP-018 - Structural: render demand is stored edge-triggered state
+
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
 
 Geometry control is now resolved from the current viewers (a remembered
 controller wins only while it views the workspace). Render demand (SLOOP-004)

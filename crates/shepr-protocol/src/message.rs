@@ -40,20 +40,59 @@ pub enum NoticeKind {
         claimed: usize,
         max: usize,
     },
-    /// The server's saved session did not come back in full when it started.
-    /// Carried in every shell snapshot for that server boot, so inactive
-    /// connections and reconnects retain the same restore diagnosis.
-    SessionRestoreIncomplete {
-        /// Why the session file could not be used at all; `None` when it
-        /// loaded and only part of it was discarded.
-        unusable: Option<String>,
-        /// Saved workspaces dropped whole.
-        dropped_workspaces: usize,
-        /// Panes or layout leaves pruned from workspaces that did restore.
-        panes_pruned: bool,
-        /// Where the original session file is kept.
-        backup_dir: String,
-    },
+}
+
+/// The server's saved session did not come back in full when it started.
+/// Carried in every shell snapshot for that server boot, so inactive
+/// connections and reconnects retain the same restore diagnosis. It is not a
+/// `NoticeKind`: no direct server notice carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRestoreNotice {
+    /// Why the session file could not be used at all; `None` when it
+    /// loaded and only part of it was discarded.
+    pub unusable: Option<String>,
+    /// Saved workspaces dropped whole.
+    pub dropped_workspaces: usize,
+    /// Panes or layout leaves pruned from workspaces that did restore.
+    pub panes_pruned: bool,
+    /// Where the original session file is kept.
+    pub backup_dir: String,
+}
+
+impl std::fmt::Display for SessionRestoreNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            unusable,
+            dropped_workspaces,
+            panes_pruned,
+            backup_dir,
+        } = self;
+        if let Some(reason) = unusable {
+            write!(f, "The saved session was not restored: {reason}.")?;
+        } else {
+            let mut lost = Vec::new();
+            if *dropped_workspaces > 0 {
+                let unit = if *dropped_workspaces == 1 {
+                    "workspace"
+                } else {
+                    "workspaces"
+                };
+                lost.push(format!("{dropped_workspaces} saved {unit}"));
+            }
+            if *panes_pruned {
+                lost.push("some saved panes".to_owned());
+            }
+            write!(
+                f,
+                "The saved session was restored in part: {} could not be restored.",
+                lost.join(" and ")
+            )?;
+        }
+        write!(
+            f,
+            " The original session file is copied to {backup_dir} before the server first saves over it."
+        )
+    }
 }
 
 impl std::fmt::Display for NoticeKind {
@@ -74,38 +113,6 @@ impl std::fmt::Display for NoticeKind {
                 f,
                 "The screen is too large to send ({claimed} bytes; the limit is {max}). Make the window smaller; the display resumes once the screen fits."
             ),
-            Self::SessionRestoreIncomplete {
-                unusable,
-                dropped_workspaces,
-                panes_pruned,
-                backup_dir,
-            } => {
-                if let Some(reason) = unusable {
-                    write!(f, "The saved session was not restored: {reason}.")?;
-                } else {
-                    let mut lost = Vec::new();
-                    if *dropped_workspaces > 0 {
-                        let unit = if *dropped_workspaces == 1 {
-                            "workspace"
-                        } else {
-                            "workspaces"
-                        };
-                        lost.push(format!("{dropped_workspaces} saved {unit}"));
-                    }
-                    if *panes_pruned {
-                        lost.push("some saved panes".to_owned());
-                    }
-                    write!(
-                        f,
-                        "The saved session was restored in part: {} could not be restored.",
-                        lost.join(" and ")
-                    )?;
-                }
-                write!(
-                    f,
-                    " The original session file is copied to {backup_dir} before the server first saves over it."
-                )
-            }
         }
     }
 }

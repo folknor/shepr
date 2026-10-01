@@ -388,7 +388,7 @@ mod tests {
     fn client_shell_snapshot_roundtrip() -> TestResult {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),
-            restore_notice: Some(NoticeKind::SessionRestoreIncomplete {
+            restore_notice: Some(SessionRestoreNotice {
                 unusable: None,
                 dropped_workspaces: 2,
                 panes_pruned: true,

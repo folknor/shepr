@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
 use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
-use shepr_platform::ipc::LocalStream;
+use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 
 /// Reusable client for Shepr's newline-delimited JSON API.
 #[derive(Debug, Clone)]
@@ -61,10 +61,7 @@ impl ApiClient {
         write_request(&mut stream, request).map_err(normalize_socket_timeout)?;
 
         let deadline = deadline_after(timeout)?;
-        let mut reader = BufReader::new(shepr_platform::ipc::DeadlineReader::new(
-            &mut stream,
-            deadline,
-        ));
+        let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
         read_json_line(&mut reader).map_err(normalize_socket_timeout)
     }
 
@@ -99,10 +96,7 @@ impl ApiClient {
             .map_err(normalize_socket_timeout)
             .map_err(ApiClientDeadlineError::Request)?;
 
-        let mut reader = BufReader::new(shepr_platform::ipc::DeadlineReader::new(
-            &mut stream,
-            deadline,
-        ));
+        let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
         read_json_line(&mut reader)
             .map_err(normalize_socket_timeout)
             .map_err(ApiClientDeadlineError::Request)

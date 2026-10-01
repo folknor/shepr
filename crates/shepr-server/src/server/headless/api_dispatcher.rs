@@ -20,7 +20,12 @@ impl super::HeadlessServer {
 
     pub(super) fn drain_api_requests_with_shutdown_check(&mut self) -> bool {
         let mut changed = false;
-        while !self.lifecycle.stop_requested(self.app.state.should_quit) {
+        for _ in 0..crate::limits::API_REQUEST_DRAIN_LIMIT {
+            // Recheck before each dequeue so a stop during this batch leaves
+            // later requests for shutdown refusal.
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+                break;
+            }
             let Ok(msg) = self.app.api_rx.try_recv() else {
                 break;
             };
@@ -31,6 +36,8 @@ impl super::HeadlessServer {
 
     pub(super) fn reject_queued_api_requests_for_shutdown(&mut self) {
         self.app.api_rx.close();
+        // Closing first makes this exhaustive cleanup finite: every request
+        // already accepted gets a refusal, and no new request can extend it.
         while let Ok(msg) = self.app.api_rx.try_recv() {
             self.reject_api_request_for_shutdown(&msg);
         }

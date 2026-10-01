@@ -2,6 +2,12 @@ use super::*;
 use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 
 impl PendingEndpointKind {
+    /// Read requests only supply client presentation state, so losing their connection is not
+    /// an interrupted user action with an unknown server-side outcome.
+    fn should_show_cancelled_notice(&self) -> bool {
+        matches!(self, Self::Generic)
+    }
+
     /// Roll back only the state owned by this request. Cancellation cannot dispatch work:
     /// its caller may have lost presentation or the connection that would carry that work.
     fn cancel(self, shell: &mut ClientShellState) -> bool {
@@ -347,14 +353,8 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         boot_id: &shepr_protocol::BootId,
-        kind: &shepr_protocol::NoticeKind,
+        notice: &shepr_protocol::SessionRestoreNotice,
     ) -> bool {
-        if !matches!(
-            kind,
-            shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. }
-        ) {
-            return false;
-        }
         let key = ClientEndpointNoticeKey {
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Rejected,
@@ -368,7 +368,7 @@ impl ClientShellState {
             .push_back(ClientVisibleEndpointNotice {
                 key,
                 title: format!("{label}: saved session not fully restored"),
-                body: kind.to_string(),
+                body: notice.to_string(),
             });
         if self.visible_endpoint_notice.is_none() {
             self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
@@ -377,12 +377,8 @@ impl ClientShellState {
         true
     }
 
-    /// Shows a notice `endpoint_id`'s server sent.
-    pub(crate) fn receive_server_notice(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        kind: &shepr_protocol::NoticeKind,
-    ) -> bool {
+    /// Shows a notice an endpoint's server sent.
+    pub(crate) fn receive_server_notice(&mut self, kind: &shepr_protocol::NoticeKind) -> bool {
         let (code, title) = match kind {
             shepr_protocol::NoticeKind::PaneInputDropped { .. } => (
                 "pane_input_dropped".to_owned(),
@@ -395,15 +391,6 @@ impl ClientShellState {
                 "oversized_surface".to_owned(),
                 "Screen too large".to_owned(),
             ),
-            // Restore diagnoses travel in snapshots; this arm only formats
-            // a directly supplied diagnostic, never connection metadata.
-            shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. } => {
-                let label = self.endpoint_label(endpoint_id);
-                (
-                    format!("session_restore_incomplete:{label}"),
-                    format!("{label}: saved session not fully restored"),
-                )
-            }
         };
         self.push_endpoint_notice(
             ClientEndpointNoticeKind::Rejected,
@@ -541,7 +528,14 @@ impl ClientShellState {
                     .as_deref()
                     .is_none_or(|snapshot| snapshot.boot_id != boot_id))
         {
-            return (false, Vec::new());
+            let highlight_cleared = self
+                .pending_workspace_highlight
+                .as_ref()
+                .is_some_and(|pending| pending.request_id == request_id);
+            if highlight_cleared {
+                self.pending_workspace_highlight = None;
+            }
+            return (pending.kind.cancel(self) || highlight_cleared, Vec::new());
         }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
@@ -559,7 +553,9 @@ impl ClientShellState {
             {
                 self.pending_workspace_highlight = None;
             }
-            if show_cancelled_notice || !matches!(error, ClientShellEndpointError::Cancelled) {
+            if (show_cancelled_notice && pending.kind.should_show_cancelled_notice())
+                || !matches!(error, ClientShellEndpointError::Cancelled)
+            {
                 let message = error.to_string();
                 let (kind, notice_code, title, body) = match error {
                     ClientShellEndpointError::Timeout => (

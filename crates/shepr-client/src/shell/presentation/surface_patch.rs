@@ -24,6 +24,23 @@ fn patch_updates_pane<'a>(
     patched_pane_ids.any(|patched| patched == pane_id)
 }
 
+fn copy_mode_cursor_changed_on_owner(
+    state: &ClientShellState,
+    patch: &shepr_protocol::PaneSurfacePatch,
+) -> bool {
+    let Some(copy_mode) = state.copy_mode.as_ref() else {
+        return false;
+    };
+    let Some(surface) = state.pane_surface.as_ref() else {
+        return false;
+    };
+    patch.cursor != surface.frame.cursor
+        && surface
+            .panes
+            .iter()
+            .any(|pane| pane.focused && pane.pane_id == copy_mode.pane_id)
+}
+
 fn apply_patch_to_surface(
     surface: &mut shepr_protocol::PaneSurfaceFrame,
     patch: &shepr_protocol::PaneSurfacePatch,
@@ -82,7 +99,10 @@ fn fast_path_blocker(
             patch.panes.iter().map(|pane| &pane.pane_id),
             &copy_mode.pane_id,
         )
-    }) {
+    }) || copy_mode_cursor_changed_on_owner(state, patch)
+    {
+        // The cursor is sampled independently of the changed pane list, so a patch can move it
+        // without naming its owner in metadata. Recompose only when that owner has copy state.
         Some("client_surface_patch.fallback.copy_mode")
     } else if patch.panes.iter().any(|pane| {
         !state
@@ -256,6 +276,128 @@ impl ClientShellState {
 mod tests {
     use super::*;
 
+    fn cursor(x: u16) -> shepr_protocol::CursorState {
+        shepr_protocol::CursorState {
+            x,
+            y: 0,
+            visible: true,
+            shape: shepr_protocol::CursorShapeParam::SteadyBlock,
+        }
+    }
+
+    fn test_surface_pane(
+        pane_id: shepr_protocol::PublicPaneId,
+        focused: bool,
+        rect: shepr_protocol::SurfaceRect,
+    ) -> shepr_protocol::PaneSurfacePane {
+        shepr_protocol::PaneSurfacePane {
+            pane_id,
+            content_revision: 0,
+            rect,
+            inner_rect: rect,
+            scrollbar_rect: None,
+            scroll: None,
+            focused,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+
+    fn state_with_copy_pane_focus(copy_pane_focused: bool) -> (ClientShellState, Rect) {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.last_composed_size = Some((80, 24));
+        let mut snapshot = crate::shell::tests::snapshot();
+        let copy_pane_id = snapshot.panes[0].pane_id.clone();
+        let other_pane_id = crate::tests::test_pane_id("w1:p2");
+        if !copy_pane_focused {
+            snapshot.focused_pane_id = Some(other_pane_id.clone());
+            snapshot.panes[0].focused = false;
+            let mut other_pane = snapshot.panes[0].clone();
+            other_pane.pane_id = other_pane_id.clone();
+            other_pane.focused = true;
+            snapshot.panes.push(other_pane);
+        }
+        state.set_snapshot(Box::new(snapshot));
+        let area = state.layout(80, 24).pane_surface;
+        let copy_rect = shepr_protocol::SurfaceRect {
+            x: 0,
+            y: 0,
+            width: if copy_pane_focused {
+                area.width
+            } else {
+                area.width / 2
+            },
+            height: area.height,
+        };
+        let panes = if copy_pane_focused {
+            vec![test_surface_pane(copy_pane_id.clone(), true, copy_rect)]
+        } else {
+            let other_rect = shepr_protocol::SurfaceRect {
+                x: copy_rect.width,
+                y: 0,
+                width: area.width.saturating_sub(copy_rect.width),
+                height: area.height,
+            };
+            vec![
+                test_surface_pane(copy_pane_id.clone(), false, copy_rect),
+                test_surface_pane(other_pane_id, true, other_rect),
+            ]
+        };
+        let snapshot = state.snapshot.as_deref().expect("snapshot installed");
+        let buffer = Buffer::empty(Rect::new(0, 0, area.width, area.height));
+        state.pane_surface = Some(shepr_protocol::PaneSurfaceFrame {
+            boot_id: snapshot.boot_id.clone(),
+            projection_revision: snapshot.revision,
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            frame: FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, Some(cursor(1)), &[]),
+            panes,
+            splits: Vec::new(),
+        });
+        state.copy_mode = Some(ClientCopyModeState {
+            pane_id: copy_pane_id,
+            history_origin: shepr_vt::AbsRow(0),
+            geometry: (area.width, area.height),
+            alternate_screen_active: false,
+            cursor: shepr_protocol::command::PaneTextPoint {
+                row: shepr_vt::AbsRow(0),
+                col: 0,
+            },
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 0,
+            entry_offset_from_bottom: 0,
+            selection: None,
+            search_prompt: None,
+            search_query: String::new(),
+            search_direction: None,
+            search_matches: Vec::new(),
+            search_total: 0,
+            search_current: None,
+            search_current_global: None,
+            search_generation: 0,
+            copy_after_search: false,
+        });
+        (state, area)
+    }
+
+    fn cursor_patch(
+        state: &ClientShellState,
+        cursor: Option<shepr_protocol::CursorState>,
+    ) -> shepr_protocol::PaneSurfacePatch {
+        let surface = state.pane_surface.as_ref().expect("surface installed");
+        shepr_protocol::PaneSurfacePatch {
+            boot_id: surface.boot_id.clone(),
+            projection_revision: surface.projection_revision,
+            base_surface_revision: surface.surface_revision,
+            surface_revision: shepr_protocol::SurfaceRevision::new(2),
+            rows: Vec::new(),
+            panes: Vec::new(),
+            cursor,
+        }
+    }
+
     #[test]
     fn pane_patch_matching_is_limited_to_the_updated_pane_ids() {
         let updated = [
@@ -267,5 +409,22 @@ mod tests {
 
         assert!(patch_updates_pane(updated.iter(), &copy_pane));
         assert!(!patch_updates_pane(updated.iter(), &parked_copy_pane));
+    }
+
+    #[test]
+    fn cursor_only_copy_blocker_is_limited_to_a_changed_cursor_on_its_owner() {
+        let (focused, area) = state_with_copy_pane_focus(true);
+        let changed_cursor = cursor_patch(&focused, Some(cursor(2)));
+        assert_eq!(
+            fast_path_blocker(&focused, &changed_cursor, area),
+            Some("client_surface_patch.fallback.copy_mode")
+        );
+
+        let unchanged_cursor = cursor_patch(&focused, Some(cursor(1)));
+        assert_eq!(fast_path_blocker(&focused, &unchanged_cursor, area), None);
+
+        let (parked, area) = state_with_copy_pane_focus(false);
+        let unrelated_cursor = cursor_patch(&parked, Some(cursor(2)));
+        assert_eq!(fast_path_blocker(&parked, &unrelated_cursor, area), None);
     }
 }

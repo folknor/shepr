@@ -1212,6 +1212,7 @@ impl ClientShellState {
             }
         }
         let mut invalidated_copy_pane = None;
+        let mut clamped_copy_coordinates = false;
         if let Some(copy_mode) = self.copy_mode.as_mut()
             && let Some(pane) = surface
                 .panes
@@ -1237,7 +1238,6 @@ impl ClientShellState {
             }
             if let Some(scroll) = pane.scroll {
                 copy_mode.history_origin = scroll.history_origin;
-                prune_evicted_search_matches(copy_mode);
                 let actual_offset =
                     usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
                 if !self.pane_scroll_targets.contains_key(&pane.pane_id) {
@@ -1245,7 +1245,29 @@ impl ClientShellState {
                 }
                 copy_mode.max_offset_from_bottom =
                     usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX);
+                let retained_cursor_row = copy_mode.retained_row(copy_mode.cursor.row);
+                clamped_copy_coordinates |= retained_cursor_row != copy_mode.cursor.row;
+                copy_mode.cursor.row = retained_cursor_row;
+                if let Some(mut selection) = copy_mode.selection {
+                    match &mut selection {
+                        ClientCopySelection::Character { anchor } => {
+                            let retained_row = copy_mode.retained_row(anchor.row);
+                            clamped_copy_coordinates |= retained_row != anchor.row;
+                            anchor.row = retained_row;
+                        }
+                        ClientCopySelection::Linewise { anchor_row } => {
+                            let retained_row = copy_mode.retained_row(*anchor_row);
+                            clamped_copy_coordinates |= retained_row != *anchor_row;
+                            *anchor_row = retained_row;
+                        }
+                    }
+                    copy_mode.selection = Some(selection);
+                }
+                prune_evicted_search_matches(copy_mode);
             }
+        }
+        if clamped_copy_coordinates {
+            self.sync_copy_selection();
         }
         if invalidated_copy_pane.as_ref().is_some_and(|pane_id| {
             self.selection

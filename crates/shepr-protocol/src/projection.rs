@@ -9,7 +9,7 @@ pub struct ClientShellSnapshot {
     /// Monotonic replacement revision within one endpoint boot.
     pub revision: ProjectionRevision,
     /// Incomplete saved-session restore for this boot, repeated on every projection.
-    pub restore_notice: Option<NoticeKind>,
+    pub restore_notice: Option<SessionRestoreNotice>,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
     pub workspaces: Vec<ClientShellWorkspace>,

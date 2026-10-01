@@ -256,6 +256,7 @@ const NODE_VALUE_FLAGS: &[&str] = &[
     "--experimental-loader",
     "--inspect-port",
 ];
+const PYTHON_VALUE_FLAGS: &[&str] = &["-W", "-X", "--check-hash-based-pycs"];
 
 fn wrapped_agent_name_from_runtime_argv(
     runtime: &str,
@@ -270,7 +271,7 @@ fn wrapped_agent_name_from_runtime_argv(
             script_arg_agent_name(argv, NODE_EVAL_FLAGS, &[], NODE_VALUE_FLAGS, cwd_pid)
         }
         name if is_python_runtime(name) => {
-            script_arg_agent_name(argv, &["-c"], &["-m"], &["-W", "-X"], cwd_pid)
+            script_arg_agent_name(argv, &["-c"], &["-m"], PYTHON_VALUE_FLAGS, cwd_pid)
         }
         name if is_pane_shell_process_name(name) => {
             shell_agent_name_from_runtime_argv(argv, cwd_pid)
@@ -1153,6 +1154,23 @@ mod tests {
                     "--model",
                     "gpt-5",
                 ],
+            )],
+        };
+
+        assert_eq!(
+            identify_agent_in_job(&job),
+            Some((Agent::Codex, "codex".to_string()))
+        );
+    }
+
+    #[test]
+    fn identify_agent_in_job_skips_python_hash_based_pyc_option_value() {
+        let job = ForegroundJob {
+            process_group_id: 123,
+            processes: vec![foreground_process(
+                123,
+                "python3",
+                &["python3", "--check-hash-based-pycs", "always", "/tmp/codex"],
             )],
         };
 

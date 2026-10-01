@@ -6,7 +6,6 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::Stream as _;
 use sha2::{Digest as _, Sha256};
 
 pub type LocalListener = interprocess::local_socket::Listener;
@@ -660,10 +659,6 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::Result<()> {
-    stream.set_nonblocking(enabled)
-}
-
 /// Mode applied by [`bind_private_local_listener`]: owner read/write only.
 // limits-exempt: this is the private socket's POSIX file mode, kept beside its application.
 const PRIVATE_SOCKET_MODE: u32 = 0o600;
@@ -1072,9 +1067,6 @@ fn peer_uid(stream: &LocalStream) -> io::Result<libc::uid_t> {
 pub struct LocalStreamDeadlineReader<'a> {
     inner: super::child_io::DeadlineReader<LocalStreamReader<'a>>,
 }
-
-/// Preserve the public path used by API and client crates.
-pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>;
 
 impl<'a> LocalStreamDeadlineReader<'a> {
     pub fn new(stream: &'a mut LocalStream, deadline: Instant) -> Self {

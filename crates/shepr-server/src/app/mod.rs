@@ -126,7 +126,7 @@ pub struct App {
     pub(crate) paths: shepr_config::AppPaths,
     /// Set when this boot's restore did not bring the saved session back in
     /// full; sent to every client that connects, for the life of the boot.
-    pub(crate) restore_notice: Option<shepr_protocol::NoticeKind>,
+    pub(crate) restore_notice: Option<shepr_protocol::SessionRestoreNotice>,
 }
 
 pub(crate) use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT};
@@ -166,7 +166,7 @@ impl App {
         let snapshot = match load {
             Some(shepr_mux::persist::SessionLoad::Loaded(snapshot)) => Some(snapshot),
             Some(shepr_mux::persist::SessionLoad::Unusable(reason)) => {
-                restore_notice = Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                restore_notice = Some(shepr_protocol::SessionRestoreNotice {
                     unusable: Some(reason),
                     dropped_workspaces: 0,
                     panes_pruned: false,
@@ -226,7 +226,7 @@ impl App {
                     restore_damage = restored.restore_damage,
                     "session restore discarded saved data; the saved session is backed up to session-backups before the first save"
                 );
-                restore_notice = Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                restore_notice = Some(shepr_protocol::SessionRestoreNotice {
                     unusable: None,
                     dropped_workspaces: restored.dropped_workspaces,
                     panes_pruned: restored.restore_damage,
@@ -1231,6 +1231,83 @@ mod tests {
             .expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].panes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn detector_release_before_pane_exit_keeps_checkpoint_resume_identity() {
+        use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+        let _env = crate::test_support::IsolatedEnv::new();
+        let mut app = test_app();
+        let geometry = app.headless_spawn_geometry();
+        assert!(app.create_default_workspace(geometry));
+        let pane_id = app.state.workspaces[0].root_pane();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("terminal")
+            .clone();
+        // Let the real child exit, but keep its PaneDied queued. This exercises
+        // the gap where the detector release can reach the app first.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !app
+                .terminal_runtimes
+                .get(&terminal_id)
+                .expect("runtime")
+                .child_has_exited()
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("pane child exits");
+        let session = PersistedAgentSession::from_report(
+            "shepr:claude",
+            "claude",
+            AgentSessionRef::id("checkpoint-resume").expect("session id"),
+        )
+        .expect("official session");
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.set_detected_agent_process_at(Agent::Claude, app.clock.now);
+        terminal.set_persisted_agent_session(session.clone());
+        for (agent, process_exited) in [(Some(Agent::Claude), true), (None, false)] {
+            app.handle_internal_event(AppEvent::StateChanged {
+                pane_id,
+                agent,
+                state: AgentState::Idle,
+                visible_blocker: false,
+                process_exited,
+                observed_at: app.clock.now,
+            });
+        }
+        assert_eq!(
+            app.state.terminals[&terminal_id].detected_agent,
+            Some(Agent::Claude),
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            Some(session.clone()),
+        );
+        app.policy = AppPolicy::Production;
+        app.state.mark_session_dirty();
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
+        });
+        app.save_session_before_teardown_async().await;
+        app.retire_session_writer();
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).expect("test lease");
+        let snapshot = shepr_mux::persist::load(&lease)
+            .into_snapshot()
+            .expect("saved checkpoint");
+        let saved = snapshot.workspaces[0]
+            .panes
+            .values()
+            .next()
+            .and_then(|pane| pane.agent_session.as_ref())
+            .expect("saved resume identity");
+        assert_eq!(saved.source, session.source);
+        assert_eq!(saved.agent, session.agent);
+        assert_eq!(saved.session_ref, session.session_ref);
     }
 
     #[test]

@@ -2481,6 +2481,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 assert!(!state.copy_operation_in_flight);
                 assert!(state.copy_operation_queue.is_empty());
                 assert!(state.copy_input_queue.is_empty());
+                assert!(state.visible_endpoint_notice.is_none());
                 assert!(state.pane_scroll_in_flight.is_empty());
                 assert!(state.pane_scroll_queued.is_empty());
                 assert_eq!(state.mode, ClientShellMode::Copy);
@@ -2502,6 +2503,47 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
             }
         }
     }
+}
+
+#[test]
+fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut enter));
+
+    let started = state.handle_input_bytes(b"w");
+    let [ClientShellAction::Endpoint { request, .. }] = started.actions.as_slice() else {
+        panic!("copy motion should issue one endpoint request");
+    };
+    let request_id = request.id.clone();
+    assert!(state.handle_input_bytes(b"w").actions.is_empty());
+    assert!(!state.copy_input_queue.is_empty());
+
+    let outcome = state.handle_endpoint_result_at(
+        "replacement-boot",
+        &request_id,
+        Err(ClientShellEndpointError::Server(
+            shepr_protocol::command::EndpointError::StaleBoot,
+        )),
+        std::time::Instant::now(),
+    );
+
+    assert!(outcome.repaint);
+    assert!(state.pending_requests.is_empty());
+    assert!(!state.copy_operation_in_flight);
+    assert!(state.copy_operation_queue.is_empty());
+    assert!(state.copy_input_queue.is_empty());
+    assert!(state.visible_endpoint_notice.is_none());
 }
 
 #[test]
@@ -2726,6 +2768,13 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     copy_mode.search_total = 2;
     copy_mode.search_current = Some(1);
     copy_mode.search_current_global = Some(1);
+    copy_mode.cursor = shepr_protocol::command::PaneTextPoint {
+        row: shepr_vt::AbsRow(2),
+        col: 1,
+    };
+    copy_mode.selection = Some(ClientCopySelection::Character {
+        anchor: shepr_vt::Point::new(shepr_vt::AbsRow(1), 2),
+    });
 
     pane_surface.surface_revision = pane_surface
         .surface_revision
@@ -2744,6 +2793,20 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     assert_eq!(copy_mode.search_current, Some(0));
     assert_eq!(copy_mode.search_current_global, Some(0));
     assert_eq!(copy_mode.history_origin, shepr_vt::AbsRow(5));
+    assert_eq!(copy_mode.cursor.row, shepr_vt::AbsRow(5));
+    assert!(matches!(
+        copy_mode.selection,
+        Some(ClientCopySelection::Character { anchor })
+            if anchor == shepr_vt::Point::new(shepr_vt::AbsRow(5), 2)
+    ));
+    assert_eq!(
+        state
+            .selection
+            .as_ref()
+            .expect("clamped copy selection")
+            .ordered_cells(),
+        ((shepr_vt::AbsRow(5), 1), (shepr_vt::AbsRow(5), 2))
+    );
 
     pane_surface.surface_revision = pane_surface
         .surface_revision

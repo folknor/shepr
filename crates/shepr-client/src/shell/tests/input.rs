@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
+    for mode in [ClientShellMode::Prefix, ClientShellMode::Navigate] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut projection = snapshot();
+        let mut second = projection.panes[0].clone();
+        second.pane_id = test_pane_id("w1:p2");
+        second.focused = false;
+        let mut third = second.clone();
+        third.pane_id = test_pane_id("w1:p3");
+        projection.panes.extend([second, third]);
+        state.set_snapshot(Box::new(projection));
+
+        // A zoomed pane view can omit panes from the workspace snapshot.
+        let mut pane_surface = surface();
+        let mut third_surface_pane = pane_surface.panes[0].clone();
+        third_surface_pane.pane_id = test_pane_id("w1:p3");
+        pane_surface.panes.push(third_surface_pane);
+        state.set_pane_surface(pane_surface);
+        state.mode = mode;
+
+        let outcome = state.handle_input_bytes(b"\t");
+        let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
+            panic!("pane cycling should issue one focus request");
+        };
+        assert!(matches!(
+            &request.command,
+            shepr_protocol::command::EndpointCommand::PaneFocus(target)
+                if target.pane_id == test_pane_id("w1:p2")
+        ));
+    }
+}
+
+#[test]
 fn host_theme_updates_are_forwarded_to_the_server() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
 

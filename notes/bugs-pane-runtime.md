@@ -46,10 +46,11 @@ with `PaneCwdProbe::read()`, the raw `/proc` readlink of the shell.
   a later probe fails (for example, the shell has just exited), the save writes
   the older probed cwd even though the shell reported a newer one.
 
-If the intent is "restore exactly where splits would go", the probe should
-return `ReportedCwd::resolve(reported, proc_cwd)`, not `proc_cwd`. If the intent
-is "restore the physical path on purpose", `ReportedCwd`'s doc should say
-persistence is the exception. The owner needs to choose.
+Owner's decision: restore where splits would go. The owner works through
+symlinked directories and wants the logical path back, so the save must use
+the same arbitration as `cwd()` (`ReportedCwd::resolve(reported, proc_cwd)`),
+falling back to `/proc` only when no report applies, and a newer OSC 7 report
+must win over an older probed value in the save fallback.
 
 ## PRUN-009 - Structural: one shared struct instead of about ten Arcs
 
@@ -81,14 +82,6 @@ routing. No concrete defect found, but the hunter expects the next ones here. A
 single explicit `(generation, event) -> (generation, effects)` table would
 replace about a dozen `pub(super)` predicates and make the invariants in the
 `HookSourceState` doc checkable.
-
-## PRUN-012 - Host theme and appearance advance the render revision even when unchanged
-
-Lateral. `apply_host_terminal_theme` and `apply_host_terminal_appearance`
-(`pane/terminal/backend.rs`) advance the render revision unconditionally. If
-the server reapplies an identical theme (on a foreground-client change, say),
-every pane's revision moves and retained surfaces resend for nothing. Advance
-only on a real change, or confirm the caller applies only on change.
 
 ## PRUN-013 - `PaneOutputWriter::try_begin` doc omits the poisoned core
 

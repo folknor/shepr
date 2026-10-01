@@ -19,9 +19,3 @@ non-interactive shell often lacks the user's interactive `PATH` additions, so th
 probe fails, logs a warning and installs anyway. Matches the doc ("a warning when
 the version cannot be determined (install proceeds)"); noted because the warning
 appears on every install on such hosts.
-
-## AGNT-018 - Python script detection treats `--check-hash-based-pycs` as valueless
-
-Lateral, low. `script_arg_index` (`detect/mod.rs`) does not list
-`--check-hash-based-pycs` as taking a value, so
-`python --check-hash-based-pycs always agent.py` takes `always` as the script.

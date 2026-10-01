@@ -305,20 +305,18 @@ impl AppState {
 
     /// Marks the pane's agent idle because its process exited. Returns whether
     /// that released the agent from the terminal.
-    pub(crate) fn publish_pane_process_exit_if_agent(&mut self, pane_id: PaneId) -> bool {
+    pub(crate) fn publish_pane_process_exit_if_agent(
+        &mut self,
+        pane_id: PaneId,
+        exit_reason: shepr_platform::ChildExitReason,
+    ) -> bool {
         let observed_at = self.clock_now;
         let update = self.update_terminal_state(pane_id, |terminal| {
             let agent = terminal.effective_known_agent().or(terminal.detected_agent);
             if agent.is_none() && !terminal.full_lifecycle_hook_authority_active() {
                 return None;
             }
-            Some(terminal.set_detected_state_with_screen_signals_at(
-                agent,
-                AgentState::Idle,
-                false,
-                true,
-                observed_at,
-            ))
+            Some(terminal.set_pane_process_exit_at(exit_reason, observed_at))
         });
         update == StateUpdate::Released
     }

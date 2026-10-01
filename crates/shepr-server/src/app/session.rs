@@ -1211,7 +1211,7 @@ mod tests {
         // Every client of this boot is told, naming where the original goes.
         assert_eq!(
             app.restore_notice,
-            Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+            Some(shepr_protocol::SessionRestoreNotice {
                 unusable: None,
                 dropped_workspaces: 1,
                 panes_pruned: false,
@@ -1273,7 +1273,7 @@ mod tests {
             super::super::tests::test_clock(),
         );
         let backups = data_dir.join("session-backups");
-        let Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+        let Some(shepr_protocol::SessionRestoreNotice {
             unusable: Some(reason),
             dropped_workspaces: 0,
             panes_pruned: false,

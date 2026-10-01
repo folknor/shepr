@@ -26,6 +26,9 @@ pub(super) struct StateChangedUpdate {
     pub(super) agent: Option<Agent>,
     pub(super) state: AgentState,
     pub(super) visible_blocker: bool,
+    // This observes agent absence, not the pane child's exit reason. The app
+    // applies it under a live child; after child death the watcher decides
+    // whether the resume identity belongs in the pane-exit checkpoint.
     pub(super) process_exited: bool,
     pub(super) observed_at: std::time::Instant,
 }
@@ -159,8 +162,8 @@ fn foreground_shell_agent_action_with_suspended_agent(
 
     if probe.foreground_is_pane_shell {
         // Do not clear identity immediately. First publish an idle process-exit
-        // transition for the previous agent so notifications and wait-agent callers
-        // observe completion before the pane becomes unknown.
+        // transition for the previous agent so state observers see completion
+        // before the pane becomes unknown.
         return ForegroundShellAgentAction::ReportProcessExit;
     }
 

@@ -1,5 +1,4 @@
 use super::*;
-use interprocess::local_socket::traits::Stream as _;
 use std::time::Duration;
 
 fn upload_test_streams(
@@ -261,9 +260,10 @@ fn accepted_bridge_stream_is_reset_to_blocking() {
     let listener =
         shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind listener");
     let client = shepr_platform::ipc::connect_local_stream(&socket).expect("connect client");
-    let mut server = listener.accept().expect("accept client");
+    let server = listener.accept().expect("accept client");
 
-    shepr_platform::ipc::set_local_stream_polling(&mut server, true)
+    server
+        .set_nonblocking(true)
         .expect("force a nonblocking accepted stream");
     assert!(is_nonblocking(&server));
     let server = prepare_remote_bridge_stream(server).expect("prepare bridge stream");

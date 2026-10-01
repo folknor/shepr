@@ -13,6 +13,9 @@ Filed from the defect hunt over `crates/shepr-client/src/` outside `shell/`.
 
 ## CEND-014 - Structural: "which endpoint" is held in six places
 
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
+
 The registry's `active`, `Presentation` (`Owned` / `Handoff` / `Unavailable`),
 the selection tracker's `selected` / `attempt` / `failed`,
 `ClientState::deferred_local`, `ClientLoop::scheduled_activation`, and
@@ -27,6 +30,9 @@ choice (a single enum covering selected, deferred, handing off from/to,
 failed-on-generation) would remove most of these interactions.
 
 ## CEND-015 - Structural: the handoff protocol treats a server-side surface as an exclusive lease
+
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
 
 The handoff protocol (source-off first, six phases, rollback through target-off
 and source-on, successor intents, effects fence) exists to keep at most one

@@ -3,7 +3,7 @@ use std::time::Duration;
 use interprocess::local_socket::traits::Stream as _;
 use tracing::info;
 
-use shepr_platform::ipc::LocalStream;
+use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
 use shepr_protocol::{ClientMessage, ServerMessage};
 
@@ -127,7 +127,7 @@ pub(crate) fn do_handshake_for_link(
     let read_deadline = deadline.map_or(read_deadline, |deadline| {
         read_deadline.min(Deadline::at(deadline))
     });
-    let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, read_deadline.instant());
+    let mut reader = LocalStreamDeadlineReader::new(stream, read_deadline.instant());
     shepr_protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
     let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader)?;
 

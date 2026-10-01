@@ -12,38 +12,22 @@ Filed from the defect hunt over `crates/shepr-server/src/app/`, `lib.rs`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SAPP-004 - A pane-exit checkpoint drops the dying pane's agent session before it captures
+## SAPP-004 - A detector release applied while the pane shell lives still drops the resume identity
 
-Claim broken: the pane-exit checkpoint exists to "keep the pre-exit layout live
-until its checkpoint is durable" (`internal_events.rs`) so a signal-killed pane
-comes back on restore; AGENTS.md promises agent resume on restore.
-
-`App::prepare_pane_exit` (`events.rs`) calls `publish_pane_process_exit` before
-`request_pane_exit_checkpoint`. `publish_pane_process_exit_if_agent` runs
-`set_detected_state_with_screen_signals_at(agent, Idle, false, true, ..)`,
-which for a matching agent sets `persisted_agent_session = None` and clears the
-hook authority (shepr-mux `terminal/state/detection.rs`). The checkpoint then
-captures that terminal with no agent session, so the restored pane gets a plain
-shell and no resume, for exactly the panes the checkpoint protects. It also
-makes the session dirty, forcing a fresh checkpoint rather than reusing a
-settled one.
-
-Caveat: the detector's own process scan can observe the agent's death first and
-clear the session the same way, so the loss is racy even with the order fixed.
-The underlying problem: "agent process exited" is treated as "user quit the
-agent" regardless of `ChildExitReason`; an `Interrupted` exit should keep the
-resume identity.
-
-Direction: capture the checkpoint before publishing the exit, and/or carry the
-exit reason into the release so a signal death keeps `persisted_agent_session`.
-The limitation is now documented at `App::prepare_pane_exit` (`app/events.rs`)
-and in shepr-mux `terminal/state/detection.rs`. The detector's release
-(`AppEvent::StateChanged` with `process_exited`) carries no `ChildExitReason`;
-the reason arrives later in `PaneDied` from the child watcher. The fix
-coordinates the detector process-exit path (shepr-mux `pane/process_probe.rs`)
-with the child watcher (`pane/runtime.rs`) so an `Interrupted` pane exit keeps
-the resume identity even when the detector release runs first, while an agent
-exiting under a live pane shell still clears it.
+A checkpointed pane exit (`Interrupted` or `ReaderIoFailed`) now keeps the
+agent's resume identity: once the pane child has exited, the server drops
+queued detector updates for that pane, the exit reason travels with the pane
+exit, the preservation rule lives in shepr-mux `terminal/state/detection.rs`,
+and an agent exiting under a live pane shell still clears it. Residue: a
+detector release applied while the pane shell is still alive clears the
+identity, even when the shell then dies from the same cause. A signal sent to
+the whole session or cgroup reaches the agent first (an interactive shell
+ignores SIGTERM until the escalation to SIGKILL), and an OOM kill can take the
+agent before the shell; either way the checkpoint saves no resume identity. The
+rarer case without a pidfd, where death is known only once the wait completes,
+is the same class. A fix would make the detector's process-exit release
+provisional (held until the shell survives a short grace period or a later
+tick confirms it).
 
 ## SAPP-007 - Test-only reimplementations of production paths
 
@@ -65,6 +49,9 @@ The hunter recommends deleting these and driving tests through the production
 entry points (the headless loop already has a test harness).
 
 ## SAPP-012 - Structural: the pane-exit checkpoint as a typed state machine
+
+Outside the resolution loop: the owner resolves this directly. Do not assign it
+or related bugs to fixers.
 
 The checkpoint in `session.rs` spreads one concept across loosely coupled
 fields. The separate pending flag is gone (preservation is now the snapshot's

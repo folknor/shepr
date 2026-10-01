@@ -54,6 +54,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         assert!(state.pane_scroll_in_flight.is_empty());
         assert!(state.pane_scroll_queued.is_empty());
         assert!(state.pane_scroll_targets.is_empty());
+        assert!(state.visible_endpoint_notice.is_none());
         state.set_snapshot(Box::new(snapshot()));
         let mut next = ClientShellInput::default();
         state.push_pane_scroll_offset(pane_id.clone(), 2, &mut next);
@@ -63,6 +64,56 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         ));
         assert!(state.pane_scroll_in_flight.contains_key(&pane_id));
     }
+}
+
+#[test]
+fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let pane_id = test_pane_id("w1:p1");
+    let mut first = ClientShellInput::default();
+    state.push_pane_scroll_offset(pane_id.clone(), 3, &mut first);
+    let id = request_id(&first.actions).to_owned();
+    let mut queued = ClientShellInput::default();
+    state.push_pane_scroll_offset(pane_id.clone(), 7, &mut queued);
+    assert!(state.pane_scroll_queued.contains_key(&pane_id));
+
+    let outcome = state.handle_endpoint_result_at(
+        "replacement-boot",
+        &id,
+        Err(ClientShellEndpointError::Server(
+            shepr_protocol::command::EndpointError::StaleBoot,
+        )),
+        std::time::Instant::now(),
+    );
+
+    assert!(outcome.repaint);
+    assert!(state.pending_requests.is_empty());
+    assert!(state.pane_scroll_in_flight.is_empty());
+    assert!(state.pane_scroll_queued.is_empty());
+    assert!(state.pane_scroll_targets.is_empty());
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
+fn disconnecting_a_pending_scroll_does_not_show_an_interrupted_action_notice() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let pane_id = test_pane_id("w1:p1");
+    let mut first = ClientShellInput::default();
+    state.push_pane_scroll_offset(pane_id.clone(), 3, &mut first);
+    let mut queued = ClientShellInput::default();
+    state.push_pane_scroll_offset(pane_id.clone(), 7, &mut queued);
+
+    state.mark_endpoint_disconnected(&ClientEndpointId::Local);
+
+    assert!(state.pending_requests.is_empty());
+    assert!(state.pane_scroll_in_flight.is_empty());
+    assert!(state.pane_scroll_queued.is_empty());
+    assert!(state.pane_scroll_targets.is_empty());
+    assert!(state.visible_endpoint_notice.is_none());
 }
 
 struct TestTransport {

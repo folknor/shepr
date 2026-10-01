@@ -2520,6 +2520,35 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 }
 
 #[test]
+fn unchanged_host_appearance_does_not_advance_render_revision() {
+    let pane = PaneTerminal::new(shepr_vt::Terminal::new(20, 5, 0));
+    let initial_revision = shepr_vt::lock_terminal_core(&pane.core)
+        .expect("terminal core")
+        .content_revision;
+    pane.apply_host_terminal_appearance(None);
+    assert_eq!(
+        shepr_vt::lock_terminal_core(&pane.core)
+            .expect("terminal core")
+            .content_revision,
+        initial_revision
+    );
+
+    let appearance = Some(shepr_termio::host_term::theme::HostAppearance::Dark);
+
+    pane.apply_host_terminal_appearance(appearance);
+    let changed_revision = shepr_vt::lock_terminal_core(&pane.core)
+        .expect("terminal core")
+        .content_revision;
+    assert_eq!(changed_revision, initial_revision.wrapping_add(2));
+
+    pane.apply_host_terminal_appearance(appearance);
+    let repeated_revision = shepr_vt::lock_terminal_core(&pane.core)
+        .expect("terminal core")
+        .content_revision;
+    assert_eq!(repeated_revision, changed_revision);
+}
+
+#[test]
 fn process_pty_bytes_returns_xtgettcap_truecolor_query_responses_without_queuing_input() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
@@ -2853,6 +2882,38 @@ fn full_frame_links_cells_by_uri_in_one_table() {
     assert_eq!(&links[..5], &[Some(0), Some(0), None, Some(1), None]);
     assert_eq!(frame_cell(&frame, 0, 1).hyperlink, Some(0));
     assert_eq!(frame_cell(&frame, 1, 1).hyperlink, None);
+}
+
+#[test]
+fn full_frame_indexes_distinct_hyperlinks_and_existing_entries() {
+    use std::fmt::Write as _;
+
+    let mut input = String::new();
+    for (index, symbol) in "abcdefghijklmnop".chars().enumerate() {
+        write!(
+            &mut input,
+            "\x1b]8;;https://link-{index}.example\x1b\\{symbol}\x1b]8;;\x1b\\"
+        )
+        .expect("test input string accepts formatting");
+    }
+    let mut terminal = shepr_vt::Terminal::new(16, 1, 0);
+    terminal.write(input.as_bytes());
+    let pane = PaneTerminal::new(terminal);
+    let mut frame = FrameData::blank(16, 1);
+    frame.hyperlinks = vec![
+        "https://link-0.example".to_owned(),
+        "https://existing.example".to_owned(),
+    ];
+
+    pane.render_into(&mut frame, Rect::new(0, 0, 16, 1));
+
+    assert_eq!(frame.hyperlinks.len(), 17);
+    assert_eq!(frame.hyperlinks[0], "https://link-0.example");
+    assert_eq!(frame.hyperlinks[1], "https://existing.example");
+    assert_eq!(frame_cell(&frame, 0, 0).hyperlink, Some(0));
+    for x in 1..16 {
+        assert_eq!(frame_cell(&frame, x, 0).hyperlink, Some(u32::from(x) + 1));
+    }
 }
 
 #[test]

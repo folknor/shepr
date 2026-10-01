@@ -1121,7 +1121,7 @@ impl ClientLoop {
                 );
             }
             ServerMessage::ClientShellError { kind } => {
-                if state.shell.receive_server_notice(endpoint_id, &kind)
+                if state.shell.receive_server_notice(&kind)
                     && let Some(frame) = state.shell.compose(
                         state.reported_geometry.cols(),
                         state.reported_geometry.rows(),

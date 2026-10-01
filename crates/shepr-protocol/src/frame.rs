@@ -126,13 +126,12 @@ impl FrameData {
     /// The index of `uri` in this frame's link table, adding it when absent.
     /// `None` once the table is full: the cell then simply carries no link,
     /// rather than the frame growing past what the wire accepts.
-    /// Pane rendering calls this per cell. Hyperlink runs occupy adjacent
-    /// cells, so a match at the table tail makes repeated cells constant-time.
-    /// Distinct URIs still scan the table, so a frame with many distinct links
-    /// pays quadratic lookup work. A cache cannot safely live in `FrameData`
-    /// while this public vector can be edited or replaced directly. A renderer
-    /// that owns a frame's construction must own and update any scoped index
-    /// alongside the vector.
+    /// A match at the table tail makes repeated calls for adjacent hyperlink
+    /// cells constant-time. Other existing URIs are found with a linear scan.
+    /// The pane renderer uses a per-render index for distinct links. A cache
+    /// cannot safely live in `FrameData` while this public vector can be edited
+    /// or replaced directly, so a renderer that owns a frame's construction
+    /// must own and update any scoped index alongside the vector.
     pub fn intern_hyperlink(&mut self, uri: &str) -> Option<u32> {
         if self.hyperlinks.last().is_some_and(|known| known == uri) {
             return self

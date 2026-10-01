@@ -5,9 +5,10 @@
 use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-/// Copy-mode rows are absolute: output that evicts history does not move
-/// the line the cursor, a selection anchor or a search match names. The
-/// viewport is still addressed by scroll offsets, so these convert.
+/// Copy-mode coordinates are absolute rows. Output leaves retained points in
+/// place; surface installation clamps evicted cursor and selection rows and
+/// prunes evicted search matches. The viewport is addressed by scroll offsets,
+/// so these convert.
 impl ClientCopyModeState {
     /// The row at the top of the pane's viewport.
     pub(super) fn viewport_top(&self) -> shepr_vt::AbsRow {
@@ -29,7 +30,7 @@ impl ClientCopyModeState {
     }
 
     /// `row` clamped to the rows the pane retains.
-    fn retained_row(&self, row: shepr_vt::AbsRow) -> shepr_vt::AbsRow {
+    pub(in crate::shell) fn retained_row(&self, row: shepr_vt::AbsRow) -> shepr_vt::AbsRow {
         row.clamp(self.history_origin, self.last_row())
     }
 

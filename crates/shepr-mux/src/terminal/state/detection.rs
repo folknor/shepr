@@ -1,6 +1,32 @@
 use super::*;
 
 impl TerminalState {
+    /// A pane exit ends hook authority, but an interrupted pane must retain
+    /// its resume identity for the checkpoint taken before layout removal.
+    /// Detector releases are only applied while the pane child is live; once
+    /// it exits, the watcher supplies the reason to this transition instead.
+    pub fn set_pane_process_exit_at(
+        &mut self,
+        exit_reason: shepr_platform::ChildExitReason,
+        now: Instant,
+    ) -> TerminalStateMutation {
+        let previous_session = self.current_session_identity_for_persistence();
+        let agent = self.effective_known_agent().or(self.detected_agent);
+        let mut mutation = self.set_detected_state_with_screen_signals_at(
+            agent,
+            AgentState::Idle,
+            false,
+            true,
+            now,
+        );
+        if exit_reason.requires_session_checkpoint() {
+            self.persisted_agent_session = previous_session.clone();
+        }
+        mutation.session_ref_changed =
+            previous_session != self.current_session_identity_for_persistence();
+        mutation
+    }
+
     pub fn set_detected_agent_process_at(
         &mut self,
         agent: Agent,
@@ -213,9 +239,8 @@ impl TerminalState {
                     .as_ref()
                     .is_some_and(|session| Some(session.agent) == agent)
             {
-                // Detector process-exit reports have no pane ChildExitReason.
-                // A later signal exit cannot preserve an identity cleared here;
-                // reason-aware preservation must be coordinated with the pane watcher.
+                // This is a release under a live pane child. Pane death uses
+                // set_pane_process_exit_at to retain interrupted sessions.
                 self.persisted_agent_session = None;
             }
         }
@@ -295,5 +320,95 @@ impl TerminalState {
             Instant::now(),
         )
         .effective_state_change
+    }
+}
+
+#[cfg(test)]
+mod pane_exit_tests {
+    use super::*;
+    use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use shepr_platform::ChildExitReason;
+
+    fn running_terminal() -> TerminalState {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let session = PersistedAgentSession::from_report(
+            "shepr:claude",
+            "claude",
+            AgentSessionRef::id("interrupted-session").expect("session id"),
+        )
+        .expect("official session");
+        // clock-io-ok: synthetic observation time for this test terminal.
+        let now = Instant::now();
+        terminal.set_detected_agent_process_at(Agent::Claude, now);
+        terminal.hook_authority = Some(HookAuthority {
+            source: "shepr:claude".into(),
+            agent_label: "claude".into(),
+            state: AgentState::Working,
+            reported_at: now,
+            session_ref: Some(session.session_ref.clone()),
+        });
+        terminal.set_persisted_agent_session(session);
+        terminal
+    }
+
+    #[test]
+    fn checkpointed_pane_exit_keeps_resume_identity_without_new_session_dirtiness() {
+        for reason in [
+            ChildExitReason::Interrupted,
+            ChildExitReason::ReaderIoFailed,
+        ] {
+            let mut terminal = running_terminal();
+            let session = terminal.current_session_identity_for_persistence();
+            // clock-io-ok: synthetic exit time for the transition under test.
+            let now = Instant::now();
+            let mutation = terminal.set_pane_process_exit_at(reason, now);
+            assert_eq!(terminal.current_session_identity_for_persistence(), session);
+            assert!(!mutation.session_ref_changed);
+            assert!(terminal.hook_authority.is_none());
+            // Replaying publication must not drop the preserved session.
+            terminal.set_pane_process_exit_at(reason, now);
+            assert_eq!(terminal.current_session_identity_for_persistence(), session);
+        }
+    }
+
+    #[test]
+    fn agent_exit_under_live_shell_clears_resume_identity() {
+        let mut terminal = running_terminal();
+        // clock-io-ok: synthetic exit time for the transition under test.
+        let now = Instant::now();
+        let mutation = terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            true,
+            now,
+        );
+        assert!(mutation.session_ref_changed);
+        assert!(
+            terminal
+                .current_session_identity_for_persistence()
+                .is_none()
+        );
+        // A later interrupted shell exit cannot resurrect a completed agent.
+        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now);
+        assert!(
+            terminal
+                .current_session_identity_for_persistence()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ordinary_pane_exit_clears_resume_identity() {
+        let mut terminal = running_terminal();
+        // clock-io-ok: synthetic exit time for the transition under test.
+        let now = Instant::now();
+        let mutation = terminal.set_pane_process_exit_at(ChildExitReason::Exited, now);
+        assert!(mutation.session_ref_changed);
+        assert!(
+            terminal
+                .current_session_identity_for_persistence()
+                .is_none()
+        );
     }
 }

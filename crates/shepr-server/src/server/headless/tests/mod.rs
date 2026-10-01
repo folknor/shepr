@@ -438,6 +438,72 @@ fn server_stop_interrupts_server_event_backlog() {
     shutdown_test_runtimes(&mut server);
 }
 
+#[test]
+fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
+    let mut server = test_headless_server();
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    server.insert_test_client(
+        42,
+        ClientConnection::new(
+            (80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            42,
+            Some(writer),
+        ),
+    );
+
+    let event_count = crate::limits::SERVER_EVENT_DRAIN_LIMIT + 2;
+    let (server_event_tx, server_event_rx) =
+        tokio::sync::mpsc::channel(crate::limits::SERVER_EVENT_DRAIN_LIMIT + 2);
+    server.server_event_tx = server_event_tx;
+    server.server_event_rx = server_event_rx;
+    for index in 0..event_count {
+        server
+            .server_event_tx
+            .try_send(ServerEvent::ClientPasteRejected {
+                client_id: ClientId::test_new(42),
+                size: index + 1,
+                max: 1024,
+            })
+            .expect("test precondition");
+    }
+
+    assert!(!server.drain_server_events());
+    assert_eq!(server.server_event_rx.len(), 2);
+    for expected_size in 1..=crate::limits::SERVER_EVENT_DRAIN_LIMIT {
+        let ServerMessage::ClientShellError {
+            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
+        } = read_server_message(
+            control_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("first server event batch is reported"),
+        )
+        else {
+            panic!("expected paste rejection notice");
+        };
+        assert_eq!(size, expected_size);
+        assert_eq!(max, 1024);
+    }
+
+    assert!(!server.drain_server_events());
+    for expected_size in (crate::limits::SERVER_EVENT_DRAIN_LIMIT + 1)..=event_count {
+        let ServerMessage::ClientShellError {
+            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
+        } = read_server_message(
+            control_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("remaining server events are reported on the next pass"),
+        )
+        else {
+            panic!("expected paste rejection notice");
+        };
+        assert_eq!(size, expected_size);
+        assert_eq!(max, 1024);
+    }
+    assert_eq!(server.server_event_rx.len(), 0);
+    shutdown_test_runtimes(&mut server);
+}
+
 fn shutdown_test_request(
     id: &str,
 ) -> (
@@ -590,6 +656,78 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
 
     assert_eq!(response["error"]["code"], "pane_not_found");
     assert!(server.app.event_rx.try_recv().is_err());
+}
+
+#[test]
+fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("bounded-api")];
+    let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    server.app.api_rx = api_rx;
+
+    let request_count = crate::limits::API_REQUEST_DRAIN_LIMIT + 2;
+    let mut responses = Vec::with_capacity(request_count);
+    for index in 0..request_count {
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        api_tx
+            .send(shepr_api::ApiRequestMessage {
+                request: shepr_api::schema::AppRequest {
+                    id: format!("bounded-{index}"),
+                    method: shepr_api::schema::AppMethod::DetectCapture(
+                        shepr_api::schema::PaneTarget {
+                            pane_id: format!("w999:p{index}"),
+                        },
+                    ),
+                },
+                respond_to,
+            })
+            .expect("test precondition");
+        responses.push(response_rx);
+    }
+
+    server.drain_api_requests_with_shutdown_check();
+    assert_eq!(
+        server.app.api_rx.len(),
+        request_count - crate::limits::API_REQUEST_DRAIN_LIMIT
+    );
+    for (index, response_rx) in responses
+        .iter()
+        .take(crate::limits::API_REQUEST_DRAIN_LIMIT)
+        .enumerate()
+    {
+        let error = response_rx
+            .try_recv()
+            .expect("first API request batch is answered")
+            .expect_err("test pane does not exist");
+        assert_eq!(
+            error.into_message(),
+            format!("pane w999:p{index} not found")
+        );
+    }
+    for response_rx in responses
+        .iter()
+        .skip(crate::limits::API_REQUEST_DRAIN_LIMIT)
+    {
+        assert!(response_rx.try_recv().is_err());
+    }
+
+    server.drain_api_requests_with_shutdown_check();
+    for (index, response_rx) in responses
+        .iter()
+        .enumerate()
+        .skip(crate::limits::API_REQUEST_DRAIN_LIMIT)
+    {
+        let error = response_rx
+            .try_recv()
+            .expect("remaining API request is answered on the next pass")
+            .expect_err("test pane does not exist");
+        assert_eq!(
+            error.into_message(),
+            format!("pane w999:p{index} not found")
+        );
+    }
+    assert_eq!(server.app.api_rx.len(), 0);
+    shutdown_test_runtimes(&mut server);
 }
 
 fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<u8>>) {
@@ -2155,7 +2293,7 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
 #[tokio::test]
 async fn every_client_of_a_partly_restored_boot_gets_the_notice_in_its_seed() {
     let mut server = test_headless_server();
-    let notice = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+    let notice = shepr_protocol::SessionRestoreNotice {
         unusable: None,
         dropped_workspaces: 1,
         panes_pruned: true,
@@ -2183,17 +2321,6 @@ async fn a_fully_restored_boot_sends_no_restore_notice() {
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let seed = client_shell_snapshot(&control);
     assert_eq!(seed.restore_notice, None);
-    while let Ok(bytes) = control.try_recv() {
-        assert!(
-            !matches!(
-                read_server_message(bytes),
-                ServerMessage::ClientShellError {
-                    kind: shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. }
-                }
-            ),
-            "no restore notice without a restore problem"
-        );
-    }
     shutdown_test_runtimes(&mut server);
 }
 

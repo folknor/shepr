@@ -83,6 +83,17 @@ impl ClientShellState {
                 workspace_drop_indicator_row,
             },
         );
+        let active_lifecycle = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
+            .map(|endpoint| {
+                (
+                    endpoint.endpoint_id.display_label().to_owned(),
+                    endpoint.status,
+                )
+            });
         let healthy_local_chrome = self.snapshot.is_some()
             && self.endpoints.len() == 1
             && !self.sidebar_collapsed
@@ -108,7 +119,12 @@ impl ClientShellState {
             } else {
                 Rect::new(0, 0, cols, 1)
             };
-            if !healthy_local_chrome || self.endpoint_error.is_some() {
+            // The lifecycle banner already carries the placeholder status. A second status
+            // line in the same row can be covered by that banner on narrow surfaces. An
+            // endpoint error suppressed here still shows in the mode bar.
+            if (!healthy_local_chrome || self.endpoint_error.is_some())
+                && active_lifecycle.is_none()
+            {
                 render::put_text(
                     &mut buffer,
                     message_area.x,
@@ -334,38 +350,42 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
         }
         self.hits.notification_toast = Rect::default();
-        let active_lifecycle = self
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-            .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
-            .map(|endpoint| {
-                (
-                    endpoint.endpoint_id.display_label().to_owned(),
-                    endpoint.status,
-                )
-            });
         if active_lifecycle.is_some() || self.visible_endpoint_notice.is_some() {
             // Banner and card are opaque: they draw into a fresh scratch buffer and return
             // their `Clear` rects, and the frame takes exactly those rects.
             let mut scratch = Buffer::empty(Rect::new(0, 0, cols, rows));
             let mut opaque = Vec::new();
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
+                let area = if !has_surface && layout.sidebar.width > 0 {
+                    layout.pane_surface
+                } else {
+                    Rect::new(0, 0, cols, rows)
+                };
                 opaque.push(endpoint_notices::render_lifecycle_banner(
                     &mut scratch,
-                    Rect::new(0, 0, cols, rows),
+                    area,
                     label,
                     *status,
                     &self.config.palette,
                 ));
                 1
             });
+            let notice_offset = if has_surface {
+                lifecycle_offset
+            } else if layout.sidebar.width == 0 {
+                // The fallback sidebar starts below the placeholder line when its normal
+                // column is hidden, so leave its header row clear as well.
+                2
+            } else {
+                // An expanded sidebar has its header on row zero, even without a pane surface.
+                1
+            };
             if let Some(notice) = self.visible_endpoint_notice.as_ref() {
                 self.hits.notification_toast = endpoint_notices::render_notice(
                     &mut scratch,
                     Rect::new(0, 0, cols, rows),
                     notice,
-                    lifecycle_offset,
+                    notice_offset,
                     &self.config.palette,
                 );
                 opaque.push(self.hits.notification_toast);
@@ -651,6 +671,14 @@ mod tests {
     use super::*;
     use shepr_protocol::command::{PaneTextPoint, PaneTextRange};
 
+    fn frame_row_text(frame: &FrameData, y: u16) -> String {
+        let start = usize::from(y) * usize::from(frame.width);
+        frame.cells[start..start + usize::from(frame.width)]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect()
+    }
+
     fn text_range(row: u64, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {
             start: PaneTextPoint {
@@ -730,5 +758,46 @@ mod tests {
         assert_eq!(bg(0, 2), surface1);
         assert_eq!(bg(1, 2), surface1);
         assert_ne!(bg(2, 2), surface1);
+    }
+
+    #[test]
+    fn placeholder_lifecycle_and_notice_leave_the_hidden_sidebar_header_clear() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
+        state.sidebar_collapsed = true;
+        state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+        assert!(state.push_endpoint_notice(
+            ClientEndpointNoticeKind::Unavailable,
+            "unavailable",
+            "Server unavailable",
+            "Waiting for the server",
+        ));
+
+        let frame = state.compose(34, 12).expect("placeholder frame");
+
+        let lifecycle_row = frame_row_text(&frame, 0);
+        assert!(lifecycle_row.contains("reconnecting"));
+        assert!(!lifecycle_row.contains("Local:"));
+        assert!(frame_row_text(&frame, 1).contains("spaces"));
+        assert!(state.hits.notification_toast.y >= 2);
+    }
+
+    #[test]
+    fn online_placeholder_notice_starts_below_the_expanded_sidebar_header() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.sidebar_collapsed = false;
+        state.sidebar_width = 24;
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
+        assert!(state.push_endpoint_notice(
+            ClientEndpointNoticeKind::Unavailable,
+            "unavailable",
+            "Server unavailable",
+            "Waiting for the server",
+        ));
+
+        let frame = state.compose(80, 12).expect("placeholder frame");
+
+        assert!(frame_row_text(&frame, 0).contains("spaces"));
+        assert!(state.hits.notification_toast.y >= 1);
     }
 }

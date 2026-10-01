@@ -227,7 +227,7 @@ mod tests {
         let snapshot = shepr_protocol::ClientShellSnapshot {
             boot_id: crate::tests::test_boot_id("restored"),
             revision: shepr_protocol::ProjectionRevision::new(1),
-            restore_notice: Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+            restore_notice: Some(shepr_protocol::SessionRestoreNotice {
                 unusable: None,
                 dropped_workspaces: 1,
                 panes_pruned: false,

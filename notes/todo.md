@@ -22,6 +22,19 @@ Do this the next time opencode or Kilo is in use.
 - To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
 - At the same time, check the Kilo plugin's `ownsLocalLifecycle` gate (`crates/shepr-agent/src/integration/assets/kilo/shepr-agent-state.js`): it assumes `process.argv.slice(2)` holds Kilo's own arguments and excludes the subcommands `acp`, `attach`, `console`, `daemon`, `serve` and `web`, names not verified against the Kilo CLI.
 
+## Decide whether to keep `pane_history`
+
+`experimental.pane_history` (off by default) makes every session save also
+write each pane's screen and scrollback to `session-history.json`, and a
+restore replays that text above each fresh shell's prompt. Weigh what it buys
+(seeing what a pane showed before a restart or reboot) against what it costs:
+larger saves (scrollback can reach the default 10 MB budget per pane), screen
+contents, possibly secrets, written to disk, and its code in shepr-mux
+persistence, the server save and checkpoint paths, and
+`spawn_with_initial_history`. Either keep it, and make it a plain
+`server.toml` setting rather than an experimental one, or remove it along with
+the history file and its restore path.
+
 # Possible capabilities
 
 Proposals that arrived as defects but would widen what shepr claims. None is

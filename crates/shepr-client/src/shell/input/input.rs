@@ -909,37 +909,14 @@ impl ClientShellState {
     }
 
     fn cycle_pane(&mut self, reverse: bool, outcome: &mut ClientShellInput) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(surface) = self.pane_surface.as_ref() else {
-            return;
-        };
-        if surface.panes.is_empty() {
-            return;
-        }
-        let current = snapshot
-            .focused_pane_id
-            .as_deref()
-            .and_then(|focused| {
-                surface
-                    .panes
-                    .iter()
-                    .position(|pane| pane.pane_id == focused)
-            })
-            .unwrap_or(0);
-        let next = if reverse {
-            (current + surface.panes.len() - 1) % surface.panes.len()
+        let action = if reverse {
+            shepr_termio::input::KeybindAction::CyclePanePrevious
         } else {
-            (current + 1) % surface.panes.len()
+            shepr_termio::input::KeybindAction::CyclePaneNext
         };
-        let pane_id = surface.panes[next].pane_id.clone();
-        self.push_endpoint_command(
-            shepr_protocol::command::EndpointCommand::PaneFocus(
-                shepr_protocol::command::PaneTarget { pane_id },
-            ),
-            outcome,
-        );
+        if let Some(command) = self.endpoint_command_for_action(action) {
+            self.push_endpoint_command(command, outcome);
+        }
     }
 
     fn route_resize_key(

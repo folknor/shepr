@@ -518,7 +518,7 @@ pub(crate) fn handle_client_handshake(
     }
 
     // The client's preamble and hello are read against one overall deadline.
-    let mut reader = shepr_platform::ipc::DeadlineReader::new(
+    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(
         &mut stream,
         // clock-io-ok: the deadline bounds real socket reads of the handshake.
         std::time::Instant::now() + HANDSHAKE_TIMEOUT,

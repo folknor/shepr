@@ -1290,6 +1290,15 @@ impl PaneRuntime {
         }
     }
 
+    /// With a process handle, includes zombies before the watcher reaps them
+    /// and publishes PaneDied. Without one, only the completed wait is known:
+    /// an unreaped exit cannot yet be distinguished from a live shell.
+    /// Detection cannot distinguish agent completion from pane interruption
+    /// after this point; the watcher owns that decision.
+    pub fn child_has_exited(&self) -> bool {
+        self.child_liveness.has_exited()
+    }
+
     pub fn child_pid(&self) -> Option<u32> {
         self.child_liveness.live_pid()
     }
@@ -1486,7 +1495,9 @@ mod tests {
             .apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme::default());
         assert!(runtime.content_seq() > before_theme);
         let before_appearance = runtime.content_seq();
-        let _ = runtime.terminal.apply_host_terminal_appearance(None);
+        let _ = runtime.terminal.apply_host_terminal_appearance(Some(
+            shepr_termio::host_term::theme::HostAppearance::Dark,
+        ));
         assert!(runtime.content_seq() > before_appearance);
     }
 

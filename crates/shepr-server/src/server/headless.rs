@@ -472,6 +472,8 @@ impl HeadlessServer {
                 Some(next_deadline.map_or(until, |current| current.min(until)))
             });
             let stop_signal = Arc::clone(self.lifecycle.stop_signal());
+            // A capped drain leaves queued work in its receiver. The matching
+            // receive branch stays ready and starts another pass immediately.
             let event = {
                 tokio::select! {
                     // A `server.stop` from the API sets the latch on another
@@ -812,7 +814,12 @@ impl HeadlessServer {
     /// Drains server events from the dedicated channel.
     fn drain_server_events(&mut self) -> bool {
         let mut changed = false;
-        while !self.lifecycle.stop_requested(self.app.state.should_quit) {
+        for _ in 0..crate::limits::SERVER_EVENT_DRAIN_LIMIT {
+            // Recheck before each dequeue so a stop during this batch leaves
+            // later events for shutdown settlement.
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+                break;
+            }
             let Ok(ev) = self.server_event_rx.try_recv() else {
                 break;
             };

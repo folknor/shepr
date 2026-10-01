@@ -1,7 +1,6 @@
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
-use shepr_agent::detect::AgentState;
 use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
 use shepr_mux::git::WorkspaceGitStatus;

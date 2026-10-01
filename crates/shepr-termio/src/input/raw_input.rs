@@ -647,9 +647,13 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         if self.split_coalesced_escape
             && could_be_incomplete_doubled_escape_key_sequence(&self.buffer)
         {
-            // Give an ambiguous legacy Alt key prefix the same idle window as
-            // a lone Escape, then release its first Escape before handling the
-            // remaining bytes with the existing timeout rules.
+            // `ESC ESC` cannot distinguish two Escape presses from a legacy
+            // rxvt Alt+arrow (`ESC ESC [ A`) split across reads. Keep this
+            // prefix through one normal idle flush so a split tail can arrive;
+            // a shorter window would reject tails arriving after it. Bytes
+            // that rule out the sequence are released earlier in
+            // `drain_available_chunks`. Other outstanding host-reply holds
+            // are handled below.
             chunks.push(vec![ESC]);
             self.buffer.drain(..1);
         }
@@ -2512,6 +2516,35 @@ mod tests {
             framer.flush_timeout(),
             vec![b"\x1b".to_vec(), b"\x1b".to_vec()]
         );
+    }
+
+    #[test]
+    fn host_input_double_escape_uses_one_idle_window_to_disambiguate() {
+        let mut split_alt_arrow = RawInputFramer::for_host_input();
+        assert!(split_alt_arrow.push(b"\x1b\x1b").is_empty());
+        assert_eq!(
+            split_alt_arrow.held_input_flush_timeout_ms(),
+            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        );
+        let events = split_alt_arrow.push(b"[A");
+        assert_eq!(events.len(), 1);
+        assert_raw_key(
+            events.into_iter().next().expect("test precondition"),
+            KeyCode::Up,
+            KeyModifiers::ALT,
+        );
+
+        let mut two_escapes = RawInputFramer::for_host_input();
+        assert!(two_escapes.push(b"\x1b\x1b").is_empty());
+        assert_eq!(
+            two_escapes.held_input_flush_timeout_ms(),
+            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        );
+        let events = two_escapes.flush_timeout();
+        assert_eq!(events.len(), 2);
+        for event in events {
+            assert_raw_key(event, KeyCode::Esc, KeyModifiers::empty());
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ use super::process::{PipeCapture, kill_and_reap, kill_child};
 use interprocess::TryClone as _;
 use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
+use interprocess::local_socket::traits::Stream as _;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -227,9 +228,9 @@ fn discard_unclaimed_bridge_failure(failure_rx: &std::sync::Mutex<mpsc::Receiver
 }
 
 pub(super) fn prepare_remote_bridge_stream(
-    mut stream: shepr_platform::ipc::LocalStream,
+    stream: shepr_platform::ipc::LocalStream,
 ) -> io::Result<shepr_platform::ipc::LocalStream> {
-    shepr_platform::ipc::set_local_stream_polling(&mut stream, false)?;
+    stream.set_nonblocking(false)?;
     Ok(stream)
 }
 
@@ -420,7 +421,7 @@ impl BridgeUpload {
 }
 
 pub(super) fn bridge_connection(
-    mut stream: shepr_platform::ipc::LocalStream,
+    stream: shepr_platform::ipc::LocalStream,
     target: &SshTarget,
     remote_command: &str,
     ssh_options: Option<&ManagedSshOptions>,
@@ -456,7 +457,7 @@ pub(super) fn bridge_connection(
         })?;
     let stderr_reader = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT);
     let stream_to_child = stream.try_clone()?;
-    shepr_platform::ipc::set_local_stream_polling(&mut stream, true)?;
+    stream.set_nonblocking(true)?;
     let mut child_to_stream = stream;
 
     let connection_stop = Arc::new(AtomicBool::new(false));

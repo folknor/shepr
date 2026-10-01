@@ -18,9 +18,9 @@ use crate::schema::{
 };
 use crate::{ApiRequestMessage, ApiRequestSender, socket_path};
 use shepr_platform::ipc::{
-    LocalStream, SocketFileIdentity, SocketStartupLock, bind_private_socket,
-    is_connection_closed_error, peer_is_same_user, remove_socket_file_if_owned,
-    set_local_stream_polling, socket_file_identity,
+    LocalStream, LocalStreamDeadlineReader, SocketFileIdentity, SocketStartupLock,
+    bind_private_socket, is_connection_closed_error, peer_is_same_user,
+    remove_socket_file_if_owned, socket_file_identity,
 };
 
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
@@ -497,7 +497,7 @@ fn read_request_line_until(
     stream: &mut LocalStream,
     deadline: Instant,
 ) -> std::io::Result<Option<String>> {
-    set_local_stream_polling(stream, false)?;
+    stream.set_nonblocking(false)?;
     let result = read_request_line_blocking(stream, deadline);
     // Later phases arm their own modes; don't leave a stale receive timeout.
     // A read error takes precedence over a failure to clear it.
@@ -513,7 +513,7 @@ fn read_request_line_blocking(
 ) -> std::io::Result<Option<String>> {
     use std::io::Read as _;
 
-    let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, deadline);
+    let mut reader = LocalStreamDeadlineReader::new(stream, deadline);
     let mut bytes = Vec::new();
     let mut chunk = [0u8; INITIAL_REQUEST_READ_CHUNK_BYTES];
     loop {

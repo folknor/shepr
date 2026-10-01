@@ -128,11 +128,7 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
         exit_reason: shepr_platform::ChildExitReason,
     ) -> Option<u64> {
-        // Detector StateChanged events carry process_exited without the pane
-        // child's exit reason. That path can already clear the resume identity,
-        // so moving this publication after the checkpoint would not fix
-        // signal exits.
-        self.publish_pane_process_exit(pane_id);
+        self.publish_pane_process_exit(pane_id, exit_reason);
         if exit_reason.requires_session_checkpoint()
             && self.state.prepare_pane_removal_by_id(pane_id).is_some()
         {
@@ -169,11 +165,29 @@ impl App {
             return Self::render_demand_if(changed);
         }
 
+        // A detector tick can finish before the watcher publishes PaneDied.
+        // Once the pane child is dead, only its exit reason can decide whether
+        // to release the resume identity. Ignore all queued detector updates,
+        // including the identity-clear tick following its process-exit report.
+        if let AppEvent::StateChanged { pane_id, .. }
+        | AppEvent::AgentProcessDetected { pane_id, .. } = &ev
+            && self.state.workspaces.iter().enumerate().any(|(index, _)| {
+                self.state
+                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, index, *pane_id)
+                    .is_some_and(shepr_mux::pane::PaneRuntime::child_has_exited)
+            })
+        {
+            return RenderDemand::None;
+        }
+
         let projection_before = self.state.shell_projection_revision;
-        if let AppEvent::PaneDied { pane_id, .. } = &ev
+        if let AppEvent::PaneDied {
+            pane_id,
+            exit_reason,
+        } = &ev
             && !pane_exit_prepared
         {
-            self.publish_pane_process_exit(*pane_id);
+            self.publish_pane_process_exit(*pane_id, *exit_reason);
         }
 
         let mut removed = false;
@@ -253,8 +267,15 @@ impl App {
         Self::render_demand_if(changed)
     }
 
-    fn publish_pane_process_exit(&mut self, pane_id: shepr_core::layout::PaneId) {
-        if self.state.publish_pane_process_exit_if_agent(pane_id) {
+    fn publish_pane_process_exit(
+        &mut self,
+        pane_id: shepr_core::layout::PaneId,
+        exit_reason: shepr_platform::ChildExitReason,
+    ) {
+        if self
+            .state
+            .publish_pane_process_exit_if_agent(pane_id, exit_reason)
+        {
             self.sync_pane_lifecycle_authority_detection_pause(pane_id);
             self.state.mark_shell_projection_dirty();
         }

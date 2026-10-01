@@ -13,13 +13,6 @@ Filed from the defect hunt over `crates/shepr-termio/src/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## INPLAT-010 - Compatibility aliases in `ipc.rs`
-
-Lateral. `pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>` ("Preserve
-the public path used by API and client crates") and `set_local_stream_polling` (a
-one-line wrapper over `set_nonblocking`) are compatibility shims in a repo with no
-compatibility to keep.
-
 ## INPLAT-013 - Structural: drop `interprocess` from `shepr-platform`
 
 Connect (`connect_local_stream_within`), peer credentials (`peer_uid`),
@@ -62,10 +55,11 @@ defensive clamps in `shepr-pty/src/fd.rs` and `shepr-vt/src/lib.rs` stay
 necessary. Private fields with a clamping constructor would make an
 under-minimum pane grid unrepresentable.
 
-## INPLAT-018 - A doubled Escape is now held until the idle flush
+## INPLAT-019 - A held second Escape can wait for the next key while a host colour reply is pending
 
-Lateral, `shepr-termio/src/input/raw_input.rs`. The framer now holds `ESC ESC`
-(or `ESC ESC [` with parameter bytes) until the idle flush, so two quick Esc
-presses deliver both Escapes one idle timeout late, where the first used to go
-through at once. Check whether the hold is needed for a real sequence or can
-release the first Escape immediately.
+Lateral, `shepr-termio/src/input/raw_input.rs` (the idle flush) and
+`crates/shepr-client/src/input.rs`. With a host colour reply pending, an idle
+flush can emit the first Escape of a doubled `ESC ESC` and retain the second.
+The client schedules another idle timeout only when a flush emits no chunks,
+so the retained Escape waits for further terminal input and can combine with a
+later key. Both files are upstream-tracked.

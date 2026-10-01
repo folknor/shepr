@@ -22,19 +22,10 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
             },
             "Screen too large",
         ),
-        (
-            shepr_protocol::NoticeKind::SessionRestoreIncomplete {
-                unusable: None,
-                dropped_workspaces: 2,
-                panes_pruned: false,
-                backup_dir: "/state/shepr/session-backups".to_owned(),
-            },
-            "Local: saved session not fully restored",
-        ),
     ];
 
     for (kind, expected_title) in notices {
-        assert!(state.receive_server_notice(&ClientEndpointId::Local, &kind));
+        assert!(state.receive_server_notice(&kind));
         let notice = state
             .visible_endpoint_notice
             .as_ref()
@@ -195,7 +186,7 @@ fn client_presentation_regression_notice_card_keeps_diagnostic_lines_visible() {
 fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
-    let kind = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+    let kind = shepr_protocol::SessionRestoreNotice {
         unusable: None,
         dropped_workspaces: 1,
         panes_pruned: false,
@@ -246,7 +237,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
 fn transient_cards_and_dismissal_do_not_discard_queued_restore_cards() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let boot = crate::tests::test_boot_id("restored");
-    let kind = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+    let kind = shepr_protocol::SessionRestoreNotice {
         unusable: None,
         dropped_workspaces: 1,
         panes_pruned: false,
