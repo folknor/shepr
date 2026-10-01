@@ -121,14 +121,11 @@ fn remote_server_compatibility_error(
 ) -> io::Error {
     let version = printable_remote_value(version);
     let build_id = printable_remote_value(build_id);
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this build, stop the remote server and retry",
-            shepr_protocol::build_version(),
-            shepr_protocol::BUILD_ID
-        ),
-    )
+    crate::remote_compatibility_error(format!(
+        "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this build, stop the remote server and retry",
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID
+    ))
 }
 
 /// A single remote-reported token (a version, a build id) for a local message:

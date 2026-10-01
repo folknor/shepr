@@ -233,7 +233,7 @@ pub(super) struct ShellRenderState<'a> {
 pub(super) fn render_shell(
     buffer: &mut Buffer,
     layout: ClientShellLayout,
-    snapshot: &ClientShellSnapshot,
+    snapshot: Option<&ClientShellSnapshot>,
     config: &ClientShellConfig,
     mut state: ShellRenderState<'_>,
 ) -> ShellHitMap {
@@ -251,7 +251,7 @@ pub(super) fn render_shell(
             super::endpoint_sidebar::render_expanded(
                 buffer,
                 layout.sidebar,
-                Some(snapshot),
+                snapshot,
                 config,
                 &mut state,
                 &mut hits,

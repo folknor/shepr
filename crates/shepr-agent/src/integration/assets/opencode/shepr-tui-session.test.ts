@@ -57,6 +57,7 @@ beforeEach(() => {
   holdConnections = false;
   failConnections = false;
   connections.length = 0;
+  process.env.SHEPR_BUILD_PROFILE = "release";
   process.env.SHEPR_ENV = "1";
   process.env.SHEPR_SOCKET_PATH = "test.sock";
   process.env.SHEPR_PANE_ID = "test:p1";

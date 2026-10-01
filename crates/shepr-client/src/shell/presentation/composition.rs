@@ -5,133 +5,6 @@ pub(in crate::shell) mod wire_cells;
 use wire_cells::{StylePatch, overwrite, patch_cell, patch_rect, patch_style};
 
 impl ClientShellState {
-    fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
-        let layout = self.layout(cols, rows);
-        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
-        buffer.set_style(
-            buffer.area,
-            Style::default()
-                .fg(self.config.palette.text)
-                .bg(self.config.palette.panel_bg),
-        );
-        self.hits = ShellHitMap::default();
-        let sidebar = if layout.sidebar.width > 0 {
-            layout.sidebar
-        } else {
-            Rect::new(0, 1, cols, rows.saturating_sub(2))
-        };
-        let sidebar_collapsed = layout.sidebar.width > 0 && self.sidebar_collapsed;
-        let valid_navigation_target = self.mode == ClientShellMode::Navigate
-            && self
-                .navigate_workspace_id
-                .as_ref()
-                .is_some_and(|target| self.navigation_target_valid(target));
-        let pending_workspace_highlight =
-            self.pending_workspace_highlight.as_ref().filter(|pending| {
-                self.mode != ClientShellMode::Navigate
-                    && pending.target.endpoint_id == self.active_endpoint_id
-                    && self.navigation_target_valid(&pending.target)
-            });
-        // No pane surface yet (a fresh connection or projection) says nothing against a
-        // healthy Local's workspace chrome; keep it rather than the machine list.
-        let local_snapshot = self.snapshot.as_deref().filter(|_| {
-            self.endpoints.len() == 1
-                && !self.sidebar_collapsed
-                && layout.sidebar.width > 0
-                && self.endpoint_status(&self.active_endpoint_id)
-                    == Some(ClientEndpointStatus::Online)
-        });
-        let mut render_state = render::ShellRenderState {
-            machine_diagnostics: &self.machine_diagnostics,
-            endpoints: &self.endpoints,
-            active_endpoint_id: &self.active_endpoint_id,
-            collapsed_endpoints: &self.collapsed_endpoints,
-            workspace_scroll: &mut self.workspace_scroll,
-            agent_scroll: &mut self.agent_scroll,
-            reveal_focused_workspace: &mut self.reveal_focused_workspace,
-            sidebar_collapsed,
-            sidebar_section_split: self.sidebar_section_split,
-            selected_workspace_id: self
-                .navigate_workspace_id
-                .as_ref()
-                .filter(|_| valid_navigation_target)
-                .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
-            reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
-            dragged_workspace_id: None,
-            workspace_drop_indicator_row: None,
-        };
-        if sidebar_collapsed {
-            super::endpoint_sidebar::render_collapsed(
-                &mut buffer,
-                sidebar,
-                &self.config,
-                &mut render_state,
-                &mut self.hits,
-            );
-        } else {
-            super::endpoint_sidebar::render_expanded(
-                &mut buffer,
-                sidebar,
-                local_snapshot.or(self.snapshot.as_deref()),
-                &self.config,
-                &mut render_state,
-                &mut self.hits,
-            );
-        }
-        if !self.config.mouse_capture {
-            self.hits = ShellHitMap::default();
-        }
-        let message = self.endpoint_error.clone().unwrap_or_else(|| {
-            let status = self
-                .endpoint_status(&self.active_endpoint_id)
-                .unwrap_or(ClientEndpointStatus::Connecting);
-            let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
-            if self.endpoints.len() == 1 {
-                format!("{}: {label}.", self.active_endpoint_label())
-            } else {
-                format!(
-                    "{}: {label}. Select a connected machine.",
-                    self.active_endpoint_label()
-                )
-            }
-        });
-        let message_area = if layout.sidebar.width > 0 {
-            layout.pane_surface
-        } else {
-            Rect::new(0, 0, cols, 1)
-        };
-        if local_snapshot.is_none() || self.endpoint_error.is_some() {
-            render::put_text(
-                &mut buffer,
-                message_area.x,
-                message_area.y,
-                message_area.width,
-                &message,
-                Style::default().fg(self.config.palette.overlay0),
-            );
-        }
-        render::render_mode_bar(
-            &mut buffer,
-            Rect::new(0, 0, cols, rows),
-            self.mode,
-            None,
-            self.endpoint_error.as_deref(),
-            &self.config.keybinds,
-            &self.config.palette,
-        );
-        if let Some(notice) = &self.visible_endpoint_notice {
-            self.hits.notification_toast = endpoint_notices::render_notice(
-                &mut buffer,
-                Rect::new(0, 0, cols, rows),
-                notice,
-                1,
-                &self.config.palette,
-            );
-            self.endpoint_notice_drawn(self.now);
-        }
-        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
-    }
-
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
@@ -148,21 +21,16 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
-        if self.snapshot.is_none() || self.pane_surface.is_none() {
-            let frame = self.compose_unavailable(cols, rows);
-            self.record_composed_frame();
-            return Some(frame);
-        }
-        let snapshot = self.snapshot.as_deref()?;
-        // Do not compose a retained surface while waiting for its matching snapshot or
-        // connection generation.
-        if self.pending_pane_surface.is_some()
-            || self.pane_surface_generation != self.active_snapshot_generation
+        // A retained surface is presentable only with its matching snapshot and generation.
+        // A missing pair uses the placeholder layer; a pair awaiting coherence keeps the
+        // last frame until the matching projection arrives.
+        let has_surface = self.snapshot.is_some() && self.pane_surface.is_some();
+        if has_surface
+            && (self.pending_pane_surface.is_some()
+                || self.pane_surface_generation != self.active_snapshot_generation
+                || self.snapshot.as_deref()?.revision
+                    != self.pane_surface.as_ref()?.projection_revision)
         {
-            return None;
-        }
-        let surface = self.pane_surface.as_ref()?;
-        if snapshot.revision != surface.projection_revision {
             return None;
         }
         let layout = self.layout(cols, rows);
@@ -177,10 +45,23 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        if !has_surface {
+            buffer.set_style(
+                buffer.area,
+                Style::default()
+                    .fg(self.config.palette.text)
+                    .bg(self.config.palette.panel_bg),
+            );
+        }
+        let mut chrome_layout = layout;
+        if !has_surface && layout.sidebar.width == 0 {
+            chrome_layout.sidebar = Rect::new(0, 1, cols, rows.saturating_sub(2));
+        }
+
         self.hits = render::render_shell(
             &mut buffer,
-            layout,
-            snapshot,
+            chrome_layout,
+            self.snapshot.as_deref(),
             &self.config,
             render::ShellRenderState {
                 machine_diagnostics: &self.machine_diagnostics,
@@ -190,7 +71,7 @@ impl ClientShellState {
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
-                sidebar_collapsed: self.sidebar_collapsed,
+                sidebar_collapsed: layout.sidebar.width > 0 && self.sidebar_collapsed,
                 sidebar_section_split: self.sidebar_section_split,
                 selected_workspace_id: self
                     .navigate_workspace_id
@@ -202,99 +83,231 @@ impl ClientShellState {
                 workspace_drop_indicator_row,
             },
         );
-        // The surface may have been produced for another layout: a resize or sidebar toggle
-        // keeps the retained surface until the resized one arrives, a resize can race a surface
-        // already in flight. `compose_pane_surface` clips the cells; the hits are clipped to
-        // match (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
-        // columns that are not on screen. Later draws that use these rects still go through
-        // `Buffer::cell_mut`, never `buffer[(x, y)]`.
-        let surface_overflows = surface_overflows_area(surface, layout.pane_surface);
-        self.hits.panes = surface
-            .panes
-            .iter()
-            .filter_map(|pane| {
-                let hit = PaneHit {
-                    rect: Rect::new(
-                        layout.pane_surface.x.saturating_add(pane.rect.x),
-                        layout.pane_surface.y.saturating_add(pane.rect.y),
-                        pane.rect.width,
-                        pane.rect.height,
-                    ),
-                    inner_rect: Rect::new(
-                        layout.pane_surface.x.saturating_add(pane.inner_rect.x),
-                        layout.pane_surface.y.saturating_add(pane.inner_rect.y),
-                        pane.inner_rect.width,
-                        pane.inner_rect.height,
-                    ),
-                    scrollbar_rect: pane.scrollbar_rect.map(|rect| {
-                        Rect::new(
-                            layout.pane_surface.x.saturating_add(rect.x),
-                            layout.pane_surface.y.saturating_add(rect.y),
-                            rect.width,
-                            rect.height,
-                        )
-                    }),
-                    scroll: pane.scroll.map(|metrics| shepr_termio::ScrollMetrics {
-                        offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
-                            .unwrap_or(usize::MAX),
-                        max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
-                            .unwrap_or(usize::MAX),
-                        viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
-                        history_origin: metrics.history_origin,
-                    }),
-                    pane_id: pane.pane_id.clone(),
-                    mouse_reporting: pane.mouse_reporting,
-                    sgr_pixel_mouse: pane.sgr_pixel_mouse,
-                    pixel_width: pane.pixel_width,
-                    pixel_height: pane.pixel_height,
-                };
-                if surface_overflows {
-                    clip_pane_hit(hit, layout.pane_surface)
+        let healthy_local_chrome = self.snapshot.is_some()
+            && self.endpoints.len() == 1
+            && !self.sidebar_collapsed
+            && layout.sidebar.width > 0
+            && self.endpoint_status(&self.active_endpoint_id) == Some(ClientEndpointStatus::Online);
+        if !has_surface {
+            let message = self.endpoint_error.clone().unwrap_or_else(|| {
+                let status = self
+                    .endpoint_status(&self.active_endpoint_id)
+                    .unwrap_or(ClientEndpointStatus::Connecting);
+                let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
+                if self.endpoints.len() == 1 {
+                    format!("{}: {label}.", self.active_endpoint_label())
                 } else {
-                    Some(hit)
+                    format!(
+                        "{}: {label}. Select a connected machine.",
+                        self.active_endpoint_label()
+                    )
                 }
-            })
-            .collect();
-        let topology_signature = pane_surface_topology_signature(surface);
-        self.hits.pane_splits = surface
-            .splits
-            .iter()
-            // A split dragged against geometry the screen does not show would send ratios
-            // computed from the wrong extent; splits wait for a surface that fits.
-            .filter(|_| !surface_overflows)
-            .map(|split| PaneSplitHit {
-                direction: split.direction,
-                pos: match split.direction {
-                    shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
-                        layout.pane_surface.x.saturating_add(split.pos)
+            });
+            let message_area = if layout.sidebar.width > 0 {
+                layout.pane_surface
+            } else {
+                Rect::new(0, 0, cols, 1)
+            };
+            if !healthy_local_chrome || self.endpoint_error.is_some() {
+                render::put_text(
+                    &mut buffer,
+                    message_area.x,
+                    message_area.y,
+                    message_area.width,
+                    &message,
+                    Style::default().fg(self.config.palette.overlay0),
+                );
+            }
+        }
+        // Pane cells and their local decorations are one optional layer. Everything above
+        // them (lifecycle, notices, overlays and the mode bar) follows the same pipeline
+        // when the pane area contains only a connection placeholder.
+        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+        if let Some(surface) = self.pane_surface.as_ref().filter(|_| has_surface) {
+            // The surface may have been produced for another layout: a resize or sidebar toggle
+            // keeps the retained surface until the resized one arrives, a resize can race a surface
+            // already in flight. `compose_pane_surface` clips the cells; the hits are clipped to
+            // match (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
+            // columns that are not on screen. Later draws that use these rects still go through
+            // `Buffer::cell_mut`, never `buffer[(x, y)]`.
+            let surface_overflows = surface_overflows_area(surface, layout.pane_surface);
+            self.hits.panes = surface
+                .panes
+                .iter()
+                .filter_map(|pane| {
+                    let hit = PaneHit {
+                        rect: Rect::new(
+                            layout.pane_surface.x.saturating_add(pane.rect.x),
+                            layout.pane_surface.y.saturating_add(pane.rect.y),
+                            pane.rect.width,
+                            pane.rect.height,
+                        ),
+                        inner_rect: Rect::new(
+                            layout.pane_surface.x.saturating_add(pane.inner_rect.x),
+                            layout.pane_surface.y.saturating_add(pane.inner_rect.y),
+                            pane.inner_rect.width,
+                            pane.inner_rect.height,
+                        ),
+                        scrollbar_rect: pane.scrollbar_rect.map(|rect| {
+                            Rect::new(
+                                layout.pane_surface.x.saturating_add(rect.x),
+                                layout.pane_surface.y.saturating_add(rect.y),
+                                rect.width,
+                                rect.height,
+                            )
+                        }),
+                        scroll: pane.scroll.map(|metrics| shepr_termio::ScrollMetrics {
+                            offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
+                                .unwrap_or(usize::MAX),
+                            max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
+                                .unwrap_or(usize::MAX),
+                            viewport_rows: usize::try_from(metrics.viewport_rows)
+                                .unwrap_or(usize::MAX),
+                            history_origin: metrics.history_origin,
+                        }),
+                        pane_id: pane.pane_id.clone(),
+                        mouse_reporting: pane.mouse_reporting,
+                        sgr_pixel_mouse: pane.sgr_pixel_mouse,
+                        pixel_width: pane.pixel_width,
+                        pixel_height: pane.pixel_height,
+                    };
+                    if surface_overflows {
+                        clip_pane_hit(hit, layout.pane_surface)
+                    } else {
+                        Some(hit)
                     }
-                    shepr_protocol::PaneSurfaceSplitDirection::Vertical => {
-                        layout.pane_surface.y.saturating_add(split.pos)
+                })
+                .collect();
+            let topology_signature = pane_surface_topology_signature(surface);
+            self.hits.pane_splits = surface
+                .splits
+                .iter()
+                // A split dragged against geometry the screen does not show would send ratios
+                // computed from the wrong extent; splits wait for a surface that fits.
+                .filter(|_| !surface_overflows)
+                .map(|split| PaneSplitHit {
+                    direction: split.direction,
+                    pos: match split.direction {
+                        shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
+                            layout.pane_surface.x.saturating_add(split.pos)
+                        }
+                        shepr_protocol::PaneSurfaceSplitDirection::Vertical => {
+                            layout.pane_surface.y.saturating_add(split.pos)
+                        }
+                    },
+                    area: Rect::new(
+                        layout.pane_surface.x.saturating_add(split.area.x),
+                        layout.pane_surface.y.saturating_add(split.area.y),
+                        split.area.width,
+                        split.area.height,
+                    ),
+                    hit_rect: Rect::new(
+                        layout.pane_surface.x.saturating_add(split.hit_rect.x),
+                        layout.pane_surface.y.saturating_add(split.hit_rect.y),
+                        split.hit_rect.width,
+                        split.hit_rect.height,
+                    ),
+                    path: split.path.clone(),
+                    topology_signature,
+                })
+                .collect();
+            if !self.config.mouse_capture {
+                self.hits.pane_splits.clear();
+            }
+            // Chrome is the only thing drawn through ratatui here; from this point the frame's
+            // wire cells are the composition target and every later stage patches or overwrites
+            // them in place (see `wire_cells`).
+            compose_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+            let has_selection = self
+                .selection
+                .as_ref()
+                .is_some_and(shepr_vt::selection::Selection::is_visible);
+            let has_search = self
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy_mode| !copy_mode.search_matches.is_empty());
+            // Highlights restyle wire cells in the existing order: noncurrent search matches,
+            // selection, the current search match, then the copy cursor.
+            if has_selection || has_search {
+                for hit in &self.hits.panes {
+                    let copy_surface_coherent =
+                        client_copy_surface_coherent(self.copy_mode.as_ref(), hit);
+                    if copy_surface_coherent {
+                        render_client_copy_search_highlights(
+                            &mut frame,
+                            self.copy_mode.as_ref(),
+                            hit,
+                            &self.config.palette,
+                            false,
+                        );
                     }
-                },
-                area: Rect::new(
-                    layout.pane_surface.x.saturating_add(split.area.x),
-                    layout.pane_surface.y.saturating_add(split.area.y),
-                    split.area.width,
-                    split.area.height,
-                ),
-                hit_rect: Rect::new(
-                    layout.pane_surface.x.saturating_add(split.hit_rect.x),
-                    layout.pane_surface.y.saturating_add(split.hit_rect.y),
-                    split.hit_rect.width,
-                    split.hit_rect.height,
-                ),
-                path: split.path.clone(),
-                topology_signature,
-            })
-            .collect();
-        if !self.config.mouse_capture {
-            self.hits.pane_splits.clear();
+                    let selection_is_stale_copy_projection = !copy_surface_coherent
+                        && self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                            copy_mode.pane_id == hit.pane_id
+                                && self
+                                    .selection
+                                    .as_ref()
+                                    .is_some_and(|selection| selection.pane_id == hit.pane_id)
+                        });
+                    if !selection_is_stale_copy_projection {
+                        shepr_termio::selection_render::render_selection_highlight(
+                            self.selection.as_ref(),
+                            &hit.pane_id,
+                            hit.inner_rect,
+                            hit.scroll,
+                            &self.config.palette,
+                            shepr_termio::host_term::theme::TerminalTheme {
+                                background: self.host_background,
+                                ..Default::default()
+                            },
+                            &mut |x, y, style| {
+                                patch_cell(&mut frame, x, y, StylePatch::from_style(style));
+                            },
+                        );
+                    }
+                    if copy_surface_coherent {
+                        render_client_copy_search_highlights(
+                            &mut frame,
+                            self.copy_mode.as_ref(),
+                            hit,
+                            &self.config.palette,
+                            true,
+                        );
+                    }
+                }
+            }
+            if self.mode == ClientShellMode::Copy {
+                frame.cursor = None;
+                if let Some((x, y)) = self
+                    .copy_mode
+                    .as_ref()
+                    .and_then(|copy_mode| client_copy_cursor_cell(copy_mode, &self.hits.panes))
+                    && x < frame.width
+                    && y < frame.height
+                {
+                    patch_cell(
+                        &mut frame,
+                        x,
+                        y,
+                        StylePatch::from_style(
+                            Style::default()
+                                .fg(match self.config.palette.panel_bg {
+                                    ratatui::style::Color::Reset => self.config.palette.surface_dim,
+                                    color => color,
+                                })
+                                .bg(self.config.palette.accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    );
+                }
+            }
         }
         // The bar normally covers the pane area's bottom row. When the copy cursor sits on
         // that row (the last line of history, which scrolling cannot lift, or a pane too
         // short to reserve it) the bar moves to the top row so the cursor stays visible.
-        let mode_bar_area = {
+        let mode_bar_area = if !has_surface {
+            Rect::new(0, 0, cols, rows)
+        } else {
             let bottom_row = layout.pane_surface.bottom().saturating_sub(1);
             let copy_cursor_row = (self.mode == ClientShellMode::Copy)
                 .then(|| {
@@ -315,93 +328,10 @@ impl ClientShellState {
                 layout.pane_surface
             }
         };
-        // Chrome is the only thing drawn through ratatui here; from this point the frame's
-        // wire cells are the composition target and every later stage patches or overwrites
-        // them in place (see `wire_cells`).
-        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
-        compose_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-        let has_selection = self
-            .selection
-            .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_visible);
-        let has_search = self
-            .copy_mode
-            .as_ref()
-            .is_some_and(|copy_mode| !copy_mode.search_matches.is_empty());
-        // Highlights restyle wire cells in the existing order: noncurrent search matches,
-        // selection, the current search match, then the copy cursor.
-        if has_selection || has_search {
-            for hit in &self.hits.panes {
-                let copy_surface_coherent =
-                    client_copy_surface_coherent(self.copy_mode.as_ref(), hit);
-                if copy_surface_coherent {
-                    render_client_copy_search_highlights(
-                        &mut frame,
-                        self.copy_mode.as_ref(),
-                        hit,
-                        &self.config.palette,
-                        false,
-                    );
-                }
-                let selection_is_stale_copy_projection = !copy_surface_coherent
-                    && self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                        copy_mode.pane_id == hit.pane_id
-                            && self
-                                .selection
-                                .as_ref()
-                                .is_some_and(|selection| selection.pane_id == hit.pane_id)
-                    });
-                if !selection_is_stale_copy_projection {
-                    shepr_termio::selection_render::render_selection_highlight(
-                        self.selection.as_ref(),
-                        &hit.pane_id,
-                        hit.inner_rect,
-                        hit.scroll,
-                        &self.config.palette,
-                        shepr_termio::host_term::theme::TerminalTheme {
-                            background: self.host_background,
-                            ..Default::default()
-                        },
-                        &mut |x, y, style| {
-                            patch_cell(&mut frame, x, y, StylePatch::from_style(style));
-                        },
-                    );
-                }
-                if copy_surface_coherent {
-                    render_client_copy_search_highlights(
-                        &mut frame,
-                        self.copy_mode.as_ref(),
-                        hit,
-                        &self.config.palette,
-                        true,
-                    );
-                }
-            }
-        }
-        if self.mode == ClientShellMode::Copy {
+        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
             frame.cursor = None;
-            if let Some((x, y)) = self
-                .copy_mode
-                .as_ref()
-                .and_then(|copy_mode| client_copy_cursor_cell(copy_mode, &self.hits.panes))
-                && x < frame.width
-                && y < frame.height
-            {
-                patch_cell(
-                    &mut frame,
-                    x,
-                    y,
-                    StylePatch::from_style(
-                        Style::default()
-                            .fg(match self.config.palette.panel_bg {
-                                ratatui::style::Color::Reset => self.config.palette.surface_dim,
-                                color => color,
-                            })
-                            .bg(self.config.palette.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                );
-            }
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
         }
         self.hits.notification_toast = Rect::default();
         let active_lifecycle = self
@@ -451,17 +381,12 @@ impl ClientShellState {
                 ClientShellOverlay::ContextMenu(menu) => {
                     render::render_context_menu(&mut scratch, menu, &self.config.palette)
                 }
-                ClientShellOverlay::GlobalMenu(menu) => render::render_global_menu(
-                    &mut scratch,
-                    menu.launcher,
-                    menu,
-                    snapshot,
-                    &self.config.palette,
-                ),
+                ClientShellOverlay::GlobalMenu(menu) => {
+                    render::render_global_menu(&mut scratch, menu, &self.config.palette)
+                }
                 _ => render::render_client_overlay(
                     &mut scratch,
                     overlay,
-                    snapshot,
                     &self.endpoints,
                     &self.active_endpoint_id,
                     &self.config.keybinds,
@@ -565,13 +490,7 @@ impl ClientShellState {
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
         }
-        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
-            frame.cursor = None;
-            self.hits.panes.clear();
-            self.hits.pane_splits.clear();
-        }
-        // This path draws a visible notice unconditionally (above), so this is where its
-        // lifetime starts.
+        // Both pane layers pass through the notice stage, so its lifetime starts here.
         self.endpoint_notice_drawn(self.now);
         self.record_composed_frame();
         Some(frame)

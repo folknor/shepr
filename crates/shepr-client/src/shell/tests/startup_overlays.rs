@@ -57,3 +57,66 @@ fn transient_shell_deadlines_schedule_their_expiry() {
         .expect("notice deadline");
     assert_eq!(state.next_timer_deadline(), Some(notice_deadline));
 }
+
+#[test]
+fn overlays_render_without_a_pane_surface_or_snapshot() {
+    for with_snapshot in [false, true] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        if with_snapshot {
+            state.set_snapshot(Box::new(snapshot()));
+        }
+        state.open_navigator_overlay();
+        if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+            navigator.search_focused = true;
+        }
+        let frame = state.compose(106, 30).expect("navigator frame");
+        assert!(frame.cursor.is_some());
+        assert!(!state.hits.navigator_popup.is_empty());
+        assert!(!state.hits.navigator_search.is_empty());
+        assert!(state.hits.panes.is_empty());
+
+        state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
+            query: TextEditor::default(),
+            search_focused: false,
+            scroll: 0,
+        }));
+        state.compose(106, 30).expect("help frame");
+        assert!(!state.hits.help_popup.is_empty());
+        assert!(state.hits.navigator_popup.is_empty());
+    }
+}
+
+#[test]
+fn unavailable_global_menu_renders_and_activates_without_snapshot() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.compose(106, 30).expect("placeholder frame");
+    state.toggle_global_menu();
+    let frame = state.compose(106, 30).expect("menu frame");
+    assert_eq!(state.hits.global_menu_rows.len(), 2);
+    assert!(
+        frame_rows(&frame)
+            .iter()
+            .any(|row| row.contains("keybinds"))
+    );
+    let mut outcome = ClientShellInput::default();
+    state.activate_global_menu_item(0, &mut outcome);
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+}
+
+#[test]
+fn unavailable_small_popup_uses_the_common_hint_and_clears_hits() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.open_navigator_overlay();
+    state.compose(106, 30).expect("navigator frame");
+    assert!(!state.hits.navigator_popup.is_empty());
+    let frame = state.compose(40, 3).expect("small frame");
+    assert!(state.hits.navigator_popup.is_empty());
+    assert!(state.hits.navigator_rows.is_empty());
+    assert!(
+        frame_rows(&frame)
+            .iter()
+            .any(|row| row.contains("window too small"))
+    );
+    assert!(state.overlay.is_some());
+    assert!(frame.cursor.is_none());
+}

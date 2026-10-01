@@ -3,7 +3,6 @@ pub(super) use crate::limits::{
     AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_CAP, AGENT_PENDING_IDLE_RECHECK,
     AGENT_STARTUP_GRACE_WINDOW, STABLE_VISIBLE_SIGNAL_REFRESH,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use shepr_agent::detect::manifest::screen_unknown_is_stable;
 use shepr_agent::detect::{Agent, AgentDetection, AgentState, PresentedAgentState};
@@ -288,14 +287,14 @@ pub(super) fn detection_update_for_publish_with_osc(
     (!detection.skip_state_update).then_some(detection)
 }
 
-pub(super) fn observe_detection_content_change(bytes: &[u8], detection_content_seq: &AtomicU64) {
+pub(super) fn observe_detection_content_change(bytes: &[u8], detection_content_seq: &mut u64) {
     if !bytes.is_empty() {
-        detection_content_seq.fetch_add(1, Ordering::Relaxed);
+        *detection_content_seq = detection_content_seq.wrapping_add(1);
     }
 }
 
-pub(super) fn mark_detection_content_changed(detection_content_seq: &AtomicU64) {
-    detection_content_seq.fetch_add(1, Ordering::Relaxed);
+pub(super) fn mark_detection_content_changed(detection_content_seq: &mut u64) {
+    *detection_content_seq = detection_content_seq.wrapping_add(1);
 }
 
 #[cfg(test)]
@@ -694,24 +693,24 @@ mod tests {
 
     #[test]
     fn detection_content_change_tracks_raw_nonempty_reads_for_scan_scheduling() {
-        let seq = AtomicU64::new(0);
+        let mut seq = 0;
 
-        observe_detection_content_change(b"", &seq);
-        assert_eq!(seq.load(Ordering::Relaxed), 0);
+        observe_detection_content_change(b"", &mut seq);
+        assert_eq!(seq, 0);
 
-        observe_detection_content_change(b"\x1b[?2026h", &seq);
-        assert_eq!(seq.load(Ordering::Relaxed), 1);
+        observe_detection_content_change(b"\x1b[?2026h", &mut seq);
+        assert_eq!(seq, 1);
 
-        observe_detection_content_change(b"body bytes", &seq);
-        assert_eq!(seq.load(Ordering::Relaxed), 2);
+        observe_detection_content_change(b"body bytes", &mut seq);
+        assert_eq!(seq, 2);
     }
 
     #[test]
     fn local_terminal_mutations_can_invalidate_idle_scan_skip() {
-        let seq = AtomicU64::new(0);
+        let mut seq = 0;
 
-        mark_detection_content_changed(&seq);
+        mark_detection_content_changed(&mut seq);
 
-        assert_eq!(seq.load(Ordering::Relaxed), 1);
+        assert_eq!(seq, 1);
     }
 }

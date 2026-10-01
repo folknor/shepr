@@ -773,9 +773,9 @@ fn integration_state_for_path(
     let installed_version = std::str::from_utf8(&content)
         .ok()
         .and_then(parse_integration_version);
-    // The marker is useful for diagnostics only. Exact bytes make dev and
-    // release builds share configs safely without one build trusting another's
-    // larger version number or relying on a manual bump after an asset edit.
+    // Only release launches install these shared artifacts. Exact bytes detect
+    // edits without trusting a larger version marker or requiring a manual bump.
+    // Dev launches must skip status-driven installation altogether.
     let state = if content.as_slice() == expected_asset.as_bytes() {
         super::IntegrationStatusKind::Current
     } else {

@@ -128,8 +128,11 @@ impl FrameData {
     /// rather than the frame growing past what the wire accepts.
     /// Pane rendering calls this per cell. Hyperlink runs occupy adjacent
     /// cells, so a match at the table tail makes repeated cells constant-time.
-    /// Distinct URIs still scan the table: its vector positions are their wire
-    /// indices, and callers can mutate the public vector directly.
+    /// Distinct URIs still scan the table, so a frame with many distinct links
+    /// pays quadratic lookup work. A cache cannot safely live in `FrameData`
+    /// while this public vector can be edited or replaced directly. A renderer
+    /// that owns a frame's construction must own and update any scoped index
+    /// alongside the vector.
     pub fn intern_hyperlink(&mut self, uri: &str) -> Option<u32> {
         if self.hyperlinks.last().is_some_and(|known| known == uri) {
             return self

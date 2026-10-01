@@ -113,29 +113,33 @@ impl From<KeyEvent> for TerminalKey {
 ///
 /// # Errors
 ///
-/// `TERM_PROGRAM` has a value the text policy refuses (padded or non-UTF-8),
-/// naming the variable. The presence-only host variables are checked by raw
-/// non-emptiness and do not refuse their bytes.
+/// Raw and presence values have no content-based refusals. Padded and
+/// non-UTF-8 `TERM_PROGRAM` values do not match the name shepr recognizes and
+/// cannot fail setup.
 pub fn host_modify_other_keys_mode()
 -> Result<Option<ModifyOtherKeysLevel>, shepr_core::env::EnvError> {
-    use shepr_core::env::{EnvVar, read_present, read_text};
+    use shepr_core::env::{EnvVar, read_os, read_present};
+    use std::os::unix::ffi::OsStrExt;
+
+    let term_program = read_os(EnvVar::TermProgram)?;
     Ok(host_modify_other_keys_mode_for_env(
         read_present(EnvVar::Tmux)?,
-        read_text(EnvVar::TermProgram)?.as_deref(),
+        term_program.as_deref().map(OsStrExt::as_bytes),
         read_present(EnvVar::WeztermPane)?,
     ))
 }
 
 fn host_modify_other_keys_mode_for_env(
     in_tmux: bool,
-    term_program: Option<&str>,
+    term_program: Option<&[u8]>,
     wezterm_pane: bool,
 ) -> Option<ModifyOtherKeysLevel> {
     if in_tmux {
         return Some(ModifyOtherKeysLevel::All);
     }
 
-    if wezterm_pane || term_program.is_some_and(|program| program.eq_ignore_ascii_case("wezterm")) {
+    if wezterm_pane || term_program.is_some_and(|program| program.eq_ignore_ascii_case(b"wezterm"))
+    {
         return Some(ModifyOtherKeysLevel::ExceptWellDefined);
     }
 
@@ -241,7 +245,7 @@ mod tests {
     #[test]
     fn modify_other_keys_mode_is_enabled_for_tmux() {
         assert_eq!(
-            host_modify_other_keys_mode_for_env(true, Some("WezTerm"), true),
+            host_modify_other_keys_mode_for_env(true, Some(&b"WezTerm"[..]), true),
             Some(ModifyOtherKeysLevel::All)
         );
     }
@@ -249,7 +253,7 @@ mod tests {
     #[test]
     fn modify_other_keys_mode_is_enabled_for_wezterm_hosts() {
         assert_eq!(
-            host_modify_other_keys_mode_for_env(false, Some("WezTerm"), false),
+            host_modify_other_keys_mode_for_env(false, Some(&b"WezTerm"[..]), false),
             Some(ModifyOtherKeysLevel::ExceptWellDefined)
         );
         assert_eq!(
@@ -261,11 +265,23 @@ mod tests {
     #[test]
     fn modify_other_keys_mode_is_not_enabled_for_unknown_hosts() {
         assert_eq!(
-            host_modify_other_keys_mode_for_env(false, Some("ghostty"), false),
+            host_modify_other_keys_mode_for_env(false, Some(&b"ghostty"[..]), false),
             None
         );
         assert_eq!(
             host_modify_other_keys_mode_for_env(false, None, false),
+            None
+        );
+    }
+
+    #[test]
+    fn unknown_or_malformed_terminal_names_do_not_enable_modify_other_keys() {
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, Some(&b" WezTerm"[..]), false),
+            None
+        );
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, Some(&b"WezTerm\xff"[..]), false),
             None
         );
     }

@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=opencode
-// SHEPR_INTEGRATION_VERSION=2
+// SHEPR_INTEGRATION_VERSION=3
 
 import net from "node:net";
 
@@ -154,6 +154,7 @@ function ownsLocalLifecycle() {
 export const SheprAgentStatePlugin = async () => {
   if (
     !ownsLocalLifecycle() ||
+    process.env.SHEPR_BUILD_PROFILE !== "release" ||
     process.env.SHEPR_ENV !== "1" ||
     !process.env.SHEPR_SOCKET_PATH ||
     !process.env.SHEPR_PANE_ID

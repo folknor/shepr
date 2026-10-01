@@ -147,7 +147,19 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
     let mods = key.modifiers;
     // KittyKeyboardFlags is a wire newtype with named bits, not bitflags' `contains` API.
     let event_suffix = kitty_event_suffix(key, flags);
+    let disambiguate = flags & KittyKeyboardFlags::DISAMBIGUATE.bits() != 0;
     let report_all_keys = flags & KittyKeyboardFlags::REPORT_ALL_KEYS.bits() != 0;
+    let reports_non_press_event = key.kind != crossterm::event::KeyEventKind::Press
+        && flags & KittyKeyboardFlags::REPORT_EVENT_TYPES.bits() != 0;
+
+    // Alternate-key reporting only decorates an escape code selected for some
+    // other reason, and event-type reporting only needs a new encoding for
+    // repeats and releases. Keep character chords with an existing legacy
+    // spelling on that spelling unless disambiguation or report-all requests
+    // CSI u.
+    if !disambiguate && !report_all_keys && !reports_non_press_event && kitty_legacy_text_key(key) {
+        return None;
+    }
 
     if !report_all_keys
         && key.modifiers.is_empty()
@@ -575,6 +587,24 @@ fn encode_text_input(key: &TerminalKey) -> Option<Vec<u8>> {
     let ch = text_char_for_key(key)?;
     let mut buf = [0u8; UTF8_MAX_BYTES_PER_CODEPOINT];
     Some(ch.encode_utf8(&mut buf).as_bytes().to_vec())
+}
+
+fn kitty_legacy_text_key(key: &TerminalKey) -> bool {
+    let KeyCode::Char(ch) = key.code else {
+        return false;
+    };
+    if !ch.is_ascii_graphic() && ch != ' ' {
+        return false;
+    }
+
+    let mods = key.modifiers;
+    mods == KeyModifiers::ALT
+        || mods == KeyModifiers::CONTROL
+        || mods == (KeyModifiers::ALT | KeyModifiers::SHIFT)
+        || mods == (KeyModifiers::CONTROL | KeyModifiers::ALT)
+        // Kitty's legacy table includes Ctrl+Shift+Space as NUL. Other
+        // Ctrl+Shift character chords retain Shift through CSI u.
+        || (ch == ' ' && mods == (KeyModifiers::CONTROL | KeyModifiers::SHIFT))
 }
 
 fn text_char_for_key(key: &TerminalKey) -> Option<char> {
@@ -1253,6 +1283,33 @@ mod tests {
         assert_eq!(
             encode_key(key, KeyboardProtocol::Kitty { flags: 1 }),
             b"\x1b[99;5u"
+        );
+    }
+
+    #[test]
+    fn kitty_non_disambiguating_enhancements_keep_legacy_text_chords() {
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        for flags in [2, 4] {
+            assert_eq!(
+                encode_key(ctrl_a, KeyboardProtocol::Kitty { flags }),
+                b"\x01",
+                "flags={flags}"
+            );
+        }
+
+        assert_eq!(
+            encode_key(ctrl_a, KeyboardProtocol::Kitty { flags: 1 }),
+            b"\x1b[97;5u"
+        );
+
+        let ctrl_a_repeat = KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+            crossterm::event::KeyEventKind::Repeat,
+        );
+        assert_eq!(
+            encode_key(ctrl_a_repeat, KeyboardProtocol::Kitty { flags: 2 }),
+            b"\x1b[97;5:2u"
         );
     }
 

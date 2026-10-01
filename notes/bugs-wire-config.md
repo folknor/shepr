@@ -92,46 +92,8 @@ render. Consecutive cells of one link now hit a table-tail fast path. Residue:
 a cell whose link differs from the last one still scans the table with
 `hyperlinks.iter().position(...)`, so a screen of distinct links
 (`ls --hyperlink`, a file tree) costs O(linked cells x distinct links) string
-comparisons per full render per pane. The table is a public `Vec` the wire
-indexes into and callers can mutate, which is what kept a `HashMap<String, u32>`
-index beside it (as `from_ratatui_buffer_with_hyperlinks` already has) out of
-the first pass.
-
-## WIRECFG-008 - `read_runtime_status_at` maps two kinds of "no usable status" differently
-
-A stalled server (`TimedOut`) maps to `Ok(None)`, but a server that accepts and
-closes without a line (connection thread spawn failure, peer-credential
-refusal, oversized request line) maps to `Err("empty api response")`. Both mean
-"no usable status".
-
-## WIRECFG-011 - `TerminalGeometry` serializes and deserializes through two hand-synced structs
-
-`TerminalGeometry` serializes with its own derive and deserializes through the
-separate `ReceivedTerminalGeometry` (`try_from`). The positional layouts must
-stay identical by hand; reordering either struct's fields silently breaks the
-wire with no compile error, caught only by a round-trip test. A `TryFrom`
-validation on the deserialized value of the same type (or a shared private
-struct) removes the duplication.
-
-## WIRECFG-012 - The build identity varies with the host CPU and possibly the rustc path
-
-Filed by the hunter as surprising rather than a contract break. The build
-identity folds in `CARGO_CFG_TARGET_FEATURE` (through the `CARGO_CFG_*` family).
-The owner's global `~/.cargo/config.toml` sets `-Ctarget-cpu=native`, so two
-hosts with different CPUs that each build the same commit get different
-`BUILD_ID`s and each refuses the other as "a different build". Copying one
-binary to every host instead gives matching identities but a binary tuned for the
-build host's CPU, which can fault with SIGILL elsewhere. `build.rs`'s "the same
-inputs give the same identity on every host" is true but hides this. If per-host
-builds are the install method, remote machines with different CPUs can never
-connect. `RUSTC` and `HOST` are also identity inputs, and `RUSTC` may be an
-absolute path under the builder's home; the hunter did not verify what cargo
-hands the script under rustup here, and if it is absolute it would make
-identities differ across users even on identical hardware.
-
-## WIRECFG-013 - The stop's lease check can make a concurrently starting server lose the lease race
-
-Filed by the hunter as surprising; the window is tiny. `wait_for_lease_release`
-checks the data-directory lease by briefly taking its `flock`. A server starting
-at that instant (another terminal's autostart) can lose the race and exit with
-`ALREADY_RUNNING`.
+comparisons per full render per pane. A cache inside `FrameData` would go stale
+because `hyperlinks` is a public `Vec` callers can edit (the reason is now
+commented in `frame.rs`), so the fix belongs to the caller: the full-frame render
+in `backend.rs` should own a URI-to-index map for the frame it builds, seeded
+from the existing table and updated on each insertion.

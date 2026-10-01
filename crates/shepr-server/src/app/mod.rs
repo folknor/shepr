@@ -1431,7 +1431,7 @@ mod tests {
                 .expect("test precondition")
                 .state,
             AgentState::Idle,
-            "Working→Idle should still apply after temporary queue pressure"
+            "Working to Idle should still apply after temporary queue pressure"
         );
     }
 }

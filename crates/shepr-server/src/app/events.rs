@@ -128,6 +128,10 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
         exit_reason: shepr_platform::ChildExitReason,
     ) -> Option<u64> {
+        // Detector StateChanged events carry process_exited without the pane
+        // child's exit reason. That path can already clear the resume identity,
+        // so moving this publication after the checkpoint would not fix
+        // signal exits.
         self.publish_pane_process_exit(pane_id);
         if exit_reason.requires_session_checkpoint()
             && self.state.prepare_pane_removal_by_id(pane_id).is_some()
@@ -226,7 +230,9 @@ impl App {
             state_changed =
                 self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         }
-        if checkpointed_pane_exit {
+        // A stale removal keeps the pane in the layout, so it has not completed
+        // the checkpointed exit whose save state this method advances.
+        if checkpointed_pane_exit && removed {
             self.finish_checkpointed_pane_exit_after_event(session_was_dirty);
         }
         if let Some(pane_id) = touched_pane {

@@ -234,6 +234,8 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
         crate::limits::SSH_CONTROL_PERSIST_OPTION,
         ssh_options::BATCH_MODE_NO,
         ssh_options::STRICT_HOST_KEY_CHECKING,
+        ssh_options::REMOTE_COMMAND_NONE,
+        ssh_options::LOG_LEVEL_ERROR,
         crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
@@ -356,6 +358,8 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
         ssh_options::BATCH_MODE_YES,
         crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
         ssh_options::STRICT_HOST_KEY_CHECKING,
+        ssh_options::REMOTE_COMMAND_NONE,
+        ssh_options::LOG_LEVEL_ERROR,
         crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
         crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
     ] {
@@ -372,17 +376,95 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
 }
 
 #[test]
+fn ssh_modes_override_user_remote_command_and_quiet_logging() {
+    let paths = test_app_paths();
+    let home = paths.home_dir().expect("test home is configured");
+    let user_config = home.join(".ssh").join("config");
+    std::fs::create_dir_all(user_config.parent().expect("config has a parent"))
+        .expect("create user ssh config directory");
+    std::fs::write(
+        &user_config,
+        "Host example\n  RemoteCommand whoami\n  LogLevel QUIET\n",
+    )
+    .expect("write user ssh config");
+    let target = SshTarget::parse("example").expect("test precondition");
+    let config = write_managed_ssh_config("example", &paths, test_control_dir())
+        .expect("write managed config");
+    let managed_contents =
+        std::fs::read_to_string(&config.options.config_path).expect("read managed config");
+    // The managed config includes the user's file, whose RemoteCommand and
+    // LogLevel would apply unless the command line overrides them.
+    assert!(managed_contents.contains("Include"));
+    assert!(managed_contents.contains(&*user_config.to_string_lossy()));
+    let ssh = RemoteSsh::test_with_state(target.clone(), config);
+    let batch_args = ssh
+        .command()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let auth_config =
+        write_managed_ssh_config("example", &paths, test_control_dir()).expect("write config");
+    let auth_args = authentication_command_with_config(&target, auth_config)
+        .command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    for args in [&batch_args, &auth_args] {
+        for required in [
+            ssh_options::STRICT_HOST_KEY_CHECKING,
+            ssh_options::REMOTE_COMMAND_NONE,
+            ssh_options::LOG_LEVEL_ERROR,
+        ] {
+            assert!(args.iter().any(|arg| arg == required), "missing {required}");
+        }
+    }
+    assert!(
+        batch_args
+            .iter()
+            .any(|arg| arg == ssh_options::BATCH_MODE_YES)
+    );
+    assert!(
+        auth_args
+            .iter()
+            .any(|arg| arg == ssh_options::BATCH_MODE_NO)
+    );
+}
+
+#[test]
+fn missing_local_ssh_is_reported_as_local_setup_not_remote_incompatibility() {
+    let error = crate::local_setup_error(
+        "could not start local ssh",
+        io::Error::from(io::ErrorKind::NotFound),
+    );
+    let diagnostic = crate::SshFailureDiagnostic::from_error(&error);
+    assert!(diagnostic.is_local_setup_failure());
+    assert!(!diagnostic.is_remote_compatibility());
+    assert!(diagnostic.needs_attention());
+    assert!(error.to_string().contains("local ssh"));
+    assert!(matches!(
+        crate::classify_check(Err(error)),
+        crate::MachineCheck::Failed(_)
+    ));
+}
+
+#[test]
 fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     let mut ssh = test_ssh();
     let now = Instant::now();
-    assert_eq!(
-        ssh.command_timeout(now).expect("no deadline"),
-        SSH_COMMAND_TIMEOUT
-    );
+    let timeout = ssh.command_timeout(now).expect("no deadline");
+    assert_eq!(timeout.duration, SSH_COMMAND_TIMEOUT);
+    assert!(timeout.authentication_candidate);
 
     ssh.set_attempt_deadline(Some(now + Duration::from_secs(2)));
     let timeout = ssh.command_timeout(now).expect("time is left");
-    assert_eq!(timeout, Duration::from_secs(2));
+    assert_eq!(timeout.duration, Duration::from_secs(2));
+    assert!(!timeout.authentication_candidate);
+
+    ssh.set_attempt_deadline(Some(now + Duration::from_secs(25)));
+    let timeout = ssh.command_timeout(now).expect("a round trip fits");
+    assert_eq!(timeout.duration, SSH_COMMAND_TIMEOUT);
+    assert!(timeout.authentication_candidate);
 
     ssh.set_attempt_deadline(Some(now));
     let error = ssh
@@ -395,4 +477,24 @@ fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     // The refusal happens before ssh is spawned.
     let error = ssh.sh_output("true\n").expect_err("refused");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+}
+
+#[test]
+fn a_round_trip_timeout_can_prompt_but_an_attempt_deadline_stays_offline() {
+    let round_trip = classify_command_timeout(
+        io::Error::new(io::ErrorKind::TimedOut, "SSH command timed out"),
+        true,
+    );
+    let diagnostic = crate::SshFailureDiagnostic::from_error(&round_trip);
+    assert!(diagnostic.is_authentication_wait_timeout());
+    assert!(diagnostic.failed_before_remote_result());
+    assert!(!diagnostic.is_transient_network_failure());
+
+    let attempt = classify_command_timeout(
+        io::Error::new(io::ErrorKind::TimedOut, "SSH command timed out"),
+        false,
+    );
+    let diagnostic = crate::SshFailureDiagnostic::from_error(&attempt);
+    assert!(!diagnostic.is_authentication_wait_timeout());
+    assert!(diagnostic.is_transient_network_failure());
 }

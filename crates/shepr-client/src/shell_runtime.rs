@@ -226,6 +226,25 @@ fn local_activation_metadata_ready(
         })
 }
 
+fn local_activation_unavailable_notice(
+    status: Option<endpoint::ClientEndpointStatus>,
+) -> &'static str {
+    match status {
+        Some(endpoint::ClientEndpointStatus::Connecting) => {
+            "Local is connecting; selection will resume when it is ready"
+        }
+        Some(endpoint::ClientEndpointStatus::Reconnecting) => {
+            "Local is reconnecting; selection will resume when it is ready"
+        }
+        Some(endpoint::ClientEndpointStatus::Attention) => {
+            "Local needs attention; selection will resume when it is ready"
+        }
+        Some(endpoint::ClientEndpointStatus::Online) | None => {
+            "Local is waiting for its workspace snapshot; selection will resume when it is ready"
+        }
+    }
+}
+
 pub(super) fn take_ready_local_activation(
     state: &mut ClientState,
     endpoints: &endpoint::EndpointRegistry,
@@ -260,9 +279,14 @@ pub(super) fn begin_endpoint_activation(
             endpoint_id,
             target,
         });
-        state.shell.receive_endpoint_unavailable(
-            "Local is reconnecting; selection will resume when it is ready".into(),
+        // Attention also has a supervised retry deadline. Name the current state so an
+        // attention diagnostic does not read like a promise that retrying will repair it.
+        let notice = local_activation_unavailable_notice(
+            state
+                .shell
+                .endpoint_status(&endpoint::ClientEndpointId::Local),
         );
+        state.shell.receive_endpoint_unavailable(notice.into());
         return Ok(());
     }
     let replace_pending = endpoint_id.is_local()
@@ -467,10 +491,21 @@ pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: Stri
     }
 }
 
+fn endpoint_disconnect_notice(kind: io::ErrorKind) -> &'static str {
+    match kind {
+        io::ErrorKind::TimedOut => "connection timed out; reconnecting",
+        io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::BrokenPipe
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::NotConnected => "connection was lost; reconnecting",
+        _ => "connection failed; reconnecting",
+    }
+}
+
 /// The rollback reason when an endpoint a machine switch involves disconnects mid-switch.
-/// `notice` is the same predicate the active-endpoint path shows after the label ("connection
-/// was lost; reconnecting", "was removed or re-pointed"), so both read as one
-/// sentence about the named machine.
+/// The predicate is fixed UI text; remote diagnostics stay in machine diagnostics, and every
+/// raw transport error stays in the log.
 fn handoff_interrupted_notice(label: &str, notice: &str) -> String {
     format!("machine switch interrupted: {label} {notice}")
 }
@@ -507,9 +542,13 @@ pub(super) fn handle_endpoint_disconnect(
     endpoint_id: &endpoint::ClientEndpointId,
     generation: u64,
     now: std::time::Instant,
-    notice: &str,
+    error_kind: io::ErrorKind,
+    diagnostic: &str,
 ) -> bool {
     supervisors.disconnected(endpoint_id, generation, now);
+    let notice = endpoint_disconnect_notice(error_kind);
+    let diagnostic = shepr_remote::SshFailureDiagnostic::from_message(diagnostic.to_owned());
+    state.shell.set_machine_diagnostic(endpoint_id, &diagnostic);
     let interrupted = handoff_interrupted_notice(state.shell.endpoint_label(endpoint_id), notice);
     if let Some(activation) = state
         .presentation
@@ -766,9 +805,33 @@ mod tests {
             handoff_interrupted_notice("buildbox", "connection was lost; reconnecting"),
             "machine switch interrupted: buildbox connection was lost; reconnecting"
         );
+    }
+
+    #[test]
+    fn local_activation_notice_matches_the_current_endpoint_status() {
         assert_eq!(
-            handoff_interrupted_notice("buildbox", "was removed or re-pointed"),
-            "machine switch interrupted: buildbox was removed or re-pointed"
+            local_activation_unavailable_notice(Some(endpoint::ClientEndpointStatus::Attention)),
+            "Local needs attention; selection will resume when it is ready"
+        );
+        assert_eq!(
+            local_activation_unavailable_notice(Some(endpoint::ClientEndpointStatus::Reconnecting)),
+            "Local is reconnecting; selection will resume when it is ready"
+        );
+    }
+
+    #[test]
+    fn transport_failures_map_to_fixed_disconnect_notices() {
+        assert_eq!(
+            endpoint_disconnect_notice(io::ErrorKind::UnexpectedEof),
+            "connection was lost; reconnecting"
+        );
+        assert_eq!(
+            endpoint_disconnect_notice(io::ErrorKind::TimedOut),
+            "connection timed out; reconnecting"
+        );
+        assert_eq!(
+            endpoint_disconnect_notice(io::ErrorKind::InvalidData),
+            "connection failed; reconnecting"
         );
     }
 

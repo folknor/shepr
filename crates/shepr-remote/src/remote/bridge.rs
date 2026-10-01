@@ -439,7 +439,7 @@ pub(super) fn bridge_connection(
 
     let child = command
         .spawn()
-        .map_err(|err| io::Error::new(err.kind(), format!("failed to start ssh bridge: {err}")))?;
+        .map_err(|error| crate::local_setup_error("could not start local ssh bridge", error))?;
     let mut child = BridgeChildStartupGuard::new(child);
     let child_stdin = child
         .child()?

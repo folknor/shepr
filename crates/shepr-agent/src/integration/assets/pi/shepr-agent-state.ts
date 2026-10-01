@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=pi
-// SHEPR_INTEGRATION_VERSION=2
+// SHEPR_INTEGRATION_VERSION=3
 // @ts-nocheck
 
 import net from "node:net";
@@ -15,7 +15,7 @@ const source = "shepr:pi";
 let requestQueue = Promise.resolve();
 
 function enabled() {
-  return SHEPR_ENV === "1" && !!socketPath && !!paneId;
+  return process.env.SHEPR_BUILD_PROFILE === "release" && SHEPR_ENV === "1" && !!socketPath && !!paneId;
 }
 
 function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolean> {

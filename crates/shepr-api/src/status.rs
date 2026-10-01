@@ -44,12 +44,13 @@ pub fn read_runtime_status_at(
         .and_then(crate::client::parse_response_value);
     let response = match response {
         Ok(response) => response,
-        // A stalled server (one that accepts but never answers) reads as "no
-        // usable status", the same as nothing listening: callers turn `None`
-        // into "status API unavailable" guidance. A receive timeout on this
-        // socket is `EAGAIN`, i.e. `WouldBlock`; the client normalizes that to
+        // A server that stalls or closes without a response has no usable
+        // status, the same as nothing listening. Callers turn `None` into
+        // "status API unavailable" guidance. A receive timeout on this socket
+        // is `EAGAIN`, i.e. `WouldBlock`; the client normalizes that to
         // `TimedOut`, and both are accepted here so the mapping never depends
         // on which layer reported it.
+        Err(crate::client::ApiClientError::EmptyResponse) => return Ok(None),
         Err(crate::client::ApiClientError::Io(err))
             if matches!(
                 err.kind(),
@@ -113,6 +114,30 @@ mod tests {
         assert!(
             matches!(status, Ok(None)),
             "a stalled server must read as no status: {status:?}"
+        );
+    }
+
+    #[test]
+    fn server_that_closes_without_a_status_line_reports_no_status() {
+        let scratch = shepr_test_support::ScratchDir::new("status-empty-response");
+        let path = scratch.join("empty.sock");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().expect("test precondition");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .expect("read the status request");
+            assert!(!line.is_empty(), "the client sent a status request");
+        });
+
+        let status = read_runtime_status_at(&path, Duration::from_millis(100));
+        server.join().expect("test precondition");
+        assert!(
+            matches!(status, Ok(None)),
+            "a close without a response must read as no status: {status:?}"
         );
     }
 }

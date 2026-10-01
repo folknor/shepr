@@ -36,9 +36,10 @@
 //!
 //! [`EnvKind::Handoff`] and [`EnvKind::Raw`] preserve OS strings byte for byte.
 //! A handoff is written by one shepr process for a child. Raw values include
-//! inherited `PATH` and `SHELL` inputs, and Git environment values whose path
-//! or list grammar belongs to Git; non-UTF-8 bytes and whitespace can be
-//! meaningful. Only empty reads as unset.
+//! inherited `PATH` and `SHELL` inputs, Git environment values whose path or
+//! list grammar belongs to Git, and `TERM_PROGRAM`, whose terminal name is
+//! recognized only by a byte comparison that ignores ASCII case; non-UTF-8
+//! bytes and whitespace are not refused. Only empty reads as unset.
 //!
 //! What a value means beyond its kind (a log filter's
 //! syntax, which directory a relative path is joined to) stays with the site
@@ -186,7 +187,8 @@ env_vocabulary! {
         /// every pane, since it names the outer terminal.
         Tmux => "TMUX",
         /// `TERM_PROGRAM`: the host terminal's name; selects the host key
-        /// protocol. Written into every pane as `shepr`.
+        /// protocol by a byte comparison that ignores ASCII case. Written into
+        /// every pane as `shepr`.
         TermProgram => "TERM_PROGRAM",
         /// `WEZTERM_PANE`: set inside WezTerm; selects the host key protocol.
         /// Removed from every pane, since it names the outer terminal.
@@ -229,7 +231,10 @@ env_vocabulary! {
         /// `/etc/gitconfig`. Preserve the path's OS bytes.
         GitConfigSystem => "GIT_CONFIG_SYSTEM",
         /// `GIT_CONFIG_NOSYSTEM`: Git's boolean setting that skips the system
-        /// config file when true. Kept as text for Git's full boolean grammar.
+        /// config file when true. Shepr also reads it to decide whether that
+        /// file contributes to sidebar Git status. Keep it text-valued until
+        /// that consumer can parse raw bytes without selecting the wrong set
+        /// of config files when the value is malformed.
         GitConfigNoSystem => "GIT_CONFIG_NOSYSTEM",
         /// `GIT_CONFIG_COUNT`: the number of indexed command-scope config
         /// pairs Git reads. Its decimal grammar follows Git's parser.
@@ -326,8 +331,8 @@ pub enum EnvKind {
     /// reads as unset, and nothing is refused.
     Handoff,
     /// An inherited OS string whose grammar belongs to its consumer, such as
-    /// `PATH`, `SHELL` or Git's environment settings: only empty reads as
-    /// unset, and nothing is refused.
+    /// `PATH`, `SHELL`, Git's environment settings or the terminal name:
+    /// only empty reads as unset, and nothing is refused.
     Raw,
 }
 
@@ -341,7 +346,6 @@ impl EnvVar {
             | Self::SheprEnv
             | Self::SheprBuildProfile
             | Self::SheprLog
-            | Self::TermProgram
             | Self::GitConfigNoSystem => EnvKind::Text,
             Self::SheprConfigPath
             | Self::PiCodingAgentDir
@@ -372,6 +376,7 @@ impl EnvVar {
             | Self::GitCeilingDirectories
             | Self::GitConfigGlobal
             | Self::GitConfigSystem
+            | Self::TermProgram
             | Self::GitConfigCount
             | Self::GitConfigParameters => EnvKind::Raw,
         }
@@ -989,7 +994,7 @@ mod tests {
             (EnvVar::SshTty, "SSH_TTY", Presence),
             (EnvVar::VscodeIpcHookCli, "VSCODE_IPC_HOOK_CLI", Presence),
             (EnvVar::Tmux, "TMUX", Presence),
-            (EnvVar::TermProgram, "TERM_PROGRAM", Text),
+            (EnvVar::TermProgram, "TERM_PROGRAM", Raw),
             (EnvVar::WeztermPane, "WEZTERM_PANE", Presence),
             (EnvVar::WaylandDisplay, "WAYLAND_DISPLAY", Presence),
             (EnvVar::Display, "DISPLAY", Presence),

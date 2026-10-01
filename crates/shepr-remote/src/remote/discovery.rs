@@ -238,13 +238,10 @@ impl DiscoveryProgress {
                     candidate.path, candidate.reason
                 )
             });
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "matching Shepr is not ready on {}{rejection}; install or update it there manually and retry",
-                steps.target(),
-            ),
-        ))
+        Err(crate::remote_compatibility_error(format!(
+            "matching Shepr is not ready on {}{rejection}; install or update it there manually and retry",
+            steps.target(),
+        )))
     }
 
     fn remember_rejected_candidate(&mut self, steps: &mut impl DiscoverySteps) {
@@ -495,26 +492,12 @@ fn remote_compatibility_error(
     ))
 }
 
-#[derive(Debug)]
-struct RemoteCandidateMismatch(String);
-
-impl std::fmt::Display for RemoteCandidateMismatch {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for RemoteCandidateMismatch {}
-
 fn remote_candidate_mismatch(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, RemoteCandidateMismatch(message))
+    crate::remote_compatibility_error(message)
 }
 
 pub(super) fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
-    error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<RemoteCandidateMismatch>())
-        .is_some()
+    super::SshFailureDiagnostic::from_error(error).is_remote_compatibility()
 }
 
 #[cfg(test)]

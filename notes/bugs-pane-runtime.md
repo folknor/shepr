@@ -74,54 +74,12 @@ return `ReportedCwd::resolve(reported, proc_cwd)`, not `proc_cwd`. If the intent
 is "restore the physical path on purpose", `ReportedCwd`'s doc should say
 persistence is the exception. The owner needs to choose.
 
-## PRUN-006 - `collect_dirty_patch_snapshot` claims revision and metadata are paired, but only content-lock writers are excluded
-
-Hunter's rating: low, certain. Claim: "The guard waits for announced writes to
-finish and excludes new ones, so the revision and the terminal metadata remain
-paired throughout."
-
-The snapshot takes the content write lock, then the core lock five separate
-times (`collect_dirty_patch`, `scroll_metrics`, `mouse_reporting_enabled`,
-`sgr_pixel_mouse_enabled`, `alternate_screen_active`). These mutators change
-render-visible state without the content write lock: `scroll_up`,
-`scroll_down`, `scroll_reset`, `set_scroll_offset_from_bottom` (viewport, so
-patch rows and `scroll_metrics`), `apply_host_terminal_theme`,
-`maybe_restore_host_terminal_theme` (on the blocking pool from detection, so
-another thread), `apply_host_terminal_appearance`. None advances `content_seq`,
-so `client_shell`'s "revision stable across the render" check cannot see them.
-The scroll mutators run on the event loop with the collector, so the pairing
-holds today by thread affinity, not by the lock the comment names; theme changes
-affect colours only. No wrong frame found; the comment overstates the guarantee,
-and five lock holds per pane per frame cost real time on the hot path. See
-PRUN-008.
-
-## PRUN-007 - `RenderSignal::request_pty` takes a mutex on every PTY read
-
-Hot-path observation. `request_pty` takes a mutex and does a `HashSet` insert on
-every PTY read of every pane, even when the pane is already pending. A per-pane
-`AtomicBool` "queued" flag in `PaneReadEffects` (cleared by `take`) would make
-the common repeated read lock-free. Each PTY read today does: content write
-lock, core lock, the `request_pty` mutex, plus two atomics; with the revision in
-the core (PRUN-008) this drops to the core lock plus the render signal.
-
-## PRUN-008 - Structural: put the content revision inside `PaneTerminalCore`
-
-`content_seq`, `content_write_lock`, `ContentWriteGuard` (its odd/even protocol,
-`cancel` and unwinding rules) and `PaneOutputWriter::try_begin` exist only to
-pair a revision counter with core state across separate core-lock holds. Bump
-the revision under the core lock in every mutator and have the snapshot read
-patch, revision and metadata in one hold. This removes a lock layer and one
-lock-order level (`reply-order -> content -> core` becomes
-`reply-order -> core`), makes PRUN-006's claim true by construction, and stops
-the theme and scroll mutators from bypassing the revision.
-`detection_content_seq` can live there too.
-
 ## PRUN-009 - Structural: one shared struct instead of about ten Arcs
 
 `PaneRuntime`, `PaneReadEffects` and `PaneOutputWriter` each hold separate
-`Arc`s to the same items: `terminal`, `content_seq`, `content_write_lock`,
-`detection_content_seq`, `reported_cwd`, `child_liveness`,
-`full_lifecycle_authority_active`, `persistence_cwd`, `detect_reset_notify`. One
+`Arc`s to the same items (`terminal`, `reported_cwd`, `child_liveness`,
+`full_lifecycle_authority_active`, `persistence_cwd`, `detect_reset_notify` and
+so on; the content revisions now live in the terminal core). One
 `Arc<PaneShared>` would make clone sites and ownership readable and make the
 drop story in PRUN-003 explicit (a `Weak<PaneShared>` in the timer).
 
@@ -146,3 +104,17 @@ routing. No concrete defect found, but the hunter expects the next ones here. A
 single explicit `(generation, event) -> (generation, effects)` table would
 replace about a dozen `pub(super)` predicates and make the invariants in the
 `HookSourceState` doc checkable.
+
+## PRUN-012 - Host theme and appearance advance the render revision even when unchanged
+
+Lateral. `apply_host_terminal_theme` and `apply_host_terminal_appearance`
+(`pane/terminal/backend.rs`) advance the render revision unconditionally. If
+the server reapplies an identical theme (on a foreground-client change, say),
+every pane's revision moves and retained surfaces resend for nothing. Advance
+only on a real change, or confirm the caller applies only on change.
+
+## PRUN-013 - `PaneOutputWriter::try_begin` doc omits the poisoned core
+
+Lateral, low. `try_begin` (`pane/runtime.rs`) returns `None` for a poisoned core
+as well as a busy one; its doc names only "a snapshot or another mutation holds
+the core". Only test support uses it today.

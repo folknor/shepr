@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=mastracode
-# SHEPR_INTEGRATION_VERSION=6
+# SHEPR_INTEGRATION_VERSION=7
 
 set -eu
 
@@ -28,6 +28,8 @@ case "$action" in
   *) exit 0 ;;
 esac
 
+# Shared agent configs contain release hooks only. Dev panes use detection.
+[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || exit 0
 [ "${SHEPR_ENV:-}" = "1" ] || exit 0
 [ -n "${SHEPR_SOCKET_PATH:-}" ] || exit 0
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0

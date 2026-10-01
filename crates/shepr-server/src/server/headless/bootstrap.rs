@@ -214,12 +214,18 @@ fn log_panics() {
 /// thread starts. Every outcome goes to the log; nothing here can fail the
 /// launch. A server that stops while the thread runs leaves at most a
 /// half-finished install, which the next launch completes: every file is
-/// replaced by rename, never rewritten in place.
+/// replaced by rename, never rewritten in place. The installer is given this
+/// build's compiled profile, never the inherited pane marker, and skips
+/// everything unless it is release: agent configs are shared by every build on
+/// the host, and only release hooks are installed into them.
 fn spawn_integration_install() {
     let paths = shepr_agent::integration::AgentIntegrationPaths::resolve();
+    let build_profile = shepr_config::BuildProfile::current().marker();
     if let Err(error) = std::thread::Builder::new()
         .name("integration-install".into())
-        .spawn(move || shepr_agent::integration::install_present_integrations(&paths))
+        .spawn(move || {
+            shepr_agent::integration::install_present_integrations(&paths, build_profile);
+        })
     {
         warn!(%error, "could not start the agent integration install");
     }

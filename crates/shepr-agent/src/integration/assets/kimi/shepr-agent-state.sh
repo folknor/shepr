@@ -1,7 +1,7 @@
 #!/bin/sh
 # managed by shepr; reinstalling the integration replaces this file.
 # SHEPR_INTEGRATION_ID=kimi
-# SHEPR_INTEGRATION_VERSION=4
+# SHEPR_INTEGRATION_VERSION=5
 
 # Stamp the report the moment the hook starts. Every event runs this script in
 # a fresh process, and shepr drops a report whose seq is older than the last
@@ -17,6 +17,8 @@ case "$action" in
   *) exit 0 ;;
 esac
 
+# Shared agent configs contain release hooks only. Dev panes use detection.
+[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || exit 0
 [ "${SHEPR_ENV:-}" = "1" ] || exit 0
 [ -n "${SHEPR_SOCKET_PATH:-}" ] || exit 0
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0

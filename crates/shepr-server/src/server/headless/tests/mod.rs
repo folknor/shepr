@@ -2546,15 +2546,15 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     };
     let retained = server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id]));
     release.send(()).expect("release waiting writer");
-    let announced = writer.join().expect("writer completed");
+    let writer_took_core = writer.join().expect("writer completed");
 
     assert!(
         retained,
         "a waiting writer must not invalidate the collected snapshot"
     );
     assert!(
-        !announced,
-        "writer must wait before announcing a new revision"
+        !writer_took_core,
+        "writer must wait for the collection to release the terminal core"
     );
     let patch = recv_pane_surface_patch(&mut render, "snapshot before waiting write");
     assert_eq!(
@@ -3450,6 +3450,15 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_workspace() {
         server.clients.geometry_controller(&second_workspace_id),
         Some(ClientId::test_new(67))
     );
+    let (lower_control, _) = connect_test_shell(&mut server, 66, 90, 25);
+    let _ = lower_control.recv().expect("lower-id viewer snapshot");
+    assert!(server.place_test_client_on_workspace(ClientId::test_new(66), &second_workspace_id));
+    server
+        .clients
+        .get_mut(&ClientId::test_new(68))
+        .expect("focused viewer")
+        .shell_state_mut()
+        .outer_terminal_focus = Some(true);
     let stale_size = server.app.test_runtime(second_pane).current_size();
 
     assert!(server.reapply_controlled_shell_workspace_geometry(false));

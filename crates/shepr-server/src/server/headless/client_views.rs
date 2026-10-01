@@ -38,8 +38,9 @@ pub(super) enum GeometrySource {
 ///   it, viewed or not, so switching workspaces never resizes a pane.
 /// - Otherwise a workspace is sized for a current viewer. Its last geometry
 ///   controller wins while it still views that workspace; if it does not, the
-///   lowest-id current viewer is the fallback. With several clients presenting
-///   and no viewer, the workspace keeps its size: `None`.
+///   lowest-id outer-focused viewer wins, then the lowest-id current viewer.
+///   With several clients presenting and no viewer, the workspace keeps its
+///   size: `None`.
 /// - With no client presenting surfaces, every workspace is sized for the
 ///   configured headless size.
 fn workspace_geometry_source(
@@ -50,6 +51,7 @@ fn workspace_geometry_source(
     let mut sole_presenter = None;
     let mut has_multiple_presenters = false;
     let mut lowest_viewer = None;
+    let mut lowest_focused_viewer = None;
     let mut current_controller = None;
     for (&client_id, client) in clients {
         if !presents_surface(client) {
@@ -63,6 +65,11 @@ fn workspace_geometry_source(
         if client.shell_state().location.focused_workspace_id.as_ref() == Some(workspace_id) {
             if lowest_viewer.is_none_or(|viewer| client_id < viewer) {
                 lowest_viewer = Some(client_id);
+            }
+            if client.shell_state().outer_terminal_focus == Some(true)
+                && lowest_focused_viewer.is_none_or(|viewer| client_id < viewer)
+            {
+                lowest_focused_viewer = Some(client_id);
             }
             if last_controller == Some(client_id) {
                 // A remembered choice has effect only while its client is a
@@ -81,7 +88,7 @@ fn workspace_geometry_source(
     if let Some(controller) = current_controller {
         return Some(GeometrySource::Client(controller));
     }
-    if let Some(viewer) = lowest_viewer {
+    if let Some(viewer) = lowest_focused_viewer.or(lowest_viewer) {
         return Some(GeometrySource::Client(viewer));
     }
     None
@@ -499,9 +506,9 @@ impl HeadlessServer {
         })
     }
 
-    /// Settles the remembered controller of each viewed workspace to one of
-    /// its current viewers, then applies the view-derived PTY size rule to
-    /// every workspace.
+    /// Settles a stale controller to the lowest-id outer-focused viewer, or
+    /// the lowest-id viewer when none is focused, then applies the view-derived
+    /// PTY size rule to every workspace.
     pub(super) fn reapply_controlled_shell_workspace_geometry(
         &mut self,
         start_pending_agent_resumes: bool,
@@ -529,8 +536,16 @@ impl HeadlessServer {
                 .as_ref()
                 .is_some_and(|controller| viewers.contains(controller));
             if !controller_is_viewing {
-                self.clients
-                    .set_geometry_controller(workspace_id, viewers[0]);
+                let fallback = viewers
+                    .iter()
+                    .copied()
+                    .find(|client_id| {
+                        self.clients.get(client_id).is_some_and(|client| {
+                            client.shell_state().outer_terminal_focus == Some(true)
+                        })
+                    })
+                    .unwrap_or(viewers[0]);
+                self.clients.set_geometry_controller(workspace_id, fallback);
             }
         }
         self.apply_shell_geometry(start_pending_agent_resumes)
@@ -613,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn pty_size_rule_prefers_the_sole_surface_then_the_controller_then_headless() {
+    fn pty_size_rule_prefers_focused_viewer_when_controller_is_stale() {
         let workspace_id: shepr_protocol::WorkspaceId = shepr_test_fixtures::id("w1");
         let mut clients = crate::server::clients::ClientRegistry::default();
         assert_eq!(
@@ -637,26 +652,28 @@ mod tests {
             .shell_state_mut()
             .location
             .focused_workspace_id = Some(workspace_id.clone());
+        second_client.shell_state_mut().outer_terminal_focus = Some(true);
         clients.insert(second, second_client);
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
-            Some(GeometrySource::Client(first)),
-            "without a current claim, the lowest-id viewer is the fallback"
+            Some(GeometrySource::Client(second)),
+            "an outer-focused viewer wins the fallback over a lower-id viewer"
         );
-        assert!(clients.claim_geometry(workspace_id.clone(), second));
+        assert!(clients.claim_geometry(workspace_id.clone(), first));
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
-            Some(GeometrySource::Client(second))
+            Some(GeometrySource::Client(first)),
+            "a remembered controller wins while it still views the workspace"
         );
 
         let other_workspace_id: shepr_protocol::WorkspaceId = shepr_test_fixtures::id("w2");
-        if let Some(client) = clients.get_mut(&second) {
+        if let Some(client) = clients.get_mut(&first) {
             client.shell_state_mut().location.focused_workspace_id = Some(other_workspace_id);
         }
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
-            Some(GeometrySource::Client(first)),
-            "a remembered controller only wins while it still views the workspace"
+            Some(GeometrySource::Client(second)),
+            "a focused viewer wins after the remembered controller leaves"
         );
 
         // An inactive surface presents nothing: the other one is sole again.

@@ -303,6 +303,8 @@ fn capture_shell_asset(
         // host-program-ok: the shipped agent hook is the shell script under test.
         let mut command = command_in_scratch("sh", "agent-integration-shell-asset");
         command.arg(script);
+        // Hook assets report only from panes of a release server.
+        command.env("SHEPR_BUILD_PROFILE", "release");
         if let Some(action) = step.action {
             command.arg(action);
         }

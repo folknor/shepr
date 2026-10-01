@@ -9,7 +9,8 @@ use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
 use super::version::{agent_version_requirement, enforce_agent_version};
 
 /// Installs or updates shepr's hooks for every supported agent present on
-/// this host, the way a server does at launch.
+/// this host when a release server launches. Dev servers skip installation
+/// because agent configs are shared with release servers on the same host.
 ///
 /// An agent is present when its own config directory already exists; an
 /// absent agent is skipped and its directory is never created. A target
@@ -20,7 +21,16 @@ use super::version::{agent_version_requirement, enforce_agent_version};
 ///
 /// This does file IO and may run an agent's `--version` probe (bounded by a
 /// timeout), so a server calls it off its startup path.
-pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
+pub fn install_present_integrations(paths: &AgentIntegrationPaths, build_profile: &str) {
+    // Use the caller's compiled profile, never the inherited pane environment:
+    // a dev server can be launched from a release pane and vice versa.
+    if build_profile != "release" {
+        tracing::info!(
+            build_profile,
+            "agent integration installation skipped; only release servers own agent configs"
+        );
+        return;
+    }
     for target in IntegrationTarget::all() {
         let label = target.label();
         match install_if_present(paths, target) {

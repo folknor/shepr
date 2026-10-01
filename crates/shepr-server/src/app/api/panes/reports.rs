@@ -232,7 +232,11 @@ mod tests {
         let socket_path = scratch.join("report-handler.sock");
         // host-program-ok: the shipped agent hook is the shell script under test.
         let mut command = shepr_test_support::command_in_scratch("sh", "agent-report-handler");
-        command.arg(script).arg("session");
+        // Hook assets report only from panes of a release server.
+        command
+            .arg(script)
+            .arg("session")
+            .env("SHEPR_BUILD_PROFILE", "release");
         let mut input = serde_json::json!({
             "hook_event_name": "SessionStart",
             "session_id": "claude-contract-session",

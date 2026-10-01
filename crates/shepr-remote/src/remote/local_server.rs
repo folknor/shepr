@@ -86,6 +86,10 @@ pub fn ensure_running(
     let server = server_executable()?;
 
     let _lock = acquire_launch_lock(paths, timeout.saturating_add(LAUNCH_LOCK_WAIT_GRACE))?;
+    // One budget covers every endpoint transition while this client owns the
+    // launch lock; a server that repeatedly starts and releases cannot reset it.
+    // clock-io-ok: the launch budget measures real elapsed waiting on sockets
+    let transition_deadline = Instant::now() + timeout;
     // A client that held the lock before us may have finished its launch.
     loop {
         match probe_server(paths)? {
@@ -95,12 +99,16 @@ pub fn ensure_running(
             }
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
             Probed::NoServer => break,
-            Probed::Starting | Probed::Stopping => {
+            Probed::Starting | Probed::Stopping | Probed::Releasing => {
                 info!("the server sockets are in transition; waiting for them to settle");
-                wait_for_server_sockets_to_settle(paths, timeout)?;
-            }
-            Probed::Releasing => {
-                wait_for_server_sockets_to_settle(paths, timeout)?;
+                // clock-io-ok: the launch budget measures real elapsed waiting
+                if transition_deadline
+                    .saturating_duration_since(Instant::now())
+                    .is_zero()
+                {
+                    return Err(server_transition_timeout(paths, timeout));
+                }
+                wait_for_server_sockets_to_settle_until(paths, transition_deadline, timeout)?;
             }
         }
     }
@@ -227,12 +235,12 @@ fn probe_server_at(client_socket: &Path, api_socket: &Path) -> io::Result<Probed
 /// a different stable probe result appears. The launcher holds its profile
 /// lock while waiting, so another shepr client cannot start a competing
 /// successor in this interval.
-fn wait_for_server_sockets_to_settle(
+fn wait_for_server_sockets_to_settle_until(
     paths: &shepr_config::AppPaths,
+    deadline: Instant,
     timeout: Duration,
 ) -> io::Result<()> {
     // clock-io-ok: bounds a wait on another process's real sockets.
-    let deadline = Instant::now() + timeout;
     loop {
         if server_sockets_are_stopped(paths)? {
             return Ok(());
@@ -244,17 +252,21 @@ fn wait_for_server_sockets_to_settle(
         // clock-io-ok: the same real-socket wait.
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "the shepr server at {} did not release its sockets within {}ms",
-                    paths.server_address().client_socket().display(),
-                    timeout.as_millis()
-                ),
-            ));
+            return Err(server_transition_timeout(paths, timeout));
         }
         std::thread::sleep(SOCKET_POLL_INTERVAL.min(remaining));
     }
+}
+
+fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "the shepr server at {} did not release its sockets within {}ms",
+            paths.server_address().client_socket().display(),
+            timeout.as_millis()
+        ),
+    )
 }
 
 fn server_sockets_are_stopped(paths: &shepr_config::AppPaths) -> io::Result<bool> {

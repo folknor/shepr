@@ -13,36 +13,6 @@ merged into CEND-001 in `notes/bugs-client-endpoints.md`.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CSHELL-001 - Overlays are never drawn when there is no presentable surface, but still own input
-
-Where: `ClientShellState::compose_unavailable`
-(`shell/presentation/composition.rs`).
-
-`compose` returns `compose_unavailable` whenever `snapshot` or `pane_surface` is
-`None`. That path draws the sidebar, a status line, the mode bar and the notice
-card, and never looks at `self.overlay`. Every overlay keeps routing keys
-(`route_key_press` sends everything to `route_overlay_key` while
-`self.overlay.is_some()`) and mouse events (`handle_mouse_with_accounting`).
-
-Claims broken:
-
-- `compose`'s own contract for an overlay that cannot be drawn: "a one-line hint
-  says why the overlay is missing ... Overlay hit rects stay empty". On this path
-  there is no hint; the overlay is simply skipped.
-- AGENTS.md: "With machines configured, losing the local server does not end the
-  client either: it keeps serving the remote machines". With Local active and
-  down, the session navigator (prefix+g) is the keyboard route to a remote
-  machine, and it opens invisible. Typing edits an unseen query, and Enter
-  activates whatever row happens to be selected.
-- The expanded sidebar still draws the `menu` launcher and sets
-  `hits.global_launcher` on this path, so clicking it opens a `GlobalMenu` that
-  is never painted; the next click anywhere closes it, because
-  `hits.global_menu_rows` is empty.
-- `compose` says the mode bar is drawn "only when no overlay is open". The
-  unavailable path draws it with an overlay open.
-
-Fix direction: one composition pipeline; see CSHELL-017.
-
 ## CSHELL-003 - A pane-split drag released during a projection gap drops the final ratio
 
 Where: the `ClientChromeDrag::PaneSplit` arms in `handle_mouse_with_accounting`
@@ -148,13 +118,6 @@ mode and moving on makes every byte of output in every other pane recompose the
 whole frame indefinitely. Scope the blocker to patches that touch the copy or
 selection pane.
 
-## CSHELL-017 - Structural: one composition pipeline
-
-`compose` and `compose_unavailable` already disagree on overlays (CSHELL-001),
-the mode bar rule and hit-map handling. A single pipeline with the pane area as a
-layer (surface or placeholder) would apply overlays, banners, notices and the
-mode bar once, in one order.
-
 ## CSHELL-018 - Structural: a request ledger instead of per-feature in-flight bookkeeping
 
 In-flight state is spread across `pending_requests`, `pane_scroll_in_flight`,
@@ -174,6 +137,15 @@ request kind's rollback on that path, so the in-flight state that request set
 (copy operation, pane scroll, word-selection row) can stay set with nothing
 behind it. Cancellation runs the rollback; this path should too.
 
+## CSHELL-024 - The placeholder layer lets the banner and notice card overlap other chrome
+
+Lateral, `shell/presentation/composition.rs`. With the single composition
+pipeline the lifecycle banner also draws over the placeholder: with no sidebar
+it shares row 0 with the left-aligned status message and can cover its tail on
+a narrow terminal. With the active endpoint Online but no surface yet, the
+notice card now draws at offset 0 where the old unavailable path used 1, so it
+can overlap the status line or the sidebar header.
+
 ## CSHELL-019 - Structural: surface baseline versus presentable surface
 
 The shell keeps `pane_surface` and `pending_pane_surface` with revision rules in
@@ -190,12 +162,6 @@ regain their meaning.
 The mode bars, the navigator and help footers, and the copy-mode bar each
 hand-write key names. Deriving labels as the Prefix bar does prevents the next
 drift after CSHELL-004.
-
-## CSHELL-021 - `render_global_menu` takes the launcher rect the menu already carries
-
-Lateral, `shell/presentation/composition.rs`:
-`render_global_menu(&mut scratch, menu.launcher, menu, ..)` passes the launcher
-separately from the menu that now carries it. Drop the parameter.
 
 ## CSHELL-022 - Clicking the displayed endpoint's machine row no longer cancels a pending switch
 

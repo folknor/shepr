@@ -1,8 +1,10 @@
 //! Startup authentication and restart offers for configured machines.
 //!
-//! The TUI reaches machines with `BatchMode=yes`, so any prompt (password, key
-//! passphrase, keyboard-interactive, FIDO touch) fails its connection. This
-//! step runs once before the client takes over the terminal:
+//! The TUI reaches machines with `BatchMode=yes`, so password and
+//! keyboard-interactive prompts are disabled. A security-key agent can still
+//! wait for user presence; when a full bounded SSH command times out before a
+//! remote result, preflight offers foreground SSH for that candidate. This step
+//! runs once before the client takes over the terminal:
 //!
 //! 1. [`preflight`] checks every machine concurrently and without prompting,
 //!    walks the ones that need authentication one at a time and runs interactive
@@ -61,7 +63,8 @@ pub trait PreflightSsh: Sync {
 pub enum MachineCheck {
     /// SSH works and a compatible shepr can be served from the machine.
     Ready,
-    /// SSH refused the credentials the TUI can use; a prompt may fix it.
+    /// Non-interactive SSH refused credentials or timed out before returning;
+    /// foreground SSH may complete authentication or wait for key presence.
     NeedsAuthentication(SshFailureDiagnostic),
     /// The machine did not answer: timeout, refusal, no route.
     Offline(SshFailureDiagnostic),
@@ -92,17 +95,17 @@ pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
         Err(error) => error,
     };
     let diagnostic = SshFailureDiagnostic::from_error(&error);
-    if diagnostic.requires_authentication() {
+    if diagnostic.may_require_interactive_authentication() {
         MachineCheck::NeedsAuthentication(diagnostic)
     } else if diagnostic.is_host_key() {
         MachineCheck::HostKey(diagnostic)
     } else if diagnostic.is_transient_network_failure() {
         MachineCheck::Offline(diagnostic)
-    } else if diagnostic.is_ssh_process_failure() {
+    } else if diagnostic.is_ssh_process_failure() || diagnostic.is_local_setup_failure() {
         // Exit 255 alone cannot establish a transient link failure. Keep the
         // diagnostic visible when OpenSSH reports an unknown or actionable cause.
         MachineCheck::Failed(diagnostic)
-    } else if diagnostic.needs_attention() {
+    } else if diagnostic.is_remote_compatibility() || diagnostic.needs_attention() {
         MachineCheck::Incompatible(diagnostic)
     } else {
         MachineCheck::Failed(diagnostic)
@@ -185,8 +188,8 @@ pub fn preflight(
         })
         .collect();
 
-    // The first check stopped at the authentication failure, so it never saw the
-    // machine's shepr or server. Look again, now that the master is open.
+    // These checks did not return a remote result. Look again after the
+    // foreground attempt, now that the authenticated master is open.
     let authenticated: Vec<usize> = outcomes
         .iter()
         .enumerate()
@@ -200,10 +203,23 @@ pub fn preflight(
             .collect();
         let checks = check_concurrently(ssh, &rechecked);
         for (index, check) in authenticated.into_iter().zip(checks) {
-            outcomes[index].check = check;
+            outcomes[index].check = check_after_authentication(check);
         }
     }
     outcomes
+}
+
+fn check_after_authentication(check: MachineCheck) -> MachineCheck {
+    match check {
+        MachineCheck::NeedsAuthentication(diagnostic)
+            if diagnostic.is_authentication_wait_timeout() =>
+        {
+            // Foreground authentication already succeeded. A later bounded
+            // timeout is a failed check, not evidence that the remote refused it.
+            MachineCheck::Failed(diagnostic)
+        }
+        check => check,
+    }
 }
 
 /// One round of checks, all machines at once.
@@ -486,15 +502,17 @@ mod tests {
                 return Err(ssh_failure("user@host: Permission denied (publickey)."));
             }
             match label {
+                "pending" if !authenticated => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    crate::SshFailureDiagnostic::authentication_wait_timeout(),
+                )),
                 "offline" => Err(io::Error::from(io::ErrorKind::TimedOut)),
                 "hostkey" => Err(ssh_failure("Host key verification failed.")),
-                "old" => Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
+                "old" => Err(crate::remote_compatibility_error(
                     "the machine runs another build",
                 )),
                 // A remote client/server pair of two builds: discovery rejects it.
-                "pair" => Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
+                "pair" => Err(crate::remote_compatibility_error(
                     "the installed shepr-server is another build than shepr",
                 )),
                 "stale" | "authstale" => {
@@ -704,12 +722,15 @@ mod tests {
             ),
             (io::Error::from(io::ErrorKind::TimedOut), "offline"),
             (
-                io::Error::new(io::ErrorKind::Unsupported, "matching Shepr is not ready"),
+                crate::remote_compatibility_error("matching Shepr is not ready"),
                 "incompatible",
             ),
             (
-                io::Error::new(io::ErrorKind::InvalidData, "build mismatch"),
-                "incompatible",
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    crate::SshFailureDiagnostic::authentication_wait_timeout(),
+                ),
+                "authentication",
             ),
             (io::Error::other("something else"), "failed"),
         ] {
@@ -724,9 +745,48 @@ mod tests {
             };
             assert_eq!(class, expected);
         }
+        for kind in [
+            io::ErrorKind::InvalidInput,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Unsupported,
+        ] {
+            assert!(matches!(
+                classify_check(Err(crate::local_setup_error(
+                    "local setup failure",
+                    io::Error::new(kind, "the local operation failed"),
+                ))),
+                MachineCheck::Failed(_)
+            ));
+        }
         assert!(matches!(
             classify_check(Ok(MachineSshCheck::DifferentBuild(server("boot-1")))),
             MachineCheck::DifferentBuild(_)
+        ));
+    }
+
+    #[test]
+    fn a_bounded_ssh_timeout_gets_a_foreground_authentication_attempt() {
+        let machines = [machine("pending")];
+        let ssh = FakeSsh::new(&[]);
+        let outcomes = preflight(&machines, &ssh, true, |_| {});
+        assert_eq!(ssh.entries(), ["prompt pending"]);
+        assert_eq!(ssh.checks_of("pending"), 2);
+        assert!(matches!(&outcomes[0].authentication, Some(Ok(()))));
+        assert!(matches!(&outcomes[0].check, MachineCheck::Ready));
+    }
+
+    #[test]
+    fn a_timeout_after_successful_authentication_is_not_reported_as_a_refusal() {
+        let waiting = classify_check(Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            crate::SshFailureDiagnostic::authentication_wait_timeout(),
+        )));
+        assert!(matches!(&waiting, MachineCheck::NeedsAuthentication(_)));
+        assert!(matches!(
+            check_after_authentication(waiting),
+            MachineCheck::Failed(_)
         ));
     }
 

@@ -39,10 +39,11 @@ pub(crate) trait PaneRuntimeFixture: Sized {
     /// revisions. This does not exercise PTY-reader effect dispatch.
     fn test_process_pty_bytes(&self, bytes: &[u8]);
     /// Arrange for a writer to try to land `bytes` while the next dirty-patch
-    /// collection holds the terminal core. The writer tries the content write
-    /// lock once the collection has started, reports through the handle
-    /// whether it got it (announcing a new revision mid-collection), then
-    /// waits for the returned sender before it writes.
+    /// collection holds the terminal core. Once the collection has started,
+    /// the writer tries to take the terminal core without waiting, reports
+    /// through the handle whether it got it (which would let a write land
+    /// mid-collection), then waits for the returned sender before it writes,
+    /// blocking on the core if the first attempt failed.
     fn test_contend_during_dirty_collection(
         &self,
         bytes: Vec<u8>,
@@ -109,11 +110,11 @@ impl PaneRuntimeFixture for PaneRuntime {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("test start signal arrives within timeout");
             let early = writer.try_begin();
-            let announced = early.is_some();
+            let took_core = early.is_some();
             ready_tx.send(()).expect("test ready channel is open");
             release_rx.recv().expect("test releases the waiting writer");
             early.unwrap_or_else(|| writer.begin()).write(&bytes);
-            announced
+            took_core
         });
         (release_tx, handle)
     }

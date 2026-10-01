@@ -25,6 +25,8 @@ impl PaneTerminal {
         let initial_default_background = Some(initial_colors.background);
         Self {
             core: Mutex::new(PaneTerminalCore {
+                content_revision: 0,
+                detection_content_seq: 0,
                 dirty_collection_hook: None,
                 terminal,
                 synchronized_output_epoch: 0,
@@ -39,6 +41,7 @@ impl PaneTerminal {
                 agent_osc_state: AgentOscStateTracker::default(),
             }),
             pane_id,
+            render_queued: std::sync::Arc::new(AtomicBool::new(false)),
             mutation_failure_reported: AtomicBool::new(false),
             oversized_clipboard_reported: AtomicBool::new(false),
             dirty_patch_fallback_reported: AtomicBool::new(false),
@@ -56,6 +59,7 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("host theme update");
             return;
         };
+        core.content_revision = core.content_revision.wrapping_add(2);
         core.host_terminal_theme = theme;
         if !has_default_color_override(&core.terminal) {
             core.transient_default_color_owner_pgid = None;
@@ -83,6 +87,7 @@ impl PaneTerminal {
                 return None;
             }
         };
+        core.content_revision = core.content_revision.wrapping_add(2);
         let color_scheme = appearance;
         let previous = core.terminal.set_color_scheme(color_scheme);
 
@@ -133,13 +138,17 @@ impl PaneTerminal {
         };
 
         let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
-        restore_host_terminal_theme_if_needed(
+        let restored = restore_host_terminal_theme_if_needed(
             &mut core,
             pane_id,
             shell_pid,
             alternate_screen,
             foreground_job.as_ref(),
-        )
+        );
+        if restored {
+            core.content_revision = core.content_revision.wrapping_add(2);
+        }
+        restored
     }
 
     pub(crate) fn terminal_title(&self) -> Option<String> {
@@ -174,28 +183,18 @@ impl PaneTerminal {
         core.agent_osc_state.clear_retained();
     }
 
-    /// Processes one chunk of child output. `now` is the read's timestamp: it
-    /// decides whether a pending synchronized update has expired, and it is
-    /// the parser's clock for any synchronized update this chunk begins.
-    pub(crate) fn process_pty_bytes_at(
+    pub(in crate::pane) fn process_pty_bytes_locked(
         &self,
         pane_id: PaneId,
         bytes: &[u8],
         now: Instant,
+        mut core: std::sync::MutexGuard<'_, PaneTerminalCore>,
     ) -> ProcessBytesResult {
-        let mut core = match shepr_vt::lock_terminal_core(&self.core) {
-            Ok(core) => core,
-            Err(shepr_vt::TerminalCorePoisoned) => {
-                // The PTY actor logs and closes the pane for this result. It
-                // also owns the idle-poison path, so logging here would
-                // duplicate the same failure on reader-detected poison.
-                return ProcessBytesResult {
-                    core_poisoned: true,
-                    ..ProcessBytesResult::default()
-                };
-            }
-        };
-
+        core.content_revision = core.content_revision.wrapping_add(2);
+        super::super::agent_detection::observe_detection_content_change(
+            bytes,
+            &mut core.detection_content_seq,
+        );
         core.osc_debug_tracker.observe(bytes);
         for event in core.osc_debug_tracker.drain_pending() {
             debug!(
@@ -260,7 +259,7 @@ impl PaneTerminal {
     /// detection tick can drop the override once that program is gone.
     ///
     /// Finding the program means scanning `/proc`. The caller releases the
-    /// terminal, content and reply-order locks before this scan, then this
+    /// terminal and reply-order locks before this scan, then this
     /// method takes the terminal lock briefly to store the answer. The
     /// generation check drops an answer if another OSC colour write arrived
     /// during the scan.
@@ -296,7 +295,7 @@ impl PaneTerminal {
     /// Flushes a synchronized update whose timeout has passed and returns
     /// everything the core queued for delivery. The runtime's timeout task
     /// calls this for a child that went quiet inside an update;
-    /// [`Self::process_pty_bytes_at`] does the same before parsing new output.
+    /// The parser does the same before parsing new output.
     /// Readers and render paths only inspect the terminal. `request_render`
     /// is set when a frame was flushed.
     pub(crate) fn tick(&self, now: Instant) -> ProcessBytesResult {
@@ -311,6 +310,10 @@ impl PaneTerminal {
         };
         let flushed = core.terminal.tick(now);
         if flushed {
+            super::super::agent_detection::mark_detection_content_changed(
+                &mut core.detection_content_seq,
+            );
+            core.content_revision = core.content_revision.wrapping_add(2);
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
         let effects = collect_core_effects(&mut core);
@@ -348,6 +351,7 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("history seed");
             return;
         };
+        core.content_revision = core.content_revision.wrapping_add(2);
         core.terminal.write(ansi.as_bytes());
         // Saved history is trimmed, so it normally ends on the last restored
         // line with no line break. Without one the cursor stays at the end of
@@ -376,6 +380,10 @@ impl PaneTerminal {
                 return Vec::new();
             }
         };
+        super::super::agent_detection::mark_detection_content_changed(
+            &mut core.detection_content_seq,
+        );
+        core.content_revision = core.content_revision.wrapping_add(2);
         let synchronized_output_before = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
@@ -443,6 +451,7 @@ impl PaneTerminal {
             return;
         };
         let lines = isize::try_from(lines).unwrap_or(isize::MAX);
+        core.content_revision = core.content_revision.wrapping_add(2);
         core.terminal.scroll_viewport_delta(-lines);
     }
 
@@ -452,6 +461,7 @@ impl PaneTerminal {
             return;
         };
         let lines = isize::try_from(lines).unwrap_or(isize::MAX);
+        core.content_revision = core.content_revision.wrapping_add(2);
         core.terminal.scroll_viewport_delta(lines);
     }
 
@@ -460,6 +470,7 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("scroll reset");
             return;
         };
+        core.content_revision = core.content_revision.wrapping_add(2);
         core.terminal.scroll_viewport_bottom();
     }
 
@@ -467,7 +478,13 @@ impl PaneTerminal {
         let mut core = shepr_vt::lock_terminal_core(&self.core)
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         match core.terminal.clear_screen() {
-            shepr_vt::ClearScreenOutcome::Cleared => Ok(()),
+            shepr_vt::ClearScreenOutcome::Cleared => {
+                super::super::agent_detection::mark_detection_content_changed(
+                    &mut core.detection_content_seq,
+                );
+                core.content_revision = core.content_revision.wrapping_add(2);
+                Ok(())
+            }
             shepr_vt::ClearScreenOutcome::AlternateScreenActive => {
                 Err(PaneClearError::AlternateScreenActive)
             }
@@ -479,6 +496,7 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("set scroll offset");
             return;
         };
+        core.content_revision = core.content_revision.wrapping_add(2);
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, lines);
     }
 
@@ -950,14 +968,14 @@ impl PaneTerminal {
         // swallow rows a later patch still had to send.
     }
 
-    pub(crate) fn collect_dirty_patch(
+    pub(in crate::pane) fn collect_dirty_patch_snapshot(
         &self,
         area_width: u16,
         area_height: u16,
-    ) -> TerminalDirtyPatchOutcome {
+    ) -> Option<super::super::runtime::TerminalDirtyPatchSnapshot> {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             self.report_dirty_patch_fallback("terminal core lock poisoned");
-            return TerminalDirtyPatchOutcome::Fallback;
+            return None;
         };
         if let Some(hook) = core.dirty_collection_hook.take() {
             hook();
@@ -966,20 +984,25 @@ impl PaneTerminal {
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput)
         {
-            return TerminalDirtyPatchOutcome::Fallback;
+            return None;
         }
         let collection = terminal_collect_dirty_patch(&mut core, area_width, area_height);
-        let fallback_reason = collection.fallback_reason;
-        let outcome = collection.outcome;
-        if matches!(outcome, TerminalDirtyPatchOutcome::Fallback) {
+        if matches!(collection.outcome, TerminalDirtyPatchOutcome::Fallback) {
             drop(core);
-            if let Some(reason) = fallback_reason {
+            if let Some(reason) = collection.fallback_reason {
                 self.report_dirty_patch_fallback(reason);
             }
-            return outcome;
+            return None;
         }
-        drop(core);
-        outcome
+        Some(super::super::runtime::TerminalDirtyPatchSnapshot {
+            patch: collection.outcome,
+            content_revision: core.content_revision,
+            scroll_metrics: Some(terminal_scroll_metrics(&core.terminal)),
+            mouse_reporting: core.terminal.mouse_tracking_enabled(),
+            sgr_pixel_mouse: core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels),
+            alternate_screen_active: core.terminal.active_screen()
+                == shepr_vt::ActiveScreen::Alternate,
+        })
     }
 }
 
@@ -999,6 +1022,42 @@ fn terminal_screen_row_has_text(
 
 #[cfg(test)]
 impl PaneTerminal {
+    pub(crate) fn collect_dirty_patch(
+        &self,
+        area_width: u16,
+        area_height: u16,
+    ) -> TerminalDirtyPatchOutcome {
+        self.collect_dirty_patch_snapshot(area_width, area_height)
+            .map_or(TerminalDirtyPatchOutcome::Fallback, |snapshot| {
+                snapshot.patch
+            })
+    }
+
+    /// Processes one chunk of child output. `now` is the read's timestamp: it
+    /// decides whether a pending synchronized update has expired, and it is
+    /// the parser's clock for any synchronized update this chunk begins.
+    pub(crate) fn process_pty_bytes_at(
+        &self,
+        pane_id: PaneId,
+        bytes: &[u8],
+        now: Instant,
+    ) -> ProcessBytesResult {
+        let core = match shepr_vt::lock_terminal_core(&self.core) {
+            Ok(core) => core,
+            Err(shepr_vt::TerminalCorePoisoned) => {
+                // The PTY actor logs and closes the pane for this result. It
+                // also owns the idle-poison path, so logging here would
+                // duplicate the same failure on reader-detected poison.
+                return ProcessBytesResult {
+                    core_poisoned: true,
+                    ..ProcessBytesResult::default()
+                };
+            }
+        };
+
+        self.process_pty_bytes_locked(pane_id, bytes, now, core)
+    }
+
     pub(crate) fn has_transient_default_color_override(&self) -> bool {
         shepr_vt::lock_terminal_core(&self.core)
             .is_ok_and(|core| core.transient_default_color_owner_pgid.is_some())

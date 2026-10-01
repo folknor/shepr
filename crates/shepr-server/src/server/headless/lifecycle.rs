@@ -218,7 +218,7 @@ impl ShutdownLifecycle {
 
 impl HeadlessServer {
     pub(super) fn start_host_shutdown_monitor(&mut self) {
-        let quit_notify = self.server_event_tx.clone();
+        let wake_loop = self.server_event_tx.clone();
         self.host_shutdown_monitor = Some(HostShutdownMonitor::start(
             Arc::clone(self.lifecycle.host_shutdown_request_flag()),
             move || {
@@ -229,7 +229,7 @@ impl HeadlessServer {
                 let (Ok(())
                 | Err(
                     mpsc::error::TrySendError::Full(_) | mpsc::error::TrySendError::Closed(_),
-                )) = quit_notify.try_send(ServerEvent::QuitSignal);
+                )) = wake_loop.try_send(ServerEvent::HostShutdownWake);
             },
         ));
     }

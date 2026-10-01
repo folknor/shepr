@@ -4,8 +4,9 @@
 //! not self-describing, so two builds that disagree on any message layout
 //! decode each other's frames into garbage instead of failing. A hand-bumped
 //! protocol number cannot guard that, because nothing forces anyone to bump
-//! it. This script fingerprints every input that shapes the binary and hands
-//! the result to the crate as `BUILD_ID`, which the handshake preamble, `ping`
+//! it. This script fingerprints the source tree and the build settings that
+//! distinguish client-server wire layouts, then hands the result to the crate
+//! as `BUILD_ID`, which the handshake preamble, `ping`
 //! and `status` compare exactly. Any change to an observed input yields a new
 //! identity, so a stale server, a hand-copied remote binary, or a dev build
 //! meeting the installed release server is reported as a mismatch instead of
@@ -22,15 +23,23 @@
 //!   `OPT_LEVEL`, `DEBUG` and `TARGET` (which cargo always hands a build
 //!   script), the compiler's `--version`, the effective rustflags, the compiler
 //!   wrappers and linker, every `CARGO_PROFILE_*` override set through the
-//!   environment, and the target cfg set (`CARGO_CFG_*`, without the
-//!   per-package `CARGO_CFG_FEATURE`). Without these a dev and a release build
-//!   of one tree would share an identity, and a dev run would attach to the
-//!   installed server as if it were the same binary. Profile settings made in a
-//!   config file that surface in no build-script variable (`lto`,
-//!   `codegen-units`) stay invisible to any build script. A `CARGO_PROFILE_*`
-//!   or `CARGO_CFG_*` variable first added after the script last ran is also
-//!   invisible until another tracked input causes a rerun, because its name
-//!   was not available to register as a rerun trigger.
+//!   environment, and target cfg values except the per-package
+//!   `CARGO_CFG_FEATURE` and `CARGO_CFG_TARGET_FEATURE`. Cargo's `HOST` and
+//!   `RUSTC` identify the build-script machine and the compiler executable path;
+//!   neither affects this target's wire schema, so neither is hashed. The
+//!   compiler version is hashed instead of its path. `CARGO_CFG_TARGET_FEATURE`
+//!   includes features selected by `-Ctarget-cpu=native`, so hashing it would
+//!   make builds of the same source and profile differ across builder CPUs.
+//!   Target features change code generation, but this source has no
+//!   target-feature conditional wire types or codec behavior. Without the
+//!   remaining profile inputs, a dev and a release build of one tree would
+//!   share an identity, and a dev run would attach to the installed server as
+//!   if it were the same binary. Profile settings made in a config file that
+//!   surface in no build-script variable (`lto`, `codegen-units`) stay
+//!   invisible to any build script. A `CARGO_PROFILE_*` or `CARGO_CFG_*`
+//!   variable first added after the script last ran is also invisible until
+//!   another tracked input causes a rerun, because its name was not available
+//!   to register as a rerun trigger.
 //!
 //! When the profile half cannot be established (a variable cargo always sets
 //! is missing, or the compiler cannot answer `--version`), the identity is
@@ -39,7 +48,8 @@
 //! whose inputs are unknown cannot prove it is the same build as anything.
 //!
 //! The hash is FNV-1a over labelled, length-prefixed records in a fixed
-//! order, so the same inputs give the same identity on every host.
+//! order, so the same recorded source and wire-relevant profile inputs give
+//! the same identity on every host.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -63,22 +73,37 @@ pub(crate) const UNIDENTIFIABLE_BUILD_ID: &str = "unidentifiable--";
 const REQUIRED_PROFILE_VARS: [&str; 4] = ["PROFILE", "OPT_LEVEL", "DEBUG", "TARGET"];
 
 /// Profile variables that may legitimately be unset; unset is itself an input.
-const OPTIONAL_PROFILE_VARS: [&str; 7] = [
+const OPTIONAL_PROFILE_VARS: [&str; 5] = [
     "CARGO_ENCODED_RUSTFLAGS",
     "RUSTFLAGS",
-    "RUSTC",
     "RUSTC_WRAPPER",
     "RUSTC_WORKSPACE_WRAPPER",
     "RUSTC_LINKER",
-    "HOST",
 ];
 
 /// Variable families folded in whole, in sorted order.
 const PROFILE_VAR_PREFIXES: [&str; 2] = ["CARGO_PROFILE_", "CARGO_CFG_"];
 
-/// The one `CARGO_CFG_*` variable that differs per package (the enabled
-/// features of the crate whose script runs), so it is not a build input.
-const EXCLUDED_PROFILE_VARS: [&str; 1] = ["CARGO_CFG_FEATURE"];
+/// Cargo features differ per package, while target features can vary with the
+/// builder CPU when `-Ctarget-cpu=native` is used. Neither changes this
+/// project's wire schema, so neither is part of the identity.
+const EXCLUDED_PROFILE_VARS: [&str; 2] = ["CARGO_CFG_FEATURE", "CARGO_CFG_TARGET_FEATURE"];
+
+/// Whether `key` belongs to a variable family folded into the identity.
+fn is_profile_family_var(key: &str) -> bool {
+    PROFILE_VAR_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+        && !EXCLUDED_PROFILE_VARS.contains(&key)
+}
+
+/// Whether `ProfileInputs::from_env` records the variable `name` at all.
+#[cfg(test)]
+pub(crate) fn is_profile_input(name: &str) -> bool {
+    REQUIRED_PROFILE_VARS.contains(&name)
+        || OPTIONAL_PROFILE_VARS.contains(&name)
+        || is_profile_family_var(name)
+}
 
 struct Fnv(u64);
 
@@ -135,14 +160,13 @@ impl ProfileInputs {
             let Some(key) = key.to_str() else {
                 continue;
             };
-            if PROFILE_VAR_PREFIXES
-                .iter()
-                .any(|prefix| key.starts_with(prefix))
-                && !EXCLUDED_PROFILE_VARS.contains(&key)
-            {
+            if is_profile_family_var(key) {
                 vars.push((key.to_owned(), Some(value)));
             }
         }
+        // Cargo supplies its resolved compiler path as `RUSTC`. Its path may be
+        // different on each builder, so record the compiler version below,
+        // not this location.
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
         let rustc_version = std::process::Command::new(rustc)
             .current_dir(root)

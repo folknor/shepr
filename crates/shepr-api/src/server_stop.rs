@@ -290,6 +290,7 @@ fn stop_socket_with_timeout(
             reachable,
         });
     }
+    let mut socket_deadline = deadline;
     if let Some((lease_path, lease_timeout)) = lease {
         // clock-io-ok: the lease wait polls another process's lock.
         let lease_deadline = Instant::now() + lease_timeout;
@@ -329,13 +330,16 @@ fn stop_socket_with_timeout(
                 path: lease_path.into(),
             });
         }
+        // Lease release may consume its separate budget before the final
+        // endpoint disappears, so retain the later deadline for that wait.
+        socket_deadline = socket_deadline.max(lease_deadline);
     }
     if let Some(expected_boot_id) = expected_boot_id {
         match wait_until_sockets_stopped_or_new_boot(
             stopped_socket_paths,
             socket_path,
             expected_boot_id,
-            deadline,
+            socket_deadline,
             label,
         )? {
             BootStopWait::Gone => {}
@@ -410,10 +414,8 @@ fn wait_for_lease_release(lease_path: &Path, deadline: Instant) -> io::Result<bo
         return Ok(true);
     }
     loop {
-        match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
-            Ok(_free) => return Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(error),
+        if data_dir_lease_is_free(lease_path)? {
+            return Ok(true);
         }
         // clock-io-ok: polls another process's lock while it shuts down.
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -421,6 +423,18 @@ fn wait_for_lease_release(lease_path: &Path, deadline: Instant) -> io::Result<bo
             return Ok(false);
         }
         std::thread::sleep(STOP_WAIT_POLL.min(remaining));
+    }
+}
+
+// Flock has no nonintrusive ownership query. This brief exclusive probe can
+// race a server start before its sockets bind; the client launcher retries a
+// daemon that loses the probe. Keeping it lets a stop detect a successor that
+// acquired the lease before either endpoint appeared.
+fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
+    match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
+        Ok(_free) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -542,18 +556,15 @@ fn wait_for_lease_release_or_new_boot(
         return Ok(LeaseWait::Released);
     }
     loop {
-        match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
-            Ok(_free) => return Ok(LeaseWait::Released),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(source) => {
-                return Err(ServerStopError::Io {
-                    context: format!(
-                        "could not check whether {label} released {}",
-                        lease_path.display()
-                    ),
-                    source,
-                });
-            }
+        let free = data_dir_lease_is_free(lease_path).map_err(|source| ServerStopError::Io {
+            context: format!(
+                "could not check whether {label} released {}",
+                lease_path.display()
+            ),
+            source,
+        })?;
+        if free {
+            return Ok(LeaseWait::Released);
         }
         // clock-io-ok: polls another process's lock while it shuts down.
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1230,6 +1241,59 @@ mod tests {
             .expect("the stop completes when its sockets disappear")
             .expect("the named server stopped");
         api_thread.join().expect("test API thread");
+        stop_thread.join().expect("test stop thread");
+    }
+
+    #[test]
+    fn a_conditional_stop_uses_the_lease_deadline_for_the_last_socket() {
+        let scratch = ScratchDir::new("stop-lease-client-socket");
+        let api_socket = scratch.join("api.sock");
+        let client_socket = scratch.join("client.sock");
+        let lease_path = scratch.join("session.lock");
+        let api_listener =
+            std::os::unix::net::UnixListener::bind(&api_socket).expect("bind the test API socket");
+        let client_listener = std::os::unix::net::UnixListener::bind(&client_socket)
+            .expect("bind the test client socket");
+        let held =
+            shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("hold the lease");
+        let api_thread = std::thread::spawn(move || {
+            let (mut stream, _) = api_listener.accept().expect("accept the stop request");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone the test stream"))
+                .read_line(&mut request)
+                .expect("read the stop request");
+            stream
+                .write_all(b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n")
+                .expect("answer the stop request");
+        });
+
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let stop_api_socket = api_socket.clone();
+        let stop_paths = vec![api_socket, client_socket];
+        let stop_thread = std::thread::spawn(move || {
+            let result = stop_socket_with_timeout(
+                &stop_api_socket,
+                &stop_paths,
+                Some((&lease_path, Duration::from_millis(300))),
+                Duration::from_millis(75),
+                "test server",
+                Some("old-boot"),
+            );
+            finished_tx.send(result).expect("send the stop result");
+        });
+        api_thread.join().expect("test API thread");
+
+        std::thread::sleep(Duration::from_millis(125));
+        drop(held);
+        assert!(
+            finished_rx.recv_timeout(Duration::from_millis(75)).is_err(),
+            "the socket wait must continue while the lease deadline remains"
+        );
+        drop(client_listener);
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the socket wait completes when the client endpoint disappears")
+            .expect("the named server stopped");
         stop_thread.join().expect("test stop thread");
     }
 }

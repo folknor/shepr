@@ -46,6 +46,14 @@ resume identity.
 
 Direction: capture the checkpoint before publishing the exit, and/or carry the
 exit reason into the release so a signal death keeps `persisted_agent_session`.
+The limitation is now documented at `App::prepare_pane_exit` (`app/events.rs`)
+and in shepr-mux `terminal/state/detection.rs`. The detector's release
+(`AppEvent::StateChanged` with `process_exited`) carries no `ChildExitReason`;
+the reason arrives later in `PaneDied` from the child watcher. The fix
+coordinates the detector process-exit path (shepr-mux `pane/process_probe.rs`)
+with the child watcher (`pane/runtime.rs`) so an `Interrupted` pane exit keeps
+the resume identity even when the detector release runs first, while an agent
+exiting under a live pane shell still clears it.
 
 ## SAPP-007 - Test-only reimplementations of production paths
 
@@ -65,12 +73,6 @@ semantics, and tests assert on the duplicate:
 
 The hunter recommends deleting these and driving tests through the production
 entry points (the headless loop already has a test harness).
-
-## SAPP-010 - A `Stale` removal plan still clears `session_dirty`
-
-`handle_internal_event_inner` calls `finish_checkpointed_pane_exit_after_event`
-even when the removal plan went `Stale` and nothing was removed, clearing
-`session_dirty` for a removal that did not happen.
 
 ## SAPP-011 - Session dirtiness has two entry points with different side effects
 
@@ -99,7 +101,3 @@ hunter recommends the rewrite.
 that builds its workspace with `Workspace::test_from_pane`, a production-visible
 `test_`-named constructor in shepr-mux. The module doc owns the choice; noted
 because AGENTS.md prefers seams over test surfaces in production crates.
-
-## SAPP-014 - A gremlin arrow in a test message
-
-`app/mod.rs`: the test message "Working→Idle ..." contains a U+2192 arrow.

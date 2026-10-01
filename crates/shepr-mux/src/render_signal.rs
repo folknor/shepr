@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use shepr_core::layout::PaneId;
 
@@ -23,6 +23,7 @@ pub struct RenderSignal {
 struct RenderSignalState {
     request: RenderRequest,
     immediate_pty_sources: HashSet<PaneId>,
+    queued_pty_flags: Vec<Arc<AtomicBool>>,
 }
 
 impl RenderSignal {
@@ -40,9 +41,15 @@ impl RenderSignal {
         self.pending.store(true, Ordering::Release);
     }
 
-    /// Returns true when the signal becomes pending or visible PTY work joins it.
-    pub(crate) fn request_pty(&self, pane_id: PaneId) -> bool {
+    /// Repeated reads of an already queued pane need only an atomic exchange.
+    /// The collector clears enrolled flags under the same lock that drains the
+    /// request, so a concurrent producer either joins this batch or the next.
+    pub(crate) fn request_pty_coalesced(&self, pane_id: PaneId, queued: &Arc<AtomicBool>) -> bool {
+        if queued.swap(true, Ordering::AcqRel) {
+            return false;
+        }
         let mut state = shepr_vt::lock_auxiliary(&self.state);
+        state.queued_pty_flags.push(Arc::clone(queued));
         let source_added = state.request.pty_sources.insert(pane_id);
         let wake_for_source = source_added && state.immediate_pty_sources.contains(&pane_id);
         let became_pending = !self.pending.swap(true, Ordering::AcqRel);
@@ -88,14 +95,59 @@ impl RenderSignal {
 
     pub fn take(&self) -> RenderRequest {
         let mut state = shepr_vt::lock_auxiliary(&self.state);
+        for queued in state.queued_pty_flags.drain(..) {
+            queued.store(false, Ordering::Release);
+        }
         self.pending.store(false, Ordering::Release);
         std::mem::take(&mut state.request)
     }
 }
 
 #[cfg(test)]
+impl RenderSignal {
+    /// Returns true when the signal becomes pending or visible PTY work joins it.
+    pub(crate) fn request_pty(&self, pane_id: PaneId) -> bool {
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let source_added = state.request.pty_sources.insert(pane_id);
+        let wake_for_source = source_added && state.immediate_pty_sources.contains(&pane_id);
+        let became_pending = !self.pending.swap(true, Ordering::AcqRel);
+        became_pending || wake_for_source
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_pty_reads_do_not_lock_and_collection_rearms_the_pane() {
+        let signal = RenderSignal::new();
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        let queued = Arc::new(AtomicBool::new(false));
+        assert!(signal.request_pty_coalesced(pane_id, &queued));
+        {
+            let _guard = shepr_vt::lock_auxiliary(&signal.state);
+            assert!(!signal.request_pty_coalesced(pane_id, &queued));
+        }
+        assert_eq!(signal.take().pty_sources, HashSet::from([pane_id]));
+        assert!(!queued.load(Ordering::Acquire));
+        assert!(signal.request_pty_coalesced(pane_id, &queued));
+        assert_eq!(signal.take().pty_sources, HashSet::from([pane_id]));
+    }
+
+    #[test]
+    fn queued_hidden_pane_does_not_suppress_a_new_visible_source() {
+        let signal = RenderSignal::new();
+        let hidden = shepr_test_fixtures::fixed_pane_id(1);
+        let visible = shepr_test_fixtures::fixed_pane_id(2);
+        signal.set_immediate_pty_sources(HashSet::from([visible]));
+        let hidden_queued = Arc::new(AtomicBool::new(false));
+        let visible_queued = Arc::new(AtomicBool::new(false));
+        assert!(signal.request_pty_coalesced(hidden, &hidden_queued));
+        assert!(!signal.request_pty_coalesced(hidden, &hidden_queued));
+        assert!(signal.request_pty_coalesced(visible, &visible_queued));
+        assert_eq!(signal.take().pty_sources, HashSet::from([hidden, visible]));
+    }
 
     #[test]
     fn coalesces_pty_sources_until_taken() {

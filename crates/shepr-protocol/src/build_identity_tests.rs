@@ -7,7 +7,7 @@ use std::path::Path;
 use shepr_test_support::ScratchDir;
 
 use super::build_script::{
-    ProfileInputs, UNIDENTIFIABLE_BUILD_ID, build_id, profile_constant_source,
+    ProfileInputs, UNIDENTIFIABLE_BUILD_ID, build_id, is_profile_input, profile_constant_source,
 };
 use super::{builds_match, is_identifiable_build_id};
 
@@ -97,7 +97,7 @@ fn every_profile_input_moves_the_identity() {
         with_var(profile("debug"), "RUSTFLAGS", Some("-Ctarget-cpu=native")),
         // Unset and empty are distinct inputs.
         with_var(profile("debug"), "RUSTFLAGS", Some("")),
-        with_var(profile("debug"), "CARGO_CFG_TARGET_FEATURE", Some("sse2")),
+        with_var(profile("debug"), "CARGO_CFG_TARGET_ENDIAN", Some("big")),
         with_var(profile("debug"), "CARGO_PROFILE_DEV_LTO", Some("true")),
     ];
     let mut compiler = profile("debug");
@@ -107,6 +107,31 @@ fn every_profile_input_moves_the_identity() {
         let moved = id(&tree, inputs);
         assert!(is_identifiable_build_id(&moved), "{moved}");
         assert_ne!(moved, base, "{inputs:?}");
+    }
+}
+
+/// Inputs that name the builder rather than the build: the compiler's path and
+/// the build host, and target features that `-Ctarget-cpu=native` makes depend
+/// on the builder's CPU. The per-package cargo features are not a build input
+/// either. None of them is recorded, so none can move the identity.
+#[test]
+fn builder_specific_variables_are_not_profile_inputs() {
+    for recorded in [
+        "PROFILE",
+        "RUSTFLAGS",
+        "RUSTC_LINKER",
+        "CARGO_CFG_TARGET_OS",
+        "CARGO_PROFILE_DEV_LTO",
+    ] {
+        assert!(is_profile_input(recorded), "{recorded}");
+    }
+    for ignored in [
+        "RUSTC",
+        "HOST",
+        "CARGO_CFG_TARGET_FEATURE",
+        "CARGO_CFG_FEATURE",
+    ] {
+        assert!(!is_profile_input(ignored), "{ignored}");
     }
 }
 

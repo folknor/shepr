@@ -163,7 +163,10 @@ impl StoredSetupError {
     }
 
     fn to_io_error(&self) -> io::Error {
-        io::Error::new(self.kind, self.message.clone())
+        crate::local_setup_error(
+            "machine SSH setup failed",
+            io::Error::new(self.kind, self.message.clone()),
+        )
     }
 }
 
@@ -223,14 +226,17 @@ impl MachineSshConnector {
         // Validate both paths at launch so a runtime directory that can never hold the
         // local bridge socket or the shared control socket fails before the
         // endpoint's first scheduled connection attempt.
-        let runtime_dir = super::ssh::ensure_ssh_runtime_dir(&self.paths)?;
-        validate_machine_bridge_path(runtime_dir, &self.label)?;
-        shepr_platform::shared_ssh_control_path(
-            runtime_dir,
-            self.paths.config_file(),
-            self.target.as_str(),
-        )?;
-        Ok(())
+        let result = (|| {
+            let runtime_dir = super::ssh::ensure_ssh_runtime_dir(&self.paths)?;
+            validate_machine_bridge_path(runtime_dir, &self.label)?;
+            shepr_platform::shared_ssh_control_path(
+                runtime_dir,
+                self.paths.config_file(),
+                self.target.as_str(),
+            )?;
+            Ok(())
+        })();
+        result.map_err(|error| crate::local_setup_error("could not prepare local SSH paths", error))
     }
 
     /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
@@ -364,13 +370,22 @@ impl MachineSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = machine_bridge_path(paths.runtime_dir(), label)?;
+        let path = machine_bridge_path(paths.runtime_dir(), label).map_err(|error| {
+            crate::local_setup_error("could not prepare local SSH bridge", error)
+        })?;
         let bridge = SshStdioBridge::start(
             target.clone(),
             remote_shepr,
             path.clone(),
             Some(ssh.options()),
-        )?;
+        )
+        .map_err(|error| {
+            if shepr_platform::ipc::SocketBusy::from_io(&error).is_some() {
+                error
+            } else {
+                crate::local_setup_error("could not start local SSH bridge", error)
+            }
+        })?;
         // clock-io-ok: starting the bridge spent real time; what is left bounds the connect.
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
@@ -715,14 +730,32 @@ mod tests {
             super::super::SshFailureDiagnostic::from_error(&io::Error::other(host_key))
                 .needs_attention()
         );
-        for error in [
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                "matching Shepr is not ready; install or update",
-            ),
-            io::Error::new(io::ErrorKind::InvalidData, "handshake rejected"),
+        let compatibility =
+            crate::remote_compatibility_error("matching Shepr is not ready; install or update");
+        let compatibility = super::super::SshFailureDiagnostic::from_error(&compatibility);
+        assert!(compatibility.needs_attention());
+        assert!(compatibility.is_remote_compatibility());
+        for kind in [
+            io::ErrorKind::InvalidInput,
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
         ] {
-            assert!(super::super::SshFailureDiagnostic::from_error(&error).needs_attention());
+            let error = crate::local_setup_error(
+                "local setup failure",
+                io::Error::new(kind, "the local operation failed"),
+            );
+            let diagnostic = super::super::SshFailureDiagnostic::from_error(&error);
+            assert!(diagnostic.is_local_setup_failure(), "{kind}");
+            assert!(diagnostic.needs_attention(), "{kind}");
+        }
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::Unsupported] {
+            let error = crate::local_setup_error(
+                "local setup failure",
+                io::Error::new(kind, "the local operation failed"),
+            );
+            let diagnostic = super::super::SshFailureDiagnostic::from_error(&error);
+            assert!(diagnostic.is_local_setup_failure(), "{kind}");
+            assert!(diagnostic.needs_attention(), "{kind}");
         }
         assert!(
             !super::super::SshFailureDiagnostic::from_error(&io::Error::new(

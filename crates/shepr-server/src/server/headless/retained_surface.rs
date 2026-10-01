@@ -97,23 +97,19 @@ fn retained_scrollbar_patch(
     app: &app::App,
     frame: &FrameData,
     pane: &mut shepr_protocol::PaneSurfacePane,
+    reserved_gutter: Option<shepr_protocol::SurfaceRect>,
     alternate_screen_active: bool,
     metrics: Option<shepr_mux::pane::ScrollMetrics>,
 ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     let next_rect = metrics
         .filter(|metrics| metrics.max_offset_from_bottom > 0)
         .filter(|_| app.state.settings.pane_scrollbars && !alternate_screen_active)
-        .and_then(|_| {
-            let rect = shepr_protocol::SurfaceRect {
-                x: pane.inner_rect.x.checked_add(pane.inner_rect.width)?,
-                y: pane.inner_rect.y,
-                width: 1,
-                height: pane.inner_rect.height,
-            };
-            (rect_fits_frame(rect, frame)
+        .and(reserved_gutter)
+        .filter(|rect| {
+            let right = pane.rect.x.saturating_add(pane.rect.width);
+            rect_fits_frame(*rect, frame)
                 && rect.x >= pane.rect.x
-                && rect.x < pane.rect.x.saturating_add(pane.rect.width))
-            .then_some(rect)
+                && rect.x.saturating_add(rect.width) <= right
         });
     let patch_rect = next_rect.or(pane.scrollbar_rect);
     pane.scrollbar_rect = next_rect;
@@ -190,6 +186,7 @@ struct RetainedRecipient<'a> {
 
 struct ResolvedRetainedPane<'a> {
     pane: &'a shepr_protocol::PaneSurfacePane,
+    reserved_scrollbar_gutter: Option<shepr_protocol::SurfaceRect>,
     workspace_index: usize,
     identity: &'a ClientPaneIdentity,
 }
@@ -227,18 +224,60 @@ fn resolve_retained_panes<'a>(
     {
         return None;
     }
-    Some(
-        surface
-            .panes
-            .iter()
-            .zip(identities)
-            .map(|(pane, identity)| ResolvedRetainedPane {
-                pane,
-                workspace_index,
-                identity,
-            })
-            .collect(),
-    )
+    let workspace = app.state.workspaces.get(workspace_index)?;
+    let area = Rect::new(0, 0, surface.frame.width, surface.frame.height);
+    let pane_layouts = app
+        .state
+        .pane_geometry_in(area)
+        .visible_panes(workspace.layout(), workspace.zoomed());
+    if pane_layouts.len() != surface.panes.len() {
+        return None;
+    }
+    let mut resolved = Vec::with_capacity(surface.panes.len());
+    for ((pane, identity), layout) in surface.panes.iter().zip(identities).zip(pane_layouts) {
+        if layout.id != identity.pane_id {
+            return None;
+        }
+        let pane_inner = shepr_mux::workspace::pane_inner_rect(layout.rect, layout.borders);
+        let content = shepr_mux::workspace::terminal_content_rect(
+            pane_inner,
+            app.state.settings.pane_scrollbars,
+            pane.alternate_screen_active,
+        );
+        let committed_rect = Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
+        let committed_inner = Rect::new(
+            pane.inner_rect.x,
+            pane.inner_rect.y,
+            pane.inner_rect.width,
+            pane.inner_rect.height,
+        );
+        if layout.rect != committed_rect || content != committed_inner {
+            return None;
+        }
+
+        // The terminal content can end at the pane's right border when the
+        // pane is too narrow for a gutter. Derive the track only from the
+        // full layout's reserved gutter, never from that content endpoint.
+        let reserved_scrollbar_gutter =
+            (content != pane_inner).then(|| shepr_protocol::SurfaceRect {
+                x: pane_inner
+                    .x
+                    .saturating_add(pane_inner.width.saturating_sub(1)),
+                y: pane_inner.y,
+                width: 1,
+                height: pane_inner.height,
+            });
+        if pane.scrollbar_rect.is_some() && pane.scrollbar_rect != reserved_scrollbar_gutter {
+            return None;
+        }
+        resolved.push(ResolvedRetainedPane {
+            pane,
+            reserved_scrollbar_gutter,
+            workspace_index,
+            identity,
+        });
+    }
+    Some(resolved)
 }
 
 fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> bool {
@@ -441,6 +480,7 @@ impl HeadlessServer {
                     &self.app,
                     &surface.frame,
                     pane,
+                    recipient.panes[pane_index].reserved_scrollbar_gutter,
                     collected_pane.alternate_screen_active,
                     collected_pane.scroll_metrics,
                 ) else {
@@ -629,6 +669,80 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].workspace_index, 0);
         assert_eq!(resolved[0].identity.pane_id, pane_id);
+    }
+
+    #[test]
+    fn retained_scrollbar_does_not_invent_a_gutter_at_the_pane_border() {
+        let mut app = app::App::new(
+            &shepr_config::Config::default(),
+            app::AppPolicy::Test,
+            tokio::sync::mpsc::unbounded_channel().1,
+        );
+        app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
+        app.state.settings.pane_scrollbars = true;
+        app.state.settings.pane_outer_borders = true;
+        let workspace = shepr_mux::workspace::Workspace::test_new("narrow-scrollbar");
+        let workspace_id = workspace.id.clone();
+        let pane_id = workspace.root_pane();
+        app.state.workspaces.push(workspace);
+        let area = Rect::new(0, 0, 6, 5);
+        let layout = app.state.pane_geometry_in(area).visible_panes(
+            app.state.workspaces[0].layout(),
+            app.state.workspaces[0].zoomed(),
+        );
+        let pane_layout = layout.first().expect("test workspace has one pane");
+        let pane_inner =
+            shepr_mux::workspace::pane_inner_rect(pane_layout.rect, pane_layout.borders);
+        assert_eq!(pane_inner.width, 4);
+        let content = shepr_mux::workspace::terminal_content_rect(pane_inner, true, false);
+        let mut pane = shepr_protocol::PaneSurfacePane {
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            content_revision: 0,
+            rect: pane_layout.rect.into(),
+            inner_rect: content.into(),
+            scrollbar_rect: None,
+            scroll: None,
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let surface = shepr_protocol::PaneSurfaceFrame {
+            boot_id: shepr_test_fixtures::fixed_boot_id(1),
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            frame: FrameData::blank(6, 5),
+            panes: vec![pane.clone()],
+            splits: Vec::new(),
+        };
+        let identities = vec![ClientPaneIdentity {
+            workspace_id,
+            pane_id,
+        }];
+        let resolved = resolve_retained_panes(&app, &surface, &identities)
+            .expect("the committed pane geometry matches its layout");
+        assert_eq!(resolved[0].reserved_scrollbar_gutter, None);
+        let metrics = shepr_mux::pane::ScrollMetrics {
+            offset_from_bottom: 1,
+            max_offset_from_bottom: 4,
+            viewport_rows: 3,
+            history_origin: shepr_vt::AbsRow(1),
+        };
+
+        let rows = retained_scrollbar_patch(
+            &app,
+            &surface.frame,
+            &mut pane,
+            resolved[0].reserved_scrollbar_gutter,
+            false,
+            Some(metrics),
+        )
+        .expect("a pane without a reserved gutter needs no scrollbar patch");
+
+        assert!(rows.is_empty());
+        assert_eq!(pane.scrollbar_rect, None);
     }
 
     #[test]

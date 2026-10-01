@@ -58,39 +58,6 @@ message is about, not its envelope. Better still, make the restore state a field
 of `ClientShellSnapshot` rather than a one-shot message, so it cannot be lost to
 ordering or gating and is re-delivered on every reconnect.
 
-## CEND-004 - The disconnect notice text does not read as the documented sentence
-
-Claim broken: `handoff_interrupted_notice`'s doc says `notice` is "the same
-predicate the active-endpoint path shows after the label ("connection was lost;
-reconnecting", "was removed or re-pointed"), so both read as one sentence about
-the named machine", and its test asserts those strings.
-
-The only production caller (`ClientLoop::handle_timer`) passes
-`format!("{}; reconnecting", failure.message)`, where `failure.message` is a raw
-`io::Error` string. From a reader that is `EndpointFramingError`, which embeds
-the storage key, so the user sees "build endpoint ssh:build: server closed
-connection; reconnecting", "Local endpoint local: server closed connection;
-reconnecting", or "Local Broken pipe (os error 32); reconnecting". "was removed or
-re-pointed" names a removed feature: machines are fixed at launch.
-
-Fix direction: map failure kinds to fixed predicates for the UI (keep the raw
-error for the log and the machine diagnostic) and drop the removed/re-pointed
-wording.
-
-## CEND-008 - Picking Local in Attention promises a reconnect that will not happen
-
-`begin_endpoint_activation` defers a Local pick with "Local is reconnecting;
-selection will resume when it is ready" whatever Local's state is, including
-Attention (build mismatch, permission problem), where it will not become ready
-without outside action.
-
-## CEND-012 - The `Connected` repaint shows nothing new
-
-`ClientLoop::handle_endpoint_supervisor` `Connected` composes and presents a
-frame before changing any shell state (status is set Online only when the
-snapshot arrives), so the "machine list" repaint it comments on shows nothing
-new.
-
 ## CEND-014 - Structural: "which endpoint" is held in six places
 
 The registry's `active`, `Presentation` (`Owned` / `Handoff` / `Unavailable`),
@@ -116,3 +83,11 @@ to draw and where to send input, with the server told only "viewing" vs "not
 viewing" for its foreground and PTY size rules, the rollback paths and their
 failure modes would disappear. The hunter suggests weighing this as a rewrite rather than
 another round of patches to `activation.rs`.
+
+## CEND-017 - The Local Attention notice still promises a resume
+
+Lateral. `begin_endpoint_activation` (`shell_runtime.rs`) now says "Local needs
+attention; selection will resume when it is ready" for a Local pick in
+Attention, while the comment above it says naming the state avoids promising
+that retrying repairs it. The second clause still makes that promise for a
+condition (build mismatch, permission problem) that may need outside action.

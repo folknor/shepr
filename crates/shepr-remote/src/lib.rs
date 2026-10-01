@@ -51,8 +51,13 @@ pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 enum SshFailure {
     /// The remote refused every offered credential.
     Authentication,
+    /// A bounded SSH command ended before returning, so foreground SSH may
+    /// need to wait for interactive authentication or security-key presence.
+    AuthenticationPending,
     /// The remote's host key is unknown or changed.
     HostKey,
+    /// Local SSH setup or process creation failed before a remote result.
+    LocalSetup,
     /// The remote was never reached or the link dropped: a retry can clear it.
     Link,
     /// ssh could not use the configured target or the local ssh configuration.
@@ -70,7 +75,11 @@ enum SshFailure {
 
 impl SshFailure {
     fn needs_attention(self) -> bool {
-        !matches!(self, Self::Link | Self::Other)
+        // A round-trip timeout is only a hint that authentication may be
+        // waiting. Startup preflight acts on that hint before this question is
+        // asked; a running client cannot prompt, so it keeps retrying as it
+        // does for a link failure instead of parking the machine in Attention.
+        !matches!(self, Self::Link | Self::AuthenticationPending | Self::Other)
     }
 }
 
@@ -88,6 +97,9 @@ pub struct SshFailureDiagnostic {
 enum SshFailureOrigin {
     Io(std::io::ErrorKind),
     SshOutput(Option<i32>),
+    CommandTimeout,
+    LocalSetup,
+    RemoteCompatibility,
     Message,
 }
 
@@ -100,9 +112,25 @@ impl SshFailureDiagnostic {
             return failure.clone();
         }
         let message = error.to_string();
+        if error.get_ref().is_some_and(|source| {
+            source
+                .downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>()
+                .is_some()
+        }) {
+            return Self {
+                failure: SshFailure::LocalSetup,
+                origin: SshFailureOrigin::LocalSetup,
+                message,
+            };
+        }
         let failure = if is_ssh_link_error_kind(error.kind()) {
             SshFailure::Link
-        } else if is_attention_error_kind(error.kind()) {
+        } else if matches!(
+            error.kind(),
+            std::io::ErrorKind::InvalidData | std::io::ErrorKind::Unsupported
+        ) {
+            // These kinds also carry remote protocol and install refusals from
+            // callers outside this crate. Local sources are wrapped explicitly.
             SshFailure::Compatibility
         } else {
             SshFailure::Other
@@ -146,21 +174,52 @@ impl SshFailureDiagnostic {
         self.failure == SshFailure::Authentication
     }
 
+    fn may_require_interactive_authentication(&self) -> bool {
+        matches!(
+            self.failure,
+            SshFailure::Authentication | SshFailure::AuthenticationPending
+        )
+    }
+
+    pub(crate) fn is_authentication_wait_timeout(&self) -> bool {
+        self.failure == SshFailure::AuthenticationPending
+    }
+
+    pub(crate) fn is_remote_compatibility(&self) -> bool {
+        matches!(self.origin, SshFailureOrigin::RemoteCompatibility)
+    }
+
+    pub(crate) fn is_local_setup_failure(&self) -> bool {
+        self.failure == SshFailure::LocalSetup
+    }
+
+    pub(crate) fn authentication_wait_timeout() -> Self {
+        Self {
+            failure: SshFailure::AuthenticationPending,
+            origin: SshFailureOrigin::CommandTimeout,
+            message: "SSH command timed out before returning a remote result; interactive authentication may be needed"
+                .into(),
+        }
+    }
+
     pub fn is_host_key(&self) -> bool {
         self.failure == SshFailure::HostKey
     }
 
     /// Whether the attempt failed before any remote command produced a result:
-    /// ssh itself failed (whatever the cause, authentication and host key
-    /// included), or a typed IO error says the link was never made or was
-    /// lost. Discovery and the bridge use it so an ssh failure is never read as
-    /// a remote command's answer. It says nothing about whether a retry helps;
-    /// that is [`Self::is_transient_network_failure`].
+    /// SSH itself failed (whatever the cause, authentication and host key
+    /// included), a bounded SSH command timed out, or a typed IO error says the
+    /// link was never made or was lost. Discovery and the bridge use it so no
+    /// such failure is read as a remote command's answer. It says nothing about
+    /// whether a retry helps; that is [`Self::is_transient_network_failure`].
     pub fn failed_before_remote_result(&self) -> bool {
         match self.origin {
             SshFailureOrigin::Io(kind) => is_ssh_link_error_kind(kind),
             SshFailureOrigin::SshOutput(exit_code) => exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE),
-            SshFailureOrigin::Message => false,
+            SshFailureOrigin::CommandTimeout => true,
+            SshFailureOrigin::LocalSetup
+            | SshFailureOrigin::RemoteCompatibility
+            | SshFailureOrigin::Message => false,
         }
     }
 
@@ -182,6 +241,9 @@ impl SshFailureDiagnostic {
             }
             SshFailureOrigin::Io(_)
             | SshFailureOrigin::SshOutput(_)
+            | SshFailureOrigin::CommandTimeout
+            | SshFailureOrigin::LocalSetup
+            | SshFailureOrigin::RemoteCompatibility
             | SshFailureOrigin::Message => None,
         }
     }
@@ -305,14 +367,33 @@ fn is_ssh_link_error_kind(kind: std::io::ErrorKind) -> bool {
     )
 }
 
-fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        std::io::ErrorKind::InvalidInput
-            | std::io::ErrorKind::InvalidData
-            | std::io::ErrorKind::NotFound
-            | std::io::ErrorKind::PermissionDenied
-            | std::io::ErrorKind::Unsupported
+pub(crate) fn local_setup_error(context: &str, error: std::io::Error) -> std::io::Error {
+    if error.get_ref().is_some_and(|source| {
+        source
+            .downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>()
+            .is_some()
+    }) {
+        return error;
+    }
+    let message = format!("{context}: {error}");
+    std::io::Error::new(
+        error.kind(),
+        SshFailureDiagnostic {
+            failure: SshFailure::LocalSetup,
+            origin: SshFailureOrigin::LocalSetup,
+            message,
+        },
+    )
+}
+
+pub(crate) fn remote_compatibility_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        SshFailureDiagnostic {
+            failure: SshFailure::Compatibility,
+            origin: SshFailureOrigin::RemoteCompatibility,
+            message: message.into(),
+        },
     )
 }
 

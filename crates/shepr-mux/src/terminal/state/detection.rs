@@ -213,6 +213,9 @@ impl TerminalState {
                     .as_ref()
                     .is_some_and(|session| Some(session.agent) == agent)
             {
+                // Detector process-exit reports have no pane ChildExitReason.
+                // A later signal exit cannot preserve an identity cleared here;
+                // reason-aware preservation must be coordinated with the pane watcher.
                 self.persisted_agent_session = None;
             }
         }

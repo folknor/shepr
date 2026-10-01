@@ -871,16 +871,20 @@ impl Terminal {
 
     /// The absolute row id of screen row 0, the oldest retained line.
     ///
-    /// A line's absolute row id is `history_origin() + its screen row`.
-    /// Screen rows shift under a caller whenever lines leave the top of the
-    /// retained buffer (history at its line limit evicting its oldest line on
-    /// every new one, `ED 3`, the host's clear); absolute ids do not: an id
-    /// names the same line for as long as it is retained and is never reused,
-    /// and ids below the origin name lines that are gone. A column change
-    /// (which re-wraps every line) and RIS move the origin past every earlier
-    /// id. On the alternate screen, and on a primary screen without
-    /// scrollback, nothing identifies a line once it scrolls off: rows there
-    /// are viewport rows and the origin stays put (`rows.rs`).
+    /// A primary-screen line's absolute row id is `history_origin() + its
+    /// screen row`. Primary screen rows shift under a caller whenever lines
+    /// leave the top of the retained buffer (history at its line limit evicting
+    /// its oldest line on every new one, `ED 3`, the host's clear); absolute
+    /// ids do not: an id names the same primary line for as long as it is
+    /// retained and is never reused, and ids below the origin name lines that
+    /// are gone. A column change (which re-wraps every line) and RIS move the
+    /// origin past every earlier id. On the alternate screen and on a primary
+    /// screen without scrollback, nothing identifies a line once it scrolls
+    /// off: rows there are viewport rows and the origin stays put (`rows.rs`).
+    /// Alternate viewport coordinates can therefore numerically collide with
+    /// primary row ids and identify only the current viewport row, not a stable
+    /// line. Consumers retaining an alternate-screen location must include
+    /// the active screen and invalidate the location when the screen changes.
     pub fn history_origin(&self) -> AbsRow {
         AbsRow(self.rows.origin())
     }

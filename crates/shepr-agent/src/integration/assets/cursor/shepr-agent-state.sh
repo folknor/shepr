@@ -1,11 +1,13 @@
 #!/bin/sh
 # managed by shepr; reinstalling the integration replaces this file.
 # SHEPR_INTEGRATION_ID=cursor
-# SHEPR_INTEGRATION_VERSION=3
+# SHEPR_INTEGRATION_VERSION=4
 
 hook_input="$(cat 2>/dev/null || true)"
 
 [ "${1:-}" = "session" ] || exit 0
+# Shared agent configs contain release hooks only. Dev panes use detection.
+[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || exit 0
 [ "${SHEPR_ENV:-}" = "1" ] || exit 0
 [ -n "${SHEPR_SOCKET_PATH:-}" ] || exit 0
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0

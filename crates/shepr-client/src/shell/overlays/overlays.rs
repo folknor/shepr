@@ -35,7 +35,6 @@ pub(crate) struct OverlayRender {
 pub(crate) fn render_client_overlay(
     b: &mut Buffer,
     o: &ClientShellOverlay,
-    _s: &ClientShellSnapshot,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
@@ -62,12 +61,10 @@ pub(crate) fn render_client_overlay(
 
 pub(crate) fn render_global_menu(
     buffer: &mut Buffer,
-    launcher: Rect,
     menu: &ClientGlobalMenuOverlay,
-    snapshot: &ClientShellSnapshot,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = super::super::global_menu::global_menu_items(snapshot);
+    let items = super::super::global_menu::global_menu_items();
     let screen = buffer.area;
     let width = items
         .iter()
@@ -80,6 +77,7 @@ pub(crate) fn render_global_menu(
         .unwrap_or(u16::MAX)
         .saturating_add(2)
         .min(screen.height.max(1));
+    let launcher = menu.launcher;
     let x = launcher
         .right()
         .saturating_sub(width)

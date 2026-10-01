@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 
 const originalEnvironment = {
   SHEPR_ENV: process.env.SHEPR_ENV,
+  SHEPR_BUILD_PROFILE: process.env.SHEPR_BUILD_PROFILE,
   SHEPR_PANE_ID: process.env.SHEPR_PANE_ID,
   SHEPR_SOCKET_PATH: process.env.SHEPR_SOCKET_PATH,
 };
@@ -41,6 +42,7 @@ mock.module("node:net", () => ({
 beforeEach(() => {
   requests.length = 0;
   clients.length = 0;
+  process.env.SHEPR_BUILD_PROFILE = "release";
   process.env.SHEPR_ENV = "1";
   process.env.SHEPR_SOCKET_PATH = "test.sock";
   process.env.SHEPR_PANE_ID = "test:p1";
@@ -126,4 +128,19 @@ function requestParam(request: unknown, name: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+for (const profile of ["dev", "unknown", undefined]) {
+  test(`release plugin rejects ${profile ?? "missing"} pane profile`, async () => {
+    const previous = process.env.SHEPR_BUILD_PROFILE;
+    try {
+      if (profile === undefined) delete process.env.SHEPR_BUILD_PROFILE;
+      else process.env.SHEPR_BUILD_PROFILE = profile;
+      expect(await loadPlugin()).toEqual({});
+      expect(requests).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.SHEPR_BUILD_PROFILE;
+      else process.env.SHEPR_BUILD_PROFILE = previous;
+    }
+  });
 }

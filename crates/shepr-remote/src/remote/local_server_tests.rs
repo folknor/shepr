@@ -306,7 +306,9 @@ fn launch_waits_for_the_client_socket_after_api_release() {
     let (finished_tx, finished_rx) = std::sync::mpsc::channel();
     let wait_paths = paths.clone();
     let waiter = std::thread::spawn(move || {
-        let result = wait_for_server_sockets_to_settle(&wait_paths, Duration::from_secs(1));
+        let timeout = Duration::from_secs(1);
+        let result =
+            wait_for_server_sockets_to_settle_until(&wait_paths, Instant::now() + timeout, timeout);
         finished_tx.send(result).expect("send the wait result");
     });
 
@@ -320,6 +322,38 @@ fn launch_waits_for_the_client_socket_after_api_release() {
         .expect("the transition completes when the client socket disappears")
         .expect("shutdown sockets cleared");
     waiter.join().expect("test waiter thread");
+}
+
+#[test]
+fn repeated_socket_transitions_share_one_wait_deadline() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let (client, api) = runtime_sockets(&paths);
+    let client_listener = UnixListener::bind(&client).expect("bind the first transition socket");
+    let timeout = Duration::from_millis(500);
+    let deadline = Instant::now() + timeout;
+    let release_client = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(350));
+        drop(client_listener);
+    });
+
+    wait_for_server_sockets_to_settle_until(&paths, deadline, timeout)
+        .expect("the first transition ends when both sockets are absent");
+    release_client
+        .join()
+        .expect("release the first transition socket");
+
+    let api_listener = UnixListener::bind(&api).expect("bind a new starting transition");
+    let second_wait = Instant::now();
+    let error = wait_for_server_sockets_to_settle_until(&paths, deadline, timeout)
+        .expect_err("the second transition must use the first transition's deadline");
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        second_wait.elapsed() < Duration::from_millis(225),
+        "the second wait got a fresh timeout: {:?}",
+        second_wait.elapsed()
+    );
+    drop(api_listener);
 }
 
 #[test]

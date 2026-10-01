@@ -5,18 +5,32 @@ use shepr_core::geometry::{CellPx, GridSize};
 
 /// Coherent geometry carried by a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "ReceivedTerminalGeometry")]
+#[serde(
+    try_from = "ReceivedTerminalGeometry",
+    into = "ReceivedTerminalGeometry"
+)]
 pub struct TerminalGeometry {
     pub grid: GridSize,
     pub cell: Option<CellPx>,
     pub pixel_mouse: bool,
 }
 
-#[derive(Deserialize)]
+/// The single positional wire shape used for both directions.
+#[derive(Serialize, Deserialize)]
 struct ReceivedTerminalGeometry {
     grid: GridSize,
     cell: Option<CellPx>,
     pixel_mouse: bool,
+}
+
+impl From<TerminalGeometry> for ReceivedTerminalGeometry {
+    fn from(geometry: TerminalGeometry) -> Self {
+        Self {
+            grid: geometry.grid,
+            cell: geometry.cell,
+            pixel_mouse: geometry.pixel_mouse,
+        }
+    }
 }
 
 impl TryFrom<ReceivedTerminalGeometry> for TerminalGeometry {
@@ -162,5 +176,14 @@ mod tests {
     fn received_geometry_rejects_pixel_mouse_without_cells() {
         assert!(decode_received_geometry(80, 24, None, true).is_err());
         assert!(decode_received_geometry(0, 24, None, false).is_err());
+    }
+
+    #[test]
+    fn terminal_geometry_uses_its_shared_positional_wire_shape() {
+        let geometry = TerminalGeometry::new(80, 24, 8, 16, true);
+        let fields = (geometry.grid, geometry.cell, geometry.pixel_mouse);
+        let geometry_bytes = crate::codec::to_vec(&geometry).expect("geometry should encode");
+        let field_bytes = crate::codec::to_vec(&fields).expect("geometry fields should encode");
+        assert_eq!(geometry_bytes, field_bytes);
     }
 }

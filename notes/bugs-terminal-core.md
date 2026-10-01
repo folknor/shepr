@@ -21,19 +21,3 @@ and walks `PATH` (`resolve_executable` with `classify_candidate`, a `stat` plus
 restore runs this on the server's event loop, so a hung mount in the cwd,
 `HOME` or any `PATH` entry stalls the whole server, not just resume. This is
 wider than the note in `agent_resume.rs` acknowledges.
-
-## TCORE-007 - The scanner over-counts OSC parser bytes
-
-`osc_parser_bytes` counts the `;` separators, which vte keeps out of `osc_raw`
-(`action_osc_put_param` does not push them), so the cut comes a few bytes early.
-The 2x headroom in `MAX_PARSER_OSC_BYTES` keeps the "every accepted OSC 52 store
-reaches the parser whole" claim true, so not a behaviour defect, but the bound is
-not quite "body bytes handed to the parser" as named.
-
-## TCORE-008 - Alternate-screen row ids reuse primary ids
-
-On the 1049 switch the origin does not move, so `origin + y` names a primary
-line before the switch and an alt line after it. `history_origin`'s doc states
-this, and the client drops selections and copy-mode state when
-`alternate_screen_active` flips between two surfaces. A consumer that only
-compares origins would not notice the switch.

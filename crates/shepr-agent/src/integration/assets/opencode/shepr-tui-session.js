@@ -1,7 +1,7 @@
 // installed by shepr
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // SHEPR_INTEGRATION_ID=opencode-tui
-// SHEPR_INTEGRATION_VERSION=2
+// SHEPR_INTEGRATION_VERSION=3
 
 import net from "node:net";
 
@@ -79,7 +79,7 @@ export default {
 };
 
 async function tui(api) {
-  if (process.env.SHEPR_ENV !== "1" || !process.env.SHEPR_SOCKET_PATH || !process.env.SHEPR_PANE_ID) return;
+  if (process.env.SHEPR_BUILD_PROFILE !== "release" || process.env.SHEPR_ENV !== "1" || !process.env.SHEPR_SOCKET_PATH || !process.env.SHEPR_PANE_ID) return;
 
   let disposed = false;
   let context;
@@ -412,7 +412,7 @@ async function tui(api) {
 }
 
 function setup(api) {
-  if (process.env.SHEPR_ENV !== "1" || !process.env.SHEPR_SOCKET_PATH || !process.env.SHEPR_PANE_ID) return;
+  if (process.env.SHEPR_BUILD_PROFILE !== "release" || process.env.SHEPR_ENV !== "1" || !process.env.SHEPR_SOCKET_PATH || !process.env.SHEPR_PANE_ID) return;
 
   let disposed = false;
   let selected;

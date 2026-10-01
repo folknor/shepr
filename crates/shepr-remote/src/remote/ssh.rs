@@ -17,12 +17,27 @@ pub(super) mod ssh_options {
     pub(crate) const BATCH_MODE_YES: &str = "BatchMode=yes";
     pub(crate) const CONTROL_MASTER: &str = "ControlMaster=auto";
     pub(crate) const STRICT_HOST_KEY_CHECKING: &str = "StrictHostKeyChecking=yes";
+    pub(crate) const REMOTE_COMMAND_NONE: &str = "RemoteCommand=none";
+    pub(crate) const LOG_LEVEL_ERROR: &str = "LogLevel=ERROR";
 
     /// Appends OpenSSH options using the same `-o` argument shape at each call site.
     pub(crate) fn append(command: &mut Command, options: &[&str]) {
         for option in options {
             command.arg("-o").arg(*option);
         }
+    }
+
+    /// Keep user config from replacing shepr's remote command or hiding SSH
+    /// diagnostics, while still requiring an explicitly trusted host key.
+    pub(crate) fn append_shepr_options(command: &mut Command) {
+        append(
+            command,
+            &[
+                STRICT_HOST_KEY_CHECKING,
+                REMOTE_COMMAND_NONE,
+                LOG_LEVEL_ERROR,
+            ],
+        );
     }
 
     impl crate::limits::SshKeepalive {
@@ -222,7 +237,13 @@ pub fn ssh_authentication_command(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
 ) -> io::Result<SshAuthenticationCommand> {
-    let config = write_managed_ssh_config(target.as_str(), paths, SshControlDir::runtime(paths)?)?;
+    let control_dir = SshControlDir::runtime(paths).map_err(|error| {
+        crate::local_setup_error("could not prepare local SSH configuration", error)
+    })?;
+    let config =
+        write_managed_ssh_config(target.as_str(), paths, control_dir).map_err(|error| {
+            crate::local_setup_error("could not prepare local SSH configuration", error)
+        })?;
     Ok(authentication_command_with_config(target, config))
 }
 
@@ -239,10 +260,10 @@ pub(super) fn authentication_command_with_config(
         &mut command,
         &[
             ssh_options::BATCH_MODE_NO,
-            ssh_options::STRICT_HOST_KEY_CHECKING,
             crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
         ],
     );
+    ssh_options::append_shepr_options(&mut command);
     command.arg("-T").arg(target.as_str()).arg("exit");
     SshAuthenticationCommand {
         command,
@@ -250,9 +271,10 @@ pub(super) fn authentication_command_with_config(
     }
 }
 
-/// A configured machine's ssh, always in BatchMode: every command it builds
-/// fails rather than prompting. Interactive authentication
-/// goes through [`ssh_authentication_command`], not this type.
+/// A configured machine's ssh, always in BatchMode: its commands do not open
+/// authentication prompts. An agent can still wait for security-key presence
+/// until the bounded command timeout; preflight then tries foreground SSH.
+/// Interactive authentication goes through [`ssh_authentication_command`].
 pub(crate) struct RemoteSsh {
     target: SshTarget,
     managed_config: ManagedSshConfig,
@@ -266,8 +288,13 @@ pub(crate) struct RemoteSsh {
 impl RemoteSsh {
     /// For long-lived callers that already hold the launch-time config.
     pub(crate) fn new(target: SshTarget, paths: &shepr_config::AppPaths) -> io::Result<Self> {
-        let managed_config =
-            write_managed_ssh_config(target.as_str(), paths, SshControlDir::runtime(paths)?)?;
+        let control_dir = SshControlDir::runtime(paths).map_err(|error| {
+            crate::local_setup_error("could not prepare local SSH configuration", error)
+        })?;
+        let managed_config = write_managed_ssh_config(target.as_str(), paths, control_dir)
+            .map_err(|error| {
+                crate::local_setup_error("could not prepare local SSH configuration", error)
+            })?;
         Ok(Self {
             target,
             managed_config,
@@ -281,15 +308,23 @@ impl RemoteSsh {
 
     /// The timeout for the next command, or `TimedOut` when the attempt
     /// deadline has already passed and no further command may start.
-    pub(super) fn command_timeout(&self, now: Instant) -> io::Result<Duration> {
+    pub(super) fn command_timeout(&self, now: Instant) -> io::Result<CommandTimeout> {
         let Some(deadline) = self.attempt_deadline else {
-            return Ok(SSH_COMMAND_TIMEOUT);
+            return Ok(CommandTimeout {
+                duration: SSH_COMMAND_TIMEOUT,
+                authentication_candidate: true,
+            });
         };
         let remaining = deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             return Err(attempt_deadline_passed());
         }
-        Ok(remaining.min(SSH_COMMAND_TIMEOUT))
+        // A shorter command may be capped by time already spent in the attempt,
+        // so its timeout alone is not enough evidence to offer foreground SSH.
+        Ok(CommandTimeout {
+            duration: remaining.min(SSH_COMMAND_TIMEOUT),
+            authentication_candidate: remaining >= SSH_COMMAND_TIMEOUT,
+        })
     }
 
     pub(super) fn target(&self) -> &str {
@@ -311,13 +346,22 @@ impl RemoteSsh {
     pub(super) fn sh_output(&self, script: &str) -> io::Result<Output> {
         // clock-io-ok: earlier SSH round trips may have used the attempt budget.
         let timeout = self.command_timeout(Instant::now())?;
-        self.sh_output_within(script, timeout)
+        self.sh_output_with_timeout(script, timeout.duration, timeout.authentication_candidate)
     }
 
     /// Runs `script` under `/bin/sh` on the remote host, giving the
     /// connection `timeout` instead of the round-trip budget. For a command that
     /// legitimately runs longer than one round trip, such as a server stop.
     pub(super) fn sh_output_within(&self, script: &str, timeout: Duration) -> io::Result<Output> {
+        self.sh_output_with_timeout(script, timeout, false)
+    }
+
+    fn sh_output_with_timeout(
+        &self,
+        script: &str,
+        timeout: Duration,
+        authentication_candidate: bool,
+    ) -> io::Result<Output> {
         let script = posix_remote_output_command(script);
         let mut child = self
             .command()
@@ -325,7 +369,8 @@ impl RemoteSsh {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|error| crate::local_setup_error("could not start local ssh", error))?;
 
         let write_result = if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(script.as_bytes())
@@ -335,7 +380,8 @@ impl RemoteSsh {
                 "ssh bootstrap stdin missing",
             ))
         };
-        let output = wait_with_output_timeout(child, timeout)?;
+        let output = wait_with_output_timeout(child, timeout)
+            .map_err(|error| classify_command_timeout(error, authentication_candidate))?;
         finish_ssh_command(write_result, output)
     }
 
@@ -350,7 +396,29 @@ impl RemoteSsh {
             .stderr(Stdio::piped());
         // clock-io-ok: earlier SSH round trips may have used the attempt budget.
         let timeout = self.command_timeout(Instant::now())?;
-        normalize_remote_output(wait_with_output_timeout(command.spawn()?, timeout)?)
+        let child = command
+            .spawn()
+            .map_err(|error| crate::local_setup_error("could not start local ssh", error))?;
+        let output = wait_with_output_timeout(child, timeout.duration)
+            .map_err(|error| classify_command_timeout(error, timeout.authentication_candidate))?;
+        normalize_remote_output(output)
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct CommandTimeout {
+    duration: Duration,
+    authentication_candidate: bool,
+}
+
+fn classify_command_timeout(error: io::Error, authentication_candidate: bool) -> io::Error {
+    if error.kind() == io::ErrorKind::TimedOut && authentication_candidate {
+        io::Error::new(
+            error.kind(),
+            super::SshFailureDiagnostic::authentication_wait_timeout(),
+        )
+    } else {
+        error
     }
 }
 
@@ -362,7 +430,9 @@ fn finish_ssh_command(write_result: io::Result<()>, output: Output) -> io::Resul
     if !output.status.success() {
         return normalize_remote_output(output);
     }
-    write_result?;
+    write_result.map_err(|error| {
+        crate::local_setup_error("could not write the local SSH command", error)
+    })?;
     normalize_remote_output(output)
 }
 
@@ -388,12 +458,12 @@ pub(super) fn normalize_remote_stdout(
 }
 
 pub(super) fn apply_batch_ssh_options(command: &mut Command) {
+    ssh_options::append_shepr_options(command);
     ssh_options::append(
         command,
         &[
             ssh_options::BATCH_MODE_YES,
             crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
-            ssh_options::STRICT_HOST_KEY_CHECKING,
             crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
             crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
         ],

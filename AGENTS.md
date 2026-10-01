@@ -27,9 +27,12 @@ Kept:
 - Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
   compiled into the binary
 - Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
-  own config that report state and session IDs back to shepr. The server
+  own config that report state and session IDs back to shepr. A release server
   installs or updates them at launch for every agent whose config directory
-  exists on its host; there is no install or uninstall command
+  exists on its host. Dev servers log that integration installation is skipped
+  and use screen detection; release hooks report only from release panes.
+  Agent session IDs and hook-only states are therefore unavailable in dev
+  panes. There is no install or uninstall command
 - Session restore (layout saved to disk, rebuilt with fresh shells) and agent
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)
@@ -87,7 +90,11 @@ commands to add, remove or list them. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
 checks every machine and runs interactive ssh for each one that needs
 authentication, one at a time, on shepr's own control socket, then checks those
-again; there is no command for it. Host keys are never accepted automatically.
+again; there is no command for it. A check command that uses its full round-trip
+budget without a result is treated as a possible interactive-authentication
+wait, including security-key presence, and gets the foreground attempt. A
+command shortened by the overall attempt budget remains an offline result.
+Host keys are never accepted automatically.
 A running server of a different build, the local one or a machine's, is then
 offered a restart (the local one only at the build profile's own runtime
 address: a socket override names a server this client cannot relaunch, so it

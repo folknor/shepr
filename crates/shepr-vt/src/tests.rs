@@ -1,6 +1,6 @@
 use super::*;
 use crate::limits::{
-    KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_OSC_BYTES, MAX_PARSER_OSC_BYTES, MAX_SCROLLBACK_LINES,
+    KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES, MAX_SCROLLBACK_LINES,
     MIN_SCROLLBACK_LINES,
 };
 
@@ -740,14 +740,15 @@ fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
 fn oversized_osc_body_is_skipped_and_parser_recovers_at_its_terminator() {
     let mut terminal = Terminal::new(10, 3, 0);
     let mut sequence = b"\x1b]7;".to_vec();
-    sequence.resize(2 + MAX_PARSER_OSC_BYTES, b'x');
+    // The OSC identifier `7` is raw payload; its following `;` is only a
+    // parameter boundary and does not consume the parser's raw-byte bound.
+    sequence.resize(3 + MAX_OSC_RAW_BYTES, b'x');
     terminal.write(&sequence);
 
-    // The scanner and vte have both consumed the bounded prefix. Crossing the
-    // parser bound ends vte's OSC and causes following body bytes to be held
-    // back until the real terminator.
+    // The scanner and vte have consumed the full raw-byte allowance. The next
+    // body byte ends vte's OSC and later bytes wait for the real terminator.
     terminal.write(b"x");
-    terminal.write(&vec![b'y'; MAX_PARSER_OSC_BYTES * 2]);
+    terminal.write(&vec![b'y'; MAX_OSC_RAW_BYTES * 2]);
     terminal.write(b"\x07after\x1b[5n");
 
     assert!(terminal.take_pwd_changes().is_empty());
@@ -1698,12 +1699,15 @@ fn the_alternate_screen_leaves_primary_row_ids_alone() {
     write_line_range(&mut terminal, 0..1_200, 1);
     let origin = terminal.history_origin();
     assert!(origin > AbsRow(0));
+    let primary_top = absolute_row_text(&terminal, origin).expect("primary top row is retained");
 
     terminal.write(b"\x1b[?1049h");
     for _ in 0..50 {
         terminal.write(b"full-screen\r\n");
     }
     assert_eq!(terminal.history_origin(), origin);
+    // The same numeric coordinate now addresses an alternate viewport row.
+    assert_ne!(absolute_row_text(&terminal, origin), Some(primary_top));
     terminal.write(b"\x1b[?1049l");
     assert_eq!(terminal.history_origin(), origin);
     assert_rows_name_their_lines(&terminal, [origin, AbsRow(1_199)]);

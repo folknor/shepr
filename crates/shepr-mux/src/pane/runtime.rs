@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 
 use bytes::Bytes;
@@ -11,7 +11,6 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{error, info, warn};
 
 use super::PaneClearError;
-use super::agent_detection::{mark_detection_content_changed, observe_detection_content_change};
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
@@ -211,9 +210,6 @@ pub struct PaneRuntime {
     teardown_tracker: Arc<super::teardown::PaneTeardownTracker>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
     persistence_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
-    content_seq: Arc<AtomicU64>,
-    content_write_lock: Arc<Mutex<()>>,
-    detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     // Only detection is aborted directly; the child watcher must reap, and
@@ -236,75 +232,28 @@ fn write_terminal_response(io: &dyn ChildIo, response: impl FnOnce() -> Option<B
 pub struct PaneOutputWriter {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
-    content_seq: Arc<AtomicU64>,
-    content_write_lock: Arc<Mutex<()>>,
-    detection_content_seq: Arc<AtomicU64>,
 }
 
-/// A write that holds the content write lock and has announced itself.
+/// A parser write holding the terminal core, excluding snapshot collection.
 pub struct PaneOutputWrite<'a> {
     writer: &'a PaneOutputWriter,
-    _guard: ContentWriteGuard<'a>,
-}
-
-/// Keep the content revision odd for the whole terminal mutation, including
-/// unwinding, and release it before unlocking the writer mutex.
-struct ContentWriteGuard<'a> {
-    seq: &'a AtomicU64,
-    _lock: std::sync::MutexGuard<'a, ()>,
-    announced: bool,
-}
-
-impl<'a> ContentWriteGuard<'a> {
-    fn new(seq: &'a AtomicU64, lock: &'a Mutex<()>) -> Self {
-        let guard = shepr_vt::lock_auxiliary(lock);
-        Self::from_lock(seq, guard)
-    }
-
-    fn try_new(seq: &'a AtomicU64, lock: &'a Mutex<()>) -> Option<Self> {
-        shepr_vt::try_lock_auxiliary(lock).map(|guard| Self::from_lock(seq, guard))
-    }
-
-    fn from_lock(seq: &'a AtomicU64, guard: std::sync::MutexGuard<'a, ()>) -> Self {
-        seq.fetch_add(1, Ordering::AcqRel);
-        Self {
-            seq,
-            _lock: guard,
-            announced: true,
-        }
-    }
-
-    /// Cancel a write announcement when the guarded operation proved to be a
-    /// no-op. The lock still protects readers until the even revision returns.
-    fn cancel(mut self) {
-        self.seq.fetch_sub(1, Ordering::Release);
-        self.announced = false;
-    }
-}
-
-impl Drop for ContentWriteGuard<'_> {
-    fn drop(&mut self) {
-        if self.announced {
-            self.seq.fetch_add(1, Ordering::Release);
-        }
-    }
+    core: Option<std::sync::MutexGuard<'a, super::terminal::PaneTerminalCore>>,
 }
 
 impl PaneOutputWriter {
-    /// Wait for the content write lock, then announce the write.
+    /// Acquire the core before parsing; acquiring alone publishes no revision.
     pub fn begin(&self) -> PaneOutputWrite<'_> {
         PaneOutputWrite {
             writer: self,
-            _guard: ContentWriteGuard::new(&self.content_seq, &self.content_write_lock),
+            core: shepr_vt::lock_terminal_core(&self.terminal.core).ok(),
         }
     }
 
-    /// Announce the write only if no render or other write holds the content
-    /// write lock.
+    /// Return immediately if a snapshot or another mutation holds the core.
     pub fn try_begin(&self) -> Option<PaneOutputWrite<'_>> {
         Some(PaneOutputWrite {
             writer: self,
-            _guard: ContentWriteGuard::try_new(&self.content_seq, &self.content_write_lock)?,
+            core: Some(shepr_vt::try_lock_terminal_core(&self.terminal.core).ok()?),
         })
     }
 }
@@ -314,17 +263,19 @@ impl PaneOutputWrite<'_> {
     /// Effects produced by the parser are intentionally not dispatched here;
     /// this seam is for tests that need to seed or mutate terminal contents.
     pub fn write(self, bytes: &[u8]) {
-        let detection_content_seq = Arc::clone(&self.writer.detection_content_seq);
-        let result = self.process(bytes, std::time::Instant::now());
-        if !result.core_poisoned {
-            observe_detection_content_change(bytes, &detection_content_seq);
-        }
+        let _ = self.process(bytes, std::time::Instant::now());
     }
 
     fn process(self, bytes: &[u8], now: std::time::Instant) -> ProcessBytesResult {
+        let Some(core) = self.core else {
+            return ProcessBytesResult {
+                core_poisoned: true,
+                ..ProcessBytesResult::default()
+            };
+        };
         self.writer
             .terminal
-            .process_pty_bytes_at(self.writer.pane_id, bytes, now)
+            .process_pty_bytes_locked(self.writer.pane_id, bytes, now, core)
     }
 }
 
@@ -444,9 +395,6 @@ struct PaneReadEffects {
     render_dirty: Arc<RenderSignal>,
     reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
     events: crate::events::EventSender,
-    content_write_lock: Arc<Mutex<()>>,
-    content_seq: Arc<AtomicU64>,
-    detection_content_seq: Arc<AtomicU64>,
     child_liveness: Arc<ChildLiveness>,
     sync_timeout_render: SyncTimeoutRender,
     deferred_effect_order: Arc<DeferredEffectOrder>,
@@ -459,7 +407,7 @@ struct PaneReadEffects {
 
 /// The effects of a terminal write that may block: the `/proc` scan for the
 /// default-colour owner and the readlink behind an OSC 7 report. They run
-/// with no terminal, content or reply-order lock held.
+/// with no terminal or reply-order lock held.
 struct DeferredEffects {
     ticket: DeferredEffectTicket,
     default_color_generation: Option<u64>,
@@ -587,7 +535,10 @@ impl PaneReadEffects {
         let pane_id = self.pane_id;
         let title_requested =
             result.terminal_title_changed && self.render_dirty.request_terminal_title(pane_id);
-        let render_requested = result.request_render && self.render_dirty.request_pty(pane_id);
+        let render_requested = result.request_render
+            && self
+                .render_dirty
+                .request_pty_coalesced(pane_id, &self.terminal.render_queued);
         if title_requested || render_requested {
             self.render_notify.notify_one();
         }
@@ -684,17 +635,13 @@ impl PaneReadEffects {
     }
 
     /// The timer's half of the runtime tick: flush an expired update, queue
-    /// its replies at one point in the reply order (taken before the content
-    /// and core locks, as the reader does), then apply its effects with no
-    /// lock held.
+    /// its replies at one point in the reply order (taken before the core
+    /// lock, as the reader does), then apply its effects with no lock held.
     fn flush_expired_synchronized_output(&self) {
         let mut tick_result = None;
         let mut deferred_ticket = None;
         let mut tick = || {
-            let content_write_guard =
-                ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
             let mut result = self.terminal.tick(std::time::Instant::now());
-            drop(content_write_guard);
             deferred_ticket = self.reserve_deferred(&result);
             let replies = std::mem::take(&mut result.terminal_responses);
             tick_result = Some(result);
@@ -726,11 +673,6 @@ impl PaneReadEffects {
             // The PTY actor checks the poisoned core on every loop, including
             // idle polls, and reports that exit through its broken-core path.
             return;
-        }
-        if result.request_render {
-            // A timer has no PTY input bytes to count; only a flushed frame
-            // advances detection's screen-content revision here.
-            self.detection_content_seq.fetch_add(1, Ordering::AcqRel);
         }
         if let Some(deferred) = self.apply_immediate(result, deferred_ticket) {
             self.apply_deferred(deferred);
@@ -839,7 +781,6 @@ impl PaneRuntime {
             pane_terminal.seed_history_ansi(ansi);
         }
         let terminal = Arc::new(pane_terminal);
-        let content_write_lock = Arc::new(Mutex::new(()));
 
         let spawned = shepr_pty::backend::spawn_pty(geometry, &cmd).inspect_err(
             |err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"),
@@ -862,8 +803,6 @@ impl PaneRuntime {
         let generation = crate::events::RuntimeGeneration::alloc();
         let events = crate::events::EventSender::runtime(events.clone(), pane_id, generation);
         let reported_cwd = Arc::new(Mutex::new(None));
-        let content_seq = Arc::new(AtomicU64::new(0));
-        let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let io: Box<dyn ChildIo> = {
             // The shadowed clone below moves into the read callback; the
@@ -878,9 +817,6 @@ impl PaneRuntime {
                 render_dirty: Arc::clone(render_dirty),
                 reported_cwd: Arc::clone(&reported_cwd),
                 events: events.clone(),
-                content_write_lock: Arc::clone(&content_write_lock),
-                content_seq: Arc::clone(&content_seq),
-                detection_content_seq: Arc::clone(&detection_content_seq),
                 child_liveness: Arc::clone(&child_liveness),
                 sync_timeout_render: SyncTimeoutRender::default(),
                 deferred_effect_order: Arc::default(),
@@ -892,14 +828,11 @@ impl PaneRuntime {
             let output = PaneOutputWriter {
                 pane_id,
                 terminal: Arc::clone(&terminal),
-                content_seq: Arc::clone(&content_seq),
-                content_write_lock: Arc::clone(&content_write_lock),
-                detection_content_seq: Arc::clone(&detection_content_seq),
             };
             let on_read = Box::new(move |bytes: &[u8]| {
                 let write = output.begin();
                 // Ticks an expired synchronized update first, then parses; the
-                // content write lock is released when this returns.
+                // core lock is released when this returns.
                 let mut result = write.process(bytes, std::time::Instant::now());
                 if result.core_poisoned {
                     // The actor ends the loop and reports the pane dead.
@@ -909,7 +842,6 @@ impl PaneRuntime {
                         core_broken: true,
                     };
                 }
-                observe_detection_content_change(bytes, &read_effects.detection_content_seq);
                 let deferred_ticket = read_effects.reserve_deferred(&result);
                 let terminal_responses = std::mem::take(&mut result.terminal_responses);
                 if let Some(delay) = result.render_delay {
@@ -1056,7 +988,6 @@ impl PaneRuntime {
             let child_liveness = Arc::clone(&child_liveness);
             let terminal = Arc::clone(&terminal);
             let state_events = events.clone();
-            let detection_content_seq = Arc::clone(&detection_content_seq);
             let full_lifecycle_authority_active_for_task =
                 Arc::clone(&full_lifecycle_authority_active);
             let render_notify = Arc::clone(render_notify);
@@ -1107,7 +1038,8 @@ impl PaneRuntime {
                     // One sequence per tick, read before any screen snapshot:
                     // the cache may key a snapshot to an older sequence (one
                     // extra read later), never to one newer than its text.
-                    let content_seq = detection_content_seq.load(Ordering::Acquire);
+                    let content_seq = shepr_vt::lock_terminal_core(&terminal.core)
+                        .map_or(0, |core| core.detection_content_seq);
                     let observations = |observation| DetectorObservations {
                         now,
                         foreground_group: foreground_pgid,
@@ -1189,7 +1121,9 @@ impl PaneRuntime {
                         .await
                         {
                             Ok(true) => {
-                                if render_dirty.request_pty(pane_id) {
+                                if render_dirty
+                                    .request_pty_coalesced(pane_id, &terminal.render_queued)
+                                {
                                     render_notify.notify_one();
                                 }
                             }
@@ -1229,9 +1163,6 @@ impl PaneRuntime {
             teardown_tracker,
             reported_cwd,
             persistence_cwd: Arc::new(Mutex::new(None)),
-            content_seq,
-            content_write_lock,
-            detection_content_seq,
             full_lifecycle_authority_active,
             detect_reset_notify,
             detect_handle,
@@ -1267,9 +1198,6 @@ impl PaneRuntime {
             teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
             persistence_cwd: Arc::new(Mutex::new(None)),
-            content_seq: Arc::new(AtomicU64::new(0)),
-            content_write_lock: Arc::new(Mutex::new(())),
-            detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: detection_reset,
             detect_handle: None,
@@ -1282,16 +1210,13 @@ impl PaneRuntime {
         PaneOutputWriter {
             pane_id: self.pane_id,
             terminal: Arc::clone(&self.terminal),
-            content_seq: Arc::clone(&self.content_seq),
-            content_write_lock: Arc::clone(&self.content_write_lock),
-            detection_content_seq: Arc::clone(&self.detection_content_seq),
         }
     }
 
     /// Run `hook` during the next dirty-patch collection attempt, including
     /// when it falls back for synchronized output or a full render. The hook
-    /// runs while the terminal core and content write locks are held, so it
-    /// must not call methods that acquire either lock. A poisoned core
+    /// runs while the terminal core lock is held, so it
+    /// must not call methods that acquire that lock. A poisoned core
     /// prevents the hook from running.
     pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
         self.terminal.on_next_dirty_collection(hook);
@@ -1311,7 +1236,7 @@ impl PaneRuntime {
     }
 
     pub fn content_seq(&self) -> u64 {
-        self.content_seq.load(Ordering::Acquire)
+        shepr_vt::lock_terminal_core(&self.terminal.core).map_or(0, |core| core.content_revision)
     }
 
     /// Resize if the dimensions actually changed.
@@ -1326,13 +1251,8 @@ impl PaneRuntime {
             // parses bytes and queues any replies. Resizing the terminal
             // under that lock keeps its replies in the same order as the
             // terminal state that produced them.
-            let content_write_guard =
-                ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
-            let terminal_responses = self.terminal.resize(size);
-            drop(content_write_guard);
-            terminal_responses
+            self.terminal.resize(size)
         });
-        mark_detection_content_changed(&self.detection_content_seq);
     }
 
     /// Scroll up by N lines (into scrollback history).
@@ -1346,17 +1266,7 @@ impl PaneRuntime {
     }
 
     pub fn clear_screen(&self) -> Result<(), PaneClearError> {
-        let guard = ContentWriteGuard::new(&self.content_seq, &self.content_write_lock);
-        let result = self.terminal.clear_screen();
-        // A refused clear (the alternate screen is active) changed nothing, so it
-        // publishes no content revision and no detection change.
-        if result.is_ok() {
-            drop(guard);
-            mark_detection_content_changed(&self.detection_content_seq);
-        } else {
-            guard.cancel();
-        }
-        result
+        self.terminal.clear_screen()
     }
 
     /// Reset scroll to live view (offset = 0).
@@ -1505,23 +1415,9 @@ impl PaneRuntime {
         area_width: u16,
         area_height: u16,
     ) -> Option<TerminalDirtyPatchSnapshot> {
-        // The guard waits for announced writes to finish and excludes new ones,
-        // so the revision and the terminal metadata remain paired throughout.
-        let _content_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-        let revision = self.content_seq();
-        let patch = self.terminal.collect_dirty_patch(area_width, area_height);
-        if matches!(patch, TerminalDirtyPatchOutcome::Fallback) {
-            return None;
-        }
-        let snapshot = TerminalDirtyPatchSnapshot {
-            patch,
-            content_revision: revision,
-            scroll_metrics: self.scroll_metrics(),
-            mouse_reporting: self.mouse_reporting_enabled(),
-            sgr_pixel_mouse: self.sgr_pixel_mouse_enabled(),
-            alternate_screen_active: self.alternate_screen_active(),
-        };
-        Some(snapshot)
+        // Patch, revision and metadata are read in one terminal-core hold.
+        self.terminal
+            .collect_dirty_patch_snapshot(area_width, area_height)
     }
 
     pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {
@@ -1844,6 +1740,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn output_writer_holds_the_core_without_announcing_an_unwritten_mutation() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
+        let writer = runtime.output_writer();
+        let before = runtime.content_seq();
+        let write = writer.begin();
+        assert!(writer.try_begin().is_none());
+        drop(write);
+        assert_eq!(runtime.content_seq(), before);
+        writer.try_begin().expect("unlocked core").write(b"hello");
+        assert!(runtime.content_seq() > before);
+        assert!(runtime.visible_text().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn scroll_and_host_theme_mutations_advance_the_snapshot_revision() {
+        let (runtime, _rx) =
+            PaneRuntime::test_with_channel_and_scrollback_bytes(20, 4, 100_000, &[], 4);
+        runtime.test_process_pty_bytes(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        let before = runtime.content_seq();
+        runtime.scroll_up(1);
+        let snapshot = runtime
+            .collect_dirty_patch_snapshot(20, 4)
+            .expect("snapshot");
+        assert!(snapshot.content_revision > before);
+        assert_eq!(snapshot.content_revision, runtime.content_seq());
+        assert_eq!(snapshot.scroll_metrics, runtime.scroll_metrics());
+        let before_theme = snapshot.content_revision;
+        runtime
+            .terminal
+            .apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme::default());
+        assert!(runtime.content_seq() > before_theme);
+        let before_appearance = runtime.content_seq();
+        let _ = runtime.terminal.apply_host_terminal_appearance(None);
+        assert!(runtime.content_seq() > before_appearance);
+    }
+
+    #[tokio::test]
     async fn clear_pane_preserves_wrapped_input_and_unfinished_vt_sequence() {
         let (runtime, mut rx) = PaneRuntime::test_with_channel_and_scrollback_bytes(
             10,
@@ -1881,7 +1814,9 @@ mod tests {
         );
         let before = runtime.visible_text();
         let content_seq = runtime.content_seq();
-        let detection_content_seq = runtime.detection_content_seq.load(Ordering::Acquire);
+        let detection_content_seq = shepr_vt::lock_terminal_core(&runtime.terminal.core)
+            .expect("core")
+            .detection_content_seq;
         assert_eq!(
             runtime.clear_screen(),
             Err(PaneClearError::AlternateScreenActive)
@@ -1889,7 +1824,9 @@ mod tests {
         assert_eq!(runtime.visible_text(), before);
         assert_eq!(runtime.content_seq(), content_seq);
         assert_eq!(
-            runtime.detection_content_seq.load(Ordering::Acquire),
+            shepr_vt::lock_terminal_core(&runtime.terminal.core)
+                .expect("core")
+                .detection_content_seq,
             detection_content_seq
         );
         runtime.test_process_pty_bytes(b"\x1b[?1049l");
@@ -1918,7 +1855,7 @@ mod tests {
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
         assert!(runtime.collect_dirty_patch_snapshot(20, 4).is_none());
-        assert!(shepr_vt::try_lock_auxiliary(&runtime.content_write_lock).is_some());
+        assert!(runtime.terminal.core.try_lock().is_ok());
     }
 
     #[tokio::test]
@@ -2309,9 +2246,6 @@ mod tests {
             render_dirty: Arc::new(RenderSignal::new()),
             reported_cwd: Arc::new(Mutex::new(None)),
             events: events.into(),
-            content_write_lock: Arc::new(Mutex::new(())),
-            content_seq: Arc::new(AtomicU64::new(0)),
-            detection_content_seq: Arc::new(AtomicU64::new(0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             sync_timeout_render: SyncTimeoutRender::default(),
             deferred_effect_order: Arc::default(),
@@ -2330,8 +2264,18 @@ mod tests {
             .await
             .expect("the timeout task requests a render");
         assert!(!terminal.synchronized_output_active());
-        assert_eq!(effects.content_seq.load(Ordering::Acquire), 2);
-        assert_eq!(effects.detection_content_seq.load(Ordering::Acquire), 1);
+        assert_eq!(
+            shepr_vt::lock_terminal_core(&effects.terminal.core)
+                .expect("core")
+                .content_revision,
+            4
+        );
+        assert_eq!(
+            shepr_vt::lock_terminal_core(&effects.terminal.core)
+                .expect("core")
+                .detection_content_seq,
+            2
+        );
         assert!(effects.render_dirty.is_pending());
     }
 
@@ -2725,9 +2669,6 @@ mod tests {
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
-            content_seq: Arc::new(AtomicU64::new(0)),
-            content_write_lock: Arc::new(Mutex::new(())),
-            detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
@@ -2756,9 +2697,6 @@ mod tests {
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             teardown_tracker: Arc::default(),
             reported_cwd: Arc::new(Mutex::new(None)),
-            content_seq: Arc::new(AtomicU64::new(0)),
-            content_write_lock: Arc::new(Mutex::new(())),
-            detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),

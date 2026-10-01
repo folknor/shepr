@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=antigravity_cli
-# SHEPR_INTEGRATION_VERSION=2
+# SHEPR_INTEGRATION_VERSION=3
 
 # Session-only: this hook reports the Antigravity conversation so Shepr can
 # resume the pane. Lifecycle state comes from Shepr's screen detection.
@@ -20,6 +20,8 @@ emit_and_exit() {
 hook_input="$(cat 2>/dev/null || true)"
 
 [ "${1:-}" = "session" ] || emit_and_exit
+# Shared agent configs contain release hooks only. Dev panes use detection.
+[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || emit_and_exit
 [ "${SHEPR_ENV:-}" = "1" ] || emit_and_exit
 [ -n "${SHEPR_SOCKET_PATH:-}" ] || emit_and_exit
 [ -n "${SHEPR_PANE_ID:-}" ] || emit_and_exit

@@ -8,6 +8,7 @@ import { expectContractTrace } from "../contract_traces.ts";
 const originalArgv = process.argv;
 const originalEnvironment = {
   SHEPR_ENV: process.env.SHEPR_ENV,
+  SHEPR_BUILD_PROFILE: process.env.SHEPR_BUILD_PROFILE,
   SHEPR_OMP_IDLE_DEBOUNCE_MS: process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS,
   SHEPR_PANE_ID: process.env.SHEPR_PANE_ID,
   SHEPR_SOCKET_PATH: process.env.SHEPR_SOCKET_PATH,
@@ -78,6 +79,7 @@ function createExtensionHarness() {
 function configureIntegrationEnvironment(recordingSocketPath: string) {
   // Tests may run inside an OMP shell; nested-session cases opt in explicitly.
   delete process.env.OMPCODE;
+  process.env.SHEPR_BUILD_PROFILE = "release";
   process.env.SHEPR_ENV = "1";
   process.env.SHEPR_SOCKET_PATH = recordingSocketPath;
   process.env.SHEPR_PANE_ID = "test:p1";
@@ -112,6 +114,7 @@ async function startRecordingServer(name: string): Promise<unknown[]> {
 }
 
 test("OpenCode stays disabled without the Shepr socket environment", async () => {
+  process.env.SHEPR_BUILD_PROFILE = "release";
   process.env.SHEPR_ENV = "1";
   process.env.SHEPR_PANE_ID = "test:p1";
   delete process.env.SHEPR_SOCKET_PATH;
@@ -752,4 +755,18 @@ function requestSeq(request: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+for (const integration of integrations) {
+  for (const profile of ["dev", "unknown", undefined]) {
+    test(`${integration.name} rejects ${profile ?? "missing"} pane profile`, async () => {
+      configureIntegrationEnvironment("unused.sock");
+      if (profile === undefined) delete process.env.SHEPR_BUILD_PROFILE;
+      else process.env.SHEPR_BUILD_PROFILE = profile;
+      const { handlers, pi } = createExtensionHarness();
+      const { default: install } = await importFresh(integration.modulePath);
+      install(pi);
+      expect(handlers.size).toBe(0);
+    });
+  }
 }

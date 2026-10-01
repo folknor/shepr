@@ -28,8 +28,8 @@
 //! callers can keep parser input and scanner effects in byte order.
 
 use crate::limits::{
-    MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_PARSER_OSC_BYTES,
-    MAX_U16_DECIMAL_DIGITS, MAX_XTGETTCAP_BYTES, XTGETTCAP_REPLY_OVERHEAD_BYTES,
+    MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES, MAX_U16_DECIMAL_DIGITS,
+    MAX_XTGETTCAP_BYTES, XTGETTCAP_REPLY_OVERHEAD_BYTES,
 };
 use memchr::memchr;
 
@@ -92,9 +92,9 @@ pub(super) struct Scanner {
     state: State,
     buffer: Vec<u8>,
     overflow: bool,
-    /// Body bytes of the current OSC the parser has been handed.
-    osc_parser_bytes: usize,
-    /// The current OSC passed `MAX_PARSER_OSC_BYTES` and the parser was ended.
+    /// Bytes stored in vte's current OSC raw payload, excluding `;` separators.
+    osc_raw_bytes: usize,
+    /// The current OSC passed `MAX_OSC_RAW_BYTES` and the parser was ended.
     osc_cut: bool,
 }
 
@@ -186,7 +186,7 @@ impl Scanner {
                     if self.osc_cut {
                         return;
                     }
-                    if self.osc_parser_bytes >= MAX_PARSER_OSC_BYTES {
+                    if byte != b';' && self.osc_raw_bytes >= MAX_OSC_RAW_BYTES {
                         events.push(ScannedEvent {
                             // Stop before the first byte past the parser's
                             // bound.
@@ -196,7 +196,9 @@ impl Scanner {
                         self.osc_cut = true;
                         return;
                     }
-                    self.osc_parser_bytes += 1;
+                    if byte != b';' {
+                        self.osc_raw_bytes += 1;
+                    }
                     if self.buffer.len() >= MAX_OSC_BYTES {
                         self.overflow = true;
                     } else {
@@ -280,7 +282,7 @@ impl Scanner {
         self.state = state;
         self.buffer.clear();
         self.overflow = false;
-        self.osc_parser_bytes = 0;
+        self.osc_raw_bytes = 0;
         self.osc_cut = false;
     }
 
@@ -577,9 +579,12 @@ mod tests {
     fn oversized_osc_marks_abort_and_resume_boundaries() {
         let mut scanner = Scanner::default();
         let mut events = scanner.scan(b"\x1b]7;");
-        // Past the retention bound only: the report is dropped, but the parser
-        // still gets the body.
-        let body = vec![b'x'; MAX_PARSER_OSC_BYTES - 2];
+        // vte stores `7` in its raw OSC buffer, but not either `;` separator.
+        // The adapter retains no report at this size, but the parser gets its
+        // entire raw-byte allowance before the next ordinary body byte is cut.
+        let mut body = vec![b'x'; MAX_OSC_RAW_BYTES - 1];
+        let separator = body.len() / 2;
+        body.insert(separator, b';');
         events.extend(scanner.scan(&body));
         assert!(events.is_empty());
         assert!(!scanner.has_oversized_osc());
@@ -613,13 +618,13 @@ mod tests {
         // A BEL terminator is skipped with the body.
         let mut scanner = Scanner::default();
         let mut events = scanner.scan(b"\x1b]");
-        events.extend(scanner.scan(&vec![b'x'; MAX_PARSER_OSC_BYTES + 1]));
+        events.extend(scanner.scan(&vec![b'x'; MAX_OSC_RAW_BYTES + 1]));
         events.extend(scanner.scan(b"\x07"));
         assert_eq!(
             events,
             vec![
                 ScannedEvent {
-                    end: MAX_PARSER_OSC_BYTES,
+                    end: MAX_OSC_RAW_BYTES,
                     event: ScanEvent::AbortOversizedOsc,
                 },
                 ScannedEvent {

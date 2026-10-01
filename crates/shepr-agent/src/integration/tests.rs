@@ -380,7 +380,7 @@ fn launch_install_covers_present_agents_only() {
     env.set("HOME", &home);
     let paths = AgentIntegrationPaths::resolve();
 
-    install_present_integrations(&paths);
+    install_present_integrations(&paths, "release");
 
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
     assert_eq!(status_of(Target::Pi), IntegrationStatusKind::Current);
@@ -401,13 +401,13 @@ fn launch_install_covers_present_agents_only() {
         fs::metadata(path).expect("stat hook").ino()
     };
     let before = inode(&hook);
-    install_present_integrations(&paths);
+    install_present_integrations(&paths, "release");
     assert_eq!(inode(&hook), before);
 
     // A registration the user removed is put back.
     fs::write(claude_dir.join("settings.json"), "{}").expect("test precondition");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Outdated);
-    install_present_integrations(&paths);
+    install_present_integrations(&paths, "release");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 }
 
@@ -426,7 +426,7 @@ fn launch_install_leaves_a_current_hook_alone_when_its_config_cannot_be_read() {
     let broken_settings = "{ not json";
     fs::write(&settings_path, broken_settings).expect("test precondition");
 
-    install_present_integrations(&paths);
+    install_present_integrations(&paths, "release");
 
     assert_eq!(
         fs::read_to_string(&settings_path).expect("settings remain readable"),
@@ -453,7 +453,7 @@ fn launch_install_failure_for_one_agent_leaves_the_others() {
     fs::write(claude_dir.join("settings.json"), "{ not json").expect("test precondition");
     env.set("HOME", &home);
 
-    install_present_integrations(&AgentIntegrationPaths::resolve());
+    install_present_integrations(&AgentIntegrationPaths::resolve(), "release");
 
     assert_eq!(
         status_of(Target::Claude),
@@ -1876,7 +1876,10 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut command = shepr_test_support::command_in_scratch("sh", "kimi-hook");
-    command.arg(&hook).arg(action);
+    command
+        .arg(&hook)
+        .arg(action)
+        .env("SHEPR_BUILD_PROFILE", "release");
     let capture = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
     assert!(
         capture.status.success(),
@@ -1939,7 +1942,10 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut command = shepr_test_support::command_in_scratch("sh", "session-hook");
-    command.arg(&hook).arg("session");
+    command
+        .arg(&hook)
+        .arg("session")
+        .env("SHEPR_BUILD_PROFILE", "release");
     let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
     (
         output.status.success(),
@@ -3160,4 +3166,59 @@ fn hook_assets_share_one_envelope() {
         "no reporting assets under {}",
         assets.display()
     );
+}
+
+#[test]
+fn dev_launch_preserves_release_assets_and_registrations() {
+    let env = IsolatedEnv::new();
+    let dir = env.home().join(".claude");
+    fs::create_dir_all(dir.join("hooks")).expect("test precondition");
+    let hook = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
+    let settings = dir.join(CLAUDE_SETTINGS_NAME);
+    fs::write(&hook, "release asset with different bytes").expect("test precondition");
+    fs::write(&settings, "release registration with different events").expect("test precondition");
+    // An inherited release marker must not enable a dev server's installer.
+    env.set("SHEPR_BUILD_PROFILE", "release");
+    install_present_integrations(&AgentIntegrationPaths::resolve(), "dev");
+    assert_eq!(
+        fs::read_to_string(hook).expect("read hook"),
+        "release asset with different bytes"
+    );
+    assert_eq!(
+        fs::read_to_string(settings).expect("read settings"),
+        "release registration with different events"
+    );
+}
+
+#[test]
+fn shell_hooks_reject_dev_panes_after_draining_input() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    for target in crate::agent::IntegrationTarget::all() {
+        let asset = integration_asset(target).expect("target has an asset");
+        // host-program-ok: tells the shipped shell hooks from the script-language ones
+        if !asset.starts_with("#!/bin/sh") {
+            continue;
+        }
+        let dir = base.join(target.label());
+        fs::create_dir_all(&dir).expect("test precondition");
+        let hook = dir.join("hook.sh");
+        fs::write(&hook, asset).expect("test precondition");
+        // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
+        let mut command = shepr_test_support::command_in_scratch("sh", "dev-hook");
+        command
+            .arg(&hook)
+            .arg("session")
+            .env("SHEPR_BUILD_PROFILE", "dev");
+        let capture = shepr_test_support::capture_hook(
+            command,
+            &dir.join("s.sock"),
+            &dir,
+            "w1:p2",
+            br#"{"session_id":"dev-session"}"#,
+        );
+        assert!(capture.status.success(), "{target:?}");
+        assert!(capture.stderr.is_empty(), "{target:?}");
+        assert!(capture.requests.is_empty(), "{target:?}");
+    }
 }

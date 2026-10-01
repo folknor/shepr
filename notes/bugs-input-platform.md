@@ -22,16 +22,6 @@ one read and the arrow tail in a later one, the framer still splits the escapes,
 so the pane gets Esc then Up and an `alt+up` binding does not fire. The file is
 upstream-tracked.
 
-## INPLAT-007 - Kitty flags without DISAMBIGUATE send CSI u for modified characters <!-- shout-ok -->
-
-Lateral, low confidence. In `encode_terminal_key`, any non-zero flags make every
-modified Char go through `try_encode_csi_u`. With only REPORT_ALTERNATE_KEYS (4)
-or only REPORT_EVENT_TYPES (2), Ctrl+a becomes `CSI 97;5u` / `CSI 97;5:1u`. The
-kitty spec describes 0b100 as affecting only keys "represented as escape codes
-due to the other enhancements in effect", which suggests the legacy `0x01`
-there. Check kitty's `key_encoding.c` before changing anything; children nearly
-always push DISAMBIGUATE. <!-- shout-ok -->
-
 ## INPLAT-010 - Compatibility aliases in `ipc.rs`
 
 Lateral. `pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>` ("Preserve
@@ -63,9 +53,11 @@ audit.
 ## INPLAT-015 - Structural: classify environment kinds by who owns the grammar
 
 `EnvKind` mixes "shepr parses this strictly" with "a foreign program owns this
-value". The Git variables are now `Raw` and `Presence` can no longer refuse a
-value, but other foreign variables remain strict: `TERM_PROGRAM` is still
-interpreted text, so a non-UTF-8 or padded value still fails client setup. If
+value". The Git ceiling and config path variables and `TERM_PROGRAM` are now
+`Raw` and `Presence` can no longer refuse a value, but `GIT_CONFIG_NOSYSTEM` is
+still `Text`: shepr-mux `git/config.rs` reads it with `read_text` before parsing
+Git's boolean grammar, so a non-UTF-8 or padded value is refused instead of
+read as Git reads it. Moving it to `Raw` needs that consumer to parse bytes. If
 every variable whose grammar belongs to Git, the shell, the terminal, tmux or
 sshd were `Raw` or `Presence` (byte-preserving, never refused), strict
 `Text`/`Path` would remain only for shepr's own variables, and a foreign value

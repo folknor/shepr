@@ -427,8 +427,9 @@ pub(crate) enum ServerEvent {
     ClientDisconnected { client_id: ClientId },
     /// A client writer drained its render slot and can accept another render.
     ClientWriterDrained { client_id: ClientId },
-    /// Ctrl+C or external shutdown signal received.
-    QuitSignal,
+    /// The logind monitor observed a host shutdown warning or cancellation and
+    /// woke the server loop to synchronize its shutdown state.
+    HostShutdownWake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1316,7 +1317,7 @@ mod tests {
 
         let (server_event_tx, mut server_event_rx) = mpsc::channel(1);
         server_event_tx
-            .try_send(ServerEvent::QuitSignal)
+            .try_send(ServerEvent::HostShutdownWake)
             .expect("fill the server event channel");
         let handle = std::thread::spawn(move || {
             client_writer_loop(
@@ -1333,7 +1334,7 @@ mod tests {
         ));
         assert!(matches!(
             server_event_rx.blocking_recv(),
-            Some(ServerEvent::QuitSignal)
+            Some(ServerEvent::HostShutdownWake)
         ));
         assert!(matches!(
             server_event_rx.blocking_recv(),

@@ -155,6 +155,7 @@ pub(crate) struct PaneTerminal {
     /// not treat a poisoned lock as a successful mutation: operations without
     /// a failure return log their skipped operation once per pane.
     pub core: Mutex<PaneTerminalCore>,
+    pub render_queued: std::sync::Arc<AtomicBool>,
     /// Set on production construction so mutations without a pane-id
     /// argument can identify their owner in a failure report.
     pane_id: Option<PaneId>,
@@ -172,6 +173,13 @@ pub struct AgentDetectionInputs {
 }
 
 pub(crate) struct PaneTerminalCore {
+    /// Render-visible mutations advance this while holding the core lock.
+    /// Revisions remain even for callers that previously tested write parity;
+    /// exclusion is now provided by the core, with no announced-write state.
+    pub content_revision: u64,
+    /// Live output, completed synchronized updates, clears and resizes only.
+    /// Viewport and host presentation changes do not invalidate screen scans.
+    pub detection_content_seq: u64,
     /// Runs during the next dirty-patch collection attempt, even if it falls
     /// back; see
     /// `PaneRuntime::on_next_dirty_collection`.

@@ -5,9 +5,7 @@ pub(super) enum ClientGlobalMenuAction {
     Binding(shepr_termio::input::KeybindAction),
 }
 
-pub(super) fn global_menu_items(
-    _snapshot: &ClientShellSnapshot,
-) -> Vec<(&'static str, ClientGlobalMenuAction)> {
+pub(super) fn global_menu_items() -> Vec<(&'static str, ClientGlobalMenuAction)> {
     vec![
         (
             "keybinds",
@@ -33,11 +31,7 @@ impl ClientShellState {
     }
 
     pub(super) fn move_global_menu_selection(&mut self, delta: isize) {
-        let item_count = self
-            .snapshot
-            .as_deref()
-            .map(global_menu_items)
-            .map_or(0, |items| items.len());
+        let item_count = global_menu_items().len();
         let Some(ClientShellOverlay::GlobalMenu(menu)) = self.overlay.as_mut() else {
             return;
         };
@@ -54,11 +48,7 @@ impl ClientShellState {
         index: usize,
         outcome: &mut ClientShellInput,
     ) {
-        let Some(action) = self.snapshot.as_deref().and_then(|snapshot| {
-            global_menu_items(snapshot)
-                .get(index)
-                .map(|(_, action)| *action)
-        }) else {
+        let Some(action) = global_menu_items().get(index).map(|(_, action)| *action) else {
             return;
         };
         self.overlay = None;

@@ -48,7 +48,9 @@ pub(crate) struct ClientShellState {
     /// Last focused-pane report-all demand sent to this shell.
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Presses forwarded by this shell that need release on abrupt teardown,
-    /// keyed by target pane and the client's reported press identity.
+    /// keyed by target pane and the client's reported press identity. The
+    /// client pins a pane mouse gesture's drag and release to its original
+    /// target even when the pointer crosses a pane boundary.
     held_inputs: HashMap<(shepr_protocol::PublicPaneId, ClientShellPressId), ClientShellHeldInput>,
     /// The workspace this connection views. Only this client's own navigation,
     /// and the settling of workspaces that appeared or vanished, move it.

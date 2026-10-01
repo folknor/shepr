@@ -53,50 +53,6 @@ Direction: make demand per client. A drained client should be rendered alone
 (full for it, nothing for the others), and a PTY change should go retained to
 every client that can take it.
 
-## SLOOP-005 - The retained scrollbar patch can paint over the right border of a narrow pane
-
-Claim broken: the retained path's contract
-(`render_retained_pane_surface_and_stream`, `headless/retained_surface.rs`):
-"Applies terminal dirty rows to the committed origin-relative pane surface. Any
-presentation or geometry uncertainty falls back to the complete renderer."
-
-The complete renderer decides the scrollbar gutter through
-`terminal_content_rect` (shepr-mux `workspace/geometry.rs`): a pane whose inner
-width is 4 or less gets no gutter and `stable_scrollbar_gutter` (`ui/panes.rs`)
-returns `scrollbar_rect = None`. `retained_scrollbar_patch` re-derives the rect
-as `inner_rect.x + inner_rect.width`, checked only against `pane.rect`. With no
-gutter that column is the pane's own right border when it has one (outer borders
-on, `pane_borders = "always"`, or `pane_gaps`), inside `pane.rect`, so the check
-passes. Once such a pane gains scrollback, a retained update paints scrollbar
-cells over its right border and sets `scrollbar_rect` on the wire pane (the
-client then hit-tests a scrollbar in the border). The next full render puts the
-border back, so the frame flickers.
-
-Direction: carry the gutter decision (or the full `PaneInfo`) beside the
-committed baseline, as `surface_pane_identities` already carries pane identity,
-and patch only the rect the full renderer reserved.
-
-## SLOOP-006 - Doc: `host_shutdown_monitor` is never dropped
-
-`HeadlessServer::host_shutdown_monitor` (`headless.rs`): "`None` before `run`
-and while the server has dropped it to release its delay lock (see
-`freeze_for_host_shutdown`)." Nothing drops it; `freeze_for_host_shutdown` calls
-`release_delay_lock(generation)` and the monitor lives until the server does.
-
-## SLOOP-007 - Doc: `ServerEvent::QuitSignal` is a host-shutdown wake
-
-`client_transport.rs`: "Ctrl+C or external shutdown signal received." Its only
-producer is the logind monitor's wake closure in `start_host_shutdown_monitor`;
-Ctrl+C goes through the stop latch. The handler's comment in
-`apply_server_event` ("the next iteration will initiate shutdown") is also
-wrong: a host shutdown warning freezes saves and does not stop the server. The
-name misleads.
-
-## SLOOP-008 - A dead `ClientWriterDrained` arm in `apply_server_event`
-
-`handle_server_event_with_render_impact`, the only caller, intercepts that event
-first. Two copies of the same rule, one dead.
-
 ## SLOOP-013 - Server-event and API drains are unbounded
 
 `drain_server_events` and `drain_api_requests_with_shutdown_check` drain until
@@ -135,21 +91,11 @@ is still stored, edge-triggered state that paths must remember to update, while
 pane focus (`sync_pane_focus`) is derived level-based from the views. Deriving
 per-client demand the same way is the remaining rewrite.
 
-## SLOOP-020 - The geometry fallback ignores outer focus
+## SLOOP-021 - The retained path recomputes the pane layout per recipient
 
-Lateral. `workspace_geometry_source` (`headless/client_views.rs`) falls back to
-the lowest-id viewer when the remembered controller is not viewing, ignoring
-outer focus. If a stale controller survives to a surface activation,
-`resize_shell_workspaces_sized_for` can size the workspace for the activating
-client although a focused viewer is present, bypassing the rule that surface
-activation does not claim a workspace another focused active shell already
-views. Settlement after navigation makes this hard to reach. Preferring a
-focused viewer before the lowest id, in both the fallback and
-`reapply_controlled_shell_workspace_geometry`, would close it.
-
-## SLOOP-019 - A mouse release over another pane leaves the press held
-
-Lateral. Held presses (`clients.rs`) are keyed by (target pane, press id), so a
-mouse Up delivered to a different target than its Down (a release over another
-pane) does not clear the Down entry. Abrupt teardown then sends a stray release
-to the original pane. Minor, and new with the per-target key.
+Lateral, hot path. `resolve_retained_panes` (`headless/retained_surface.rs`)
+recomputes the workspace's visible pane layout for every recipient of every
+retained render, and returns `None` unless pane order, ids and rects match the
+committed surface exactly. The cost is proportional to panes but sits on the
+client frame fanout path; caching the layout per workspace and frame size
+across recipients would remove it.

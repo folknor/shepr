@@ -12,45 +12,6 @@ Filed from the defect hunt over `crates/shepr-remote/src/`, the root binary's
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## RLAUNCH-002 - FIDO-touch keys are classified Offline, so the documented prompt never runs
-
-Hunter's severity: medium; confidence moderate (depends on the authenticator's
-user-presence timeout, typically around 30 s, exceeding shepr's 15 s round trip).
-
-`remote/preflight.rs` module doc: "The TUI reaches machines with `BatchMode=yes`,
-so any prompt (password, key passphrase, keyboard-interactive, FIDO touch) fails
-its connection", and preflight then runs interactive ssh for machines that need
-authentication. A key that needs a touch does not fail under BatchMode; ssh (or
-the agent) blocks for user presence. `RemoteSsh::command_timeout` caps the round
-trip at `SSH_COMMAND_TIMEOUT` (15 s) and `wait_with_output_timeout` kills ssh
-with `ErrorKind::TimedOut`; `SshFailureDiagnostic::from_error` maps `TimedOut` to
-`SshFailure::Link`, and `classify_check` reports `MachineCheck::Offline`.
-Offline machines get no prompt and no notice. The "signing failed" signature in
-`classify_ssh_diagnostic` would recognise the authenticator's own timeout only if
-ssh lived long enough to print it. Net effect: a FIDO machine is silently shown
-offline at startup, every client attempt blocks on a touch request for its
-whole budget, and interactive authentication is never offered.
-
-## RLAUNCH-004 - Local failures are filed as remote incompatibility
-
-Hunter's severity: low. `SshFailureDiagnostic::from_error` maps `InvalidInput`,
-`InvalidData`, `NotFound`, `PermissionDenied` and `Unsupported` to
-`SshFailure::Compatibility` ("The remote end is not a usable shepr of this
-build"), and `classify_check` turns that into `MachineCheck::Incompatible` ("The
-machine answered but cannot be served"). Errors of those kinds that never
-touched the machine: `ssh` not installed locally (`Command::spawn` fails with
-`NotFound`; preflight prints "machine X cannot be used: No such file or directory
-(os error 2)", naming neither ssh nor the missing program); a missing XDG runtime
-root or unsafe runtime directory from `RemoteSsh::new` in `check_machine_ssh`
-(`NotFound`, or `PermissionDenied` carrying `UnsafeSshRuntimeDirectory`); local
-IO on the metadata cache path or managed config write.
-
-Structural note: classification reverse-engineers provenance from `io::ErrorKind`
-plus stderr signatures. A typed error at the source (local setup, ssh process,
-remote command, install mismatch, server mismatch) carried through
-`check_machine_ssh` and the connector would make these classes exact, and would
-let RLAUNCH-002 tell "blocked on user presence" from "network timeout".
-
 ## RLAUNCH-005 - `DiscoveryProgress` keeps progress across ssh failures its doc says clear it
 
 The struct doc says results survive only "a timeout, the attempt deadline, a
@@ -75,18 +36,6 @@ one of the two should change, and the doc reads as the intended policy.
   default install paths, so the gap is installs elsewhere on a profile-only
   PATH.
 
-## RLAUNCH-011 - User ssh config can break every shepr ssh invocation and the auth classification
-
-Lateral, not a broken claim; noted because RLAUNCH-002 and this both undermine
-the prompt-on-auth design. The managed ssh config includes the user's
-`~/.ssh/config` first, and shepr overrides only a handful of options on the
-command line. A host block with `RemoteCommand` makes every shepr ssh invocation
-fail ("Cannot execute command-line and remote command"), and `LogLevel QUIET`
-suppresses the stderr signatures `classify_ssh_diagnostic` depends on, so
-authentication failures read as `Unrecognized` and are never prompted for.
-Passing `-o RemoteCommand=none` and `-o LogLevel=ERROR` with the batch options
-would make classification independent of user config.
-
 ## RLAUNCH-013 - Structural: two independent discovery and validation paths for one machine
 
 `check_machine_ssh` (fresh discovery per round, verifies the disk cache, judges
@@ -104,18 +53,19 @@ the server's own lease, API and client socket release order is still a third,
 separately maintained rule, and boot identity is still a separate status check.
 Folding the API into the client socket would leave one rule.
 
-## RLAUNCH-015 - The conditional stop's socket wait can start with its deadline already spent
+## RLAUNCH-017 - `is_remote_candidate_mismatch` matches every remote compatibility error
 
-Lateral, `crates/shepr-api/src/server_stop.rs`. In the conditional stop the lease
-wait has its own deadline, and the socket wait that follows reuses the overall
-`deadline`, which may already have passed. A server that releases its lease
-before its last socket then gets a single socket check and the stop reports
-`TimedOut`. The socket wait could use the later of the two deadlines.
+Lateral, `remote/discovery.rs`. The predicate now matches any remote
+compatibility error (including "matching Shepr is not ready" and remote server
+compatibility errors), not only a candidate mismatch. In
+`resolve_remote_shepr` this matters only if verify can return one of the
+others, which it appears not to today; the predicate is wider than its name.
 
-## RLAUNCH-016 - A flapping server keeps the launcher waiting without bound
+## RLAUNCH-018 - An unwrapped local io error now retries silently instead of asking for attention
 
-Lateral, `crates/shepr-remote/src/remote/local_server.rs`. The transition loop in
-`ensure_running` re-arms a fresh timeout on each Starting, Stopping or Releasing
-round, so a server that keeps moving between those states keeps the launcher
-waiting, holding the launch lock, without bound. One overall deadline would
-bound it.
+Lateral, `shepr-remote/src/lib.rs`. `SshFailureDiagnostic::from_error` no longer
+treats `InvalidInput`, `NotFound` or `PermissionDenied` as needing attention;
+local failures are recognised only when wrapped by `local_setup_error`. An io
+error of those kinds that reaches the classifier unwrapped (from client
+endpoint setup, say) now reads as `Other` and is retried as Reconnecting
+instead of showing Attention.

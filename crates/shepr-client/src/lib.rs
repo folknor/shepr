@@ -865,10 +865,6 @@ impl ClientLoop {
                 ) {
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                let frame = state.shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                );
                 let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
                 if let Err(error) = spawn_endpoint_reader(
                     reader,
@@ -898,6 +894,15 @@ impl ClientLoop {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 write_stream.insert_native(endpoint_id.clone(), writer, generation, false, now);
+                // The supervisor is Online as soon as the transport connects. Reflect that
+                // before composing so this repaint updates the client-owned machine list.
+                state
+                    .shell
+                    .set_endpoint_status(&endpoint_id, endpoint::ClientEndpointStatus::Online);
+                let frame = state.shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                );
                 if let Some(frame) = frame {
                     // Connecting changes no pane projection (the connection has no
                     // surface yet), only the machine list.
@@ -1410,7 +1415,8 @@ impl ClientLoop {
                 &failure.endpoint_id,
                 failure.generation,
                 now,
-                &format!("{}; reconnecting", failure.message),
+                failure.kind,
+                &failure.message,
             ) {
                 clear_endpoint_host_effects(state)?;
             }

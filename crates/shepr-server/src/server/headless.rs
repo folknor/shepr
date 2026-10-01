@@ -161,9 +161,9 @@ pub struct HeadlessServer {
     retained_surface_fallbacks_reported: HashSet<&'static str>,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
-    /// Watches logind for shutdown warnings; `None` before `run` and while the
-    /// server has dropped it to release its delay lock (see
-    /// `freeze_for_host_shutdown`).
+    /// Watches logind for shutdown warnings; `None` until `run` starts it.
+    /// Releasing a shutdown delay inhibitor leaves the monitor installed so it
+    /// can observe a cancellation and inhibit the next shutdown.
     host_shutdown_monitor: Option<lifecycle::HostShutdownMonitor>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
@@ -1133,6 +1133,11 @@ impl HeadlessServer {
     /// Handles a server event, then reports any change in which panes hold
     /// terminal focus. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
+        // Writer readiness is a transport signal. Preserve deferred demand
+        // without touching application projection or per-client input state.
+        if let ServerEvent::ClientWriterDrained { client_id } = &ev {
+            return self.take_drained_writer_render(client_id) != RenderDemand::None;
+        }
         if matches!(
             &ev,
             ServerEvent::ClientDetach { client_id }
@@ -1477,28 +1482,26 @@ impl HeadlessServer {
                 info!(?client_id, "client disconnected");
                 true
             }
-            ServerEvent::ClientWriterDrained { client_id } => {
-                let Some(client) = self.clients.get_mut(&client_id) else {
-                    return false;
-                };
-                client.take_deferred_render() != RenderDemand::None
-            }
-            ServerEvent::QuitSignal => {
-                // The quit check at the top of the loop handles this.
-                // No render needed - the next iteration will initiate shutdown.
-                false
-            }
+            // `handle_server_event` consumes writer-drain signals before
+            // application dispatch; retain that arm for enum exhaustiveness.
+            // The host-shutdown monitor updates its flag before sending its
+            // wake. The loop checks that flag to checkpoint and freeze saves;
+            // a host warning does not stop the server.
+            ServerEvent::ClientWriterDrained { .. } | ServerEvent::HostShutdownWake => false,
         }
     }
 
+    /// Takes the render a drained client writer had deferred, keeping its exact
+    /// demand (a deferred partial render stays partial).
+    fn take_drained_writer_render(&mut self, client_id: &ClientId) -> RenderDemand {
+        self.clients
+            .get_mut(client_id)
+            .map_or(RenderDemand::None, ClientConnection::take_deferred_render)
+    }
+
     fn handle_server_event_with_render_impact(&mut self, ev: ServerEvent) -> RenderDemand {
-        // Writer readiness is a transport signal. Preserve the deferred demand
-        // without touching application projection or per-client input sources.
-        if let ServerEvent::ClientWriterDrained { client_id } = ev {
-            return self
-                .clients
-                .get_mut(&client_id)
-                .map_or(RenderDemand::None, ClientConnection::take_deferred_render);
+        if let ServerEvent::ClientWriterDrained { client_id } = &ev {
+            return self.take_drained_writer_render(client_id);
         }
         // Presentation events change connection state only. Shared application
         // mutations publish their projection revision at the mutation site.
