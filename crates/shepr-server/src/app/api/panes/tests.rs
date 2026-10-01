@@ -73,7 +73,6 @@ async fn clear_pane_mutates_endpoint_owned_history() {
     let command = EndpointCommand::PaneClear(PaneTarget {
         pane_id: public_pane_id,
     });
-    assert!(command.traits().mutates_ui);
     let response = app.handle_endpoint_command(command);
     assert_eq!(response, Ok(EndpointReply::Done));
     let runtime = app

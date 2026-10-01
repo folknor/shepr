@@ -283,7 +283,8 @@ fn git_config_override_path(
     cwd: &Path,
     var: shepr_core::env::EnvVar,
 ) -> io::Result<Option<PathBuf>> {
-    Ok(shepr_core::env::read_path(var)?.map(|path| {
+    Ok(shepr_core::env::read_os(var)?.map(|path| {
+        let path = PathBuf::from(path);
         if path.is_absolute() {
             path
         } else {

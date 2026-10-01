@@ -3,12 +3,15 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=devin
-# SHEPR_INTEGRATION_VERSION=3
+# SHEPR_INTEGRATION_VERSION=4
 
 set -eu
 
 action="${1:-}"
-hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-devin-hook.XXXXXX")" || exit 0
+hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-devin-hook.XXXXXX")" || {
+  cat >/dev/null 2>/dev/null || true
+  exit 0
+}
 trap 'rm -f "$hook_input_file"' 0
 trap 'exit 0' HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true

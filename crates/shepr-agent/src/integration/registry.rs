@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::agent::IntegrationTarget as Target;
 
-use super::command::hook_command;
+use super::command::{hook_command, is_hook_command_for_path};
 use super::config_edit::{direct_command_field, is_matching_command_hook};
 use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::types::InstallOutcome;
@@ -306,7 +306,7 @@ pub(crate) fn integration_status(
     target: Target,
 ) -> io::Result<super::IntegrationStatus> {
     let spec = spec_for(target)?;
-    integration_status_at(target, installed_path(paths, spec)?)
+    integration_status_at_with_paths(target, installed_path(paths, spec)?, paths)
 }
 
 /// Whether `target`'s agent is present on this host: its own config
@@ -352,20 +352,13 @@ fn grok_hook_config_is_valid(hook_path: &Path) -> io::Result<bool> {
     Ok(config == expected_config)
 }
 
-fn opencode_tui_integration_is_valid(plugin_path: &Path) -> io::Result<bool> {
+fn opencode_tui_integration_is_valid(plugin_path: &Path, state_dir: &Path) -> io::Result<bool> {
     let Some(config_dir) = plugin_path.parent().and_then(Path::parent) else {
         return Ok(false);
     };
     let tui_plugin_path = config_dir.join(super::OPENCODE_TUI_PLUGIN_INSTALL_NAME);
     let tui_plugin_current =
         file_matches_asset(&tui_plugin_path, super::OPENCODE_TUI_PLUGIN_ASSET)?;
-    let cli_config_path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
-    let cli_config_exists = cli_config_path.try_exists().map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("cannot stat {}: {error}", cli_config_path.display()),
-        )
-    })?;
     let v2_plugin_path = config_dir
         .join(super::OPENCODE_V2_TUI_PLUGIN_DIR)
         .join("tui.js");
@@ -380,11 +373,11 @@ fn opencode_tui_integration_is_valid(plugin_path: &Path) -> io::Result<bool> {
     )? {
         return Ok(false);
     }
-    Ok(!cli_config_exists
-        || super::opencode_config::cli_plugin_is_configured(
-            config_dir,
-            super::OPENCODE_V2_TUI_PLUGIN_SPEC,
-        )?)
+    super::opencode_config::cli_plugin_is_registered_or_deferred(
+        config_dir,
+        state_dir,
+        super::OPENCODE_V2_TUI_PLUGIN_SPEC,
+    )
 }
 
 /// `levels` directories up from `path` (1 is the parent).
@@ -419,10 +412,10 @@ enum JsonHookShape {
     Simple,
 }
 
-/// Whether `entries` holds the hook in the shape its installer writes, under
-/// the installer's matcher. Install first strips every entry carrying shepr's
-/// command from the event, whatever its matcher or extra fields, and then
-/// writes the canonical one, so anything this rejects a reinstall repairs.
+/// Whether `entries` holds `command` in the shape its installer writes, under
+/// the installer's matcher. Install first strips every entry invoking shepr's
+/// hook path from every event, whatever its matcher or extra fields, and then
+/// writes the canonical set, so anything this rejects a reinstall repairs.
 ///
 /// There is deliberately no per-entry `disabled` or `enabled` check: none of
 /// these agents documents such a field (Claude Code only offers the global
@@ -507,13 +500,14 @@ fn read_json(path: &Path) -> io::Result<Option<serde_json::Value>> {
     })
 }
 
-/// Every `(event, command)` pair appears in the command field used by that
-/// target's installer shape, under the matching event.
+/// Expected hook commands use the installer's shape, and no other command
+/// invokes this hook path under a different event or action.
 fn json_hook_commands_registered(
     config_path: &Path,
     root: HooksRoot,
     expected: &[(&str, String)],
     shape: &JsonHookShape,
+    hook_path: &Path,
 ) -> io::Result<bool> {
     let Some(document) = read_json(config_path)? else {
         return Ok(false);
@@ -525,11 +519,50 @@ fn json_hook_commands_registered(
     let Some(events) = events.and_then(serde_json::Value::as_object) else {
         return Ok(false);
     };
-    Ok(expected.iter().all(|(event, command)| {
+    let expected_are_canonical = expected.iter().all(|(event, command)| {
         events
             .get(*event)
             .is_some_and(|entries| json_event_has_command(entries, command, shape))
-    }))
+    });
+    let mut installed = Vec::new();
+    for (event, entries) in events {
+        collect_hook_path_commands(entries, hook_path, event, &mut installed);
+    }
+    let mut expected_commands = expected
+        .iter()
+        .map(|(event, command)| ((*event).to_string(), command.clone()))
+        .collect::<Vec<_>>();
+    installed.sort();
+    expected_commands.sort();
+    Ok(expected_are_canonical && installed == expected_commands)
+}
+
+fn collect_hook_path_commands(
+    value: &serde_json::Value,
+    hook_path: &Path,
+    event: &str,
+    output: &mut Vec<(String, String)>,
+) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_hook_path_commands(value, hook_path, event, output);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for field in ["command", "bash"] {
+                if let Some(command) = object.get(field).and_then(serde_json::Value::as_str)
+                    && is_hook_command_for_path(command, hook_path)
+                {
+                    output.push((event.to_string(), command.to_string()));
+                }
+            }
+            if let Some(hooks) = object.get("hooks") {
+                collect_hook_path_commands(hooks, hook_path, event, output);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn read_toml(path: &Path) -> io::Result<Option<toml::Value>> {
@@ -555,27 +588,16 @@ fn codex_hooks_feature_enabled(config_path: &Path) -> io::Result<bool> {
 }
 
 fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> io::Result<bool> {
-    let Some(config) = read_toml(config_path)? else {
+    let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
-    let Some(entries) = config.get("hooks").and_then(toml::Value::as_array) else {
-        return Ok(false);
-    };
-    Ok(
-        integration_hook_events(crate::agent::IntegrationTarget::Kimi)
-            .iter()
-            .all(|hook| {
-                hook.action.is_some_and(|action| {
-                    let command = hook_command(hook_path, Some(action.as_str()));
-                    entries.iter().any(|entry| {
-                        entry.get("event").and_then(toml::Value::as_str) == Some(hook.event)
-                            && entry.get("command").and_then(toml::Value::as_str)
-                                == Some(command.as_str())
-                            && entry.get("matcher").and_then(toml::Value::as_str) == hook.matcher
-                    })
-                })
-            }),
-    )
+    let _config = toml::from_str::<toml::Value>(&content).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot parse {}: {error}", config_path.display()),
+        )
+    })?;
+    super::config_edit::kimi_config_block_is_current(&content, hook_path)
 }
 
 /// Convert an agent's hook events into the commands its integration registers.
@@ -599,7 +621,11 @@ fn hook_event_commands(
 ///
 /// The config files are read from the directory the spec row's `path` is
 /// installed under, so the depth follows the row instead of a hand-kept count.
-fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io::Result<bool> {
+fn hook_registration_is_current(
+    spec: &IntegrationSpec,
+    hook_path: &Path,
+    paths: &AgentIntegrationPaths,
+) -> io::Result<bool> {
     let Some(dir) = ancestor(hook_path, spec.path.len()) else {
         return Ok(false);
     };
@@ -617,7 +643,12 @@ fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io:
     let registered = match spec.registration {
         RegistrationCheck::DirectoryLoaded => true,
         RegistrationCheck::Grok => grok_hook_config_is_valid(hook_path)?,
-        RegistrationCheck::Opencode => return opencode_tui_integration_is_valid(hook_path),
+        RegistrationCheck::Opencode => {
+            return opencode_tui_integration_is_valid(
+                hook_path,
+                &paths.directory(DirectoryKey::OpencodeState)?,
+            );
+        }
         RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path)?,
         RegistrationCheck::AntigravityCli => {
             let expected_block = super::targets::antigravity_cli_hook_block(hook_path)?;
@@ -634,6 +665,7 @@ fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io:
                     matcher: None,
                     timeout_seconds: hook_timeout_seconds(spec)?,
                 },
+                hook_path,
             )?;
             let hooks_feature_enabled = codex_hooks_feature_enabled(&config(1)?)?;
             hook_commands_registered && hooks_feature_enabled
@@ -675,7 +707,7 @@ fn hook_registration_is_current(spec: &IntegrationSpec, hook_path: &Path) -> io:
                 },
                 JsonShape::Simple => JsonHookShape::Simple,
             };
-            json_hook_commands_registered(&config(0)?, root, &expected, &shape)?
+            json_hook_commands_registered(&config(0)?, root, &expected, &shape, hook_path)?
         }
     };
     Ok(registered)
@@ -757,9 +789,10 @@ fn integration_state_for_path(
 /// its asset, or a stat, read or parse error on its registration config, is
 /// returned. A missing registration reads `Outdated`, so the next install
 /// repairs it.
-pub(crate) fn integration_status_at(
+fn integration_status_at_with_paths(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
+    paths: &AgentIntegrationPaths,
 ) -> io::Result<super::IntegrationStatus> {
     let spec = spec_for(target)?;
     let expected_asset =
@@ -768,7 +801,8 @@ pub(crate) fn integration_status_at(
         })?;
     let (mut state, installed_version) = integration_state_for_path(&path, expected_asset)?;
 
-    if state == super::IntegrationStatusKind::Current && !hook_registration_is_current(spec, &path)?
+    if state == super::IntegrationStatusKind::Current
+        && !hook_registration_is_current(spec, &path, paths)?
     {
         state = super::IntegrationStatusKind::Outdated;
     }
@@ -796,6 +830,17 @@ fn parse_integration_version(content: &str) -> Option<u32> {
             .parse()
             .ok()
     })
+}
+
+/// `integration_status_at_with_paths` with the paths resolved from the
+/// process environment.
+#[cfg(test)]
+pub(crate) fn integration_status_at(
+    target: crate::agent::IntegrationTarget,
+    path: PathBuf,
+) -> io::Result<super::IntegrationStatus> {
+    let paths = AgentIntegrationPaths::resolve();
+    integration_status_at_with_paths(target, path, &paths)
 }
 
 /// One status per supported target, in spec order.
@@ -1119,6 +1164,48 @@ mod registration_tests {
     }
 
     #[test]
+    fn kimi_status_rejects_and_install_removes_stale_managed_event() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let dir = env.home().join(".kimi-code");
+        fs::create_dir_all(&dir).expect("test precondition");
+        let paths = AgentIntegrationPaths::resolve();
+        super::super::targets::install_kimi(&paths).expect("install");
+
+        let status = integration_status(&paths, IntegrationTarget::Kimi).expect("status");
+        assert_eq!(status.state, IntegrationStatusKind::Current);
+        let hook = status.path;
+        let config_path = dir.join(super::super::KIMI_CONFIG_NAME);
+        let config = fs::read_to_string(&config_path).expect("test precondition");
+        let stale_registration = format!(
+            "[[hooks]]\nevent = \"OldEvent\"\ncommand = {}\ntimeout = 10\n\n{}",
+            super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("old-action"),)),
+            super::super::KIMI_CONFIG_BLOCK_END,
+        );
+        let stale = config.replace(super::super::KIMI_CONFIG_BLOCK_END, &stale_registration);
+        assert_ne!(stale, config, "test precondition");
+        fs::write(&config_path, stale).expect("test precondition");
+        assert_eq!(
+            integration_status(&paths, IntegrationTarget::Kimi)
+                .expect("status")
+                .state,
+            IntegrationStatusKind::Outdated
+        );
+
+        super::super::targets::install_kimi(&paths).expect("reinstall");
+        assert_eq!(
+            integration_status(&paths, IntegrationTarget::Kimi)
+                .expect("status")
+                .state,
+            IntegrationStatusKind::Current
+        );
+        assert!(
+            !fs::read_to_string(&config_path)
+                .expect("test precondition")
+                .contains("OldEvent")
+        );
+    }
+
+    #[test]
     fn mastracode_checks_flat_top_level_events() {
         let dir = base("mastracode");
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
@@ -1324,6 +1411,69 @@ mod registration_tests {
             assert_eq!(status().state, IntegrationStatusKind::Current, "{target:?}");
             let document = fs::read_to_string(&config_path).expect("test precondition");
             assert!(!document.contains("hand-edited"), "{target:?}: {document}");
+
+            let hook_path = status().path;
+            let stale_command = super::super::command::hook_command(&hook_path, Some("old-action"));
+            let stale_entry = match target {
+                IntegrationTarget::Claude
+                | IntegrationTarget::Codex
+                | IntegrationTarget::Devin
+                | IntegrationTarget::Droid => serde_json::json!({
+                    "matcher": "previous matcher",
+                    "hooks": [{
+                        "type": "command",
+                        "command": stale_command,
+                        "timeout": 5,
+                    }],
+                }),
+                IntegrationTarget::Copilot => serde_json::json!({
+                    "type": "command",
+                    "bash": stale_command,
+                    "timeoutSec": 5,
+                }),
+                IntegrationTarget::Cursor => serde_json::json!({"command": stale_command}),
+                IntegrationTarget::Mastracode => serde_json::json!({
+                    "type": "command",
+                    "command": stale_command,
+                    "timeout": 5,
+                    "description": super::super::config_edit::MASTRACODE_HOOK_DESCRIPTION,
+                }),
+                _ => unreachable!("only JSON hook targets are listed"),
+            };
+            let mut document = read_json(&config_path)
+                .expect("read config")
+                .expect("config exists");
+            let events = match root {
+                HooksRoot::HooksKey => document.get_mut("hooks"),
+                HooksRoot::Document => Some(&mut document),
+            }
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("test precondition");
+            events
+                .entry("PreviousEvent".to_owned())
+                .or_insert_with(|| serde_json::json!([]))
+                .as_array_mut()
+                .expect("test precondition")
+                .push(stale_entry);
+            fs::write(&config_path, document.to_string()).expect("test precondition");
+            assert_eq!(
+                status().state,
+                IntegrationStatusKind::Outdated,
+                "{target:?}"
+            );
+
+            install(&paths).expect("reinstall removes stale event registrations");
+            assert_eq!(status().state, IntegrationStatusKind::Current, "{target:?}");
+            let document = read_json(&config_path)
+                .expect("read config")
+                .expect("config exists");
+            let events = match root {
+                HooksRoot::HooksKey => document.get("hooks"),
+                HooksRoot::Document => Some(&document),
+            }
+            .and_then(serde_json::Value::as_object)
+            .expect("test precondition");
+            assert!(!events.contains_key("PreviousEvent"), "{target:?}");
         }
     }
 

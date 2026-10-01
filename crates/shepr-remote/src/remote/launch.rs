@@ -105,7 +105,9 @@ pub(super) fn posix_shell_command(script: &str) -> String {
 }
 
 pub fn shell_quote(value: &str) -> String {
-    if RemoteExecutable::is_shell_plain_word(value) {
+    // zsh expands an unquoted leading `=`, and this command can be typed into
+    // the user's interactive shell before any inner POSIX shell sees it.
+    if !value.starts_with('=') && RemoteExecutable::is_shell_plain_word(value) {
         return value.to_string();
     }
 

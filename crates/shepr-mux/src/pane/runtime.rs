@@ -195,8 +195,11 @@ impl PaneCwdProbe {
     }
 }
 
-/// PTY runtime for a pane. Owns the terminal, I/O channels, and background tasks.
-/// Dropping this aborts async tasks and closes the PTY.
+/// PTY runtime for a pane. Owns the terminal and PTY I/O. Dropping it aborts
+/// the detection task and shuts down PTY I/O. The child watcher continues until
+/// it reaps the child, handing it to a reaper thread if that async watcher is
+/// dropped. An armed synchronized-output timer may finish its flush after the
+/// runtime is dropped.
 pub struct PaneRuntime {
     generation: crate::events::RuntimeGeneration,
     pane_id: PaneId,
@@ -212,7 +215,8 @@ pub struct PaneRuntime {
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
-    // Task handles for deterministic shutdown
+    // Only detection is aborted directly; the child watcher must reap, and
+    // synchronized-output timers hold effects weakly while sleeping.
     detect_handle: Option<tokio::task::AbortHandle>,
 }
 
@@ -652,19 +656,29 @@ impl PaneReadEffects {
         else {
             return;
         };
-        let effects = Arc::clone(self);
+        let effects = Arc::downgrade(self);
         self.rt.spawn(async move {
             let mut wake_at = first_wake;
             loop {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at)).await;
-                match effects.sync_timeout_render.next_wake(wake_at) {
-                    Some(later) => wake_at = later,
-                    None => break,
+                let Some(current_effects) = effects.upgrade() else {
+                    return;
+                };
+                match current_effects.sync_timeout_render.next_wake(wake_at) {
+                    Some(later) => {
+                        wake_at = later;
+                        drop(current_effects);
+                    }
+                    None => {
+                        // The weak reference keeps the pane alive only while
+                        // the timer is actively flushing, not while it sleeps.
+                        tokio::task::spawn_blocking(move || {
+                            current_effects.flush_expired_synchronized_output();
+                        });
+                        return;
+                    }
                 }
             }
-            // The terminal and content locks are synchronous. Keep their wait
-            // off a Tokio worker when a timer fires.
-            tokio::task::spawn_blocking(move || effects.flush_expired_synchronized_output());
         });
     }
 
@@ -1053,8 +1067,6 @@ impl PaneRuntime {
                 let mut detector = DetectorState::new(Instant::now(), launch_purpose);
                 let mut next_wake = crate::limits::PROCESS_RECHECK_NO_AGENT;
 
-                tokio::time::sleep(crate::limits::INITIAL_DETECTION_DELAY).await;
-
                 loop {
                     if child_liveness.wait_completed() {
                         break;
@@ -1275,8 +1287,11 @@ impl PaneRuntime {
         }
     }
 
-    /// Run `hook` inside the next dirty-patch collection, while it holds the
-    /// terminal core and the content write lock.
+    /// Run `hook` during the next dirty-patch collection attempt, including
+    /// when it falls back for synchronized output or a full render. The hook
+    /// runs while the terminal core and content write locks are held, so it
+    /// must not call methods that acquire either lock. A poisoned core
+    /// prevents the hook from running.
     pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
         self.terminal.on_next_dirty_collection(hook);
     }

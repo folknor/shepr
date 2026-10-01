@@ -1,5 +1,7 @@
 pub(super) use crate::limits::MAX_GIT_REF_FILE_BYTES;
+use std::ffi::OsStr;
 use std::io::{self, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -427,26 +429,27 @@ struct GitCeilings {
 }
 
 impl GitCeilings {
-    /// This process's ceilings. A refused value (padded or not UTF-8) is
-    /// logged and read as no ceiling, as Git ignores an entry it cannot use.
+    /// This process's ceilings, parsed from Git's colon-separated OS bytes.
     fn from_env() -> Self {
-        match shepr_core::env::read_text(shepr_core::env::EnvVar::GitCeilingDirectories) {
-            Ok(value) => Self::parse(value.as_deref().unwrap_or_default()),
+        match shepr_core::env::read_os(shepr_core::env::EnvVar::GitCeilingDirectories) {
+            Ok(Some(value)) => Self::parse(&value),
+            Ok(None) => Self::default(),
             Err(error) => {
-                tracing::warn!(%error, "ignoring a refused environment value");
+                tracing::warn!(%error, "failed to read Git ceiling directories");
                 Self::default()
             }
         }
     }
 
-    fn parse(value: &str) -> Self {
+    fn parse(value: &OsStr) -> Self {
         let mut resolve = true;
         let mut dirs = Vec::new();
-        for entry in value.split(':') {
+        for entry in value.as_bytes().split(|byte| *byte == b':') {
             if entry.is_empty() {
                 resolve = false;
                 continue;
             }
+            let entry = OsStr::from_bytes(entry);
             let path = Path::new(entry);
             if !path.is_absolute() {
                 continue;
@@ -908,7 +911,7 @@ mod tests {
     }
 
     fn ceilings(value: &str) -> GitCeilings {
-        GitCeilings::parse(value)
+        GitCeilings::parse(OsStr::new(value))
     }
 
     /// `outer` is a checkout; `outer/ceiling/work` sits below a ceiling.

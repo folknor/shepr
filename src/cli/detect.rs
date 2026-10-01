@@ -81,35 +81,49 @@ pub(super) fn explain(
     paths: &super::target::CliContext,
     args: ExplainArgs,
 ) -> super::CliResult<i32> {
-    let explain = if let Some(path) = args.file {
-        let agent_label = args
-            .agent
-            .ok_or_else(|| super::CliError::Usage("--file requires --agent".into()))?;
-        explain_file(&path, &agent_label)?
-    } else {
-        let target = args.pane.ok_or_else(|| {
-            super::CliError::Usage("explain requires PANE unless --file is used".into())
-        })?;
-        let response = super::send_request(
-            paths,
-            &Request {
-                id: "cli:detect:explain".into(),
-                method: Method::DetectExplain(PaneTarget { pane_id: target }),
-            },
-        )?;
-        if response.get("error").is_some() {
-            print_detect_error(&response)?;
-            return Ok(1);
-        }
-        response["result"]["explain"].clone()
-    };
+    if args.file.is_some() {
+        return run_file_explain(&args);
+    }
+    let target = args.pane.ok_or_else(|| {
+        super::CliError::Usage("explain requires PANE unless --file is used".into())
+    })?;
+    let response = super::send_request(
+        paths,
+        &Request {
+            id: "cli:detect:explain".into(),
+            method: Method::DetectExplain(PaneTarget { pane_id: target }),
+        },
+    )?;
+    if response.get("error").is_some() {
+        print_detect_error(&response)?;
+        return Ok(1);
+    }
+    print_explain_output(&response["result"]["explain"], args.json, args.verbose);
+    Ok(0)
+}
 
-    if args.json {
+/// Evaluates a saved capture in this process. `cli::run` sends a `--file`
+/// explain here before it resolves any application paths.
+pub(super) fn run_file_explain(args: &ExplainArgs) -> super::CliResult<i32> {
+    let path = args
+        .file
+        .as_deref()
+        .ok_or_else(|| super::CliError::Usage("--file is required".into()))?;
+    let agent_label = args
+        .agent
+        .as_deref()
+        .ok_or_else(|| super::CliError::Usage("--file requires --agent".into()))?;
+    let explain = explain_file(path, agent_label)?;
+    print_explain_output(&explain, args.json, args.verbose);
+    Ok(0)
+}
+
+fn print_explain_output(explain: &serde_json::Value, json: bool, verbose: bool) {
+    if json {
         println!("{explain}");
     } else {
-        print_explain_text(&explain, args.verbose);
+        print_explain_text(explain, verbose);
     }
-    Ok(0)
 }
 
 fn print_detect_error(response: &serde_json::Value) -> super::CliResult<()> {

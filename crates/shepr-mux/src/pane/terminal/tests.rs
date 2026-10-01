@@ -1164,11 +1164,21 @@ fn terminal_legacy_modified_enter_is_shell_compatible() {
         KeyModifiers::ALT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
     ] {
         let key = shepr_termio::input::TerminalKey::new(KeyCode::Enter, modifiers);
-        let expected = if modifiers.contains(KeyModifiers::ALT) {
-            b"\x1b\r".as_slice()
+        // Legacy encoding has no Super bit, so any Super chord is spelled as
+        // CSI u (modifier parameter 1 + shift 1 + alt 2 + ctrl 4 + super 8).
+        let expected = if modifiers.contains(KeyModifiers::SUPER) {
+            let param = 1
+                + u8::from(modifiers.contains(KeyModifiers::SHIFT))
+                + 2 * u8::from(modifiers.contains(KeyModifiers::ALT))
+                + 4 * u8::from(modifiers.contains(KeyModifiers::CONTROL))
+                + 8;
+            format!("\x1b[13;{param}u").into_bytes()
+        } else if modifiers.contains(KeyModifiers::ALT) {
+            b"\x1b\r".to_vec()
         } else {
-            b"\r".as_slice()
+            b"\r".to_vec()
         };
+        let expected = expected.as_slice();
         for kind in [KeyEventKind::Press, KeyEventKind::Repeat] {
             assert_eq!(
                 pane.encode_terminal_key(key.clone().with_kind(kind), protocol),
@@ -1196,7 +1206,8 @@ fn terminal_modified_enter_tracks_live_protocol_negotiation() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    let legacy = ["\r", "\r", "\r", "\x1b\r"];
+    // Legacy encoding has no Super bit, so Super alone is spelled as CSI u.
+    let legacy = ["\r", "\r", "\x1b[13;9u", "\x1b\r"];
     let mode_one = ["\x1b[27;2;13~", "\x1b[27;5;13~", "\x1b[27;9;13~", "\x1b\r"];
     let mode_two = [
         "\x1b[27;2;13~",

@@ -8,7 +8,7 @@ use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
 use crate::agent::IntegrationTarget as Target;
 use crate::limits::TOML_BASIC_STRING_DELIMITER_BYTES;
 
-use super::command::hook_command;
+use super::command::{hook_command, is_hook_command_for_path};
 use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
 
 pub(crate) fn ensure_hooks_object<'a>(
@@ -82,17 +82,16 @@ pub(crate) fn ensure_command_hook(
     Ok(())
 }
 
+/// The description MastraCode's flat hook entries carry; status matches it.
+pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent state to Shepr";
+
 // Claude and Codex use nested hook groups:
 //   { "matcher": "...", "hooks": [{ "type": "command", ... }] }
 // Copilot uses the flatter settings shape:
 //   { "type": "command", "matcher": "...", "bash": "...", ... }
 // Keep the helpers separate so install preserves unrelated hooks in
 // each agent's native format instead of normalizing user configuration.
-// Appends unconditionally: the caller strips entries carrying the command
-// with `remove_flat_command_hook` first.
-/// The description MastraCode's flat hook entries carry; status matches it.
-pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent state to Shepr";
-
+// Appends unconditionally: the caller strips entries carrying this hook path first.
 pub(crate) fn ensure_flat_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -170,103 +169,10 @@ pub(crate) fn is_matching_direct_command_entry(entry: &Value, command: &str) -> 
         || entry.get("bash").and_then(Value::as_str) == Some(command)
 }
 
-pub(crate) fn remove_command_hook(
-    hooks: &mut Map<String, Value>,
-    event: &str,
-    command: &str,
-) -> io::Result<bool> {
-    let Some(entries_value) = hooks.get_mut(event) else {
-        return Ok(false);
-    };
-
-    let entries = entries_value
-        .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-
-    let mut removed = false;
-    entries.retain_mut(|entry| {
-        let Some(entry_object) = entry.as_object_mut() else {
-            return true;
-        };
-        let Some(hook_entries) = entry_object.get_mut("hooks") else {
-            return true;
-        };
-        let Some(hook_entries) = hook_entries.as_array_mut() else {
-            return true;
-        };
-
-        let before = hook_entries.len();
-        hook_entries.retain(|hook| !is_matching_command_hook(hook, command));
-        if hook_entries.len() != before {
-            removed = true;
-        }
-
-        !hook_entries.is_empty()
-    });
-
-    let remove_event = entries.is_empty();
-    if remove_event {
-        hooks.remove(event);
-    }
-
-    Ok(removed)
-}
-
-pub(crate) fn remove_flat_command_hook(
-    hooks: &mut Map<String, Value>,
-    event: &str,
-    command: &str,
-) -> io::Result<bool> {
-    let Some(entries_value) = hooks.get_mut(event) else {
-        return Ok(false);
-    };
-
-    let entries = entries_value
-        .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-
-    let before = entries.len();
-    entries.retain(|entry| {
-        !(entry.get("type").and_then(Value::as_str) == Some("command")
-            && entry.get("command").and_then(Value::as_str) == Some(command))
-    });
-    let removed = entries.len() != before;
-    if entries.is_empty() {
-        hooks.remove(event);
-    }
-    Ok(removed)
-}
-
-pub(crate) fn remove_direct_command_hook(
-    hooks: &mut Map<String, Value>,
-    event: &str,
-    command: &str,
-) -> io::Result<bool> {
-    let Some(entries_value) = hooks.get_mut(event) else {
-        return Ok(false);
-    };
-
-    let entries = entries_value
-        .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-
-    let before = entries.len();
-    entries.retain(|entry| {
-        !(entry.get("type").and_then(Value::as_str) == Some("command")
-            && is_matching_direct_command_entry(entry, command))
-    });
-    let removed = entries.len() != before;
-    if entries.is_empty() {
-        hooks.remove(event);
-    }
-    Ok(removed)
-}
-
 // Cursor hooks.json uses the minimal shape `{ "command": "..." }` documented at
 // https://cursor.com/docs/hooks. Keep this separate from the nested codex and
 // flat copilot helpers so install does not rewrite unrelated hooks.
-// Appends unconditionally: the caller strips entries carrying the command
-// with `remove_simple_command_hook` first.
+// Appends unconditionally: the caller strips entries carrying this hook path first.
 pub(crate) fn ensure_simple_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -282,44 +188,76 @@ pub(crate) fn ensure_simple_command_hook(
     Ok(())
 }
 
-pub(crate) fn remove_simple_command_hook(
+pub(crate) fn remove_hook_path_commands(
     hooks: &mut Map<String, Value>,
-    event: &str,
-    command: &str,
+    hook_path: &Path,
 ) -> io::Result<bool> {
-    let Some(entries_value) = hooks.get_mut(event) else {
-        return Ok(false);
-    };
+    remove_hook_path_commands_preserving(hooks, hook_path, None)
+}
 
-    let entries = entries_value
-        .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-
-    let before = entries.len();
-    entries.retain(|entry| entry.get("command").and_then(Value::as_str) != Some(command));
-    let removed = entries.len() != before;
-    if entries.is_empty() {
-        hooks.remove(event);
+pub(crate) fn remove_hook_path_commands_preserving(
+    events: &mut Map<String, Value>,
+    hook_path: &Path,
+    preserve: Option<(&str, &Value)>,
+) -> io::Result<bool> {
+    let mut removed = false;
+    let mut preserved = false;
+    let mut empty_events = Vec::new();
+    for (event, entries_value) in events.iter_mut() {
+        let Some(entries) = entries_value.as_array_mut() else {
+            continue;
+        };
+        let mut removed_in_event = false;
+        entries.retain_mut(|entry| {
+            if !preserved
+                && preserve.is_some_and(|(preserve_event, canonical)| {
+                    preserve_event == event && canonical == entry
+                })
+            {
+                preserved = true;
+                return true;
+            }
+            let Some(command_entries) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+                let owned = value_uses_hook_path(entry, hook_path);
+                removed |= owned;
+                removed_in_event |= owned;
+                return !owned;
+            };
+            let mut removed_in_group = false;
+            command_entries.retain(|command_entry| {
+                let owned = value_uses_hook_path(command_entry, hook_path);
+                removed |= owned;
+                removed_in_group |= owned;
+                removed_in_event |= owned;
+                !owned
+            });
+            if removed_in_group && command_entries.is_empty() {
+                return false;
+            }
+            if value_uses_hook_path(entry, hook_path) {
+                removed = true;
+                removed_in_event = true;
+                return false;
+            }
+            true
+        });
+        if removed_in_event && entries.is_empty() {
+            empty_events.push(event.clone());
+        }
+    }
+    for event in empty_events {
+        events.remove(&event);
     }
     Ok(removed)
 }
 
-pub(crate) fn remove_hook_commands(
-    hooks: &mut Map<String, Value>,
-    event: &str,
-    hook_path: &Path,
-    action: Option<&str>,
-) -> io::Result<bool> {
-    remove_command_hook(hooks, event, &hook_command(hook_path, action))
-}
-
-pub(crate) fn remove_direct_hook_commands(
-    hooks: &mut Map<String, Value>,
-    event: &str,
-    hook_path: &Path,
-    action: Option<&str>,
-) -> io::Result<bool> {
-    remove_direct_command_hook(hooks, event, &hook_command(hook_path, action))
+fn value_uses_hook_path(value: &Value, hook_path: &Path) -> bool {
+    ["command", "bash"].iter().any(|field| {
+        value
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|command| is_hook_command_for_path(command, hook_path))
+    })
 }
 
 pub(crate) fn is_matching_command_hook(hook: &Value, command: &str) -> bool {
@@ -357,8 +295,6 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
 }
 
 pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
-    let events = super::registry::integration_hook_events(Target::Kimi);
-    let timeout = super::registry::integration_hook_timeout(Target::Kimi)?;
     let mut result = remove_kimi_config_block(content)?
         .trim_end_matches('\n')
         .to_string();
@@ -367,13 +303,49 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
         result.push('\n');
     }
 
-    result.push_str(KIMI_CONFIG_BLOCK_BEGIN);
-    result.push('\n');
+    result.push_str(&kimi_integration_block(hook_path)?);
+    result
+        .parse::<DocumentMut>()
+        .map_err(|error| io::Error::other(format!("could not build Kimi config.toml: {error}")))?;
+    Ok(result)
+}
+
+pub(crate) fn kimi_config_block_is_current(content: &str, hook_path: &Path) -> io::Result<bool> {
+    let expected = kimi_integration_block(hook_path)?;
+    let mut actual = String::new();
+    let mut in_block = false;
+    let mut found_block = false;
+
+    for line in content.split_inclusive('\n') {
+        let marker = line.trim();
+        if marker == KIMI_CONFIG_BLOCK_BEGIN {
+            if found_block {
+                return Ok(false);
+            }
+            found_block = true;
+            in_block = true;
+        }
+        if in_block {
+            actual.push_str(line);
+        }
+        if marker == KIMI_CONFIG_BLOCK_END {
+            in_block = false;
+        }
+    }
+
+    Ok(found_block && !in_block && actual == expected)
+}
+
+fn kimi_integration_block(hook_path: &Path) -> io::Result<String> {
+    let events = super::registry::integration_hook_events(Target::Kimi);
+    let timeout = super::registry::integration_hook_timeout(Target::Kimi)?;
+    let mut block = String::from(KIMI_CONFIG_BLOCK_BEGIN);
+    block.push('\n');
     for hook in events {
         let Some(action) = hook.action else {
             continue;
         };
-        result.push_str(&kimi_hook_table(
+        block.push_str(&kimi_hook_table(
             hook.event,
             hook.matcher,
             hook_path,
@@ -381,12 +353,9 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
             timeout,
         ));
     }
-    result.push_str(KIMI_CONFIG_BLOCK_END);
-    result.push('\n');
-    result
-        .parse::<DocumentMut>()
-        .map_err(|error| io::Error::other(format!("could not build Kimi config.toml: {error}")))?;
-    Ok(result)
+    block.push_str(KIMI_CONFIG_BLOCK_END);
+    block.push('\n');
+    Ok(block)
 }
 
 pub(crate) fn kimi_hook_table(

@@ -290,9 +290,6 @@ pub enum EndpointCommand {
 pub struct EndpointCommandTraits {
     /// The dotted name logs and client notices use.
     pub name: &'static str,
-    /// The command can change what a shell shows, so the server renders after
-    /// it.
-    pub mutates_ui: bool,
     /// The command creates or removes a workspace or pane, or reorders
     /// workspaces (which client locations track by index), so every shell
     /// client's location is reconciled after it.
@@ -304,33 +301,32 @@ pub struct EndpointCommandTraits {
 
 impl EndpointCommand {
     pub fn traits(&self) -> EndpointCommandTraits {
-        let (name, mutates_ui, changes_topology, claims_shell_geometry) = match self {
-            Self::ClientShellSurfaceSet(_) => ("client_shell.surface.set", true, false, false),
-            Self::WorkspaceCreate(_) => ("workspace.create", true, true, true),
-            Self::WorkspaceFocus(_) => ("workspace.focus", true, false, true),
-            Self::WorkspaceRename(_) => ("workspace.rename", true, false, true),
-            Self::WorkspaceCheckoutRoot(_) => ("workspace.checkout_root", false, false, false),
-            Self::WorkspaceMove(_) => ("workspace.move", true, true, true),
-            Self::WorkspaceClose(_) => ("workspace.close", true, true, true),
-            Self::PaneSplit(_) => ("pane.split", true, true, true),
-            Self::PaneSwap(_) => ("pane.swap", true, false, true),
-            Self::PaneZoom(_) => ("pane.zoom", true, false, true),
-            Self::LayoutSetSplitRatio(_) => ("layout.set_split_ratio", true, false, true),
-            Self::PaneFocusDirection(_) => ("pane.focus_direction", true, false, true),
-            Self::PaneResize(_) => ("pane.resize", true, false, true),
-            Self::PaneScroll(_) => ("pane.scroll", true, false, true),
-            Self::PaneClear(_) => ("pane.clear", true, false, true),
-            Self::PaneSelectionRead(_) => ("pane.selection.read", false, false, false),
-            Self::PaneCopyMotion(_) => ("pane.copy_motion", false, false, false),
-            Self::PaneCopySearch(_) => ("pane.copy_search", false, false, false),
-            Self::PaneFocus(_) => ("pane.focus", true, false, true),
-            Self::PaneInputSet(_) => ("pane.input.set", true, false, true),
-            Self::PaneRename(_) => ("pane.rename", true, false, true),
-            Self::PaneClose(_) => ("pane.close", true, true, true),
+        let (name, changes_topology, claims_shell_geometry) = match self {
+            Self::ClientShellSurfaceSet(_) => ("client_shell.surface.set", false, false),
+            Self::WorkspaceCreate(_) => ("workspace.create", true, true),
+            Self::WorkspaceFocus(_) => ("workspace.focus", false, true),
+            Self::WorkspaceRename(_) => ("workspace.rename", false, true),
+            Self::WorkspaceCheckoutRoot(_) => ("workspace.checkout_root", false, false),
+            Self::WorkspaceMove(_) => ("workspace.move", true, true),
+            Self::WorkspaceClose(_) => ("workspace.close", true, true),
+            Self::PaneSplit(_) => ("pane.split", true, true),
+            Self::PaneSwap(_) => ("pane.swap", false, true),
+            Self::PaneZoom(_) => ("pane.zoom", false, true),
+            Self::LayoutSetSplitRatio(_) => ("layout.set_split_ratio", false, true),
+            Self::PaneFocusDirection(_) => ("pane.focus_direction", false, true),
+            Self::PaneResize(_) => ("pane.resize", false, true),
+            Self::PaneScroll(_) => ("pane.scroll", false, true),
+            Self::PaneClear(_) => ("pane.clear", false, true),
+            Self::PaneSelectionRead(_) => ("pane.selection.read", false, false),
+            Self::PaneCopyMotion(_) => ("pane.copy_motion", false, false),
+            Self::PaneCopySearch(_) => ("pane.copy_search", false, false),
+            Self::PaneFocus(_) => ("pane.focus", false, true),
+            Self::PaneInputSet(_) => ("pane.input.set", false, true),
+            Self::PaneRename(_) => ("pane.rename", false, true),
+            Self::PaneClose(_) => ("pane.close", true, true),
         };
         EndpointCommandTraits {
             name,
-            mutates_ui,
             changes_topology,
             claims_shell_geometry,
         }

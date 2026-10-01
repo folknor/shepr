@@ -1327,13 +1327,30 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
     let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
+    let state_dir = home.join(".local/state/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
-    fs::write(opencode_dir.join("tui.json"), "{}").expect("test precondition");
+    fs::create_dir_all(&state_dir).expect("test precondition");
+    fs::write(state_dir.join("kv.json"), "{}").expect("test precondition");
     env.set("HOME", &home);
 
-    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert!(!opencode_dir.join("cli.json").try_exists().expect("stat"));
+    let status = || {
+        integration_status_at(
+            crate::agent::IntegrationTarget::Opencode,
+            install_path(&installed, ArtifactRole::Plugin).clone(),
+        )
+        .expect("status")
+        .state
+    };
+    assert_eq!(status(), IntegrationStatusKind::Current);
+    fs::remove_file(state_dir.join("kv.json")).expect("test precondition");
+    assert_eq!(status(), IntegrationStatusKind::Outdated);
+
+    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    assert_eq!(status(), IntegrationStatusKind::Current);
+    assert!(opencode_dir.join("cli.json").stat_is_file());
     assert!(
         opencode_dir
             .join(OPENCODE_V2_TUI_PLUGIN_DIR)
@@ -1387,10 +1404,14 @@ fn opencode_v2_install_and_status_preserve_cli_preferences() {
     install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Current);
     assert_eq!(
-        serde_json::from_str::<Value>(&fs::read_to_string(cli).expect("test precondition"))
+        serde_json::from_str::<Value>(&fs::read_to_string(&cli).expect("test precondition"))
             .expect("test precondition"),
         json!({"theme":{"name":"catppuccin"},"plugins":["other", OPENCODE_V2_TUI_PLUGIN_SPEC]})
     );
+    fs::remove_file(&cli).expect("test precondition");
+    assert_eq!(status(), IntegrationStatusKind::Outdated);
+    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    assert_eq!(status(), IntegrationStatusKind::Current);
 }
 
 #[test]
@@ -1720,7 +1741,7 @@ fn omp_handler(event: &str) -> &'static str {
 #[test]
 fn omp_root_activation_requires_ui_context() {
     let activator = OMP_EXTENSION_ASSET
-        .find("function activateRootSession(ctx: any, sessionStartSource = \"startup\"): boolean")
+        .find("function activateRootSession(ctx: any, sessionStartSource?: string): boolean")
         .expect("omp extension should centralize root session activation");
     let helper = &OMP_EXTENSION_ASSET[activator..];
     let non_ui_guard = helper
@@ -1744,8 +1765,17 @@ fn omp_session_start_and_switch_use_root_activation() {
         .expect("omp extension registers session_start handler");
     let session_start_handler = &OMP_EXTENSION_ASSET[session_start..];
     session_start_handler
-        .find("if (!activateRootSession(ctx))")
-        .expect("omp session_start handler should activate root session");
+        .find("if (!activateRootSession(ctx, \"startup\"))")
+        .expect("omp session_start handler should activate root session as a startup");
+
+    // Per-turn activation must not claim a startup: only session_start and
+    // session_switch select a session.
+    let agent_start = omp_handler("agent_start");
+    assert!(
+        agent_start.contains("activateRootSession(ctx)"),
+        "{agent_start}"
+    );
+    assert!(!agent_start.contains("\"startup\""), "{agent_start}");
 
     let session_switch = OMP_EXTENSION_ASSET
         .find("pi.on(\"session_switch\", (event, ctx)")
@@ -1759,7 +1789,7 @@ fn omp_session_start_and_switch_use_root_activation() {
 #[test]
 fn omp_session_reports_include_start_source() {
     let report_session = OMP_EXTENSION_ASSET
-        .find("function reportSession(sessionStartSource = \"startup\"): Promise<void>")
+        .find("function reportSession(sessionStartSource?: string): Promise<void>")
         .expect("omp extension should label session reports with a lifecycle source");
     let helper = &OMP_EXTENSION_ASSET[report_session..];
     let session_source = helper

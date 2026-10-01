@@ -151,34 +151,6 @@ name misleads.
 `handle_server_event_with_render_impact`, the only caller, intercepts that event
 first. Two copies of the same rule, one dead.
 
-## SLOOP-009 - Doc: `render_and_stream` claims there is always a surface
-
-"Rendered above for every active shell client ... so there is always a surface
-here". The surface is `None` whenever rendering was deferred (synchronized
-output, a poisoned core, a changed epoch); the `continue` is the normal path
-there.
-
-## SLOOP-010 - `EndpointCommandTraits::mutates_ui` is never read
-
-Lateral (protocol scope): `shepr-protocol/src/command.rs` says "so the server
-renders after it". The server never reads it; render demand comes from the
-app's outcome.
-
-## SLOOP-011 - The PTY size rule doc omits the surface-activation exception
-
-The rule doc lists "surface activation" among the claims, but
-`set_client_shell_surface_active` skips the claim when another client with
-outer focus already views the workspace. The exception is reasonable; the rule
-doc does not mention it.
-
-## SLOOP-012 - Held-press tracking is keyed by key code or button only
-
-`ClientShellPressId` (`clients.rs`). A press of key K forwarded to pane A, then
-a press of K to pane B before any release, overwrites A's entry, so on abrupt
-teardown only B gets a release and A keeps K held, against "Presses forwarded by
-this shell that need release on abrupt teardown". Key the map by (target, press
-id).
-
 ## SLOOP-013 - Server-event and API drains are unbounded
 
 `drain_server_events` and `drain_api_requests_with_shutdown_check` drain until
@@ -232,3 +204,10 @@ edge-triggered state that paths must remember to update, while pane focus
 (`sync_pane_focus`) is derived level-based from the views and has none of these
 bugs. Deriving the controller and per-client demand the same way is the rewrite
 the hunter says pays.
+
+## SLOOP-019 - A mouse release over another pane leaves the press held
+
+Lateral. Held presses (`clients.rs`) are keyed by (target pane, press id), so a
+mouse Up delivered to a different target than its Down (a release over another
+pane) does not clear the Down entry. Abrupt teardown then sends a stray release
+to the original pane. Minor, and new with the per-target key.

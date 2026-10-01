@@ -100,13 +100,26 @@ fn parse_rgb_color(value: &str) -> Option<RgbColor> {
             return None;
         }
         return Some(RgbColor {
-            r: parse_hex_component(&hex[..digits])?,
-            g: parse_hex_component(&hex[digits..digits * 2])?,
-            b: parse_hex_component(&hex[digits * 2..])?,
+            r: parse_hash_component(&hex[..digits])?,
+            g: parse_hash_component(&hex[digits..digits * 2])?,
+            b: parse_hash_component(&hex[digits * 2..])?,
         });
     }
 
     None
+}
+
+fn parse_hash_component(component: &str) -> Option<u8> {
+    if component.is_empty()
+        || component.len() > 4
+        || !component.chars().all(|ch| ch.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let value = u32::from_str_radix(component, 16).ok()?;
+    // XParseColor treats # components as their most significant bits, unlike rgb:.
+    let high_byte = (value << (16 - component.len() * 4)) >> 8;
+    u8::try_from(high_byte).ok()
 }
 
 fn parse_hex_component(component: &str) -> Option<u8> {

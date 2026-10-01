@@ -12,42 +12,6 @@ Filed from the defect hunt over `crates/shepr-server/src/app/`, `lib.rs`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SAPP-001 - The server loop spins hot while a resume cwd check is outstanding (forever on a hung mount)
-
-Claims broken: `start_pending_agent_resume` (`agent_resume.rs`) says the
-worker-side cwd check exists "so a persistently hung mount lookup leaves the loop
-free while the resume waits". `ResumeSchedule::wakeup` says it returns `None`
-"while nothing holds an eligible candidate back".
-
-`pending_agent_resume_wakeup()` returns `pending.not_before.max(theme_wait)`
-whenever candidates are eligible, and that instant stays in the past once the
-theme wait or a launch/backoff barrier has elapsed.
-`next_headless_loop_deadline_with_git_refresh` (`runtime.rs`) feeds it into the
-loop deadline unfiltered, unlike the render deadline and
-`default_workspace_retry_at`, which are filtered to `> now` in the same
-function. Meanwhile `start_pending_agent_resumes` returns `false` without doing
-anything while any candidate lacks a directory check, and nothing in the
-schedule moves:
-
-1. theme wait expired (or a barrier passed), candidate eligible, check
-   dispatched to a worker;
-2. loop computes deadline = past instant, `sleep_until_or_pending` fires at
-   once, `handle_scheduled_tasks_headless` runs, `start_pending_agent_resumes`
-   returns false, `schedule_resume_cwd_checks` dedups the in-flight check;
-3. back to 2.
-
-The spin lasts as long as the `metadata` call on the worker: milliseconds
-normally, unbounded on a hung NFS/sshfs mount (the case the worker split was made
-for). The same holds after every `Retryable` outcome (its check is consumed by
-`take_directory_check`, so the next pass re-dispatches and spins until the new
-check lands).
-
-Direction: the schedule should know about outstanding checks: return no wakeup
-while any candidate awaits a check (the completion already wakes the loop
-through `worker_rx`), or filter the resume wakeup to `> now`. Structurally, make
-"awaiting cwd check" a state the schedule owns rather than something `App`
-checks after `is_due` said yes.
-
 ## SAPP-002 - One hung resume directory blocks every other agent resume, indefinitely
 
 Claims broken: the same comment ("leaves the loop free while the resume waits")
@@ -66,7 +30,7 @@ if pending.iter().any(|candidate| {
 
 `worker::resume_cwd_check` has no timeout. One pane whose saved cwd sits on a
 hung mount keeps every other restored agent, in every workspace, from resuming
-for as long as the mount hangs (and per SAPP-001 spins the loop meanwhile). The
+for as long as the mount hangs. The
 comment justifies the all-or-nothing gate as keeping candidate order and
 spacing.
 
@@ -147,40 +111,6 @@ resume identity.
 Direction: capture the checkpoint before publishing the exit, and/or carry the
 exit reason into the release so a signal death keeps `persisted_agent_session`.
 
-## SAPP-005 - The resume theme wait never applies after restoring a session that saved a theme
-
-Claims broken: `PENDING_AGENT_RESUME_THEME_WAIT` (`limits.rs`): "Wait briefly
-for restored agent theme reports"; `resume_schedule` module doc: the theme wait
-is "how long a host theme is waited for".
-
-`App::with_paths` seeds `host_terminal_theme` from the snapshot
-(`restored_host_theme`). `host_theme_available()` is
-`!host_terminal_theme.is_empty()`, so after any restore of a session saved while
-a client was attached, the theme is "available" before any client has reported
-one, and `ResumeSchedule::wakeup` skips the wait. Resumes are the only consumer
-of the wait and only happen after a restore, so the wait is effectively dead
-whenever it could matter. Resumed agents answer their startup OSC 10/11 queries
-with the theme of whichever client was foreground when the session was last
-saved, possibly another machine's terminal with the opposite light/dark scheme,
-and cache it.
-
-Direction: track "a live client reported a theme this boot" separately from "a
-theme exists", and gate the wait on the former. If the saved theme is meant to be
-the fallback, say so in `PENDING_AGENT_RESUME_THEME_WAIT` (whose "before
-assigning a fallback" describes nothing the code does).
-
-## SAPP-006 - An appearance-only report from the foreground client wipes the saved host theme
-
-Lateral, in `HeadlessServer::sync_host_theme_from_foreground`
-(`server/headless.rs`), which documents: "A client that has reported nothing yet
-leaves the current theme (a live client's, or the one saved with the session) in
-place." It returns early only when the theme is empty and the appearance is
-`None`. A client that has reported its Mode 2031 appearance but not yet its OSC
-10/11 colours passes the guard, and `set_host_terminal_theme(empty)` replaces the
-current theme with an empty one: every pane runtime is re-themed to defaults and
-`schedule_session_save` persists the empty theme. Fix: apply the theme only when
-the client's theme is non-empty, independently of the appearance.
-
 ## SAPP-007 - Test-only reimplementations of production paths
 
 Several `#[cfg(test)]` functions duplicate production logic with different
@@ -202,22 +132,6 @@ semantics, and tests assert on the duplicate:
 
 The hunter recommends deleting these and driving tests through the production
 entry points (the headless loop already has a test harness).
-
-## SAPP-008 - A corrupt or unreadable pane-history file is discarded with no notice and no backup
-
-`App::with_paths` loads history with `load_history(..)`; a read or parse failure
-is only a `warn!` in shepr-mux, `restore_notice` says nothing, and
-`protect_unloaded` does not cover the history file, so the first save overwrites
-it. The restore notice is scoped to the session file, so the hunter calls this a
-gap rather than a broken promise, worth deciding explicitly since pane history
-is the bulk of what a user would want back.
-
-## SAPP-009 - Limit docs describe behaviour the code does not have
-
-`limits.rs`: `GIT_REMOTE_STATUS_REFRESH_INTERVAL` says "while it is visible";
-the server refreshes whenever a client is attached, whatever any sidebar shows
-(AGENTS.md). `PENDING_AGENT_RESUME_THEME_WAIT` says "before assigning a
-fallback"; nothing assigns one (see SAPP-005).
 
 ## SAPP-010 - A `Stale` removal plan still clears `session_dirty`
 

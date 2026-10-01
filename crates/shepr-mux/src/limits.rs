@@ -62,8 +62,8 @@ pub(crate) const PROCESS_RECHECK_TRANSIENT: Duration = Duration::from_millis(50)
 /// color-setting program that stays in the foreground or on the alternate
 /// screen falls back to the ordinary cadence after this.
 pub(crate) const TRANSIENT_COLOR_RECHECK_WINDOW: Duration = Duration::from_secs(2);
-/// Probe cadence when no agent is identified, balancing acquisition latency
-/// against repeated process scans.
+/// Probe cadence when no agent is identified, also used for the initial
+/// scheduled poll, balancing acquisition latency against repeated scans.
 pub(crate) const PROCESS_RECHECK_NO_AGENT: Duration = Duration::from_millis(500);
 /// Probe cadence while tracking an agent whose visible state can change.
 pub(crate) const PROCESS_RECHECK_ACTIVE_AGENT: Duration = Duration::from_millis(300);
@@ -85,10 +85,6 @@ pub(crate) const AGENT_RESUME_DETECTION_HOLD: Duration = Duration::from_secs(30)
 /// A restored pane holds absence for the same interval as agent resume, so
 /// detection cannot clear the agent before its process has time to appear.
 pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = AGENT_RESUME_DETECTION_HOLD;
-/// Delay before the detector first polls a newly launched pane, giving the
-/// shell time to put initial output on the screen.
-pub(crate) const INITIAL_DETECTION_DELAY: Duration = Duration::from_millis(50);
-
 /// Default screen depth sampled for agent detection when no caller supplies
 /// one; it covers a conventional terminal viewport.
 pub(crate) const DEFAULT_DETECTION_ROWS: usize = 24;

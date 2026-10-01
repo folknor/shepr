@@ -38,8 +38,9 @@ pub(super) enum GeometrySource {
 ///   it, viewed or not, so switching workspaces never resizes a pane.
 /// - Otherwise a workspace is sized for its geometry controller: the client
 ///   that first viewed it, or that last claimed it by interacting with it
-///   (input, outer focus, navigation, surface activation). When the controller
-///   stops viewing the workspace, a remaining viewer takes it over
+///   (input, outer focus, navigation, surface activation when no other active
+///   shell with outer-terminal focus is viewing that workspace). When the
+///   controller stops viewing the workspace, a remaining viewer takes it over
 ///   (`reapply_controlled_shell_workspace_geometry`).
 /// - With no client presenting surfaces, every workspace is sized for the
 ///   configured headless size.

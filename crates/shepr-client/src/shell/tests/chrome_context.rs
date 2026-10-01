@@ -283,6 +283,7 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
 
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
         highlighted: 1,
+        launcher,
     }));
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);

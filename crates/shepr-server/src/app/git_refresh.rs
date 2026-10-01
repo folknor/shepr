@@ -55,13 +55,29 @@ impl GitRefreshScheduler {
         cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
     ) {
         self.git_refresh_in_flight = false;
+        let mut refreshed_keys = HashSet::with_capacity(cache_updates.len());
         for (key, entry) in cache_updates {
+            refreshed_keys.insert(key.clone());
             for error in &entry.read_errors {
                 if self.reported_git_read_errors.insert(error.clone()) {
                     tracing::warn!(%error, "git status read failed");
                 }
             }
             self.git_status_cache.insert(key, entry);
+        }
+        if !refreshed_keys.is_empty() {
+            // A successful refresh returns one update per current unique
+            // workspace repository, releasing entries no workspace visits.
+            self.git_status_cache
+                .retain(|key, _| refreshed_keys.contains(key));
+            let current_errors: HashSet<_> = self
+                .git_status_cache
+                .values()
+                .flat_map(|entry| entry.read_errors.iter().cloned())
+                .collect();
+            // Keep error deduplication only while an active cache entry carries it.
+            self.reported_git_read_errors
+                .retain(|error| current_errors.contains(error));
         }
         if self.git_refresh_due_after_in_flight {
             self.mark_due(now);
@@ -99,6 +115,11 @@ struct WorkspaceGitRefreshOutput {
 
 impl App {
     pub(crate) fn start_git_status_refresh_if_due(&mut self, now: Instant) {
+        if self.state.workspaces.is_empty() {
+            self.git_refresh.git_status_cache.clear();
+            self.git_refresh.reported_git_read_errors.clear();
+            return;
+        }
         let Some(deadline) = self.git_refresh_deadline() else {
             return;
         };
@@ -119,6 +140,8 @@ impl App {
             ahead_behind: true,
         };
         if workspaces.is_empty() {
+            self.git_refresh.git_status_cache.clear();
+            self.git_refresh.reported_git_read_errors.clear();
             self.git_refresh.last_git_remote_status_refresh = now;
             self.git_refresh.git_identity_refresh_requested = false;
             return;

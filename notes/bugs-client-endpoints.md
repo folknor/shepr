@@ -141,47 +141,12 @@ Fix direction: map failure kinds to fixed predicates for the UI (keep the raw
 error for the log and the machine diagnostic) and drop the removed/re-pointed
 wording.
 
-## CEND-005 - `shepr server stop` makes an attached client exit nonzero
-
-`lib.rs` module doc: "Handles ServerShutdown gracefully (clean exit, ...)". With
-no machines, `ServerShutdown` returns `Err(ClientError::ServerShutdown)`, which
-`run_launched_client` turns into `ClientRunError::Session`.
-
-## CEND-006 - `finish_client` doc promises forwarded notices that do not exist
-
-`src/cli/error.rs` `finish_client` doc: "its lines (forwarded notices, then the
-message that ended the session)". `ClientExit` holds one optional message and
-never any forwarded notices.
-
-## CEND-007 - A preamble build mismatch reads as a server rejection
-
-`ClientError::Preamble(DifferentBuild)` displays as "server rejected handshake:
-..."; the server did not reject anything, the client detected a different build
-from the preamble.
-
 ## CEND-008 - Picking Local in Attention promises a reconnect that will not happen
 
 `begin_endpoint_activation` defers a Local pick with "Local is reconnecting;
 selection will resume when it is ready" whatever Local's state is, including
 Attention (build mismatch, permission problem), where it will not become ready
 without outside action.
-
-## CEND-009 - The handshake clears a receive timeout it never set
-
-`handshake::do_handshake_for_link` calls `set_handshake_recv_timeout(None)` "to
-clear client handshake read timeout", but no receive timeout is ever set (reads
-go through `DeadlineReader`). Dead step with a misleading error context.
-
-## CEND-010 - `server_reader_thread`'s `should_quit` is a per-transport stop flag
-
-`transport::server_reader_thread` names its parameter `should_quit`; it is the
-per-transport stop flag from `NativeEndpointTransport::stop_handle`, not the
-client quit flag.
-
-## CEND-011 - An always-true generation check
-
-`ClientLoop::handle_server_message` checks `completed.generation == generation`
-after `receive_response` matched the key on that generation.
 
 ## CEND-012 - The `Connected` repaint shows nothing new
 

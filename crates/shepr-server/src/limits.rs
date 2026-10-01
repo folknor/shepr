@@ -29,12 +29,13 @@ pub(crate) const PANE_TEARDOWN_WAIT: Duration =
 /// cadence: rendering faster only produces frames no screen can show, while
 /// output bursts coalesce into the next frame.
 pub(crate) const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
-/// Refresh Git ahead/behind status periodically while it is visible, keeping it
-/// fresh without probing on every render.
+/// Refresh Git ahead/behind status periodically while clients are connected,
+/// keeping it fresh without probing on every render.
 pub(crate) const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 /// Rediscover repository roots periodically so external cwd changes settle.
 pub(crate) const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
-/// Wait briefly for restored agent theme reports before assigning a fallback.
+/// Wait briefly for live host colors; afterward the saved theme, if any, stays
+/// the fallback for resumed agents.
 pub(crate) const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 /// Coalesce ordinary session writes to avoid saving on every event.
 pub(crate) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);

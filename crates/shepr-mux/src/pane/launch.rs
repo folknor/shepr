@@ -211,11 +211,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
     // Both sockets are exported as the server resolved them, replacing any
     // inherited value. Every agent integration reports through the API
-    // socket variable, so it is always set. Under a client-socket-only
-    // override that costs a nested shepr client its client socket: the API
-    // variable takes precedence and derives the runtime client socket, which
-    // this server does not listen on. Dropping the API variable instead would
-    // switch off every integration in such a pane.
+    // socket variable, so it is always set.
     cmd.env(EnvVar::SheprSocketPath, &launch_env.api_socket_path);
     cmd.env(
         EnvVar::SheprClientSocketPath,

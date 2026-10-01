@@ -23,6 +23,10 @@ impl App {
         &mut self,
         theme: shepr_termio::host_term::theme::TerminalTheme,
     ) -> bool {
+        if theme.is_empty() {
+            return false;
+        }
+        self.live_host_theme_reported = true;
         if theme == self.state.host_terminal_theme {
             return false;
         }

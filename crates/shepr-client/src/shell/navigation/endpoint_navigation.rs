@@ -56,10 +56,6 @@ impl ClientShellState {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
             outcome.repaint = true;
-            if !collapse_toggle && (endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id))
-            {
-                self.activate_endpoint(endpoint_id, outcome);
-            }
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id,

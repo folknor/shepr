@@ -12,11 +12,10 @@ pub fn encode_terminal_key(mut key: TerminalKey, protocol: KeyboardProtocol) -> 
         &mut key,
         matches!(protocol, KeyboardProtocol::Kitty { flags } if flags != 0),
     );
-    // Super has no legacy character encoding. Preserve the chord with CSI-u
-    // instead of leaking the unmodified character into the pane.
+    // Legacy encoding has no Super modifier bit. Preserve the chord with CSI-u
+    // instead of leaking the unmodified key into the pane.
     if matches!(protocol, KeyboardProtocol::Legacy)
         && key.kind != crossterm::event::KeyEventKind::Release
-        && matches!(key.code, KeyCode::Char(_))
         && key.modifiers.contains(KeyModifiers::SUPER)
         && let Some(bytes) = try_encode_csi_u(&key, 0)
     {
@@ -165,7 +164,8 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
     // Special keys (arrows, F-keys, etc.) have well-established legacy
     // xterm modified formats (\x1b[1;3A for Alt+Up, etc.) that are universally
     // understood. Even Ghostty sends these in legacy format with kitty mode on.
-    // Only use CSI u for character keys and keys without legacy representations.
+    // Use CSI u for character keys and keys without legacy forms. Super chords
+    // on functional keys also need it because xterm's modifier bits omit Super.
     match key.code {
         KeyCode::Up
         | KeyCode::Down
@@ -178,7 +178,9 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
         | KeyCode::Insert
         | KeyCode::Delete
         | KeyCode::F(_)
-            if event_suffix.is_none() && !report_all_keys =>
+            if event_suffix.is_none()
+                && !report_all_keys
+                && !mods.contains(KeyModifiers::SUPER) =>
         {
             return None; // let legacy handle these
         }

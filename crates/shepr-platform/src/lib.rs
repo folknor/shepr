@@ -49,8 +49,9 @@ pub use stderr_null::redirect_stderr_to_null;
 pub use terminal_environment::prefers_osc52_clipboard;
 
 /// Whether a presence variable (`shepr_core::env::EnvKind::Presence`) is set,
-/// for the per-call host probes that have no error path to report through: a
-/// refused value (padded or non-UTF-8) is logged and reads as unset.
+/// for per-call host probes with no error path to report through. Presence
+/// reads inspect only raw non-emptiness, so padding and non-UTF-8 bytes are
+/// accepted; the fallback keeps a future registry error fail-soft.
 fn env_present(var: shepr_core::env::EnvVar) -> bool {
     shepr_core::env::read_present(var).unwrap_or_else(|error| {
         tracing::warn!(%error, "ignoring a refused environment value");

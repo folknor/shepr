@@ -376,7 +376,7 @@ fn serialize_history_within(
             trim.panes += 1;
             trim.dropped_bytes += *size - kept;
         }
-        cuts.push((kept > 0).then_some(cut));
+        cuts.push(cut);
     }
     let mut trimmed = CappedBuf::new(cap);
     write_history_json(&mut trimmed, history, Shape::Cut(&cuts))?;
@@ -460,9 +460,9 @@ impl Write for CappedBuf {
 enum Shape<'a> {
     /// Every pane whole.
     Whole,
-    /// Each pane from a cut, in workspace and pane order; `None` leaves
-    /// the pane out.
-    Cut(&'a [Option<Cut>]),
+    /// Each pane from a cut, in workspace and pane order. A pane whose cut
+    /// keeps nothing is written as an empty string, never left out.
+    Cut(&'a [Cut]),
     /// No workspaces, only the layout fingerprint the history pairs with.
     Compact,
 }
@@ -502,7 +502,7 @@ fn write_history_json<W: Write>(
         for (id, text) in panes {
             let cut = match shape {
                 Shape::Cut(cuts) => {
-                    let cut = cuts.get(pane_index).copied().flatten();
+                    let cut = cuts.get(pane_index).copied();
                     pane_index += 1;
                     cut
                 }
@@ -767,7 +767,6 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Reads the saved layout while the caller owns the data directory.
 /// What reading the saved session found.
 pub enum SessionLoad {
     /// No session file, or no lease to read it under: a fresh start.
@@ -796,6 +795,7 @@ pub fn session_backup_directory(data_dir: &Path) -> PathBuf {
     backup_directory(&session_path(data_dir))
 }
 
+/// Reads the saved layout while the caller owns the data directory.
 pub fn load(lease: &DataDirLease) -> SessionLoad {
     if !lease.is_active() {
         return SessionLoad::Missing;

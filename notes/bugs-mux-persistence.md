@@ -79,31 +79,3 @@ invalid") is never built. An error from reading Git's config environment
 (`git_user_config_paths_at` -> `shepr_core::env::read_*`) surfaces as
 `FileRead` on `<common dir>/config`, so the log names the wrong thing. Construct
 the variant there or delete it.
-
-## MUXP-004 - The doc comment on `enum SessionLoad` belongs to `load`
-
-`persist/io.rs`: the doc on `SessionLoad` begins with "Reads the saved layout
-while the caller owns the data directory." That line belongs to `load` and was
-left above the enum.
-
-## MUXP-005 - A trimmed history leaves out empty panes instead of writing `""`
-
-`persist/io.rs` `serialize_history_within`: in the trimmed shape a pane whose
-history is empty (size 0) is left out entirely, because `kept > 0` is false,
-rather than written as `""`. Restore treats both the same, so harmless, but the
-`Shape::Cut` doc says `None` means a trimmed pane.
-
-## MUXP-006 - `SessionPersister.finished` promises a count `Notify` does not keep
-
-`persist/actor.rs`: documented as "Fired once per submitted job". It is a
-`Notify::notify_one`, so completions that land while nobody waits collapse into
-one permit. The server reaps one save at a time, so correct today; the wording
-promises a count the signal does not keep.
-
-## MUXP-007 - Git refresh caches grow without bound on a long-lived server
-
-Lateral, `crates/shepr-server/src/app/git_refresh.rs`: `reported_git_read_errors`
-is a `HashSet<GitReadError>` that is never pruned, and the errors carry stderr
-text and paths. `git_status_cache` drops only fingerprint-less entries
-(`mark_due`), so an entry for every repository a workspace has ever visited stays
-for the life of the server.

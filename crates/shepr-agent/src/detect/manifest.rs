@@ -46,7 +46,7 @@ pub const UNKNOWN_MANIFEST_FALLBACK: &str = "manifest_unknown_fallback";
 /// Input to the detection engine, carrying the screen snapshot plus any
 /// OSC-derived strings captured from the terminal title / progress sequences.
 /// Pass empty strings for `osc_title` and `osc_progress` when the data is not
-/// available - behavior is identical to the pre-OSC engine in that case.
+/// available; rules targeting those OSC regions then see empty text.
 #[derive(Debug, Clone, Copy)]
 pub struct DetectionInput<'a> {
     pub screen: &'a str,
@@ -146,8 +146,8 @@ struct ManifestRule {
     #[serde(default = "default_region")]
     region: String,
     /// `visible_idle`, `visible_blocker` and `visible_working`: the matched
-    /// screen visibly shows that state's live chrome. Each only counts when the
-    /// rule's `state` is the corresponding one.
+    /// screen visibly shows that state's live chrome. Validation requires the
+    /// rule's `state` to be the corresponding one.
     #[serde(default)]
     visible_idle: bool,
     #[serde(default)]
@@ -947,6 +947,24 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, Strin
     for rule in &manifest.rules {
         if rule.id.trim().is_empty() {
             return Err("manifest rule id must not be empty".to_string());
+        }
+        if rule.visible_idle && rule.state != Some(ManifestState::Idle) {
+            return Err(format!(
+                "rule {} uses visible_idle without state = \"idle\"",
+                rule.id
+            ));
+        }
+        if rule.visible_blocker && rule.state != Some(ManifestState::Blocked) {
+            return Err(format!(
+                "rule {} uses visible_blocker without state = \"blocked\"",
+                rule.id
+            ));
+        }
+        if rule.visible_working && rule.state != Some(ManifestState::Working) {
+            return Err(format!(
+                "rule {} uses visible_working without state = \"working\"",
+                rule.id
+            ));
         }
         if rule.skip_state_update {
             if rule.state != Some(ManifestState::Unknown) {

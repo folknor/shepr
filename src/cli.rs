@@ -82,6 +82,14 @@ pub(crate) struct Invocation {
 /// Parses argv. On a usage error, or when `--help` for a subcommand was asked
 /// for, clap's message has already been printed and the exit code is returned.
 pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
+    if let Some((help, version)) = root_exit_flags_before_subcommand(args) {
+        return Ok(Invocation {
+            launch: Launch::Tui,
+            help,
+            version,
+        });
+    }
+
     match spec::command().try_get_matches_from(args) {
         Ok(matches) => {
             let launch = match matches.subcommand() {
@@ -115,6 +123,32 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
             Err(error.exit_code())
         }
     }
+}
+
+/// Root help and version flags take precedence over validation of a following
+/// subcommand, including required arguments nested below a command group.
+fn root_exit_flags_before_subcommand(args: &[String]) -> Option<(bool, bool)> {
+    let mut help = false;
+    let mut version = false;
+    let mut has_subcommand = false;
+
+    for argument in args.iter().skip(1).map(String::as_str) {
+        match argument {
+            "-h" | "--help" => help = true,
+            "-V" | "--version" => version = true,
+            COMMAND_CLIENT
+            | COMMAND_REMOTE_CLIENT_BRIDGE
+            | COMMAND_SERVER
+            | COMMAND_STATUS
+            | "detect" => {
+                has_subcommand = true;
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    (has_subcommand && (help || version)).then_some((help, version))
 }
 
 impl Invocation {
@@ -164,11 +198,16 @@ pub(crate) fn print_help() {
 
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
+    if let CliCommand::Detect(detect::Command::Explain(args)) = command
+        && args.file.is_some()
+    {
+        return detect::run_file_explain(args);
+    }
+
     if let CliCommand::Status(status::Command::Client { json }) = command {
-        // Client identity is read from this executable and its sibling, not from
-        // server sockets or XDG paths. A remote discovery probe runs this in an
-        // ssh session that may have no XDG_RUNTIME_DIR, so it must not resolve
-        // the application paths the other commands need.
+        // A standalone identity report of this executable and its sibling
+        // `shepr-server`: it reads only the binaries, never sockets or runtime
+        // paths, so it answers even where application paths cannot be resolved.
         status::print_client_status(*json)?;
         return Ok(0);
     }

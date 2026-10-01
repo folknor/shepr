@@ -18,27 +18,27 @@
 //! scoped `#[expect]`, and `brokkr.toml`'s `disallowed-escapes-are-allowlisted`
 //! textlint makes a new one a reviewed change.
 //!
-//! One rule holds for every variable:
+//! The policy is explicit about whether it interprets a value:
 //!
-//! - unset and empty are the same answer: unset. A shell `VAR=` is not a value.
-//!   A selector ([`EnvKind::SelectorPath`]) refuses empty instead: unset
-//!   falls back to the build's default server, so an
-//!   empty override (a shell `VAR=$UNSET`, or a pane launched with an empty
-//!   socket path) would otherwise silently retarget the process at a
-//!   different server.
-//! - surrounding whitespace is refused, naming the variable: `" 1"` is not `1`,
-//!   and guessing which the user meant is how a setting silently fails to take.
-//! - a value that is not valid UTF-8 is refused, naming the variable.
-//! - a [`EnvKind::Flag`] accepts exactly `1`, `0`, `true` and `false`, in that
+//! - For interpreted values, unset and empty are the same answer: unset. A
+//!   shell `VAR=` is not a value. A selector ([`EnvKind::SelectorPath`]) refuses
+//!   empty instead: unset falls back to the build's default server, so an empty
+//!   override (a shell `VAR=$UNSET`, or a pane launched with an empty socket
+//!   path) would otherwise silently retarget the process at a different server.
+//! - Interpreted text refuses surrounding whitespace, naming the variable:
+//!   `" 1"` is not `1`, and guessing which the user meant is how a setting
+//!   silently fails to take. A value that is not valid UTF-8 is refused too.
+//! - A presence value is set when its raw OS string is non-empty. Its bytes and
+//!   whitespace are not interpreted.
+//! - A [`EnvKind::Flag`] accepts exactly `1`, `0`, `true` and `false`, in that
 //!   case; anything else is refused.
 //! - an absolute-path kind refuses a relative path, naming the variable.
 //!
 //! [`EnvKind::Handoff`] and [`EnvKind::Raw`] preserve OS strings byte for byte.
-//! A handoff is written by one shepr process for a child. Raw values are
-//! inherited `PATH` and `SHELL` inputs, where non-UTF-8 bytes and whitespace
-//! can be meaningful, and Git's command-scope config variables, whose grammar
-//! belongs to Git;
-//! only empty reads as unset.
+//! A handoff is written by one shepr process for a child. Raw values include
+//! inherited `PATH` and `SHELL` inputs, and Git environment values whose path
+//! or list grammar belongs to Git; non-UTF-8 bytes and whitespace can be
+//! meaningful. Only empty reads as unset.
 //!
 //! What a value means beyond its kind (a log filter's
 //! syntax, which directory a relative path is joined to) stays with the site
@@ -218,15 +218,15 @@ env_vocabulary! {
         AntigravityCliConfigDir => "ANTIGRAVITY_CLI_CONFIG_DIR",
         /// `GROK_HOME`: the grok CLI's config home override.
         GrokHome => "GROK_HOME",
-        /// `GIT_CEILING_DIRECTORIES`: Git's colon-separated list of absolute
-        /// directories repository discovery does not ascend into. shepr's own
-        /// discovery honours it as Git does; Git children read it themselves.
+        /// `GIT_CEILING_DIRECTORIES`: Git's byte-preserving, colon-separated
+        /// list of absolute directories repository discovery does not ascend
+        /// into. Git children read it themselves too.
         GitCeilingDirectories => "GIT_CEILING_DIRECTORIES",
         /// `GIT_CONFIG_GLOBAL`: replace both default global config files with
-        /// this one file, as Git does.
+        /// this one file, as Git does. Preserve the path's OS bytes.
         GitConfigGlobal => "GIT_CONFIG_GLOBAL",
         /// `GIT_CONFIG_SYSTEM`: replace Git's system config file, normally
-        /// `/etc/gitconfig`.
+        /// `/etc/gitconfig`. Preserve the path's OS bytes.
         GitConfigSystem => "GIT_CONFIG_SYSTEM",
         /// `GIT_CONFIG_NOSYSTEM`: Git's boolean setting that skips the system
         /// config file when true. Kept as text for Git's full boolean grammar.
@@ -320,12 +320,13 @@ pub enum EnvKind {
     /// [`AbsolutePath`](Self::AbsolutePath) that refuses empty rather than
     /// reading it as unset (the module doc, first rule).
     SelectorPath,
-    /// Presence alone is the answer; the value is never interpreted.
+    /// A non-empty raw OS string is set; its encoding and content are ignored.
     Presence,
     /// A path one shepr process hands a shepr child byte for byte: only empty
     /// reads as unset, and nothing is refused.
     Handoff,
-    /// An inherited OS string such as `PATH` or `SHELL`: only empty reads as
+    /// An inherited OS string whose grammar belongs to its consumer, such as
+    /// `PATH`, `SHELL` or Git's environment settings: only empty reads as
     /// unset, and nothing is refused.
     Raw,
 }
@@ -341,7 +342,6 @@ impl EnvVar {
             | Self::SheprBuildProfile
             | Self::SheprLog
             | Self::TermProgram
-            | Self::GitCeilingDirectories
             | Self::GitConfigNoSystem => EnvKind::Text,
             Self::SheprConfigPath
             | Self::PiCodingAgentDir
@@ -354,9 +354,7 @@ impl EnvVar {
             | Self::QwenHome
             | Self::CursorConfigDir
             | Self::AntigravityCliConfigDir
-            | Self::GrokHome
-            | Self::GitConfigGlobal
-            | Self::GitConfigSystem => EnvKind::Path,
+            | Self::GrokHome => EnvKind::Path,
             Self::Home | Self::XdgConfigHome | Self::XdgStateHome | Self::XdgRuntimeDir => {
                 EnvKind::AbsolutePath
             }
@@ -369,9 +367,13 @@ impl EnvVar {
             | Self::WaylandDisplay
             | Self::Display => EnvKind::Presence,
             Self::SheprStartupCwd => EnvKind::Handoff,
-            Self::Shell | Self::Path | Self::GitConfigCount | Self::GitConfigParameters => {
-                EnvKind::Raw
-            }
+            Self::Shell
+            | Self::Path
+            | Self::GitCeilingDirectories
+            | Self::GitConfigGlobal
+            | Self::GitConfigSystem
+            | Self::GitConfigCount
+            | Self::GitConfigParameters => EnvKind::Raw,
         }
     }
 }
@@ -480,13 +482,17 @@ pub enum EnvValue {
 ///
 /// # Errors
 ///
-/// Returns [`EnvError`] for a non-UTF-8 value, one with surrounding
-/// whitespace, a malformed flag, a relative path where an absolute one is
-/// declared, or an empty selector.
+/// Returns [`EnvError`] for an interpreted non-UTF-8 value, one with
+/// surrounding whitespace, a malformed flag, a relative path where an
+/// absolute one is declared, or an empty selector. Presence and raw values do
+/// not refuse their bytes.
 pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, EnvError> {
     let refuse = |refusal| EnvError { var, refusal };
     let Some(raw) = raw else { return Ok(None) };
     let kind = var.kind();
+    if kind == EnvKind::Presence {
+        return Ok((!raw.is_empty()).then_some(EnvValue::Present));
+    }
     if matches!(kind, EnvKind::Handoff | EnvKind::Raw) {
         return Ok((!raw.is_empty()).then(|| EnvValue::Raw(raw.to_owned())));
     }
@@ -512,6 +518,8 @@ pub fn resolve(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<EnvValue>, Env
             "0" | "false" => Ok(Some(EnvValue::Flag(false))),
             other => Err(refuse(EnvRefusal::NotAFlag(other.to_owned()))),
         },
+        // Presence, handoff and raw values returned above; these arms only
+        // keep the match exhaustive.
         EnvKind::Presence => Ok(Some(EnvValue::Present)),
         EnvKind::AbsolutePath | EnvKind::SelectorPath => {
             if Path::new(text).is_absolute() {
@@ -594,7 +602,7 @@ pub fn resolve_flag(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<bool>, En
     }))
 }
 
-/// [`resolve`] for a presence variable: whether it is set and non-empty.
+/// [`resolve`] for a presence variable: whether its raw OS string is non-empty.
 ///
 /// # Panics
 ///
@@ -603,7 +611,7 @@ pub fn resolve_flag(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<bool>, En
 ///
 /// # Errors
 ///
-/// Every refusal [`resolve`] makes.
+/// Presence values have no value-level refusals.
 pub fn resolve_present(var: EnvVar, raw: Option<&OsStr>) -> Result<bool, EnvError> {
     assert!(is_presence(var.kind()), "{var} is not a presence variable");
     Ok(resolve(var, raw)?.is_some())
@@ -670,7 +678,7 @@ pub fn read_flag(var: EnvVar) -> Result<Option<bool>, EnvError> {
 ///
 /// # Errors
 ///
-/// Every refusal [`resolve`] makes.
+/// Presence values have no value-level refusals.
 pub fn read_present(var: EnvVar) -> Result<bool, EnvError> {
     resolve_present(var, raw(var).as_deref())
 }
@@ -701,8 +709,8 @@ pub fn read_path(var: EnvVar) -> Result<Option<PathBuf>, EnvError> {
     resolve_path(var, raw(var).as_deref())
 }
 
-/// Resolves one byte-preserving value such as `PATH`, `SHELL` or
-/// `GIT_CONFIG_COUNT`.
+/// Resolves one byte-preserving value such as `PATH`, `SHELL`,
+/// `GIT_CEILING_DIRECTORIES`, a Git config path override or `GIT_CONFIG_COUNT`.
 ///
 /// # Panics
 ///
@@ -710,7 +718,7 @@ pub fn read_path(var: EnvVar) -> Result<Option<PathBuf>, EnvError> {
 ///
 /// # Errors
 ///
-/// Every refusal [`resolve`] makes.
+/// Raw and handoff values have no value-level refusals.
 pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, EnvError> {
     assert!(
         matches!(var.kind(), EnvKind::Raw | EnvKind::Handoff),
@@ -724,8 +732,8 @@ pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, 
     }))
 }
 
-/// Reads one byte-preserving environment value such as `PATH`, `SHELL` or
-/// `GIT_CONFIG_COUNT`.
+/// Reads one byte-preserving environment value such as `PATH`, `SHELL`,
+/// `GIT_CEILING_DIRECTORIES`, a Git config path override or `GIT_CONFIG_COUNT`.
 ///
 /// # Panics
 ///
@@ -733,7 +741,7 @@ pub fn resolve_os(var: EnvVar, raw: Option<&OsStr>) -> Result<Option<OsString>, 
 ///
 /// # Errors
 ///
-/// Every refusal [`resolve`] makes.
+/// Raw and handoff values have no value-level refusals.
 pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
     resolve_os(var, raw(var).as_deref())
 }
@@ -1003,10 +1011,10 @@ mod tests {
             (
                 EnvVar::GitCeilingDirectories,
                 "GIT_CEILING_DIRECTORIES",
-                Text,
+                Raw,
             ),
-            (EnvVar::GitConfigGlobal, "GIT_CONFIG_GLOBAL", Path),
-            (EnvVar::GitConfigSystem, "GIT_CONFIG_SYSTEM", Path),
+            (EnvVar::GitConfigGlobal, "GIT_CONFIG_GLOBAL", Raw),
+            (EnvVar::GitConfigSystem, "GIT_CONFIG_SYSTEM", Raw),
             (EnvVar::GitConfigNoSystem, "GIT_CONFIG_NOSYSTEM", Text),
             (EnvVar::GitConfigCount, "GIT_CONFIG_COUNT", Raw),
             (EnvVar::GitConfigParameters, "GIT_CONFIG_PARAMETERS", Raw),
@@ -1205,7 +1213,8 @@ mod tests {
     }
 
     /// The shared policy, over every variable: unset is unset and so is empty
-    /// (except for selectors, below), padding and non-UTF-8 refuse by name.
+    /// (except for selectors, below), interpreted text refuses padding and
+    /// non-UTF-8, and presence is decided from raw non-emptiness.
     #[test]
     fn the_policy_holds_for_every_variable() {
         let non_utf8 = OsStr::from_bytes(&[b'/', b'a', 0xff]);
@@ -1227,6 +1236,21 @@ mod tests {
                 }
                 continue;
             }
+            if kind == EnvKind::Presence {
+                assert_eq!(
+                    resolve(var, Some(non_utf8)),
+                    Ok(Some(EnvValue::Present)),
+                    "{var} checks only whether raw bytes are empty"
+                );
+                for padded in [" 1", "1 ", "\t1", "  "] {
+                    assert_eq!(
+                        resolve(var, Some(OsStr::new(padded))),
+                        Ok(Some(EnvValue::Present)),
+                        "{var} ignores text whitespace"
+                    );
+                }
+                continue;
+            }
             let error = resolve(var, Some(non_utf8)).expect_err("non-UTF-8 refuses");
             assert_eq!(error.refusal, EnvRefusal::NotUtf8);
             assert!(error.to_string().contains(var.name()), "{error}");
@@ -1242,11 +1266,8 @@ mod tests {
             let good = match kind {
                 EnvKind::Flag => "1",
                 EnvKind::AbsolutePath | EnvKind::SelectorPath => "/abs/value",
-                EnvKind::Text
-                | EnvKind::Path
-                | EnvKind::Presence
-                | EnvKind::Handoff
-                | EnvKind::Raw => "value",
+                EnvKind::Text | EnvKind::Path | EnvKind::Handoff | EnvKind::Raw => "value",
+                EnvKind::Presence => unreachable!("presence was checked above"),
             };
             assert!(
                 resolve(var, Some(OsStr::new(good)))

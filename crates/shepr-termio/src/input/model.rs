@@ -113,7 +113,9 @@ impl From<KeyEvent> for TerminalKey {
 ///
 /// # Errors
 ///
-/// A value the policy refuses (padded or non-UTF-8), naming the variable.
+/// `TERM_PROGRAM` has a value the text policy refuses (padded or non-UTF-8),
+/// naming the variable. The presence-only host variables are checked by raw
+/// non-emptiness and do not refuse their bytes.
 pub fn host_modify_other_keys_mode()
 -> Result<Option<ModifyOtherKeysLevel>, shepr_core::env::EnvError> {
     use shepr_core::env::{EnvVar, read_present, read_text};

@@ -27,11 +27,13 @@ pub enum Liveness {
 }
 
 /// Another process already holds a server socket path: its startup lock, a
-/// live listener at the path, or a file that raced the bind into place.
+/// live listener at the path, or a path that appeared while binding. A
+/// non-socket path already present during probing is reported as unreachable
+/// with `AlreadyExists`, not as busy.
 ///
-/// Every busy refusal from this module is an [`io::ErrorKind::AddrInUse`]
-/// error carrying this payload, so the path survives whichever caller sees it
-/// and nobody gets a bare "address in use". Callers that word the refusal
+/// Every refusal classified as busy is an [`io::ErrorKind::AddrInUse`] error
+/// carrying this payload, so the path survives whichever caller sees it and
+/// nobody gets a bare "address in use". Callers that word the refusal
 /// themselves find it with [`SocketBusy::from_io`].
 #[derive(Debug)]
 pub struct SocketBusy {
@@ -927,7 +929,7 @@ fn sweep_stale_socket_staging_dirs(parent: &Path) {
         };
         if !directory_metadata.file_type().is_dir()
             || directory_metadata.uid() != uid
-            || directory_metadata.permissions().mode() & 0o777
+            || directory_metadata.permissions().mode() & 0o7777
                 != super::limits::PRIVATE_DIRECTORY_MODE
         {
             continue;

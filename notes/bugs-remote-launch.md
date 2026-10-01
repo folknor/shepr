@@ -134,44 +134,6 @@ one of the two should change, and the doc reads as the intended policy.
   default install paths, so the gap is installs elsewhere on a profile-only
   PATH.
 
-## RLAUNCH-007 - Root `--help` and `--version` do not always win
-
-`launch_with_args`: "Root-level `--help` and `--version` win over any subcommand
-given with them." Clap validates the subcommand before the root flags are read,
-so `shepr --help server`, `shepr --version detect` (both groups are
-`subcommand_required` with `arg_required_else_help`) and `shepr -V detect
-capture` (missing required PANE) end in a usage error, exit 2.
-
-## RLAUNCH-008 - Path-resolution exemptions that buy nothing, and a CLI path that needs more than it says
-
-- `cli::run` exempts `status client` from path resolution because "A remote
-  discovery probe runs this in an ssh session that may have no
-  XDG_RUNTIME_DIR". The check's next probe, `status server --json`
-  (`remote_server_status`), and the bridge both resolve `AppPaths`, which
-  refuses an unset `XDG_RUNTIME_DIR`. Such a machine is unusable anyway; the
-  exemption only moves where it fails.
-- `detect explain --file` is documented (spec help, AGENTS.md) as evaluating
-  locally "without a server", but `cli::run` resolves `AppPaths` before
-  dispatch, so it still fails without `XDG_RUNTIME_DIR` or with an invalid
-  `SHEPR_BUILD_PROFILE` marker.
-
-## RLAUNCH-009 - Dead branch in `restart_notice`
-
-`restart_notice`'s `left_running` closure has a `None` arm ("Its executable and
-boot identity are not available for a safe stop command"). `left_running` is
-only reached for `NoTerminal`, `Declined` and `Failed`, and
-`restart_different_builds` sets those only while `outcome.check` is still
-`DifferentBuild`. The arm cannot run.
-
-## RLAUNCH-010 - `shell_quote` leaves words beginning with `=` unquoted
-
-Lateral. `shepr_remote::shell_quote`, also behind `interactive_shell_command`,
-which `shepr-server/src/app/agent_resume.rs` uses to type a resume command into a
-pane's shell, leaves words beginning with `=` unquoted. zsh's default `EQUALS`
-option expands `=word` to the path of command `word`, or fails with "word not
-found". Any resume argv element starting with `=` breaks under zsh. Quote a
-leading `=` (and `~`, already excluded).
-
 ## RLAUNCH-011 - User ssh config can break every shepr ssh invocation and the auth classification
 
 Lateral, not a broken claim; noted because RLAUNCH-002 and this both undermine
@@ -183,14 +145,6 @@ suppresses the stderr signatures `classify_ssh_diagnostic` depends on, so
 authentication failures read as `Unrecognized` and are never prompted for.
 Passing `-o RemoteCommand=none` and `-o LogLevel=ERROR` with the batch options
 would make classification independent of user config.
-
-## RLAUNCH-012 - Unreachable machines cost a slow start on every launch
-
-Lateral; documented as the phase bound, so the hunter says not a defect.
-Preflight blocks the TUI until every check of a round finishes, up to
-`PREFLIGHT_CHECK_BUDGET` (25 s), and a second round follows any successful
-prompt. A blackholed host (no RST) costs the 10 s `ConnectTimeout` at every
-launch, so "fail soft" still means a slow start.
 
 ## RLAUNCH-013 - Structural: two independent discovery and validation paths for one machine
 

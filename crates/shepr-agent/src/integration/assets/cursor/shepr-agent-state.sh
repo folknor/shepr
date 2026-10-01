@@ -1,7 +1,9 @@
 #!/bin/sh
 # managed by shepr; reinstalling the integration replaces this file.
 # SHEPR_INTEGRATION_ID=cursor
-# SHEPR_INTEGRATION_VERSION=2
+# SHEPR_INTEGRATION_VERSION=3
+
+hook_input="$(cat 2>/dev/null || true)"
 
 [ "${1:-}" = "session" ] || exit 0
 [ "${SHEPR_ENV:-}" = "1" ] || exit 0
@@ -9,7 +11,7 @@
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-python3 -c '
+printf '%s' "$hook_input" | python3 -c '
 import json
 import os
 import socket

@@ -12,8 +12,10 @@ use serde_json::{Map, Value, json as serde_json_value};
 use crate::agent::resume::AgentSessionStartSource;
 use crate::agent::{IntegrationHookAction, IntegrationHookEvent};
 
-use super::command::hook_command;
-use super::config_edit::{ensure_command_hook, ensure_hooks_object, is_matching_command_hook};
+use super::command::{hook_command, is_hook_command_for_path};
+use super::config_edit::{
+    ensure_command_hook, ensure_hooks_object, remove_hook_path_commands_preserving,
+};
 
 // This is Claude's event-source subset; the shared source enum covers the
 // broader vocabulary reported by the other integrations.
@@ -57,7 +59,7 @@ pub(crate) fn install(
         "claude settings hooks",
     )?;
     let canonical = canonical_hook_value(hook_path, &matcher, action, timeout.as_secs());
-    apply_value_removals(hooks, hook_path, &canonical, event, action)?;
+    apply_value_removals(hooks, hook_path, &canonical, event)?;
     ensure_command_hook(
         hooks,
         event,
@@ -97,43 +99,8 @@ fn apply_value_removals(
     hook_path: &Path,
     canonical: &Value,
     event: &str,
-    action: Option<&str>,
 ) -> io::Result<()> {
-    let command = hook_command(hook_path, action);
-    remove_value_event_commands(hooks, event, &[command], canonical)
-}
-
-/// Strips every entry carrying one of `commands` from `event`, except the
-/// first entry that is already exactly `canonical`.
-fn remove_value_event_commands(
-    hooks: &mut Map<String, Value>,
-    event: &str,
-    commands: &[String],
-    canonical: &Value,
-) -> io::Result<()> {
-    let Some(entries_value) = hooks.get_mut(event) else {
-        return Ok(());
-    };
-    let entries = entries_value
-        .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
-    let mut canonical_preserved = false;
-
-    entries.retain_mut(|entry| {
-        if !canonical_preserved && entry == canonical {
-            canonical_preserved = true;
-            return true;
-        }
-        let Some(command_entries) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
-            return true;
-        };
-        command_entries.retain(|entry| {
-            !commands
-                .iter()
-                .any(|command| is_matching_command_hook(entry, command))
-        });
-        !command_entries.is_empty()
-    });
+    let _ = remove_hook_path_commands_preserving(hooks, hook_path, Some((event, canonical)))?;
     Ok(())
 }
 
@@ -193,8 +160,7 @@ fn rewrite(
     };
 
     let canonical = canonical_hook_value(hook_path, matcher, action, timeout_seconds);
-    let command = hook_command(hook_path, action);
-    let canonical_preserved = remove_event_commands(&hooks, event, &[command], &canonical)?;
+    let canonical_preserved = remove_hook_path_commands(&hooks, hook_path, event, &canonical)?;
 
     if !canonical_preserved {
         match hooks.get(event) {
@@ -253,53 +219,75 @@ fn rewrite(
     verify_updated(root.to_string(), settings_path, desired)
 }
 
-fn remove_event_commands(
+fn remove_hook_path_commands(
     hooks: &CstObject,
+    hook_path: &Path,
     event: &str,
-    commands: &[String],
     canonical: &Value,
 ) -> io::Result<bool> {
-    let Some(event_property) = hooks.get(event) else {
-        return Ok(false);
-    };
-    let entries = event_property
-        .array_value()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
     let mut canonical_preserved = false;
-
-    for entry in entries.elements() {
-        if !canonical_preserved && entry.to_serde_value().as_ref() == Some(canonical) {
-            canonical_preserved = true;
-            continue;
-        }
-
-        let Some(entry_object) = entry.as_object() else {
+    for event_property in hooks.properties() {
+        let property_event = event_property.decoded_name().ok_or_else(|| {
+            io::Error::other("Claude settings hooks contain an undecodable event name")
+        })?;
+        let Some(entries) = event_property.value().and_then(|value| value.as_array()) else {
             continue;
         };
-        let Some(command_entries) = entry_object
-            .get("hooks")
-            .and_then(|property| property.array_value())
-        else {
-            continue;
-        };
+        let mut removed_in_event = false;
+        for entry in entries.elements() {
+            if property_event == event
+                && !canonical_preserved
+                && entry.to_serde_value().as_ref() == Some(canonical)
+            {
+                canonical_preserved = true;
+                continue;
+            }
+            let Some(command_entries) = entry
+                .as_object()
+                .and_then(|object| object.get("hooks"))
+                .and_then(|property| property.array_value())
+            else {
+                if cst_value_uses_hook_path(&entry, hook_path) {
+                    removed_in_event = true;
+                    entry.remove();
+                }
+                continue;
+            };
+            let mut removed_in_group = false;
+            for command_entry in command_entries.elements() {
+                if cst_value_uses_hook_path(&command_entry, hook_path) {
+                    removed_in_group = true;
+                    removed_in_event = true;
+                    command_entry.remove();
+                }
+            }
 
-        for command_entry in command_entries.elements() {
-            let matches = command_entry.to_serde_value().is_some_and(|value| {
-                commands
-                    .iter()
-                    .any(|command| is_matching_command_hook(&value, command))
-            });
-            if matches {
-                command_entry.remove();
+            if removed_in_group && command_entries.elements().is_empty() {
+                entry.remove();
+                continue;
+            }
+            if cst_value_uses_hook_path(&entry, hook_path) {
+                removed_in_event = true;
+                entry.remove();
             }
         }
-
-        if command_entries.elements().is_empty() {
-            entry.remove();
+        if removed_in_event && entries.elements().is_empty() {
+            event_property.remove();
         }
     }
 
     Ok(canonical_preserved)
+}
+
+fn cst_value_uses_hook_path(value: &CstNode, hook_path: &Path) -> bool {
+    value.to_serde_value().is_some_and(|value| {
+        ["command", "bash"].iter().any(|field| {
+            value
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(|command| is_hook_command_for_path(command, hook_path))
+        })
+    })
 }
 
 fn canonical_hook_value(

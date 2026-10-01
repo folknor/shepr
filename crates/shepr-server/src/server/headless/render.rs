@@ -622,9 +622,10 @@ impl HeadlessServer {
                 client.clear_deferred_render();
                 continue;
             }
-            // Rendered above for every active shell client, and inactive ones
-            // were skipped just before this, so there is always a surface
-            // here; without one there is nothing to send.
+            // Rendering can be deferred above while a pane is synchronized,
+            // its core is poisoned, or the workspace/render epoch changes.
+            // The projection still goes out, but there is no pane surface to
+            // send on this pass.
             let Some(crate::server::client_shell::RenderedPaneSurface {
                 frame,
                 panes,

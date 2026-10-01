@@ -12,19 +12,6 @@ Filed from the defect hunt over `crates/shepr-mux/src/` `pane.rs`, `pane/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## PRUN-001 - The first detection poll is about 550 ms after launch, not the documented 50 ms
-
-Hunter's rating: low, certain. Claim: `limits::INITIAL_DETECTION_DELAY`, "Delay
-before the detector first polls a newly launched pane, giving the shell time to
-put initial output on the screen."
-
-The detection task in `PaneRuntime::spawn_with_initial_history` sleeps
-`INITIAL_DETECTION_DELAY`, then enters the loop, whose first act is to sleep
-`next_wake`, which starts at `PROCESS_RECHECK_NO_AGENT` (500 ms), before any
-tick. The first `detector.tick` runs at about 550 ms; the 50 ms constant only
-shifts the phase. Either tick once before the first sleep, or delete the
-constant and say the first poll waits one no-agent recheck interval.
-
 ## PRUN-002 - The detection task waits on the synchronous terminal-core lock on Tokio workers
 
 Hunter's rating: low-medium, certain. Claim: `PaneReadEffects::arm_sync_timeout`,
@@ -50,26 +37,13 @@ an async task per pane.
 
 ## PRUN-003 - `PaneRuntime` says dropping it "aborts async tasks"; two kinds of task outlive it
 
-Hunter's rating: low, certain. Claim: the doc on `PaneRuntime`, "Dropping this
-aborts async tasks and closes the PTY."
-
-`Drop for PaneRuntime` aborts only the detection task.
-
-- Synchronized-output timer tasks, spawned by `PaneReadEffects::arm_sync_timeout`
-  and holding `Arc<PaneReadEffects>`, still wake after the pane is gone: run
-  `flush_expired_synchronized_output` on the blocking pool (content and core
-  locks), call `render_dirty.request_pty(pane_id)` and `notify_one` for a pane
-  that no longer exists, send `ClipboardWrite` and `TerminalCwdReported` events,
-  and run `resolve_default_color_owner` (a `/proc` scan). The events carry the
-  runtime generation so the app drops them, but a dead pane can still wake the
-  render loop, and a clipboard write from the final frame can be queued after
-  removal.
-- The child watcher is deliberately left running so the child is reaped. That
-  is correct; the doc should say so.
-
-Either abort the timer task on drop (keep its `AbortHandle` in
-`SyncTimeoutRender`) or reword the doc. A `Weak` in the timer would also stop it
-keeping the terminal alive.
+Hunter's rating: low. The synchronized-output timer
+(`PaneReadEffects::arm_sync_timeout`) now holds a `Weak` while asleep and the
+`PaneRuntime` doc describes the timer and the child watcher. Residue: a timer
+that upgraded its reference just before the runtime dropped still finishes its
+flush afterwards, so it can request a render wake (and queue generation-stamped
+events the app discards) for a pane that is gone. Aborting the timer on drop
+(an `AbortHandle` in `SyncTimeoutRender`) would close it.
 
 ## PRUN-004 - Two definitions of "the pane's cwd": restore uses the one the runtime calls inferior
 
@@ -99,20 +73,6 @@ If the intent is "restore exactly where splits would go", the probe should
 return `ReportedCwd::resolve(reported, proc_cwd)`, not `proc_cwd`. If the intent
 is "restore the physical path on purpose", `ReportedCwd`'s doc should say
 persistence is the exception. The owner needs to choose.
-
-## PRUN-005 - `on_next_dirty_collection` hooks do not run on the next collection when it falls back
-
-Hunter's rating: low, test seam. Claim: `PaneRuntime::on_next_dirty_collection`,
-"Run `hook` inside the next dirty-patch collection."
-
-`PaneTerminal::collect_dirty_patch` returns early on synchronized output and on
-a `Fallback` outcome (a visible hyperlink, a poisoned core) without taking the
-hook, so it waits for the first non-fallback collection, which can be
-arbitrarily later; it does run on `Clean`. Used only by tests (`shepr-server`
-`test_support`, `invariant_tests`), but a test relying on "next" around a
-hyperlink or synchronized frame will hang or see the hook fire on the wrong
-frame. The hook also runs with the core and content locks held, so a hook that
-reads the runtime deadlocks; the doc should say so.
 
 ## PRUN-006 - `collect_dirty_patch_snapshot` claims revision and metadata are paired, but only content-lock writers are excluded
 

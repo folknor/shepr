@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=antigravity_cli
-# SHEPR_INTEGRATION_VERSION=1
+# SHEPR_INTEGRATION_VERSION=2
 
 # Session-only: this hook reports the Antigravity conversation so Shepr can
 # resume the pane. Lifecycle state comes from Shepr's screen detection.
@@ -17,13 +17,15 @@ emit_and_exit() {
   exit 0
 }
 
+hook_input="$(cat 2>/dev/null || true)"
+
 [ "${1:-}" = "session" ] || emit_and_exit
 [ "${SHEPR_ENV:-}" = "1" ] || emit_and_exit
 [ -n "${SHEPR_SOCKET_PATH:-}" ] || emit_and_exit
 [ -n "${SHEPR_PANE_ID:-}" ] || emit_and_exit
 command -v python3 >/dev/null 2>&1 || emit_and_exit
 
-python3 -c '
+printf '%s' "$hook_input" | python3 -c '
 import json
 import os
 import socket

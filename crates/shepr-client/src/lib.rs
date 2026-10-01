@@ -216,10 +216,11 @@ fn run_launched_client(
     let Err(err) = result else {
         return Ok(ClientExit::new(None));
     };
+    let graceful_shutdown = matches!(&err, ClientError::ServerShutdown { .. });
     let connection_lost_during_terminal_hangup =
         terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
     let exit = ClientExit::new(Some(err.to_string()));
-    if connection_lost_during_terminal_hangup {
+    if graceful_shutdown || connection_lost_during_terminal_hangup {
         Ok(exit)
     } else {
         Err(ClientRunError::Session(exit))
@@ -1184,9 +1185,7 @@ impl ClientLoop {
                 // and those can carry pane input, a resize or a detach. It also
                 // releases the next queued command in this endpoint's lane.
                 let shell = &mut state.shell;
-                let outcome = if completed.generation == generation
-                    && shell.endpoint_is_active(&completed.endpoint_id)
-                {
+                let outcome = if shell.endpoint_is_active(&completed.endpoint_id) {
                     shell.handle_endpoint_result_at(
                         &completed.boot_id,
                         &completed.request_id,

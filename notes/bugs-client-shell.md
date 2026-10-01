@@ -185,34 +185,6 @@ the next motion sends an origin row the server no longer has. The module comment
 assumes the row still exists. Clamp the cursor to `retained_row` as
 `move_copy_cursor` already does.
 
-## CSHELL-011 - `receive_endpoint_error` hardcodes the paste notice
-
-`receive_endpoint_error(message)` hardcodes code `paste_rejected` and title
-"Paste rejected". The generic name hides that it serves one purpose; its only
-caller is `push_focused_paste`.
-
-## CSHELL-012 - The collapsed sidebar labels machines by endpoint index
-
-Labels are `L`, then `2`, `3`, ..., so the first configured machine reads `2`.
-
-## CSHELL-013 - `compose` stamps a frame time for frames it did not produce
-
-`compose` stamps `last_composed_at` and clears `selection_repaint_deadline` even
-when it returns `None` (pending surface, generation or revision mismatch).
-`request_selection_drag_repaint` then throttles against a frame that was never
-presented.
-
-## CSHELL-014 - The global menu jumps when the sidebar collapses under it
-
-`render_global_menu` anchors to `hits.global_launcher`. If the sidebar collapses
-while the menu is open (keybind), the launcher rect is empty and the menu jumps
-to the top-left corner.
-
-## CSHELL-015 - Clicking the active endpoint's row also re-activates it
-
-`handle_endpoint_machine_click` on the active endpoint's row both toggles its
-collapse and pushes `ActivateEndpoint` for the endpoint that is already active.
-
 ## CSHELL-016 - A parked copy mode makes every pane's output recompose the whole frame
 
 Hot path. `fast_path_blocker` sends every pane patch through a full `compose`
@@ -256,3 +228,22 @@ regain their meaning.
 The mode bars, the navigator and help footers, and the copy-mode bar each
 hand-write key names. Deriving labels as the Prefix bar does prevents the next
 drift after CSHELL-004.
+
+## CSHELL-021 - `render_global_menu` takes the launcher rect the menu already carries
+
+Lateral, `shell/presentation/composition.rs`:
+`render_global_menu(&mut scratch, menu.launcher, menu, ..)` passes the launcher
+separately from the menu that now carries it. Drop the parameter.
+
+## CSHELL-022 - Clicking the displayed endpoint's machine row no longer cancels a pending switch
+
+`handle_endpoint_machine_click` on the active endpoint's machine row now only
+toggles collapse and pushes no `ActivateEndpoint`, which removed a redundant
+re-activation. It also removed the one machine-row gesture that cancelled a
+pending switch: with a switch to a remote machine in flight and Local still
+displayed, clicking Local's machine row used to activate Local and so cancel
+the switch. The test
+`clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed` now
+expects no action for the machine row; only the workspace row still cancels.
+Decide whether a machine-row click on the displayed endpoint should activate it
+when a switch away from it is pending.

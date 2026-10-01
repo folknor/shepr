@@ -172,7 +172,8 @@ pub struct AgentDetectionInputs {
 }
 
 pub(crate) struct PaneTerminalCore {
-    /// Runs inside the next dirty-patch collection; see
+    /// Runs during the next dirty-patch collection attempt, even if it falls
+    /// back; see
     /// `PaneRuntime::on_next_dirty_collection`.
     pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
     pub terminal: shepr_vt::Terminal,

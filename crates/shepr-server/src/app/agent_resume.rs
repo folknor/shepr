@@ -25,8 +25,8 @@ impl App {
             .any(|terminal| terminal.pending_agent_resume_plan.is_some())
     }
 
-    fn host_theme_available(&self) -> bool {
-        !self.state.host_terminal_theme.is_empty()
+    fn live_host_theme_reported(&self) -> bool {
+        self.live_host_theme_reported
     }
 
     /// When the headless loop should wake to attempt a resume, `None` while
@@ -37,8 +37,9 @@ impl App {
             return None;
         }
         self.resume_schedule.wakeup(
+            self.clock.now,
             self.has_pending_agent_resume_candidates(),
-            self.host_theme_available(),
+            self.live_host_theme_reported(),
         )
     }
 
@@ -56,7 +57,7 @@ impl App {
             .observe(now, has_pending_plans, eligible);
         if !self
             .resume_schedule
-            .is_due(now, eligible, self.host_theme_available())
+            .is_due(now, eligible, self.live_host_theme_reported())
         {
             return false;
         }
@@ -125,7 +126,7 @@ impl App {
             .observe(now, has_pending_plans, eligible);
         if !self
             .resume_schedule
-            .is_due(now, eligible, self.host_theme_available())
+            .is_due(now, eligible, self.live_host_theme_reported())
         {
             return Vec::new();
         }
@@ -520,6 +521,22 @@ mod tests {
         )
     }
 
+    fn report_test_host_theme(app: &mut App) {
+        app.set_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+            foreground: Some(shepr_termio::host_term::theme::RgbColor {
+                r: 220,
+                g: 220,
+                b: 220,
+            }),
+            background: Some(shepr_termio::host_term::theme::RgbColor {
+                r: 20,
+                g: 20,
+                b: 20,
+            }),
+            ..Default::default()
+        });
+    }
+
     #[tokio::test]
     async fn abandoned_resumes_are_all_settled_in_one_pass_without_spacing() {
         for delay_ms in [100, 250, 0] {
@@ -550,7 +567,7 @@ mod tests {
                 ));
             }
             let now = Instant::now();
-            // No host theme yet: the first pass only starts the theme wait.
+            // No live host theme report yet: the first pass only starts the wait.
             assert!(!app.start_pending_agent_resumes_inline_for_test(now));
             let theme_wait = now + PENDING_AGENT_RESUME_THEME_WAIT;
             assert_eq!(app.pending_agent_resume_wakeup(), Some(theme_wait));
@@ -819,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_agent_resume_waits_for_host_theme_before_launch() {
+    async fn pending_agent_resume_waits_for_live_host_theme_before_launch() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
@@ -845,19 +862,7 @@ mod tests {
         assert!(!app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
 
-        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
+        report_test_host_theme(&mut app);
 
         assert!(app.start_pending_agent_resumes_inline_for_test(Instant::now()));
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
@@ -950,19 +955,7 @@ mod tests {
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
+        report_test_host_theme(&mut app);
         for terminal_id in [&active_terminal, &hidden_terminal] {
             app.state
                 .terminals
@@ -1012,19 +1005,7 @@ mod tests {
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
+        report_test_host_theme(&mut app);
         app.state
             .terminals
             .get_mut(&hidden_terminal)
@@ -1066,19 +1047,7 @@ mod tests {
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
         app.state.set_bookmark_index(Some(1));
         app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
+        report_test_host_theme(&mut app);
         app.state
             .terminals
             .get_mut(&previous_terminal)
@@ -1141,19 +1110,7 @@ mod tests {
             (info.inner_rect.height, info.inner_rect.width)
         };
         let before_launch = content_rect(&app);
-        app.state.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
+        report_test_host_theme(&mut app);
         app.state
             .terminals
             .get_mut(&terminal_id)

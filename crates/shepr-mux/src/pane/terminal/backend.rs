@@ -959,6 +959,9 @@ impl PaneTerminal {
             self.report_dirty_patch_fallback("terminal core lock poisoned");
             return TerminalDirtyPatchOutcome::Fallback;
         };
+        if let Some(hook) = core.dirty_collection_hook.take() {
+            hook();
+        }
         if core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput)
@@ -974,9 +977,6 @@ impl PaneTerminal {
                 self.report_dirty_patch_fallback(reason);
             }
             return outcome;
-        }
-        if let Some(hook) = core.dirty_collection_hook.take() {
-            hook();
         }
         drop(core);
         outcome

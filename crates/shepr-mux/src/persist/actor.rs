@@ -205,7 +205,7 @@ enum Worker {
 /// Owns a session's files; see the module docs.
 pub struct SessionPersister {
     worker: Worker,
-    /// Fired once per submitted job, when it ends.
+    /// Completion wakeup; unobserved completions coalesce into one `Notify` permit.
     finished: Arc<Notify>,
 }
 

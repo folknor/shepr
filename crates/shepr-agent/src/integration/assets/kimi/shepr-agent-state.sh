@@ -1,7 +1,7 @@
 #!/bin/sh
 # managed by shepr; reinstalling the integration replaces this file.
 # SHEPR_INTEGRATION_ID=kimi
-# SHEPR_INTEGRATION_VERSION=3
+# SHEPR_INTEGRATION_VERSION=4
 
 # Stamp the report the moment the hook starts. Every event runs this script in
 # a fresh process, and shepr drops a report whose seq is older than the last
@@ -9,6 +9,7 @@
 # interpreter startup jitter reorder near-simultaneous events (a PreToolUse
 # followed at once by a PermissionRequest).
 hook_seq="$(date +%s%N 2>/dev/null || true)"
+hook_input="$(cat 2>/dev/null || true)"
 
 action="${1:-}"
 case "$action" in
@@ -21,7 +22,7 @@ esac
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-python3 -c '
+printf '%s' "$hook_input" | python3 -c '
 import json
 import os
 import socket

@@ -27,6 +27,7 @@ impl ClientShellState {
         } else {
             self.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
                 highlighted: 0,
+                launcher: self.hits.global_launcher,
             }));
         }
     }

@@ -11,11 +11,11 @@
 //!
 //! - `not_before`: a barrier before which nothing is attempted (the spacing
 //!   after a launch, the backoff after a retryable failure);
-//! - `theme_wait_until`: how long a host theme is waited for, set the first
-//!   time candidates become eligible and never restarted while plans stay
-//!   pending.
+//! - `theme_wait_until`: the deadline to use the restored host theme as a
+//!   fallback, set the first time candidates become eligible and never
+//!   restarted while plans stay pending. A live host color report bypasses it.
 //!
-//! The theme arriving bypasses the theme wait but never a barrier.
+//! A live host color report bypasses the theme wait but never a barrier.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,9 +52,10 @@ pub(crate) struct ResumeSchedule {
 }
 
 impl ResumeSchedule {
-    /// `theme_wait`: how long the first eligible candidates wait for a host
-    /// theme. `spacing`: the gap after a launch (zero launches every eligible
-    /// candidate in one pass). `backoff`: the gap after a retryable failure.
+    /// `theme_wait`: how long the first eligible candidates wait for live host
+    /// colors before using the restored theme as fallback. `spacing`: the gap
+    /// after a launch (zero launches every eligible candidate in one pass).
+    /// `backoff`: the gap after a retryable failure.
     pub(crate) fn new(theme_wait: Duration, spacing: Duration, backoff: Duration) -> Self {
         Self {
             theme_wait,
@@ -115,29 +116,36 @@ impl ResumeSchedule {
     }
 
     /// When the loop should wake for a resume: `None` while nothing is
-    /// eligible (the barrier is kept for when something is) or while nothing
-    /// holds an eligible candidate back, otherwise the later of the barrier and
-    /// the theme wait (which does not apply once the theme is available).
-    pub(crate) fn wakeup(&self, eligible: bool, theme_available: bool) -> Option<Instant> {
+    /// eligible (the barrier is kept for when something is) or nothing holds
+    /// an eligible candidate back, otherwise the later future deadline. An
+    /// expired deadline is omitted so an outstanding cwd check can wake the
+    /// loop without making it spin.
+    pub(crate) fn wakeup(
+        &self,
+        now: Instant,
+        eligible: bool,
+        live_theme_reported: bool,
+    ) -> Option<Instant> {
         if !eligible {
             return None;
         }
         let pending = self.pending?;
-        let theme_wait = if theme_available {
+        let barrier = pending.not_before.filter(|deadline| *deadline > now);
+        let theme_wait = if live_theme_reported {
             None
         } else {
-            pending.theme_wait_until
+            pending.theme_wait_until.filter(|deadline| *deadline > now)
         };
-        pending.not_before.max(theme_wait)
+        barrier.max(theme_wait)
     }
 
     /// Whether an attempt may run now: candidates are eligible and neither the
     /// barrier nor the theme wait still holds them back.
-    pub(crate) fn is_due(&self, now: Instant, eligible: bool, theme_available: bool) -> bool {
+    pub(crate) fn is_due(&self, now: Instant, eligible: bool, live_theme_reported: bool) -> bool {
         eligible
             && self.pending.is_some()
             && self
-                .wakeup(eligible, theme_available)
+                .wakeup(now, eligible, live_theme_reported)
                 .is_none_or(|wakeup| now >= wakeup)
     }
 
@@ -300,7 +308,7 @@ mod tests {
         let barrier = now + Duration::from_millis(250);
         assert_eq!(schedule.not_before(), Some(barrier));
         schedule.observe(now, true, true);
-        assert_eq!(schedule.wakeup(true, true), Some(barrier));
+        assert_eq!(schedule.wakeup(start, true, true), Some(barrier));
         assert!(!schedule.is_due(barrier - Duration::from_millis(1), true, true));
         assert!(schedule.is_due(barrier, true, true));
     }
@@ -338,31 +346,31 @@ mod tests {
         let start = Instant::now();
         schedule.observe(start, true, true);
         let deadline = start + THEME_WAIT;
-        assert_eq!(schedule.wakeup(true, false), Some(deadline));
+        assert_eq!(schedule.wakeup(start, true, false), Some(deadline));
         // A loop that keeps running (any pane printing) observes on every
         // iteration; none of them moves the wait.
         for step in 1..7 {
             let now = start + Duration::from_millis(step * 100);
             schedule.observe(now, true, true);
-            assert_eq!(schedule.wakeup(true, false), Some(deadline));
+            assert_eq!(schedule.wakeup(now, true, false), Some(deadline));
             assert_eq!(schedule.is_due(now, true, false), now >= deadline);
         }
     }
 
     #[test]
-    fn the_theme_bypasses_the_wait_but_not_a_barrier() {
+    fn a_live_theme_report_bypasses_the_wait_but_not_a_barrier() {
         let mut schedule = schedule(250);
         let start = Instant::now();
         schedule.observe(start, true, true);
         assert!(!schedule.is_due(start, true, false));
         assert!(
             schedule.is_due(start, true, true),
-            "the theme ends the wait"
+            "a live theme report ends the wait"
         );
         run(&mut schedule, start, &[AttemptOutcome::Launched]);
         let barrier = start + Duration::from_millis(250);
         assert!(!schedule.is_due(start, true, true));
-        assert_eq!(schedule.wakeup(true, true), Some(barrier));
+        assert_eq!(schedule.wakeup(start, true, true), Some(barrier));
     }
 
     #[test]
@@ -375,13 +383,13 @@ mod tests {
 
         // Plans are pending but none is eligible (workspace not laid out).
         schedule.observe(start, true, false);
-        assert_eq!(schedule.wakeup(false, true), None);
-        assert_eq!(schedule.wakeup(false, false), None);
+        assert_eq!(schedule.wakeup(start, false, true), None);
+        assert_eq!(schedule.wakeup(start, false, false), None);
         assert!(!schedule.is_due(barrier, false, true));
 
         // Something becomes eligible again: the barrier still holds.
         schedule.observe(start, true, true);
-        assert_eq!(schedule.wakeup(true, true), Some(barrier));
+        assert_eq!(schedule.wakeup(start, true, true), Some(barrier));
     }
 
     #[test]
@@ -389,14 +397,20 @@ mod tests {
         let mut schedule = schedule(0);
         let start = Instant::now();
         schedule.observe(start, true, false);
-        assert_eq!(schedule.wakeup(true, false), None);
+        assert_eq!(schedule.wakeup(start, true, false), None);
         let later = start + Duration::from_secs(5);
         schedule.observe(later, true, true);
-        assert_eq!(schedule.wakeup(true, false), Some(later + THEME_WAIT));
+        assert_eq!(
+            schedule.wakeup(later, true, false),
+            Some(later + THEME_WAIT)
+        );
         // Never restarted, even across a stretch with nothing eligible.
         schedule.observe(later + Duration::from_secs(1), true, false);
         schedule.observe(later + Duration::from_secs(2), true, true);
-        assert_eq!(schedule.wakeup(true, false), Some(later + THEME_WAIT));
+        assert_eq!(
+            schedule.wakeup(later + Duration::from_secs(2), true, false),
+            None
+        );
     }
 
     #[test]
@@ -410,12 +424,15 @@ mod tests {
         // The pane went away without a launch.
         schedule.observe(start, false, false);
         assert!(!schedule.is_pending());
-        assert_eq!(schedule.wakeup(true, false), None);
+        assert_eq!(schedule.wakeup(start, true, false), None);
 
         // New plans start from scratch: fresh theme wait, no old barrier.
         let later = start + Duration::from_secs(1);
         schedule.observe(later, true, true);
         assert_eq!(schedule.not_before(), None);
-        assert_eq!(schedule.wakeup(true, false), Some(later + THEME_WAIT));
+        assert_eq!(
+            schedule.wakeup(later, true, false),
+            Some(later + THEME_WAIT)
+        );
     }
 }

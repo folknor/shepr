@@ -651,9 +651,10 @@ impl HeadlessServer {
 
     /// Colours the panes with the foreground client's host theme: panes have
     /// one theme (their default colours and the answers to colour queries),
-    /// and the client the user was last active in supplies it. A client that
-    /// has reported nothing yet leaves the current theme (a live client's, or
-    /// the one saved with the session) in place. Returns whether it changed.
+    /// and the client the user was last active in supplies it. A client with
+    /// no host color report yet leaves the current theme (a live client's, or
+    /// the one saved with the session) in place. Its appearance still applies
+    /// independently. Returns whether anything changed.
     fn sync_host_theme_from_foreground(&mut self) -> bool {
         let Some(shell) = self
             .clients
@@ -672,7 +673,9 @@ impl HeadlessServer {
         let mut changed = self
             .app
             .set_host_terminal_appearance_state(appearance, appearance_explicit);
-        changed |= self.app.set_host_terminal_theme(theme);
+        if !theme.is_empty() {
+            changed |= self.app.set_host_terminal_theme(theme);
+        }
         changed
     }
 

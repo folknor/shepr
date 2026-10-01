@@ -13,8 +13,7 @@ use super::command::hook_command;
 use super::config_edit::{
     build_codex_config_with_hooks, build_kimi_config_with_hooks, ensure_command_hook,
     ensure_direct_command_hook, ensure_flat_command_hook, ensure_hooks_object,
-    ensure_simple_command_hook, remove_direct_hook_commands, remove_flat_command_hook,
-    remove_hook_commands, remove_simple_command_hook,
+    ensure_simple_command_hook, remove_hook_path_commands,
 };
 use super::config_file::{check_config_targets, lock_config_for_update, write_config};
 use super::env::{AgentIntegrationPaths, DirectoryKey};
@@ -174,11 +173,11 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
         "codex hooks file hooks",
     )?;
     let timeout = integration_hook_timeout(Target::Codex)?.as_secs();
+    remove_hook_path_commands(hooks, &hook_path)?;
     for hook in integration_hook_events(Target::Codex) {
         let Some(action) = hook.action.map(IntegrationHookAction::as_str) else {
             continue;
         };
-        remove_hook_commands(hooks, hook.event, &hook_path, Some(action))?;
         ensure_command_hook(
             hooks,
             hook.event,
@@ -271,10 +270,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
         "copilot settings",
         "copilot settings hooks",
     )?;
-    for hook in integration_hook_events(Target::Copilot) {
-        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
-        remove_direct_hook_commands(hooks, hook.event, &hook_path, action)?;
-    }
+    remove_hook_path_commands(hooks, &hook_path)?;
     for hook in integration_hook_events(Target::Copilot) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_direct_command_hook(
@@ -319,10 +315,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
         "devin settings",
         "devin settings hooks",
     )?;
-    for hook in integration_hook_events(Target::Devin) {
-        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
-        remove_hook_commands(hooks, hook.event, &hook_path, action)?;
-    }
+    remove_hook_path_commands(hooks, &hook_path)?;
     for hook in integration_hook_events(Target::Devin) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
@@ -367,10 +360,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
         "droid settings",
         "droid settings hooks",
     )?;
-    for hook in integration_hook_events(Target::Droid) {
-        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
-        remove_hook_commands(hooks, hook.event, &hook_path, action)?;
-    }
+    remove_hook_path_commands(hooks, &hook_path)?;
     for hook in integration_hook_events(Target::Droid) {
         let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
@@ -504,10 +494,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
         "cursor hooks file hooks",
     )?;
     let session_command = hook_command(&hook_path, Some("session"));
-    // Strip every entry carrying the command first, as the other targets do,
-    // so a hand-edited one (a matcher added, say) is replaced by the canonical
-    // entry that the status check looks for instead of being kept as-is.
-    remove_simple_command_hook(hooks, "sessionStart", &session_command)?;
+    remove_hook_path_commands(hooks, &hook_path)?;
     ensure_simple_command_hook(hooks, "sessionStart", &session_command)?;
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
@@ -545,11 +532,11 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
 
     // This helper writes the Mastracode-specific description, so keep its use
     // scoped to the target that owns that description.
+    remove_hook_path_commands(hooks, &hook_path)?;
     for hook in integration_hook_events(Target::Mastracode) {
         let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
             continue;
         };
-        remove_flat_command_hook(hooks, hook.event, &hook_command(&hook_path, Some(action)))?;
         ensure_flat_command_hook(
             hooks,
             hook.event,

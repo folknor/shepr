@@ -1422,7 +1422,7 @@ fn selecting_an_offline_active_machine_in_the_navigator_is_silent() {
 }
 
 #[test]
-fn clicking_an_online_active_machine_row_still_requests_reproof() {
+fn clicking_an_online_active_machine_row_only_toggles_its_collapse_state() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
     state.compose(100, 28).expect("active remote frame");
@@ -1441,13 +1441,8 @@ fn clicking_an_online_active_machine_row_still_requests_reproof() {
         modifiers: KeyModifiers::empty(),
     })]);
 
-    assert!(matches!(
-        outcome.actions.as_slice(),
-        [ClientShellAction::ActivateEndpoint {
-            endpoint_id: activated,
-            target: None,
-        }] if activated == &endpoint_id
-    ));
+    assert!(outcome.actions.is_empty());
+    assert!(state.collapsed_endpoints.contains(&endpoint_id));
 }
 
 #[test]
@@ -1489,11 +1484,20 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
                 modifiers: KeyModifiers::empty(),
             }),
         ]);
-        assert!(
-            matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local, target,
-        }] if target.is_some() == workspace)
-        );
+        if workspace {
+            assert!(matches!(
+                outcome.actions.as_slice(),
+                [ClientShellAction::ActivateEndpoint {
+                    endpoint_id: ClientEndpointId::Local,
+                    target: Some(_),
+                }]
+            ));
+        } else {
+            // The machine row of the displayed endpoint only toggles its
+            // collapse state; it no longer activates the endpoint.
+            assert!(outcome.actions.is_empty());
+            assert!(state.collapsed_endpoints.contains(&ClientEndpointId::Local));
+        }
     }
 }
 

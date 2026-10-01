@@ -133,8 +133,6 @@ impl ClientShellState {
     }
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
-        self.last_composed_at = Some(self.now);
-        self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
         }
@@ -151,7 +149,9 @@ impl ClientShellState {
                     && self.navigation_target_valid(&pending.target)
             });
         if self.snapshot.is_none() || self.pane_surface.is_none() {
-            return Some(self.compose_unavailable(cols, rows));
+            let frame = self.compose_unavailable(cols, rows);
+            self.record_composed_frame();
+            return Some(frame);
         }
         let snapshot = self.snapshot.as_deref()?;
         // Do not compose a retained surface while waiting for its matching snapshot or
@@ -453,7 +453,7 @@ impl ClientShellState {
                 }
                 ClientShellOverlay::GlobalMenu(menu) => render::render_global_menu(
                     &mut scratch,
-                    self.hits.global_launcher,
+                    menu.launcher,
                     menu,
                     snapshot,
                     &self.config.palette,
@@ -573,7 +573,13 @@ impl ClientShellState {
         // This path draws a visible notice unconditionally (above), so this is where its
         // lifetime starts.
         self.endpoint_notice_drawn(self.now);
+        self.record_composed_frame();
         Some(frame)
+    }
+
+    fn record_composed_frame(&mut self) {
+        self.last_composed_at = Some(self.now);
+        self.selection_repaint_deadline = None;
     }
 }
 

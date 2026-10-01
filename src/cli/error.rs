@@ -86,9 +86,8 @@ impl CliError {
 }
 
 /// Turns a finished client run into the command's result. The client has
-/// restored the host terminal before returning, so its lines (forwarded
-/// notices, then the message that ended the session) land on the restored
-/// screen, each as `shepr: {line}`.
+/// restored the host terminal before returning, so its optional session
+/// message lands on the restored screen as `shepr: {message}`.
 pub(crate) fn finish_client(
     outcome: Result<shepr_client::ClientExit, shepr_client::ClientRunError>,
 ) -> Result<i32, CliError> {

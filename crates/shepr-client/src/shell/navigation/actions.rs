@@ -279,7 +279,7 @@ impl ClientShellState {
         true
     }
 
-    pub(crate) fn receive_endpoint_error(&mut self, message: String) -> bool {
+    pub(crate) fn receive_paste_rejection(&mut self, message: String) -> bool {
         self.push_endpoint_notice(
             ClientEndpointNoticeKind::Rejected,
             "paste_rejected",

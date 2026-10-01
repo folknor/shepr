@@ -31,22 +31,9 @@ fn read_timeout_for_link(link_kind: HandshakeLinkKind) -> Duration {
     }
 }
 
-fn set_handshake_recv_timeout(
-    stream: &LocalStream,
-    timeout: Option<Duration>,
-    context: &'static str,
-) -> Result<(), ClientError> {
-    stream.set_recv_timeout(timeout).map_err(|error| {
-        ClientError::ConnectionFailed(std::io::Error::new(
-            error.kind(),
-            format!("{context}: {error}"),
-        ))
-    })
-}
-
 /// Maps a failed preamble exchange onto the client's error kinds: an early
 /// close or read failure stays a transient connection problem, while a peer
-/// that is not this build is a rejection the user has to act on.
+/// identifying a different build needs user action.
 fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError {
     use shepr_protocol::preamble::PreambleError;
     match error {
@@ -143,11 +130,6 @@ pub(crate) fn do_handshake_for_link(
     let mut reader = shepr_platform::ipc::DeadlineReader::new(stream, read_deadline.instant());
     shepr_protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
     let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader)?;
-    set_handshake_recv_timeout(
-        stream,
-        None,
-        "failed to clear client handshake read timeout",
-    )?;
 
     // A pre-welcome shutdown notice is transient if a peer sends one. The local server closes
     // without a welcome when stopping is observed during the handshake; if stopping races

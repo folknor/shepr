@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=omp
-// SHEPR_INTEGRATION_VERSION=1
+// SHEPR_INTEGRATION_VERSION=2
 // @ts-nocheck
 
 import net from "node:net";
@@ -150,7 +150,7 @@ function currentSessionRef(): Record<string, unknown> | undefined {
   return undefined;
 }
 
-function reportSession(sessionStartSource = "startup"): Promise<void> {
+function reportSession(sessionStartSource?: string): Promise<void> {
   const sessionRef = currentSessionRef();
   if (!sessionRef) {
     return Promise.resolve();
@@ -165,7 +165,7 @@ function reportSession(sessionStartSource = "startup"): Promise<void> {
       source,
       agent: "omp",
       seq,
-      session_start_source: sessionStartSource,
+      ...(sessionStartSource ? { session_start_source: sessionStartSource } : {}),
       ...sessionRef,
     },
   });
@@ -318,7 +318,7 @@ export default function (pi) {
     retryTimer.unref?.();
   }
 
-  function activateRootSession(ctx: any, sessionStartSource = "startup"): boolean {
+  function activateRootSession(ctx: any, sessionStartSource?: string): boolean {
     if (ctx?.hasUI !== true) {
       return false;
     }
@@ -359,7 +359,7 @@ export default function (pi) {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    if (!activateRootSession(ctx)) {
+    if (!activateRootSession(ctx, "startup")) {
       return;
     }
     // A reload can replace this extension mid-run without emitting another agent_start.

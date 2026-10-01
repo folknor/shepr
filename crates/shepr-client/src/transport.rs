@@ -54,7 +54,7 @@ pub(super) fn spawn_endpoint_reader(
 pub(super) fn server_reader_thread(
     mut stream: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    should_quit: &Arc<AtomicBool>,
+    transport_stopped: &Arc<AtomicBool>,
     read_activity: &endpoint::EndpointReadActivity,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
@@ -74,10 +74,10 @@ pub(super) fn server_reader_thread(
 
     let mut stream = EndpointReader {
         stream: &mut stream,
-        stopped: should_quit,
+        stopped: transport_stopped,
     };
     loop {
-        if should_quit.load(Ordering::Acquire) {
+        if transport_stopped.load(Ordering::Acquire) {
             break;
         }
 

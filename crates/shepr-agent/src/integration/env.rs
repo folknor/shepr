@@ -197,11 +197,13 @@ fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf
     let config_dir = environment
         .path(EnvVar::PiConfigDir)?
         .unwrap_or_else(|| ".omp".into());
-    Ok(environment
-        .home_dir()?
-        .join(config_dir)
-        .join("agent")
-        .join("extensions"))
+    let config_dir = expand_tilde_path_with_environment(config_dir, environment)?;
+    let config_dir = if config_dir.is_absolute() {
+        config_dir
+    } else {
+        environment.home_dir()?.join(config_dir)
+    };
+    Ok(config_dir.join("agent").join("extensions"))
 }
 
 fn claude_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
@@ -358,6 +360,18 @@ mod tests {
         let error =
             directory(&env, DirectoryKey::Cursor).expect_err("a padded override is refused");
         assert!(error.to_string().contains("CURSOR_CONFIG_DIR"), "{error}");
+    }
+
+    #[test]
+    fn omp_pi_config_dir_override_expands_tilde() {
+        let env = paths_with(&[
+            (EnvVar::Home, "/test/home"),
+            (EnvVar::PiConfigDir, "~/.omp2"),
+        ]);
+        assert_eq!(
+            directory(&env, DirectoryKey::OmpExtension).expect("test precondition"),
+            PathBuf::from("/test/home/.omp2/agent/extensions")
+        );
     }
 
     #[test]

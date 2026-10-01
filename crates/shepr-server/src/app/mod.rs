@@ -93,6 +93,9 @@ pub struct App {
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     /// When deferred agent resumes may be attempted; see `resume_schedule`.
     pub(crate) resume_schedule: resume_schedule::ResumeSchedule,
+    /// True after a live foreground client reports host colors this boot. A
+    /// restored session theme remains the fallback until this report arrives.
+    pub(crate) live_host_theme_reported: bool,
     /// The next time automatic workspace creation may retry after a failure;
     /// the loop's deadline wakes it then.
     default_workspace_retry_at: Option<Instant>,
@@ -316,6 +319,7 @@ impl App {
                 Duration::from_millis(config.session().startup_per_agent_delay_ms.into()),
                 PENDING_AGENT_RESUME_RETRY_INTERVAL,
             ),
+            live_host_theme_reported: false,
             default_workspace_retry_at: None,
             default_workspace_retry_delay: None,
             runtimes_replaced_panes: Vec::new(),

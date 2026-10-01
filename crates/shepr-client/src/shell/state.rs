@@ -300,6 +300,7 @@ pub(super) struct ClientHelpOverlay {
 #[derive(Debug)]
 pub(super) struct ClientGlobalMenuOverlay {
     pub(super) highlighted: usize,
+    pub(super) launcher: Rect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

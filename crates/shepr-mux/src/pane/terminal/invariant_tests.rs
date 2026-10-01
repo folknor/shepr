@@ -357,8 +357,8 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         TerminalDirtyPatchOutcome::Fallback
     ));
     assert!(
-        !hook_ran.load(std::sync::atomic::Ordering::Acquire),
-        "a fallback discards the collection and leaves its hook pending"
+        hook_ran.load(std::sync::atomic::Ordering::Acquire),
+        "the next collection attempt runs its hook even when it falls back"
     );
     let core = shepr_vt::lock_terminal_core(&terminal.pane.core).expect("test precondition");
     #[expect(

@@ -96,10 +96,34 @@ pub(crate) fn prepare_cli_plugin(
     // while those sources still exist so we do not skip the migration; otherwise
     // create cli.json ourselves, since OpenCode will never do it for a fresh V2
     // install with nothing to migrate.
-    if !is_file(&path)? && cli_migration_pending(config_dir, state_dir)? {
+    if cli_plugin_registration_is_deferred(config_dir, state_dir)? {
         return Ok(None);
     }
     prepare_plugin(path, "plugins", plugin_spec, paths).map(Some)
+}
+
+pub(crate) fn cli_plugin_registration_is_deferred(
+    config_dir: &Path,
+    state_dir: &Path,
+) -> io::Result<bool> {
+    let path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
+    let cli_config_is_absent = match fs::symlink_metadata(&path) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error),
+    };
+    Ok(cli_config_is_absent && cli_migration_pending(config_dir, state_dir)?)
+}
+
+pub(crate) fn cli_plugin_is_registered_or_deferred(
+    config_dir: &Path,
+    state_dir: &Path,
+    plugin_spec: &str,
+) -> io::Result<bool> {
+    if cli_plugin_registration_is_deferred(config_dir, state_dir)? {
+        return Ok(true);
+    }
+    cli_plugin_is_configured(config_dir, plugin_spec)
 }
 
 fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> io::Result<bool> {

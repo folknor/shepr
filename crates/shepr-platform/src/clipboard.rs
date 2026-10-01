@@ -117,12 +117,12 @@ pub(super) fn read_clipboard_text_commands(session: ClipboardSession) -> Vec<Cli
     if session.wayland {
         commands.push(ClipboardCommand {
             program: "wl-paste",
-            args: &["--type", "text/plain;charset=utf-8"],
+            args: &["--no-newline", "--type", "text/plain;charset=utf-8"],
             owns_selection_after_exit: false,
         });
         commands.push(ClipboardCommand {
             program: "wl-paste",
-            args: &["--type", "text/plain"],
+            args: &["--no-newline", "--type", "text/plain"],
             owns_selection_after_exit: false,
         });
     }

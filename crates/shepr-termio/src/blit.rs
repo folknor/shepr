@@ -81,6 +81,13 @@ impl BlitEncoder {
         suppress_visible_cursor: bool,
     ) -> EncodedBlit {
         if !frame_cell_count_matches(frame) {
+            tracing::warn!(
+                event = "blit.invalid_frame",
+                width = frame.width,
+                height = frame.height,
+                cells = frame.cells.len(),
+                "refusing to encode frame with a mismatched cell count"
+            );
             return EncodedBlit {
                 bytes: Vec::new(),
                 next_last_visible_cursor: self.last_visible_cursor,
@@ -93,9 +100,10 @@ impl BlitEncoder {
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
         let mut next_last_cursor_shape = self.last_cursor_shape;
-        // The sink is a Vec<u8>, whose io::Write impl never returns an error,
-        // so there is no failure to act on here.
-        drop(blit_frame_to_with_cursor_memory_and_clear_policy(
+        // Vec writes cannot fail. The helper also guards against a malformed
+        // previous frame; commits store only validated frames, so that check
+        // is defensive unless the encoder's state invariant changes.
+        if let Err(error) = blit_frame_to_with_cursor_memory_and_clear_policy(
             &mut bytes,
             frame,
             prev,
@@ -103,7 +111,18 @@ impl BlitEncoder {
             &mut next_last_cursor_shape,
             clear_before_full_redraw,
             suppress_visible_cursor,
-        ));
+        ) {
+            tracing::warn!(
+                event = "blit.frame_encode_failed",
+                error = %error,
+                "could not encode terminal frame"
+            );
+            return EncodedBlit {
+                bytes: Vec::new(),
+                next_last_visible_cursor: self.last_visible_cursor,
+                next_last_cursor_shape: self.last_cursor_shape,
+            };
+        }
         EncodedBlit {
             bytes,
             next_last_visible_cursor,

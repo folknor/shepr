@@ -73,7 +73,7 @@ pub enum ClientError {
     HandshakeRejected {
         error: shepr_protocol::HandshakeRefusal,
     },
-    /// The peer did not send a valid build preamble.
+    /// The peer did not identify itself as this build.
     Preamble(shepr_protocol::preamble::PreambleError),
     /// The first framed reply had the wrong message kind.
     UnexpectedWelcome,
@@ -103,7 +103,8 @@ impl std::fmt::Display for ClientError {
             ClientError::Preamble(
                 error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
             ) => {
-                write!(f, "server rejected handshake: {error}")
+                // The preamble error already names the mismatch and both builds.
+                write!(f, "{error}")
             }
             ClientError::Preamble(error) => write!(f, "protocol error: {error}"),
             ClientError::UnexpectedWelcome => {

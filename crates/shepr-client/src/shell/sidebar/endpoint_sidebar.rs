@@ -56,9 +56,13 @@ pub(super) fn render_collapsed(
     hits.workspace_max_scroll = max_scroll;
     let mut skip = *state.workspace_scroll;
     let mut y = workspace_area.y;
-    for (index, endpoint) in state.endpoints.iter().enumerate() {
+    let mut machine_number = 0usize;
+    for endpoint in state.endpoints {
         if y >= workspace_area.bottom() {
             break;
+        }
+        if !endpoint.endpoint_id.is_local() {
+            machine_number += 1;
         }
         let active = &endpoint.endpoint_id == state.active_endpoint_id;
         let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
@@ -72,7 +76,7 @@ pub(super) fn render_collapsed(
             let label = if endpoint.endpoint_id.is_local() {
                 "L".to_owned()
             } else {
-                (index + 1).to_string()
+                machine_number.to_string()
             };
             let marker = if collapsed { "▸" } else { "▾" };
             put_text(

@@ -346,26 +346,23 @@ fn restart_notice(machine: &MachineConfig, outcome: &PreflightOutcome) -> Option
         MachineCheck::DifferentBuild(server) => Some(server),
         _ => None,
     };
-    let left_running = || match server {
-        Some(server) => format!(
+    let left_running = || {
+        server.map(|server| format!(
             "the shepr server on machine {label} is a different build (build {}, this shepr is build {}) and is left running, so the machine is unavailable. To restart it, run `{}` (this ends its pane processes; the layout is restored when a server starts again), then run shepr again.",
             server.build_id,
             shepr_protocol::BUILD_ID,
             remote_stop_command(machine, server)
-        ),
-        None => format!(
-            "the shepr server on machine {label} is left running, so the machine is unavailable. Its executable and boot identity are not available for a safe stop command; run shepr again to check it."
-        ),
+        ))
     };
     let notice = match restart {
         RestartResult::NoTerminal => format!(
             "{} Run shepr from an interactive terminal to be offered a restart.",
-            left_running()
+            left_running()?
         ),
-        RestartResult::Declined => left_running(),
+        RestartResult::Declined => left_running()?,
         RestartResult::Failed(error) => format!(
             "could not stop the shepr server on machine {label}: {error}\n{}",
-            left_running()
+            left_running()?
         ),
         RestartResult::Stopped => format!(
             "stopped the shepr server of a different build on machine {label}; one of this build starts when the client attaches."

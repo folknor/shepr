@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=kilo
-// SHEPR_INTEGRATION_VERSION=3
+// SHEPR_INTEGRATION_VERSION=4
 
 import net from "node:net";
 
@@ -132,15 +132,32 @@ function reportSession(sessionID) {
   if (!sessionID) {
     return Promise.resolve();
   }
-  // Kilo's session events carry no start source, so a resumed session cannot
-  // be told apart from a new one here; "startup" is reported for both. Its
-  // event payloads expose the ID either directly or through `info.id`, and
-  // `updated` also fires for new sessions. shepr treats Kilo's "startup" and
-  // "resume" alike: both can anchor a session, and neither lets Kilo replace it.
+  // Kilo's session events carry no start source, so "startup" is the only
+  // selection marker available for both new and resumed sessions. The mux
+  // allows it to replace the pane identity when this process owns the local
+  // lifecycle. Event payloads expose the ID directly or through `info.id`,
+  // and `updated` also fires for new sessions.
   return request("pane.report_agent_session", {
     agent_session_id: sessionID,
     session_start_source: "startup",
   });
+}
+
+function ownsLocalLifecycle() {
+  const args = process.argv.slice(2);
+  const separator = args.indexOf("--");
+  if (separator !== -1) args.splice(separator);
+  if (args.some((arg) => arg === "--attach" || arg.startsWith("--attach="))) {
+    return false;
+  }
+  while (
+    args[0] === "--print-logs" ||
+    args[0] === "--log-level" ||
+    args[0]?.startsWith("--log-level=")
+  ) {
+    args.splice(0, args[0] === "--log-level" ? 2 : 1);
+  }
+  return !["acp", "attach", "console", "daemon", "serve", "web"].includes(args[0]);
 }
 
 function reportState(state, sessionID) {
@@ -155,6 +172,7 @@ function reportState(state, sessionID) {
 
 export const SheprAgentStatePlugin = async () => {
   if (
+    !ownsLocalLifecycle() ||
     process.env.SHEPR_ENV !== "1" ||
     !process.env.SHEPR_SOCKET_PATH ||
     !process.env.SHEPR_PANE_ID

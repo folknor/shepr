@@ -1014,7 +1014,7 @@ impl ClientShellState {
     ) {
         let size = text.len();
         if size > shepr_protocol::MAX_INPUT_PAYLOAD {
-            outcome.repaint |= self.receive_endpoint_error(paste_rejected_notice(
+            outcome.repaint |= self.receive_paste_rejection(paste_rejected_notice(
                 size,
                 shepr_protocol::MAX_INPUT_PAYLOAD,
             ));

@@ -47,8 +47,9 @@ pub(crate) struct ClientShellState {
     pub(crate) outer_terminal_focus: Option<bool>,
     /// Last focused-pane report-all demand sent to this shell.
     pub(crate) host_keyboard_report_all_active: Option<bool>,
-    /// Presses forwarded by this shell that need release on abrupt teardown.
-    held_inputs: HashMap<ClientShellPressId, ClientShellHeldInput>,
+    /// Presses forwarded by this shell that need release on abrupt teardown,
+    /// keyed by target pane and the client's reported press identity.
+    held_inputs: HashMap<(shepr_protocol::PublicPaneId, ClientShellPressId), ClientShellHeldInput>,
     /// The workspace this connection views. Only this client's own navigation,
     /// and the settling of workspaces that appeared or vanished, move it.
     pub(crate) location: ClientShellLocation,
@@ -369,8 +370,9 @@ impl ClientRegistry {
     }
 }
 
-/// A held press, keyed by what the client reports: the key code (a Linux
-/// terminal reports no physical key identity) or the mouse button.
+/// A held press identity within one target pane, keyed by what the client
+/// reports: the key code (a Linux terminal reports no physical key identity)
+/// or the mouse button.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ClientShellPressId {
     Key(ClientKeyCode),
@@ -578,7 +580,7 @@ impl ClientConnection {
                     ..
                 } => {
                     shell.held_inputs.insert(
-                        ClientShellPressId::Key(code.clone()),
+                        (target.clone(), ClientShellPressId::Key(code.clone())),
                         ClientShellHeldInput {
                             target: target.to_owned(),
                             release: ClientPaneInputEvent::Key {
@@ -599,7 +601,7 @@ impl ClientConnection {
                 } => {
                     shell
                         .held_inputs
-                        .remove(&ClientShellPressId::Key(code.clone()));
+                        .remove(&(target.clone(), ClientShellPressId::Key(code.clone())));
                 }
                 ClientPaneInputEvent::Mouse {
                     kind: ClientMouseKind::Down(button),
@@ -615,7 +617,7 @@ impl ClientConnection {
                     modifiers,
                     ..
                 } => {
-                    let id = ClientShellPressId::Mouse(*button);
+                    let id = (target.clone(), ClientShellPressId::Mouse(*button));
                     if matches!(
                         event,
                         ClientPaneInputEvent::Mouse {
@@ -645,7 +647,7 @@ impl ClientConnection {
                 } => {
                     shell
                         .held_inputs
-                        .remove(&ClientShellPressId::Mouse(*button));
+                        .remove(&(target.clone(), ClientShellPressId::Mouse(*button)));
                 }
                 ClientPaneInputEvent::Key {
                     kind: ClientKeyKind::Press | ClientKeyKind::Repeat,

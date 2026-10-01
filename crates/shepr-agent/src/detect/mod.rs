@@ -245,6 +245,18 @@ fn normalized_process_name(process: &ForegroundProcess) -> String {
     effective.to_string()
 }
 
+/// Node and Bun options that run inline code instead of a script.
+const NODE_EVAL_FLAGS: &[&str] = &["-e", "--eval", "-p", "--print"];
+/// Node and Bun options that take their value as the next argument.
+const NODE_VALUE_FLAGS: &[&str] = &[
+    "-r",
+    "--require",
+    "--loader",
+    "--import",
+    "--experimental-loader",
+    "--inspect-port",
+];
+
 fn wrapped_agent_name_from_runtime_argv(
     runtime: &str,
     argv: Option<&[String]>,
@@ -255,9 +267,11 @@ fn wrapped_agent_name_from_runtime_argv(
 
     match runtime_name.as_str() {
         "node" | "bun" => {
-            script_arg_agent_name(argv, &["-e", "--eval", "-p", "--print"], &[], cwd_pid)
+            script_arg_agent_name(argv, NODE_EVAL_FLAGS, &[], NODE_VALUE_FLAGS, cwd_pid)
         }
-        name if is_python_runtime(name) => script_arg_agent_name(argv, &["-c"], &["-m"], cwd_pid),
+        name if is_python_runtime(name) => {
+            script_arg_agent_name(argv, &["-c"], &["-m"], &["-W", "-X"], cwd_pid)
+        }
         name if is_pane_shell_process_name(name) => {
             shell_agent_name_from_runtime_argv(argv, cwd_pid)
         }
@@ -285,10 +299,12 @@ fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<u32>) -> 
                 .and_then(|command| shell_command_agent_name(command, cwd_pid));
         }
 
+        if shell_option_takes_value(arg) {
+            let _ = args.next();
+            continue;
+        }
+
         if arg.starts_with('-') {
-            if option_takes_value(arg) {
-                let _ = args.next();
-            }
             continue;
         }
 
@@ -314,25 +330,38 @@ fn script_arg_agent_name(
     argv: &[String],
     eval_flags: &[&str],
     module_flags: &[&str],
+    value_flags: &[&str],
     cwd_pid: Option<u32>,
 ) -> Option<String> {
-    let index = script_arg_index(argv, eval_flags, module_flags)?;
+    let index = script_arg_index(argv, eval_flags, module_flags, value_flags)?;
     agent_name_from_path_token(argv.get(index)?, cwd_pid)
 }
 
-fn script_arg_index(argv: &[String], eval_flags: &[&str], module_flags: &[&str]) -> Option<usize> {
+fn script_arg_index(
+    argv: &[String],
+    eval_flags: &[&str],
+    module_flags: &[&str],
+    value_flags: &[&str],
+) -> Option<usize> {
     let mut index = 1;
     while let Some(arg) = argv.get(index) {
         if arg == "--" {
             return argv.get(index + 1).map(|_| index + 1);
         }
 
-        if flag_matches(arg, eval_flags) || flag_matches(arg, module_flags) {
+        if flag_matches(arg, eval_flags)
+            || flag_matches(arg, module_flags)
+            || python_execution_flag_cluster(arg, eval_flags, module_flags)
+        {
             return None;
         }
 
         if arg.starts_with('-') {
-            index += if option_takes_value(arg) { 2 } else { 1 };
+            index += if value_flags.contains(&arg.as_str()) {
+                2
+            } else {
+                1
+            };
             continue;
         }
 
@@ -340,6 +369,36 @@ fn script_arg_index(argv: &[String], eval_flags: &[&str], module_flags: &[&str])
     }
 
     None
+}
+
+fn python_execution_flag_cluster(arg: &str, eval_flags: &[&str], module_flags: &[&str]) -> bool {
+    if !eval_flags.contains(&"-c") && !module_flags.contains(&"-m") {
+        return false;
+    }
+    let Some(flags) = arg
+        .strip_prefix('-')
+        .filter(|flags| !flags.starts_with('-'))
+    else {
+        return false;
+    };
+    let Some(mode) = flags.chars().last() else {
+        return false;
+    };
+    let mode_flag = format!("-{mode}");
+    if !eval_flags.contains(&mode_flag.as_str()) && !module_flags.contains(&mode_flag.as_str()) {
+        return false;
+    }
+
+    // Python permits no-argument flags such as -I to precede -c or -m in a
+    // short-flag cluster. Do not interpret the value attached to -W or -X as
+    // a cluster; those options take their value in the same argument.
+    let prefix = &flags[..flags.len() - mode.len_utf8()];
+    prefix.chars().all(|flag| {
+        matches!(
+            flag,
+            'b' | 'B' | 'd' | 'E' | 'i' | 'I' | 'O' | 'P' | 'q' | 's' | 'S' | 'u' | 'v' | 'V' | 'x'
+        )
+    })
 }
 
 fn flag_matches(arg: &str, flags: &[&str]) -> bool {
@@ -362,20 +421,8 @@ fn long_flag_value(arg: &str, flag: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('='))
 }
 
-fn option_takes_value(arg: &str) -> bool {
-    matches!(
-        arg,
-        "-r" | "--require"
-            | "--loader"
-            | "--import"
-            | "--experimental-loader"
-            | "--inspect-port"
-            | "-W"
-            | "-X"
-            | "-S"
-            | "-L"
-            | "-o"
-    )
+fn shell_option_takes_value(arg: &str) -> bool {
+    matches!(arg, "-o" | "-O" | "+o" | "+O")
 }
 
 fn argv0_agent_name(argv: Option<&[String]>, cwd_pid: Option<u32>) -> Option<String> {
@@ -484,7 +531,7 @@ fn letta_entrypoint_index(argv: &[String], cwd_pid: Option<u32>) -> Option<usize
         return None;
     }
 
-    script_arg_index(argv, &["-e", "--eval", "-p", "--print"], &[])
+    script_arg_index(argv, NODE_EVAL_FLAGS, &[], NODE_VALUE_FLAGS)
         .filter(|index| argv.get(*index).is_some_and(|arg| is_letta(arg)))
 }
 
