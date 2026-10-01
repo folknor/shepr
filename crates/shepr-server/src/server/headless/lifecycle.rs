@@ -342,7 +342,7 @@ impl HeadlessServer {
         // flush barrier must cover the notice without making earlier replies
         // unreachable to clients that leave when they read it.
         self.resolve_pending_endpoint_replies_for_shutdown();
-        self.flush_endpoint_replies();
+        self.release_endpoint_replies(ReleaseMode::Shutdown);
         self.app.state.should_quit = true;
     }
 
@@ -361,6 +361,9 @@ impl HeadlessServer {
             .require_phase("completing shutdown", ShutdownPhase::Stopping)
             .map_err(io::Error::other)?;
         info!("completing server shutdown");
+        // A client whose outbox already closed leaves first, so a request it
+        // left buffered finds no registered client and is dropped with it.
+        self.reap_closed_clients();
         self.reject_late_client_connections().await;
 
         let shutdown_msg = ServerMessage::ServerShutdown {
@@ -385,12 +388,7 @@ impl HeadlessServer {
         let flushes = self
             .clients
             .values()
-            .filter_map(|client| {
-                client
-                    .writer
-                    .as_ref()
-                    .map(crate::server::client_transport::ClientWriter::flush)
-            })
+            .map(|client| client.outbox.flush_barrier())
             .collect::<Vec<_>>();
         self.shutdown_flushes.extend(flushes);
     }

@@ -1,4 +1,4 @@
-use super::{App, RenderDemand};
+use super::App;
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
@@ -111,13 +111,10 @@ impl App {
     }
 
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
-        let _ = self.handle_internal_event_with_render_demand(ev);
+        let _ = self.handle_internal_event_with_view_change(ev);
     }
 
-    pub(crate) fn handle_internal_event_with_render_demand(
-        &mut self,
-        ev: AppEvent,
-    ) -> RenderDemand {
+    pub(crate) fn handle_internal_event_with_view_change(&mut self, ev: AppEvent) -> bool {
         self.handle_internal_event_inner(ev, false)
     }
 
@@ -140,20 +137,16 @@ impl App {
 
     /// Applies an event whose pane-exit publication and checkpoint decision
     /// have already been made by the App.
-    pub(crate) fn handle_prepared_pane_exit(&mut self, ev: AppEvent) -> RenderDemand {
+    pub(crate) fn handle_prepared_pane_exit(&mut self, ev: AppEvent) -> bool {
         self.handle_internal_event_inner(ev, true)
     }
 
-    fn handle_internal_event_inner(
-        &mut self,
-        ev: AppEvent,
-        pane_exit_prepared: bool,
-    ) -> RenderDemand {
+    fn handle_internal_event_inner(&mut self, ev: AppEvent, pane_exit_prepared: bool) -> bool {
         let Some(ev) = self.admit_runtime_event(ev) else {
-            return RenderDemand::None;
+            return false;
         };
         if matches!(&ev, AppEvent::ClipboardWrite { .. }) {
-            return RenderDemand::None;
+            return false;
         }
 
         if let AppEvent::GitStatusRefreshed {
@@ -162,7 +155,7 @@ impl App {
         } = ev
         {
             let changed = self.handle_git_status_refreshed(results, cache_updates);
-            return Self::render_demand_if(changed);
+            return changed;
         }
 
         // A detector tick can finish before the watcher publishes PaneDied.
@@ -177,7 +170,7 @@ impl App {
                     .is_some_and(shepr_mux::pane::PaneRuntime::child_has_exited)
             })
         {
-            return RenderDemand::None;
+            return false;
         }
 
         let projection_before = self.state.shell_projection_revision;
@@ -264,7 +257,7 @@ impl App {
         if removed {
             self.state.mark_shell_projection_dirty();
         }
-        Self::render_demand_if(changed)
+        changed
     }
 
     fn publish_pane_process_exit(
@@ -278,14 +271,6 @@ impl App {
         {
             self.sync_pane_lifecycle_authority_detection_pause(pane_id);
             self.state.mark_shell_projection_dirty();
-        }
-    }
-
-    fn render_demand_if(changed: bool) -> RenderDemand {
-        if changed {
-            RenderDemand::Full
-        } else {
-            RenderDemand::None
         }
     }
 
@@ -415,13 +400,6 @@ mod pane_exit_event_tests {
 }
 
 #[cfg(test)]
-impl App {
-    pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
-        self.handle_internal_event_with_render_demand(ev) != RenderDemand::None
-    }
-}
-
-#[cfg(test)]
 mod runtime_generation_tests {
     use super::*;
     use crate::test_support::*;
@@ -509,10 +487,7 @@ mod runtime_generation_tests {
                 exit_reason: shepr_platform::ChildExitReason::Interrupted,
             }),
         };
-        assert_eq!(
-            app.handle_internal_event_with_render_demand(died()),
-            RenderDemand::None
-        );
+        assert!(!app.handle_internal_event_with_view_change(died()));
         assert!(app.state.workspaces[0].contains_pane(pane_id));
         assert_eq!(
             app.state.terminals[&terminal_id].persisted_agent_session(),
@@ -530,7 +505,7 @@ mod runtime_generation_tests {
         app.insert_test_runtime(pane_id, replacement);
         // This also covers a checkpointed exit replayed after replacement:
         // its original envelope is checked again before any removal.
-        assert_eq!(app.handle_prepared_pane_exit(died()), RenderDemand::None);
+        assert!(!app.handle_prepared_pane_exit(died()));
         assert!(app.state.workspaces[0].contains_pane(pane_id));
         assert!(
             app.admit_runtime_event(AppEvent::Runtime {

@@ -327,35 +327,6 @@ and restore replays scrollback older than its layout. The writer calls history
 panes. Stamp a save generation into both files and pair on it, or publish layout
 and history as one directory by a single rename.
 
-## REJ-021 - A failed health pong leaves a ghost client registered
-
-Class: failure on failure (the client's control queue is over its item or byte
-cap). Scope: server loop and transport.
-
-On `ClientMessage::HealthPing` the reader sends the pong through its own
-control-writer clone. If the queue is over its cap, `send_control` calls
-`close_connection()` (socket shut down, `writer_alive = false`, so the writer
-thread exits without a write error and sends nothing), and the reader breaks
-without `send_client_disconnected`. Neither thread reports the client gone. The
-`ClientConnection` stays in the registry until the next server-side send to it
-fails, still presenting a surface: geometry control (PTYs sized for a dead
-terminal), possibly foreground (host theme, clipboard writes), focus on the panes
-it viewed, and `app_client_count` (git refresh cadence). Claims broken: the
-transport's pattern that every reader exit tells the loop, and the `HealthPing`
-comment. Send `ClientDisconnected` on that `break` (and the encode-failure
-`break` above it); structurally, make the writer queue's `close_connection` the
-one place that reports the disconnect. See `notes/work.md` item 4.
-
-## REJ-022 - Sends that fail during shutdown re-apply geometry on a stopping server
-
-Class: failure on failure (a client send fails while the server stops). Scope:
-server loop and transport.
-
-During shutdown a failed send in `send_to_all_clients`,
-`reject_endpoint_request_for_shutdown` or `flush_endpoint_replies` goes through
-`remove_client_and_resize_if_needed`, which re-applies geometry and may resize
-PTYs of a server that is stopping. Harmless; a plain registry removal would do.
-
 ## REJ-023 - The global panic hook restores the terminal for panics the client is designed to survive
 
 Class: failure on failure (a panic in a helper thread). Scope: client endpoints.

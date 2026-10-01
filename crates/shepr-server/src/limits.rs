@@ -132,3 +132,12 @@ pub(crate) const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_milli
 
 /// The fraction of a split one resize step moves its edge by.
 pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: f32 = 0.05;
+
+/// Most endpoint replies held for one client, ready or waiting on a worker. A
+/// same-build client has one command in flight per endpoint, so a legitimate
+/// backlog is one or two entries; a client past this is dropped, not
+/// buffered for.
+pub(crate) const MAX_HELD_ENDPOINT_REPLIES: usize = 64;
+/// Most framed reply and refusal bytes held for one client. A held reply
+/// drains into the control lane, whose own byte budget is this size.
+pub(crate) const MAX_HELD_ENDPOINT_REPLY_BYTES: usize = CLIENT_CONTROL_QUEUE_MAX_BYTES;

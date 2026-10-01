@@ -319,6 +319,18 @@ fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> 
     })
 }
 
+/// What `render_patches` did with each candidate. A candidate whose patch
+/// changed nothing is in none of these.
+#[derive(Default)]
+pub(super) struct PatchOutcome {
+    /// Took a patch.
+    pub(super) sent: Vec<ClientId>,
+    /// Needs a full surface this pass instead.
+    pub(super) promote: Vec<ClientId>,
+    /// Its slot was busy; owed a full surface once it frees.
+    pub(super) owed: Vec<ClientId>,
+}
+
 impl HeadlessServer {
     /// Reports each retained-render fallback after the full renderer has
     /// recovered the surface, including recurring reasons.
@@ -333,66 +345,65 @@ impl HeadlessServer {
         );
     }
 
-    /// Applies terminal dirty rows to the committed origin-relative pane surface.
-    /// Any presentation or geometry uncertainty falls back to the complete renderer.
-    pub(super) fn render_retained_pane_surface_and_stream(
+    /// Sends pending PTY damage to `ids` as retained patches, each judged on
+    /// its own. A candidate whose slot is busy is owed (the damage is consumed
+    /// for everyone, so its baseline is now behind). A candidate failing a
+    /// check about its own baseline or patch, or viewing a pane whose dirty
+    /// rows could not be collected, is promoted to the full step; the others
+    /// still get their patches. Every recipient is planned before any is
+    /// sent, and a client's baseline changes only on its own successful send.
+    pub(super) fn render_patches(
         &mut self,
+        ids: &[ClientId],
         pty_sources: &HashSet<shepr_core::layout::PaneId>,
-    ) -> bool {
+    ) -> PatchOutcome {
+        let mut outcome = PatchOutcome::default();
         macro_rules! fallback {
-            ($reason:literal) => {{
-                self.retained_surface_fallback_reason = Some($reason);
-                return false;
+            ($reason:literal, $id:expr, $label:lifetime) => {{
+                self.retained_surface_fallback_reason.get_or_insert($reason);
+                outcome.promote.push($id);
+                continue $label;
             }};
         }
-        macro_rules! success {
-            ($reason:literal) => {{
-                trace!(reason = $reason, "retained pane surface update succeeded");
-                return true;
-            }};
+        let targets = render_targets(&self.clients)
+            .into_iter()
+            .filter(|target| ids.contains(&target.client_id))
+            .collect::<Vec<_>>();
+        // Check slots before baseline validation or source collection.
+        let mut ready = Vec::new();
+        for target in targets {
+            if let Some(client) = self.clients.get_mut(&target.client_id) {
+                if !client.outbox.surface_slot_free() {
+                    client.render_state.owe();
+                    outcome.owed.push(target.client_id);
+                } else {
+                    ready.push(target);
+                }
+            }
         }
-
-        if pty_sources.is_empty()
-            || self.app.full_redraw_pending
-            || self.app.state.settings.reveal_hidden_cursor_for_cjk_ime
-        {
-            fallback!("unsafe_state");
-        }
-        let mut targets = render_targets(&self.clients);
-        targets.retain(|target| {
-            self.clients
-                .get(&target.client_id)
-                .is_some_and(ClientConnection::is_active_shell_client)
-        });
-        if targets.is_empty() {
-            success!("no_active_surface");
-        }
-
+        let targets = ready;
         let mut recipients = Vec::with_capacity(targets.len());
         // Several clients can view the same workspace at the same size. The
         // layout only depends on that workspace and frame geometry, so compute
         // it once per key during this fanout pass and validate each client's
         // committed surface against the shared result.
         let mut layouts = HashMap::new();
-        for target in &targets {
+        'targets: for target in &targets {
             let Some(client) = self.clients.get(&target.client_id) else {
-                fallback!("client_missing");
+                fallback!("client_missing", target.client_id, 'targets);
             };
-            if client.deferred_render() != RenderDemand::None {
-                continue;
-            }
             if client.render_state.requires_recompute() {
-                fallback!("recompute_pending");
+                fallback!("recompute_pending", target.client_id, 'targets);
             }
             let Some(surface) = client.render_state.last_pane_surface() else {
-                fallback!("no_baseline");
+                fallback!("no_baseline", target.client_id, 'targets);
             };
             if surface.boot_id != self.client_shell_boot_id
                 || surface.projection_revision != client.shell_state().projection_revision
                 || surface.frame.width != target.terminal_size.cols.get()
                 || surface.frame.height != target.terminal_size.rows.get()
             {
-                fallback!("baseline_mismatch");
+                fallback!("baseline_mismatch", target.client_id, 'targets);
             }
             let identities = &client.surface_pane_identities;
             let layout = if let Some(identity) = identities.first() {
@@ -403,7 +414,7 @@ impl HeadlessServer {
                     surface.frame.width,
                     surface.frame.height,
                 ) else {
-                    fallback!("baseline_mismatch");
+                    fallback!("baseline_mismatch", target.client_id, 'targets);
                 };
                 Some(layout)
             } else {
@@ -414,15 +425,15 @@ impl HeadlessServer {
                     let Some(panes) =
                         resolve_retained_panes(&self.app, surface, identities, layout)
                     else {
-                        fallback!("baseline_mismatch");
+                        fallback!("baseline_mismatch", target.client_id, 'targets);
                     };
                     panes
                 }
                 None if surface.panes.is_empty() => Vec::new(),
-                None => fallback!("baseline_mismatch"),
+                None => fallback!("baseline_mismatch", target.client_id, 'targets),
             };
             if has_synchronized_pane(&self.app, &panes) {
-                fallback!("synchronized_visible");
+                fallback!("synchronized_visible", target.client_id, 'targets);
             }
             recipients.push(RetainedRecipient {
                 client_id: target.client_id,
@@ -431,10 +442,18 @@ impl HeadlessServer {
             });
         }
         if recipients.is_empty() {
-            success!("all_recipients_deferred");
+            return outcome;
         }
 
         let mut collected = Vec::with_capacity(pty_sources.len());
+        let mut failed_sources = HashSet::new();
+        macro_rules! source_fallback {
+            ($reason:literal, $source:expr) => {{
+                self.retained_surface_fallback_reason.get_or_insert($reason);
+                failed_sources.insert(*$source);
+                continue;
+            }};
+        }
         for source in pty_sources {
             let mut source_pane = None;
             let mut width = 0u16;
@@ -463,10 +482,10 @@ impl HeadlessServer {
                 workspace_index,
                 pane_id,
             ) else {
-                fallback!("runtime_missing");
+                source_fallback!("runtime_missing", source);
             };
             let Some(snapshot) = runtime.collect_dirty_patch_snapshot(width, height) else {
-                fallback!("terminal_snapshot");
+                source_fallback!("terminal_snapshot", source);
             };
             let patch = match snapshot.patch {
                 shepr_mux::pane::TerminalDirtyPatchOutcome::Clean => {
@@ -474,7 +493,7 @@ impl HeadlessServer {
                 }
                 shepr_mux::pane::TerminalDirtyPatchOutcome::Patch(patch) => patch,
                 shepr_mux::pane::TerminalDirtyPatchOutcome::Fallback => {
-                    fallback!("terminal_patch");
+                    source_fallback!("terminal_patch", source);
                 }
             };
             collected.push(CollectedPanePatch {
@@ -489,8 +508,16 @@ impl HeadlessServer {
         }
 
         let mut updates = Vec::with_capacity(recipients.len());
-        for recipient in &recipients {
+        'recipients: for recipient in &recipients {
             let client_id = recipient.client_id;
+            if recipient
+                .panes
+                .iter()
+                .any(|pane| failed_sources.contains(&pane.identity.pane_id))
+            {
+                outcome.promote.push(client_id);
+                continue;
+            }
             let surface = recipient.surface;
             let mut panes = surface.panes.clone();
             let projection_revision = surface.projection_revision;
@@ -508,26 +535,26 @@ impl HeadlessServer {
                     continue;
                 };
                 let Some(pane) = panes.get_mut(pane_index) else {
-                    fallback!("baseline_mismatch");
+                    fallback!("baseline_mismatch", client_id, 'recipients);
                 };
                 // Alternate-screen transitions change whether the pane reserves
                 // a scrollbar gutter. Recompute layout and resize the runtime
                 // through the complete renderer before retaining further rows.
                 if pane.alternate_screen_active != collected_pane.alternate_screen_active {
-                    fallback!("alternate_screen_geometry");
+                    fallback!("alternate_screen_geometry", client_id, 'recipients);
                 }
                 if patch_intersects_hyperlinks(
                     &surface.frame,
                     pane.inner_rect,
                     &collected_pane.patch,
                 ) {
-                    fallback!("hyperlink");
+                    fallback!("hyperlink", client_id, 'recipients);
                 }
                 let previous_pane = pane.clone();
                 let Some(rows) =
                     changed_rows(&surface.frame, pane.inner_rect, &collected_pane.patch)
                 else {
-                    fallback!("invalid_patch");
+                    fallback!("invalid_patch", client_id, 'recipients);
                 };
                 patch_rows.extend(rows);
                 let Some(scrollbar_rows) = retained_scrollbar_patch(
@@ -538,7 +565,7 @@ impl HeadlessServer {
                     collected_pane.alternate_screen_active,
                     collected_pane.scroll_metrics,
                 ) else {
-                    fallback!("scrollbar_patch");
+                    fallback!("scrollbar_patch", client_id, 'recipients);
                 };
                 patch_rows.extend(scrollbar_rows);
                 pane.content_revision = collected_pane.content_revision;
@@ -568,7 +595,7 @@ impl HeadlessServer {
             )
             .is_err()
             {
-                fallback!("invalid_patch");
+                fallback!("invalid_patch", client_id, 'recipients);
             }
             let cursor = retained_cursor(&self.app, &recipient.panes);
             let cursor_changed = cursor != surface.frame.cursor;
@@ -586,32 +613,29 @@ impl HeadlessServer {
             }
             updates.push(RetainedRecipientUpdate { client_id, patch });
         }
-        if updates.is_empty() {
-            success!("unchanged");
-        }
-        if recipients
-            .iter()
-            .any(|recipient| has_synchronized_pane(&self.app, &recipient.panes))
-        {
-            fallback!("synchronized_during_patch");
-        }
 
-        let mut sent = 0u64;
-        let mut disconnected = Vec::new();
+        let synchronized = recipients
+            .iter()
+            .filter(|recipient| has_synchronized_pane(&self.app, &recipient.panes))
+            .map(|recipient| recipient.client_id)
+            .collect::<HashSet<_>>();
+        drop(recipients);
         for update in updates {
             let RetainedRecipientUpdate { client_id, patch } = update;
             let Some(client) = self.clients.get_mut(&client_id) else {
                 continue;
             };
-            let Some(writer) = client.writer.as_ref().cloned() else {
-                client.defer_full_render();
+            if synchronized.contains(&client_id) {
+                self.retained_surface_fallback_reason
+                    .get_or_insert("synchronized_during_patch");
+                outcome.promote.push(client_id);
                 continue;
-            };
+            }
             let Some(prepared) = client.render_state.prepare_pane_surface_patch(patch) else {
-                client.defer_full_render();
+                outcome.promote.push(client_id);
                 continue;
             };
-            let serialized = match Self::frame_server_message(prepared.message()) {
+            let serialized = match crate::server::outbox::frame_server_message(prepared.message()) {
                 Ok(serialized) => serialized,
                 Err(error) => {
                     warn!(
@@ -620,35 +644,37 @@ impl HeadlessServer {
                         "failed to serialize retained pane surface patch"
                     );
                     client.request_repaint();
-                    client.defer_full_render();
+                    outcome.promote.push(client_id);
                     continue;
                 }
             };
-            let send = writer.render.try_send(serialized);
-            match send {
-                Ok(()) => {
-                    client.clear_deferred_render();
+            match client.outbox.offer_surface(serialized) {
+                crate::server::outbox::SurfaceOffer::Queued => {
+                    client.render_state.clear_debt();
                     client.render_state.commit_sent_frame(prepared);
                     if client.render_state.last_pane_surface().is_none() {
                         client.request_repaint();
                     }
-                    sent += 1;
+                    outcome.sent.push(client_id);
                 }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    client.defer_full_render();
+                // The slot was free when this pass checked it and only the
+                // writer empties it, so this is a bug guard: owe, not panic.
+                crate::server::outbox::SurfaceOffer::Occupied => {
+                    client.render_state.owe();
+                    outcome.owed.push(client_id);
                 }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    disconnected.push(client_id);
-                }
+                // The outbox closed itself; the reap removes the client.
+                crate::server::outbox::SurfaceOffer::Closed => {}
             }
         }
-        for client_id in disconnected {
-            self.remove_client_and_resize_if_needed(client_id);
-        }
-        if sent > 0 {
-            success!("sent");
-        }
-        success!("recovery_queued");
+
+        trace!(
+            sent = outcome.sent.len(),
+            promoted = outcome.promote.len(),
+            owed = outcome.owed.len(),
+            "retained pane surface pass completed"
+        );
+        outcome
     }
 }
 

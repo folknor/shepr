@@ -28,12 +28,52 @@ fn warn_surface_encoding_failure(
     );
 }
 
+/// Moves whenever something every client's projection or surface may depend
+/// on changed (application state, theme, PTY sizes, the client set). A
+/// version, compared against what each client last settled at, so a client
+/// that could not be served when it moved keeps that debt until it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewEpoch(u64);
+impl ViewEpoch {
+    /// Never current: a client settled here is stale at any epoch.
+    pub(crate) const ZERO: Self = Self(0);
+    pub(crate) const INITIAL: Self = Self(1);
+    pub(crate) fn advance(&mut self) {
+        self.0 = self.0.saturating_add(1);
+    }
+}
+
+/// What a client is owed beyond what its baseline says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SurfaceDebt {
+    /// Owed only what the baseline implies (missing, or recompute pending).
+    Clear,
+    /// A surface this client should have was not delivered.
+    Owed,
+    /// The last attempt produced a surface the client can never receive
+    /// (oversized). Hides the baseline-implied debt until a retry is due.
+    Refused,
+}
+
+/// What the delta planner made of a rendered surface.
+pub(crate) enum PreparedSurface {
+    /// A message to send, and the baseline to commit once it is queued.
+    Ready(Box<PreparedRender>),
+    /// Identical to the baseline: nothing to send.
+    Unchanged,
+    /// The surface revision counter is spent; the client can never be sent
+    /// another surface on this connection.
+    RevisionsExhausted,
+}
+
 /// Per-client render baseline: the last surface sent and its revision. The
 /// delta planner skips unchanged surfaces after its cell comparison pass.
 pub(crate) struct ClientRenderState {
     last_surface: Option<Box<PaneSurfaceFrame>>,
     surface_revision: SurfaceRevision,
     recompute_pending: bool,
+    settled: ViewEpoch,
+    debt: SurfaceDebt,
 }
 
 impl ClientRenderState {
@@ -42,7 +82,52 @@ impl ClientRenderState {
             last_surface: None,
             surface_revision: SurfaceRevision::ZERO,
             recompute_pending: false,
+            settled: ViewEpoch::ZERO,
+            debt: SurfaceDebt::Clear,
         }
+    }
+
+    pub(crate) fn is_settled_at(&self, epoch: ViewEpoch) -> bool {
+        self.settled == epoch
+    }
+    pub(crate) fn settle(&mut self, epoch: ViewEpoch) {
+        self.settled = epoch;
+    }
+    /// Makes this client alone stale, whatever the epoch.
+    pub(crate) fn invalidate(&mut self) {
+        self.settled = ViewEpoch::ZERO;
+    }
+    pub(crate) fn owe(&mut self) {
+        self.debt = SurfaceDebt::Owed;
+    }
+    /// Records a surface too large to send. Nothing was committed, so any
+    /// baseline is behind what the client should see (a surface equal to it
+    /// is not sent at all): a retry must send a full surface, never patch
+    /// that baseline with only the newest damage.
+    pub(crate) fn refuse(&mut self) {
+        self.debt = SurfaceDebt::Refused;
+        self.recompute_pending = true;
+    }
+    pub(crate) fn clear_debt(&mut self) {
+        self.debt = SurfaceDebt::Clear;
+    }
+    /// Lets a refused client be planned again. Returns whether it was refused.
+    pub(crate) fn retry_refused(&mut self) -> bool {
+        if self.debt != SurfaceDebt::Refused {
+            return false;
+        }
+        self.clear_debt();
+        true
+    }
+    pub(crate) fn surface_debt(&self) -> bool {
+        match self.debt {
+            SurfaceDebt::Owed => true,
+            SurfaceDebt::Refused => false,
+            SurfaceDebt::Clear => self.last_surface.is_none() || self.recompute_pending,
+        }
+    }
+    pub(crate) fn takes_patches(&self) -> bool {
+        self.debt == SurfaceDebt::Clear && self.last_surface.is_some() && !self.recompute_pending
     }
 
     pub(crate) fn request_recompute(&mut self) {
@@ -55,6 +140,7 @@ impl ClientRenderState {
 
     pub(crate) fn request_repaint(&mut self) {
         self.last_surface = None;
+        self.clear_debt();
     }
 
     pub(crate) fn last_pane_surface(&self) -> Option<&PaneSurfaceFrame> {
@@ -64,18 +150,18 @@ impl ClientRenderState {
     pub(crate) fn prepare_pane_surface(
         &mut self,
         mut surface: PaneSurfaceFrame,
-    ) -> Option<PreparedRender> {
+    ) -> PreparedSurface {
         let Self {
             last_surface,
             surface_revision,
             recompute_pending,
+            ..
         } = self;
         // The client accepts a surface only at its exact successor revision,
         // so an exhausted counter (one step per sent frame, unreachable in
-        // practice) holds the last frame rather than repeating a revision.
+        // practice) closes the connection rather than repeating a revision.
         let Some(next_revision) = surface_revision.checked_next() else {
-            tracing::error!("surface revisions exhausted; holding the last frame");
-            return None;
+            return PreparedSurface::RevisionsExhausted;
         };
         surface.surface_revision = next_revision;
         let plan = last_surface.as_deref().and_then(|last| {
@@ -91,7 +177,7 @@ impl ClientRenderState {
             Some(shepr_protocol::surface_delta::SurfaceDeltaPlan::Unchanged(_message))
                 if !*recompute_pending =>
             {
-                return None;
+                return PreparedSurface::Unchanged;
             }
             Some(
                 shepr_protocol::surface_delta::SurfaceDeltaPlan::Unchanged(message)
@@ -105,10 +191,10 @@ impl ClientRenderState {
                 (ServerMessage::PaneSurface(surface), None)
             }
         };
-        Some(PreparedRender::Semantic {
+        PreparedSurface::Ready(Box::new(PreparedRender::Semantic {
             message,
             committed_surface,
-        })
+        }))
     }
 
     pub(crate) fn prepare_pane_surface_patch(
@@ -312,7 +398,26 @@ pub(crate) fn render_surface_virtual(
 }
 
 #[cfg(test)]
+impl PreparedSurface {
+    fn expect(self, message: &str) -> PreparedRender {
+        match self {
+            Self::Ready(render) => *render,
+            _ => panic!("{message}"),
+        }
+    }
+    fn is_some(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+    fn is_none(&self) -> bool {
+        matches!(self, Self::Unchanged)
+    }
+}
+#[cfg(test)]
 impl ClientRenderState {
+    pub(crate) fn exhaust_revisions(&mut self) {
+        self.surface_revision = SurfaceRevision::new(u64::MAX);
+    }
+
     /// The last sent surface, mutable, so tests can stage a stale baseline.
     pub(crate) fn last_surface_mut(&mut self) -> Option<&mut PaneSurfaceFrame> {
         self.last_surface.as_deref_mut()
@@ -334,6 +439,47 @@ mod tests {
             panes: Vec::new(),
             splits: Vec::new(),
         }
+    }
+
+    #[test]
+    fn surface_debt_tracks_missing_baselines_refusal_retries_and_repaint() {
+        let mut state = ClientRenderState::new();
+        assert!(state.surface_debt());
+        assert!(!state.takes_patches());
+        state.settle(ViewEpoch::INITIAL);
+        state.refuse();
+        assert!(!state.surface_debt());
+        assert!(!state.takes_patches());
+        assert!(state.retry_refused());
+        assert!(state.surface_debt());
+        let prepared = state
+            .prepare_pane_surface(test_surface("baseline"))
+            .expect("surface");
+        state.commit_sent_frame(prepared);
+        assert!(!state.surface_debt());
+        assert!(state.takes_patches());
+        state.owe();
+        assert!(state.surface_debt());
+        assert!(!state.takes_patches());
+        state.clear_debt();
+        state.request_recompute();
+        assert!(state.surface_debt());
+        state.refuse();
+        assert!(!state.surface_debt());
+        state.request_repaint();
+        assert!(state.surface_debt());
+        state.invalidate();
+        assert!(!state.is_settled_at(ViewEpoch::INITIAL));
+    }
+
+    #[test]
+    fn exhausted_surface_revisions_are_distinct_from_an_unchanged_surface() {
+        let mut state = ClientRenderState::new();
+        state.exhaust_revisions();
+        assert!(matches!(
+            state.prepare_pane_surface(test_surface("baseline")),
+            PreparedSurface::RevisionsExhausted
+        ));
     }
 
     #[test]

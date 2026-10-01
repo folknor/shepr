@@ -27,7 +27,9 @@ impl HeadlessServer {
                     ?client_id,
                     "projection revisions exhausted; dropping client"
                 );
-                self.remove_client_and_resize_if_needed(client_id);
+                if let Some(client) = self.clients.get(&client_id) {
+                    client.outbox.close();
+                }
                 return None;
             };
             Some(raised)
@@ -56,17 +58,13 @@ impl HeadlessServer {
             // dedupe state whenever a viewer is (re)activated so the post-commit replay can
             // produce mouse/keyboard modes and graphics even when runtime demand is unchanged.
             if active {
-                client.host_mouse_capture_active = None;
-                client.host_sgr_pixels_active = None;
-                client.shell_state_mut().host_keyboard_report_all_active = None;
                 // Do not emit/cache a title during a frozen target activation.
                 // A committed client explicitly requests the bounded replay
                 // after its coherent frame is visible.
-                client.sent_window_title = None;
+                client.outbox.forget_presentation();
             }
-            client.clear_deferred_render();
-            if !active && let Some(writer) = &client.writer {
-                writer.discard_pending_render();
+            if !active {
+                client.outbox.discard_pending_surface();
             }
             let held_inputs = (!active && changed).then(|| client.drain_shell_held_inputs());
             (changed, projection_revision, held_inputs)

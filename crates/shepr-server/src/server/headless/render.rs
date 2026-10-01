@@ -1,9 +1,6 @@
 use super::*;
 use crate::server::ClientId;
-
-fn writer_gone(client_id: ClientId) {
-    debug!(?client_id, "client writer channel closed");
-}
+use crate::server::render_stream::{PreparedSurface, ViewEpoch};
 
 pub(super) use crate::limits::SHELL_CWD_REFRESH_INTERVAL;
 
@@ -41,6 +38,92 @@ fn pane_surface_render_key(
         cell_size.width_px,
         cell_size.height_px,
     )
+}
+
+/// What one loop iteration owes, derived by `render_plan`.
+pub(super) struct RenderPlan {
+    /// Clients due a projection or a surface, in ascending id order.
+    pub(super) full: Vec<ClientId>,
+    /// Clients with a current baseline that can take pending PTY damage as a
+    /// retained patch.
+    pub(super) patch: Vec<ClientId>,
+    /// With no client attached, whether the PTY size rule is due for this
+    /// epoch.
+    pub(super) headless_geometry: bool,
+}
+impl RenderPlan {
+    pub(super) fn has_full(&self) -> bool {
+        !self.full.is_empty() || self.headless_geometry
+    }
+}
+
+/// What one `render_pass` did, for the debug log and tests.
+#[derive(Default, Debug)]
+pub(super) struct PassReport {
+    /// Clients that went through the full step (projection and surface
+    /// decision), including patch candidates promoted to it.
+    pub(super) full: Vec<ClientId>,
+    /// Clients that took a retained patch.
+    pub(super) patched: Vec<ClientId>,
+    /// Clients that could not take a surface this pass and are owed one.
+    pub(super) owed: Vec<ClientId>,
+    /// Surface renders made; clients sharing a workspace and size share one.
+    pub(super) surface_renders: usize,
+}
+type SurfaceEncoder = fn(&ServerMessage) -> Result<Vec<u8>, shepr_protocol::FramingError>;
+
+type SurfaceRenderer = fn(
+    &app::App,
+    Option<&shepr_protocol::WorkspaceId>,
+    Rect,
+    shepr_termio::host_term::cell_size::HostCellSize,
+) -> Result<
+    crate::server::client_shell::RenderedPaneSurface,
+    crate::server::client_shell::SurfaceRenderDeferred,
+>;
+
+pub(super) struct SurfaceBoundary {
+    pub(super) encode: SurfaceEncoder,
+    pub(super) render: SurfaceRenderer,
+}
+impl Default for SurfaceBoundary {
+    fn default() -> Self {
+        Self {
+            encode: crate::server::outbox::frame_server_message,
+            render: render_client_shell_pane_surface,
+        }
+    }
+}
+
+struct SharedSurfaces {
+    boundary: SurfaceBoundary,
+    remaining: HashMap<PaneSurfaceRenderKey, usize>,
+    rendered: HashMap<
+        PaneSurfaceRenderKey,
+        Result<
+            crate::server::client_shell::RenderedPaneSurface,
+            crate::server::client_shell::SurfaceRenderDeferred,
+        >,
+    >,
+    surface_renders: usize,
+    oversized_notices: Vec<(ClientId, usize, usize)>,
+}
+
+/// How one client's full step ended; `render_full` maps it to the client's
+/// surface debt in one place.
+enum ClientPassOutcome {
+    /// A surface was queued in its slot.
+    Delivered,
+    /// The surface equals its baseline: nothing to send, nothing owed.
+    Unchanged,
+    /// It could not take a surface this pass.
+    Owed,
+    /// Its surface is too large to send.
+    Refused,
+    /// An inactive shell: projected only.
+    Skipped,
+    /// Its outbox closed; the reap removes it.
+    Closed,
 }
 
 impl HeadlessServer {
@@ -169,40 +252,10 @@ impl HeadlessServer {
             })
             .collect::<Vec<_>>();
 
-        let mut broken_clients = Vec::new();
         for (client_id, enabled, sgr_pixels) in requested {
-            let Some(client) = self.clients.get_mut(&client_id) else {
-                continue;
-            };
-            if client.host_mouse_capture_active == Some(enabled)
-                && client.host_sgr_pixels_active == Some(sgr_pixels)
-            {
-                continue;
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.outbox.tell_mouse_capture(enabled, sgr_pixels);
             }
-            let Some(writer) = &client.writer else {
-                continue;
-            };
-            let serialized = match Self::frame_server_message(&ServerMessage::MouseCapture {
-                enabled,
-                sgr_pixels,
-            }) {
-                Ok(framed) => framed,
-                Err(err) => {
-                    warn!(error = %err, "failed to serialize mouse capture mode for client");
-                    continue;
-                }
-            };
-            if writer.control.send(serialized).is_err() {
-                writer_gone(client_id);
-                broken_clients.push(client_id);
-                continue;
-            }
-            client.host_mouse_capture_active = Some(enabled);
-            client.host_sgr_pixels_active = Some(sgr_pixels);
-        }
-
-        for client_id in broken_clients {
-            self.remove_client_and_resize_if_needed(client_id);
         }
     }
 
@@ -223,49 +276,17 @@ impl HeadlessServer {
                 (client_id, report_all)
             })
             .collect::<Vec<_>>();
-        let mut broken_clients = Vec::new();
         for (client_id, report_all) in shell_modes {
-            let Some(client) = self.clients.get_mut(&client_id) else {
-                continue;
-            };
-            if client.shell_state().host_keyboard_report_all_active == Some(report_all) {
-                continue;
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.outbox.tell_keyboard_report_all(report_all);
             }
-            let Some(writer) = &client.writer else {
-                continue;
-            };
-            let serialized = match Self::frame_server_message(
-                &ServerMessage::ClientShellKeyboardReportAll {
-                    enabled: report_all,
-                },
-            ) {
-                Ok(serialized) => serialized,
-                Err(err) => {
-                    warn!(error = %err, "failed to serialize client shell keyboard report-all mode");
-                    continue;
-                }
-            };
-            if writer.control.send(serialized).is_err() {
-                writer_gone(client_id);
-                broken_clients.push(client_id);
-                continue;
-            }
-            client.shell_state_mut().host_keyboard_report_all_active = Some(report_all);
         }
-
-        for client_id in broken_clients {
-            self.remove_client_and_resize_if_needed(client_id);
-        }
-    }
-
-    pub(super) fn has_pending_presentation_work(&self, render_demand: RenderDemand) -> bool {
-        render_demand == RenderDemand::Full || self.app.render_dirty.has_immediate_work()
     }
 
     pub(super) fn sync_immediate_pty_sources(&self) {
         let mut pane_ids = HashSet::new();
         for (&client_id, client) in &self.clients {
-            if !client.is_active_shell_client() || client.writer.is_none() {
+            if !client.is_active_shell_client() || !client.outbox.is_attached() {
                 continue;
             }
             let Some(target) = self.shell_target_for_client(client_id) else {
@@ -313,7 +334,7 @@ impl HeadlessServer {
 
     fn any_shell_surface_contains_pane(&self, pane_id: shepr_core::layout::PaneId) -> bool {
         self.clients.iter().any(|(&client_id, client)| {
-            if !client.is_active_shell_client() || client.writer.is_none() {
+            if !client.is_active_shell_client() || !client.outbox.is_attached() {
                 return false;
             }
             let Some(target) = self.shell_target_for_client(client_id) else {
@@ -327,55 +348,207 @@ impl HeadlessServer {
         })
     }
 
-    /// Whether a visible pane of the workspace `target` names is inside a
-    /// synchronized update, which a resize would tear.
-    fn workspace_has_synchronized_pane(&self, target: &shepr_protocol::WorkspaceId) -> bool {
+    /// The runtimes of the panes a surface of the workspace `target` names
+    /// shows: the focused pane when zoomed, every layout pane otherwise.
+    fn visible_pane_runtimes(
+        &self,
+        target: &shepr_protocol::WorkspaceId,
+    ) -> Vec<&shepr_mux::pane::PaneRuntime> {
         let Some(workspace_index) = self.app.state.workspace_index(target) else {
-            return false;
+            return Vec::new();
         };
         let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
-            return false;
+            return Vec::new();
         };
         let visible = if workspace.zoomed() {
             vec![workspace.focused_pane_id()]
         } else {
             workspace.layout().pane_ids()
         };
-        visible.into_iter().any(|pane_id| {
-            self.app
-                .state
-                .runtime_for_pane_in_workspace(
+        visible
+            .into_iter()
+            .filter_map(|pane_id| {
+                self.app.state.runtime_for_pane_in_workspace(
                     &self.app.terminal_runtimes,
                     workspace_index,
                     pane_id,
                 )
-                .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
-        })
+            })
+            .collect()
     }
 
-    pub(super) fn render_and_stream(&mut self) {
-        let render_targets = render_targets(&self.clients);
+    /// Whether a visible pane of the workspace `target` names is inside a
+    /// synchronized update, which a resize would tear.
+    fn workspace_has_synchronized_pane(&self, target: &shepr_protocol::WorkspaceId) -> bool {
+        self.visible_pane_runtimes(target)
+            .into_iter()
+            .any(shepr_mux::pane::PaneRuntime::synchronized_output_active)
+    }
 
-        if render_targets.is_empty() {
-            // With nothing to draw, only geometry is due: a workspace the
-            // server has not laid out yet (at startup, or created while no
-            // client was attached) gets its PTY size from the PTY size rule.
-            let laid_out =
-                self.app.state.has_workspace_without_area() && self.apply_all_workspace_geometry();
-            self.app.full_redraw_pending = false;
-            if let Some(cache) = self.shell_session_cache.as_mut() {
-                cache.timer_projections.clear();
+    /// What each attached client is owed this iteration, derived from its own
+    /// settle point, location, baseline and slot plus the server-wide epoch.
+    /// The checks run cheapest first: a client already due for a full pass
+    /// never reaches `surface_deliverable`, which may lock terminal cores.
+    pub(super) fn render_plan(&self, render_signal_pending: bool) -> RenderPlan {
+        let targets = render_targets(&self.clients);
+        let mut plan = RenderPlan {
+            full: Vec::new(),
+            patch: Vec::new(),
+            headless_geometry: targets.is_empty() && self.headless_settled != self.view_epoch,
+        };
+        let mut held = HashMap::new();
+        for target in targets {
+            let Some(client) = self.clients.get(&target.client_id) else {
+                continue;
+            };
+            let shell = client.shell_state();
+            let full = !client.render_state.is_settled_at(self.view_epoch)
+                || shell.projected_location_generation != shell.location.generation()
+                || shell.snapshot.is_none()
+                || (client.is_active_shell_client()
+                    && client.render_state.surface_debt()
+                    && self.surface_deliverable(target.client_id, &mut held));
+            if full {
+                plan.full.push(target.client_id);
+            } else if render_signal_pending
+                && client.is_active_shell_client()
+                && client.render_state.takes_patches()
+            {
+                plan.patch.push(target.client_id);
             }
-            debug!(laid_out, "updated geometry with no attached clients");
-            return;
         }
-        let render_target_count = render_targets.len();
-        let mut remaining_surface_renders = HashMap::new();
+        plan
+    }
+
+    /// Whether no surface of the workspace `target` names can be drawn now: a
+    /// visible pane is inside a synchronized update, or its terminal core is
+    /// poisoned. Either clears by itself (the update ends with a PTY repaint
+    /// signal, a poisoned pane's actor closes it), so a client held here
+    /// stays out of the plan rather than retrying.
+    fn workspace_surface_held(&self, target: &shepr_protocol::WorkspaceId) -> bool {
+        self.visible_pane_runtimes(target)
+            .into_iter()
+            .any(|runtime| {
+                runtime
+                    .synchronized_output_state()
+                    .is_none_or(|(active, _)| active)
+            })
+    }
+
+    /// The visible panes' PTY grid sizes, to tell whether a geometry
+    /// application resized any of them.
+    fn visible_pane_grid_sizes(
+        &self,
+        target: &shepr_protocol::WorkspaceId,
+    ) -> Vec<shepr_core::geometry::GridSize> {
+        self.visible_pane_runtimes(target)
+            .into_iter()
+            .map(shepr_mux::pane::PaneRuntime::grid_size)
+            .collect()
+    }
+
+    /// Whether `id` can take a surface now: its slot is free and the
+    /// workspace it views is not held. `held` memoizes the workspace check
+    /// for one plan or step, so each workspace's cores are locked once.
+    fn surface_deliverable(
+        &self,
+        id: ClientId,
+        held: &mut HashMap<shepr_protocol::WorkspaceId, bool>,
+    ) -> bool {
+        let Some(client) = self.clients.get(&id) else {
+            return false;
+        };
+        if !client.outbox.surface_slot_free() {
+            return false;
+        }
+        let Some(workspace) = self.shell_target_for_client(id) else {
+            return true;
+        };
+        !*held
+            .entry(workspace.clone())
+            .or_insert_with(|| self.workspace_surface_held(&workspace))
+    }
+
+    pub(super) fn render_pass(
+        &mut self,
+        plan: &RenderPlan,
+        sources: &HashSet<shepr_core::layout::PaneId>,
+    ) -> PassReport {
+        self.render_pass_with_boundary(plan, sources, SurfaceBoundary::default())
+    }
+
+    // Inject the framing boundary so failure recovery can be verified without
+    // constructing a surface larger than the protocol's one GiB limit.
+    pub(super) fn render_pass_with_boundary(
+        &mut self,
+        plan: &RenderPlan,
+        sources: &HashSet<shepr_core::layout::PaneId>,
+        boundary: SurfaceBoundary,
+    ) -> PassReport {
+        let epoch = self.view_epoch;
+        let mut report = PassReport::default();
+        let mut full = plan.full.clone();
+        if !sources.is_empty() {
+            if self.app.state.settings.reveal_hidden_cursor_for_cjk_ime {
+                full.extend(&plan.patch);
+            } else {
+                let patches = self.render_patches(&plan.patch, sources);
+                full.extend(patches.promote);
+                report.patched = patches.sent;
+                report.owed = patches.owed;
+                for id in &report.patched {
+                    if let Some(client) = self.clients.get_mut(id) {
+                        client.render_state.settle(epoch);
+                    }
+                }
+            }
+        }
+        full.sort_unstable();
+        full.dedup();
+        self.render_full(&full, epoch, &mut report, boundary);
+        if plan.headless_geometry {
+            if self.app.state.has_workspace_without_area() {
+                self.apply_all_workspace_geometry();
+            }
+            self.headless_settled = epoch;
+        }
+        if let Some(cache) = self.shell_session_cache.as_mut() {
+            cache.timer_projections.clear();
+        }
+        debug!(?report, "rendered client surfaces");
+        report
+    }
+
+    fn render_full(
+        &mut self,
+        ids: &[ClientId],
+        epoch: ViewEpoch,
+        report: &mut PassReport,
+        boundary: SurfaceBoundary,
+    ) {
+        let render_targets = render_targets(&self.clients)
+            .into_iter()
+            .filter(|target| ids.contains(&target.client_id))
+            .collect::<Vec<_>>();
+        let mut held = HashMap::new();
+        let deliverable = ids
+            .iter()
+            .map(|&id| (id, self.surface_deliverable(id, &mut held)))
+            .collect::<HashMap<_, _>>();
+        let mut shared = SharedSurfaces {
+            boundary,
+            remaining: HashMap::new(),
+            rendered: HashMap::new(),
+            surface_renders: 0,
+            oversized_notices: Vec::new(),
+        };
         for target in &render_targets {
             let Some(client) = self.clients.get(&target.client_id) else {
                 continue;
             };
-            if !client.is_active_shell_client() {
+            if !client.is_active_shell_client()
+                || !deliverable.get(&target.client_id).copied().unwrap_or(false)
+            {
                 continue;
             }
             let area = Rect::new(
@@ -386,26 +559,25 @@ impl HeadlessServer {
             );
             let shell_target = self.shell_target_for_client(target.client_id);
             let key = pane_surface_render_key(shell_target.as_ref(), area, target.cell_size);
-            *remaining_surface_renders.entry(key).or_insert(0usize) += 1;
+            *shared.remaining.entry(key).or_insert(0usize) += 1;
         }
-        let mut shared_surface_renders = HashMap::new();
 
         // Resize a workspace from its geometry source before drawing any observer.
         // Retained updates fall back here when a pane changes alternate screens.
-        for target in &render_targets {
-            let client_id = target.client_id;
+        let workspaces = ids
+            .iter()
+            .filter_map(|&id| self.shell_target_for_client(id))
+            .collect::<HashSet<_>>();
+        for surface_target in workspaces {
+            let Some(super::client_views::GeometrySource::Client(client_id)) =
+                self.workspace_geometry_source(&surface_target)
+            else {
+                continue;
+            };
             let Some(client) = self.clients.get(&client_id) else {
                 continue;
             };
             if !client.is_active_shell_client() {
-                continue;
-            }
-            let Some(surface_target) = self.shell_target_for_client(client_id) else {
-                continue;
-            };
-            if self.workspace_geometry_source(&surface_target)
-                != Some(super::client_views::GeometrySource::Client(client_id))
-            {
                 continue;
             }
             let changed = client
@@ -419,6 +591,9 @@ impl HeadlessServer {
                     let Some(first_identity) = identities.first() else {
                         return false;
                     };
+                    if first_identity.workspace_id != surface_target {
+                        return true;
+                    }
                     let Some(workspace_index) =
                         self.app.resolve_workspace_id(&first_identity.workspace_id)
                     else {
@@ -451,294 +626,306 @@ impl HeadlessServer {
             if !changed || self.workspace_has_synchronized_pane(&surface_target) {
                 continue;
             }
-            self.apply_workspace_geometry(&surface_target);
+            // The outer workspace area can stay equal while an alternate
+            // screen changes its panes' PTY sizes, so both are compared. A
+            // resize reaches viewers outside this pass on the next iteration.
+            // An application that resized nothing invalidates nobody: the
+            // source's baseline can stay behind (its slot is busy, or its
+            // surface was refused), and invalidating its co-viewers on every
+            // pass would hand the pass back and forth between them.
+            let sizes_before = self.visible_pane_grid_sizes(&surface_target);
+            let area_changed = self.apply_workspace_geometry(&surface_target);
+            if !area_changed && self.visible_pane_grid_sizes(&surface_target) == sizes_before {
+                continue;
+            }
+            let viewers = self
+                .clients
+                .keys()
+                .copied()
+                .filter(|id| {
+                    !ids.contains(id)
+                        && self.shell_target_for_client(*id).as_ref() == Some(&surface_target)
+                })
+                .collect::<Vec<_>>();
+            for id in viewers {
+                if let Some(client) = self.clients.get_mut(&id) {
+                    client.render_state.invalidate();
+                }
+            }
         }
 
-        let mut broken_clients: Vec<ClientId> = Vec::new();
         // Rebuild the shared session only when application state that feeds
         // it changed. `/proc`-derived fields are rechecked by the headless
         // loop's timer (`refresh_shell_projection_sources`), not here.
         if !render_targets.is_empty() {
             self.refresh_stale_shell_session_cache();
         }
-        // (client, claimed bytes, message limit)
-        let mut oversized_notices: Vec<(ClientId, usize, usize)> = Vec::new();
         for target in render_targets {
             let client_id = target.client_id;
-            let (cols, rows) = (
-                target.terminal_size.cols.get(),
-                target.terminal_size.rows.get(),
-            );
-            let cell_size = target.cell_size;
-            let area = Rect::new(0, 0, cols, rows);
-            let shell_target = self.shell_target_for_client(client_id);
-            let shell_render = if self
-                .clients
-                .get(&client_id)
-                .is_some_and(ClientConnection::is_active_shell_client)
-            {
-                let render_cell_size = cell_size.or_default();
-                let key = pane_surface_render_key(shell_target.as_ref(), area, render_cell_size);
-                let remaining = remaining_surface_renders
-                    .get_mut(&key)
-                    .map_or(1, |remaining| {
-                        let current = *remaining;
-                        *remaining = remaining.saturating_sub(1);
-                        current
-                    });
-                // Pane rendering reads shared terminal cores and produces the
-                // same frame for clients with the same workspace and geometry.
-                // Keep an Arc-backed result until the last matching client so
-                // only the per-client wire surface has to own a frame copy.
-                let result = if remaining == 1 {
-                    shared_surface_renders.remove(&key).unwrap_or_else(|| {
-                        render_client_shell_pane_surface(
-                            &self.app,
-                            shell_target.as_ref(),
-                            area,
-                            render_cell_size,
-                        )
-                    })
-                } else if let Some(result) = shared_surface_renders.get(&key) {
-                    result.clone()
-                } else {
-                    let result = render_client_shell_pane_surface(
-                        &self.app,
-                        shell_target.as_ref(),
-                        area,
-                        render_cell_size,
-                    );
-                    shared_surface_renders.insert(key, result.clone());
-                    result
-                };
-                match result {
-                    Ok(surface) => Some(surface),
-                    Err(reason) => {
-                        // Only the surface waits (synchronized output); the
-                        // projection below still goes out, so a held
-                        // endpoint reply flushed after this render never
-                        // reaches the client ahead of the snapshot its
-                        // command changed.
-                        if let Some(client) = self.clients.get_mut(&client_id) {
-                            client.render_state.request_recompute();
-                        }
-                        if matches!(
-                            reason,
-                            crate::server::client_shell::SurfaceRenderDeferred::Changed
-                        ) {
-                            self.app.render_dirty.request_generic();
-                        }
-                        None
+            let takes_surface = deliverable.get(&client_id).copied().unwrap_or(false);
+            let outcome = self.render_client_full(&target, takes_surface, &mut shared);
+            report.full.push(client_id);
+            // The single exit: every outcome but a closed outbox maps to the
+            // client's debt and settles it at the pass epoch, so no path can
+            // leave a client stale for the next plan to pick up again.
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                match outcome {
+                    ClientPassOutcome::Closed => continue,
+                    ClientPassOutcome::Owed => {
+                        client.render_state.owe();
+                        report.owed.push(client_id);
                     }
+                    ClientPassOutcome::Refused => client.render_state.refuse(),
+                    ClientPassOutcome::Delivered
+                    | ClientPassOutcome::Unchanged
+                    | ClientPassOutcome::Skipped => client.render_state.clear_debt(),
                 }
-            } else {
-                None
-            };
-            let Some(client) = self.clients.get_mut(&client_id) else {
-                continue;
-            };
-            // A projection is due when the shared session moved, or when this
-            // client's own location did: a location change invalidates only
-            // the projection of the client that moved.
-            let needs_projection = {
-                let shell = client.shell_state();
-                shell.session_generation != self.shell_session_generation
-                    || shell.projected_location_generation != shell.location.generation()
-                    || shell.snapshot.is_none()
-            };
-            if needs_projection {
-                let (location_generation, projection_revision) = {
-                    let shell = client.shell_state();
-                    (shell.location.generation(), shell.projection_revision.get())
-                };
-                let cached_projection = self
-                    .shell_session_cache
-                    .as_mut()
-                    .and_then(|cache| cache.timer_projections.remove(&client_id))
-                    .filter(|candidate| {
-                        candidate.location_generation == location_generation
-                            && candidate.projection_revision == projection_revision
-                    });
-                let mut candidate = if let Some(cached) = cached_projection {
-                    cached.snapshot
-                } else {
-                    let Some(cache) = self.shell_session_cache.as_ref() else {
-                        continue;
-                    };
-                    crate::server::client_shell::snapshot_from_session(
-                        &self.app,
-                        &cache.session,
-                        &self.client_shell_boot_id,
-                        projection_revision,
-                        &client.shell_state().location,
-                    )
-                };
-                let snapshot_changed = client.shell_state().snapshot.as_ref() != Some(&candidate);
-                if snapshot_changed {
-                    let shell = client.shell_state_mut();
-                    // The counter is per connection and steps once per
-                    // changed snapshot, so exhaustion is unreachable in
-                    // practice. Should it happen, drop the client: it
-                    // reconnects with a fresh counter instead of receiving
-                    // a snapshot that repeats a revision.
-                    let Some(revision) = shell.projection_revision.checked_next() else {
-                        warn!(
-                            ?client_id,
-                            "projection revisions exhausted; dropping client"
-                        );
-                        broken_clients.push(client_id);
-                        continue;
-                    };
-                    shell.projection_revision = revision;
-                    candidate.revision = revision;
-                    let snapshot_message = shepr_protocol::endpoint::snapshot_message(&candidate);
-                    let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
-                        Ok(framed) => framed,
-                        Err(err) => {
-                            warn!(?client_id, error = %err, "failed to frame endpoint snapshot");
-                            broken_clients.push(client_id);
-                            continue;
-                        }
-                    };
-                    let Some(writer) = client.writer.as_ref().cloned() else {
-                        broken_clients.push(client_id);
-                        continue;
-                    };
-                    if writer.control.send(snapshot_framed).is_err() {
-                        writer_gone(client_id);
-                        broken_clients.push(client_id);
-                        continue;
-                    }
-                    client.shell_state_mut().snapshot = Some(candidate);
-                }
-                // Only a projection that succeeded advances what was projected.
-                let shell = client.shell_state_mut();
-                shell.session_generation = self.shell_session_generation;
-                shell.projected_location_generation = shell.location.generation();
-            }
-            let shell = client.shell_state();
-            let shell_projection_revision = shell.projection_revision;
-            if !shell.surface_active {
-                client.clear_deferred_render();
-                continue;
-            }
-            // Rendering can be deferred above while a pane is synchronized,
-            // its core is poisoned, or the workspace/render epoch changes.
-            // The projection still goes out, but there is no pane surface to
-            // send on this pass.
-            let Some(crate::server::client_shell::RenderedPaneSurface {
-                frame,
-                panes,
-                splits,
-                pane_identities,
-            }) = shell_render
-            else {
-                continue;
-            };
-            // This connection's baseline advances only after its own send.
-            // FrameData owns a Vec, so the shared render result needs an owned
-            // cell grid for every connection that keeps a baseline.
-            let frame =
-                std::sync::Arc::try_unwrap(frame).unwrap_or_else(|shared| shared.as_ref().clone());
-
-            // A public pane ID can outlive a layout update with no change to
-            // the wire fields, but its internal pane identity still belongs
-            // in the committed baseline used by retained rendering.
-            if client.surface_pane_identities != pane_identities {
-                client.render_state.request_recompute();
-            }
-
-            let Some(writer) = client.writer.as_ref().cloned() else {
-                continue;
-            };
-            let prepared =
-                client
-                    .render_state
-                    .prepare_pane_surface(shepr_protocol::PaneSurfaceFrame {
-                        boot_id: self.client_shell_boot_id.clone(),
-                        projection_revision: shell_projection_revision,
-                        surface_revision: shepr_protocol::SurfaceRevision::new(0),
-                        frame,
-                        panes,
-                        splits,
-                    });
-            let Some(prepared) = prepared else {
-                client.clear_deferred_render();
-                continue;
-            };
-            // A surface past one frame is split across frames here; only one
-            // past `MAX_MESSAGE_SIZE` fails.
-            let serialized = match Self::frame_server_message(prepared.message()) {
-                Ok(frame) => frame,
-                Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
-                    // Nothing is committed, so the next render that has work
-                    // for this client tries a full surface again: it fits
-                    // again once the window shrinks or the content gets
-                    // cheaper (fewer hyperlinks or long graphemes). Renders
-                    // only run on real damage, so this does not spin. What
-                    // must not happen is a client that stays blank with
-                    // nobody told why, or a warning per render.
-                    if client.oversized_surface_reported {
-                        debug!(
-                            ?client_id,
-                            claimed, max, "skipping oversized surface for client"
-                        );
-                    } else {
-                        warn!(
-                            ?client_id,
-                            claimed, max, "skipping oversized surface for client"
-                        );
-                        client.oversized_surface_reported = true;
-                        oversized_notices.push((client_id, claimed, max));
-                    }
-                    continue;
-                }
-                Err(err) => {
-                    warn!(?client_id, error = %err, "failed to serialize frame");
-                    broken_clients.push(client_id);
-                    continue;
-                }
-            };
-            let send = writer.render.try_send(serialized);
-            match send {
-                Ok(()) => {
-                    client.render_state.commit_sent_frame(prepared);
-                    client.commit_surface_pane_identities(pane_identities);
-                    client.clear_deferred_render();
-                    client.oversized_surface_reported = false;
-                }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    client.defer_full_render();
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    broken_clients.push(client_id);
-                }
+                client.render_state.settle(epoch);
             }
         }
 
-        for (client_id, claimed, max) in oversized_notices {
-            if broken_clients.contains(&client_id) {
-                continue;
-            }
+        report.surface_renders += shared.surface_renders;
+        for (client_id, claimed, max) in shared.oversized_notices {
             let notice = ServerMessage::ClientShellError {
                 kind: shepr_protocol::NoticeKind::OversizedSurface { claimed, max },
             };
             self.send_to_client(client_id, &notice);
         }
-
-        if !broken_clients.is_empty() {
-            for client_id in broken_clients {
-                self.remove_client_and_resize_if_needed(client_id);
+    }
+    fn render_client_full(
+        &mut self,
+        target: &crate::server::clients::RenderTarget,
+        deliverable: bool,
+        shared: &mut SharedSurfaces,
+    ) -> ClientPassOutcome {
+        let client_id = target.client_id;
+        let (cols, rows) = (
+            target.terminal_size.cols.get(),
+            target.terminal_size.rows.get(),
+        );
+        let cell_size = target.cell_size;
+        let area = Rect::new(0, 0, cols, rows);
+        let shell_target = self.shell_target_for_client(client_id);
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return ClientPassOutcome::Closed;
+        };
+        // A projection is due when the shared session moved, or when this
+        // client's own location did: a location change invalidates only
+        // the projection of the client that moved.
+        let needs_projection = {
+            let shell = client.shell_state();
+            shell.session_generation != self.shell_session_generation
+                || shell.projected_location_generation != shell.location.generation()
+                || shell.snapshot.is_none()
+        };
+        if needs_projection {
+            let (location_generation, projection_revision) = {
+                let shell = client.shell_state();
+                (shell.location.generation(), shell.projection_revision.get())
+            };
+            let cached_projection = self
+                .shell_session_cache
+                .as_mut()
+                .and_then(|cache| cache.timer_projections.remove(&client_id))
+                .filter(|candidate| {
+                    candidate.location_generation == location_generation
+                        && candidate.projection_revision == projection_revision
+                });
+            let mut candidate = if let Some(cached) = cached_projection {
+                cached.snapshot
+            } else {
+                // The step refreshed the cache before any client, which
+                // leaves it present. Were it missing, the client is owed and
+                // settled rather than reported closed: a closed outcome
+                // skips the settle and, with its outbox still open, nothing
+                // would ever reap it.
+                let Some(cache) = self.shell_session_cache.as_ref() else {
+                    warn!(?client_id, "shell session cache missing while projecting");
+                    return ClientPassOutcome::Owed;
+                };
+                crate::server::client_shell::snapshot_from_session(
+                    &self.app,
+                    &cache.session,
+                    &self.client_shell_boot_id,
+                    projection_revision,
+                    &client.shell_state().location,
+                )
+            };
+            let snapshot_changed = client.shell_state().snapshot.as_ref() != Some(&candidate);
+            if snapshot_changed {
+                let shell = client.shell_state_mut();
+                // The counter is per connection and steps once per
+                // changed snapshot, so exhaustion is unreachable in
+                // practice. Should it happen, drop the client: it
+                // reconnects with a fresh counter instead of receiving
+                // a snapshot that repeats a revision.
+                let Some(revision) = shell.projection_revision.checked_next() else {
+                    warn!(
+                        ?client_id,
+                        "projection revisions exhausted; dropping client"
+                    );
+                    client.outbox.close();
+                    return ClientPassOutcome::Closed;
+                };
+                shell.projection_revision = revision;
+                candidate.revision = revision;
+                let snapshot_message = shepr_protocol::endpoint::snapshot_message(&candidate);
+                // A refused send has already closed the outbox.
+                if client.outbox.send(&snapshot_message) == Delivery::Closed {
+                    return ClientPassOutcome::Closed;
+                }
+                client.shell_state_mut().snapshot = Some(candidate);
             }
+            // Only a projection that succeeded advances what was projected.
+            let shell = client.shell_state_mut();
+            shell.session_generation = self.shell_session_generation;
+            shell.projected_location_generation = shell.location.generation();
         }
-        if let Some(cache) = self.shell_session_cache.as_mut() {
-            cache.timer_projections.clear();
+        let shell_projection_revision = client.shell_state().projection_revision;
+        if !client.is_active_shell_client() {
+            return ClientPassOutcome::Skipped;
+        }
+        // A client that cannot take a surface now was projected above and
+        // costs no surface render; its plan brings it back once it can.
+        if !deliverable {
+            return ClientPassOutcome::Owed;
+        }
+        let shell_render = {
+            let render_cell_size = cell_size.or_default();
+            let key = pane_surface_render_key(shell_target.as_ref(), area, render_cell_size);
+            let remaining = shared.remaining.get_mut(&key).map_or(1, |remaining| {
+                let current = *remaining;
+                *remaining = remaining.saturating_sub(1);
+                current
+            });
+            // Pane rendering reads shared terminal cores and produces the
+            // same frame for clients with the same workspace and geometry.
+            // Keep an Arc-backed result until the last matching client so
+            // only the per-client wire surface has to own a frame copy.
+            let result = if remaining == 1 {
+                shared.rendered.remove(&key).unwrap_or_else(|| {
+                    shared.surface_renders += 1;
+                    (shared.boundary.render)(
+                        &self.app,
+                        shell_target.as_ref(),
+                        area,
+                        render_cell_size,
+                    )
+                })
+            } else if let Some(result) = shared.rendered.get(&key) {
+                result.clone()
+            } else {
+                shared.surface_renders += 1;
+                let result = (shared.boundary.render)(
+                    &self.app,
+                    shell_target.as_ref(),
+                    area,
+                    render_cell_size,
+                );
+                shared.rendered.insert(key, result.clone());
+                result
+            };
+            result.ok()
+        };
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return ClientPassOutcome::Closed;
+        };
+        if shell_render.is_none() {
+            client.render_state.request_recompute();
+        }
+        // Rendering is deferred while a pane is synchronized or its core is
+        // poisoned (both appearing after the deliverability check), or when
+        // the viewed workspace or a pane's content moved during the draw.
+        // Only the surface waits: the projection already went out, so a held
+        // endpoint reply released after this pass never reaches the client
+        // ahead of the snapshot its command changed. The client is owed; a
+        // moved pane raised its own render signal, and a vanished workspace
+        // moved the view epoch, so nothing more is requested here.
+        let Some(crate::server::client_shell::RenderedPaneSurface {
+            frame,
+            panes,
+            splits,
+            pane_identities,
+        }) = shell_render
+        else {
+            return ClientPassOutcome::Owed;
+        };
+        // This connection's baseline advances only after its own send.
+        // FrameData owns a Vec, so the shared render result needs an owned
+        // cell grid for every connection that keeps a baseline.
+        let frame =
+            std::sync::Arc::try_unwrap(frame).unwrap_or_else(|shared| shared.as_ref().clone());
+
+        // A public pane ID can outlive a layout update with no change to
+        // the wire fields, but its internal pane identity still belongs
+        // in the committed baseline used by retained rendering.
+        if client.surface_pane_identities != pane_identities {
+            client.render_state.request_recompute();
         }
 
-        // Full-frame recovery is tracked per connection. A slow client must not
-        // keep responsive peers on the global full-render path while it waits
-        // for its render slot to drain.
-        self.app.full_redraw_pending = false;
-        debug!(targets = render_target_count, "rendered virtual frame(s)");
+        let prepared = client
+            .render_state
+            .prepare_pane_surface(shepr_protocol::PaneSurfaceFrame {
+                boot_id: self.client_shell_boot_id.clone(),
+                projection_revision: shell_projection_revision,
+                surface_revision: shepr_protocol::SurfaceRevision::new(0),
+                frame,
+                panes,
+                splits,
+            });
+        let prepared = match prepared {
+            PreparedSurface::Ready(prepared) => *prepared,
+            PreparedSurface::Unchanged => return ClientPassOutcome::Unchanged,
+            PreparedSurface::RevisionsExhausted => {
+                warn!(?client_id, "surface revisions exhausted; dropping client");
+                client.outbox.close();
+                return ClientPassOutcome::Closed;
+            }
+        };
+        // A surface past one frame is split across frames here; only one
+        // past `MAX_MESSAGE_SIZE` fails.
+        let serialized = match (shared.boundary.encode)(prepared.message()) {
+            Ok(frame) => frame,
+            Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
+                // Nothing is committed. The client is refused, which hides
+                // the debt its missing or stale baseline implies, so it stays
+                // out of the plan instead of retrying every pass. A new
+                // epoch, its own resize or navigation, or PTY damage on a
+                // pane it shows brings it back for a full surface, which fits
+                // again once the window shrinks or the content gets cheaper.
+                // The client is told once, not per render.
+                if client.oversized_surface_reported {
+                    debug!(
+                        ?client_id,
+                        claimed, max, "skipping oversized surface for client"
+                    );
+                } else {
+                    warn!(
+                        ?client_id,
+                        claimed, max, "skipping oversized surface for client"
+                    );
+                    client.oversized_surface_reported = true;
+                    shared.oversized_notices.push((client_id, claimed, max));
+                }
+                return ClientPassOutcome::Refused;
+            }
+            Err(err) => {
+                warn!(?client_id, error = %err, "failed to serialize frame");
+                client.outbox.close();
+                return ClientPassOutcome::Closed;
+            }
+        };
+        match client.outbox.offer_surface(serialized) {
+            crate::server::outbox::SurfaceOffer::Queued => {
+                client.render_state.commit_sent_frame(prepared);
+                client.commit_surface_pane_identities(pane_identities);
+                client.oversized_surface_reported = false;
+                ClientPassOutcome::Delivered
+            }
+            // Deliverability was checked before the step and the writer only
+            // ever empties the slot, so this is a bug guard: owe and drop.
+            crate::server::outbox::SurfaceOffer::Occupied => ClientPassOutcome::Owed,
+            crate::server::outbox::SurfaceOffer::Closed => ClientPassOutcome::Closed,
+        }
     }
 }

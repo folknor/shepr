@@ -9,8 +9,9 @@ use shepr_protocol::ServerMessage;
 use shepr_protocol::command::{ClientShellSurfaceSetParams, EndpointCommand};
 
 use crate::server::ClientId;
-use crate::server::client_transport::{RenderLaneReceiver, ServerEvent};
+use crate::server::client_transport::ServerEvent;
 use crate::server::headless::tests as headless_tests;
+use crate::server::outbox::RenderLaneReceiver;
 use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
 /// Maximum time an expected server control message may take in this test.
@@ -143,7 +144,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             pixel_mouse: false,
             mouse_capture: true,
             surface_active: true,
-            writer: source_writer,
+            outbox: source_writer,
         }
     ));
     let source_snapshot = headless_tests::client_shell_snapshot(&source_control);
@@ -164,7 +165,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             pixel_mouse: false,
             mouse_capture: true,
             surface_active: false,
-            writer: target_writer,
+            outbox: target_writer,
         }
     ));
     let remote_snapshot = headless_tests::client_shell_snapshot(&target_control);
@@ -315,7 +316,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         SurfaceActivationProgress::Pending
     );
 
-    headless_tests::render_and_stream(&mut target_server);
+    headless_tests::render_now(&mut target_server);
     let coherent_snapshot = headless_tests::client_shell_snapshot(&target_control);
     let snapshot_progress =
         activation.receive_snapshot(&target_id, TARGET_GENERATION, &coherent_snapshot);
@@ -398,7 +399,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         ),
         SurfaceActivationProgress::Pending
     );
-    headless_tests::render_and_stream(&mut target_server);
+    headless_tests::render_now(&mut target_server);
     let sync_snapshot_deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
     let sync_snapshot = loop {
         let message = recv_server_message_until(
@@ -439,7 +440,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             _ => None,
         })
         .expect("client presentation effects fence");
-    assert!(headless_tests::handle_server_event(
+    assert!(!headless_tests::handle_server_event(
         &mut target_server,
         ServerEvent::ClientShellPresentationSync {
             client_id: target_client_id,

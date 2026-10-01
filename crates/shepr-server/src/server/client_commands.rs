@@ -9,9 +9,8 @@ pub(crate) use crate::limits::{MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_REQUEST_
 /// long scrollback) crosses in as many frames as it needs, up to the control
 /// queue's byte cap including frame prefixes. A larger result becomes
 /// `EndpointError::ResponseTooLarge` instead of closing the client connection
-/// and leaving it to wait out its command timeout. This bounds one reply; if
-/// earlier control messages have consumed the remaining queue space, the
-/// queue's slow-reader policy can still close that connection.
+/// and leaving it to wait out its command timeout. Held replies wait for
+/// earlier control traffic to drain before entering the bounded control lane.
 pub(crate) fn response_message(
     boot_id: BootId,
     request_id: RequestId,

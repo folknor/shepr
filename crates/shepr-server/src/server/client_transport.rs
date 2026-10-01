@@ -7,11 +7,9 @@
 //! `HeadlessServer`.
 
 use crate::server::ClientId;
-use std::collections::VecDeque;
+use crate::server::outbox::{ClientOutbox, ClientWriteItem, ControlSender, Delivery, OutboxQueue};
 use std::io::{self, Write};
-use std::net::Shutdown;
-use std::sync::mpsc::{SendError, TrySendError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -25,8 +23,7 @@ use shepr_protocol::{
 };
 
 use crate::limits::{
-    CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS, CLIENT_WRITE_STALL_TIMEOUT,
-    HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
 };
 
 /// The server's client protocol, installed into the listener's gate once
@@ -36,6 +33,7 @@ use crate::limits::{
 pub(crate) struct ClientTransportHandler {
     pub(crate) server_event_tx: mpsc::Sender<ServerEvent>,
     pub(crate) should_quit: Arc<shepr_api::ServerStopSignal>,
+    pub(crate) wake: Arc<tokio::sync::Notify>,
     pub(crate) ids: crate::server::clients::ClientIdAllocator,
 }
 
@@ -49,6 +47,7 @@ impl shepr_api::ClientProtocolHandler for ClientTransportHandler {
             accepted + HANDSHAKE_TIMEOUT,
             &self.server_event_tx,
             &self.should_quit,
+            Arc::clone(&self.wake),
         ) {
             debug!(?client_id, %error, "client transport failed");
         }
@@ -125,281 +124,6 @@ fn send_client_disconnected(server_event_tx: &mpsc::Sender<ServerEvent>, client_
     );
 }
 
-/// Channels owned by the server side of a client writer thread.
-#[derive(Clone, Debug)]
-pub(crate) struct ClientWriter {
-    /// Reliable control messages such as shutdown, notifications, and clipboard writes.
-    pub(crate) control: ClientControlWriter,
-    /// Droppable render messages. Capacity is one so slow clients cannot build lag.
-    pub(crate) render: ClientRenderWriter,
-}
-
-impl ClientWriter {
-    /// Drops render-lane work that has not yet been claimed by the writer.
-    pub(crate) fn discard_pending_render(&self) {
-        self.render.queue.discard_pending_render();
-    }
-
-    /// Shuts down both socket directions and wakes the connection's transport
-    /// threads, even if the reader still holds a writer handle clone.
-    pub(crate) fn close(&self) {
-        self.control.queue.close_connection();
-    }
-
-    /// Adds a barrier after the control messages already queued for this
-    /// client. The receiver completes after the writer flushes that prefix.
-    pub(crate) fn flush(&self) -> tokio::sync::oneshot::Receiver<()> {
-        self.control.flush()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct ClientControlWriter {
-    queue: Arc<ClientWriterQueue>,
-}
-
-#[derive(Debug)]
-pub(crate) struct ClientRenderWriter {
-    queue: Arc<ClientWriterQueue>,
-}
-
-macro_rules! writer_handle {
-    ($type:ty) => {
-        impl Clone for $type {
-            fn clone(&self) -> Self {
-                self.queue.add_sender();
-                Self {
-                    queue: self.queue.clone(),
-                }
-            }
-        }
-        impl Drop for $type {
-            fn drop(&mut self) {
-                self.queue.remove_sender();
-            }
-        }
-    };
-}
-writer_handle!(ClientControlWriter);
-writer_handle!(ClientRenderWriter);
-
-impl ClientControlWriter {
-    fn queue(queue: Arc<ClientWriterQueue>) -> Self {
-        queue.add_sender();
-        Self { queue }
-    }
-
-    pub(crate) fn send(&self, data: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
-        self.queue.send_control(data)
-    }
-
-    fn flush(&self) -> tokio::sync::oneshot::Receiver<()> {
-        self.queue.send_flush()
-    }
-}
-
-impl ClientRenderWriter {
-    fn queue(queue: Arc<ClientWriterQueue>) -> Self {
-        queue.add_sender();
-        Self { queue }
-    }
-
-    pub(crate) fn try_send(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        self.queue.try_send_render(data)
-    }
-}
-
-#[derive(Debug)]
-struct ClientWriterQueue {
-    state: Mutex<ClientWriterQueueState>,
-    ready: Condvar,
-    shutdown_stream: Mutex<Option<LocalStream>>,
-    max_control_items: usize,
-    max_control_bytes: usize,
-}
-
-#[derive(Debug, Default)]
-struct ClientWriterQueueState {
-    control: VecDeque<ClientControlItem>,
-    /// Queued and in-flight control items share the same bound.
-    control_items: usize,
-    /// Queued and in-flight control bytes share the same bound.
-    control_bytes: usize,
-    render: Option<Vec<u8>>,
-    senders: usize,
-    writer_alive: bool,
-}
-
-#[derive(Debug)]
-enum ClientWriteItem {
-    Control(Vec<u8>),
-    Render(Vec<u8>),
-    Flush(tokio::sync::oneshot::Sender<()>),
-}
-
-#[derive(Debug)]
-enum ClientControlItem {
-    Data(Vec<u8>),
-    Flush(tokio::sync::oneshot::Sender<()>),
-}
-
-impl ClientWriterQueue {
-    fn new_for_connection(shutdown_stream: LocalStream) -> Arc<Self> {
-        Self::with_limits(
-            Some(shutdown_stream),
-            CLIENT_CONTROL_QUEUE_MAX_ITEMS,
-            CLIENT_CONTROL_QUEUE_MAX_BYTES,
-        )
-    }
-
-    fn with_limits(
-        shutdown_stream: Option<LocalStream>,
-        max_control_items: usize,
-        max_control_bytes: usize,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(ClientWriterQueueState {
-                writer_alive: true,
-                ..ClientWriterQueueState::default()
-            }),
-            ready: Condvar::new(),
-            shutdown_stream: Mutex::new(shutdown_stream),
-            max_control_items,
-            max_control_bytes,
-        })
-    }
-
-    fn add_sender(&self) {
-        let mut state = self.lock_state();
-        state.senders = state.senders.saturating_add(1);
-    }
-
-    fn remove_sender(&self) {
-        let mut state = self.lock_state();
-        state.senders = state.senders.saturating_sub(1);
-        self.ready.notify_one();
-    }
-
-    fn send_control(&self, data: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
-        let mut state = self.lock_state();
-        if !state.writer_alive {
-            return Err(SendError(data));
-        }
-        // Control items share the byte budget while queued and in flight.
-        // A reply that fits an empty queue still closes a client if earlier
-        // control traffic leaves too little room: `ResponseTooLarge` means a
-        // wire-limit violation, while sending past the remaining budget would
-        // let a slow reader exceed the backlog bound.
-        if state.control_items >= self.max_control_items
-            || data.len() > self.max_control_bytes.saturating_sub(state.control_bytes)
-        {
-            drop(state);
-            self.close_connection();
-            return Err(SendError(data));
-        }
-        state.control_items += 1;
-        state.control_bytes += data.len();
-        state.control.push_back(ClientControlItem::Data(data));
-        self.ready.notify_one();
-        Ok(())
-    }
-
-    fn send_flush(&self) -> tokio::sync::oneshot::Receiver<()> {
-        let (ack, receiver) = tokio::sync::oneshot::channel();
-        let mut state = self.lock_state();
-        if !state.writer_alive {
-            return receiver;
-        }
-        if state.control_items >= self.max_control_items {
-            drop(state);
-            self.close_connection();
-            return receiver;
-        }
-        state.control_items += 1;
-        state.control.push_back(ClientControlItem::Flush(ack));
-        self.ready.notify_one();
-        receiver
-    }
-
-    fn try_send_render(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        let mut state = self.lock_state();
-        if !state.writer_alive {
-            return Err(TrySendError::Disconnected(data));
-        }
-        if state.render.is_some() {
-            return Err(TrySendError::Full(data));
-        }
-        state.render = Some(data);
-        self.ready.notify_one();
-        Ok(())
-    }
-
-    fn discard_pending_render(&self) {
-        let mut state = self.lock_state();
-        state.render = None;
-        self.ready.notify_all();
-    }
-
-    fn recv(&self) -> Option<ClientWriteItem> {
-        let mut state = self.lock_state();
-        loop {
-            if let Some(item) = state.control.pop_front() {
-                return Some(match item {
-                    ClientControlItem::Data(data) => ClientWriteItem::Control(data),
-                    ClientControlItem::Flush(ack) => ClientWriteItem::Flush(ack),
-                });
-            }
-            if let Some(data) = state.render.take() {
-                return Some(ClientWriteItem::Render(data));
-            }
-            if state.senders == 0 || !state.writer_alive {
-                return None;
-            }
-            state = self
-                .ready
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-    }
-
-    fn close_writer(&self) {
-        let mut state = self.lock_state();
-        state.writer_alive = false;
-        state.render = None;
-        state.control.clear();
-        state.control_items = 0;
-        state.control_bytes = 0;
-        self.ready.notify_all();
-    }
-
-    fn finish_control_item(&self, bytes: usize) {
-        let mut state = self.lock_state();
-        state.control_items = state.control_items.saturating_sub(1);
-        state.control_bytes = state.control_bytes.saturating_sub(bytes);
-    }
-
-    fn close_connection(&self) {
-        self.close_writer();
-        let stream = self
-            .shutdown_stream
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(stream) = stream
-            && let Err(error) = shutdown_client_connection(&stream)
-            && error.kind() != io::ErrorKind::NotConnected
-        {
-            debug!(error = %error, "failed to shut down client connection");
-        }
-    }
-
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, ClientWriterQueueState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
 /// Internal event sent from client transport threads to the main event loop.
 #[derive(Debug)]
 pub(crate) enum ServerEvent {
@@ -413,7 +137,7 @@ pub(crate) enum ServerEvent {
         pixel_mouse: bool,
         mouse_capture: bool,
         surface_active: bool,
-        writer: ClientWriter,
+        outbox: ClientOutbox,
     },
     /// A fully decoded interactive paste exceeded the text-input limit.
     ClientPasteRejected {
@@ -457,7 +181,9 @@ pub(crate) enum ServerEvent {
     /// A client connection was lost.
     ClientDisconnected { client_id: ClientId },
     /// A client writer drained its render slot and can accept another render.
-    ClientWriterDrained { client_id: ClientId },
+    /// A pure wake: the loop's next plan derives every client's surface debt
+    /// from its own state, so the event names no client.
+    ClientWriterDrained,
     /// The logind monitor observed a host shutdown warning or cancellation and
     /// woke the server loop to synchronize its shutdown state.
     HostShutdownWake,
@@ -521,12 +247,15 @@ fn classify_input_event_size(
 /// forwarded to the server event channel. Any other first message is refused.
 /// `deadline` bounds reading the preamble and hello together and is counted
 /// from accept, so classification time is part of the handshake budget.
-pub(crate) fn handle_client_handshake(
+/// `wake` is the server loop's outbox wake, raised when this connection's
+/// outbox closes or its control lane makes room for held replies.
+fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: ClientId,
     deadline: Instant,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
+    wake: Arc<tokio::sync::Notify>,
 ) -> io::Result<()> {
     if should_quit.is_requested() {
         return Ok(());
@@ -633,28 +362,25 @@ pub(crate) fn handle_client_handshake(
 
     stream.set_read_timeout(None)?;
 
-    // Create separate channels for reliable control messages and droppable renders.
+    // One outbox carries the reliable control lane and the droppable surface slot.
     let write_stream = stream.try_clone()?;
     let shutdown_stream = stream.try_clone()?;
-    let writer_queue = ClientWriterQueue::new_for_connection(shutdown_stream);
-    let writer = ClientWriter {
-        control: ClientControlWriter::queue(Arc::clone(&writer_queue)),
-        render: ClientRenderWriter::queue(Arc::clone(&writer_queue)),
-    };
+    let outbox = ClientOutbox::for_connection(shutdown_stream, wake);
+    let writer_queue = outbox.queue_handle();
 
-    // Spawn a writer thread that forwards messages from the channels to the stream.
+    // Spawn a writer thread that drains the outbox queue to the stream.
     let writer_event_tx = server_event_tx.clone();
     std::thread::spawn(move || {
         client_writer_loop(write_stream, client_id, &writer_queue, &writer_event_tx);
     });
 
     if should_quit.is_requested() {
-        send_shutdown_to_unregistered_client(&writer);
+        send_shutdown_to_unregistered_client(&outbox);
         return Ok(());
     }
 
     // Notify the main loop about the new client.
-    let endpoint_control_writer = writer.control.clone();
+    let endpoint_control_writer = outbox.control_sender();
     // The exact-build preamble guarantees support for semantic surfaces.
     let connected = ServerEvent::ClientShellConnected {
         client_id,
@@ -665,12 +391,12 @@ pub(crate) fn handle_client_handshake(
         pixel_mouse: cell.exact,
         mouse_capture: hello.mouse_capture,
         surface_active: hello.surface_active,
-        writer,
+        outbox,
     };
     if let Err(err) = server_event_tx.blocking_send(connected)
-        && let ServerEvent::ClientShellConnected { writer, .. } = err.0
+        && let ServerEvent::ClientShellConnected { outbox, .. } = err.0
     {
-        send_shutdown_to_unregistered_client(&writer);
+        send_shutdown_to_unregistered_client(&outbox);
     }
 
     // Enter read loop - read client messages and forward to main loop.
@@ -683,18 +409,18 @@ pub(crate) fn handle_client_handshake(
     )
 }
 
-fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
-    if let Ok(framed) = shepr_protocol::encode_message(&ServerMessage::ServerShutdown {
+fn send_shutdown_to_unregistered_client(outbox: &ClientOutbox) {
+    if outbox.send(&ServerMessage::ServerShutdown {
         reason: Some(shepr_protocol::ShutdownReason::Message(
             "server is shutting down".to_owned(),
         )),
-    }) && writer.control.send(framed).is_ok()
+    }) == Delivery::Queued
     {
         // Handshake handling runs on a transport thread, so waiting here
         // does not park the Tokio server loop. The wait is bounded: a writer
         // stuck on a client that stopped reading must not pin this thread
         // forever.
-        let mut flushed = writer.flush();
+        let mut flushed = outbox.flush_barrier();
         // clock-io-ok: the bound covers the writer thread's real socket write.
         let deadline = std::time::Instant::now() + UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT;
         while matches!(
@@ -714,7 +440,7 @@ fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
 fn client_writer_loop(
     mut stream: LocalStream,
     client_id: ClientId,
-    writer_queue: &Arc<ClientWriterQueue>,
+    writer_queue: &Arc<OutboxQueue>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) {
     while let Some(item) = writer_queue.recv() {
@@ -733,9 +459,9 @@ fn client_writer_loop(
                 let result = write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT);
                 if result.is_ok() {
                     // The event is reliable: dropping it could leave the
-                    // server's deferred render unclaimed until another event.
+                    // server's surface debt waiting until another event wakes the loop.
                     server_event_tx
-                        .blocking_send(ServerEvent::ClientWriterDrained { client_id })
+                        .blocking_send(ServerEvent::ClientWriterDrained)
                         .ok();
                 }
                 (result, None)
@@ -758,17 +484,13 @@ fn client_writer_loop(
             writer_queue.finish_control_item(bytes);
         }
         if let Err(err) = result {
-            debug!(error = %err, "client write failed, closing writer");
-            send_client_disconnected(server_event_tx, client_id);
+            debug!(?client_id, error = %err, "client write failed, closing writer");
+            writer_queue.close_connection();
             break;
         }
     }
-    writer_queue.close_writer();
-    debug!("client writer thread exiting");
-}
-
-fn shutdown_client_connection(stream: &LocalStream) -> io::Result<()> {
-    stream.shutdown(Shutdown::Both)
+    writer_queue.close_connection();
+    debug!(?client_id, "client writer thread exiting");
 }
 
 fn write_framed_bytes(
@@ -785,7 +507,7 @@ fn client_read_loop_with_endpoint_controls(
     client_id: ClientId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
-    endpoint_control_writer: Option<&ClientControlWriter>,
+    endpoint_control_writer: Option<&ControlSender>,
 ) -> io::Result<()> {
     while !should_quit.is_requested() {
         let message = shepr_protocol::read_message_single_frame_limited(
@@ -940,14 +662,13 @@ fn client_read_loop_with_endpoint_controls(
                 // writer, not responsiveness of the headless event loop. A
                 // client removed from the registry has its socket shut down,
                 // so its reader cannot keep that client healthy with pongs.
-                let response = ServerMessage::HealthPong;
+                // A pong that cannot be queued (lane overflow or an encode
+                // failure) has closed the outbox, which wakes the loop to
+                // reap the client; the reader has nothing left to serve.
                 let Some(writer) = endpoint_control_writer else {
                     continue;
                 };
-                let Ok(framed) = shepr_protocol::encode_message(&response) else {
-                    break;
-                };
-                if writer.send(framed).is_err() {
+                if writer.send(&ServerMessage::HealthPong) == Delivery::Closed {
                     break;
                 }
                 continue;
@@ -978,164 +699,11 @@ fn client_read_loop_with_endpoint_controls(
 }
 
 #[cfg(test)]
-pub(crate) use tests::RenderLaneReceiver;
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
     use std::path::PathBuf;
-
-    /// How often a test reader re-checks the queue. The queue's condvar wakes one
-    /// waiter, and a test can have two (the control drain and a render read), so
-    /// test readers poll rather than rely on being the one woken.
-    const TEST_LANE_POLL: Duration = Duration::from_millis(2);
-
-    /// The test side of a writer's render slot, read the way the socket writer
-    /// thread takes it. Mirrors the `std::sync::mpsc::Receiver` methods tests use.
-    #[derive(Debug)]
-    pub(crate) struct RenderLaneReceiver {
-        queue: Arc<ClientWriterQueue>,
-    }
-
-    impl RenderLaneReceiver {
-        pub(crate) fn try_recv(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
-            self.queue.take_render_for_test()
-        }
-
-        pub(crate) fn recv(&self) -> Result<Vec<u8>, std::sync::mpsc::RecvError> {
-            loop {
-                match self.queue.take_render_for_test() {
-                    Ok(data) => return Ok(data),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        return Err(std::sync::mpsc::RecvError);
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        self.queue.wait_for_test(TEST_LANE_POLL);
-                    }
-                }
-            }
-        }
-
-        pub(crate) fn recv_timeout(
-            &self,
-            timeout: Duration,
-        ) -> Result<Vec<u8>, std::sync::mpsc::RecvTimeoutError> {
-            let deadline = std::time::Instant::now() + timeout;
-            loop {
-                match self.queue.take_render_for_test() {
-                    Ok(data) => return Ok(data),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        return Err(std::sync::mpsc::RecvTimeoutError::Disconnected);
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                }
-                let now = std::time::Instant::now();
-                if now >= deadline {
-                    return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
-                }
-                self.queue
-                    .wait_for_test(TEST_LANE_POLL.min(deadline.saturating_duration_since(now)));
-            }
-        }
-    }
-
-    impl ClientWriter {
-        pub(crate) fn test_close(&self) {
-            self.render.queue.close_writer();
-        }
-
-        /// A writer over the production queue whose far side a test reads in
-        /// place of the socket writer thread: control items arrive on the
-        /// returned channel (flush barriers are acknowledged as they are
-        /// reached), and the render slot is read through [`RenderLaneReceiver`].
-        /// The server side sends through exactly the code production uses, so the
-        /// one-slot render backpressure a test sees is the real one: a render the
-        /// test has not read keeps the slot full.
-        pub(crate) fn test_pair() -> (Self, std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver)
-        {
-            let queue = ClientWriterQueue::with_limits(
-                None,
-                CLIENT_CONTROL_QUEUE_MAX_ITEMS,
-                CLIENT_CONTROL_QUEUE_MAX_BYTES,
-            );
-            let writer = Self {
-                control: ClientControlWriter::queue(Arc::clone(&queue)),
-                render: ClientRenderWriter::queue(Arc::clone(&queue)),
-            };
-            let (control_tx, control_rx) = std::sync::mpsc::channel();
-            let drain = Arc::clone(&queue);
-            std::thread::spawn(move || {
-                while let Some(item) = drain.recv_control_for_test() {
-                    match item {
-                        ClientControlItem::Data(data) => {
-                            let bytes = data.len();
-                            if control_tx.send(data).is_err() {
-                                // The test dropped its control receiver: the
-                                // client is gone, as a failed socket write says.
-                                drain.close_writer();
-                                return;
-                            }
-                            drain.finish_control_item(bytes);
-                        }
-                        ClientControlItem::Flush(ack) => {
-                            // Same contract as the socket writer: a waiter that
-                            // stopped waiting dropped its receiver, and the
-                            // barrier was reached either way.
-                            ack.send(()).ok();
-                            drain.finish_control_item(0);
-                        }
-                    }
-                }
-            });
-            (writer, control_rx, RenderLaneReceiver { queue })
-        }
-    }
-
-    /// The far side of the queue as a test reads it, standing in for
-    /// `client_writer_loop`. Only the consumer side is replaced; every send goes
-    /// through the production methods above.
-    impl ClientWriterQueue {
-        /// The next control item, or `None` once the lane can produce no more.
-        fn recv_control_for_test(&self) -> Option<ClientControlItem> {
-            let mut state = self.lock_state();
-            loop {
-                if let Some(item) = state.control.pop_front() {
-                    return Some(item);
-                }
-                if state.senders == 0 || !state.writer_alive {
-                    return None;
-                }
-                state = self
-                    .ready
-                    .wait_timeout(state, TEST_LANE_POLL)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
-            }
-        }
-
-        /// Takes the render slot, as the writer thread does before writing it.
-        fn take_render_for_test(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
-            let mut state = self.lock_state();
-            if let Some(data) = state.render.take() {
-                return Ok(data);
-            }
-            if state.senders == 0 || !state.writer_alive {
-                Err(std::sync::mpsc::TryRecvError::Disconnected)
-            } else {
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            }
-        }
-
-        fn wait_for_test(&self, timeout: Duration) {
-            let state = self.lock_state();
-            drop(
-                self.ready
-                    .wait_timeout(state, timeout)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
-        }
-    }
-
+    use std::sync::mpsc::{SendError, TrySendError};
     /// The client read loop - reads messages from the client and forwards to the server event channel.
     fn client_read_loop(
         stream: LocalStream,
@@ -1216,19 +784,14 @@ mod tests {
             .unwrap_or_else(|| panic!("{context}: channel closed"))
     }
 
-    fn test_queue_writer() -> (ClientWriter, Arc<ClientWriterQueue>) {
-        let queue = ClientWriterQueue::with_limits(
+    fn test_queue_writer() -> (ClientOutbox, Arc<OutboxQueue>) {
+        let queue = OutboxQueue::with_limits(
             None,
+            Arc::new(tokio::sync::Notify::new()),
             CLIENT_CONTROL_QUEUE_MAX_ITEMS,
             CLIENT_CONTROL_QUEUE_MAX_BYTES,
         );
-        (
-            ClientWriter {
-                control: ClientControlWriter::queue(Arc::clone(&queue)),
-                render: ClientRenderWriter::queue(Arc::clone(&queue)),
-            },
-            queue,
-        )
+        (ClientOutbox::from_queue(Arc::clone(&queue)), queue)
     }
 
     fn frame_server_message(message: &ServerMessage) -> Vec<u8> {
@@ -1236,104 +799,18 @@ mod tests {
     }
 
     #[test]
-    fn client_writer_queue_keeps_render_slot_bounded() {
-        let (writer, _queue) = test_queue_writer();
-        let first = frame_server_message(&ServerMessage::WindowTitle {
-            title: Some("first".into()),
-        });
-        let second = frame_server_message(&ServerMessage::WindowTitle {
-            title: Some("second".into()),
-        });
-
-        writer.render.try_send(first).expect("first render fits");
-        assert!(matches!(
-            writer.render.try_send(second),
-            Err(TrySendError::Full(_))
-        ));
-    }
-
-    #[test]
-    fn client_control_queue_bounds_outstanding_bytes_and_items() {
-        let queue = ClientWriterQueue::with_limits(None, 2, 5);
-        let writer = ClientWriter {
-            control: ClientControlWriter::queue(Arc::clone(&queue)),
-            render: ClientRenderWriter::queue(Arc::clone(&queue)),
-        };
-        writer
-            .control
-            .send(vec![b'x'; 5])
-            .expect("message within the byte bound fits");
-        let Some(ClientWriteItem::Control(data)) = queue.recv() else {
-            panic!("expected the queued control message");
-        };
-        assert_eq!(data.len(), 5);
-        assert!(matches!(writer.control.send(vec![b'y']), Err(SendError(_))));
-        assert!(matches!(
-            writer.render.try_send(vec![b'z']),
-            Err(TrySendError::Disconnected(_))
-        ));
-
-        let queue = ClientWriterQueue::with_limits(None, 2, 10);
-        let writer = ClientWriter {
-            control: ClientControlWriter::queue(Arc::clone(&queue)),
-            render: ClientRenderWriter::queue(Arc::clone(&queue)),
-        };
-        writer.control.send(vec![b'a']).expect("first item fits");
-        writer.control.send(vec![b'b']).expect("second item fits");
-        assert!(matches!(queue.recv(), Some(ClientWriteItem::Control(_))));
-        assert!(matches!(writer.control.send(vec![b'c']), Err(SendError(_))));
-    }
-
-    #[test]
-    fn client_control_queue_closes_when_endpoint_reply_exceeds_remaining_byte_budget() {
-        let reply =
-            shepr_protocol::encode_message(&crate::server::client_commands::response_message(
-                shepr_test_fixtures::fixed_boot_id(1),
-                "request-a".into(),
-                Ok(shepr_protocol::command::EndpointReply::Done),
-            ))
-            .expect("endpoint response frames");
-        let byte_cap = reply.len();
-        let empty_queue = ClientWriterQueue::with_limits(None, 4, byte_cap);
-        let empty_writer = ClientWriter {
-            control: ClientControlWriter::queue(Arc::clone(&empty_queue)),
-            render: ClientRenderWriter::queue(Arc::clone(&empty_queue)),
-        };
-        empty_writer
-            .control
-            .send(reply.clone())
-            .expect("the endpoint reply fits an empty queue");
-
-        let queue = ClientWriterQueue::with_limits(None, 4, byte_cap);
-        let writer = ClientWriter {
-            control: ClientControlWriter::queue(Arc::clone(&queue)),
-            render: ClientRenderWriter::queue(Arc::clone(&queue)),
-        };
-
-        writer
-            .control
-            .send(vec![b'x'])
-            .expect("first control item fits");
-        assert!(matches!(writer.control.send(reply), Err(SendError(_))));
-        assert!(matches!(
-            writer.render.try_send(vec![b'z']),
-            Err(TrySendError::Disconnected(_))
-        ));
-    }
-
-    #[test]
     fn client_writer_prioritizes_control_and_reports_render_drain() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-writer-priority");
         let (writer, queue) = test_queue_writer();
         writer
-            .render
-            .try_send(frame_server_message(&ServerMessage::WindowTitle {
+            .queue_handle()
+            .try_send_render(frame_server_message(&ServerMessage::WindowTitle {
                 title: Some("render".into()),
             }))
             .expect("queue render");
         writer
-            .control
-            .send(frame_server_message(&ServerMessage::WindowTitle {
+            .queue_handle()
+            .send_control(frame_server_message(&ServerMessage::WindowTitle {
                 title: Some("control".into()),
             }))
             .expect("queue control");
@@ -1360,7 +837,7 @@ mod tests {
             .blocking_recv()
             .expect("writer drained render slot")
         {
-            ServerEvent::ClientWriterDrained { client_id } => assert_eq!(client_id, 9),
+            ServerEvent::ClientWriterDrained => {}
             other => panic!("expected writer drained event, got {other:?}"),
         }
 
@@ -1377,8 +854,8 @@ mod tests {
             .expect("test precondition");
         let (writer, queue) = test_queue_writer();
         writer
-            .render
-            .try_send(frame_server_message(&ServerMessage::WindowTitle {
+            .queue_handle()
+            .try_send_render(frame_server_message(&ServerMessage::WindowTitle {
                 title: Some("render".into()),
             }))
             .expect("queue render");
@@ -1406,7 +883,7 @@ mod tests {
         ));
         assert!(matches!(
             server_event_rx.blocking_recv(),
-            Some(ServerEvent::ClientWriterDrained { client_id }) if client_id == 10
+            Some(ServerEvent::ClientWriterDrained)
         ));
 
         drop(writer);
@@ -1422,13 +899,11 @@ mod tests {
         client_stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .expect("test precondition");
-        let queue = ClientWriterQueue::new_for_connection(
+        let queue = OutboxQueue::new_for_connection(
             server_stream.try_clone().expect("clone shutdown handle"),
+            Arc::new(tokio::sync::Notify::new()),
         );
-        let writer = ClientWriter {
-            control: ClientControlWriter::queue(Arc::clone(&queue)),
-            render: ClientRenderWriter::queue(Arc::clone(&queue)),
-        };
+        let writer = ClientOutbox::from_queue(Arc::clone(&queue));
 
         writer.close();
         let mut bytes = Vec::new();
@@ -1467,7 +942,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-writer-clone-drop");
         let (writer, queue) = test_queue_writer();
-        let cloned_writer = writer.clone();
+        let cloned_writer = writer.control_sender();
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1483,12 +958,13 @@ mod tests {
         });
 
         drop(writer);
-        cloned_writer
-            .control
-            .send(frame_server_message(&ServerMessage::WindowTitle {
+        assert_eq!(
+            cloned_writer.send(&ServerMessage::WindowTitle {
                 title: Some("cloned".into()),
-            }))
-            .expect("cloned writer still sends after original drops");
+            }),
+            Delivery::Queued,
+            "cloned writer still sends after original drops"
+        );
         match shepr_protocol::read_message(&mut client_stream)
             .expect("read control from cloned writer")
         {
@@ -1527,16 +1003,19 @@ mod tests {
 
         drop(client_stream);
         writer
-            .control
-            .send(vec![b'x'; 1024 * 1024])
+            .queue_handle()
+            .send_control(vec![b'x'; 1024 * 1024])
             .expect("message is accepted before the writer observes socket failure");
         done_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("writer exits after socket write failure");
 
-        assert!(matches!(writer.control.send(vec![b'y']), Err(SendError(_))));
         assert!(matches!(
-            writer.render.try_send(vec![b'z']),
+            writer.queue_handle().send_control(vec![b'y']),
+            Err(SendError(_))
+        ));
+        assert!(matches!(
+            writer.queue_handle().try_send_render(vec![b'z']),
             Err(TrySendError::Disconnected(_))
         ));
     }
@@ -1584,6 +1063,7 @@ mod tests {
         api.client_gate().open(Arc::new(ClientTransportHandler {
             server_event_tx,
             should_quit: stop,
+            wake: Arc::new(tokio::sync::Notify::new()),
             ids: crate::server::clients::ClientIdAllocator::default(),
         }));
         let mut peer = shepr_platform::ipc::connect_local_stream(paths.server_address().socket())
@@ -1617,6 +1097,7 @@ mod tests {
                 Instant::now() + HANDSHAKE_TIMEOUT,
                 &server_event_tx,
                 &handshake_quit,
+                Arc::new(tokio::sync::Notify::new()),
             )
         });
 
@@ -1698,6 +1179,7 @@ mod tests {
                 Instant::now() + HANDSHAKE_TIMEOUT,
                 &server_event_tx,
                 &handshake_quit,
+                Arc::new(tokio::sync::Notify::new()),
             )
         });
 
@@ -1720,7 +1202,7 @@ mod tests {
                 pixel_mouse,
                 mouse_capture,
                 surface_active,
-                writer,
+                outbox: writer,
             } => {
                 assert_eq!(client_id, 43);
                 assert_eq!((surface_cols, surface_rows), (80, 29));

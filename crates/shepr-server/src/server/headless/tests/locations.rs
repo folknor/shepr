@@ -59,9 +59,7 @@ fn run(
     client_id: u64,
     command: EndpointCommand,
 ) -> Result<EndpointReply, EndpointError> {
-    server
-        .handle_client_shell_command(ClientId::test_new(client_id), command)
-        .1
+    server.handle_client_shell_command(ClientId::test_new(client_id), command)
 }
 
 #[tokio::test]
@@ -69,7 +67,7 @@ async fn a_location_change_invalidates_only_that_clients_projection() {
     let (mut server, _panes) = server_with_workspaces(&["first", "second"]);
     let (control_7, _render_7) = connect(&mut server, 7);
     let (control_8, _render_8) = connect(&mut server, 8);
-    server.render_and_stream();
+    server.render_now();
     assert!(control_7.try_recv().is_err());
     assert!(control_8.try_recv().is_err());
     let session_generation = server.shell_session_generation;
@@ -103,7 +101,7 @@ async fn a_location_change_invalidates_only_that_clients_projection() {
     assert_eq!(location_of(&server, 7), Some(second.clone()));
     assert_eq!(location_of(&server, 8), Some(workspace_id(&server, 0)));
 
-    server.render_and_stream();
+    server.render_now();
     let replacement = client_shell_snapshot(&control_7);
     assert_eq!(replacement.focused_workspace_id.as_ref(), Some(&second));
     assert!(
@@ -297,7 +295,7 @@ fn presenting_client(
             size,
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             client_id,
-            Some(writer),
+            writer,
         ),
     );
     (control, render)
@@ -357,7 +355,7 @@ async fn automatic_creation_falls_back_to_the_lowest_id_presenting_client() {
             (120, 40),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             9,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
 
@@ -390,7 +388,7 @@ async fn automatic_creation_with_no_presenting_client_is_headless_with_no_contro
             (120, 40),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             4,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
 
@@ -420,7 +418,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
     let (writer, control, _render) = test_client_writer();
     let client_id = ClientId::test_new(7);
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id,
             surface_cols: 100,
             surface_rows: 30,
@@ -429,7 +427,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     let _ = client_shell_snapshot(&control);

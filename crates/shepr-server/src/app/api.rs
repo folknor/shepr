@@ -9,7 +9,7 @@ pub(super) mod session;
 mod workspaces;
 
 use super::state::SpawnGeometry;
-use super::{App, Outcome, RenderDemand};
+use super::{App, Outcome};
 use shepr_api::error::ApiResult;
 use shepr_protocol::WorkspaceId;
 use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
@@ -35,7 +35,7 @@ pub(crate) struct EndpointOutcome {
     /// Shared effects committed by the handler, including changes committed
     /// before a later refusal.
     pub(crate) effects: EndpointEffects,
-    pub(crate) render: RenderDemand,
+    pub(crate) view_changed: bool,
 }
 
 impl App {
@@ -45,12 +45,11 @@ impl App {
     ) -> Outcome {
         let projection_before = self.state.shell_projection_revision;
         let response = self.handle_api_request_after_internal_events_drained(request);
-        let render = if self.state.shell_projection_revision != projection_before {
-            RenderDemand::Full
-        } else {
-            RenderDemand::None
-        };
-        Outcome { response, render }
+        let view_changed = self.state.shell_projection_revision != projection_before;
+        Outcome {
+            response,
+            view_changed,
+        }
     }
 
     pub(crate) fn handle_api_request_after_internal_events_drained(
@@ -94,16 +93,12 @@ impl App {
         if effects.shell_projection_changed && !projection_revision_changed {
             self.state.mark_shell_projection_dirty();
         }
-        let render = if effects.needs_render() || projection_revision_changed {
-            RenderDemand::Full
-        } else {
-            RenderDemand::None
-        };
+        let view_changed = effects.needs_render() || projection_revision_changed;
         EndpointOutcome {
             result,
             navigate,
             effects,
-            render,
+            view_changed,
         }
     }
 
@@ -258,7 +253,7 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert_eq!(read.render, RenderDemand::None);
+        assert!(!read.view_changed);
 
         let rename = app.handle_endpoint_command_with_render(
             EndpointCommand::PaneRename(shepr_protocol::command::PaneRenameParams {
@@ -267,7 +262,7 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert_eq!(rename.render, RenderDemand::None);
+        assert!(!rename.view_changed);
         assert!(rename.result.is_err());
     }
 
@@ -292,7 +287,7 @@ mod tests {
             (
                 app.state.workspaces[0].custom_name.clone(),
                 outcome.effects,
-                outcome.render,
+                outcome.view_changed,
                 before,
                 app.state.shell_projection_revision,
             )
@@ -301,25 +296,25 @@ mod tests {
         let (name, effects, render, before, after) = rename("  logs  ");
         assert_eq!(name, Some("logs".to_owned()));
         assert!(effects.shell_projection_changed);
-        assert_eq!(render, RenderDemand::Full);
+        assert!(render);
         assert_ne!(after, before);
 
         let (name, effects, render, before, after) = rename("logs");
         assert_eq!(name, Some("logs".to_owned()));
         assert_eq!(effects, EndpointEffects::default());
-        assert_eq!(render, RenderDemand::None);
+        assert!(!render);
         assert_eq!(after, before);
 
         let (name, effects, render, before, after) = rename("   ");
         assert_eq!(name, None);
         assert!(effects.shell_projection_changed);
-        assert_eq!(render, RenderDemand::Full);
+        assert!(render);
         assert_ne!(after, before);
 
         let (name, effects, render, before, after) = rename("");
         assert_eq!(name, None);
         assert_eq!(effects, EndpointEffects::default());
-        assert_eq!(render, RenderDemand::None);
+        assert!(!render);
         assert_eq!(after, before);
     }
 

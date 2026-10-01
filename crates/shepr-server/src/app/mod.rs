@@ -30,24 +30,9 @@ pub(crate) struct AppClock {
     pub(crate) wall_now: SystemTime,
 }
 
-/// How much of the server view an app operation requires the loop to render.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum RenderDemand {
-    #[default]
-    None,
-    Partial,
-    Full,
-}
-
-impl RenderDemand {
-    pub(crate) fn join(&mut self, other: Self) {
-        *self = (*self).max(other);
-    }
-}
-
 pub(crate) struct Outcome {
     pub(crate) response: shepr_api::error::ApiResult,
-    pub(crate) render: RenderDemand,
+    pub(crate) view_changed: bool,
 }
 
 use crate::limits::{
@@ -121,7 +106,6 @@ pub struct App {
     /// waited on at exit.
     pane_teardowns: Arc<shepr_mux::pane::PaneTeardownTracker>,
     pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
-    pub(crate) full_redraw_pending: bool,
     pub(crate) paths: shepr_config::AppPaths,
     /// Set when this boot's restore did not bring the saved session back in
     /// full; sent to every client that connects, for the life of the boot.
@@ -331,7 +315,6 @@ impl App {
             render_notify,
             pane_teardowns,
             render_dirty,
-            full_redraw_pending: false,
             paths,
             restore_notice,
         };
@@ -488,17 +471,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn render_demand_join_keeps_strongest_request() {
-        let mut demand = RenderDemand::None;
-        demand.join(RenderDemand::Partial);
-        assert_eq!(demand, RenderDemand::Partial);
-        demand.join(RenderDemand::None);
-        assert_eq!(demand, RenderDemand::Partial);
-        demand.join(RenderDemand::Full);
-        assert_eq!(demand, RenderDemand::Full);
-    }
-
     pub(super) fn test_clock() -> AppClock {
         AppClock {
             now: Instant::now(),
@@ -596,7 +568,7 @@ mod tests {
         let mut app = test_app();
         app.git_refresh.git_refresh_in_flight = true;
 
-        let changed = app.handle_internal_event_with_render_impact(AppEvent::GitStatusRefreshed {
+        let changed = app.handle_internal_event_with_view_change(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
             cache_updates: Vec::new(),
         });

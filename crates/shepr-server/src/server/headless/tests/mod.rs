@@ -2,7 +2,7 @@ use super::*;
 use crate::test_support::*;
 use std::time::Duration;
 
-use crate::server::client_transport::{ClientWriter, RenderLaneReceiver};
+use crate::server::outbox::{ClientOutbox, RenderLaneReceiver};
 use bytes::Bytes;
 use shepr_protocol::MAX_FRAME_SIZE;
 use shepr_protocol::command::EndpointCommand;
@@ -20,15 +20,15 @@ pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
     event: crate::server::client_transport::ServerEvent,
 ) -> bool {
-    let changed = server.handle_server_event(event);
+    let changed = server.test_handle_server_event(event);
     // The loop flushes endpoint replies at the end of its pass. The cross-crate
     // handoff tests drive renders themselves, so replies leave here at once.
-    server.flush_endpoint_replies();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     changed
 }
 
-pub(crate) fn render_and_stream(server: &mut HeadlessServer) {
-    server.render_and_stream();
+pub(crate) fn render_now(server: &mut HeadlessServer) {
+    server.render_now();
 }
 
 pub(crate) fn outer_terminal_focus(
@@ -76,9 +76,9 @@ pub(crate) fn dispatch_lifecycle_messages(
             },
             other => panic!("unhandled lifecycle message: {other:?}"),
         };
-        server.handle_server_event(event);
+        server.test_handle_server_event(event);
     }
-    server.flush_endpoint_replies();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
 }
 
 #[cfg(test)]
@@ -127,6 +127,8 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
 
     HeadlessServer {
         app,
+        view_epoch: ViewEpoch::INITIAL,
+        headless_settled: ViewEpoch::ZERO,
         _api_server: None,
         clients: ClientRegistry::default(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
@@ -146,8 +148,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
         replaying_checkpointed_pane_exit: None,
-        endpoint_replies: HashMap::new(),
-        next_endpoint_reply_ticket: 0,
+        outbox_wake: Arc::new(tokio::sync::Notify::new()),
         worker_tx,
         worker_rx,
         checkout_root_runner: worker::default_checkout_root_runner(),
@@ -224,7 +225,7 @@ fn frame_text(frame: &FrameData) -> String {
 
 #[test]
 fn frame_server_message_splits_payloads_over_the_frame_cap() {
-    let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
+    let small = crate::server::outbox::frame_server_message(&ServerMessage::ClientShellError {
         kind: shepr_protocol::NoticeKind::PaneInputDropped {
             pane_id: shepr_protocol::PublicPaneId::new(
                 &crate::test_support::test_workspace_id("w1"),
@@ -242,9 +243,10 @@ fn frame_server_message_splits_payloads_over_the_frame_cap() {
     // Clipboard data past one frame crosses as a continued frame and a final
     // one, and reads back whole.
     let data = "x".repeat(MAX_FRAME_SIZE + 1);
-    let large =
-        HeadlessServer::frame_server_message(&ServerMessage::Clipboard { data: data.clone() })
-            .expect("large message frames");
+    let large = crate::server::outbox::frame_server_message(&ServerMessage::Clipboard {
+        data: data.clone(),
+    })
+    .expect("large message frames");
     let first_prefix = u32::from_le_bytes(large[..4].try_into().expect("test precondition"));
     assert_ne!(first_prefix & (1 << 31), 0, "the first frame is continued");
     assert!(matches!(
@@ -266,7 +268,7 @@ async fn default_headless_size_lays_out_workspaces_without_clients() {
         )
     );
     assert_eq!(server.app.state.workspace_area(0), None);
-    server.render_and_stream();
+    server.render_now();
     let headless = server.app.state.settings.headless_rect();
     assert_eq!(server.app.state.workspace_area(0), Some(headless));
     assert_eq!(
@@ -295,9 +297,11 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
     let (_control, _render) = connect_test_shell(&mut server, 7, 112, 36);
     let client_size = server.app.test_runtime(pane_id).current_size();
 
-    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
-        client_id: ClientId::test_new(7),
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientDisconnected {
+            client_id: ClientId::test_new(7),
+        })
+    );
 
     let target = server
         .app
@@ -332,8 +336,8 @@ fn disconnect_after_detach_has_no_render_impact() {
     let _snapshot = client_shell_snapshot(&control);
     let client_id = ClientId::test_new(8);
 
-    assert!(server.handle_server_event(ServerEvent::ClientDetach { client_id }));
-    assert!(!server.handle_server_event(ServerEvent::ClientDisconnected { client_id }));
+    assert!(server.test_handle_server_event(ServerEvent::ClientDetach { client_id }));
+    assert!(!server.test_handle_server_event(ServerEvent::ClientDisconnected { client_id }));
     assert!(!server.clients.contains_key(&client_id));
     shutdown_test_runtimes(&mut server);
 }
@@ -401,7 +405,7 @@ fn server_stop_interrupts_server_event_backlog() {
 
     server.lifecycle.stop_signal().request();
 
-    assert!(!server.drain_server_events());
+    assert!(!server.test_drain_server_events());
     assert!(server.server_event_rx.try_recv().is_ok());
     shutdown_test_runtimes(&mut server);
 }
@@ -416,7 +420,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             42,
-            Some(writer),
+            writer,
         ),
     );
 
@@ -436,7 +440,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
             .expect("test precondition");
     }
 
-    assert!(!server.drain_server_events());
+    assert!(!server.test_drain_server_events());
     assert_eq!(server.server_event_rx.len(), 2);
     for expected_size in 1..=crate::limits::SERVER_EVENT_DRAIN_LIMIT {
         let ServerMessage::ClientShellError {
@@ -453,7 +457,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
         assert_eq!(max, 1024);
     }
 
-    assert!(!server.drain_server_events());
+    assert!(!server.test_drain_server_events());
     for expected_size in (crate::limits::SERVER_EVENT_DRAIN_LIMIT + 1)..=event_count {
         let ServerMessage::ClientShellError {
             kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
@@ -615,7 +619,7 @@ async fn a_queued_new_client_gets_its_endpoint_refusal_before_shutdown() {
                 pixel_mouse: false,
                 mouse_capture: false,
                 surface_active: true,
-                writer,
+                outbox: writer,
             })
             .is_ok()
     );
@@ -865,7 +869,7 @@ fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(client_tx),
+            client_tx,
         ),
     );
     server.promote_client_to_foreground(ClientId::test_new(1));
@@ -919,7 +923,7 @@ fn window_title_waits_for_a_client_to_exist() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(client_tx),
+            client_tx,
         ),
     );
     server.promote_client_to_foreground(ClientId::test_new(1));
@@ -951,7 +955,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            Some(client_tx),
+            client_tx,
         ),
     );
     server.sync_window_title();
@@ -1038,7 +1042,7 @@ fn a_client_without_a_writer_does_not_cache_the_window_title() {
     // Production never keeps a writer-less client (a detach removes it), but
     // the targeted send must still report a writer-less entry as undelivered.
     if let Some(client) = server.clients.get_mut(&1) {
-        client.writer = None;
+        client.outbox = ClientOutbox::detached();
     }
     assert!(!server.send_to_client(
         ClientId::test_new(1),
@@ -1047,12 +1051,12 @@ fn a_client_without_a_writer_does_not_cache_the_window_title() {
         }
     ));
     server.sync_window_title();
-    assert!(server.clients[&1].sent_window_title.is_none());
+    assert!(server.clients[&1].outbox.told_window_title().is_none());
 
     // Attaching again has to deliver the title rather than skip it as sent.
     let (client_tx, control_rx, _render_rx) = test_client_writer();
     if let Some(client) = server.clients.get_mut(&1) {
-        client.writer = Some(client_tx);
+        client.outbox = client_tx;
     }
     server.sync_window_title();
     assert_eq!(
@@ -1092,7 +1096,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            Some(client_tx),
+            client_tx,
         ),
     );
     server.promote_client_to_foreground(ClientId::test_new(2));
@@ -1150,9 +1154,11 @@ async fn promoted_client_window_title_uses_its_own_view() {
     drain_window_titles(&survivor_control);
     drain_window_titles(&disconnected_control);
 
-    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
-        client_id: ClientId::test_new(2)
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientDisconnected {
+            client_id: ClientId::test_new(2)
+        })
+    );
     server.sync_window_title();
 
     assert_eq!(
@@ -1191,11 +1197,11 @@ async fn promoted_client_window_title_uses_its_own_view() {
 }
 
 pub(crate) fn test_client_writer() -> (
-    ClientWriter,
+    ClientOutbox,
     std::sync::mpsc::Receiver<Vec<u8>>,
     RenderLaneReceiver,
 ) {
-    ClientWriter::test_pair()
+    ClientOutbox::test_pair()
 }
 
 /// Gives an already inserted fixture client a way to send frames, so it
@@ -1210,7 +1216,7 @@ fn attach_test_writer(
         .clients
         .get_mut(&ClientId::test_new(client_id))
         .expect("fixture client is registered")
-        .writer = Some(writer);
+        .outbox = writer;
     (control, render)
 }
 
@@ -1222,7 +1228,7 @@ async fn client_shell_attach_seeds_workspace() {
     let (writer, _control_rx, _render_rx) = test_client_writer();
 
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id: ClientId::test_new(6),
             surface_cols: 80,
             surface_rows: 23,
@@ -1231,7 +1237,7 @@ async fn client_shell_attach_seeds_workspace() {
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
 
@@ -1283,7 +1289,7 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
         );
 
     let (writer, control_rx, _render_rx) = test_client_writer();
-    server.handle_server_event(ServerEvent::ClientShellConnected {
+    server.test_handle_server_event(ServerEvent::ClientShellConnected {
         client_id: ClientId::test_new(78),
         surface_cols: 80,
         surface_rows: 24,
@@ -1292,7 +1298,7 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
         pixel_mouse: false,
         mouse_capture: false,
         surface_active: false,
-        writer,
+        outbox: writer,
     });
 
     let snapshot = client_shell_snapshot(&control_rx);
@@ -1316,7 +1322,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(41);
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -1325,7 +1331,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
@@ -1341,16 +1347,13 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
                 label: label.into(),
             },
         ));
-        assert_eq!(
-            server.handle_server_event_with_render_impact(
-                ServerEvent::ClientShellEndpointRequest {
-                    client_id,
-                    boot_id: boot_id.clone(),
-                    request_id: request_id.into(),
-                    command,
-                }
-            ),
-            RenderDemand::Full
+        assert!(
+            server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+                client_id,
+                boot_id: boot_id.clone(),
+                request_id: request_id.into(),
+                command,
+            })
         );
     }
     assert!(
@@ -1359,8 +1362,8 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     );
 
     // The loop's order: render, then flush the held replies.
-    server.render_and_stream();
-    server.flush_endpoint_replies();
+    server.render_now();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
 
     let ServerMessage::EndpointSnapshot(snapshot) =
         read_server_message(control_rx.recv().expect("renamed projection"))
@@ -1385,7 +1388,12 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             other => panic!("expected client shell endpoint response, got {other:?}"),
         }
     }
-    assert!(server.endpoint_replies.is_empty());
+    assert!(
+        server
+            .clients
+            .iter()
+            .all(|(_, client)| client.outbox.held_reply_count() == 0)
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1401,7 +1409,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
     let current_boot = server.client_shell_boot_id.clone();
     let workspace_id = server.app.state.workspaces[0].id.clone();
 
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "held".into(),
@@ -1412,7 +1420,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             },
         )),
     });
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: shepr_test_fixtures::fixed_boot_id(2),
         request_id: "stale".into(),
@@ -1422,7 +1430,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             },
         )),
     });
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "deactivate".into(),
@@ -1430,7 +1438,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             shepr_protocol::command::ClientShellSurfaceSetParams { active: false },
         )),
     });
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "inactive".into(),
@@ -1440,7 +1448,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             },
         )),
     });
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "activate".into(),
@@ -1449,8 +1457,8 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
         )),
     });
 
-    server.render_and_stream();
-    server.flush_endpoint_replies();
+    server.render_now();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     let mut replies = Vec::new();
     while replies.len() < 5 {
         if let ServerMessage::ClientShellEndpointResponse {
@@ -1486,7 +1494,12 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
         &replies[4].1,
         Ok(shepr_protocol::command::EndpointReply::ClientShellSurfaceSet { active: true, .. })
     ));
-    assert!(server.endpoint_replies.is_empty());
+    assert!(
+        server
+            .clients
+            .iter()
+            .all(|(_, client)| client.outbox.held_reply_count() == 0)
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1506,7 +1519,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
     let boot_id = server.client_shell_boot_id.clone();
     let client_id = ClientId::test_new(45);
 
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: boot_id.clone(),
         request_id: "scroll".into(),
@@ -1523,7 +1536,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
     );
 
     let second_workspace = server.app.state.workspaces[1].id.clone();
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id,
         request_id: "focus-workspace".into(),
@@ -1538,7 +1551,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
         "moving a client to another workspace changes the immediate PTY sources"
     );
     server.immediate_pty_sources_dirty = false;
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
         request_id: "deactivate-surface".into(),
@@ -1582,7 +1595,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
     });
 
     let started = std::time::Instant::now();
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id: client_a,
         boot_id: boot_id.clone(),
         request_id: "slow-checkout".into(),
@@ -1599,7 +1612,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         .expect("checkout worker should have started");
 
     let workspace_id = server.app.state.workspaces[0].id.clone();
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id: client_a,
         boot_id: boot_id.clone(),
         request_id: "after-slow".into(),
@@ -1609,7 +1622,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
             },
         )),
     });
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id: client_b,
         boot_id,
         request_id: "other-client".into(),
@@ -1617,8 +1630,8 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
             shepr_protocol::command::WorkspaceTarget { workspace_id },
         )),
     });
-    server.render_and_stream();
-    server.flush_endpoint_replies();
+    server.render_now();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     let mut other_client_replied = false;
     while !other_client_replied {
         if let ServerMessage::ClientShellEndpointResponse { request_id, .. } = read_server_message(
@@ -1630,12 +1643,18 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         }
     }
     assert!(
-        server.endpoint_replies[&client_a]
-            .front()
-            .is_some_and(|reply| reply.message.is_none()),
+        server.clients[&client_a]
+            .outbox
+            .held_reply_message(0)
+            .is_none(),
         "the slow client's reserved reply should remain held"
     );
-    assert!(server.endpoint_replies[&client_a][1].message.is_some());
+    assert!(
+        server.clients[&client_a]
+            .outbox
+            .held_reply_message(1)
+            .is_some()
+    );
     release_tx
         .send(())
         .expect("checkout worker should still wait");
@@ -1645,7 +1664,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         .expect("checkout completion should wake the loop")
         .expect("worker channel should stay open");
     assert!(!server.handle_worker_completion(completion, server.app.clock.now));
-    server.flush_endpoint_replies();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     let mut client_a_replies = Vec::new();
     while client_a_replies.len() < 2 {
         if let ServerMessage::ClientShellEndpointResponse {
@@ -1698,26 +1717,33 @@ async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdow
 
     // A client that leaves takes its pending slot with it, and the worker
     // result that arrives for it afterwards finds nothing to fill.
-    let gone = server.reserve_endpoint_reply(client_a, refusal("gone"));
+    let gone = server
+        .reserve_endpoint_reply(client_a, &refusal("gone"))
+        .expect("reserve");
     server.remove_client(client_a);
-    assert!(!server.endpoint_replies.contains_key(&client_a));
-    server.complete_endpoint_reply(gone, refusal("late"));
-    assert!(server.endpoint_replies.is_empty());
+    assert!(!server.clients.contains_key(&client_a));
+    server.complete_endpoint_reply(gone, &refusal("late"));
+    assert!(
+        server
+            .clients
+            .iter()
+            .all(|(_, client)| client.outbox.held_reply_count() == 0)
+    );
 
     // At shutdown a pending slot is answered with its refusal, and a reply
     // queued behind it still leaves after it.
-    server.reserve_endpoint_reply(client_b, refusal("pending"));
+    server.reserve_endpoint_reply(client_b, &refusal("pending"));
     server.queue_endpoint_reply(
         client_b,
-        crate::server::client_commands::response_message(
+        &crate::server::client_commands::response_message(
             boot_id.clone(),
             "after".into(),
             Ok(shepr_protocol::command::EndpointReply::Done),
         ),
     );
-    server.flush_endpoint_replies();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     assert_eq!(
-        server.endpoint_replies[&client_b].len(),
+        server.clients[&client_b].outbox.held_reply_count(),
         2,
         "the pending slot holds the reply behind it"
     );
@@ -1757,7 +1783,12 @@ async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdow
         ),
         ServerMessage::ServerShutdown { .. }
     ));
-    assert!(server.endpoint_replies.is_empty());
+    assert!(
+        server
+            .clients
+            .iter()
+            .all(|(_, client)| client.outbox.held_reply_count() == 0)
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -1770,7 +1801,7 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(42);
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -1779,14 +1810,14 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
 
     // Focusing a pane that does not exist fails; its error is held like
     // any other reply until the loop flushes.
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
         request_id: "missing-pane".into(),
@@ -1796,8 +1827,8 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
             },
         )),
     });
-    assert_eq!(server.endpoint_replies.len(), 1);
-    server.flush_endpoint_replies();
+    assert_eq!(server.clients[&client_id].outbox.held_reply_count(), 1);
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     let ServerMessage::ClientShellEndpointResponse {
         request_id,
         result: Err(_),
@@ -1819,7 +1850,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(43);
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -1828,12 +1859,12 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
     let workspace_id = server.app.state.workspaces[0].id.clone();
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
         request_id: "then-left".into(),
@@ -1844,9 +1875,14 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
             },
         )),
     });
-    assert!(server.handle_server_event(ServerEvent::ClientDetach { client_id }));
-    server.flush_endpoint_replies();
-    assert!(server.endpoint_replies.is_empty());
+    assert!(server.test_handle_server_event(ServerEvent::ClientDetach { client_id }));
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
+    assert!(
+        server
+            .clients
+            .iter()
+            .all(|(_, client)| client.outbox.held_reply_count() == 0)
+    );
     assert!(!server.clients.contains_key(&client_id));
     shutdown_test_runtimes(&mut server);
 }
@@ -1870,7 +1906,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
 
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id: ClientId::test_new(7),
             surface_cols: 80,
             surface_rows: 23,
@@ -1879,13 +1915,13 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             pixel_mouse: true,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     let snapshot = client_shell_snapshot(&control_rx);
     assert_eq!(snapshot.workspaces.len(), 1);
     assert_eq!(snapshot.workspaces[0].label, "shell-only-label");
-    server.render_and_stream();
+    server.render_now();
     let initial_surface = match read_server_message(render_rx.recv().expect("pane surface")) {
         ServerMessage::PaneSurface(surface) => {
             assert_eq!((surface.frame.width, surface.frame.height), (80, 23));
@@ -1929,7 +1965,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .expect("pane runtime")
         .test_process_pty_bytes(b"\rPATCHED");
     let sources = std::collections::HashSet::from([pane_id]);
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    assert!(server.try_render_patches(&sources));
     match read_server_message(render_rx.recv().expect("pane surface patch")) {
         ServerMessage::SurfaceUpdate(patch) => {
             assert_eq!(
@@ -1976,7 +2012,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
         .expect("pane runtime")
         .test_process_pty_bytes(b"\x1b[?1003l\x1b[?1006l\x1b[?1016l");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    assert!(server.try_render_patches(&sources));
     match read_server_message(render_rx.recv().expect("metadata-only pane surface patch")) {
         ServerMessage::SurfaceUpdate(patch) => {
             assert!(patch.spans.is_empty(), "mouse modes only change metadata");
@@ -2010,7 +2046,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .expect("test precondition")
         .render_state
         .request_repaint();
-    server.render_and_stream();
+    server.render_now();
     let full = match read_server_message(render_rx.recv().expect("full comparison surface")) {
         ServerMessage::PaneSurface(surface) => surface,
         other => panic!("expected full comparison surface, got {other:?}"),
@@ -2043,7 +2079,7 @@ fn connect_test_shell(
 ) -> (std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver) {
     let (writer, control, render) = test_client_writer();
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id: client_id.into(),
             surface_cols,
             surface_rows,
@@ -2052,7 +2088,7 @@ fn connect_test_shell(
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     (control, render)
@@ -2085,7 +2121,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
     server.app.state.ensure_test_terminals();
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let _ = client_shell_snapshot(&control);
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err());
     let built_at = server
         .shell_session_cache
@@ -2110,7 +2146,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
         );
     };
 
-    server.render_and_stream();
+    server.render_now();
     unchanged(&server);
     assert!(control.try_recv().is_err());
 
@@ -2128,7 +2164,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
             offset_from_bottom: 0,
         }),
     ));
-    server.render_and_stream();
+    server.render_now();
     unchanged(&server);
     assert!(control.try_recv().is_err());
     shutdown_test_runtimes(&mut server);
@@ -2141,10 +2177,19 @@ fn command_through_server(
     client_id: u64,
     command: EndpointCommand,
 ) -> bool {
-    let (render, result) =
-        server.handle_client_shell_command(ClientId::test_new(client_id), command);
+    let epoch_before = server.view_epoch;
+    let location_before = server.clients[&ClientId::test_new(client_id)]
+        .shell_state()
+        .location
+        .generation();
+    let result = server.handle_client_shell_command(ClientId::test_new(client_id), command);
     assert!(result.is_ok());
-    render
+    server.view_epoch != epoch_before
+        || server.clients[&ClientId::test_new(client_id)]
+            .shell_state()
+            .location
+            .generation()
+            != location_before
 }
 
 /// Renders and returns the one replacement the change must produce.
@@ -2153,7 +2198,7 @@ fn next_projection(
     control: &std::sync::mpsc::Receiver<Vec<u8>>,
     previous: &mut shepr_protocol::ProjectionRevision,
 ) -> Box<shepr_protocol::ClientShellSnapshot> {
-    server.render_and_stream();
+    server.render_now();
     let snapshot = client_shell_snapshot(control);
     assert!(snapshot.revision > *previous);
     *previous = snapshot.revision;
@@ -2166,7 +2211,7 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let first = client_shell_snapshot(&control);
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err());
 
     let outcome = server.app.handle_endpoint_command_with_render(
@@ -2176,8 +2221,8 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
         }),
         &crate::app::EndpointContext::without_geometry(),
     );
-    assert_eq!(outcome.render, RenderDemand::Full);
-    server.render_and_stream();
+    assert!(outcome.view_changed);
+    server.render_now();
     let renamed = client_shell_snapshot(&control);
     assert_eq!(renamed.workspaces[0].label, "renamed");
     assert!(renamed.revision > first.revision);
@@ -2192,7 +2237,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     let pane_id = server.app.state.workspaces[0].root_pane();
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let _ = client_shell_snapshot(&control);
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err());
 
     let scratch = ScratchDir::new("headless-cwd");
@@ -2203,7 +2248,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
             pane_id,
             cwd: shepr_mux::UsableCwd::new(cwd.clone()).expect("socket directory is usable"),
         });
-    server.render_and_stream();
+    server.render_now();
     let reported = client_shell_snapshot(&control);
     assert_eq!(
         reported.panes[0].cwd.as_deref(),
@@ -2224,13 +2269,13 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     assert!(!server.refresh_shell_projection_sources());
     assert_eq!(server.shell_session_generation, generation);
     assert!(!server.shell_cwd_refresh_due(Instant::now()));
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err());
 
     // A change no event reports (standing in for a shell's /proc cwd) is
     // found by the timer and reaches the client with the next render.
     server.app.state.workspaces[0].custom_name = Some("silent".into());
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err(), "no event reported the change");
     age_cache(&mut server);
     assert!(server.refresh_shell_projection_sources());
@@ -2244,7 +2289,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
         1,
         "the changed client's projection is retained for the render pass"
     );
-    server.render_and_stream();
+    server.render_now();
     assert!(
         server
             .shell_session_cache
@@ -2259,9 +2304,11 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     );
 
     // The timer only runs while a shell client is connected.
-    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
-        client_id: ClientId::test_new(7),
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientDisconnected {
+            client_id: ClientId::test_new(7),
+        })
+    );
     age_cache(&mut server);
     assert_eq!(server.shell_cwd_refresh_deadline(), None);
     shutdown_test_runtimes(&mut server);
@@ -2292,7 +2339,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     let workspace_id = server.app.public_workspace_id(0).expect("workspace id");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let mut previous = client_shell_snapshot(&control).revision;
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err());
 
     assert!(command_through_server(
@@ -2387,17 +2434,19 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let _ = client_shell_snapshot(&control);
-    server.render_and_stream();
-    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
-        client_id: ClientId::test_new(7),
-    }));
+    server.render_now();
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientDisconnected {
+            client_id: ClientId::test_new(7),
+        })
+    );
 
     // The shared cache outlives the connection; the new one is seeded fresh
     // and still receives subsequent changes.
     let (control, _render) = connect_matching_test_shell(&mut server, 8);
     let seed = client_shell_snapshot(&control);
     let mut previous = seed.revision;
-    server.render_and_stream();
+    server.render_now();
     assert!(control.try_recv().is_err());
     assert!(command_through_server(
         &mut server,
@@ -2493,7 +2542,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             .as_deref(),
         Some(older_cwd_text)
     );
-    server.render_and_stream();
+    server.render_now();
     assert!(first_control.try_recv().is_err());
 
     let cache_revision = server
@@ -2545,7 +2594,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
     );
 
     assert!(server.place_test_client_on_workspace(ClientId::test_new(8), &second_workspace_id));
-    server.render_and_stream();
+    server.render_now();
     let location_projection = client_shell_snapshot(&control);
     assert_eq!(
         location_projection
@@ -2658,7 +2707,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (control, render) = connect_matching_test_shell(&mut server, 7);
     let mut render = PaneSurfaceReceiver::new(render);
-    server.render_and_stream();
+    server.render_now();
     let before = recv_pane_surface(&mut render, "baseline");
     assert!(frame_text(&before.frame).contains("BASE"));
     let projection_before = server.clients[&7].shell_state().projection_revision.get();
@@ -2677,7 +2726,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
         .get_mut(&7)
         .expect("test precondition")
         .request_recompute();
-    server.render_and_stream();
+    server.render_now();
     assert!(render.try_recv().is_err(), "partial frame was published");
     // Only the pane surface waits for the synchronized update: the projection
     // still goes out, so a reply flushed after this render cannot overtake it.
@@ -2696,8 +2745,8 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\rCOMPLETE\x1b[?2026l");
-    assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    server.render_and_stream();
+    assert!(!server.try_render_patches(&HashSet::from([pane_id])));
+    server.render_now();
     let after = recv_pane_surface(&mut render, "completed frame");
     assert!(frame_text(&after.frame).contains("COMPLETE"));
     assert!(after.projection_revision > projection_before);
@@ -2723,21 +2772,21 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     server.app.state.set_bookmark_index(Some(0));
     let (_control, render) = connect_matching_test_shell(&mut server, 7);
     let mut render = PaneSurfaceReceiver::new(render);
-    server.render_and_stream();
+    server.render_now();
     let _ = recv_pane_surface(&mut render, "split baseline");
 
     write_shared_test_pane(&mut server, first, b"\x1b[?2026h\rPARTIAL");
     write_shared_test_pane(&mut server, second, b"\rUPDATED");
-    assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([second])));
-    server.render_and_stream();
+    assert!(!server.try_render_patches(&HashSet::from([second])));
+    server.render_now();
     assert!(
         render.try_recv().is_err(),
         "sibling published partial frame"
     );
 
     write_shared_test_pane(&mut server, first, b"\rCOMPLETE\x1b[?2026l");
-    assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([first])));
-    server.render_and_stream();
+    assert!(!server.try_render_patches(&HashSet::from([first])));
+    server.render_now();
     let after = recv_pane_surface(&mut render, "completed split");
     let text = frame_text(&after.frame);
     assert!(
@@ -2769,7 +2818,7 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     let (_control, render) = connect_matching_test_shell(&mut server, 7);
     let mut render = PaneSurfaceReceiver::new(render);
     write_shared_test_pane(&mut server, hidden, b"\x1b[?2026h\rPARTIAL");
-    server.render_and_stream();
+    server.render_now();
     let surface = recv_pane_surface(&mut render, "zoomed visible pane");
     assert!(frame_text(&surface.frame).contains("VISIBLE"));
     assert!(!frame_text(&surface.frame).contains("PARTIAL"));
@@ -2783,7 +2832,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     let (control, render) = connect_matching_test_shell(&mut server, 7);
     let mut render = PaneSurfaceReceiver::new(render);
     let _ = control.recv().expect("snapshot");
-    server.render_and_stream();
+    server.render_now();
     let _ = recv_pane_surface(&mut render, "initial surface");
 
     let (release, writer, revision) = {
@@ -2798,7 +2847,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
             runtime.test_contend_during_dirty_collection(b"\rBBBB\x1b[?1003l".to_vec());
         (release, writer, revision)
     };
-    let retained = server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id]));
+    let retained = server.try_render_patches(&HashSet::from([pane_id]));
     release.send(()).expect("release waiting writer");
     let writer_took_core = writer.join().expect("writer completed");
 
@@ -2821,7 +2870,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     assert!(frame_text(&surface.frame).contains("AAAA"));
     assert!(!frame_text(&surface.frame).contains("BBBB"));
 
-    assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
+    assert!(server.try_render_patches(&HashSet::from([pane_id])));
     let next = recv_pane_surface_patch(&mut render, "waiting write remains dirty");
     assert_eq!(meta_panes(&next.meta)[0].content_revision, revision + 2);
     assert!(!meta_panes(&next.meta)[0].mouse_reporting);
@@ -2842,7 +2891,7 @@ async fn first_shell_surface_resizes_a_pane_that_entered_alternate_screen() {
     let initial_size = server.app.test_runtime(pane_id).current_size();
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
-    server.render_and_stream();
+    server.render_now();
 
     let surface = recv_pane_surface(&mut render, "first alternate-screen surface");
     assert!(surface.panes[0].alternate_screen_active);
@@ -2863,7 +2912,7 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     let mut small_render = PaneSurfaceReceiver::new(small_render);
     let _ = large_control.recv().expect("large snapshot");
     let _ = small_control.recv().expect("small snapshot");
-    server.render_and_stream();
+    server.render_now();
     let large_initial = recv_pane_surface(&mut large_render, "large initial surface");
     let small_initial = recv_pane_surface(&mut small_render, "small initial surface");
     let initial_size = server.app.test_runtime(pane_id).current_size();
@@ -2881,7 +2930,7 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\rMIXED");
-    assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
+    assert!(server.try_render_patches(&HashSet::from([pane_id])));
 
     let large_patch = recv_pane_surface_patch(&mut large_render, "large retained patch");
     let small_patch = recv_pane_surface_patch(&mut small_render, "small retained patch");
@@ -2932,8 +2981,8 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
-    assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    server.render_and_stream();
+    assert!(!server.try_render_patches(&HashSet::from([pane_id])));
+    server.render_now();
     let large_alt = recv_pane_surface(&mut large_render, "large alternate-screen surface");
     let small_alt = recv_pane_surface(&mut small_render, "small alternate-screen surface");
     assert!(large_alt.panes[0].alternate_screen_active);
@@ -2952,8 +3001,8 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049l");
-    assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    server.render_and_stream();
+    assert!(!server.try_render_patches(&HashSet::from([pane_id])));
+    server.render_now();
     let large_main = recv_pane_surface(&mut large_render, "large restored main-screen surface");
     let small_main = recv_pane_surface(&mut small_render, "small restored main-screen surface");
     assert!(!large_main.panes[0].alternate_screen_active);
@@ -3014,7 +3063,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
     assert!(
         server.pty_sources_visible_to_any_render_target(&HashSet::from([first_pane, second_pane,]))
     );
-    server.render_and_stream();
+    server.render_now();
     let first_surface = recv_pane_surface(&mut first_render, "first baseline");
     let second_surface = recv_pane_surface(&mut second_render, "second baseline");
     assert_eq!(
@@ -3032,7 +3081,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
         .app
         .test_runtime(first_pane)
         .test_process_pty_bytes(b"\rFIRST_PATCH");
-    assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([first_pane])));
+    assert!(server.try_render_patches(&HashSet::from([first_pane])));
     let first_patch = recv_pane_surface_patch(&mut first_render, "first patch");
     assert_eq!(meta_panes(&first_patch.meta).len(), 1);
     assert!(second_render.try_recv().is_err());
@@ -3041,7 +3090,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
         .app
         .test_runtime(second_pane)
         .test_process_pty_bytes(b"\rSECOND_PATCH");
-    assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([second_pane])));
+    assert!(server.try_render_patches(&HashSet::from([second_pane])));
     let second_patch = recv_pane_surface_patch(&mut second_render, "second patch");
     assert_eq!(meta_panes(&second_patch.meta).len(), 1);
     assert!(first_render.try_recv().is_err());
@@ -3050,14 +3099,14 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
 }
 
 #[tokio::test]
-async fn late_retained_fallback_leaves_all_client_baselines_unchanged() {
+async fn late_retained_fallback_promotes_its_client_and_commits_no_patch_for_it() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (_first_control, first_render) = connect_matching_test_shell(&mut server, 7);
     let mut first_render = PaneSurfaceReceiver::new(first_render);
     let (_second_control, second_render) = connect_matching_test_shell(&mut server, 8);
     let mut second_render = PaneSurfaceReceiver::new(second_render);
-    server.render_and_stream();
+    server.render_now();
     let _ = recv_pane_surface(&mut first_render, "first baseline");
     let _ = recv_pane_surface(&mut second_render, "second baseline");
 
@@ -3083,15 +3132,19 @@ async fn late_retained_fallback_leaves_all_client_baselines_unchanged() {
     });
 
     write_shared_test_pane(&mut server, pane_id, b"\rNEXT\x1b[?1003h");
-    assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    assert!(first_render.try_recv().is_err());
+    let outcome = server.render_patches(&[7.into(), 8.into()], &HashSet::from([pane_id]));
+    assert_eq!(outcome.sent, vec![ClientId::test_new(7)]);
+    assert_eq!(outcome.promote, vec![ClientId::test_new(8)]);
+    assert!(first_render.try_recv().is_ok());
     assert!(second_render.try_recv().is_err());
-    for (id, expected) in [7, 8].into_iter().zip(before) {
-        assert_eq!(
-            server.clients[&id].render_state.last_pane_surface(),
-            Some(&expected)
-        );
-    }
+    assert_ne!(
+        server.clients[&7].render_state.last_pane_surface(),
+        Some(&before[0])
+    );
+    assert_eq!(
+        server.clients[&8].render_state.last_pane_surface(),
+        Some(&before[1])
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -3104,7 +3157,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     let mut slow_render = PaneSurfaceReceiver::new(slow_render);
     let _ = responsive_control.recv().expect("responsive snapshot");
     let _ = slow_control.recv().expect("slow snapshot");
-    server.render_and_stream();
+    server.render_now();
     let _ = responsive_render
         .recv()
         .expect("responsive initial surface");
@@ -3112,7 +3165,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
 
     let sources = HashSet::from([pane_id]);
     write_shared_test_pane(&mut server, pane_id, b"\rONE");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    assert!(server.try_render_patches(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive first patch")),
         ServerMessage::SurfaceUpdate(_)
@@ -3124,12 +3177,12 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
         .expect("test precondition")
         .clone();
     write_shared_test_pane(&mut server, pane_id, b"\rTWO\x1b[?1003h");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    assert!(server.try_render_patches(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive second patch")),
         ServerMessage::SurfaceUpdate(_)
     ));
-    assert_eq!(server.clients[&8].deferred_render(), RenderDemand::Full);
+    assert!(server.clients[&8].render_state.surface_debt());
     assert_eq!(
         server.clients[&8].render_state.last_pane_surface(),
         Some(&slow_baseline),
@@ -3137,7 +3190,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\rTHREE");
-    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    assert!(server.try_render_patches(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive third patch")),
         ServerMessage::SurfaceUpdate(_)
@@ -3147,12 +3200,8 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
         slow_render.recv("slow queued first patch"),
         DecodedServerMessage::PaneSurfacePatch(_)
     ));
-    assert!(
-        server.handle_server_event(ServerEvent::ClientWriterDrained {
-            client_id: ClientId::test_new(8)
-        })
-    );
-    server.render_and_stream();
+    assert!(!server.test_handle_server_event(ServerEvent::ClientWriterDrained));
+    server.render_now();
     assert!(matches!(
         slow_render.recv("slow full recovery surface"),
         DecodedServerMessage::Wire(ServerMessage::PaneSurface(_))
@@ -3170,7 +3219,7 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     let (slow_control, slow_render) = connect_matching_test_shell(&mut server, 8);
     let _ = responsive_control.recv().expect("responsive snapshot");
     let _ = slow_control.recv().expect("slow snapshot");
-    server.render_and_stream();
+    server.render_now();
     let _ = responsive_render
         .recv()
         .expect("responsive initial surface");
@@ -3186,28 +3235,22 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
         .get_mut(&8)
         .expect("test precondition")
         .request_repaint();
-    server.app.full_redraw_pending = true;
-    server.render_and_stream();
+    server.render_now();
     let _ = responsive_render
         .recv()
         .expect("responsive full replacement");
-    assert_eq!(server.clients[&8].deferred_render(), RenderDemand::Full);
-    assert!(!server.app.full_redraw_pending);
+    assert!(server.clients[&8].render_state.surface_debt());
 
     write_shared_test_pane(&mut server, pane_id, b"\rPATCH");
-    assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
+    assert!(server.try_render_patches(&HashSet::from([pane_id])));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive retained patch")),
         ServerMessage::SurfaceUpdate(_)
     ));
 
     let _ = slow_render.recv().expect("slow queued initial surface");
-    assert!(
-        server.handle_server_event(ServerEvent::ClientWriterDrained {
-            client_id: ClientId::test_new(8)
-        })
-    );
-    server.render_and_stream();
+    assert!(!server.test_handle_server_event(ServerEvent::ClientWriterDrained));
+    server.render_now();
     assert!(matches!(
         read_server_message(slow_render.recv().expect("slow full recovery surface")),
         ServerMessage::PaneSurface(_)
@@ -3260,7 +3303,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     // connection's location behind: it is the client's own.
     server.app.state.set_bookmark_index(Some(1));
     server.app.state.mark_shell_projection_dirty();
-    server.render_and_stream();
+    server.render_now();
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(70)),
         Some(first_workspace_id.clone())
@@ -3270,7 +3313,8 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
         Some(&second_workspace_id)
     );
 
-    let (changed, result) = server.handle_client_shell_command(
+    let epoch_before = server.view_epoch;
+    let result = server.handle_client_shell_command(
         ClientId::test_new(70),
         EndpointCommand::PaneSelectionRead(PaneSelectionReadParams {
             pane_id: first_pane_id.clone(),
@@ -3284,6 +3328,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
             },
         }),
     );
+    let changed = server.view_epoch != epoch_before;
     // The pane holds no text, so the read itself is refused. No request acts
     // on the bookmark, so nothing about it or the client's view moves.
     assert_eq!(
@@ -3302,7 +3347,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
         Some(first_workspace_id.clone())
     );
 
-    server.render_and_stream();
+    server.render_now();
     let shell = server.clients[&70].shell_state();
     assert_eq!(shell.session_generation, server.shell_session_generation);
     assert_eq!(
@@ -3381,7 +3426,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
         Bytes::from_static(b"\x1b[I")
     );
 
-    let (_, result) = server.handle_client_shell_command(
+    let result = server.handle_client_shell_command(
         ClientId::test_new(62),
         shepr_protocol::command::EndpointCommand::WorkspaceFocus(
             shepr_protocol::command::WorkspaceTarget {
@@ -3463,7 +3508,7 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
     for (client_id, command) in cases {
         let other_client = ClientId::test_new(if client_id == 61 { 62 } else { 61 });
         let other_focus = server.shell_focus_target(other_client);
-        let (_, result) = server.handle_client_shell_command(client_id.into(), command);
+        let result = server.handle_client_shell_command(client_id.into(), command);
         assert!(result.is_ok(), "client {client_id}");
 
         assert_eq!(
@@ -3535,7 +3580,7 @@ async fn navigation_moves_pane_focus_between_workspaces_once() {
 
     // The first viewer joins the second one's workspace: its old pane loses
     // focus, and the pane both now view, already focused, gains nothing again.
-    let (_, result) = server.handle_client_shell_command(
+    let result = server.handle_client_shell_command(
         ClientId::test_new(63),
         shepr_protocol::command::EndpointCommand::WorkspaceFocus(
             shepr_protocol::command::WorkspaceTarget {
@@ -3593,7 +3638,8 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     let _ = control.recv().expect("snapshot");
     let before = server.app.test_runtime(first_pane).current_size();
 
-    let (changed, result) = server.handle_client_shell_command(
+    let epoch_before = server.view_epoch;
+    let result = server.handle_client_shell_command(
         ClientId::test_new(65),
         shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
             shepr_protocol::command::LayoutSetSplitRatioParams {
@@ -3604,6 +3650,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
             },
         ),
     );
+    let changed = server.view_epoch != epoch_before;
     assert!(result.is_ok());
     assert!(changed);
 
@@ -3835,7 +3882,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
         first_size
     );
 
-    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+    server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(22),
         pane_id: second_pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
@@ -3847,7 +3894,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
         Bytes::from_static(b"typed")
     );
 
-    server.render_and_stream();
+    server.render_now();
     let first_surface = match read_server_message(first_render.recv().expect("first surface")) {
         ServerMessage::PaneSurface(surface) => surface,
         other => panic!("expected first pane surface, got {other:?}"),
@@ -3859,14 +3906,16 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
     assert!(frame_text(&first_surface.frame).contains("FIRST_WORKSPACE"));
     assert!(frame_text(&second_surface.frame).contains("SECOND_WORKSPACE"));
 
-    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
-        client_id: ClientId::test_new(22),
-        surface_cols: 60,
-        surface_rows: 16,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientShellResize {
+            client_id: ClientId::test_new(22),
+            surface_cols: 60,
+            surface_rows: 16,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+        })
+    );
     let resized_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(resized_second, second_size);
     assert_eq!(
@@ -3973,7 +4022,7 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
         server.clients.geometry_controller(&second_workspace_id),
         Some(ClientId::test_new(9))
     );
-    server.render_and_stream();
+    server.render_now();
     let diverged = client_shell_snapshot(&control_rx);
     assert_eq!(
         diverged.focused_workspace_id.as_deref(),
@@ -3988,7 +4037,7 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     let diverged_surface = recv_pane_surface(&mut render_rx, "diverged surface");
     assert!(frame_text(&diverged_surface.frame).contains("SECOND_WORKSPACE"));
 
-    let (_, result) = server.handle_client_shell_command(
+    let result = server.handle_client_shell_command(
         ClientId::test_new(9),
         EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
             pane_id: first_pane_id.clone(),
@@ -4006,7 +4055,7 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
         Some(first_workspace_id.as_str())
     );
 
-    server.render_and_stream();
+    server.render_now();
     let replacement = client_shell_snapshot(&control_rx);
     assert_eq!(
         replacement.focused_workspace_id.as_deref(),
@@ -4032,7 +4081,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
 
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ClientShellConnected {
             client_id: ClientId::test_new(9),
             surface_cols: 80,
             surface_rows: 23,
@@ -4041,7 +4090,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
             pixel_mouse: false,
             mouse_capture: false,
             surface_active: true,
-            writer,
+            outbox: writer,
         })
     );
     let initial_revision = client_shell_snapshot(&control_rx).revision;
@@ -4054,7 +4103,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
         }),
     ));
     assert_eq!(server.app.state.bookmark_index(), Some(1));
-    server.render_and_stream();
+    server.render_now();
 
     let replacement = client_shell_snapshot(&control_rx);
     assert!(replacement.revision > initial_revision);
@@ -4083,13 +4132,13 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
     let _writer_lanes = attach_test_writer(&mut server, 11);
 
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![
@@ -4193,7 +4242,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
     let key = |kind| shepr_protocol::ClientPaneInputEvent::Key {
@@ -4206,7 +4255,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     };
 
     assert!(
-        !server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
@@ -4214,7 +4263,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     );
     assert!(input_rx.try_recv().is_err());
     assert!(
-        !server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
@@ -4259,23 +4308,22 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(11)));
 
-    let render_impact =
-        server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
-            client_id: ClientId::test_new(11),
-            pane_id: public_pane_id.parse().expect("test precondition"),
-            events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
-                "x".to_owned(),
-            )],
-        });
+    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: ClientId::test_new(11),
+        pane_id: public_pane_id.parse().expect("test precondition"),
+        events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
+            "x".to_owned(),
+        )],
+    });
 
-    assert_eq!(render_impact, RenderDemand::Full);
+    assert!(render_impact);
     assert_eq!(
         input_rx.try_recv().expect("text must reach the PTY"),
         Bytes::from_static(b"x")
@@ -4290,15 +4338,14 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         Some(0)
     );
 
-    let render_impact =
-        server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
-            client_id: ClientId::test_new(11),
-            pane_id: public_pane_id.parse().expect("test precondition"),
-            events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
-                "y".to_owned(),
-            )],
-        });
-    assert_eq!(render_impact, RenderDemand::None);
+    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: ClientId::test_new(11),
+        pane_id: public_pane_id.parse().expect("test precondition"),
+        events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
+            "y".to_owned(),
+        )],
+    });
+    assert!(!render_impact);
     assert_eq!(
         input_rx.try_recv().expect("second text must reach the PTY"),
         Bytes::from_static(b"y")
@@ -4318,7 +4365,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
     server
@@ -4326,20 +4373,19 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         .set_foreground_client_id(Some(ClientId::test_new(11)));
     assert!(server.claim_unowned_shell_workspace_geometry(ClientId::test_new(11), false));
 
-    let render_impact =
-        server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
-            client_id: ClientId::test_new(11),
-            pane_id: pane_id.parse().expect("test precondition"),
-            events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
-                kind: shepr_protocol::ClientMouseKind::Moved,
-                position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
-                geometry: None,
-                modifiers: shepr_protocol::WireModifiers::NONE,
-                lines: 0,
-            }],
-        });
+    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: ClientId::test_new(11),
+        pane_id: pane_id.parse().expect("test precondition"),
+        events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+            geometry: None,
+            modifiers: shepr_protocol::WireModifiers::NONE,
+            lines: 0,
+        }],
+    });
 
-    assert_eq!(render_impact, RenderDemand::None);
+    assert!(!render_impact);
     assert!(
         input_rx.try_recv().is_ok(),
         "motion must still reach the PTY"
@@ -4359,24 +4405,23 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
 
-    let render_impact =
-        server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
-            client_id: ClientId::test_new(11),
-            pane_id: pane_id.parse().expect("test precondition"),
-            events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
-                kind: shepr_protocol::ClientMouseKind::Moved,
-                position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
-                geometry: None,
-                modifiers: shepr_protocol::WireModifiers::NONE,
-                lines: 0,
-            }],
-        });
+    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: ClientId::test_new(11),
+        pane_id: pane_id.parse().expect("test precondition"),
+        events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
+            kind: shepr_protocol::ClientMouseKind::Moved,
+            position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+            geometry: None,
+            modifiers: shepr_protocol::WireModifiers::NONE,
+            lines: 0,
+        }],
+    });
 
-    assert_eq!(render_impact, RenderDemand::Full);
+    assert!(render_impact);
     assert_eq!(
         server.clients.foreground_client_id(),
         Some(ClientId::test_new(11))
@@ -4401,7 +4446,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(writer),
+            writer,
         ),
     );
     server
@@ -4412,7 +4457,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         .into_iter()
         .map(|text| shepr_protocol::ClientPaneInputEvent::TextCommit(text.to_owned()))
         .collect();
-    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+    server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: pane_id.parse().expect("test precondition"),
         events,
@@ -4484,7 +4529,7 @@ fn retained_test_server_with_control(
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(client_tx),
+            client_tx,
         ),
     );
     server
@@ -4504,7 +4549,7 @@ fn client_shell_host_theme_follows_foreground_client() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
     server.insert_test_client(
@@ -4513,7 +4558,7 @@ fn client_shell_host_theme_follows_foreground_client() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         ),
     );
     server
@@ -4531,7 +4576,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         b: 200,
     };
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellHostTheme {
+        server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id: ClientId::test_new(1),
             update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
@@ -4540,12 +4585,12 @@ fn client_shell_host_theme_follows_foreground_client() {
         })
     );
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellHostTheme {
+        server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id: ClientId::test_new(1),
             update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(vec![(4, blue)]),
         })
     );
-    server.handle_server_event(ServerEvent::ClientShellHostTheme {
+    server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
         client_id: ClientId::test_new(1),
         update: shepr_protocol::ClientHostThemeUpdate::Appearance(
             shepr_protocol::ClientHostAppearance::Dark,
@@ -4571,7 +4616,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         b: 220,
     };
     assert!(
-        !server.handle_server_event(ServerEvent::ClientShellHostTheme {
+        !server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id: ClientId::test_new(2),
             update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
@@ -4610,7 +4655,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(first_writer),
+            first_writer,
         ),
     );
     server.insert_test_client(
@@ -4619,7 +4664,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            Some(second_writer),
+            second_writer,
         ),
     );
     server
@@ -4640,7 +4685,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         (ClientId::test_new(1), first_background),
         (ClientId::test_new(2), second_background),
     ] {
-        server.handle_server_event(ServerEvent::ClientShellHostTheme {
+        server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
             client_id,
             update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
@@ -4653,14 +4698,16 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         Some(first_background.into())
     );
 
-    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
-        client_id: ClientId::test_new(2),
-        surface_cols: 100,
-        surface_rows: 30,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientShellResize {
+            client_id: ClientId::test_new(2),
+            surface_cols: 100,
+            surface_rows: 30,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+        })
+    );
     assert_eq!(
         server.clients.foreground_client_id(),
         Some(ClientId::test_new(1))
@@ -4706,7 +4753,7 @@ async fn every_rejected_paste_is_reported_to_the_client_shell() {
 
     // Every rejected paste is its own user action and is reported.
     for _ in 0..2 {
-        server.handle_server_event(ServerEvent::ClientPasteRejected {
+        server.test_handle_server_event(ServerEvent::ClientPasteRejected {
             client_id: ClientId::test_new(7),
             size: 2_000_000,
             max: 1_048_576,
@@ -4878,7 +4925,7 @@ async fn a_surface_larger_than_one_frame_crosses_in_parts() {
     );
     let (control, render_rx) = connect_test_shell(&mut server, 91, 80, 24);
 
-    server.render_and_stream();
+    server.render_now();
     let bytes = render_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("the large surface was queued");
@@ -5053,14 +5100,16 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         Some(ClientId::test_new(71))
     );
     let before_resize = server.app.test_runtime(second_pane).current_size();
-    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
-        client_id: ClientId::test_new(71),
-        surface_cols: 90,
-        surface_rows: 25,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientShellResize {
+            client_id: ClientId::test_new(71),
+            surface_cols: 90,
+            surface_rows: 25,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+        })
+    );
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
         before_resize
@@ -5519,7 +5568,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         vec![crate::app::exiting_test_command().into()],
     ));
 
-    server.render_and_stream();
+    server.render_now();
     assert_eq!(
         server.app.state.workspace_area(0),
         Some(server.app.state.settings.headless_rect())
@@ -5581,7 +5630,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         "shepr:codex\0codex\0Id\0codex-session",
         vec![crate::app::exiting_test_command().into()],
     ));
-    server.render_and_stream();
+    server.render_now();
 
     let now = Instant::now();
     assert!(!server.handle_scheduled_tasks_headless(now));
@@ -5630,7 +5679,7 @@ fn client_shell_streams_focused_pane_report_all_demand() {
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
-                Some(client_tx),
+                client_tx,
             ),
         );
         server.app.state.set_bookmark_index(Some(0));
@@ -5666,7 +5715,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 client_id,
-                None,
+                crate::server::outbox::ClientOutbox::detached(),
             ),
         );
     }
@@ -5682,7 +5731,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     };
 
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
@@ -5692,7 +5741,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(server.promote_client_to_foreground(ClientId::test_new(2)));
 
     assert!(
-        !server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
@@ -5705,7 +5754,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     );
 
     assert!(
-        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
@@ -5718,9 +5767,11 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             .expect("second encoded press")
             .is_empty()
     );
-    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
-        client_id: ClientId::test_new(1)
-    }));
+    assert!(
+        server.test_handle_server_event(ServerEvent::ClientDisconnected {
+            client_id: ClientId::test_new(1)
+        })
+    );
     assert!(
         !input_rx
             .recv()
@@ -5741,7 +5792,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(writer),
+            writer,
         ),
     );
 
@@ -5791,7 +5842,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
-                None,
+                crate::server::outbox::ClientOutbox::detached(),
             ),
         );
         server.insert_test_client(
@@ -5800,7 +5851,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 (100, 30),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 2,
-                None,
+                crate::server::outbox::ClientOutbox::detached(),
             ),
         );
         let _first_lanes = attach_test_writer(server, 1);
@@ -5819,10 +5870,12 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             (30, 99)
         );
 
-        assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(1),
-            focused: true,
-        }));
+        assert!(
+            server.test_handle_server_event(ServerEvent::ClientShellFocus {
+                client_id: ClientId::test_new(1),
+                focused: true,
+            })
+        );
         assert_eq!(
             server.clients.foreground_client_id(),
             Some(ClientId::test_new(1))
@@ -5845,26 +5898,32 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             Bytes::from_static(b"\x1b[I")
         );
 
-        assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(2),
-            focused: true,
-        }));
+        assert!(
+            server.test_handle_server_event(ServerEvent::ClientShellFocus {
+                client_id: ClientId::test_new(2),
+                focused: true,
+            })
+        );
         assert!(
             input_rx.try_recv().is_err(),
             "second viewer duplicated focus gain"
         );
-        assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(1),
-            focused: false,
-        }));
+        assert!(
+            server.test_handle_server_event(ServerEvent::ClientShellFocus {
+                client_id: ClientId::test_new(1),
+                focused: false,
+            })
+        );
         assert!(
             input_rx.try_recv().is_err(),
             "remaining viewer lost pane focus"
         );
-        assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(2),
-            focused: false,
-        }));
+        assert!(
+            server.test_handle_server_event(ServerEvent::ClientShellFocus {
+                client_id: ClientId::test_new(2),
+                focused: false,
+            })
+        );
         assert_eq!(
             outer_terminal_focus(server, ClientId::test_new(2)),
             Some(false)
@@ -5949,7 +6008,7 @@ fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
             (120, 40),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(background_tx),
+            background_tx,
         ),
     );
     server.insert_test_client(
@@ -5958,7 +6017,7 @@ fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             2,
-            Some(foreground_tx),
+            foreground_tx,
         ),
     );
     server
@@ -5995,11 +6054,11 @@ fn clipboard_write_without_foreground_client_does_not_change_visual_state() {
 }
 
 #[test]
-fn clipboard_write_failed_foreground_send_removes_client_without_visual_change() {
+fn clipboard_write_failed_foreground_send_is_removed_at_the_reap() {
     let mut server = test_headless_server();
     let (foreground_tx, foreground_control_rx, _foreground_rx) = test_client_writer();
     drop(foreground_control_rx);
-    foreground_tx.test_close();
+    foreground_tx.close();
 
     server.insert_test_client(
         1,
@@ -6007,7 +6066,7 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            Some(foreground_tx),
+            foreground_tx,
         ),
     );
     server
@@ -6018,9 +6077,11 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
 
     assert!(!changed);
     assert!(
-        !server.clients.contains_key(&1),
-        "failed targeted send should remove the broken foreground client"
+        server.clients.contains_key(&1),
+        "closure is latched at the reap"
     );
+    assert!(server.reap_closed_clients());
+    assert!(!server.clients.contains_key(&1));
 }
 
 #[tokio::test]
@@ -6094,16 +6155,12 @@ async fn writer_readiness_does_not_invalidate_application_or_input_sources() {
         .clients
         .get_mut(&ClientId::test_new(7))
         .expect("client")
-        .defer_full_render();
+        .render_state
+        .owe();
     server.immediate_pty_sources_dirty = false;
     server.host_input_modes_dirty = false;
     let before = server.app.state.shell_projection_revision;
-    assert_eq!(
-        server.handle_server_event_with_render_impact(ServerEvent::ClientWriterDrained {
-            client_id: ClientId::test_new(7)
-        },),
-        RenderDemand::Full
-    );
+    assert!(!server.test_handle_server_event(ServerEvent::ClientWriterDrained));
     assert_eq!(server.app.state.shell_projection_revision, before);
     assert!(!server.immediate_pty_sources_dirty);
     assert!(!server.host_input_modes_dirty);
@@ -6125,4 +6182,233 @@ async fn missing_pane_exit_has_no_invalidation() {
     assert_eq!(server.app.state.shell_projection_revision, before);
     assert!(!server.immediate_pty_sources_dirty);
     assert!(!server.host_input_modes_dirty);
+}
+
+#[tokio::test]
+async fn a_failed_health_pong_leaves_no_ghost_client() {
+    let mut server = test_headless_server();
+    let outbox = ClientOutbox::test_buffered(Arc::clone(&server.outbox_wake), 1, 1);
+    let reader = outbox.control_sender();
+    let client_id = ClientId::test_new(1);
+    let workspace = shepr_mux::workspace::Workspace::test_new("health");
+    let workspace_id = workspace.id.clone();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.insert_test_client(
+        client_id,
+        ClientConnection::new(
+            (80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            1,
+            outbox,
+        ),
+    );
+    server.clients.set_foreground_client_id(Some(client_id));
+    server
+        .clients
+        .set_geometry_controller(workspace_id.clone(), client_id);
+    assert_eq!(reader.send(&ServerMessage::HealthPong), Delivery::Closed);
+    tokio::time::timeout(Duration::from_millis(100), server.outbox_wake.notified())
+        .await
+        .expect("close wakes idle loop");
+    assert!(server.clients.contains_key(&client_id));
+    assert!(server.reap_closed_clients());
+    assert!(!server.clients.contains_key(&client_id));
+    assert_eq!(server.clients.foreground_client_id(), None);
+    assert_eq!(server.clients.geometry_controller(&workspace_id), None);
+    assert_eq!(server.app_client_count(), 0);
+}
+
+#[test]
+fn closing_the_foreground_client_hands_foreground_over_at_the_reap() {
+    let mut server = test_headless_server();
+    for id in [1, 2] {
+        let outbox = ClientOutbox::test_buffered(Arc::clone(&server.outbox_wake), 16, 1024);
+        server.insert_test_client(
+            id,
+            ClientConnection::new(
+                (80, 24),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                id,
+                outbox,
+            ),
+        );
+    }
+    server
+        .clients
+        .set_foreground_client_id(Some(ClientId::test_new(2)));
+    let colors = [
+        shepr_protocol::ClientHostColor {
+            r: 240,
+            g: 240,
+            b: 240,
+        },
+        shepr_protocol::ClientHostColor {
+            r: 10,
+            g: 10,
+            b: 10,
+        },
+    ];
+    for (id, color) in [1, 2].into_iter().zip(colors) {
+        server
+            .clients
+            .get_mut(&ClientId::test_new(id))
+            .expect("client")
+            .update_host_theme(&shepr_protocol::ClientHostThemeUpdate::DefaultColor {
+                kind: shepr_protocol::ClientHostDefaultColorKind::Background,
+                color,
+            });
+    }
+    server.sync_host_theme_from_foreground();
+    assert_eq!(
+        server.app.state.host_terminal_theme.background,
+        Some(colors[1].into())
+    );
+    let epoch = server.view_epoch;
+    server.clients[&2].outbox.close();
+    assert_eq!(
+        server.clients.foreground_client_id(),
+        Some(ClientId::test_new(2))
+    );
+    assert!(server.reap_closed_clients());
+    assert_eq!(
+        server.clients.foreground_client_id(),
+        Some(ClientId::test_new(1))
+    );
+    assert_eq!(
+        server.app.state.host_terminal_theme.background,
+        Some(colors[0].into())
+    );
+    assert_ne!(server.view_epoch, epoch);
+    assert!(!server.reap_closed_clients());
+}
+
+#[test]
+fn a_stopping_server_reaps_closed_clients_without_reapplying_geometry() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("stopping")];
+    server.app.state.ensure_test_terminals();
+    let area = Rect::new(0, 0, 17, 9);
+    server.app.state.test_record_all_workspace_areas(area);
+    let outbox = ClientOutbox::test_buffered(Arc::clone(&server.outbox_wake), 16, 1024);
+    server.insert_test_client(
+        1,
+        ClientConnection::new(
+            (80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            1,
+            outbox,
+        ),
+    );
+    server.lifecycle.begin_stopping();
+    server.clients[&1].outbox.close();
+    assert!(server.reap_closed_clients());
+    assert_eq!(server.app.state.workspace_area(0), Some(area));
+}
+
+impl HeadlessServer {
+    fn test_handle_server_event(&mut self, event: ServerEvent) -> bool {
+        let before = self.view_epoch;
+        let clients_before = self.clients.iter().count();
+        let views_before = self
+            .clients
+            .iter()
+            .map(|(&id, client)| {
+                (
+                    id,
+                    client.shell_state().location.generation(),
+                    client.terminal_size,
+                    client.shell_state().outer_terminal_focus,
+                    client.render_state.is_settled_at(ViewEpoch::ZERO),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.handle_server_event(event);
+        let views_after = self
+            .clients
+            .iter()
+            .map(|(&id, client)| {
+                (
+                    id,
+                    client.shell_state().location.generation(),
+                    client.terminal_size,
+                    client.shell_state().outer_terminal_focus,
+                    client.render_state.is_settled_at(ViewEpoch::ZERO),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.view_epoch != before
+            || clients_before != self.clients.iter().count()
+            || views_before != views_after
+    }
+    fn test_drain_server_events(&mut self) -> bool {
+        let before = self.view_epoch;
+        self.drain_server_events();
+        self.view_epoch != before
+    }
+}
+
+#[test]
+fn a_completion_for_a_departed_client_is_dropped() {
+    let mut server = test_headless_server();
+    for id in [1, 2] {
+        let outbox = ClientOutbox::test_buffered(Arc::clone(&server.outbox_wake), 16, 1 << 20);
+        server.insert_test_client(
+            id,
+            ClientConnection::new(
+                (80, 24),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                id,
+                outbox,
+            ),
+        );
+    }
+    let refusal = ServerMessage::WindowTitle {
+        title: Some("refusal".into()),
+    };
+    let departing = server
+        .reserve_endpoint_reply(ClientId::test_new(1), &refusal)
+        .expect("reserved for the departing client");
+    let survivor = server
+        .reserve_endpoint_reply(ClientId::test_new(2), &refusal)
+        .expect("reserved for the survivor");
+    // Sequences are per outbox, so only the client id tells the two apart.
+    assert_eq!(departing.seq, survivor.seq);
+    server.remove_client(ClientId::test_new(1));
+    server.complete_endpoint_reply(
+        departing,
+        &ServerMessage::WindowTitle {
+            title: Some("late".into()),
+        },
+    );
+    assert!(!server.clients.contains_key(&ClientId::test_new(1)));
+    assert_eq!(server.clients[&2].outbox.held_reply_count(), 1);
+    assert_eq!(
+        server.clients[&2].outbox.held_reply_message(0),
+        None,
+        "the survivor's reply is still pending"
+    );
+}
+
+#[test]
+fn a_reaped_client_marks_the_view_changed() {
+    let mut server = test_headless_server();
+    let outbox = ClientOutbox::test_buffered(Arc::clone(&server.outbox_wake), 16, 1024);
+    server.insert_test_client(
+        1,
+        ClientConnection::new(
+            (80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            1,
+            outbox,
+        ),
+    );
+    let epoch = server.view_epoch;
+    server.clients[&1].outbox.close();
+    assert_eq!(server.view_epoch, epoch);
+    assert!(server.reap_closed_clients());
+    assert_ne!(server.view_epoch, epoch);
+    let settled = server.view_epoch;
+    assert!(!server.reap_closed_clients());
+    assert_eq!(server.view_epoch, settled);
 }

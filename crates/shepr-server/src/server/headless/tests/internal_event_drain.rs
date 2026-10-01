@@ -167,7 +167,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
     });
 
     for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
-        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
             request_id: format!("checkout-{index}").into(),
@@ -180,7 +180,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             .expect("checkout worker should start within the limit");
     }
 
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id,
         request_id: "checkout-over-limit".into(),
@@ -188,16 +188,13 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: "/".into() },
         )),
     });
-    let replies = server
-        .endpoint_replies
-        .get(&client_id)
-        .expect("checkout replies should remain ordered behind pending workers");
+    let replies = &server.clients[&client_id].outbox;
     assert_eq!(
-        replies.len(),
+        replies.held_reply_count(),
         crate::limits::MAX_WORKER_COMPLETION_BACKLOG + 1
     );
     assert!(matches!(
-        replies.back().and_then(|reply| reply.message.as_ref()),
+        replies.held_reply_message(replies.held_reply_count() - 1),
         Some(ServerMessage::ClientShellEndpointResponse {
             request_id,
             result: Err(shepr_protocol::command::EndpointError::Rejected(message)),
@@ -222,7 +219,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
         let now = server.app.clock.now;
         server.handle_worker_completion(completion, now);
     }
-    server.flush_endpoint_replies();
+    server.release_endpoint_replies(ReleaseMode::WithinBudget);
     shutdown_test_runtimes(&mut server);
 }
 
@@ -243,7 +240,10 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
         server
             .worker_tx
             .send(worker::WorkerCompletion::CheckoutRoot {
-                ticket: super::super::EndpointReplyTicket(index as u64),
+                ticket: super::super::ReplyTicket {
+                    client_id,
+                    seq: crate::server::outbox::ReplySeq::test_new(index as u64),
+                },
                 boot_id: boot_id.clone(),
                 request_id: format!("queued-{index}").into(),
                 home: None,
@@ -252,7 +252,7 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
             .expect("worker completion channel should be open");
     }
 
-    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,
         boot_id,
         request_id: "checkout-queued-limit".into(),
@@ -260,13 +260,10 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
             shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: "/".into() },
         )),
     });
-    let replies = server
-        .endpoint_replies
-        .get(&client_id)
-        .expect("the limited request should receive a reply");
-    assert_eq!(replies.len(), 1);
+    let replies = &server.clients[&client_id].outbox;
+    assert_eq!(replies.held_reply_count(), 1);
     assert!(matches!(
-        replies.front().and_then(|reply| reply.message.as_ref()),
+        replies.held_reply_message(0),
         Some(ServerMessage::ClientShellEndpointResponse {
             request_id,
             result: Err(shepr_protocol::command::EndpointError::Rejected(message)),

@@ -39,11 +39,10 @@ the same artifact.
 ## What it must also pin (or it is aspiration, not a spec)
 
 6. **Verification per brick.** Every change names its gate, matched to what the
-   change can break: named `brokkr test` cases for behavior, and a by-hand run
-   of the dev build (`brokkr run --debug`) against a local dev server for what
-   no test reaches. No gate may run `brokkr install`, run a release build,
-   touch the release server or its panes, or connect to an SSH machine; behavior only those would reach
-   is pinned by a test instead, built as a brick if none exists. A brick whose load is unproven is not laid. Per
+   change can break: named `brokkr test` cases. There are no by-hand gates: no
+   gate runs the built binaries, installs, or connects to a server or an SSH
+   machine. Behavior only a by-hand run would reach is pinned by a test
+   instead, built as a brick if none exists. A brick whose load is unproven is not laid. Per
    gate, the spec contains the **exact** command to run - copy-pasteable, flags and
    all, not "run the relevant tests". If no command exists that can verify a gate
    (no path exercises it, no test pins the behavior), building that instrument is
@@ -54,8 +53,7 @@ the same artifact.
    so a new or changed test is gated by naming it (the name is what proves it
    exists and was written) and by `brokkr check` passing, never by its own
    `brokkr test` line. A separate run earns its place only when `brokkr check`
-   cannot supply that evidence: a by-hand run of the binaries, a script check
-   run by hand, an `#[ignore]`d test, or a test that must be seen to fail with
+   cannot supply that evidence: an `#[ignore]`d test, or a test that must be seen to fail with
    its production half reverted. List `brokkr check` once per landing, not once
    per brick.
 7. **A keep/revert path.** The implementation unit is one coherent, fully

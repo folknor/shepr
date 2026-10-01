@@ -98,7 +98,7 @@ fn workspace_geometry_source(
 /// frames. Only such a client sizes panes, controls geometry or is chosen to
 /// create a workspace.
 fn presents_surface(client: &ClientConnection) -> bool {
-    client.is_active_shell_client() && client.writer.is_some()
+    client.is_active_shell_client() && client.outbox.is_attached()
 }
 
 impl HeadlessServer {
@@ -353,16 +353,17 @@ impl HeadlessServer {
         }
     }
 
-    /// The active shell clients with a writer that view `pane_id`, in id
-    /// order: the recipients of a clipboard write from that pane.
-    pub(super) fn clipboard_viewers(&self, pane_id: shepr_core::layout::PaneId) -> Vec<ClientId> {
+    /// The attached active shell clients viewing `pane_id`, in id order.
+    /// Clipboard writes, scroll invalidation and refused-surface retries use
+    /// the same visibility rule.
+    pub(super) fn pane_viewers(&self, pane_id: shepr_core::layout::PaneId) -> Vec<ClientId> {
         let Some((workspace_index, _)) = self.app.find_pane(pane_id) else {
             return Vec::new();
         };
         let mut viewers: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, client)| client.is_active_shell_client() && client.writer.is_some())
+            .filter(|(_, client)| client.is_active_shell_client() && client.outbox.is_attached())
             .map(|(&client_id, _)| client_id)
             .filter(|&client_id| self.shell_client_views_pane(client_id, workspace_index, pane_id))
             .collect();
@@ -515,7 +516,7 @@ impl HeadlessServer {
     ) -> bool {
         let mut viewed_workspaces = HashMap::<shepr_protocol::WorkspaceId, Vec<ClientId>>::new();
         for (&client_id, client) in &self.clients {
-            if !client.is_active_shell_client() || client.writer.is_none() {
+            if !client.is_active_shell_client() || !client.outbox.is_attached() {
                 continue;
             }
             let Some(workspace_id) = self.shell_target_for_client(client_id) else {
@@ -615,13 +616,17 @@ impl HeadlessServer {
 mod tests {
     use super::*;
 
-    fn client(active: bool, writer: bool) -> ClientConnection {
-        let writer = writer.then(|| crate::server::client_transport::ClientWriter::test_pair().0);
+    fn client(active: bool, attached: bool) -> ClientConnection {
+        let outbox = if attached {
+            crate::server::outbox::ClientOutbox::test_pair().0
+        } else {
+            crate::server::outbox::ClientOutbox::detached()
+        };
         let mut client = ClientConnection::new(
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            writer,
+            outbox,
         );
         client.shell_state_mut().surface_active = active;
         client

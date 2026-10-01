@@ -3,6 +3,7 @@ pub(crate) mod client_shell;
 pub(crate) mod client_transport;
 pub(crate) mod clients;
 mod input_wire;
+pub(crate) mod outbox;
 pub(crate) use clients::ClientId;
 pub mod headless;
 pub(crate) mod pane_input;

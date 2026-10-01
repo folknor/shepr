@@ -288,7 +288,12 @@ every agent integration reports through it.
   `sync_pane_focus`, and the host theme by the foreground client: the active
   shell with the most recent user activity. Connection or surface activation,
   outer focus gain, pane interaction, and endpoint commands count as activity;
-  a surface resize only changes geometry.
+  a surface resize only changes geometry. What each client is
+  owed (a projection, a surface, a patch) is likewise derived per client from
+  its own location, baseline and render slot, with a server-wide view epoch
+  only for changes every client depends on (`render_plan` in
+  `crates/shepr-server/src/server/headless/render.rs`), so one client's slow
+  link, resize or scroll never moves another client's render path.
 - **No god objects.** `AppState` lives in `crates/shepr-server/src/app/state.rs`;
   `App` behavior is organized across modules under
   `crates/shepr-server/src/app/`. Keep it that way.

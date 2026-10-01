@@ -46,7 +46,7 @@ impl HeadlessServer {
                 // client so the write is not lost.
                 let data = base64::engine::general_purpose::STANDARD.encode(content.as_slice());
                 let message = ServerMessage::Clipboard { data };
-                let viewers = self.clipboard_viewers(*pane_id);
+                let viewers = self.pane_viewers(*pane_id);
                 if viewers.is_empty() {
                     self.send_to_foreground_client(&message);
                 } else {
@@ -101,7 +101,7 @@ impl HeadlessServer {
                     return self.app.state.shell_projection_revision != projection_before;
                 }
 
-                if self.app.handle_prepared_pane_exit(ev) == RenderDemand::None {
+                if !self.app.handle_prepared_pane_exit(ev) {
                     return self.app.state.shell_projection_revision != projection_before;
                 }
                 self.immediate_pty_sources_dirty = true;
@@ -112,7 +112,7 @@ impl HeadlessServer {
 
                 true
             }
-            _ => self.app.handle_internal_event_with_render_demand(ev) != RenderDemand::None,
+            _ => self.app.handle_internal_event_with_view_change(ev),
         }
     }
 

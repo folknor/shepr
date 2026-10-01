@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Index;
 
-use crate::app::RenderDemand;
-use crate::server::client_transport::ClientWriter;
+use crate::server::outbox::ClientOutbox;
 use crate::server::render_stream::ClientRenderState;
 use shepr_protocol::WorkspaceId;
 use shepr_protocol::{
@@ -61,8 +60,6 @@ pub(crate) struct ClientShellState {
     pub(crate) host_terminal_appearance_explicit: bool,
     /// Last reported focus state for this shell's outer terminal.
     pub(crate) outer_terminal_focus: Option<bool>,
-    /// Last focused-pane report-all demand sent to this shell.
-    pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Presses forwarded by this shell that need release on abrupt teardown,
     /// keyed by target pane and the client's reported press identity. The
     /// client pins a pane mouse gesture's drag and release to its original
@@ -159,8 +156,9 @@ pub(crate) struct RenderTarget {
 /// live here and can be tested without a PTY.
 ///
 /// Presentation (surface size, outer focus, location, window title, input
-/// modes) lives on each connection; nothing here or in the app mirrors one
-/// client's view as a session-wide one. The registry holds two arbitrations
+/// modes) lives on each connection, and so does what the connection is owed
+/// (its render state's settle point and surface debt); nothing here or in the
+/// app mirrors one client's view as a session-wide one. The registry holds two arbitrations
 /// between clients: which one controls each workspace's PTY geometry, and which
 /// active shell most recently recorded user activity (the foreground client).
 /// Connection or surface activation, outer focus gain, pane interaction, and
@@ -294,7 +292,7 @@ impl ClientRegistry {
     pub(crate) fn app_client_count(&self) -> usize {
         self.connections
             .values()
-            .filter(|client| client.is_active_shell_client() && client.writer.is_some())
+            .filter(|client| client.is_active_shell_client() && client.outbox.is_attached())
             .count()
     }
 
@@ -304,10 +302,10 @@ impl ClientRegistry {
     ) -> (Option<ClientConnection>, bool) {
         let was_foreground = self.foreground_client_id == Some(client_id);
         let removed = self.connections.remove(&client_id);
-        if let Some(writer) = removed.as_ref().and_then(|client| client.writer.as_ref()) {
-            // The reader thread holds a writer clone, so dropping the registry
-            // handles cannot by itself end the transport lifetime.
-            writer.close();
+        if let Some(removed) = &removed {
+            // The reader thread holds a control sender on the same queue, so
+            // dropping the outbox cannot by itself end the transport lifetime.
+            removed.outbox.close();
         }
         self.remove_geometry_controllers_for(client_id);
         if was_foreground {
@@ -317,8 +315,9 @@ impl ClientRegistry {
     }
 
     pub(crate) fn clear(&mut self) {
-        // Shutdown queues its notice and flush barrier before clearing the
-        // registry; leave those transport handles alive long enough to drain.
+        // Shutdown has queued its notice and flush barrier by now. Dropping
+        // an outbox does not close it: its writer drains what is queued
+        // before it notices that no sender is left.
         self.connections.clear();
         self.foreground_client_id = None;
         self.geometry_controllers.clear();
@@ -503,30 +502,13 @@ pub(crate) struct ClientConnection {
     pub(crate) surface_pane_identities: Vec<ClientPaneIdentity>,
     /// Whether this frontend preserves exact SGR pixel reports.
     pub(crate) pixel_mouse: bool,
-    /// Whether an ordinary render was skipped because the render channel was full.
-    pub(crate) render_pending: RenderDemand,
     /// Whether the client has been told that its current surface is too large
     /// to send even in parts (past `MAX_MESSAGE_SIZE`). Set on the first
     /// oversized surface, cleared once a surface goes out, so a client whose
     /// surfaces keep failing is warned once rather than per render.
     pub(crate) oversized_surface_reported: bool,
-    /// Last host mouse capture mode sent to this client.
-    pub(crate) host_mouse_capture_active: Option<bool>,
-    /// Last SGR pixel provenance mode sent to this client.
-    pub(crate) host_sgr_pixels_active: Option<bool>,
-    /// Outer window title last delivered to this client, rendered for its own
-    /// view: `None` when none was delivered, `Some(None)` when it was told to
-    /// fall back to its default title.
-    pub(crate) sent_window_title: Option<Option<String>>,
-    /// Channels for sending framed ServerMessage data to the client writer thread.
-    ///
-    /// Always `Some` in production: every accepted connection brings a writer,
-    /// and a detach removes the client outright rather than keeping a
-    /// writer-less entry. `None` exists for test fixtures that exercise
-    /// server state without a transport; the `writer.is_none()` checks in the
-    /// server serve those. Making the field non-optional would mean giving
-    /// every such fixture a channel pair.
-    pub(crate) writer: Option<ClientWriter>,
+    /// Outgoing messages, held replies and presentation state for this connection.
+    pub(crate) outbox: ClientOutbox,
 }
 
 impl ClientConnection {
@@ -535,7 +517,7 @@ impl ClientConnection {
         terminal_size: shepr_core::geometry::GridSize,
         cell_size: shepr_termio::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
-        writer: Option<ClientWriter>,
+        outbox: ClientOutbox,
     ) -> Self {
         Self {
             shell,
@@ -545,12 +527,8 @@ impl ClientConnection {
             render_state: ClientRenderState::new(),
             surface_pane_identities: Vec::new(),
             pixel_mouse: false,
-            render_pending: RenderDemand::None,
             oversized_surface_reported: false,
-            host_mouse_capture_active: None,
-            host_sgr_pixels_active: None,
-            sent_window_title: None,
-            writer,
+            outbox,
         }
     }
 
@@ -686,24 +664,6 @@ impl ClientConnection {
         self.shell_state_mut().update_host_theme(update)
     }
 
-    pub(crate) fn deferred_render(&self) -> RenderDemand {
-        self.render_pending
-    }
-
-    pub(crate) fn clear_deferred_render(&mut self) {
-        self.render_pending = RenderDemand::None;
-    }
-
-    pub(crate) fn defer_full_render(&mut self) {
-        self.render_pending.join(RenderDemand::Full);
-    }
-
-    pub(crate) fn take_deferred_render(&mut self) -> RenderDemand {
-        let deferred = self.deferred_render();
-        self.clear_deferred_render();
-        deferred
-    }
-
     pub(crate) fn is_active_shell_client(&self) -> bool {
         self.shell_state().surface_active
     }
@@ -724,7 +684,7 @@ pub(crate) fn latest_shell_client(
 pub(crate) fn render_targets(clients: &ClientRegistry) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
-        .filter(|(_, client)| client.writer.is_some())
+        .filter(|(_, client)| client.outbox.is_attached())
         .map(|(&client_id, client)| RenderTarget {
             client_id,
             terminal_size: client.terminal_size,
@@ -808,14 +768,14 @@ impl ClientConnection {
         terminal_size: (u16, u16),
         cell_size: shepr_termio::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
-        writer: Option<ClientWriter>,
+        outbox: ClientOutbox,
     ) -> Self {
         Self::with_shell(
             ClientShellState::active(),
             shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
             cell_size,
             last_activity,
-            writer,
+            outbox,
         )
     }
 }
@@ -829,7 +789,7 @@ mod tests {
             (80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         )
     }
 
@@ -850,7 +810,7 @@ mod tests {
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
-            None,
+            crate::server::outbox::ClientOutbox::detached(),
         );
         registry.insert(first_id, first);
         registry.insert(second_id, second);
@@ -878,21 +838,24 @@ mod tests {
         let mut registry = ClientRegistry::default();
         let ids = ClientIdAllocator::default();
         let client_id = ids.allocate();
-        let (writer, control_rx, render_rx) = ClientWriter::test_pair();
-        let reader_control = writer.control.clone();
+        let (writer, control_rx, render_rx) = ClientOutbox::test_pair();
+        let reader_control = writer.control_sender();
         registry.insert(
             client_id,
             ClientConnection::new(
                 (80, 24),
                 shepr_termio::host_term::cell_size::HostCellSize::default(),
                 1,
-                Some(writer),
+                writer,
             ),
         );
 
         let (removed, _) = registry.remove_client(client_id);
         assert!(removed.is_some());
-        assert!(reader_control.send(vec![b'x']).is_err());
+        assert_eq!(
+            reader_control.send(&shepr_protocol::ServerMessage::HealthPong),
+            crate::server::outbox::Delivery::Closed
+        );
         drop(reader_control);
         assert!(matches!(
             control_rx.recv_timeout(std::time::Duration::from_secs(1)),

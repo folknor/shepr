@@ -1,4 +1,4 @@
-use super::EndpointReplyTicket;
+use super::ReplyTicket;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ pub(super) type CheckoutRootRunner =
 
 pub(super) enum WorkerCompletion {
     CheckoutRoot {
-        ticket: EndpointReplyTicket,
+        ticket: ReplyTicket,
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
         home: Option<String>,
@@ -54,7 +54,7 @@ pub(super) fn default_checkout_root_runner() -> CheckoutRootRunner {
 pub(super) fn checkout_root(
     sender: &mpsc::UnboundedSender<WorkerCompletion>,
     runner: CheckoutRootRunner,
-    ticket: EndpointReplyTicket,
+    ticket: ReplyTicket,
     boot_id: shepr_protocol::BootId,
     request_id: shepr_protocol::RequestId,
     cwd: PathBuf,

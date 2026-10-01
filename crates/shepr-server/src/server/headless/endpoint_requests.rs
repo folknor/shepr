@@ -6,16 +6,16 @@ use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
 impl HeadlessServer {
     /// Runs one endpoint command from a client shell. Each answer enters that
     /// client's ordered outbox; ready replies leave after any render the
-    /// command needs (`flush_endpoint_replies`).
+    /// command needs (`release_endpoint_replies`).
     pub(super) fn handle_client_shell_endpoint_request(
         &mut self,
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
         command: EndpointCommand,
-    ) -> bool {
+    ) {
         let Some(client) = self.clients.get(&client_id) else {
-            return false;
+            return;
         };
         let surface_active = client.shell_state().surface_active;
         if boot_id != self.client_shell_boot_id {
@@ -24,21 +24,21 @@ impl HeadlessServer {
                 request_id,
                 EndpointError::StaleBoot,
             );
-            self.queue_endpoint_reply(client_id, message);
-            return false;
+            self.queue_endpoint_reply(client_id, &message);
+            return;
         }
         if let EndpointCommand::ClientShellSurfaceSet(params) = &command {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)
             else {
-                return false;
+                return;
             };
             if surface_active != params.active {
                 self.immediate_pty_sources_dirty = true;
             }
             self.queue_endpoint_reply(
                 client_id,
-                crate::server::client_commands::response_message(
+                &crate::server::client_commands::response_message(
                     boot_id,
                     request_id,
                     Ok(EndpointReply::ClientShellSurfaceSet {
@@ -47,7 +47,10 @@ impl HeadlessServer {
                     }),
                 ),
             );
-            return changed;
+            if changed {
+                self.mark_view_changed();
+            }
+            return;
         }
         if !surface_active {
             let message = crate::server::client_commands::error_message(
@@ -55,13 +58,17 @@ impl HeadlessServer {
                 request_id,
                 EndpointError::SurfaceInactive,
             );
-            self.queue_endpoint_reply(client_id, message);
-            return false;
+            self.queue_endpoint_reply(client_id, &message);
+            return;
         }
 
-        let foreground_changed = self.promote_client_to_foreground(client_id);
+        if self.promote_client_to_foreground(client_id) {
+            self.mark_view_changed();
+        }
         if let EndpointCommand::WorkspaceCheckoutRoot(params) = &command {
-            let drained_changed = self.drain_all_internal_events_with_forwarding();
+            if self.drain_all_internal_events_with_forwarding() {
+                self.mark_view_changed();
+            }
             match self.app.prepare_workspace_checkout_root(params) {
                 Ok((cwd, home)) => {
                     if super::worker::completion_backlog(&self.worker_tx, &self.worker_rx)
@@ -69,7 +76,7 @@ impl HeadlessServer {
                     {
                         self.queue_endpoint_reply(
                             client_id,
-                            crate::server::client_commands::response_message(
+                            &crate::server::client_commands::response_message(
                                 boot_id,
                                 request_id,
                                 Err(EndpointError::Rejected(
@@ -77,14 +84,17 @@ impl HeadlessServer {
                                 )),
                             ),
                         );
-                        return foreground_changed | drained_changed;
+                        return;
                     }
                     let shutdown_message = crate::server::client_commands::error_message(
                         boot_id.clone(),
                         request_id.clone(),
                         EndpointError::ShuttingDown,
                     );
-                    let ticket = self.reserve_endpoint_reply(client_id, shutdown_message);
+                    let Some(ticket) = self.reserve_endpoint_reply(client_id, &shutdown_message)
+                    else {
+                        return;
+                    };
                     if let Err(error) = super::worker::checkout_root(
                         &self.worker_tx,
                         std::sync::Arc::clone(&self.checkout_root_runner),
@@ -96,7 +106,7 @@ impl HeadlessServer {
                     ) {
                         self.complete_endpoint_reply(
                             ticket,
-                            crate::server::client_commands::response_message(
+                            &crate::server::client_commands::response_message(
                                 boot_id,
                                 request_id,
                                 Err(EndpointError::Rejected(format!(
@@ -108,21 +118,20 @@ impl HeadlessServer {
                 }
                 Err(error) => self.queue_endpoint_reply(
                     client_id,
-                    crate::server::client_commands::response_message(
+                    &crate::server::client_commands::response_message(
                         boot_id,
                         request_id,
                         Err(error),
                     ),
                 ),
             }
-            return foreground_changed | drained_changed;
+            return;
         }
-        let (changed, result) = self.handle_client_shell_command(client_id, command);
+        let result = self.handle_client_shell_command(client_id, command);
         self.queue_endpoint_reply(
             client_id,
-            crate::server::client_commands::response_message(boot_id, request_id, result),
+            &crate::server::client_commands::response_message(boot_id, request_id, result),
         );
-        foreground_changed | changed
     }
 
     /// Runs one client-shell command for `client_id`, in this order:
@@ -137,18 +146,18 @@ impl HeadlessServer {
     /// 6. fill the reply's focus flags against the requester's location.
     ///
     /// Pane focus is shared per workspace; only which workspace a client views
-    /// is its own. A command that failed moves nobody. Returns whether a
-    /// render is needed, and the command's answer.
+    /// is its own. Shared changes advance the view epoch; navigation is
+    /// derived from each client's location generation. Returns the command's answer.
     pub(super) fn handle_client_shell_command(
         &mut self,
         client_id: ClientId,
         command: EndpointCommand,
-    ) -> (bool, Result<EndpointReply, EndpointError>) {
+    ) -> Result<EndpointReply, EndpointError> {
         if self.lifecycle.stop_requested(self.app.state.should_quit) {
             self.initiate_shutdown();
         }
         if self.lifecycle.phase() == ShutdownPhase::Stopping {
-            return (false, Err(EndpointError::ShuttingDown));
+            return Err(EndpointError::ShuttingDown);
         }
         let traits = command.traits();
 
@@ -162,14 +171,31 @@ impl HeadlessServer {
         let ctx = EndpointContext {
             requester_geometry: self.client_geometry(client_id),
         };
+        let scrolled_pane = match &command {
+            EndpointCommand::PaneScroll(params) => self
+                .app
+                .parse_pane_id(&params.pane_id)
+                .map(|(_, pane)| pane),
+            _ => None,
+        };
+        let projection_before = self.app.state.shell_projection_revision;
         let mut outcome = self.app.handle_endpoint_command_with_render(command, &ctx);
-        changed |= outcome.render != RenderDemand::None;
+        if let Some(pane) = scrolled_pane {
+            if outcome.effects.pane_surface_changed {
+                self.invalidate_pane_viewers(pane);
+            }
+            // Scrolling is local to its viewers, but the app can also sync
+            // shared title metadata while dispatching the same command.
+            changed |= outcome.effects.shell_projection_changed
+                || self.app.state.shell_projection_revision != projection_before;
+        } else {
+            changed |= outcome.view_changed;
+        }
         let mut immediate_sources_changed = outcome.effects.changes_immediate_pty_sources();
 
         let mut navigated = false;
         if let Some(workspace_id) = &outcome.navigate {
             navigated = self.navigate_shell_client(client_id, workspace_id);
-            changed |= navigated;
             immediate_sources_changed |= navigated;
         }
         // A command can empty the session (the last pane closing), and a
@@ -177,7 +203,7 @@ impl HeadlessServer {
         // Both move what some client views, so both change the sources.
         let created = self.create_automatic_workspace(Some(client_id));
         let reconciled = self.reconcile_client_shell_locations();
-        changed |= created | reconciled;
+        changed |= created;
         immediate_sources_changed |= created | reconciled;
         if immediate_sources_changed {
             self.immediate_pty_sources_dirty = true;
@@ -202,7 +228,10 @@ impl HeadlessServer {
             self.app.fill_reply_focus(reply, viewed.as_ref());
         }
         self.sync_pane_focus();
-        (changed, outcome.result)
+        if changed {
+            self.mark_view_changed();
+        }
+        outcome.result
     }
 
     /// Answers an endpoint command that reached the loop after the stop began
@@ -219,15 +248,15 @@ impl HeadlessServer {
         self.resolve_pending_endpoint_replies_for_shutdown();
         self.queue_endpoint_reply(
             client_id,
-            crate::server::client_commands::error_message(
+            &crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
                 EndpointError::ShuttingDown,
             ),
         );
-        self.flush_endpoint_replies();
-        if let Some(writer) = self.clients.get(&client_id).and_then(|c| c.writer.as_ref()) {
-            self.shutdown_flushes.push(writer.flush());
+        self.release_endpoint_replies(ReleaseMode::Shutdown);
+        if let Some(client) = self.clients.get(&client_id) {
+            self.shutdown_flushes.push(client.outbox.flush_barrier());
         }
     }
 }
