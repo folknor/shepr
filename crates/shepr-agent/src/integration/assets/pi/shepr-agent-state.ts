@@ -201,29 +201,27 @@ export default function (pi) {
 
   let agentActive = false;
   let blockedCount = 0;
-  let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
-  let lastMessage: string | undefined;
   let rootSession = false;
 
   function desiredState() {
     if (blockedCount > 0) {
-      return { state: "blocked" as const, message: blockedMessage };
+      return "blocked" as const;
     }
     if (agentActive) {
-      return { state: "working" as const, message: undefined };
+      return "working" as const;
     }
-    return { state: "idle" as const, message: undefined };
+    return "idle" as const;
   }
 
   function publishState(force = false) {
     const next = desiredState();
-    if (!force && next.state === lastState && next.message === lastMessage) {
+    // Reports carry only state, so changed local prompt labels add no new information.
+    if (!force && next === lastState) {
       return;
     }
-    lastState = next.state;
-    lastMessage = next.message;
-    queueState(next.state);
+    lastState = next;
+    queueState(next);
   }
 
   pi.events.on("shepr:blocked", (data) => {
@@ -232,15 +230,11 @@ export default function (pi) {
     }
     if (!data?.active) {
       blockedCount = Math.max(0, blockedCount - 1);
-      if (blockedCount === 0) {
-        blockedMessage = undefined;
-      }
       publishState();
       return;
     }
 
     blockedCount += 1;
-    blockedMessage = data.label;
     publishState();
   });
 

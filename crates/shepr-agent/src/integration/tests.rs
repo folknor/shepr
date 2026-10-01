@@ -1810,7 +1810,7 @@ fn omp_runtime_events_can_activate_root_session_after_resume() {
 fn omp_ask_and_approval_events_report_blocked_state() {
     let approval_handler = omp_handler("tool_approval_requested");
     approval_handler
-        .find("activateBlocked(label);")
+        .find("activateBlocked();")
         .expect("approval requests should block the pane");
 
     let approval_resolved = omp_handler("tool_approval_resolved");
@@ -1823,7 +1823,7 @@ fn omp_ask_and_approval_events_report_blocked_state() {
         .find("event?.toolName !== \"ask\"")
         .expect("tool execution handler should only treat Ask as blocked");
     ask_handler
-        .find("activateBlocked(askBlockedMessage(event.args));")
+        .find("activateBlocked();")
         .expect("Ask start should block the pane");
 
     let ask_end_handler = omp_handler("tool_execution_end");

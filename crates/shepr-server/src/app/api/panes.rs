@@ -1,4 +1,4 @@
-use shepr_api::error::{ApiErrorCode, ApiResult};
+use shepr_api::error::{ApiError, ApiErrorCode};
 
 use crate::app::actions::PaneRemovalCommit;
 use crate::app::{App, EndpointContext};
@@ -292,7 +292,7 @@ fn nav_direction(direction: PaneDirection) -> NavDirection {
     }
 }
 
-fn invalid_agent() -> ApiResult {
+fn invalid_agent<T>() -> Result<T, ApiError> {
     failure(ApiErrorCode::InvalidAgent, "agent label must not be empty")
 }
 

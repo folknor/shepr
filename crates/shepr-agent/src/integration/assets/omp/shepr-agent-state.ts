@@ -229,27 +229,13 @@ function lastAssistantMessage(messages: unknown[]): any | undefined {
   return undefined;
 }
 
-function retryableErrorMessage(event: any): string | undefined {
+function endedOnRetryableError(event: any): boolean {
   const messages = Array.isArray(event?.messages) ? event.messages : [];
   const assistant = lastAssistantMessage(messages);
   if (assistant?.stopReason !== "error") {
-    return undefined;
+    return false;
   }
-
-  const errorMessage = String(assistant.errorMessage ?? "");
-  if (!retryableErrorPattern.test(errorMessage)) {
-    return undefined;
-  }
-  return errorMessage || "retryable provider error";
-}
-
-function askBlockedMessage(args: any): string {
-  const questions = Array.isArray(args?.questions) ? args.questions : [];
-  const firstQuestion = questions.find((question: any) => typeof question?.question === "string");
-  if (firstQuestion?.question) {
-    return firstQuestion.question;
-  }
-  return "waiting for user input";
+  return retryableErrorPattern.test(String(assistant.errorMessage ?? ""));
 }
 
 export default function (pi) {
@@ -260,11 +246,8 @@ export default function (pi) {
   let agentActive = false;
   let retryHoldActive = false;
   let failureBlocked = false;
-  let failureMessage: string | undefined;
   let blockedCount = 0;
-  let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
-  let lastMessage: string | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let rootSession = false;
@@ -285,30 +268,29 @@ export default function (pi) {
   function clearFailureState() {
     retryHoldActive = false;
     failureBlocked = false;
-    failureMessage = undefined;
   }
 
   function desiredState() {
     if (blockedCount > 0) {
-      return { state: "blocked" as const, message: blockedMessage };
+      return "blocked" as const;
     }
     if (failureBlocked) {
-      return { state: "blocked" as const, message: failureMessage };
+      return "blocked" as const;
     }
     if (agentActive || retryHoldActive) {
-      return { state: "working" as const, message: undefined };
+      return "working" as const;
     }
-    return { state: "idle" as const, message: undefined };
+    return "idle" as const;
   }
 
   function publishState(force = false) {
     const next = desiredState();
-    if (!force && next.state === lastState && next.message === lastMessage) {
+    // Reports carry only state, so changed local prompt labels add no new information.
+    if (!force && next === lastState) {
       return;
     }
-    lastState = next.state;
-    lastMessage = next.message;
-    queueState(next.state);
+    lastState = next;
+    queueState(next);
   }
 
   function scheduleIdle() {
@@ -321,11 +303,10 @@ export default function (pi) {
     idleTimer.unref?.();
   }
 
-  function holdForRetry(message: string) {
+  function holdForRetry() {
     clearPendingTimers();
     retryHoldActive = true;
     failureBlocked = false;
-    failureMessage = message;
     publishState();
 
     retryTimer = setTimeout(() => {
@@ -352,21 +333,16 @@ export default function (pi) {
     clearFailureState();
     agentActive = false;
     blockedCount = 0;
-    blockedMessage = undefined;
   }
 
-  function activateBlocked(message: string | undefined) {
+  function activateBlocked() {
     clearPendingTimers();
     blockedCount += 1;
-    blockedMessage = message;
     publishState();
   }
 
   function deactivateBlocked() {
     blockedCount = Math.max(0, blockedCount - 1);
-    if (blockedCount === 0) {
-      blockedMessage = undefined;
-    }
     publishState();
   }
 
@@ -379,7 +355,7 @@ export default function (pi) {
       return;
     }
 
-    activateBlocked(data.label);
+    activateBlocked();
   });
 
   pi.on("session_start", (_event, ctx) => {
@@ -411,12 +387,11 @@ export default function (pi) {
     publishState();
   });
 
-  pi.on("tool_approval_requested", (event, ctx) => {
+  pi.on("tool_approval_requested", (_event, ctx) => {
     if (!rootSession && !activateRootSession(ctx)) {
       return;
     }
-    const label = event?.reason || `${event?.toolName || "Tool"} approval`;
-    activateBlocked(label);
+    activateBlocked();
   });
 
   pi.on("tool_approval_resolved", (_event, ctx) => {
@@ -433,7 +408,7 @@ export default function (pi) {
     if (!rootSession && !activateRootSession(ctx)) {
       return;
     }
-    activateBlocked(askBlockedMessage(event.args));
+    activateBlocked();
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
@@ -464,9 +439,8 @@ export default function (pi) {
 
     agentActive = false;
 
-    const retryableMessage = retryableErrorMessage(event);
-    if (retryableMessage) {
-      holdForRetry(retryableMessage);
+    if (endedOnRetryableError(event)) {
+      holdForRetry();
       return;
     }
 

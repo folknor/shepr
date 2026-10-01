@@ -255,29 +255,25 @@ pub(super) fn terminal_collect_dirty_patch(
 /// agent redrawing from the top, alacritty has pushed the previous frame into
 /// history; reading a screen's worth of rows ending at the last content row
 /// would hand the detector that stale frame (an old "proceed?" blocker, say).
+/// Restored history seeded into the primary screen reads as blank rows: it is
+/// display history, not evidence of what a later agent is doing.
 pub(super) fn terminal_detection_text(
-    core: &mut PaneTerminalCore,
+    terminal: &shepr_vt::Terminal,
 ) -> Result<String, shepr_vt::Error> {
-    let terminal = &core.terminal;
     let screen_rows = usize::from(terminal.rows()).max(1);
     let Some((start, end, _)) = terminal_recent_read_range(terminal, screen_rows)? else {
         return Ok(String::new());
     };
     let screen_start = terminal.total_rows().saturating_sub(screen_rows);
+    let primary = terminal.active_screen() == shepr_vt::ActiveScreen::Primary;
     let mut rows = Vec::with_capacity(screen_rows);
     let mut scratch = String::new();
     for row in start.max(screen_start)..=end {
         let mut text = String::new();
-        terminal_screen_row_into(terminal, ScreenRow(row), &mut scratch, &mut text);
-        if terminal.active_screen() == shepr_vt::ActiveScreen::Primary {
-            let absolute = terminal.absolute_row_for_screen(ScreenRow(row));
-            if let Some(seeded) = core.seeded_detection_rows.get(&absolute) {
-                if *seeded == text {
-                    text.clear();
-                } else {
-                    core.seeded_detection_rows.remove(&absolute);
-                }
-            }
+        let seeded =
+            terminal_screen_row_into_with_seeded(terminal, ScreenRow(row), &mut scratch, &mut text);
+        if primary && seeded {
+            text.clear();
         }
         rows.push(text);
     }
@@ -389,6 +385,24 @@ pub(super) fn terminal_screen_row_into(
         }
     });
     line.truncate(line.trim_end().len());
+}
+
+pub(super) fn terminal_screen_row_into_with_seeded(
+    terminal: &shepr_vt::Terminal,
+    y: ScreenRow,
+    scratch: &mut String,
+    line: &mut String,
+) -> bool {
+    line.clear();
+    let seeded = terminal
+        .visit_screen_row_text_with_seeded(y, scratch, |_, wide, text| {
+            if wide != shepr_vt::CellWide::SpacerTail {
+                line.push_str(text);
+            }
+        })
+        .is_some_and(|(_, seeded)| seeded);
+    line.truncate(line.trim_end().len());
+    seeded
 }
 
 pub(super) fn terminal_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {

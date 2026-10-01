@@ -182,12 +182,6 @@ pub(crate) struct PaneTerminalCore {
     /// so history formatted before a resize may no longer match its rows
     /// (`history.rs`).
     history_epoch: u64,
-    /// Saved primary rows are display history until their text changes.
-    /// Absolute IDs follow scrolling with a nonzero history budget. Column
-    /// reflow invalidates those IDs, and zero-history grids have no stable
-    /// row identity; covering those cases requires provenance in the VT grid
-    /// rather than inference from text at this adapter boundary.
-    seeded_detection_rows: std::collections::BTreeMap<AbsRow, String>,
     pub render_state: shepr_vt::RenderState,
     pub initial_default_foreground: Option<shepr_vt::RgbColor>,
     pub initial_default_background: Option<shepr_vt::RgbColor>,

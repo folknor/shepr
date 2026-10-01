@@ -524,6 +524,29 @@ impl ClientLoop {
         ])
     }
 
+    /// Waits for the loop's next event: a scheduled activation at once, else
+    /// the timer armed from the earliest pending deadline as of `now`, a
+    /// supervisor event or a client event, whichever comes first.
+    async fn wait_for_next_event(&mut self, now: std::time::Instant) -> ClientLoopEvent {
+        let timer_deadline = self.next_timer_deadline(now).map(|deadline| {
+            self.client_timer
+                .deadline(now, deadline.saturating_duration_since(now))
+        });
+        if timer_deadline.is_none() {
+            self.client_timer.fired();
+        }
+        if let Some(event) = self.scheduled_activation.take() {
+            return event;
+        }
+
+        tokio::select! {
+            biased;
+            _ = wait_for_client_timer(timer_deadline) => ClientLoopEvent::Timer,
+            ev = self.supervisor_rx.recv() => ev.map_or(ClientLoopEvent::Timer, ClientLoopEvent::EndpointSupervisor),
+            ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
+        }
+    }
+
     async fn run(&mut self) -> Result<(), ClientError> {
         while !self.should_quit.load(Ordering::Acquire) {
             // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
@@ -567,23 +590,7 @@ impl ClientLoop {
                 },
                 &self.supervisor_tx,
             );
-            let timer_deadline = self.next_timer_deadline(loop_now).map(|deadline| {
-                self.client_timer
-                    .deadline(loop_now, deadline.saturating_duration_since(loop_now))
-            });
-            if timer_deadline.is_none() {
-                self.client_timer.fired();
-            }
-            let event = if let Some(event) = self.scheduled_activation.take() {
-                event
-            } else {
-                tokio::select! {
-                    biased;
-                    _ = wait_for_client_timer(timer_deadline) => ClientLoopEvent::Timer,
-                    ev = self.supervisor_rx.recv() => ev.map_or(ClientLoopEvent::Timer, ClientLoopEvent::EndpointSupervisor),
-                    ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
-                }
-            };
+            let event = self.wait_for_next_event(loop_now).await;
             // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
             if self.handle_event(event, now)? == ClientLoopAction::Exit {
@@ -1457,12 +1464,17 @@ mod tests;
 #[cfg(test)]
 mod client_timer_tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    struct TimerTransport;
+    struct TimerTransport(Arc<Mutex<Vec<ClientMessage>>>);
 
     impl endpoint::EndpointTransport for TimerTransport {
-        fn send(&mut self, _message: &ClientMessage) -> io::Result<()> {
+        fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
+            self.0
+                .lock()
+                .map_err(|_| io::Error::other("test precondition: lock poisoned"))?
+                .push(message.clone());
             Ok(())
         }
 
@@ -1475,6 +1487,40 @@ mod client_timer_tests {
         fn take_error(&mut self) -> Option<io::Error> {
             None
         }
+    }
+
+    fn test_client_loop(
+        now: Instant,
+        write_stream: endpoint::EndpointRegistry,
+    ) -> (ClientLoop, tokio::sync::mpsc::Sender<ClientLoopEvent>) {
+        use shepr_test_fixtures::ValidatedConfigFixture as _;
+
+        let config = shepr_config::ValidatedConfig::test_default();
+        let supervisors = endpoint::EndpointSupervisors::new(config.paths(), &[], now)
+            .expect("test precondition: no configured supervisors");
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
+        let (supervisor_tx, supervisor_rx) = tokio::sync::mpsc::channel(1);
+        (
+            ClientLoop {
+                state: ClientState::test_new(),
+                local_failure_policy: endpoint::LocalFailurePolicy::Reconnect,
+                should_quit: Arc::new(AtomicBool::new(false)),
+                write_stream,
+                supervisors,
+                endpoint_commands: endpoint::commands::EndpointCommands::default(),
+                next_surface_serial: 1,
+                scheduled_activation: None,
+                selection: endpoint::selection::EndpointSelectionTracker::new(Vec::new()),
+                client_timer: timer::ClientLoopTimer::new(),
+                reported_cell_size: Arc::new(AtomicCellSize::new()),
+                event_tx: event_tx.clone(),
+                event_rx,
+                supervisor_tx,
+                supervisor_rx,
+                will_query_host_cell_size: false,
+            },
+            event_tx,
+        )
     }
 
     #[test]
@@ -1495,25 +1541,99 @@ mod client_timer_tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_due_health_deadline_still_wakes_the_loop() {
-        let now = Instant::now();
-        let health_started = now
-            .checked_sub(limits::HEARTBEAT_INTERVAL)
-            .expect("test precondition: monotonic clock has elapsed a heartbeat interval");
+    #[tokio::test(start_paused = true)]
+    async fn a_pending_loop_deadline_is_handled_once() {
+        let now = tokio::time::Instant::now().into_std();
+        let sent = Arc::new(Mutex::new(Vec::new()));
         let endpoint_id = endpoint::ClientEndpointId::Ssh(
             shepr_config::MachineLabel::parse("timer-test").expect("test machine label"),
         );
         let mut registry = endpoint::EndpointRegistry::empty();
-        registry.insert(endpoint_id, TimerTransport, 1, false, health_started);
-        let health_deadline = registry
-            .next_service_deadline(now)
-            .expect("SSH endpoint has a health deadline");
-        assert!(health_deadline <= now);
-        let deadline = earliest_client_timer_deadline([Some(health_deadline)]);
-        assert_eq!(deadline, Some(health_deadline));
-        tokio::time::timeout(Duration::from_millis(100), wait_for_client_timer(deadline))
+        registry.insert(
+            endpoint_id,
+            TimerTransport(Arc::clone(&sent)),
+            1,
+            false,
+            now,
+        );
+        let (mut client_loop, event_tx) = test_client_loop(now, registry);
+        let due_in = client_loop
+            .next_timer_deadline(now)
+            .expect("the SSH endpoint has a health deadline")
+            .saturating_duration_since(now);
+        assert!(due_in > Duration::from_millis(1));
+        // The paused clock jumps straight to the earliest timer, so a loop
+        // that armed nothing, or armed a later deadline, runs out the second
+        // timeout, and one that armed an earlier deadline wakes inside the
+        // first.
+        let event = {
+            let wait = client_loop.wait_for_next_event(now);
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(due_in - Duration::from_millis(1), &mut wait)
+                    .await
+                    .is_err(),
+                "the health deadline fired before its time"
+            );
+            tokio::time::timeout(Duration::from_millis(2), &mut wait)
+                .await
+                .expect("the client loop arms its pending deadline")
+        };
+        assert!(matches!(&event, ClientLoopEvent::Timer));
+        let fired_at = tokio::time::Instant::now().into_std();
+        client_loop
+            .handle_event(event, fired_at)
+            .expect("health deadline handling succeeds");
+        {
+            let sent = sent.lock().expect("test precondition: lock is healthy");
+            assert_eq!(sent.len(), 1);
+            assert!(matches!(sent.first(), Some(ClientMessage::HealthPing)));
+        }
+
+        let next_deadline = client_loop
+            .next_timer_deadline(fired_at)
+            .expect("the outstanding health probe has a timeout deadline");
+        assert!(next_deadline > fired_at);
+        event_tx
+            .send(ClientLoopEvent::Resize(
+                shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
+            ))
             .await
-            .expect("due health deadline wakes the client loop");
+            .expect("client event receiver remains open");
+        let event = client_loop.wait_for_next_event(fired_at).await;
+        assert!(matches!(event, ClientLoopEvent::Resize(_)));
+        assert_eq!(
+            sent.lock()
+                .expect("test precondition: lock is healthy")
+                .len(),
+            1,
+            "servicing the deadline sent one health probe"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_loop_deadline_does_not_fire_a_timer() {
+        let now = tokio::time::Instant::now().into_std();
+        let (mut client_loop, event_tx) =
+            test_client_loop(now, endpoint::EndpointRegistry::empty());
+        let wait = client_loop.wait_for_next_event(now);
+        tokio::pin!(wait);
+        // The paused clock jumps to the earliest timer: any timer the loop
+        // armed would wake it before this timeout runs out.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(60), &mut wait)
+                .await
+                .is_err(),
+            "a deadline-free client loop produced an event"
+        );
+
+        event_tx
+            .send(ClientLoopEvent::Resize(
+                shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
+            ))
+            .await
+            .expect("client event receiver remains open");
+        let event = wait.await;
+        assert!(matches!(event, ClientLoopEvent::Resize(_)));
     }
 }

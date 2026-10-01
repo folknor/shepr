@@ -420,7 +420,7 @@ mod tests {
         let inputs = pane.agent_detection_inputs();
         assert!(inputs.screen_text.contains("live first row"));
         assert!(!inputs.screen_text.contains("saved second row"));
-        // Once rewritten, this absolute row belongs to live output even if
+        // Once rewritten, this row belongs to live output even if
         // the child later prints the original text again.
         pane.process_pty_bytes(pane_id, b"\x1b[H\x1b[2Ksaved first row");
         assert!(
@@ -428,6 +428,27 @@ mod tests {
                 .screen_text
                 .contains("saved first row")
         );
+    }
+
+    #[test]
+    fn seeded_rows_remain_masked_after_column_reflow() {
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
+        pane.seed_history_ansi("restored agent dialog that wraps after a resize");
+        pane.resize(shepr_core::geometry::PaneGeometry::new(12, 12, 0, 0));
+
+        assert!(pane.agent_detection_inputs().screen_text.trim().is_empty());
+    }
+
+    #[test]
+    fn seeded_rows_remain_masked_when_zero_scrollback_evicts_them() {
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 0));
+        pane.seed_history_ansi("saved first row\r\nsaved second row");
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        pane.process_pty_bytes(pane_id, b"live one\r\nlive two\r\n");
+
+        let inputs = pane.agent_detection_inputs();
+        assert!(inputs.screen_text.contains("live two"));
+        assert!(!inputs.screen_text.contains("saved second row"));
     }
 
     #[test]

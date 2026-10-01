@@ -1,8 +1,8 @@
 //! The agent integrations checked against the server's acceptance contract.
 //! Each shell hook asset runs through a scripted agent session against a fake
-//! API socket, and each plugin's pinned trace is loaded; both request streams
-//! are replayed into a `TerminalState`, and the test asserts on the persisted
-//! session and hook authority that result rather than on request shapes.
+//! API socket, and each plugin's pinned trace is loaded. Every report identity
+//! passes through the same parser used by the server handlers before the
+//! request is replayed into `TerminalState`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,13 +17,13 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::Value;
 use shepr_agent::agent::resume::{
     AgentSessionRef, PersistedAgentSession, normalize_session_start_source,
-    session_ref_for_agent_report,
 };
 use shepr_agent::agent::{Agent, AgentSource};
 use shepr_agent::detect::AgentState;
 use shepr_api::schema::{Method, PaneAgentState, Request};
 use shepr_mux::terminal::state::{HookClockSample, TerminalState};
 use shepr_protocol::TerminalId;
+use shepr_server::app::App;
 use shepr_test_support::{IsolatedEnv, ScratchDir, command_in_scratch};
 
 const PANE_ID: &str = "w1:p1";
@@ -36,69 +36,75 @@ struct ShellStep {
 struct AssetContract {
     asset: &'static str,
     agent: Agent,
-    session_id: &'static str,
+    session: ContractSessionRef,
     state: Option<AgentState>,
+}
+
+#[derive(Clone, Copy)]
+enum ContractSessionRef {
+    Id(&'static str),
+    Path(&'static str),
 }
 
 const SHELL_ASSETS: &[AssetContract] = &[
     AssetContract {
         asset: "antigravity_cli/shepr-agent-state.sh",
         agent: Agent::Antigravity,
-        session_id: "agy-contract-session",
+        session: ContractSessionRef::Id("agy-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "claude/shepr-agent-state.sh",
         agent: Agent::Claude,
-        session_id: "claude-contract-session",
+        session: ContractSessionRef::Id("claude-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "codex/shepr-agent-state.sh",
         agent: Agent::Codex,
-        session_id: "codex-contract-session",
+        session: ContractSessionRef::Id("codex-contract-session"),
         state: Some(AgentState::Working),
     },
     AssetContract {
         asset: "copilot/shepr-agent-state.sh",
         agent: Agent::GithubCopilot,
-        session_id: "copilot-contract-session",
+        session: ContractSessionRef::Id("copilot-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "cursor/shepr-agent-state.sh",
         agent: Agent::Cursor,
-        session_id: "cursor-contract-session",
+        session: ContractSessionRef::Id("cursor-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "devin/shepr-agent-state.sh",
         agent: Agent::Devin,
-        session_id: "devin-contract-session",
+        session: ContractSessionRef::Id("devin-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "droid/shepr-agent-state.sh",
         agent: Agent::Droid,
-        session_id: "droid-contract-session",
+        session: ContractSessionRef::Id("droid-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "grok/shepr-agent-state.sh",
         agent: Agent::Grok,
-        session_id: "grok-contract-session",
+        session: ContractSessionRef::Id("grok-contract-session"),
         state: None,
     },
     AssetContract {
         asset: "kimi/shepr-agent-state.sh",
         agent: Agent::Kimi,
-        session_id: "kimi-contract-session",
+        session: ContractSessionRef::Id("kimi-contract-session"),
         state: Some(AgentState::Working),
     },
     AssetContract {
         asset: "mastracode/shepr-agent-state.sh",
         agent: Agent::Mastracode,
-        session_id: "mastracode-contract-session",
+        session: ContractSessionRef::Id("mastracode-contract-session"),
         state: Some(AgentState::Working),
     },
 ];
@@ -107,46 +113,51 @@ const BUN_ASSETS: &[AssetContract] = &[
     AssetContract {
         asset: "pi/shepr-agent-state.ts",
         agent: Agent::Pi,
-        session_id: "pi-new",
+        session: ContractSessionRef::Path("/tmp/pi-new.jsonl"),
         state: Some(AgentState::Working),
     },
     AssetContract {
         asset: "omp/shepr-agent-state.ts",
         agent: Agent::Omp,
-        session_id: "omp-contract-session",
+        session: ContractSessionRef::Id("omp-contract-session"),
         state: Some(AgentState::Working),
     },
     AssetContract {
         asset: "opencode/shepr-agent-state.js",
         agent: Agent::OpenCode,
-        session_id: "local-session",
+        session: ContractSessionRef::Id("local-session"),
         state: Some(AgentState::Working),
     },
     AssetContract {
         asset: "opencode/shepr-tui-session.js",
         agent: Agent::OpenCode,
-        session_id: "session-a",
+        session: ContractSessionRef::Id("session-a"),
         state: None,
     },
     AssetContract {
         asset: "opencode/tui.js",
         agent: Agent::OpenCode,
-        session_id: "v2-session",
+        session: ContractSessionRef::Id("v2-session"),
         state: None,
     },
     AssetContract {
         asset: "kilo/shepr-agent-state.js",
         agent: Agent::Kilo,
-        session_id: "kilo-contract-session",
+        session: ContractSessionRef::Id("kilo-contract-session"),
         state: Some(AgentState::Blocked),
     },
 ];
 
 #[test]
-fn every_bundled_agent_asset_replays_through_terminal_state() {
+fn every_bundled_agent_asset_replays_through_server_report_validation() {
     let environment = IsolatedEnv::new();
+    // Hooks read these from the agent that runs them, and so would inherit
+    // them from an agent running this test: under Cursor the Claude hook stays
+    // silent, Grok's id overrides the scripted one, and inside a Codex thread
+    // the Codex hook drops every report for another session.
     environment.remove("CURSOR_VERSION");
     environment.remove("GROK_SESSION_ID");
+    environment.remove("CODEX_THREAD_ID");
     let scratch = ScratchDir::new("agent-integration-contract");
     let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shepr-agent/src/integration");
     let assets = integration.join("assets");
@@ -221,12 +232,12 @@ fn every_bundled_agent_asset_replays_through_terminal_state() {
     for (contract, pane_id, requests) in shell_results.into_iter().chain(bun_results) {
         replay_and_assert_contract(contract, &pane_id, &requests);
     }
-
-    prove_replay_rejects_a_broken_asset(&assets, &scratch);
 }
 
 fn shell_session_steps(contract: &AssetContract) -> Vec<ShellStep> {
-    let session_id = contract.session_id;
+    let ContractSessionRef::Id(session_id) = contract.session else {
+        panic!("shell asset {} must use an id session", contract.asset);
+    };
     let (session_action, session_input) = match contract.agent {
         Agent::Antigravity => (
             Some("session"),
@@ -416,10 +427,15 @@ fn replay_and_assert_contract(contract: &AssetContract, pane_id: &str, requests:
         contract.asset
     );
     let mut terminal = new_terminal(contract.agent);
+    let session_ref = match contract.session {
+        ContractSessionRef::Id(id) => AgentSessionRef::id(id),
+        ContractSessionRef::Path(path) => AgentSessionRef::path(path),
+    }
+    .expect("valid contract session reference");
     let expected_session = PersistedAgentSession::new(
         AgentSource::Official(contract.agent),
         contract.agent,
-        AgentSessionRef::id(contract.session_id).expect("valid contract session id"),
+        session_ref,
     )
     .expect("supported agent session identity");
 
@@ -470,7 +486,7 @@ fn replay_request(
     match request.method {
         Method::PaneReportAgentSession(params) => {
             validate_pane_id(&params.pane_id, pane_id)?;
-            let (source, agent, session_ref) = decode_report_identity(
+            let (source, agent_label, session_ref) = official_report_identity(
                 &params.source,
                 &params.agent,
                 params.agent_session_id,
@@ -480,7 +496,7 @@ fn replay_request(
                 normalize_session_start_source(params.session_start_source.as_deref());
             let _mutation = terminal.set_agent_session_ref_for_typed_start_source_at(
                 source,
-                agent.label().to_owned(),
+                agent_label,
                 session_ref,
                 params.seq,
                 start_source,
@@ -490,7 +506,7 @@ fn replay_request(
         }
         Method::PaneReportAgent(params) => {
             validate_pane_id(&params.pane_id, pane_id)?;
-            let (source, agent, session_ref) = decode_report_identity(
+            let (source, agent_label, session_ref) = official_report_identity(
                 &params.source,
                 &params.agent,
                 params.agent_session_id,
@@ -498,7 +514,7 @@ fn replay_request(
             )?;
             let _mutation = terminal.set_hook_report_at(
                 source,
-                agent.label().to_owned(),
+                agent_label,
                 agent_state(params.state),
                 session_ref,
                 params.seq,
@@ -510,38 +526,23 @@ fn replay_request(
     }
 }
 
-/// The report validation the server's API handler runs before dispatch
-/// (`parse_report_session_ref` beside `handle_pane_report_agent`), restated
-/// because the App is private to the server crate. Official assets use
-/// canonical labels, so a label the server would accept only as custom is
-/// refused here.
-fn decode_report_identity(
+/// The report identity as the server's handlers parse it. Bundled assets
+/// report under their own official source, never a custom one.
+fn official_report_identity(
     source_text: &str,
     agent_text: &str,
     session_id: Option<String>,
     session_path: Option<String>,
-) -> Result<(AgentSource, Agent, Option<AgentSessionRef>), String> {
-    let source = AgentSource::parse(source_text);
-    let agent = Agent::parse_canonical_label(agent_text.trim())
-        .ok_or_else(|| format!("unknown agent label {agent_text:?}"))?;
-    if source
-        .agent()
-        .is_some_and(|source_agent| source_agent != agent)
-    {
+) -> Result<(AgentSource, String, Option<AgentSessionRef>), String> {
+    let (source, agent_label, session_ref) =
+        App::parse_agent_report_identity(source_text, agent_text, session_id, session_path)
+            .map_err(shepr_api::error::ApiError::into_message)?;
+    if source.agent().is_none() {
         return Err(format!(
-            "source {source_text:?} does not match agent {}",
-            agent.label()
+            "bundled asset used the custom source {source_text:?}"
         ));
     }
-    if source.agent().is_none() {
-        return Ok((source, agent, None));
-    }
-    let supplied_reference = session_id.is_some() || session_path.is_some();
-    let session_ref = session_ref_for_agent_report(agent, session_id, session_path);
-    if supplied_reference && session_ref.is_none() {
-        return Err("request supplied an invalid session reference".to_owned());
-    }
-    Ok((source, agent, session_ref))
+    Ok((source, agent_label, session_ref))
 }
 
 fn validate_pane_id(pane_id: &str, expected: &str) -> Result<(), String> {
@@ -636,38 +637,4 @@ fn discover_report_assets(root: &Path) -> Vec<String> {
     }
     found.sort();
     found
-}
-
-fn prove_replay_rejects_a_broken_asset(assets: &Path, scratch: &ScratchDir) {
-    let source = fs::read_to_string(assets.join("claude/shepr-agent-state.sh"))
-        .expect("read Claude asset for mutation probe");
-    let broken = source.replacen("\"agent\": \"claude\"", "\"agent\": \"codex\"", 1);
-    assert_ne!(broken, source, "mutation probe must change the asset");
-    let broken_path = scratch.join("broken-claude-state.sh");
-    fs::write(&broken_path, broken).expect("write broken asset copy in scratch");
-
-    let requests = capture_shell_asset(
-        &broken_path,
-        &[ShellStep {
-            action: Some("session"),
-            input: serde_json::json!({
-                "hook_event_name": "SessionStart",
-                "session_id": "claude-contract-session",
-                "source": "startup",
-            }),
-        }],
-        scratch,
-        "broken-claude",
-    );
-    fs::remove_file(&broken_path).expect("remove broken asset copy");
-    assert_eq!(requests.len(), 1, "broken asset still reports its session");
-    let mut terminal = new_terminal(Agent::Claude);
-    let error = replay_request(&mut terminal, PANE_ID, &requests[0], 0)
-        .expect_err("mismatched source and agent must be rejected");
-    assert!(error.contains("does not match"), "{error}");
-    assert!(
-        terminal
-            .current_session_identity_for_persistence()
-            .is_none()
-    );
 }

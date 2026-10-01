@@ -290,6 +290,30 @@ test("Pi settlement preserves explicit blocked-state precedence", async () => {
   expect(requestStates(requests)).toEqual(["idle", "working", "blocked", "idle"]);
 });
 
+test("Pi deduplicates blocked state when prompt labels change", async () => {
+  const requests = await startRecordingServer("pi-blocked-dedup");
+  const { eventHandlers, handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/shepr-agent-state.ts");
+  install(pi);
+
+  const context = piContext(() => true);
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+
+  eventHandlers.get("shepr:blocked")?.({ active: true, label: "first approval" }, context);
+  await waitFor(() => requestStates(requests).length === 2);
+  eventHandlers.get("shepr:blocked")?.({ active: true, label: "second approval" }, context);
+  await Bun.sleep(25);
+  expect(requestStates(requests)).toEqual(["idle", "blocked"]);
+
+  eventHandlers.get("shepr:blocked")?.({ active: false }, context);
+  await Bun.sleep(25);
+  expect(requestStates(requests)).toEqual(["idle", "blocked"]);
+  eventHandlers.get("shepr:blocked")?.({ active: false }, context);
+  await waitFor(() => requestStates(requests).length === 3);
+  expect(requestStates(requests)).toEqual(["idle", "blocked", "idle"]);
+});
+
 test("Pi reports the session replacement source", async () => {
   const requests = await startRecordingServer("pi-session-source");
   const { handlers, pi } = createExtensionHarness();
@@ -363,11 +387,9 @@ test("Pi serializes its agent-start session report before its working state", as
 
   let idle = true;
   const context = {
-    hasUI: true,
-    mode: "tui",
-    isIdle: () => idle,
+    ...piContext(() => idle),
     sessionManager: {
-      getSessionFile: () => undefined,
+      getSessionFile: () => "/tmp/pi-new.jsonl",
       getSessionId: () => "pi-new",
     },
   };
@@ -601,6 +623,37 @@ test("Oh My Pi reports session-bound state", async () => {
   expect(requestStates(requests)).toEqual(["working"]);
   expect(requests.some(requestHasMessage)).toBe(false);
   expectContractTrace("omp", requests);
+});
+
+test("Oh My Pi deduplicates blocked state when prompt labels change", async () => {
+  const requests = await startRecordingServer("omp-blocked-dedup");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => false,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => "omp-blocked-session",
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+
+  handlers.get("tool_approval_requested")?.({ reason: "first approval" }, context);
+  await waitFor(() => requestStates(requests).length === 2);
+  handlers.get("tool_approval_requested")?.({ reason: "second approval" }, context);
+  await Bun.sleep(25);
+  expect(requestStates(requests)).toEqual(["working", "blocked"]);
+
+  handlers.get("tool_approval_resolved")?.({}, context);
+  await Bun.sleep(25);
+  expect(requestStates(requests)).toEqual(["working", "blocked"]);
+  handlers.get("tool_approval_resolved")?.({}, context);
+  await waitFor(() => requestStates(requests).length === 3);
+  expect(requestStates(requests)).toEqual(["working", "blocked", "working"]);
 });
 
 test("Pi retries working state after an unanswered socket attempt", async () => {

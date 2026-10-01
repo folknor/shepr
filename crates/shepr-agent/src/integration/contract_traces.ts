@@ -3,8 +3,10 @@
 // and they must equal the named trace in `contract_traces.toml`. The server
 // crate's `agent_integration_contract` test replays those same traces into
 // terminal state, so the two halves together check what a plugin really sends
-// against what the server accepts. bun is a development dependency that the
-// Rust tests do not have, which is why the traces sit in a file between them.
+// against what the server accepts. Session ids and paths stay literal in the
+// comparison; the Pi trace pins a path-form resume identity. bun is a
+// development dependency that the Rust tests do not have, which is why the
+// traces sit in a file between them.
 import { expect } from "bun:test";
 import traces from "./contract_traces.toml";
 

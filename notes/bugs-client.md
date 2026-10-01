@@ -1,8 +1,7 @@
 # Defects: client, TUI shell and terminal input
 
-Filed from the defect hunt over `crates/shepr-client` and `crates/shepr-termio`,
-and from the reviews of the waves that resolved it. IDs continue the original
-series.
+Filed from the reviews of the waves that resolved the defect hunt. IDs continue
+the original series.
 
 1. An entry is removed entirely when completely resolved. No historical record
    stays here.
@@ -13,14 +12,12 @@ series.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CLIENT-028 - No test drives the client loop's use of its next deadline
+## CLIENT-029 - The loop tests restate the ClientLoop struct literal
 
-Scope: client-endpoint (from the review of the deadline query).
+Scope: client (lateral from review).
 
-The client loop now wakes from one next-deadline query across shell, command,
-activation, highlight, health and retry deadlines. The tests check each exposed
-deadline and the earliest-of helper, but nothing drives the loop itself: a
-regression that stopped arming the timer from the query, or armed it from a
-stale value, would pass. Add a loop-level test with a paused tokio clock that
-sets one pending deadline, advances past it, and asserts the expiry was handled
-exactly once, and one with no deadline that asserts no timer fires.
+`test_client_loop` in `crates/shepr-client/src/lib.rs` builds a `ClientLoop` with
+its own struct literal, restating the one in `run_client`. A field added with a
+non-trivial default compiles in both but can drift in meaning, so the tests would
+drive a loop shaped differently from production. Give `ClientLoop` one
+constructor taking the pieces, and have both `run_client` and the tests use it.

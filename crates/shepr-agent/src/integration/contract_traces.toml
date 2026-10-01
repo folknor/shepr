@@ -3,8 +3,8 @@
 # `agent_integration_contract` test replays it into terminal state. Seqs are
 # stored as their rank in the run, and ids as `<source>:<rank>`.
 
-# Pi: a new session, its settled idle state, then an agent start that
-# re-reports the session before its working state.
+# Pi: a path-form new session, its settled idle state, then an agent start that
+# re-reports the same session file before its working state.
 [[pi]]
 id = "shepr:pi:1"
 method = "pane.report_agent_session"
@@ -14,7 +14,7 @@ source = "shepr:pi"
 agent = "pi"
 seq = 1
 session_start_source = "new"
-agent_session_id = "pi-new"
+agent_session_path = "/tmp/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:2"
@@ -25,7 +25,7 @@ source = "shepr:pi"
 agent = "pi"
 state = "idle"
 seq = 2
-agent_session_id = "pi-new"
+agent_session_path = "/tmp/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:3"
@@ -35,7 +35,7 @@ pane_id = "test:p1"
 source = "shepr:pi"
 agent = "pi"
 seq = 3
-agent_session_id = "pi-new"
+agent_session_path = "/tmp/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:4"
@@ -46,7 +46,7 @@ source = "shepr:pi"
 agent = "pi"
 state = "working"
 seq = 4
-agent_session_id = "pi-new"
+agent_session_path = "/tmp/pi-new.jsonl"
 
 # Oh My Pi: a startup session that is already working.
 [[omp]]

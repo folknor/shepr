@@ -29,7 +29,6 @@ impl PaneTerminal {
                 terminal,
                 synchronized_output_epoch: 0,
                 history_epoch: 0,
-                seeded_detection_rows: Default::default(),
                 render_state,
                 initial_default_foreground,
                 initial_default_background,
@@ -154,12 +153,12 @@ impl PaneTerminal {
     /// is the latest OSC 0/2 title retained for detection and the progress the
     /// latest OSC 9;4 payload; each is `""` when none was seen or it was cleared.
     pub(crate) fn agent_detection_inputs(&self) -> AgentDetectionInputs {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             self.report_terminal_mutation_failure("agent detection read");
             return AgentDetectionInputs::default();
         };
         AgentDetectionInputs {
-            screen_text: terminal_detection_text(&mut core).unwrap_or_default(),
+            screen_text: terminal_detection_text(&core.terminal).unwrap_or_default(),
             osc_title: core.agent_osc_state.latest_title().to_owned(),
             osc_progress: core.agent_osc_state.latest_progress().to_owned(),
         }
@@ -356,19 +355,14 @@ impl PaneTerminal {
         if !ansi.ends_with('\n') {
             core.terminal.write(b"\r\n");
         }
-        // Remember stable row identities, including history that a later resize
-        // can pull onto the screen. Detection masks unchanged saved rows while
-        // rendering and persistence continue to show them normally.
-        let mut seeded = std::collections::BTreeMap::new();
         let mut scratch = String::new();
+        let mut text = String::new();
         for row in 0..core.terminal.total_rows() {
-            let mut text = String::new();
             terminal_screen_row_into(&core.terminal, ScreenRow(row), &mut scratch, &mut text);
             if !text.trim().is_empty() {
-                seeded.insert(core.terminal.absolute_row_for_screen(ScreenRow(row)), text);
+                core.terminal.mark_screen_row_seeded(ScreenRow(row));
             }
         }
-        core.seeded_detection_rows = seeded;
         // Restored history must never answer the live child, nor surface as
         // live clipboard writes, directory reports or title and colour
         // changes.
@@ -837,7 +831,7 @@ impl PaneTerminal {
     pub(crate) fn detection_text(&self) -> String {
         shepr_vt::lock_terminal_core(&self.core)
             .ok()
-            .and_then(|mut core| terminal_detection_text(&mut core).ok())
+            .and_then(|core| terminal_detection_text(&core.terminal).ok())
             .unwrap_or_default()
     }
 
