@@ -12,11 +12,13 @@ use super::env::AgentIntegrationPaths;
 /// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
     _lock: shepr_platform::ipc::FlockLock,
+    target: PathBuf,
+    contents: Option<Vec<u8>>,
 }
 
-/// Serializes Shepr's read-modify-write of a user config across processes.
-/// Callers hold the returned guard from before reading the config through its
-/// atomic replacement to prevent concurrent edits from overwriting one another.
+/// Serializes Shepr's read-modify-write of a user config across processes and
+/// snapshots it after acquiring the lock. Since agent processes do not use
+/// this lock, publication compares against the snapshot before replacing it.
 pub(super) fn lock_config_for_update(
     path: &Path,
     paths: &AgentIntegrationPaths,
@@ -36,7 +38,12 @@ pub(super) fn lock_config_for_update(
             ),
         )
     })?;
-    Ok(ConfigUpdateLock { _lock: lock })
+    let contents = read_config_snapshot(&target)?;
+    Ok(ConfigUpdateLock {
+        _lock: lock,
+        target,
+        contents,
+    })
 }
 
 fn config_update_lock_path(target: &Path, paths: &AgentIntegrationPaths) -> io::Result<PathBuf> {
@@ -142,11 +149,46 @@ fn resolve_target(path: &Path) -> io::Result<PathBuf> {
     )))
 }
 
-pub(super) fn write_config(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+pub(super) fn write_config_for_update(
+    path: &Path,
+    update_lock: &ConfigUpdateLock,
+    contents: impl AsRef<[u8]>,
+) -> io::Result<()> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
+    if target != update_lock.target {
+        return Err(config_changed_error(path));
+    }
     let replacement = Replacement::prepare(&target, contents.as_ref())?;
-    replacement.commit()
+    replacement.commit_after(|target| {
+        check_config_target(path)?;
+        let current_target = resolve_target(path)?;
+        if current_target.as_path() != target
+            || current_target != update_lock.target
+            || read_config_snapshot(&current_target)? != update_lock.contents
+        {
+            return Err(config_changed_error(path));
+        }
+        Ok(())
+    })
+}
+
+fn read_config_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn config_changed_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        format!(
+            "{} changed while Shepr was preparing an update",
+            path.display()
+        ),
+    )
 }
 
 struct Replacement {
@@ -175,6 +217,11 @@ impl Replacement {
         Ok(Self { inner })
     }
 
+    fn commit_after(self, before_publish: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+        self.inner.commit_after(before_publish)
+    }
+
+    #[cfg(test)]
     fn commit(self) -> io::Result<()> {
         self.inner.commit_after(reject_hard_links)
     }
@@ -188,4 +235,12 @@ impl Replacement {
     fn temporary(&self) -> &Path {
         self.inner.temporary_path()
     }
+}
+
+#[cfg(test)]
+pub(super) fn write_config(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    check_config_target(path)?;
+    let target = resolve_target(path)?;
+    let replacement = Replacement::prepare(&target, contents.as_ref())?;
+    replacement.commit()
 }

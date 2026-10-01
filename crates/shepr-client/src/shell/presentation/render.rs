@@ -24,6 +24,18 @@ pub(in crate::shell) fn render_sidebar_background(
     }
 }
 
+fn configured_key_labels(bindings: &[&shepr_config::ActionKeybinds]) -> String {
+    let labels = bindings
+        .iter()
+        .filter_map(|bindings| bindings.label())
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "unset".to_owned()
+    } else {
+        labels.join(" / ")
+    }
+}
+
 pub(super) fn render_mode_bar(
     buffer: &mut Buffer,
     pane_area: Rect,
@@ -84,6 +96,7 @@ pub(super) fn render_mode_bar(
     } else {
         match mode {
             ClientShellMode::Prefix => {
+                // Escape exits prefix mode directly; the listed actions use configured labels.
                 segments.extend([
                     (" PREFIX ".to_owned(), mode_style),
                     (" ".to_owned(), base),
@@ -98,18 +111,33 @@ pub(super) fn render_mode_bar(
                 ]);
             }
             ClientShellMode::Navigate => {
+                let navigate = &keybinds.keybinds.navigate;
                 segments.extend([
                     (" NAVIGATE ".to_owned(), mode_style),
-                    (" esc back  ".to_owned(), base),
-                    ("↑/↓".to_owned(), key),
+                    (
+                        format!("{} ", configured_key_labels(&[&navigate.back])),
+                        key,
+                    ),
+                    ("back  ".to_owned(), base),
+                    (
+                        configured_key_labels(&[&navigate.workspace_up, &navigate.workspace_down]),
+                        key,
+                    ),
                     (" workspace  ".to_owned(), base),
-                    ("tab".to_owned(), key),
+                    (
+                        configured_key_labels(&[
+                            &navigate.cycle_pane_next,
+                            &navigate.cycle_pane_previous,
+                        ]),
+                        key,
+                    ),
                     (" pane  ".to_owned(), base),
                     (prefix_rhs(&keybinds.keybinds.help), key),
                     (" keybinds".to_owned(), base),
                 ]);
             }
             ClientShellMode::Resize => {
+                // Resize controls are fixed in input routing, not [keys] bindings.
                 segments.extend([
                     (" RESIZE ".to_owned(), mode_style),
                     ("  ".to_owned(), base),
@@ -122,6 +150,8 @@ pub(super) fn render_mode_bar(
                 ]);
             }
             ClientShellMode::Copy => {
+                // Copy-mode commands, including search prompt controls, have fixed input
+                // bindings and no entries in the configurable keybinding table.
                 let copy_mode = copy_mode?;
                 if let Some(prompt) = copy_mode.search_prompt.as_ref() {
                     let marker = match prompt.direction {
@@ -295,4 +325,45 @@ pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &s
 
 pub(super) fn display_width(text: &str) -> u16 {
     u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shepr_test_fixtures::ValidatedConfigFixture as _;
+
+    #[test]
+    fn navigate_mode_bar_uses_configured_action_keys() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let mut config = shepr_config::Config::default();
+        config.keys.navigate_back = shepr_config::BindingConfig::one("q");
+        config.keys.navigate_workspace_up = shepr_config::BindingConfig::one("u");
+        config.keys.navigate_workspace_down = shepr_config::BindingConfig::one("d");
+        config.keys.navigate_cycle_pane_next = shepr_config::BindingConfig::one("n");
+        config.keys.navigate_cycle_pane_previous = shepr_config::BindingConfig::one("p");
+        let validated = shepr_config::ValidatedConfig::test_from_config(config, None);
+        let area = Rect::new(0, 0, 120, 2);
+        let mut buffer = Buffer::empty(area);
+
+        render_mode_bar(
+            &mut buffer,
+            area,
+            ClientShellMode::Navigate,
+            None,
+            None,
+            &validated.live_keybinds(),
+            validated.palette(),
+        );
+
+        let row = (0..area.width)
+            .map(|x| buffer[(x, 1)].symbol())
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(row.contains("q back"), "{row}");
+        assert!(row.contains("u / d workspace"), "{row}");
+        assert!(row.contains("n / p pane"), "{row}");
+        assert!(!row.contains("esc back"), "{row}");
+        assert!(!row.contains("↑/↓"), "{row}");
+        assert!(!row.contains("tab pane"), "{row}");
+    }
 }

@@ -173,6 +173,7 @@ impl super::super::EndpointTransport for FakeTransport {
 fn test_snapshot(boot_id: &str, revision: u64) -> shepr_protocol::ClientShellSnapshot {
     shepr_protocol::ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id(boot_id),
+        restore_notice: None,
         revision: revision.into(),
         focused_workspace_id: None,
         focused_pane_id: None,
@@ -509,6 +510,7 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
     let target = endpoint();
     let snapshot = shepr_protocol::ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("remote-boot"),
+        restore_notice: None,
         revision: shepr_protocol::ProjectionRevision::new(2),
         focused_workspace_id: None,
         focused_pane_id: None,

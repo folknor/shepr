@@ -190,3 +190,79 @@ fn client_presentation_regression_notice_card_keeps_diagnostic_lines_visible() {
     );
     assert!(rows.iter().any(|row| row.contains("third diagnostic line")));
 }
+
+#[test]
+fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let kind = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+        unusable: None,
+        dropped_workspaces: 1,
+        panes_pruned: false,
+        backup_dir: "/state/session-backups".into(),
+    };
+    let first = crate::tests::test_boot_id("restored-first");
+    let second = first.clone();
+    let remote =
+        ClientEndpointId::Ssh(shepr_config::MachineLabel::parse("Build").expect("test label"));
+    assert!(state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
+    assert!(state.receive_restore_notice(&remote, &second, &kind));
+    assert!(!state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
+    state.reset_endpoint_projection();
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("first card")
+            .key
+            .boot_id,
+        Some(first)
+    );
+    let now = std::time::Instant::now();
+    state.endpoint_notice_drawn(now);
+    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("second card")
+            .key
+            .boot_id,
+        Some(second)
+    );
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("remote card")
+            .title,
+        "Build: saved session not fully restored"
+    );
+    // A queued card receives a full lifetime only after it is actually drawn.
+    assert!(!state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+}
+
+#[test]
+fn transient_cards_and_dismissal_do_not_discard_queued_restore_cards() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let boot = crate::tests::test_boot_id("restored");
+    let kind = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+        unusable: None,
+        dropped_workspaces: 1,
+        panes_pruned: false,
+        backup_dir: "/state/session-backups".into(),
+    };
+    state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind);
+    state.receive_paste_rejection("too large".into());
+    state.visible_endpoint_notice = None;
+    assert!(state.tick_transient_banners(std::time::Instant::now()));
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("restore card")
+            .key
+            .boot_id,
+        Some(boot)
+    );
+}

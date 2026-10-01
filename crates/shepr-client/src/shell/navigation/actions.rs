@@ -267,6 +267,14 @@ impl ClientShellState {
         }
         // A matching notice can return after the previous card was dismissed. Its next draw
         // starts a fresh lifetime instead of inheriting the hidden card's deadline.
+        if self
+            .visible_endpoint_notice
+            .as_ref()
+            .is_some_and(|notice| self.restore_notice_seen.contains(&notice.key))
+            && let Some(notice) = self.visible_endpoint_notice.take()
+        {
+            self.restore_notice_queue.push_front(notice);
+        }
         self.endpoint_notice_deadline = None;
         self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
             key,
@@ -333,6 +341,42 @@ impl ClientShellState {
         )
     }
 
+    /// Snapshot metadata is accepted from every endpoint, independent of surface ownership.
+    /// Keep each boot's card until it has had its own drawn lifetime, even across switches.
+    pub(crate) fn receive_restore_notice(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        boot_id: &shepr_protocol::BootId,
+        kind: &shepr_protocol::NoticeKind,
+    ) -> bool {
+        if !matches!(
+            kind,
+            shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. }
+        ) {
+            return false;
+        }
+        let key = ClientEndpointNoticeKey {
+            boot_id: Some(boot_id.clone()),
+            kind: ClientEndpointNoticeKind::Rejected,
+            code: format!("session_restore_incomplete:{}", endpoint_id.storage_key()),
+        };
+        if !self.restore_notice_seen.insert(key.clone()) {
+            return false;
+        }
+        let label = self.endpoint_label(endpoint_id);
+        self.restore_notice_queue
+            .push_back(ClientVisibleEndpointNotice {
+                key,
+                title: format!("{label}: saved session not fully restored"),
+                body: kind.to_string(),
+            });
+        if self.visible_endpoint_notice.is_none() {
+            self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
+            self.endpoint_notice_deadline = None;
+        }
+        true
+    }
+
     /// Shows a notice `endpoint_id`'s server sent.
     pub(crate) fn receive_server_notice(
         &mut self,
@@ -351,9 +395,8 @@ impl ClientShellState {
                 "oversized_surface".to_owned(),
                 "Screen too large".to_owned(),
             ),
-            // The other notices answer something done on the active
-            // endpoint; this one arrives on connect from whichever machine
-            // restored, so it names that machine.
+            // Restore diagnoses travel in snapshots; this arm only formats
+            // a directly supplied diagnostic, never connection metadata.
             shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. } => {
                 let label = self.endpoint_label(endpoint_id);
                 (
@@ -613,6 +656,11 @@ impl ClientShellState {
                 origin,
                 session_generation,
             } => {
+                if self.copy_session_generation != session_generation {
+                    // The copy session that asked was left, re-entered or abandoned
+                    // behind a full input queue; its answer no longer applies.
+                    return (false, Vec::new());
+                }
                 let (repaint, continue_queue) = match result {
                     Ok(EndpointReply::PaneCopyMotion {
                         pane_id: returned_pane_id,
@@ -643,6 +691,10 @@ impl ClientShellState {
                 generation,
                 session_generation,
             } => {
+                if self.copy_session_generation != session_generation {
+                    // As for a copy motion: an older copy session's search result.
+                    return (false, Vec::new());
+                }
                 let (repaint, continue_queue) = match result {
                     Ok(EndpointReply::PaneCopySearch {
                         pane_id: returned_pane_id,

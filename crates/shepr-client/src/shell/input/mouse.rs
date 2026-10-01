@@ -526,6 +526,26 @@ impl ClientShellState {
         )
     }
 
+    fn pane_split_topology_matches_hit(&self, hit: &PaneSplitHit, workspace_id: &str) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        if snapshot.focused_workspace_id.as_deref() != Some(workspace_id) {
+            return false;
+        }
+
+        // A split-ratio update advances the projection without changing the tree. During that
+        // revision gap, the snapshot has no layout tree, so compare the hit with every surface
+        // topology received for this boot, including one waiting for its snapshot.
+        let matches_hit = |surface: &shepr_protocol::PaneSurfaceFrame| {
+            surface.boot_id == snapshot.boot_id
+                && pane_surface_topology_signature(surface) == hit.topology_signature
+        };
+        let current_matches = self.pane_surface.as_ref().is_some_and(matches_hit);
+        let pending_matches = self.pending_pane_surface.as_ref().is_none_or(matches_hit);
+        current_matches && pending_matches
+    }
+
     fn pane_split_ratio(hit: &PaneSplitHit, grab_offset: i32, point: (u16, u16)) -> f32 {
         let (pointer, origin, length) = match hit.direction {
             shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
@@ -944,7 +964,7 @@ impl ClientShellState {
                         ..
                     } => {
                         let target_is_current =
-                            self.pane_split_target_is_current(&hit, &workspace_id) == Some(true);
+                            self.pane_split_topology_matches_hit(&hit, &workspace_id);
                         let ratio = Self::pane_split_ratio(&hit, grab_offset, point);
                         if target_is_current
                             && last_sent_ratio
@@ -1817,5 +1837,117 @@ impl ClientShellState {
     ) {
         let mut accounting = PaneInputBatchAccounting::default();
         self.handle_mouse_with_accounting(mouse, now, outcome, &mut accounting);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use shepr_core::geometry::SplitBranch;
+    use shepr_protocol::{PaneSurfaceFrame, PaneSurfaceSplit, SurfaceRect};
+
+    fn split_surface(
+        boot_id: shepr_protocol::BootId,
+        revision: u64,
+        branch: SplitBranch,
+    ) -> PaneSurfaceFrame {
+        let buffer = Buffer::with_lines(["x"]);
+        PaneSurfaceFrame {
+            boot_id,
+            projection_revision: shepr_protocol::ProjectionRevision::new(revision),
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            frame: FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]),
+            panes: Vec::new(),
+            splits: vec![PaneSurfaceSplit {
+                direction: shepr_protocol::PaneSurfaceSplitDirection::Horizontal,
+                pos: 40,
+                area: SurfaceRect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 19,
+                },
+                hit_rect: SurfaceRect {
+                    x: 40,
+                    y: 0,
+                    width: 1,
+                    height: 19,
+                },
+                path: vec![branch],
+            }],
+        }
+    }
+
+    fn split_drag_state(with_changed_pending_topology: bool) -> ClientShellState {
+        let mut snapshot = super::super::tests::snapshot();
+        snapshot.revision = shepr_protocol::ProjectionRevision::new(2);
+        let boot_id = snapshot.boot_id.clone();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot));
+
+        let surface = split_surface(boot_id.clone(), 1, SplitBranch::First);
+        let topology_signature = pane_surface_topology_signature(&surface);
+        state.pane_surface = Some(surface);
+        if with_changed_pending_topology {
+            state.pending_pane_surface = Some(split_surface(boot_id, 3, SplitBranch::Second));
+        }
+        state.chrome_drag = Some(ClientChromeDrag::PaneSplit {
+            hit: PaneSplitHit {
+                direction: shepr_protocol::PaneSurfaceSplitDirection::Horizontal,
+                pos: 40,
+                area: Rect::new(0, 0, 80, 19),
+                hit_rect: Rect::new(40, 0, 1, 19),
+                path: vec![SplitBranch::First],
+                topology_signature,
+            },
+            workspace_id: shepr_protocol::WorkspaceId::from_number(1)
+                .expect("one-based workspace number"),
+            grab_offset: 0,
+            last_sent_ratio: Some(0.5),
+            throttle: Throttle::new(crate::limits::MOUSE_DRAG_SEND_INTERVAL),
+        });
+        state
+    }
+
+    fn release_split_drag(state: &mut ClientShellState) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        state.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 60,
+                row: 5,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+            &mut outcome,
+        );
+        outcome
+    }
+
+    #[test]
+    fn split_release_sends_final_ratio_during_projection_gap() {
+        let mut state = split_drag_state(false);
+
+        let outcome = release_split_drag(&mut state);
+
+        assert!(matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::Endpoint { request, .. }]
+                if matches!(
+                    &request.command,
+                    shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(params)
+                        if (params.ratio - 0.75).abs() < f32::EPSILON
+                )
+        ));
+    }
+
+    #[test]
+    fn split_release_is_rejected_when_a_received_future_surface_changed_topology() {
+        let mut state = split_drag_state(true);
+
+        let outcome = release_split_drag(&mut state);
+
+        assert!(outcome.actions.is_empty());
     }
 }

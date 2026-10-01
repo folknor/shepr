@@ -37,52 +37,22 @@ Structural fix: split `ValidatedConfig` into per-role resolutions (client-drawn,
 server-run) so each process validates only what it applies. Each role still
 parses the whole file, so unknown-key and syntax errors still fail every launch.
 
-## WIRECFG-003 - Every `SurfaceUpdate` carries the full metadata, and the fanout clones and re-sends the hyperlink table on every patch
+The split needs role-specific config types threaded through consumers in
+several crates (shepr-client `lib.rs` and its presentation config readers,
+shepr-server `app/mod.rs`, `app/state.rs` and `headless/bootstrap.rs`), which is
+why a footprint-limited attempt went no further than comments, which were then
+removed. Run it as a single-fixer wave.
 
-Files: `crates/shepr-protocol/src/surface.rs` (`SurfaceUpdate`: "An absent
-metadata value retains the previous projection"),
-`crates/shepr-protocol/src/surface_reuse.rs` (`Baseline::update` always sets
-`meta: Some(...)`; `Decoder::decode` patch branch),
-`crates/shepr-server/src/server/render_stream.rs` (`prepare_pane_surface_patch`
-builds `SurfaceMeta::from(last)` and sends `meta: Some(meta)`).
+## WIRECFG-004 - Full surface renders still build, compare and clone the whole grid
 
-Claim: AGENTS.md "Hot paths multiply"; the wire type documents a metadata-free
-update.
-
-No production code sends `meta: None`; only tests construct it. Each dirty-row
-patch (the per-keystroke path) clones `last.frame.hyperlinks` (up to
-`MAX_SURFACE_HYPERLINKS = 65_536` strings), `panes` and `splits` once per client,
-encodes and sends all of them; the client compares `meta.splits ==
-previous.splits` and `meta.frame.hyperlinks == previous.frame.hyperlinks`
-string-by-string to decide whether it is a patch. Dirty patches never introduce
-hyperlinks (`terminal_collect_dirty_patch` falls back on `hyperlink_present`), so
-for the patch path the table is the baseline's by construction. Sending
-`meta: None`, with only the cursor and changed panes in a small delta-meta type,
-would make a patch proportional to what changed and let the decoder skip the
-comparison.
-
-## WIRECFG-004 - `surface_delta::message` encodes the entire full surface on every render just to learn its size
-
-File: `crates/shepr-protocol/src/surface_delta.rs` (`message`:
-`encoded_size(full)`, plus `encoded_size` per span in `changed_rows` and again
-`encoded_size(&message)`).
-
-Claim: the framing code avoids exactly this ("Calling `encoded_len` first would
-traverse every field again on the client fanout path", `framing.rs`), and the
-same hot-path rule.
-
-For every full-surface render with a baseline, per client, the server serializes
-the whole new surface (up to `MAX_SURFACE_CELLS = 4 Mi` cells) through the
-counting sink, then each changed span, then the whole update, and the transport
-serializes the chosen message again. The full-size figure only acts as a
-threshold; a cheap bound would do (cell count times a per-cell lower bound, or
-the previous full frame's size cached on the baseline). With the
-`prepare_pane_surface` equality check (`last.frame == surface.frame`) and
-`surface.clone()` for the committed copy, one changed cell costs several
-full-grid passes per client. Client side, the non-patch branch of
-`surface_reuse::Decoder::decode` clones the baseline grid into the new surface
-and then `clone_from`s it back: two full-grid copies per projection-changing
-update.
+The full-surface size count is gone (cell deltas use a five-byte-per-cell lower
+bound and count only the candidate update), metadata-only updates skip counting
+and the grid comparison, compact sends move the rendered grid into the
+committed baseline, and projection decoding makes one grid copy instead of two.
+Residue: a full render still builds the grid and compares it with the last one
+(`last.frame == surface.frame`), a full send still clones it for the committed
+baseline, projection decoding keeps one copy for its separate consumer, and the
+conservative lower bound can pass over a delta that would have paid.
 
 ## WIRECFG-005 - `FrameData::intern_hyperlink` is a linear scan per hyperlinked cell on the render path
 

@@ -98,9 +98,33 @@ pub struct PaneSurfaceFrame {
     pub splits: Vec<PaneSurfaceSplit>,
 }
 
+/// Metadata either replaces the projection or changes only cursor and named panes.
+/// Patch metadata retains dimensions, split topology and hyperlink indices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SurfaceMeta {
+    Projection(SurfaceProjectionMeta),
+    Patch(SurfacePatchMeta),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfacePatchMeta {
+    pub cursor: Option<CursorState>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PANES, _, _>"
+    )]
+    pub panes: Vec<PaneSurfacePane>,
+}
+
+impl From<&PaneSurfaceFrame> for SurfaceMeta {
+    fn from(surface: &PaneSurfaceFrame) -> Self {
+        Self::Projection(surface.into())
+    }
+}
+
 /// Projection and frame metadata for an incremental surface update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SurfaceMeta {
+pub struct SurfaceProjectionMeta {
     pub frame: SurfaceFrameMeta,
     #[serde(
         serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
@@ -127,7 +151,7 @@ pub struct SurfaceFrameMeta {
     pub(crate) hyperlinks: Vec<String>,
 }
 
-impl From<&PaneSurfaceFrame> for SurfaceMeta {
+impl From<&PaneSurfaceFrame> for SurfaceProjectionMeta {
     fn from(surface: &PaneSurfaceFrame) -> Self {
         Self {
             frame: SurfaceFrameMeta {
@@ -142,7 +166,7 @@ impl From<&PaneSurfaceFrame> for SurfaceMeta {
     }
 }
 
-impl SurfaceMeta {
+impl SurfaceProjectionMeta {
     pub(crate) fn into_surface(
         self,
         boot_id: BootId,

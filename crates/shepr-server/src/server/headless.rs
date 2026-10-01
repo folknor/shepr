@@ -1252,12 +1252,6 @@ impl HeadlessServer {
                 shell.snapshot = Some(seed_snapshot);
                 shell.session_generation = self.shell_session_generation;
                 self.send_to_client(client_id, &snapshot_message);
-                // After the snapshot, so the client keys the notice to this
-                // boot. Every client is told, not only the first: whoever
-                // looks at this server is looking at a session with holes.
-                if let Some(kind) = self.app.restore_notice.clone() {
-                    self.send_to_client(client_id, &ServerMessage::ClientShellError { kind });
-                }
                 if surface_active {
                     self.promote_client_to_foreground(client_id);
                 }

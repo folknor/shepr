@@ -100,7 +100,7 @@ pub struct MachineSshStream {
 /// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
 /// launch, one temporary managed ssh config (instead of a new directory per
 /// attempt), and the remote executable found by the last successful discovery.
-/// Discovery costs several SSH round trips (a login-shell `command -v`, a `/bin/sh`
+/// Discovery costs several SSH round trips (an account-shell `command -v`, a `/bin/sh`
 /// `command -v`, the candidate script, a status probe per candidate), so a
 /// reconnect launches the bridge straight from the remembered executable, seeded
 /// from the on-disk metadata cache at first use.

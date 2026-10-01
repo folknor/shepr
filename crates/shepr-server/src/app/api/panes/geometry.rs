@@ -50,7 +50,7 @@ impl App {
             )
         });
         if changed {
-            self.schedule_session_save();
+            self.state.mark_session_dirty();
         }
         Handled::done_with_effects(if changed {
             EndpointEffects {
@@ -101,7 +101,6 @@ impl App {
         let focus_changed = workspace.focused_pane_id() != focus_before;
         let workspace_id = workspace.id.clone();
         self.state.mark_session_dirty();
-        self.schedule_session_save();
         Handled::navigating_with_effects(
             EndpointReply::Done,
             workspace_id,
@@ -125,9 +124,6 @@ impl App {
             // one-pane zoom no-op is handled before set_zoomed can refuse it.
             return Err(pane_missing(&params.pane_id).into());
         };
-        if outcome.changed || outcome.focus_changed {
-            self.schedule_session_save();
-        }
         Handled::navigating_with_effects(
             EndpointReply::Done,
             params.pane_id.workspace_id().clone(),

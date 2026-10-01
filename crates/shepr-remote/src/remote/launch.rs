@@ -72,22 +72,22 @@ impl RemoteExecutable {
 
     pub(super) fn bridge_command(&self) -> String {
         let args = RemoteCliCommand::ClientBridge.args();
-        // sshd hands this string to the user's login shell, which need not be POSIX
+        // sshd hands this string to the user's account shell, which need not be POSIX
         // (xonsh, fish, nushell). Run the script under /bin/sh (discovery feeds its
-        // script to `/bin/sh -s` instead), so the login shell only has to launch one
+        // script to `/bin/sh -s` instead), so the account shell only has to launch one
         // quoted command.
         posix_shell_command(&posix_remote_output_command(&self.command(&args)))
     }
 }
 
 /// Prefixes `command` with the output-ready marker line (preceded by a newline, so
-/// the marker starts a line of its own after any login banner) and maps a remote
+/// the marker starts a line of its own after any shell startup output) and maps a remote
 /// command's exit 255 to 254. OpenSSH also uses 255 for its own failures, so the
 /// wrapper keeps a remote program's 255 from being mistaken for a broken SSH link.
 ///
 /// The prefix is deliberately plain words with no quotes or newlines. For a plain
 /// `command` such as the client bridge's `<path> ...`, the wrapped result of
-/// [`posix_shell_command`] reaches a non-POSIX login shell as `/bin/sh -c` plus one
+/// [`posix_shell_command`] reaches a non-POSIX account shell as `/bin/sh -c` plus one
 /// single-quoted argument with nothing inside it to escape.
 ///
 /// Scripts fed to `/bin/sh -s` end with a newline; it is trimmed so the status
@@ -99,7 +99,7 @@ pub(super) fn posix_remote_output_command(command: &str) -> String {
     )
 }
 
-/// Runs a POSIX script under `/bin/sh` regardless of the remote login shell.
+/// Runs a POSIX script under `/bin/sh` regardless of the remote account shell.
 pub(super) fn posix_shell_command(script: &str) -> String {
     format!("/bin/sh -c {}", shell_quote(script))
 }

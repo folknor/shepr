@@ -68,7 +68,6 @@ pub(crate) fn apply_rows(
     Ok(())
 }
 
-#[derive(Serialize)]
 struct CellSpan<'a> {
     x: u16,
     y: u16,
@@ -79,13 +78,12 @@ fn changed_rows<'a>(
     last: &[CellData],
     next: &'a [CellData],
     width: u16,
-    full_size: usize,
-) -> Result<Option<Vec<CellSpan<'a>>>, SurfaceDeltaError> {
+) -> Option<Vec<CellSpan<'a>>> {
     let mut rows = Vec::new();
     if width == 0 {
-        return Ok(Some(rows));
+        return Some(rows);
     }
-    let mut size = 0;
+    let mut changed_cells = 0;
     for (y, (old_row, new_row)) in last
         .chunks(usize::from(width))
         .zip(next.chunks(usize::from(width)))
@@ -107,15 +105,16 @@ fn changed_rows<'a>(
                 y: u16::try_from(y).unwrap_or(u16::MAX),
                 cells: &new_row[start..x],
             };
-            size += encoded_size(&span)?;
-            // This lower bound excludes metadata, so aborting cannot discard a smaller delta.
-            if rows.len() == MAX_SURFACE_PATCH_SPANS || size >= full_size {
-                return Ok(None);
+            changed_cells += span.cells.len();
+            // Dense updates are cheaper to send whole. This is a planning
+            // heuristic, not an exact encoded-size comparison.
+            if rows.len() == MAX_SURFACE_PATCH_SPANS || changed_cells > next.len() / 2 {
+                return None;
             }
             rows.push(span);
         }
     }
-    Ok(Some(rows))
+    Some(rows)
 }
 
 fn encoded_size(value: &impl Serialize) -> Result<usize, SurfaceDeltaError> {
@@ -146,17 +145,17 @@ pub fn message(
     {
         return Ok(None);
     }
-    let full_size = encoded_size(full)?;
+    // Every cell has a string length prefix, two color discriminants, a skip
+    // byte and a hyperlink option tag: at least five bytes, even ignoring its
+    // symbol and style. This lower bound avoids counting the full grid while
+    // guaranteeing any chosen cell delta is smaller. It may miss useful deltas on
+    // small grids or when most of the full message consists of metadata.
+    let full_size = expected_cells.saturating_mul(5);
     let ServerMessage::PaneSurface(surface) = full else {
         return Ok(None);
     };
     {
-        let Some(rows) = changed_rows(
-            &last.frame.cells,
-            &surface.frame.cells,
-            surface.frame.width,
-            full_size,
-        )?
+        let Some(rows) = changed_rows(&last.frame.cells, &surface.frame.cells, surface.frame.width)
         else {
             return Ok(None);
         };
@@ -168,9 +167,66 @@ pub fn message(
                 cells: row.cells.to_vec(),
             })
             .collect();
-        let update = baseline.update(surface, spans);
+        let update = baseline.update(surface, spans, last);
+        // Metadata-only updates always retain the grid. Counting potentially
+        // large projection metadata cannot improve this choice, and returning
+        // it here avoids a second whole-grid equality pass in the server.
+        let metadata_only = update.spans.is_empty();
         let message = ServerMessage::SurfaceUpdate(update);
+        if metadata_only {
+            return Ok(Some(message));
+        }
         let size = encoded_size(&message)?;
         Ok((size < full_size).then_some(message))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn surface() -> PaneSurfaceFrame {
+        PaneSurfaceFrame {
+            boot_id: "1-1".into(),
+            projection_revision: super::super::ProjectionRevision::new(1),
+            surface_revision: super::super::SurfaceRevision::new(1),
+            frame: super::super::FrameData::blank(200, 100),
+            panes: Vec::new(),
+            splits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sparse_candidate_is_smaller_and_keeps_large_hyperlink_metadata_off_wire() {
+        let mut last = surface();
+        last.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.frame.cells[0].symbol = "z".into();
+        let mut full = ServerMessage::PaneSurface(next.clone());
+        let delta = message(&last, &mut full)
+            .expect("planning")
+            .expect("sparse delta");
+        assert!(encoded_size(&delta).expect("size") < encoded_size(&full).expect("size"));
+        assert!(encoded_size(&delta).expect("size") < 1024);
+        let mut decoder = super::super::surface_reuse::Decoder::default();
+        decoder
+            .decode(ServerMessage::PaneSurface(last))
+            .expect("baseline");
+        decoder.decode(delta).expect("update");
+        assert_eq!(decoder.current_surface(), Some(next));
+    }
+
+    #[test]
+    fn dense_changes_use_the_full_surface() {
+        let last = surface();
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+        for cell in &mut next.frame.cells {
+            cell.symbol = "z".into();
+        }
+        let mut full = ServerMessage::PaneSurface(next.clone());
+        assert!(message(&last, &mut full).expect("planning").is_none());
+        assert_eq!(full, ServerMessage::PaneSurface(next));
     }
 }

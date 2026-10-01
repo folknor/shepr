@@ -12,29 +12,6 @@ Filed from the defect hunt over `crates/shepr-mux/src/` `pane.rs`, `pane/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## PRUN-002 - The detection task waits on the synchronous terminal-core lock on Tokio workers
-
-Hunter's rating: low-medium, certain. Claim: `PaneReadEffects::arm_sync_timeout`,
-"The terminal and content locks are synchronous. Keep their wait off a Tokio
-worker when a timer fires." The detection loop also says of the theme probe
-"keep that probe off this worker".
-
-The detection task moves the `/proc` probes into `spawn_blocking` but takes the
-core mutex directly on the async worker at least three times per tick:
-`terminal.has_theme_restore_candidate()` (twice), `terminal.agent_detection_inputs()`
-(formats the whole live screen while holding the lock), and
-`clear_osc_evidence_for_agent_transition` on an agent change. The lock's other
-holders do a lot under it: the PTY reader parses each chunk, a history save
-formats a `SCAN_CHUNK_ROWS` chunk per hold, copy-mode search scans a chunk per
-hold, render runs `render_into`. Detection runs every 300 to 500 ms for every
-pane, hidden ones included, so panes x lock wait lands on the workers that run
-the event loop's other tasks.
-
-Fix: do the whole tick body that touches the terminal in the same
-`spawn_blocking` as the probe. Better: one dedicated detection thread per
-server that walks every pane; it is a polling loop and gains nothing from being
-an async task per pane.
-
 ## PRUN-003 - `PaneRuntime` says dropping it "aborts async tasks"; two kinds of task outlive it
 
 Hunter's rating: low. The synchronized-output timer
@@ -83,13 +60,13 @@ so on; the content revisions now live in the terminal core). One
 `Arc<PaneShared>` would make clone sites and ownership readable and make the
 drop story in PRUN-003 explicit (a `Weak<PaneShared>` in the timer).
 
-## PRUN-010 - Structural: split `spawn_with_initial_history`
+## PRUN-010 - Structural: `spawn_with_initial_history` still builds the terminal, PTY and reader inline
 
-About 450 lines building the terminal, the PTY, the read callback, the
-reader-exit callback, the child watcher and the whole detection loop inline.
-Extract a `DetectionTask` (or the dedicated detection thread from PRUN-002) that
-takes `PaneShared` and owns the tick loop, and a `ChildWatcher`, so the
-detection loop's lock and blocking policy can be tested alone.
+The detection loop and child watching now live in `pane/detection_task.rs`
+(`DetectionTask`, one whole tick per `spawn_blocking` job) and
+`pane/child_watcher.rs`. Residue: terminal setup, PTY setup and the read and
+reader-exit callbacks are still built inline in `spawn_with_initial_history`,
+and `DetectionHandles` groups only the detector's inputs (see PRUN-009).
 
 ## PRUN-011 - Structural: hook arbitration in `terminal/state` as one per-source state machine
 

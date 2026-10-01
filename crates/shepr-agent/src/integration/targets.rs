@@ -15,7 +15,7 @@ use super::config_edit::{
     ensure_direct_command_hook, ensure_flat_command_hook, ensure_hooks_object,
     ensure_simple_command_hook, remove_hook_path_commands,
 };
-use super::config_file::{check_config_targets, lock_config_for_update, write_config};
+use super::config_file::{check_config_targets, lock_config_for_update, write_config_for_update};
 use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::file_ops::{is_dir, is_file, write_managed_asset};
 use super::opencode_config::{
@@ -141,7 +141,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Instal
     write_hook_script(Target::Claude, &hook_path)?;
 
     if updated_settings != existing_settings {
-        write_config(&settings_path, updated_settings)?;
+        write_config_for_update(&settings_path, &_settings_lock, updated_settings)?;
     }
 
     let mut outcome = InstallOutcome::default();
@@ -198,9 +198,9 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<Install
     let new_config = build_codex_config_with_hooks(&existing_config)?;
 
     write_hook_script(Target::Codex, &hook_path)?;
-    write_config(&hooks_path, hooks_contents)?;
+    write_config_for_update(&hooks_path, &_hooks_lock, hooks_contents)?;
     if new_config != existing_config {
-        write_config(&config_path, new_config)?;
+        write_config_for_update(&config_path, &_config_lock, new_config)?;
     }
 
     let mut outcome = InstallOutcome::default();
@@ -237,7 +237,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallO
     write_hook_script(Target::Kimi, &hook_path)?;
 
     if new_config != existing_config {
-        write_config(&config_path, new_config)?;
+        write_config_for_update(&config_path, &_config_lock, new_config)?;
     }
 
     let mut outcome = InstallOutcome::default();
@@ -285,7 +285,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Insta
 
     fs::create_dir_all(&hooks_dir)?;
     write_hook_script(Target::Copilot, &hook_path)?;
-    write_config(&settings_path, settings_contents)?;
+    write_config_for_update(&settings_path, &_settings_lock, settings_contents)?;
 
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
@@ -329,7 +329,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<Install
     let settings_contents = serde_json::to_string_pretty(&settings)?;
 
     write_hook_script(Target::Devin, &hook_path)?;
-    write_config(&settings_path, settings_contents)?;
+    write_config_for_update(&settings_path, &_settings_lock, settings_contents)?;
 
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
@@ -375,7 +375,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<Install
 
     fs::create_dir_all(&hooks_dir)?;
     write_hook_script(Target::Droid, &hook_path)?;
-    write_config(&settings_path, settings_contents)?;
+    write_config_for_update(&settings_path, &_settings_lock, settings_contents)?;
 
     // Droid keeps its hooks in settings.json; the operator is told about hooks.
     let mut outcome = InstallOutcome::default();
@@ -499,7 +499,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Instal
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     write_hook_script(Target::Cursor, &hook_path)?;
-    write_config(&hooks_path, hooks_contents)?;
+    write_config_for_update(&hooks_path, &_hooks_lock, hooks_contents)?;
 
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
@@ -548,7 +548,7 @@ pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<In
 
     fs::create_dir_all(&hook_dir)?;
     write_hook_script(Target::Mastracode, &hook_path)?;
-    write_config(&hooks_path, hooks_contents)?;
+    write_config_for_update(&hooks_path, &_hooks_lock, hooks_contents)?;
 
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);
@@ -590,7 +590,7 @@ pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Resu
 
     fs::create_dir_all(&hooks_dir)?;
     write_hook_script(Target::AntigravityCli, &hook_path)?;
-    write_config(&hooks_path, hooks_contents)?;
+    write_config_for_update(&hooks_path, &_hooks_lock, hooks_contents)?;
 
     let mut outcome = InstallOutcome::default();
     outcome = outcome.with_artifact(ArtifactRole::Hook, hook_path);

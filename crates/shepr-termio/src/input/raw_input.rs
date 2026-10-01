@@ -644,6 +644,16 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             return chunks;
         }
 
+        if self.split_coalesced_escape
+            && could_be_incomplete_doubled_escape_key_sequence(&self.buffer)
+        {
+            // Give an ambiguous legacy Alt key prefix the same idle window as
+            // a lone Escape, then release its first Escape before handling the
+            // remaining bytes with the existing timeout rules.
+            chunks.push(vec![ESC]);
+            self.buffer.drain(..1);
+        }
+
         if self.host_replies.awaiting_cell_size_or_appearance()
             && self.buffer.as_slice() == b"\x1b["
         {
@@ -832,6 +842,9 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 && self.buffer.starts_with(b"\x1b\x1b")
                 && !starts_with_complete_key_sequence(&self.buffer)
             {
+                if could_be_incomplete_doubled_escape_key_sequence(&self.buffer) {
+                    break;
+                }
                 chunks.push(vec![ESC]);
                 self.buffer.drain(..1);
                 continue;
@@ -1259,9 +1272,9 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
     Some(1 + escaped_char_width)
 }
 
-/// Keep a complete, parsed doubled-ESC key together for host input. The host
-/// framer still separates an ambiguous ESC followed by another key when the
-/// bytes do not complete a key sequence.
+/// Keep a complete, parsed doubled-ESC key together for host input. Prefixes
+/// that can still become a key wait for one idle flush; other ambiguous input
+/// still separates ESC from a following key.
 fn starts_with_complete_key_sequence(buffer: &[u8]) -> bool {
     let Some(sequence_len) = complete_escape_sequence_len(buffer) else {
         return false;
@@ -1273,6 +1286,25 @@ fn starts_with_complete_key_sequence(buffer: &[u8]) -> bool {
         .ok()
         .and_then(parse_terminal_key_sequence)
         .is_some()
+}
+
+fn could_be_incomplete_doubled_escape_key_sequence(buffer: &[u8]) -> bool {
+    if !buffer.starts_with(b"\x1b\x1b") {
+        return false;
+    }
+    if buffer == b"\x1b\x1b" {
+        return true;
+    }
+
+    let inner = &buffer[1..];
+    if inner == b"\x1b[" || inner == b"\x1bO" {
+        return true;
+    }
+    if inner.starts_with(b"\x1b[<") || !inner.starts_with(b"\x1b[") {
+        return false;
+    }
+
+    inner[2..].iter().all(|byte| (0x20..=0x3f).contains(byte))
 }
 
 fn starts_with_incomplete_sgr_mouse_sequence(buffer: &[u8]) -> bool {
@@ -2441,12 +2473,44 @@ mod tests {
     }
 
     #[test]
+    fn host_input_reassembles_legacy_alt_arrow_split_across_reads() {
+        for (prefix, tail) in [
+            (b"\x1b\x1b".as_slice(), b"[A".as_slice()),
+            (b"\x1b\x1b[".as_slice(), b"A".as_slice()),
+        ] {
+            let mut framer = RawInputFramer::for_host_input();
+
+            assert!(framer.push(prefix).is_empty());
+            let events = framer.push(tail);
+
+            assert_eq!(events.len(), 1);
+            assert_raw_key(
+                events.into_iter().next().expect("test precondition"),
+                KeyCode::Up,
+                KeyModifiers::ALT,
+            );
+            assert!(framer.flush_timeout().is_empty());
+        }
+    }
+
+    #[test]
     fn host_input_still_splits_unrecognized_doubled_escape() {
         let mut framer = RawInputByteFramer::for_host_input();
 
         assert_eq!(
             framer.push(b"\x1b\x1bx"),
             vec![b"\x1b".to_vec(), b"\x1bx".to_vec()]
+        );
+    }
+
+    #[test]
+    fn host_input_flushes_uncompleted_doubled_escape_at_idle_timeout() {
+        let mut framer = RawInputByteFramer::for_host_input();
+
+        assert!(framer.push(b"\x1b\x1b").is_empty());
+        assert_eq!(
+            framer.flush_timeout(),
+            vec![b"\x1b".to_vec(), b"\x1b".to_vec()]
         );
     }
 

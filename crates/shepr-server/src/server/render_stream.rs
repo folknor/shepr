@@ -88,7 +88,6 @@ impl ClientRenderState {
             return None;
         };
         surface.surface_revision = next_revision;
-        let committed_surface = surface.clone();
         let mut message = ServerMessage::PaneSurface(surface);
         let delta = last_surface.as_deref().and_then(|last| {
             match shepr_protocol::surface_delta::message(last, &mut message) {
@@ -101,18 +100,18 @@ impl ClientRenderState {
                 }
             }
         });
-        let reused = if let ServerMessage::PaneSurface(surface) = &mut message {
-            delta
-                .is_none()
-                .then_some(last_surface.as_deref())
-                .flatten()
-                .filter(|last| last.frame == surface.frame)
-                .and_then(|last| shepr_protocol::surface_reuse::message(last, surface))
-        } else {
-            None
+        // A compact message owns only changed spans. Move the already rendered
+        // full surface into the committed baseline rather than cloning its grid.
+        let (message, committed_surface) = match (delta, message) {
+            (Some(compact), ServerMessage::PaneSurface(surface)) => (compact, surface),
+            (None, ServerMessage::PaneSurface(surface)) => {
+                let committed_surface = surface.clone();
+                (ServerMessage::PaneSurface(surface), committed_surface)
+            }
+            _ => return None,
         };
         Some(PreparedRender::Semantic {
-            message: delta.or(reused).unwrap_or(message),
+            message,
             committed_surface: Box::new(committed_surface),
         })
     }
@@ -149,15 +148,17 @@ impl ClientRenderState {
         patch.surface_revision = next_revision;
         shepr_protocol::validate_patch_rows(last.frame.width, last.frame.height, &patch.rows)
             .ok()?;
-        let mut meta = shepr_protocol::SurfaceMeta::from(last);
-        meta.frame.cursor.clone_from(&patch.cursor);
-        for updated in &patch.panes {
-            let pane = meta
-                .panes
-                .iter_mut()
-                .find(|pane| pane.pane_id == updated.pane_id)?;
-            pane.clone_from(updated);
+        if !patch.panes.iter().all(|updated| {
+            last.panes
+                .iter()
+                .any(|pane| pane.pane_id == updated.pane_id)
+        }) {
+            return None;
         }
+        let meta = shepr_protocol::SurfaceMeta::Patch(shepr_protocol::SurfacePatchMeta {
+            cursor: patch.cursor.clone(),
+            panes: patch.panes.clone(),
+        });
         let message = ServerMessage::SurfaceUpdate(shepr_protocol::SurfaceUpdate {
             boot_id: patch.boot_id.clone(),
             base_projection_revision: last.projection_revision,
@@ -593,5 +594,49 @@ mod tests {
                 .surface_revision,
             2
         );
+    }
+
+    #[test]
+    fn dirty_patch_does_not_resend_the_retained_hyperlink_table() {
+        let mut state = ClientRenderState::new();
+        let mut first = test_surface("abc");
+        first.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
+        let initial = state.prepare_pane_surface(first.clone()).expect("initial");
+        let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
+        decoder.decode(initial.message().clone()).expect("baseline");
+        state.commit_sent_frame(initial);
+        let mut changed = first.frame.cells[0].clone();
+        changed.symbol = "z".into();
+        let prepared = state
+            .prepare_pane_surface_patch(PaneSurfacePatch {
+                boot_id: first.boot_id.clone(),
+                projection_revision: first.projection_revision,
+                base_surface_revision: first.surface_revision,
+                surface_revision: SurfaceRevision::ZERO,
+                rows: vec![shepr_protocol::PaneSurfacePatchRow {
+                    x: 0,
+                    y: 0,
+                    cells: vec![changed.clone()],
+                }],
+                panes: Vec::new(),
+                cursor: None,
+            })
+            .expect("patch");
+        let mut bytes = Vec::new();
+        shepr_protocol::write_message(&mut bytes, prepared.message()).expect("encode");
+        assert!(
+            bytes.len() < 1024,
+            "retained metadata must not cross the wire"
+        );
+        let wire = shepr_protocol::read_message(&mut bytes.as_slice()).expect("wire");
+        assert!(matches!(
+            decoder.decode(wire).expect("patch"),
+            DecodedServerMessage::PaneSurfacePatch(_)
+        ));
+        state.commit_sent_frame(prepared);
+        first.surface_revision = shepr_protocol::SurfaceRevision::new(2);
+        first.frame.cells[0] = changed;
+        assert_eq!(state.last_pane_surface(), Some(&first));
+        assert_eq!(decoder.current_surface(), Some(first));
     }
 }

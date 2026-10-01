@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -8,7 +7,7 @@ use std::sync::{
 use bytes::Bytes;
 use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use super::PaneClearError;
 use super::launch::*;
@@ -35,93 +34,6 @@ pub struct TerminalDirtyPatchSnapshot {
 // ---------------------------------------------------------------------------
 // PaneRuntime - PTY, parser, channels, background tasks
 // ---------------------------------------------------------------------------
-
-/// Owns the pane child while its watcher awaits the pidfd. If the watcher is
-/// dropped before it reaps (the runtime shutting down while the child still
-/// runs), the child is handed to a detached thread that waits for it, so it
-/// never stays a zombie for the rest of the process.
-struct UnreapedChild(Option<std::process::Child>);
-
-impl UnreapedChild {
-    fn take(&mut self) -> Option<std::process::Child> {
-        self.0.take()
-    }
-}
-
-impl Drop for UnreapedChild {
-    fn drop(&mut self) {
-        let Some(mut child) = self.0.take() else {
-            return;
-        };
-        if let Ok(None) = child.try_wait() {
-            let spawned = std::thread::Builder::new()
-                .name("shepr-pane-reaper".into())
-                .spawn(move || {
-                    // The pane is gone, so its exit status has no reader; only
-                    // a failed reap (a possible zombie) is worth a line.
-                    if let Err(err) = child.wait() {
-                        tracing::warn!(
-                            pid = child.id(),
-                            error = %err,
-                            "could not reap an abandoned pane child"
-                        );
-                    }
-                });
-            if let Err(err) = spawned {
-                tracing::warn!(error = %err, "could not start a reaper for an abandoned pane child");
-            }
-        }
-    }
-}
-
-async fn wait_for_child_exit(
-    child: std::process::Child,
-    pidfd: Option<OwnedFd>,
-) -> std::io::Result<std::process::ExitStatus> {
-    let mut child = UnreapedChild(Some(child));
-    let Some(pidfd) = pidfd else {
-        return wait_for_child_exit_blocking(child).await;
-    };
-    let async_pidfd = match tokio::io::unix::AsyncFd::new(pidfd) {
-        Ok(async_pidfd) => async_pidfd,
-        Err(err) => {
-            tracing::debug!(error = %err, "could not register child pidfd; falling back to child wait");
-            return wait_for_child_exit_blocking(child).await;
-        }
-    };
-    if let Err(err) = async_pidfd.readable().await {
-        tracing::debug!(error = %err, "child pidfd readiness failed; falling back to child wait");
-        return wait_for_child_exit_blocking(child).await;
-    }
-
-    match shepr_platform::reap_pidfd(async_pidfd.get_ref().as_fd()) {
-        Ok(status) => {
-            // waitid(P_PIDFD, WEXITED) reaps the child, so dropping its
-            // std::process::Child wrapper cannot leave a zombie behind.
-            drop(child.take());
-            Ok(status)
-        }
-        Err(err) => {
-            // Kernels may expose pidfd_open before waitid(P_PIDFD); the child
-            // is ready by now, so Child::wait is only a short fallback reap.
-            tracing::debug!(error = %err, "waitid on child pidfd failed; falling back to child wait");
-            wait_for_child_exit_blocking(child).await
-        }
-    }
-}
-
-async fn wait_for_child_exit_blocking(
-    mut child: UnreapedChild,
-) -> std::io::Result<std::process::ExitStatus> {
-    let Some(mut child) = child.take() else {
-        return Err(std::io::Error::other("pane child was already reaped"));
-    };
-    // A blocking task keeps running once started even if this await is
-    // dropped, so the fallback reaps on runtime shutdown too.
-    tokio::task::spawn_blocking(move || child.wait())
-        .await
-        .map_err(std::io::Error::other)?
-}
 
 /// The render a pane needs once a synchronized update (mode 2026) that never
 /// ended is force-flushed by its timeout. Every PTY read inside the update
@@ -196,7 +108,9 @@ impl PaneCwdProbe {
 }
 
 /// PTY runtime for a pane. Owns the terminal and PTY I/O. Dropping it aborts
-/// the detection task and shuts down PTY I/O. The child watcher continues until
+/// the async detection loop and shuts down PTY I/O. A running blocking detection
+/// tick finishes its current operation and stops at its next cancellation check.
+/// The child watcher continues until
 /// it reaps the child, handing it to a reaper thread if that async watcher is
 /// dropped. An armed synchronized-output timer may finish its flush after the
 /// runtime is dropped.
@@ -933,225 +847,24 @@ impl PaneRuntime {
             Box::new(actor)
         };
 
-        // Start the watcher only after the PTY actor exists. If actor setup
-        // failed, the error path above reaps the child without reporting the
-        // pane as dead before it was ever constructed.
-        {
-            let child_liveness = Arc::clone(&child_liveness);
-            let events = events.clone();
-            let pidfd = child_liveness
-                .leader()
-                .and_then(|leader| match leader.try_clone_pidfd() {
-                    Ok(pidfd) => Some(pidfd),
-                    Err(err) => {
-                        tracing::debug!(
-                            pane = pane_id.raw(),
-                            pid,
-                            error = %err,
-                            "could not duplicate child pidfd; falling back to child wait"
-                        );
-                        None
-                    }
-                });
-            // Await the owned pidfd so each live pane uses no blocking-pool
-            // thread; waitid reaps it while Child::wait remains the fallback.
-            tokio::spawn(async move {
-                let exit_reason = match wait_for_child_exit(child, pidfd).await {
-                    Ok(status) => {
-                        let exit_reason = shepr_platform::classify_child_exit(&status);
-                        crate::logging::pane_exited(pane_id.raw(), &status);
-                        exit_reason
-                    }
-                    Err(e) => {
-                        crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
-                        shepr_platform::ChildExitReason::WaitFailed
-                    }
-                };
-                child_liveness.mark_wait_completed();
-                // Wait for channel capacity so this critical pane exit is not dropped.
-                if let Err(e) = events
-                    .send(AppEvent::PaneDied {
-                        pane_id,
-                        exit_reason,
-                    })
-                    .await
-                {
-                    error!(pane = pane_id.raw(), error = %e, "failed to send PaneDied event");
-                }
-            });
-        }
+        // Actor setup failures reap the child above without publishing an exit
+        // for a pane that was never constructed.
+        super::child_watcher::spawn(pane_id, child, Arc::clone(&child_liveness), events.clone());
 
-        // --- Detection task ---
-        let (detect_handle, detect_reset_notify) = {
-            use std::time::Instant;
-
-            let child_liveness = Arc::clone(&child_liveness);
-            let terminal = Arc::clone(&terminal);
-            let state_events = events.clone();
-            let full_lifecycle_authority_active_for_task =
-                Arc::clone(&full_lifecycle_authority_active);
-            let render_notify = Arc::clone(render_notify);
-            let render_dirty = Arc::clone(render_dirty);
-            let detect_reset_notify = Arc::new(Notify::new());
-            let detect_reset = Arc::clone(&detect_reset_notify);
-
-            let handle = tokio::spawn(async move {
-                let mut detector = DetectorState::new(Instant::now(), launch_purpose);
-                let mut next_wake = crate::limits::PROCESS_RECHECK_NO_AGENT;
-
-                loop {
-                    if child_liveness.wait_completed() {
-                        break;
-                    }
-                    let tick = next_wake;
-                    tokio::select! {
-                        _ = tokio::time::sleep(tick) => {}
-                        _ = detect_reset.notified() => {
-                            detector.reset();
-                        }
-                    }
-
-                    if child_liveness.wait_completed() {
-                        break;
-                    }
-                    let now = Instant::now();
-                    let Some(pid) = child_liveness.live_pid() else {
-                        break;
-                    };
-                    let lifecycle_authority_active =
-                        full_lifecycle_authority_active_for_task.load(Ordering::Acquire);
-                    let foreground_pgid = match tokio::task::spawn_blocking(move || {
-                        shepr_agent::detect::foreground_process_group_id(pid)
-                    })
-                    .await
-                    {
-                        Ok(pgid) => pgid,
-                        Err(error) => {
-                            tracing::warn!(?error, "foreground process group probe failed");
-                            continue;
-                        }
-                    };
-                    if child_liveness.live_pid() != Some(pid) {
-                        break;
-                    }
-                    let theme_restore_candidate = terminal.has_theme_restore_candidate();
-                    // One sequence per tick, read before any screen snapshot:
-                    // the cache may key a snapshot to an older sequence (one
-                    // extra read later), never to one newer than its text.
-                    let content_seq = shepr_vt::lock_terminal_core(&terminal.core)
-                        .map_or(0, |core| core.detection_content_seq);
-                    let observations = |observation| DetectorObservations {
-                        now,
-                        foreground_group: foreground_pgid,
-                        content_seq,
-                        lifecycle_authority_active,
-                        theme_restore_candidate,
-                        observation,
-                    };
-                    let mut output = detector.tick(&observations(TickObservation::Begin));
-                    if output.probe {
-                        let probe = match tokio::task::spawn_blocking(move || {
-                            probe_foreground_process(pid, foreground_pgid)
-                        })
-                        .await
-                        {
-                            Ok(probe) => probe,
-                            Err(error) => {
-                                tracing::warn!(?error, "foreground process probe failed");
-                                next_wake = output.next_wake;
-                                continue;
-                            }
-                        };
-                        if child_liveness.live_pid() != Some(pid) {
-                            break;
-                        }
-                        output = detector.tick(&observations(TickObservation::Probe(probe)));
-                    }
-                    if let Some(process_change) = output.process_change.take() {
-                        if process_change.should_clear_osc_evidence {
-                            clear_osc_evidence_for_agent_transition(
-                                &terminal,
-                                process_change.previous_agent,
-                            );
-                        }
-                        if let Some(detected_agent) = process_change.process_detected {
-                            publish_agent_process_detected_event(
-                                state_events.clone(),
-                                pane_id,
-                                detected_agent,
-                                now,
-                            )
-                            .await;
-                        }
-                        if process_change.agent_changed {
-                            let agent = process_change.agent;
-                            if let Some(process_name) = process_change.process_name {
-                                info!(
-                                    pane = pane_id.raw(),
-                                    previous_agent = ?process_change.previous_agent,
-                                    ?agent,
-                                    process = %process_name,
-                                    pgid = ?process_change.process_group_id,
-                                    "agent changed"
-                                );
-                            } else {
-                                info!(
-                                    pane = pane_id.raw(),
-                                    previous_agent = ?process_change.previous_agent,
-                                    ?agent,
-                                    pgid = ?process_change.process_group_id,
-                                    "agent changed"
-                                );
-                            }
-                        }
-                    }
-
-                    // The restore check reads /proc only when a known host
-                    // theme can be restored; keep that probe off this worker.
-                    if child_liveness.live_pid() != Some(pid) {
-                        break;
-                    }
-                    if terminal.has_theme_restore_candidate() {
-                        let theme_terminal = Arc::clone(&terminal);
-                        let theme_child_liveness = Arc::clone(&child_liveness);
-                        match tokio::task::spawn_blocking(move || {
-                            theme_terminal
-                                .maybe_restore_host_terminal_theme(pane_id, &theme_child_liveness)
-                        })
-                        .await
-                        {
-                            Ok(true) => {
-                                if render_dirty
-                                    .request_pty_coalesced(pane_id, &terminal.render_queued)
-                                {
-                                    render_notify.notify_one();
-                                }
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                tracing::warn!(?error, "host terminal theme probe failed");
-                            }
-                        }
-                    }
-                    if child_liveness.live_pid() != Some(pid) {
-                        break;
-                    }
-
-                    if output.screen {
-                        // A plain shell never requests a core snapshot. Identified
-                        // agents read screen and OSC together only on a cache miss.
-                        output = detector.tick(&observations(TickObservation::Screen(
-                            terminal.agent_detection_inputs(),
-                        )));
-                    }
-                    next_wake = output.next_wake;
-                    if let Some(update) = output.state_changed {
-                        publish_state_changed_event(state_events.clone(), pane_id, update).await;
-                    }
-                }
-            });
-            (Some(handle.abort_handle()), detect_reset_notify)
-        };
+        let detect_reset_notify = Arc::new(Notify::new());
+        let detect_handle = Some(super::detection_task::DetectionTask::spawn(
+            pane_id,
+            launch_purpose,
+            super::detection_task::DetectionHandles {
+                terminal: Arc::clone(&terminal),
+                child_liveness: Arc::clone(&child_liveness),
+                lifecycle_authority: Arc::clone(&full_lifecycle_authority_active),
+                reset: Arc::clone(&detect_reset_notify),
+                events: events.clone(),
+                render_notify: Arc::clone(render_notify),
+                render_dirty: Arc::clone(render_dirty),
+            },
+        ));
 
         Ok(Self {
             generation,
@@ -1631,8 +1344,9 @@ impl PaneRuntime {
 
 impl Drop for PaneRuntime {
     fn drop(&mut self) {
-        // Abort detection immediately, then stop PTY IO before tearing down
-        // the child session. Test runtimes have no child process to tear down.
+        // Abort the async loop; its drop guard cancels a running blocking tick
+        // at its next boundary. Stop PTY IO before tearing down the child
+        // session. Test runtimes have no child process to tear down.
         if let Some(handle) = &self.detect_handle {
             handle.abort();
         }

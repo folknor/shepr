@@ -15,11 +15,14 @@ pub(super) fn locate_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutabl
 /// [`DiscoveryProgress`] sequences them; the seam exists so that sequencing, and resuming
 /// it, can be tested without a remote host.
 pub(super) trait DiscoverySteps {
-    /// `command -v` through the remote login shell, which sets up the user's PATH.
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>>;
-    /// `command -v` through `/bin/sh`, for login shells (xonsh) that reject it.
+    /// `command -v` through sshd's non-login command in the account's configured shell.
+    /// No login mode is requested: profile scripts can print into the path result,
+    /// prompt without a terminal, or run arbitrary setup commands. The known-path
+    /// probe below covers the standard install directories independently.
+    fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>>;
+    /// `command -v` through `/bin/sh`, for account shells such as xonsh that reject it.
     fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>>;
-    /// Executables found at the known install locations.
+    /// Executables in `$CARGO_HOME/bin` (or `$HOME/.cargo/bin`) and `$HOME/.local/bin`.
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>>;
     /// Whether `candidate` passes the caller's verification.
     fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool>;
@@ -43,10 +46,10 @@ pub(super) struct SshDiscovery<'a> {
 }
 
 impl DiscoverySteps for SshDiscovery<'_> {
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+    fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
         let output = self
             .ssh
-            .posix_user_shell_output(&format!("command -v {REMOTE_INSTALL_NAME}"))?;
+            .user_shell_output(&format!("command -v {REMOTE_INSTALL_NAME}"))?;
         path_lookup_result_with_rejected_candidate(
             &output,
             &mut self.rejected_shell_unsafe_candidate,
@@ -128,7 +131,7 @@ fn path_lookup_result_with_rejected_candidate(
 /// What full discovery of the remote executable has learned so far: the result of every
 /// SSH round trip that already completed.
 ///
-/// Discovery is several round trips (a login-shell `command -v`, a `/bin/sh` `command -v`
+/// Discovery is several round trips (an account-shell `command -v`, a `/bin/sh` `command -v`
 /// when that finds nothing, the known-locations script, then a status probe per candidate
 /// until one matches), and without connection sharing each is a cold SSH connect. On a
 /// slow enough link they do not all fit in one connection attempt's budget. A configured
@@ -138,15 +141,15 @@ fn path_lookup_result_with_rejected_candidate(
 /// least one and discovery finishes after a bounded number of attempts, each of which
 /// still ends within the budget.
 ///
-/// Results are kept only when an attempt ended on a link failure (a timeout, the
-/// attempt deadline, a dropped or refused connection): those say nothing about the
-/// remote install. Any other error (a command that ran and failed, the not-ready
-/// outcome, an ssh failure reported through a command's output) clears them, so the
-/// next attempt rediscovers from scratch rather than resuming from facts that error
-/// may have made stale.
+/// Progress survives transient network failures and full round-trip timeouts that may
+/// be waiting for authentication, because no remote command returned a result. Any SSH
+/// process failure clears it, including host-key, authentication, local configuration
+/// and unrecognized failures: the next attempt starts from fresh discovery after that
+/// condition changes. Remote command and compatibility failures also clear progress,
+/// since they can mean the installation changed.
 #[derive(Default)]
 pub(crate) struct DiscoveryProgress {
-    login_shell_path: Option<Option<RemoteExecutable>>,
+    account_shell_path: Option<Option<RemoteExecutable>>,
     sh_path: Option<Option<RemoteExecutable>>,
     /// Every candidate in probe order, once the known-locations script has run.
     candidates: Option<Vec<RemoteExecutable>>,
@@ -161,21 +164,26 @@ pub(crate) struct DiscoveryProgress {
 
 impl DiscoveryProgress {
     /// Runs the round trips not yet completed, in order, skipping candidates whose
-    /// status probe failed or whose client or sibling build is incompatible. A link
-    /// failure stops the pass. Returns the first matching candidate, the first
+    /// status probe failed or whose client or sibling build is incompatible. A failed
+    /// round trip stops the pass. Returns the first matching candidate, the first
     /// candidate's rejection if none match, or the not-ready error when no candidate
     /// was there to reject.
-    /// Progress survives only an error that is a link failure (`is_ssh_link_failure`,
-    /// which includes running out of time); any other error clears it.
+    /// Progress survives a transient link failure or a full round-trip timeout that
+    /// may be waiting for interactive authentication. SSH process failures such as
+    /// authentication rejection, host-key rejection and local configuration errors
+    /// clear it, as do remote command and compatibility failures.
     pub(super) fn advance(
         &mut self,
         steps: &mut impl DiscoverySteps,
     ) -> io::Result<RemoteExecutable> {
         let result = self.run_remaining(steps);
-        if let Err(error) = &result
-            && !is_ssh_link_failure(error)
-        {
-            *self = Self::default();
+        if let Err(error) = &result {
+            let diagnostic = super::SshFailureDiagnostic::from_error(error);
+            if !diagnostic.is_transient_network_failure()
+                && !diagnostic.is_authentication_wait_timeout()
+            {
+                *self = Self::default();
+            }
         }
         result
     }
@@ -184,14 +192,14 @@ impl DiscoveryProgress {
         &mut self,
         steps: &mut impl DiscoverySteps,
     ) -> io::Result<RemoteExecutable> {
-        if self.login_shell_path.is_none() {
-            self.login_shell_path = Some(steps.path_via_login_shell()?);
+        if self.account_shell_path.is_none() {
+            self.account_shell_path = Some(steps.path_via_account_shell()?);
             self.remember_rejected_candidate(steps);
         }
-        let mut path_candidate = self.login_shell_path.clone().flatten();
+        let mut path_candidate = self.account_shell_path.clone().flatten();
         if path_candidate.is_none() {
-            // Non-POSIX login shells such as xonsh reject `command -v`; retry through
-            // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
+            // Non-POSIX account shells such as xonsh reject `command -v`; retry through
+            // /bin/sh while retaining the account-shell probe for its PATH.
             if self.sh_path.is_none() {
                 self.sh_path = Some(steps.path_via_sh()?);
                 self.remember_rejected_candidate(steps);
@@ -254,7 +262,7 @@ impl DiscoveryProgress {
 
     /// Whether any round trip has completed, so the next `advance` resumes mid-way.
     pub(crate) fn has_progress(&self) -> bool {
-        self.login_shell_path.is_some()
+        self.account_shell_path.is_some()
     }
 }
 
@@ -298,7 +306,7 @@ pub(super) fn push_if_new_remote_binary_candidate(
 /// Cargo's bin directory follows the default destination used by `brokkr install`;
 /// the local bin path also covers manual installs. These are checked before falling
 /// back to `command -v`, which misses them when a non-interactive SSH shell has a
-/// minimal PATH.
+/// minimal PATH. Installs elsewhere on a login-profile-only PATH are not discovered.
 pub(super) fn known_remote_binary_candidate_script() -> String {
     format!(
         r#"home=${{HOME:-}}
@@ -493,11 +501,13 @@ fn remote_compatibility_error(
 }
 
 fn remote_candidate_mismatch(message: String) -> io::Error {
-    crate::remote_compatibility_error(message)
+    // Cache verification may discard this executable. General compatibility errors
+    // such as a not-ready install or server mismatch do not prove its path is stale.
+    crate::remote_candidate_mismatch_error(message)
 }
 
 pub(super) fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
-    super::SshFailureDiagnostic::from_error(error).is_remote_compatibility()
+    super::SshFailureDiagnostic::from_error(error).is_remote_candidate_mismatch()
 }
 
 #[cfg(test)]

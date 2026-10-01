@@ -205,6 +205,8 @@ impl AppState {
             .position(|workspace| &workspace.id == id)
     }
 
+    /// Records that persisted session data changed. App owns translating this
+    /// state signal into one debounced save per headless loop pass.
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
     }

@@ -12,16 +12,6 @@ Filed from the defect hunt over `crates/shepr-server/src/app/`, `lib.rs`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SAPP-002 - A hung resume directory check leaves that pane's resume pending forever
-
-The resume pass now skips candidates whose directory check has not landed and
-resumes the checked ones in layout order, so one hung mount no longer blocks
-every other agent. Residue: `worker::resume_cwd_check` (`std::fs::metadata` on a
-worker) still has no deadline, so a pane whose saved cwd sits on a hung mount
-keeps its resume pending for as long as the mount hangs. A deadline after which
-the directory counts as unavailable (abandoning the resume with
-`RestoreFailure::DirectoryUnavailable`) would end it.
-
 ## SAPP-004 - A pane-exit checkpoint drops the dying pane's agent session before it captures
 
 Claim broken: the pane-exit checkpoint exists to "keep the pre-exit layout live
@@ -74,16 +64,6 @@ semantics, and tests assert on the duplicate:
 The hunter recommends deleting these and driving tests through the production
 entry points (the headless loop already has a test harness).
 
-## SAPP-011 - Session dirtiness has two entry points with different side effects
-
-`AppState::mark_session_dirty` (flag, converted by `sync_session_save_schedule`
-once per loop pass) and `App::schedule_session_save` (immediately bumps
-`session_revision` and clears the checkpoint snapshot). Handlers pick one or
-both arbitrarily (`handle_workspace_rename` only schedules,
-`handle_pane_rename` only marks, `handle_pane_swap` does both). Automatic
-workspace replacement no longer goes through the scheduling side channel, but
-the two entry points remain; one mutation entry point would remove the class.
-
 ## SAPP-012 - Structural: the pane-exit checkpoint as a typed state machine
 
 The checkpoint in `session.rs` spreads one concept across loosely coupled
@@ -91,9 +71,10 @@ fields. The separate pending flag is gone (preservation is now the snapshot's
 presence), but the requested generation, saved generation, failures, readiness,
 `session_revision`, `critical_save_retry_deadline` and the host-shutdown trio
 remain separate. Every finding in this area is an invariant between two of them
-that some path forgot. A typed enum (no checkpoint / requested gen N / saved
-gen N with snapshot / abandoned) would make SAPP-010 unrepresentable; the
-hunter recommends the rewrite.
+that some path forgot (a stale removal plan clearing the bookkeeping was one,
+since fixed). A typed enum (no checkpoint / requested gen N / saved gen N with
+snapshot / abandoned) would make that class unrepresentable; the hunter
+recommends the rewrite.
 
 ## SAPP-013 - A production-compiled test harness
 

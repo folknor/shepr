@@ -104,7 +104,8 @@ fn config_update_lock_covers_the_full_read_modify_write() {
                     .parse::<u32>()
                     .expect("test precondition");
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                write_config(&path, (value + 1).to_string()).expect("test precondition");
+                write_config_for_update(&path, &_lock, (value + 1).to_string())
+                    .expect("test precondition");
             })
         })
         .collect();
@@ -135,6 +136,28 @@ fn config_update_lock_covers_the_full_read_modify_write() {
             .ino(),
         first_inode
     );
+}
+
+#[test]
+fn config_update_preserves_a_change_from_an_agent_after_the_lock_snapshot() {
+    let _env = IsolatedEnv::new();
+    let dir = Directory::new();
+    let path = dir.0.join("settings.json");
+    fs::write(&path, b"shepr read").expect("test precondition");
+    let paths = super::super::env::AgentIntegrationPaths::resolve();
+    let update_lock = lock_config_for_update(&path, &paths).expect("test precondition");
+
+    fs::write(&path, b"agent update").expect("test precondition");
+    let error = write_config_for_update(&path, &update_lock, b"shepr update")
+        .expect_err("concurrent agent update must be preserved");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert!(
+        error
+            .to_string()
+            .contains("changed while Shepr was preparing")
+    );
+    assert_eq!(fs::read(&path).expect("test precondition"), b"agent update");
 }
 
 #[test]

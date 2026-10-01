@@ -1309,6 +1309,11 @@ impl ClientLoop {
                 return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::EndpointSnapshot(snapshot) => {
+                if let Some(kind) = snapshot.restore_notice.as_ref() {
+                    state
+                        .shell
+                        .receive_restore_notice(endpoint_id, &snapshot.boot_id, kind);
+                }
                 let projection_pending = activation_message;
                 let activation_progress = activation_message
                     .then(|| {

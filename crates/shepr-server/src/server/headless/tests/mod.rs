@@ -11,6 +11,14 @@ use shepr_protocol::MAX_FRAME_SIZE;
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::surface_reuse::DecodedServerMessage;
 
+/// The pane entries a surface update's metadata carries, whichever variant it is.
+fn meta_panes(meta: &Option<shepr_protocol::SurfaceMeta>) -> &[shepr_protocol::PaneSurfacePane] {
+    match meta.as_ref().expect("metadata") {
+        shepr_protocol::SurfaceMeta::Projection(meta) => &meta.panes,
+        shepr_protocol::SurfaceMeta::Patch(meta) => &meta.panes,
+    }
+}
+
 pub(crate) fn handle_server_event(
     server: &mut HeadlessServer,
     event: crate::server::client_transport::ServerEvent,
@@ -1667,7 +1675,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
                 Some(patch.surface_revision),
                 initial_surface.surface_revision.checked_next()
             );
-            assert_eq!(patch.meta.as_ref().expect("metadata").panes.len(), 1);
+            assert_eq!(meta_panes(&patch.meta).len(), 1);
             assert!(!patch.spans.is_empty());
             assert!(
                 patch
@@ -1707,7 +1715,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     match read_server_message(render_rx.recv().expect("metadata-only pane surface patch")) {
         ServerMessage::SurfaceUpdate(patch) => {
             assert!(patch.spans.is_empty(), "mouse modes only change metadata");
-            let panes = &patch.meta.as_ref().expect("metadata").panes;
+            let panes = meta_panes(&patch.meta);
             assert_eq!(panes.len(), 1);
             assert!(!panes[0].mouse_reporting);
             assert!(!panes[0].sgr_pixel_mouse);
@@ -2145,7 +2153,7 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
 }
 
 #[tokio::test]
-async fn every_client_of_a_partly_restored_boot_is_told_after_its_seed() {
+async fn every_client_of_a_partly_restored_boot_gets_the_notice_in_its_seed() {
     let mut server = test_headless_server();
     let notice = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
         unusable: None,
@@ -2157,18 +2165,12 @@ async fn every_client_of_a_partly_restored_boot_is_told_after_its_seed() {
 
     for client_id in [7, 8] {
         let (control, _render) = connect_matching_test_shell(&mut server, client_id);
-        // The seed comes first, so the client keys the notice to this boot.
-        let _ = client_shell_snapshot(&control);
-        let message = read_server_message(
-            control
-                .recv_timeout(Duration::from_secs(1))
-                .expect("restore notice"),
-        );
+        // The notice is part of the snapshot, so it is keyed to this boot and
+        // repeated on every projection rather than sent once beside it.
+        let seed = client_shell_snapshot(&control);
         assert_eq!(
-            message,
-            ServerMessage::ClientShellError {
-                kind: notice.clone()
-            },
+            seed.restore_notice,
+            Some(notice.clone()),
             "client {client_id}"
         );
     }
@@ -2179,7 +2181,8 @@ async fn every_client_of_a_partly_restored_boot_is_told_after_its_seed() {
 async fn a_fully_restored_boot_sends_no_restore_notice() {
     let mut server = test_headless_server();
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
-    let _ = client_shell_snapshot(&control);
+    let seed = client_shell_snapshot(&control);
+    assert_eq!(seed.restore_notice, None);
     while let Ok(bytes) = control.try_recv() {
         assert!(
             !matches!(
@@ -2557,12 +2560,9 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
         "writer must wait for the collection to release the terminal core"
     );
     let patch = recv_pane_surface_patch(&mut render, "snapshot before waiting write");
-    assert_eq!(
-        patch.meta.as_ref().expect("metadata").panes[0].content_revision,
-        revision
-    );
+    assert_eq!(meta_panes(&patch.meta)[0].content_revision, revision);
     assert!(revision.is_multiple_of(2));
-    assert!(patch.meta.as_ref().expect("metadata").panes[0].mouse_reporting);
+    assert!(meta_panes(&patch.meta)[0].mouse_reporting);
     let surface = server.clients[&7]
         .render_state
         .last_pane_surface()
@@ -2572,11 +2572,8 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
 
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     let next = recv_pane_surface_patch(&mut render, "waiting write remains dirty");
-    assert_eq!(
-        next.meta.as_ref().expect("metadata").panes[0].content_revision,
-        revision + 2
-    );
-    assert!(!next.meta.as_ref().expect("metadata").panes[0].mouse_reporting);
+    assert_eq!(meta_panes(&next.meta)[0].content_revision, revision + 2);
+    assert!(!meta_panes(&next.meta)[0].mouse_reporting);
     let surface = server.clients[&7]
         .render_state
         .last_pane_surface()
@@ -2659,8 +2656,8 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     }));
     assert_eq!(large_patch.spans, small_patch.spans);
     assert_ne!(
-        large_patch.meta.as_ref().expect("metadata").panes[0].inner_rect,
-        small_patch.meta.as_ref().expect("metadata").panes[0].inner_rect
+        meta_panes(&large_patch.meta)[0].inner_rect,
+        meta_panes(&small_patch.meta)[0].inner_rect
     );
     assert!(
         frame_text(
@@ -2786,7 +2783,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
         .test_process_pty_bytes(b"\rFIRST_PATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([first_pane])));
     let first_patch = recv_pane_surface_patch(&mut first_render, "first patch");
-    assert_eq!(first_patch.meta.as_ref().expect("metadata").panes.len(), 1);
+    assert_eq!(meta_panes(&first_patch.meta).len(), 1);
     assert!(second_render.try_recv().is_err());
 
     server
@@ -2795,7 +2792,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
         .test_process_pty_bytes(b"\rSECOND_PATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([second_pane])));
     let second_patch = recv_pane_surface_patch(&mut second_render, "second patch");
-    assert_eq!(second_patch.meta.as_ref().expect("metadata").panes.len(), 1);
+    assert_eq!(meta_panes(&second_patch.meta).len(), 1);
     assert!(first_render.try_recv().is_err());
 
     shutdown_test_runtimes(&mut server);

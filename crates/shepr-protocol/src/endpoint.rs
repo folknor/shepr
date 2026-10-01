@@ -45,6 +45,7 @@ mod tests {
     fn snapshot() -> ClientShellSnapshot {
         ClientShellSnapshot {
             boot_id: "1-1".into(),
+            restore_notice: None,
             revision: crate::ProjectionRevision::new(1),
             focused_workspace_id: None,
             focused_pane_id: None,

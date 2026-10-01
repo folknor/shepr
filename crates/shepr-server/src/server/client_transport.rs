@@ -259,6 +259,11 @@ impl ClientWriterQueue {
         if !state.writer_alive {
             return Err(SendError(data));
         }
+        // Control items share the byte budget while queued and in flight.
+        // A reply that fits an empty queue still closes a client if earlier
+        // control traffic leaves too little room: `ResponseTooLarge` means a
+        // wire-limit violation, while sending past the remaining budget would
+        // let a slow reader exceed the backlog bound.
         if state.control_items >= self.max_control_items
             || data.len() > self.max_control_bytes.saturating_sub(state.control_bytes)
         {
@@ -1251,6 +1256,43 @@ mod tests {
         writer.control.send(vec![b'b']).expect("second item fits");
         assert!(matches!(queue.recv(), Some(ClientWriteItem::Control(_))));
         assert!(matches!(writer.control.send(vec![b'c']), Err(SendError(_))));
+    }
+
+    #[test]
+    fn client_control_queue_closes_when_endpoint_reply_exceeds_remaining_byte_budget() {
+        let reply =
+            shepr_protocol::encode_message(&crate::server::client_commands::response_message(
+                shepr_test_fixtures::fixed_boot_id(1),
+                "request-a".into(),
+                Ok(shepr_protocol::command::EndpointReply::Done),
+            ))
+            .expect("endpoint response frames");
+        let byte_cap = reply.len();
+        let empty_queue = ClientWriterQueue::with_limits(None, 4, byte_cap);
+        let empty_writer = ClientWriter {
+            control: ClientControlWriter::queue(Arc::clone(&empty_queue)),
+            render: ClientRenderWriter::queue(Arc::clone(&empty_queue)),
+        };
+        empty_writer
+            .control
+            .send(reply.clone())
+            .expect("the endpoint reply fits an empty queue");
+
+        let queue = ClientWriterQueue::with_limits(None, 4, byte_cap);
+        let writer = ClientWriter {
+            control: ClientControlWriter::queue(Arc::clone(&queue)),
+            render: ClientRenderWriter::queue(Arc::clone(&queue)),
+        };
+
+        writer
+            .control
+            .send(vec![b'x'])
+            .expect("first control item fits");
+        assert!(matches!(writer.control.send(reply), Err(SendError(_))));
+        assert!(matches!(
+            writer.render.try_send(vec![b'z']),
+            Err(TrySendError::Disconnected(_))
+        ));
     }
 
     #[test]

@@ -399,8 +399,6 @@ impl App {
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.
                     self.finish_checkpointed_pane_exit();
-                } else {
-                    self.schedule_session_save();
                 }
                 true
             }

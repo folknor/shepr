@@ -100,7 +100,7 @@ impl App {
 
         let changed = pass.changed();
         if changed {
-            self.schedule_session_save();
+            self.state.mark_session_dirty();
         }
         if !self.has_pending_agent_resumes() {
             self.resume_schedule.observe(now, false, false);
@@ -494,7 +494,7 @@ impl App {
         );
         let changed = outcome != AttemptOutcome::Retryable;
         if changed {
-            self.schedule_session_save();
+            self.state.mark_session_dirty();
         }
         changed
     }

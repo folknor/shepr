@@ -93,7 +93,7 @@ impl App {
         if changed {
             ws.custom_name = label;
             crate::logging::workspace_renamed(&ws.id);
-            self.schedule_session_save();
+            self.state.mark_session_dirty();
         }
         let effects = EndpointEffects {
             shell_projection_changed: changed,
@@ -519,5 +519,33 @@ mod tests {
 
         assert!(app.workspace_info(0).is_some());
         assert!(app.workspace_info(1).is_none());
+    }
+
+    #[test]
+    fn workspace_rename_uses_the_shared_dirty_schedule() {
+        let mut app = app();
+        app.policy = crate::app::AppPolicy::Production;
+        app.state.workspaces = vec![Workspace::test_new("before")];
+        let workspace_id = app.public_workspace_id(0).expect("test precondition");
+        let sample = crate::app::AppClock {
+            now: app.clock.now + std::time::Duration::from_secs(2),
+            wall_now: app.clock.wall_now,
+        };
+        app.set_clock(sample);
+
+        app.handle_workspace_rename(WorkspaceRenameParams {
+            workspace_id,
+            label: "after".into(),
+        })
+        .expect("the workspace is renamed");
+
+        assert!(app.state.session_dirty);
+        assert_eq!(app.session_saver.session_save_deadline, None);
+        app.sync_session_save_schedule();
+        assert!(!app.state.session_dirty);
+        assert_eq!(
+            app.session_saver.session_save_deadline,
+            Some(sample.now + crate::limits::SESSION_SAVE_DEBOUNCE)
+        );
     }
 }

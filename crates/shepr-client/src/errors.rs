@@ -130,8 +130,13 @@ impl std::error::Error for ClientError {}
 /// connection was accepted (a stream clone or a reader thread that could not start).
 pub(crate) fn endpoint_setup_failure(error: &ClientError) -> shepr_remote::SshFailureDiagnostic {
     match error {
-        ClientError::ConnectionFailed(error) | ClientError::EndpointSetup(error) => {
+        // A connection failure can carry a network or remote result, so its kind
+        // decides nothing; setup after acceptance only ever fails locally.
+        ClientError::ConnectionFailed(error) => {
             shepr_remote::SshFailureDiagnostic::from_error(error)
+        }
+        ClientError::EndpointSetup(error) => {
+            shepr_remote::SshFailureDiagnostic::from_local_setup_error(error)
         }
         error => shepr_remote::SshFailureDiagnostic::from_message(error.to_string()),
     }

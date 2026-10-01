@@ -649,6 +649,8 @@ pub struct ClientShellState {
     pub(super) pending_requests: HashMap<shepr_protocol::RequestId, PendingEndpointRequest>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
+    pub(super) restore_notice_seen: HashSet<ClientEndpointNoticeKey>,
+    pub(super) restore_notice_queue: VecDeque<ClientVisibleEndpointNotice>,
     /// Expiry of the notice currently shown, with the key and body it was started for, so a
     /// replacement notice gets its own full lifetime. See `tick_transient_banners`.
     pub(super) endpoint_notice_deadline:
@@ -772,6 +774,8 @@ impl ClientShellState {
             pending_requests: HashMap::new(),
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
+            restore_notice_seen: HashSet::new(),
+            restore_notice_queue: VecDeque::new(),
             endpoint_notice_deadline: None,
             outer_focused: None,
             host_background: None,
@@ -888,7 +892,14 @@ impl ClientShellState {
         self.pane_scroll_queued.clear();
         self.pane_scroll_targets.clear();
         self.endpoint_notice_seen.clear();
-        self.visible_endpoint_notice = None;
+        if !self
+            .visible_endpoint_notice
+            .as_ref()
+            .is_some_and(|notice| self.restore_notice_seen.contains(&notice.key))
+        {
+            self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
+            self.endpoint_notice_deadline = None;
+        }
         self.endpoint_error = None;
         self.endpoint_error_deadline = None;
         self.navigate_workspace_id = None;
@@ -1314,6 +1325,13 @@ impl ClientShellState {
     /// predecessor's. Returns whether anything was hidden.
     pub(crate) fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
         let mut repaint = false;
+        if self.visible_endpoint_notice.is_none()
+            && let Some(notice) = self.restore_notice_queue.pop_front()
+        {
+            self.visible_endpoint_notice = Some(notice);
+            self.endpoint_notice_deadline = None;
+            repaint = true;
+        }
 
         let notice_expired = self.visible_endpoint_notice.as_ref().is_some_and(|notice| {
             self.endpoint_notice_deadline
@@ -1323,7 +1341,7 @@ impl ClientShellState {
                 })
         });
         if notice_expired {
-            self.visible_endpoint_notice = None;
+            self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
             self.endpoint_notice_deadline = None;
             repaint = true;
         }

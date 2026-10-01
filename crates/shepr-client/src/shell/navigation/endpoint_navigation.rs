@@ -51,10 +51,18 @@ impl ClientShellState {
         };
         let endpoint_id = hit.endpoint_id.clone();
         let collapse_toggle = super::contains(hit.collapse_toggle, point);
-        if collapse_toggle || endpoint_id == self.active_endpoint_id {
+        if collapse_toggle {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
+            outcome.repaint = true;
+        } else if endpoint_id == self.active_endpoint_id {
+            if !self.collapsed_endpoints.remove(&endpoint_id) {
+                self.collapsed_endpoints.insert(endpoint_id.clone());
+            }
+            // The runtime suppresses this while the endpoint owns the presentation, and uses it
+            // to cancel a handoff while this endpoint is still the displayed source.
+            self.activate_endpoint(endpoint_id, outcome);
             outcome.repaint = true;
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
@@ -247,5 +255,34 @@ impl ClientShellState {
             target: Some(target),
         });
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displayed_machine_body_submits_a_targetless_selection() {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(
+            &shepr_config::Config::default(),
+        ));
+        state.hits.machines.push(MachineHit {
+            rect: Rect::new(0, 0, 10, 1),
+            status_badge: Rect::default(),
+            collapse_toggle: Rect::new(0, 0, 1, 1),
+            endpoint_id: ClientEndpointId::Local,
+        });
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.handle_endpoint_machine_click((5, 0), &mut outcome));
+        assert!(matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::ActivateEndpoint {
+                endpoint_id: ClientEndpointId::Local,
+                target: None,
+            }]
+        ));
+        assert!(state.collapsed_endpoints.contains(&ClientEndpointId::Local));
     }
 }

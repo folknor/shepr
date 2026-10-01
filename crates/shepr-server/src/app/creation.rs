@@ -117,7 +117,6 @@ impl App {
         geometry: SpawnGeometry,
     ) -> std::io::Result<usize> {
         let index = self.create_workspace_without_save(initial_cwd, geometry)?;
-        self.schedule_session_save();
         Ok(index)
     }
 

@@ -222,16 +222,15 @@ impl App {
         }
     }
 
-    pub(super) fn schedule_session_save(&mut self) {
-        if self.policy.persists_session() {
-            self.session_saver.schedule(self.clock.now);
-        }
-    }
-
+    /// Consumes the pure state mutation signal and applies persistence effects
+    /// once for this loop pass. AppState mutations and App-owned mutations use
+    /// the same flag, so a handler cannot schedule the same change twice.
     pub(crate) fn sync_session_save_schedule(&mut self) {
         if self.state.session_dirty {
             self.state.session_dirty = false;
-            self.schedule_session_save();
+            if self.policy.persists_session() {
+                self.session_saver.schedule(self.clock.now);
+            }
         }
     }
 

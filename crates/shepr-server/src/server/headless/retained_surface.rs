@@ -191,6 +191,11 @@ struct ResolvedRetainedPane<'a> {
     identity: &'a ClientPaneIdentity,
 }
 
+struct RetainedPaneLayout {
+    workspace_index: usize,
+    panes: Vec<shepr_mux::workspace::PaneChromeInfo>,
+}
+
 struct CollectedPanePatch {
     identity: ClientPaneIdentity,
     patch: shepr_mux::pane::TerminalDirtyPatch,
@@ -210,6 +215,7 @@ fn resolve_retained_panes<'a>(
     app: &app::App,
     surface: &'a shepr_protocol::PaneSurfaceFrame,
     identities: &'a [ClientPaneIdentity],
+    layout: &RetainedPaneLayout,
 ) -> Option<Vec<ResolvedRetainedPane<'a>>> {
     if surface.panes.len() != identities.len() {
         return None;
@@ -217,28 +223,23 @@ fn resolve_retained_panes<'a>(
     let Some(first_identity) = identities.first() else {
         return Some(Vec::new());
     };
-    let workspace_index = app.resolve_workspace_id(&first_identity.workspace_id)?;
     if identities
         .iter()
         .any(|identity| identity.workspace_id != first_identity.workspace_id)
     {
         return None;
     }
-    let workspace = app.state.workspaces.get(workspace_index)?;
-    let area = Rect::new(0, 0, surface.frame.width, surface.frame.height);
-    let pane_layouts = app
-        .state
-        .pane_geometry_in(area)
-        .visible_panes(workspace.layout(), workspace.zoomed());
-    if pane_layouts.len() != surface.panes.len() {
+    let workspace = app.state.workspaces.get(layout.workspace_index)?;
+    if workspace.id != first_identity.workspace_id || layout.panes.len() != surface.panes.len() {
         return None;
     }
     let mut resolved = Vec::with_capacity(surface.panes.len());
-    for ((pane, identity), layout) in surface.panes.iter().zip(identities).zip(pane_layouts) {
-        if layout.id != identity.pane_id {
+    for ((pane, identity), pane_layout) in surface.panes.iter().zip(identities).zip(&layout.panes) {
+        if pane_layout.id != identity.pane_id {
             return None;
         }
-        let pane_inner = shepr_mux::workspace::pane_inner_rect(layout.rect, layout.borders);
+        let pane_inner =
+            shepr_mux::workspace::pane_inner_rect(pane_layout.rect, pane_layout.borders);
         let content = shepr_mux::workspace::terminal_content_rect(
             pane_inner,
             app.state.settings.pane_scrollbars,
@@ -251,7 +252,7 @@ fn resolve_retained_panes<'a>(
             pane.inner_rect.width,
             pane.inner_rect.height,
         );
-        if layout.rect != committed_rect || content != committed_inner {
+        if pane_layout.rect != committed_rect || content != committed_inner {
             return None;
         }
 
@@ -273,11 +274,37 @@ fn resolve_retained_panes<'a>(
         resolved.push(ResolvedRetainedPane {
             pane,
             reserved_scrollbar_gutter,
-            workspace_index,
+            workspace_index: layout.workspace_index,
             identity,
         });
     }
     Some(resolved)
+}
+
+fn retained_pane_layout<'a>(
+    app: &app::App,
+    cache: &'a mut HashMap<(usize, u16, u16), Option<RetainedPaneLayout>>,
+    workspace_id: &shepr_protocol::WorkspaceId,
+    width: u16,
+    height: u16,
+) -> Option<&'a RetainedPaneLayout> {
+    let key = (workspace_id.number(), width, height);
+    cache
+        .entry(key)
+        .or_insert_with(|| {
+            let workspace_index = app.resolve_workspace_id(workspace_id)?;
+            let workspace = app.state.workspaces.get(workspace_index)?;
+            let area = Rect::new(0, 0, width, height);
+            let panes = app
+                .state
+                .pane_geometry_in(area)
+                .visible_panes(workspace.layout(), workspace.zoomed());
+            Some(RetainedPaneLayout {
+                workspace_index,
+                panes,
+            })
+        })
+        .as_ref()
 }
 
 fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> bool {
@@ -342,6 +369,11 @@ impl HeadlessServer {
         }
 
         let mut recipients = Vec::with_capacity(targets.len());
+        // Several clients can view the same workspace at the same size. The
+        // layout only depends on that workspace and frame geometry, so compute
+        // it once per key during this fanout pass and validate each client's
+        // committed surface against the shared result.
+        let mut layouts = HashMap::new();
         for target in &targets {
             let Some(client) = self.clients.get(&target.client_id) else {
                 fallback!("client_missing");
@@ -362,10 +394,32 @@ impl HeadlessServer {
             {
                 fallback!("baseline_mismatch");
             }
-            let Some(panes) =
-                resolve_retained_panes(&self.app, surface, &client.surface_pane_identities)
-            else {
-                fallback!("baseline_mismatch");
+            let identities = &client.surface_pane_identities;
+            let layout = if let Some(identity) = identities.first() {
+                let Some(layout) = retained_pane_layout(
+                    &self.app,
+                    &mut layouts,
+                    &identity.workspace_id,
+                    surface.frame.width,
+                    surface.frame.height,
+                ) else {
+                    fallback!("baseline_mismatch");
+                };
+                Some(layout)
+            } else {
+                None
+            };
+            let panes = match layout {
+                Some(layout) => {
+                    let Some(panes) =
+                        resolve_retained_panes(&self.app, surface, identities, layout)
+                    else {
+                        fallback!("baseline_mismatch");
+                    };
+                    panes
+                }
+                None if surface.panes.is_empty() => Vec::new(),
+                None => fallback!("baseline_mismatch"),
             };
             if has_synchronized_pane(&self.app, &panes) {
                 fallback!("synchronized_visible");
@@ -663,7 +717,16 @@ mod tests {
             pane_id,
         }];
 
-        let resolved = resolve_retained_panes(&app, &surface, &identities)
+        let mut layouts = HashMap::new();
+        let layout = retained_pane_layout(
+            &app,
+            &mut layouts,
+            &identities[0].workspace_id,
+            surface.frame.width,
+            surface.frame.height,
+        )
+        .expect("test workspace layout resolves");
+        let resolved = resolve_retained_panes(&app, &surface, &identities, layout)
             .expect("typed identity resolves without parsing the wire id");
 
         assert_eq!(resolved.len(), 1);
@@ -721,7 +784,16 @@ mod tests {
             workspace_id,
             pane_id,
         }];
-        let resolved = resolve_retained_panes(&app, &surface, &identities)
+        let mut layouts = HashMap::new();
+        let layout = retained_pane_layout(
+            &app,
+            &mut layouts,
+            &identities[0].workspace_id,
+            surface.frame.width,
+            surface.frame.height,
+        )
+        .expect("test workspace layout resolves");
+        let resolved = resolve_retained_panes(&app, &surface, &identities, layout)
             .expect("the committed pane geometry matches its layout");
         assert_eq!(resolved[0].reserved_scrollbar_gutter, None);
         let metrics = shepr_mux::pane::ScrollMetrics {
@@ -743,6 +815,38 @@ mod tests {
 
         assert!(rows.is_empty());
         assert_eq!(pane.scrollbar_rect, None);
+    }
+
+    #[test]
+    fn retained_layout_is_reused_for_recipients_with_the_same_workspace_and_size() {
+        let mut app = app::App::new(
+            &shepr_config::Config::default(),
+            app::AppPolicy::Test,
+            tokio::sync::mpsc::unbounded_channel().1,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("retained-layout-cache");
+        let workspace_id = workspace.id.clone();
+        app.state.workspaces.push(workspace);
+        let mut cache = HashMap::new();
+
+        let (first_panes, first_len) = {
+            let first = retained_pane_layout(&app, &mut cache, &workspace_id, 80, 24)
+                .expect("first recipient layout");
+            (first.panes.as_ptr(), first.panes.len())
+        };
+        let (second_panes, second_len) = {
+            let second = retained_pane_layout(&app, &mut cache, &workspace_id, 80, 24)
+                .expect("second recipient layout");
+            (second.panes.as_ptr(), second.panes.len())
+        };
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(second_panes, first_panes);
+        assert_eq!(second_len, first_len);
+
+        retained_pane_layout(&app, &mut cache, &workspace_id, 81, 24)
+            .expect("different frame size gets its own layout");
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]

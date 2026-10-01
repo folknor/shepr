@@ -1,8 +1,11 @@
-use super::GitReadError;
-use super::config::{deps_current, read_config_for_status, upstream_full_ref};
+use super::config::{
+    deps_current, git_config_bool, git_user_config_paths_at, read_config_for_status,
+    upstream_full_ref,
+};
 use super::discovery::{git_repo_root, git_worktree_info};
 use super::status::git_status_fingerprint;
 use super::test_support::{temp_test_dir, write_fake_tracked_repo};
+use std::os::unix::ffi::OsStringExt;
 
 fn upstream(root: &std::path::Path) -> (Option<String>, Vec<super::config::FileDep>) {
     let info = git_worktree_info(root).expect("repository");
@@ -13,21 +16,33 @@ fn upstream(root: &std::path::Path) -> (Option<String>, Vec<super::config::FileD
 }
 
 #[test]
-fn refused_git_config_environment_is_reported_as_such() {
+fn git_config_nosystem_accepts_git_integer_whitespace() {
     let env = shepr_test_support::IsolatedEnv::new();
-    let root = temp_test_dir("refused-git-config-environment");
-    write_fake_tracked_repo(&root);
-    env.set(shepr_core::env::EnvVar::GitConfigNoSystem, " true ");
+    env.set(shepr_core::env::EnvVar::GitConfigNoSystem, " \t1");
 
-    let info = git_worktree_info(&root).expect("repository");
-    let mut errors = Vec::new();
-    let (_, config, _) = read_config_for_status(&info, "main", &mut errors);
+    let paths = git_user_config_paths_at(std::path::Path::new("/repo")).expect("config paths");
+    assert!(!paths.contains(&std::path::PathBuf::from("/etc/gitconfig")));
+}
 
-    assert!(config.is_none());
-    assert!(matches!(
-        errors.as_slice(),
-        [GitReadError::ConfigEnvironment { .. }]
-    ));
+#[test]
+fn git_config_bool_uses_git_words_and_scaled_base_zero_integers() {
+    assert_eq!(git_config_bool(b"YeS"), Some(true));
+    assert_eq!(git_config_bool(b"OFF"), Some(false));
+    assert_eq!(git_config_bool(b"0x1K"), Some(true));
+    assert_eq!(git_config_bool(b"00"), Some(false));
+    assert_eq!(git_config_bool(b"1 "), None);
+}
+
+#[test]
+fn non_utf8_git_config_nosystem_does_not_refuse_environment() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    env.set(
+        shepr_core::env::EnvVar::GitConfigNoSystem,
+        std::ffi::OsString::from_vec(vec![0xff]),
+    );
+
+    let paths = git_user_config_paths_at(std::path::Path::new("/repo")).expect("config paths");
+    assert!(paths.contains(&std::path::PathBuf::from("/etc/gitconfig")));
 }
 
 #[test]

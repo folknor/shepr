@@ -1,5 +1,5 @@
 use std::io::{self, ErrorKind};
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -259,8 +259,9 @@ pub(super) fn git_user_config_paths_at(
     cwd: &Path,
 ) -> Result<Vec<PathBuf>, shepr_core::env::EnvError> {
     let mut paths = Vec::new();
-    let no_system = shepr_core::env::read_text(shepr_core::env::EnvVar::GitConfigNoSystem)?
-        .and_then(|value| git_config_bool(&value))
+    let no_system = shepr_core::env::read_os(shepr_core::env::EnvVar::GitConfigNoSystem)?
+        .as_deref()
+        .and_then(|value| git_config_bool(value.as_bytes()))
         .unwrap_or(false);
     if !no_system {
         let system_path = git_config_override_path(cwd, shepr_core::env::EnvVar::GitConfigSystem)?
@@ -306,15 +307,71 @@ fn git_config_override_path(
     }))
 }
 
-pub(super) fn git_config_bool(value: &str) -> Option<bool> {
-    let lower = value.to_ascii_lowercase();
-    match lower.as_str() {
-        "true" | "yes" | "on" => return Some(true),
-        "false" | "no" | "off" | "" => return Some(false),
-        _ => {}
+/// Git's maybe-bool grammar: boolean words or a base-0 integer with an
+/// optional scaling suffix.
+pub(super) fn git_config_bool(value: &[u8]) -> Option<bool> {
+    if value.eq_ignore_ascii_case(b"true")
+        || value.eq_ignore_ascii_case(b"yes")
+        || value.eq_ignore_ascii_case(b"on")
+    {
+        return Some(true);
     }
-    let digits = lower
-        .strip_suffix(['k', 'm', 'g'])
-        .unwrap_or(lower.as_str());
-    digits.parse::<i64>().ok().map(|number| number != 0)
+    if value.eq_ignore_ascii_case(b"false")
+        || value.eq_ignore_ascii_case(b"no")
+        || value.eq_ignore_ascii_case(b"off")
+        || value.is_empty()
+    {
+        return Some(false);
+    }
+
+    let value = std::str::from_utf8(value).ok()?;
+    let value = value.trim_start_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);
+    let (negative, value) = if let Some(value) = value.strip_prefix('-') {
+        (true, value)
+    } else if let Some(value) = value.strip_prefix('+') {
+        (false, value)
+    } else {
+        (false, value)
+    };
+    let (radix, digits_start) = if value.len() > 2
+        && value.as_bytes()[0] == b'0'
+        && matches!(value.as_bytes()[1], b'x' | b'X')
+        && value.as_bytes()[2].is_ascii_hexdigit()
+    {
+        (16, 2)
+    } else if value.starts_with('0') {
+        (8, 0)
+    } else {
+        (10, 0)
+    };
+    let digits_end = digits_start
+        + value.as_bytes()[digits_start..]
+            .iter()
+            .take_while(|&&byte| match radix {
+                8 => matches!(byte, b'0'..=b'7'),
+                10 => byte.is_ascii_digit(),
+                16 => byte.is_ascii_hexdigit(),
+                _ => false,
+            })
+            .count();
+    if digits_end == digits_start {
+        return None;
+    }
+    let magnitude = i128::from_str_radix(&value[digits_start..digits_end], radix).ok()?;
+    let number = if negative { -magnitude } else { magnitude };
+    let suffix = &value[digits_end..];
+    let factor = if suffix.is_empty() {
+        1
+    } else if suffix.eq_ignore_ascii_case("k") {
+        1024
+    } else if suffix.eq_ignore_ascii_case("m") {
+        1024 * 1024
+    } else if suffix.eq_ignore_ascii_case("g") {
+        1024 * 1024 * 1024
+    } else {
+        return None;
+    };
+    i32::try_from(number.checked_mul(factor)?)
+        .ok()
+        .map(|number| number != 0)
 }

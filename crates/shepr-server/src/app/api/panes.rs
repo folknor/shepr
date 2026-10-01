@@ -104,7 +104,6 @@ impl App {
             return rejected("the split target is no longer available");
         };
         self.terminal_runtimes.insert(terminal_id, runtime);
-        self.schedule_session_save();
         let effects = EndpointEffects {
             shell_projection_changed: true,
             pane_surface_changed: true,
@@ -242,7 +241,6 @@ impl App {
                     .is_some_and(|workspace| workspace.focused_pane_id() != focused)
             });
         self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
-        self.schedule_session_save();
 
         Handled::done_with_effects(EndpointEffects {
             shell_projection_changed: true,

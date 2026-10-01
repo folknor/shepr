@@ -204,9 +204,9 @@ pub(crate) fn remove_hook_path_commands_preserving(
     let mut preserved = false;
     let mut empty_events = Vec::new();
     for (event, entries_value) in events.iter_mut() {
-        let Some(entries) = entries_value.as_array_mut() else {
-            continue;
-        };
+        let entries = entries_value.as_array_mut().ok_or_else(|| {
+            io::Error::other(format!("hook entries for {event} must be an array"))
+        })?;
         let mut removed_in_event = false;
         entries.retain_mut(|entry| {
             if !preserved
@@ -295,9 +295,14 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
 }
 
 pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
-    let mut result = remove_kimi_config_block(content)?
-        .trim_end_matches('\n')
-        .to_string();
+    let unmarked_content = remove_kimi_config_block(content)?;
+    // Only the marked block is safe to rewrite without reformatting user TOML.
+    if kimi_config_uses_hook_path(&unmarked_content, hook_path)? {
+        return Err(io::Error::other(
+            "kimi config.toml registers the Shepr hook outside its managed block; remove that hook and retry",
+        ));
+    }
+    let mut result = unmarked_content.trim_end_matches('\n').to_string();
     if !result.is_empty() {
         result.push('\n');
         result.push('\n');
@@ -311,6 +316,14 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
 }
 
 pub(crate) fn kimi_config_block_is_current(content: &str, hook_path: &Path) -> io::Result<bool> {
+    let unmarked_content = match remove_kimi_config_block(content) {
+        Ok(content) => content,
+        Err(_) => return Ok(false),
+    };
+    if kimi_config_uses_hook_path(&unmarked_content, hook_path)? {
+        return Ok(false);
+    }
+
     let expected = kimi_integration_block(hook_path)?;
     let mut actual = String::new();
     let mut in_block = false;
@@ -334,6 +347,21 @@ pub(crate) fn kimi_config_block_is_current(content: &str, hook_path: &Path) -> i
     }
 
     Ok(found_block && !in_block && actual == expected)
+}
+
+fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> io::Result<bool> {
+    let config = toml::from_str::<toml::Value>(content)
+        .map_err(|error| io::Error::other(format!("could not parse Kimi config.toml: {error}")))?;
+    Ok(config
+        .get("hooks")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|command| is_hook_command_for_path(command, hook_path))
+            })
+        }))
 }
 
 fn kimi_integration_block(hook_path: &Path) -> io::Result<String> {

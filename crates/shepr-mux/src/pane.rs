@@ -1,5 +1,7 @@
 mod agent_detection;
+mod child_watcher;
 mod cursor;
+mod detection_task;
 mod launch;
 mod osc;
 mod process_probe;

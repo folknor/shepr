@@ -50,6 +50,10 @@ impl ClientShellState {
             })
     }
 
+    /// Keys that leave copy mode or hand input to the prefix: Esc always, and outside
+    /// the search prompt the prefix and `q`. While a copy operation is in flight they
+    /// queue in order like every other key; they only act out of order when the queue
+    /// is full, as the way out of a request that stopped answering.
     pub(super) fn copy_mode_interrupt_key(&self, key: &shepr_termio::input::TerminalKey) -> bool {
         if key.kind != crossterm::event::KeyEventKind::Press {
             return false;
@@ -65,6 +69,16 @@ impl ClientShellState {
         }
         shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
             || shepr_termio::copy_mode::copy_mode_command_char(key) == Some('q')
+    }
+
+    /// Gives up on the in-flight copy operation and every key queued behind it. The
+    /// request stays in the ledger; its answer, if one ever comes, belongs to an older
+    /// copy session and is ignored.
+    pub(super) fn abandon_copy_operation(&mut self) {
+        self.reset_copy_pipeline();
+        if let Some(copy_mode) = self.copy_mode.as_mut() {
+            copy_mode.copy_after_search = false;
+        }
     }
 
     pub(super) fn reset_copy_pipeline(&mut self) {

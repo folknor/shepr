@@ -17,6 +17,13 @@ fn row_fits_frame(row: &shepr_protocol::PaneSurfacePatchRow, frame: &FrameData) 
         && row.y < frame.height
 }
 
+fn patch_updates_pane<'a>(
+    mut patched_pane_ids: impl Iterator<Item = &'a shepr_protocol::PublicPaneId>,
+    pane_id: &shepr_protocol::PublicPaneId,
+) -> bool {
+    patched_pane_ids.any(|patched| patched == pane_id)
+}
+
 fn apply_patch_to_surface(
     surface: &mut shepr_protocol::PaneSurfaceFrame,
     patch: &shepr_protocol::PaneSurfacePatch,
@@ -29,6 +36,8 @@ fn fast_path_blocker(
     patch: &shepr_protocol::PaneSurfacePatch,
     area: Rect,
 ) -> Option<&'static str> {
+    // Selection and copy mode affect pane cells only when their owner is patched. A parked
+    // copy session must not send unrelated pane output through full-frame composition.
     if state
         .pane_surface
         .as_ref()
@@ -60,12 +69,21 @@ fn fast_path_blocker(
         // compose. Notices expire (see `tick_transient_banners`), so this only costs for as
         // long as one is on screen.
         Some("client_surface_patch.fallback.endpoint_notice")
-    } else if state.selection.is_some() {
+    } else if state.selection.as_ref().is_some_and(|selection| {
+        selection.is_visible()
+            && patch_updates_pane(
+                patch.panes.iter().map(|pane| &pane.pane_id),
+                &selection.pane_id,
+            )
+    }) {
         Some("client_surface_patch.fallback.selection")
-    } else if state.copy_mode.is_some() {
+    } else if state.copy_mode.as_ref().is_some_and(|copy_mode| {
+        patch_updates_pane(
+            patch.panes.iter().map(|pane| &pane.pane_id),
+            &copy_mode.pane_id,
+        )
+    }) {
         Some("client_surface_patch.fallback.copy_mode")
-    } else if state.selection_highlight_clear_deadline.is_some() {
-        Some("client_surface_patch.fallback.selection_deadline")
     } else if patch.panes.iter().any(|pane| {
         !state
             .hits
@@ -231,5 +249,23 @@ impl ClientShellState {
             self.set_pane_surface(next);
         }
         ClientPaneSurfacePatchOutcome::Applied(composed_patch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_patch_matching_is_limited_to_the_updated_pane_ids() {
+        let updated = [
+            crate::tests::test_pane_id("w1:p1"),
+            crate::tests::test_pane_id("w1:p2"),
+        ];
+        let copy_pane = crate::tests::test_pane_id("w1:p1");
+        let parked_copy_pane = crate::tests::test_pane_id("w2:p1");
+
+        assert!(patch_updates_pane(updated.iter(), &copy_pane));
+        assert!(!patch_updates_pane(updated.iter(), &parked_copy_pane));
     }
 }

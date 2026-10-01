@@ -388,6 +388,12 @@ mod tests {
     fn client_shell_snapshot_roundtrip() -> TestResult {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),
+            restore_notice: Some(NoticeKind::SessionRestoreIncomplete {
+                unusable: None,
+                dropped_workspaces: 2,
+                panes_pruned: true,
+                backup_dir: "/state/session-backups".into(),
+            }),
             revision: crate::ProjectionRevision::new(1),
             focused_workspace_id: Some("w1".into()),
             focused_pane_id: Some("w1:p1".into()),

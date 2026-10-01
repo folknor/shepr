@@ -36,10 +36,11 @@
 //!
 //! [`EnvKind::Handoff`] and [`EnvKind::Raw`] preserve OS strings byte for byte.
 //! A handoff is written by one shepr process for a child. Raw values include
-//! inherited `PATH` and `SHELL` inputs, Git environment values whose path or
-//! list grammar belongs to Git, and `TERM_PROGRAM`, whose terminal name is
-//! recognized only by a byte comparison that ignores ASCII case; non-UTF-8
-//! bytes and whitespace are not refused. Only empty reads as unset.
+//! inherited `PATH` and `SHELL` inputs, Git environment values whose grammar
+//! belongs to Git, including paths, lists and booleans, and `TERM_PROGRAM`,
+//! whose terminal name is recognized only by a byte comparison that ignores
+//! ASCII case; non-UTF-8 bytes and whitespace are not refused. Only empty
+//! reads as unset.
 //!
 //! What a value means beyond its kind (a log filter's
 //! syntax, which directory a relative path is joined to) stays with the site
@@ -232,9 +233,8 @@ env_vocabulary! {
         GitConfigSystem => "GIT_CONFIG_SYSTEM",
         /// `GIT_CONFIG_NOSYSTEM`: Git's boolean setting that skips the system
         /// config file when true. Shepr also reads it to decide whether that
-        /// file contributes to sidebar Git status. Keep it text-valued until
-        /// that consumer can parse raw bytes without selecting the wrong set
-        /// of config files when the value is malformed.
+        /// file contributes to sidebar Git status, using Git's boolean
+        /// grammar.
         GitConfigNoSystem => "GIT_CONFIG_NOSYSTEM",
         /// `GIT_CONFIG_COUNT`: the number of indexed command-scope config
         /// pairs Git reads. Its decimal grammar follows Git's parser.
@@ -342,11 +342,9 @@ impl EnvVar {
     pub const fn kind(self) -> EnvKind {
         match self {
             Self::SheprDebugOscEvidence => EnvKind::Flag,
-            Self::SheprPaneId
-            | Self::SheprEnv
-            | Self::SheprBuildProfile
-            | Self::SheprLog
-            | Self::GitConfigNoSystem => EnvKind::Text,
+            Self::SheprPaneId | Self::SheprEnv | Self::SheprBuildProfile | Self::SheprLog => {
+                EnvKind::Text
+            }
             Self::SheprConfigPath
             | Self::PiCodingAgentDir
             | Self::PiConfigDir
@@ -376,6 +374,7 @@ impl EnvVar {
             | Self::GitCeilingDirectories
             | Self::GitConfigGlobal
             | Self::GitConfigSystem
+            | Self::GitConfigNoSystem
             | Self::TermProgram
             | Self::GitConfigCount
             | Self::GitConfigParameters => EnvKind::Raw,
@@ -1020,7 +1019,7 @@ mod tests {
             ),
             (EnvVar::GitConfigGlobal, "GIT_CONFIG_GLOBAL", Raw),
             (EnvVar::GitConfigSystem, "GIT_CONFIG_SYSTEM", Raw),
-            (EnvVar::GitConfigNoSystem, "GIT_CONFIG_NOSYSTEM", Text),
+            (EnvVar::GitConfigNoSystem, "GIT_CONFIG_NOSYSTEM", Raw),
             (EnvVar::GitConfigCount, "GIT_CONFIG_COUNT", Raw),
             (EnvVar::GitConfigParameters, "GIT_CONFIG_PARAMETERS", Raw),
         ];

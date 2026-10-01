@@ -56,7 +56,7 @@ enum SshFailure {
     AuthenticationPending,
     /// The remote's host key is unknown or changed.
     HostKey,
-    /// Local SSH setup or process creation failed before a remote result.
+    /// A local SSH or endpoint setup operation failed.
     LocalSetup,
     /// The remote was never reached or the link dropped: a retry can clear it.
     Link,
@@ -100,6 +100,7 @@ enum SshFailureOrigin {
     CommandTimeout,
     LocalSetup,
     RemoteCompatibility,
+    RemoteCandidateMismatch,
     Message,
 }
 
@@ -133,6 +134,10 @@ impl SshFailureDiagnostic {
             // callers outside this crate. Local sources are wrapped explicitly.
             SshFailure::Compatibility
         } else {
+            // NotFound, PermissionDenied and InvalidInput can also come from a
+            // remote command or protocol path. ErrorKind alone cannot prove the
+            // operation was local; known local setup boundaries must use
+            // `from_local_setup_error`.
             SshFailure::Other
         };
         Self {
@@ -186,7 +191,14 @@ impl SshFailureDiagnostic {
     }
 
     pub(crate) fn is_remote_compatibility(&self) -> bool {
-        matches!(self.origin, SshFailureOrigin::RemoteCompatibility)
+        matches!(
+            self.origin,
+            SshFailureOrigin::RemoteCompatibility | SshFailureOrigin::RemoteCandidateMismatch
+        )
+    }
+
+    pub(crate) fn is_remote_candidate_mismatch(&self) -> bool {
+        matches!(self.origin, SshFailureOrigin::RemoteCandidateMismatch)
     }
 
     pub(crate) fn is_local_setup_failure(&self) -> bool {
@@ -199,6 +211,17 @@ impl SshFailureDiagnostic {
             origin: SshFailureOrigin::CommandTimeout,
             message: "SSH command timed out before returning a remote result; interactive authentication may be needed"
                 .into(),
+        }
+    }
+
+    /// Classifies an error at a boundary that knows its source was local setup.
+    /// The same `ErrorKind` values can describe remote failures, so callers must
+    /// supply this context explicitly instead of relying on `from_error`.
+    pub fn from_local_setup_error(error: &std::io::Error) -> Self {
+        Self {
+            failure: SshFailure::LocalSetup,
+            origin: SshFailureOrigin::LocalSetup,
+            message: error.to_string(),
         }
     }
 
@@ -219,6 +242,7 @@ impl SshFailureDiagnostic {
             SshFailureOrigin::CommandTimeout => true,
             SshFailureOrigin::LocalSetup
             | SshFailureOrigin::RemoteCompatibility
+            | SshFailureOrigin::RemoteCandidateMismatch
             | SshFailureOrigin::Message => false,
         }
     }
@@ -244,6 +268,7 @@ impl SshFailureDiagnostic {
             | SshFailureOrigin::CommandTimeout
             | SshFailureOrigin::LocalSetup
             | SshFailureOrigin::RemoteCompatibility
+            | SshFailureOrigin::RemoteCandidateMismatch
             | SshFailureOrigin::Message => None,
         }
     }
@@ -324,6 +349,7 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
         "network is unreachable",
         "network is down",
         "connection reset by peer",
+        "broken pipe",
     ]
     .iter()
     .any(|signature| message.contains(signature))
@@ -375,15 +401,8 @@ pub(crate) fn local_setup_error(context: &str, error: std::io::Error) -> std::io
     }) {
         return error;
     }
-    let message = format!("{context}: {error}");
-    std::io::Error::new(
-        error.kind(),
-        SshFailureDiagnostic {
-            failure: SshFailure::LocalSetup,
-            origin: SshFailureOrigin::LocalSetup,
-            message,
-        },
-    )
+    let diagnostic = SshFailureDiagnostic::from_local_setup_error(&error).with_context(context);
+    std::io::Error::new(error.kind(), diagnostic)
 }
 
 pub(crate) fn remote_compatibility_error(message: impl Into<String>) -> std::io::Error {
@@ -392,6 +411,17 @@ pub(crate) fn remote_compatibility_error(message: impl Into<String>) -> std::io:
         SshFailureDiagnostic {
             failure: SshFailure::Compatibility,
             origin: SshFailureOrigin::RemoteCompatibility,
+            message: message.into(),
+        },
+    )
+}
+
+pub(crate) fn remote_candidate_mismatch_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        SshFailureDiagnostic {
+            failure: SshFailure::Compatibility,
+            origin: SshFailureOrigin::RemoteCandidateMismatch,
             message: message.into(),
         },
     )
@@ -522,6 +552,7 @@ mod tests {
                 true,
                 false,
             ),
+            ("write: Broken pipe", "offline", true, false),
             (
                 "Received disconnect from h port 22:2: Too many authentication failures",
                 "authentication",

@@ -449,6 +449,26 @@ fn missing_local_ssh_is_reported_as_local_setup_not_remote_incompatibility() {
 }
 
 #[test]
+fn local_setup_diagnostics_require_an_explicit_local_boundary() {
+    for kind in [
+        io::ErrorKind::InvalidInput,
+        io::ErrorKind::NotFound,
+        io::ErrorKind::PermissionDenied,
+    ] {
+        let error = io::Error::new(kind, "operation failed");
+        let untyped = crate::SshFailureDiagnostic::from_error(&error);
+        assert!(
+            !untyped.needs_attention(),
+            "an unwrapped {kind} does not prove a local setup failure"
+        );
+
+        let local = crate::SshFailureDiagnostic::from_local_setup_error(&error);
+        assert!(local.is_local_setup_failure(), "{kind}");
+        assert!(local.needs_attention(), "{kind}");
+    }
+}
+
+#[test]
 fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     let mut ssh = test_ssh();
     let now = Instant::now();

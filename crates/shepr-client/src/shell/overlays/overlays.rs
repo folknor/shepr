@@ -660,6 +660,7 @@ fn render_navigator_overlay(
             Style::default().fg(p.overlay0).bg(p.panel_bg),
         );
     }
+    // Navigator controls are fixed by `route_overlay_key`; none are [keys] actions.
     put_text(
         b,
         i.x,
@@ -859,6 +860,8 @@ fn render_help_overlay(
         }
     }
 
+    // Help search and scrolling controls are fixed by `route_overlay_key`; they are not
+    // configurable keybinding actions.
     put_text(
         b,
         i.x,

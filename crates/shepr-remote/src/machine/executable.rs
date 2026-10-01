@@ -49,8 +49,8 @@ impl RemoteExecutable {
             return Err(RemoteExecutableError::ContainsControlCharacters);
         }
         // The command is nested inside /bin/sh -c and then parsed by the remote
-        // login shell. Keep paths as plain shell words because nested quote
-        // escaping is not reliable across the non-POSIX login shells we support.
+        // account shell. Keep paths as plain shell words because nested quote
+        // escaping is not reliable across the non-POSIX account shells we support.
         if !Self::is_shell_plain_word(&value) {
             return Err(RemoteExecutableError::NeedsShellQuoting);
         }

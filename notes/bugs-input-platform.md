@@ -13,15 +13,6 @@ Filed from the defect hunt over `crates/shepr-termio/src/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## INPLAT-004 - Legacy Alt+arrow split across two reads still parses as Esc then the arrow
-
-`crates/shepr-termio/src/input/raw_input.rs`. The host framer now keeps a
-complete, recognised doubled-ESC sequence (rxvt-style `ESC ESC [ A` for Alt+Up)
-together when it is buffered in one piece. Residue: when `ESC ESC` arrives in
-one read and the arrow tail in a later one, the framer still splits the escapes,
-so the pane gets Esc then Up and an `alt+up` binding does not fire. The file is
-upstream-tracked.
-
 ## INPLAT-010 - Compatibility aliases in `ipc.rs`
 
 Lateral. `pub type DeadlineReader<'a> = LocalStreamDeadlineReader<'a>` ("Preserve
@@ -50,19 +41,6 @@ single `OwnedRuntimeEntry` (create, mark, hold, release, sweep) in
 `ssh_paths.rs` and make "only provably dead owners are reclaimed" one place to
 audit.
 
-## INPLAT-015 - Structural: classify environment kinds by who owns the grammar
-
-`EnvKind` mixes "shepr parses this strictly" with "a foreign program owns this
-value". The Git ceiling and config path variables and `TERM_PROGRAM` are now
-`Raw` and `Presence` can no longer refuse a value, but `GIT_CONFIG_NOSYSTEM` is
-still `Text`: shepr-mux `git/config.rs` reads it with `read_text` before parsing
-Git's boolean grammar, so a non-UTF-8 or padded value is refused instead of
-read as Git reads it. Moving it to `Raw` needs that consumer to parse bytes. If
-every variable whose grammar belongs to Git, the shell, the terminal, tmux or
-sshd were `Raw` or `Presence` (byte-preserving, never refused), strict
-`Text`/`Path` would remain only for shepr's own variables, and a foreign value
-could never fail a shepr launch.
-
 ## INPLAT-016 - Structural: the raw input framer's holds as one enum
 
 `RawInputByteFramer` tracks `discard_until`, `discarded_tail_bytes`,
@@ -83,3 +61,11 @@ public, so a value built directly can still be below the minimum, and the
 defensive clamps in `shepr-pty/src/fd.rs` and `shepr-vt/src/lib.rs` stay
 necessary. Private fields with a clamping constructor would make an
 under-minimum pane grid unrepresentable.
+
+## INPLAT-018 - A doubled Escape is now held until the idle flush
+
+Lateral, `shepr-termio/src/input/raw_input.rs`. The framer now holds `ESC ESC`
+(or `ESC ESC [` with parameter bytes) until the idle flush, so two quick Esc
+presses deliver both Escapes one idle timeout late, where the first used to go
+through at once. Check whether the hold is needed for a real sequence or can
+release the first Escape immediately.

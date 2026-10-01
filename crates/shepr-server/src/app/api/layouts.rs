@@ -38,7 +38,7 @@ impl App {
             if !set {
                 return rejected("split path not found");
             }
-            self.schedule_session_save();
+            self.state.mark_session_dirty();
         }
         let effects = if changed {
             EndpointEffects {

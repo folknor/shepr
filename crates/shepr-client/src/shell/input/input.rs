@@ -372,11 +372,14 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
-        if self.copy_operation_in_flight
-            && self.copy_mode_owns_input()
-            && !self.copy_mode_interrupt_key(&key)
-        {
-            if self.copy_input_queue.len() >= crate::limits::MAX_COPY_INPUT_QUEUE {
+        // Preserve input order through the outstanding read, including keys that interrupt copy
+        // mode. Replaying the whole stream keeps Esc and the prefix behind the keys they follow.
+        if self.copy_operation_in_flight && self.copy_mode_owns_input() {
+            if self.copy_input_queue.len() < crate::limits::MAX_COPY_INPUT_QUEUE {
+                self.copy_input_queue.push_back(key);
+                return;
+            }
+            if !self.copy_mode_interrupt_key(&key) {
                 self.set_endpoint_error(
                     "copy-mode input queue is full; later keys were ignored",
                     self.now,
@@ -384,8 +387,15 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
-            self.copy_input_queue.push_back(key);
-            return;
+            // A full queue means the outstanding read has stopped answering. Copy mode must
+            // stay possible to leave, so an interrupt key abandons that read and the keys
+            // queued behind it, then routes as if nothing were in flight.
+            self.abandon_copy_operation();
+            self.set_endpoint_error(
+                "copy-mode input queue was full; queued keys were discarded",
+                self.now,
+            );
+            outcome.repaint = true;
         }
         let lease_key = shepr_termio::input::InputLeaseKey::new(LOCAL_INPUT_SOURCE, &key);
         let host_reports_all_keys = self.host_reports_all_keys;
@@ -1110,6 +1120,38 @@ mod tests {
         state
     }
 
+    fn test_pane_id() -> shepr_protocol::PublicPaneId {
+        let workspace =
+            shepr_protocol::WorkspaceId::from_number(1).expect("one-based workspace number");
+        shepr_protocol::PublicPaneId::new(&workspace, 1)
+    }
+
+    fn copy_mode_state() -> ClientCopyModeState {
+        ClientCopyModeState {
+            pane_id: test_pane_id(),
+            history_origin: shepr_vt::AbsRow(0),
+            geometry: (10, 2),
+            alternate_screen_active: false,
+            cursor: shepr_protocol::command::PaneTextPoint {
+                row: shepr_vt::AbsRow(0),
+                col: 0,
+            },
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 0,
+            entry_offset_from_bottom: 0,
+            selection: None,
+            search_prompt: None,
+            search_query: String::new(),
+            search_direction: None,
+            search_matches: Vec::new(),
+            search_total: 0,
+            search_current: None,
+            search_current_global: None,
+            search_generation: 0,
+            copy_after_search: false,
+        }
+    }
+
     fn message_text_bytes(message: &ClientMessage) -> usize {
         let ClientMessage::ClientShellPaneInput { events, .. } = message else {
             panic!("expected targeted pane input, got {message:?}");
@@ -1204,5 +1246,85 @@ mod tests {
                 Some("clip".to_owned())
             });
         assert_eq!(third.as_deref(), Some("clip"));
+    }
+
+    #[test]
+    fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
+        let mut state = shell();
+        state.mode = ClientShellMode::Copy;
+        state.copy_mode = Some(copy_mode_state());
+        state.copy_operation_in_flight = true;
+        let mut outcome = ClientShellInput::default();
+        let mut accounting = PaneInputBatchAccounting::default();
+        let prefix = state.config.keybinds.prefix;
+
+        state.handle_key(
+            shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+            &mut outcome,
+            &mut accounting,
+        );
+        state.handle_key(
+            shepr_termio::input::TerminalKey::new(prefix.0, prefix.1),
+            &mut outcome,
+            &mut accounting,
+        );
+
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert_eq!(state.copy_input_queue.len(), 2);
+
+        let generation = state.copy_session_generation;
+        state.complete_copy_operation(generation, true, &mut outcome);
+
+        assert_eq!(state.mode, ClientShellMode::Prefix);
+        assert!(
+            state
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy_mode| copy_mode.selection.is_some())
+        );
+        assert!(state.copy_input_queue.is_empty());
+    }
+
+    #[test]
+    fn copy_escape_cancels_selection_started_by_prior_queued_key() {
+        let mut state = shell();
+        state.mode = ClientShellMode::Copy;
+        let mut copy_mode = copy_mode_state();
+        copy_mode.selection = Some(ClientCopySelection::Character {
+            anchor: shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+        });
+        state.copy_mode = Some(copy_mode);
+        state.selection = Some(shepr_vt::selection::Selection::anchor(
+            test_pane_id(),
+            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+        ));
+        state.copy_operation_in_flight = true;
+        let mut outcome = ClientShellInput::default();
+        let mut accounting = PaneInputBatchAccounting::default();
+
+        state.handle_key(
+            shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+            &mut outcome,
+            &mut accounting,
+        );
+        state.handle_key(
+            shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+            &mut outcome,
+            &mut accounting,
+        );
+
+        assert_eq!(state.copy_input_queue.len(), 2);
+        let generation = state.copy_session_generation;
+        state.complete_copy_operation(generation, true, &mut outcome);
+
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert!(
+            state
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy_mode| copy_mode.selection.is_none())
+        );
+        assert!(state.selection.is_none());
+        assert!(state.copy_input_queue.is_empty());
     }
 }

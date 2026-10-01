@@ -121,6 +121,7 @@ pub(super) fn snapshot_from_session(
     shepr_protocol::ClientShellSnapshot {
         boot_id: boot_id.clone(),
         revision: revision.into(),
+        restore_notice: app.restore_notice.clone(),
         focused_workspace_id,
         focused_pane_id,
         workspaces,

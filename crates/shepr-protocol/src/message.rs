@@ -41,8 +41,8 @@ pub enum NoticeKind {
         max: usize,
     },
     /// The server's saved session did not come back in full when it started.
-    /// Sent to every client that connects to that server boot, since the
-    /// alternative is a workspace that is silently missing.
+    /// Carried in every shell snapshot for that server boot, so inactive
+    /// connections and reconnects retain the same restore diagnosis.
     SessionRestoreIncomplete {
         /// Why the session file could not be used at all; `None` when it
         /// loaded and only part of it was discarded.

@@ -278,7 +278,7 @@ pub(super) fn authentication_command_with_config(
 pub(crate) struct RemoteSsh {
     target: SshTarget,
     managed_config: ManagedSshConfig,
-    /// Bounds commands launched by `sh_output` and `posix_user_shell_output`:
+    /// Bounds commands launched by `sh_output` and `user_shell_output`:
     /// each gets the shorter of its own timeout and the time left, and none
     /// starts once it has passed. A machine connection attempt sets it so
     /// discovery cannot outlast its budget.
@@ -385,9 +385,9 @@ impl RemoteSsh {
         finish_ssh_command(write_result, output)
     }
 
-    /// Runs `remote_command` under `/bin/sh` through the remote user's login
-    /// shell, so the command sees the user's `PATH`.
-    pub(super) fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
+    /// Runs `remote_command` through sshd's non-login command in the account's
+    /// configured shell, invoked with `-c`. Its PATH is that shell's non-login PATH.
+    pub(super) fn user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
         let mut command = self.command();
         command
             .arg(posix_remote_output_command(remote_command))

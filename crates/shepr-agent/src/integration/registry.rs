@@ -591,6 +591,8 @@ fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> io::Result<boo
     let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
+    // The registration comparison preserves TOML source text. Parse the full
+    // file here so syntax errors inside the managed block are surfaced too.
     let _config = toml::from_str::<toml::Value>(&content).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1202,6 +1204,41 @@ mod registration_tests {
             !fs::read_to_string(&config_path)
                 .expect("test precondition")
                 .contains("OldEvent")
+        );
+    }
+
+    #[test]
+    fn kimi_status_and_install_reject_a_hook_outside_the_managed_block() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let dir = env.home().join(".kimi-code");
+        fs::create_dir_all(&dir).expect("test precondition");
+        let paths = AgentIntegrationPaths::resolve();
+        super::super::targets::install_kimi(&paths).expect("install");
+
+        let status = integration_status(&paths, IntegrationTarget::Kimi).expect("status");
+        let hook = status.path;
+        let config_path = dir.join(super::super::KIMI_CONFIG_NAME);
+        let config = fs::read_to_string(&config_path).expect("test precondition");
+        let external_hook = format!(
+            "[[hooks]]\nevent = \"SessionStart\"\ncommand = {}\ntimeout = 10\n\n",
+            super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("session")))
+        );
+        let config_with_external_hook = format!("{external_hook}{config}");
+        fs::write(&config_path, &config_with_external_hook).expect("test precondition");
+
+        assert_eq!(
+            integration_status(&paths, IntegrationTarget::Kimi)
+                .expect("status")
+                .state,
+            IntegrationStatusKind::Outdated
+        );
+        let error = super::super::targets::install_kimi(&paths)
+            .expect_err("an unmarked Shepr hook must not be installed twice")
+            .to_string();
+        assert!(error.contains("outside its managed block"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("test precondition"),
+            config_with_external_hook
         );
     }
 

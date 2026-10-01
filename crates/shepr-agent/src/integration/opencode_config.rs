@@ -7,7 +7,7 @@ use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use serde_json::Value;
 
 use super::config_file::{
-    ConfigUpdateLock, check_config_target, lock_config_for_update, write_config,
+    ConfigUpdateLock, check_config_target, lock_config_for_update, write_config_for_update,
 };
 use super::env::AgentIntegrationPaths;
 use super::file_ops::{is_file, read_if_file};
@@ -28,10 +28,18 @@ impl PluginConfigEdit {
     }
 
     pub(crate) fn write(self) -> io::Result<PathBuf> {
-        if let Some(contents) = self.updated_contents {
-            write_config(&self.path, contents)?;
+        let Self {
+            path,
+            updated_contents,
+            _update_lock,
+        } = self;
+        if let Some(contents) = updated_contents {
+            let update_lock = _update_lock.ok_or_else(|| {
+                io::Error::other("OpenCode config edit is missing its update lock")
+            })?;
+            write_config_for_update(&path, &update_lock, contents)?;
         }
-        Ok(self.path)
+        Ok(path)
     }
 }
 

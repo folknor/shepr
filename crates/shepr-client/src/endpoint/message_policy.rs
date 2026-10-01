@@ -223,6 +223,31 @@ mod tests {
     }
 
     #[test]
+    fn inactive_restore_snapshot_applies_without_surface_activation() {
+        let snapshot = shepr_protocol::ClientShellSnapshot {
+            boot_id: crate::tests::test_boot_id("restored"),
+            revision: shepr_protocol::ProjectionRevision::new(1),
+            restore_notice: Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                unusable: None,
+                dropped_workspaces: 1,
+                panes_pruned: false,
+                backup_dir: "/state/session-backups".into(),
+            }),
+            focused_workspace_id: None,
+            focused_pane_id: None,
+            workspaces: Vec::new(),
+            panes: Vec::new(),
+            agents: Vec::new(),
+        };
+        assert_eq!(
+            gate(false, false, false, false).decide(&DecodedServerMessage::Wire(
+                ServerMessage::EndpointSnapshot(Box::new(snapshot)),
+            )),
+            PresentationDecision::Apply,
+        );
+    }
+
+    #[test]
     fn activation_surfaces_and_responses_are_buffered() {
         assert_eq!(
             gate(false, true, false, false).decide(&DecodedServerMessage::Wire(

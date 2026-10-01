@@ -159,21 +159,6 @@ impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
     }
 }
 
-/// A metadata-only update that keeps every cell of `last`, when `surface` is
-/// its successor on the same baseline.
-pub fn message(last: &PaneSurfaceFrame, surface: &mut PaneSurfaceFrame) -> Option<ServerMessage> {
-    let baseline = Baseline::new(
-        &last.boot_id,
-        last.projection_revision,
-        last.surface_revision,
-    );
-    if !baseline.accepts_surface(surface) {
-        return None;
-    }
-    let update = baseline.update(surface, Vec::new());
-    Some(ServerMessage::SurfaceUpdate(update))
-}
-
 struct CellBaseline {
     boot_id: super::BootId,
     projection_revision: ProjectionRevision,
@@ -181,22 +166,25 @@ struct CellBaseline {
     width: u16,
     height: u16,
     cells: Vec<CellData>,
-    meta: Option<super::surface::SurfaceMeta>,
+    meta: Option<super::surface::SurfaceProjectionMeta>,
 }
 
 impl SurfaceDecodeSubject {
     /// Names the update's panes, or the baseline's when the update keeps the
     /// previous metadata.
     fn from_update(update: &SurfaceUpdate, baseline: Option<&CellBaseline>) -> Self {
-        let meta = update
-            .meta
-            .as_ref()
-            .or_else(|| baseline.and_then(|base| base.meta.as_ref()));
+        let panes = match update.meta.as_ref() {
+            Some(super::SurfaceMeta::Projection(meta)) => meta.panes.as_slice(),
+            Some(super::SurfaceMeta::Patch(meta)) => meta.panes.as_slice(),
+            None => baseline
+                .and_then(|base| base.meta.as_ref())
+                .map_or(&[][..], |meta| meta.panes.as_slice()),
+        };
         Self::from_update_header(
             &update.boot_id,
             update.projection_revision,
             update.surface_revision,
-            meta.map_or(&[], |meta| meta.panes.as_slice()),
+            panes,
         )
     }
 
@@ -286,6 +274,7 @@ impl<'a> Baseline<'a> {
         &self,
         surface: &PaneSurfaceFrame,
         spans: Vec<super::PaneSurfacePatchRow>,
+        last: &PaneSurfaceFrame,
     ) -> super::SurfaceUpdate {
         super::SurfaceUpdate {
             boot_id: surface.boot_id.clone(),
@@ -293,7 +282,33 @@ impl<'a> Baseline<'a> {
             base_surface_revision: self.surface_revision,
             surface_revision: surface.surface_revision,
             projection_revision: surface.projection_revision,
-            meta: Some(super::surface::SurfaceMeta::from(surface)),
+            meta: Some(
+                if surface.projection_revision == last.projection_revision
+                    && surface.frame.width == last.frame.width
+                    && surface.frame.height == last.frame.height
+                    && surface.frame.hyperlinks == last.frame.hyperlinks
+                    && surface.splits == last.splits
+                    && surface.panes.len() == last.panes.len()
+                    && surface
+                        .panes
+                        .iter()
+                        .zip(&last.panes)
+                        .all(|(next, old)| next.pane_id == old.pane_id)
+                {
+                    super::SurfaceMeta::Patch(super::SurfacePatchMeta {
+                        cursor: surface.frame.cursor.clone(),
+                        panes: surface
+                            .panes
+                            .iter()
+                            .zip(&last.panes)
+                            .filter(|(next, old)| next != old)
+                            .map(|(next, _)| next.clone())
+                            .collect(),
+                    })
+                } else {
+                    super::SurfaceMeta::from(surface)
+                },
+            ),
             spans,
         }
     }
@@ -359,8 +374,86 @@ impl Decoder {
                     return Err(SurfaceDecodeError::BaselineMismatch
                         .with_subject(SurfaceDecodeSubject::from_update(&update, Some(base))));
                 }
+                // Compact metadata makes retained topology explicit. Do not clone or
+                // compare the baseline hyperlink table on a terminal dirty-row update.
+                if !matches!(&update.meta, Some(super::SurfaceMeta::Projection(_)))
+                    && update.projection_revision == base.projection_revision
+                {
+                    let Some(previous) = base.meta.as_mut() else {
+                        return Err(SurfaceDecodeError::MissingMetadata.with_subject(
+                            SurfaceDecodeSubject::from_update_header(
+                                &update.boot_id,
+                                update.projection_revision,
+                                update.surface_revision,
+                                &[],
+                            ),
+                        ));
+                    };
+                    let compact = match update.meta {
+                        Some(super::SurfaceMeta::Patch(meta)) => meta,
+                        None => super::SurfacePatchMeta {
+                            cursor: previous.frame.cursor.clone(),
+                            panes: Vec::new(),
+                        },
+                        Some(super::SurfaceMeta::Projection(_)) => {
+                            return Err(SurfaceDecodeError::MetadataMismatch);
+                        }
+                    };
+                    let patch = PaneSurfacePatch {
+                        boot_id: update.boot_id,
+                        projection_revision: update.projection_revision,
+                        base_surface_revision: update.base_surface_revision,
+                        surface_revision: update.surface_revision,
+                        rows: update.spans,
+                        panes: compact.panes,
+                        cursor: compact.cursor,
+                    };
+                    if patch.panes.iter().any(|updated| {
+                        !previous
+                            .panes
+                            .iter()
+                            .any(|pane| pane.pane_id == updated.pane_id)
+                    }) {
+                        return Err(patch_error(&patch, SurfaceDecodeError::MetadataMismatch));
+                    }
+                    if patch.rows.iter().flat_map(|row| &row.cells).any(|cell| {
+                        cell.hyperlink
+                            .is_some_and(|index| index as usize >= previous.frame.hyperlinks.len())
+                    }) {
+                        return Err(patch_error(&patch, SurfaceDecodeError::InvalidHyperlink));
+                    }
+                    super::surface_delta::apply_rows(
+                        &mut base.cells,
+                        base.width,
+                        base.height,
+                        &patch.rows,
+                    )
+                    .map_err(|error| patch_error(&patch, SurfaceDecodeError::from(error)))?;
+                    for updated in &patch.panes {
+                        if let Some(pane) = previous
+                            .panes
+                            .iter_mut()
+                            .find(|pane| pane.pane_id == updated.pane_id)
+                        {
+                            pane.clone_from(updated);
+                        }
+                    }
+                    previous.frame.cursor.clone_from(&patch.cursor);
+                    base.surface_revision = patch.surface_revision;
+                    return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
+                }
                 let meta = match update.meta {
-                    Some(meta) => meta,
+                    Some(super::SurfaceMeta::Projection(meta)) => meta,
+                    Some(super::SurfaceMeta::Patch(_)) => {
+                        return Err(SurfaceDecodeError::MetadataMismatch.with_subject(
+                            SurfaceDecodeSubject::from_update_header(
+                                &update.boot_id,
+                                update.projection_revision,
+                                update.surface_revision,
+                                &[],
+                            ),
+                        ));
+                    }
                     None => match base.meta.clone() {
                         Some(meta) => meta,
                         None => {
@@ -454,30 +547,67 @@ impl Decoder {
                     base.surface_revision = patch.surface_revision;
                     return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
                 }
-                let mut surface = meta.clone().into_surface(
+                // Validate the resulting hyperlink indices before mutating the grid.
+                // Unchanged intervals use the baseline; changed intervals use the spans.
+                // This preserves rejection atomicity without making a scratch grid.
+                super::validate_patch_rows(base.width, base.height, &update.spans).map_err(
+                    |reason| {
+                        SurfaceDecodeError::InvalidRows(reason).with_subject(
+                            SurfaceDecodeSubject::from_update_header(
+                                &update.boot_id,
+                                update.projection_revision,
+                                update.surface_revision,
+                                &meta.panes,
+                            ),
+                        )
+                    },
+                )?;
+                let invalid = |cells: &[CellData]| {
+                    cells.iter().any(|cell| {
+                        cell.hyperlink
+                            .is_some_and(|index| index as usize >= meta.frame.hyperlinks.len())
+                    })
+                };
+                let mut end = 0;
+                for row in &update.spans {
+                    let start = usize::from(row.y) * usize::from(base.width) + usize::from(row.x);
+                    if invalid(&base.cells[end..start]) || invalid(&row.cells) {
+                        return Err(SurfaceDecodeError::InvalidHyperlink.with_subject(
+                            SurfaceDecodeSubject::from_update_header(
+                                &update.boot_id,
+                                update.projection_revision,
+                                update.surface_revision,
+                                &meta.panes,
+                            ),
+                        ));
+                    }
+                    end = start + row.cells.len();
+                }
+                if invalid(&base.cells[end..]) {
+                    return Err(SurfaceDecodeError::InvalidHyperlink.with_subject(
+                        SurfaceDecodeSubject::from_update_header(
+                            &update.boot_id,
+                            update.projection_revision,
+                            update.surface_revision,
+                            &meta.panes,
+                        ),
+                    ));
+                }
+                super::surface_delta::apply_rows(
+                    &mut base.cells,
+                    base.width,
+                    base.height,
+                    &update.spans,
+                )
+                .map_err(SurfaceDecodeError::from)?;
+                // The returned full surface and the connection baseline each own their
+                // cells. Apply once to the baseline and copy only for the consumer.
+                let surface = meta.clone().into_surface(
                     update.boot_id,
                     update.projection_revision,
                     update.surface_revision,
                     base.cells.clone(),
                 );
-                super::surface_delta::apply_rows(
-                    &mut surface.frame.cells,
-                    base.width,
-                    base.height,
-                    &update.spans,
-                )
-                .map_err(|error| {
-                    SurfaceDecodeError::from(error)
-                        .with_subject(SurfaceDecodeSubject::from_surface(&surface))
-                })?;
-                if surface.frame.cells.iter().any(|cell| {
-                    cell.hyperlink
-                        .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
-                }) {
-                    return Err(SurfaceDecodeError::InvalidHyperlink
-                        .with_subject(SurfaceDecodeSubject::from_surface(&surface)));
-                }
-                base.cells.clone_from(&surface.frame.cells);
                 base.meta = Some(meta);
                 base.projection_revision = surface.projection_revision;
                 base.surface_revision = surface.surface_revision;
@@ -671,5 +801,119 @@ mod tests {
             Err(SurfaceDecodeError::WithSubject { source, .. })
                 if matches!(source.as_ref(), SurfaceDecodeError::PatchBaselineMismatch)
         ));
+    }
+
+    #[test]
+    fn compact_metadata_round_trips_and_rejected_spans_leave_baseline_unchanged() {
+        let mut first = surface();
+        first.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
+        let rect = crate::SurfaceRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        };
+        first.panes.push(crate::PaneSurfacePane {
+            pane_id: "w1:p1".parse().expect("pane ID"),
+            content_revision: 1,
+            rect,
+            inner_rect: rect,
+            scrollbar_rect: None,
+            scroll: None,
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        let mut decoder = Decoder::default();
+        decoder
+            .decode(ServerMessage::PaneSurface(first.clone()))
+            .expect("baseline");
+        let mut next = first.clone();
+        next.surface_revision = crate::SurfaceRevision::new(2);
+        next.panes[0].content_revision = 2;
+        next.frame.cursor = Some(crate::CursorState {
+            x: 1,
+            y: 0,
+            visible: true,
+            shape: crate::CursorShapeParam::SteadyBar,
+        });
+        next.frame.cells[0] = cell("z");
+        let baseline = Baseline::new(
+            &first.boot_id,
+            first.projection_revision,
+            first.surface_revision,
+        );
+        let update = baseline.update(
+            &next,
+            vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![cell("z")],
+            }],
+            &first,
+        );
+        assert!(
+            matches!(&update.meta, Some(crate::SurfaceMeta::Patch(meta)) if meta.panes.len() == 1)
+        );
+        let mut bad = update.clone();
+        bad.spans[0].cells[0].hyperlink = Some(1);
+        assert!(decoder.decode(ServerMessage::SurfaceUpdate(bad)).is_err());
+        assert_eq!(decoder.current_surface(), Some(first.clone()));
+        let mut bad = update.clone();
+        bad.spans.push(bad.spans[0].clone());
+        assert!(decoder.decode(ServerMessage::SurfaceUpdate(bad)).is_err());
+        assert_eq!(decoder.current_surface(), Some(first));
+        let mut bytes = Vec::new();
+        crate::write_message(&mut bytes, &ServerMessage::SurfaceUpdate(update)).expect("encode");
+        assert!(
+            bytes.len() < 1024,
+            "retained hyperlink must not cross the wire"
+        );
+        let wire = crate::read_message(&mut bytes.as_slice()).expect("decode wire");
+        assert!(matches!(
+            decoder.decode(wire).expect("apply"),
+            DecodedServerMessage::PaneSurfacePatch(_)
+        ));
+        assert_eq!(decoder.current_surface(), Some(next));
+    }
+
+    #[test]
+    fn projection_update_validates_only_the_resulting_hyperlink_indices() {
+        let mut first = surface();
+        first.frame.hyperlinks = vec!["https://example.test".into()];
+        first.frame.cells[0].hyperlink = Some(0);
+        let mut decoder = Decoder::default();
+        decoder
+            .decode(ServerMessage::PaneSurface(first.clone()))
+            .expect("baseline");
+        let mut next = first.clone();
+        next.projection_revision = crate::ProjectionRevision::new(2);
+        next.surface_revision = crate::SurfaceRevision::new(2);
+        next.frame.hyperlinks.clear();
+        next.frame.cells[0] = cell("z");
+        let baseline = Baseline::new(
+            &first.boot_id,
+            first.projection_revision,
+            first.surface_revision,
+        );
+        let bad = baseline.update(&next, Vec::new(), &first);
+        assert!(decoder.decode(ServerMessage::SurfaceUpdate(bad)).is_err());
+        assert_eq!(decoder.current_surface(), Some(first.clone()));
+        let good = baseline.update(
+            &next,
+            vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![cell("z")],
+            }],
+            &first,
+        );
+        decoder
+            .decode(ServerMessage::SurfaceUpdate(good))
+            .expect("overwritten index is valid");
+        assert_eq!(decoder.current_surface(), Some(next));
     }
 }

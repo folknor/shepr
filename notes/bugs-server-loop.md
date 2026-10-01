@@ -12,17 +12,6 @@ Filed from the defect hunt over `crates/shepr-server/src/server/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SLOOP-001 - A reply that fits the control queue alone can still close a busy client
-
-`response_message` (`server/client_commands.rs`) now answers
-`EndpointError::ResponseTooLarge` for a reply that cannot fit the client control
-queue cap (`CLIENT_CONTROL_QUEUE_MAX_BYTES`) by itself. Residue: a reply that
-fits the cap alone but lands while earlier control items occupy part of it is
-still refused by `ClientWriterQueue::send_control` (`client_transport.rs`),
-which closes the connection under the slow-reader policy. Letting a single item
-exceed the cap when the queue is otherwise empty, or answering such a reply
-with an error instead of a disconnect, would close it.
-
 ## SLOOP-003 - Requests still buffered at the stop are refused after the shutdown notice
 
 Held endpoint replies are now resolved and queued before `ServerShutdown` is
@@ -90,12 +79,3 @@ controller wins only while it views the workspace). Render demand (SLOOP-004)
 is still stored, edge-triggered state that paths must remember to update, while
 pane focus (`sync_pane_focus`) is derived level-based from the views. Deriving
 per-client demand the same way is the remaining rewrite.
-
-## SLOOP-021 - The retained path recomputes the pane layout per recipient
-
-Lateral, hot path. `resolve_retained_panes` (`headless/retained_surface.rs`)
-recomputes the workspace's visible pane layout for every recipient of every
-retained render, and returns `None` unless pane order, ids and rects match the
-committed surface exactly. The cost is proportional to panes but sits on the
-client frame fanout path; caching the layout per workspace and frame size
-across recipients would remove it.

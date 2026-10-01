@@ -2439,6 +2439,23 @@ fn install_grok_uses_grok_home_env() {
 }
 
 #[test]
+fn hook_path_strip_rejects_non_array_event_values() {
+    let mut settings = json!({"hooks": {"UnrelatedEvent": {}}});
+    let hooks = settings
+        .get_mut("hooks")
+        .and_then(Value::as_object_mut)
+        .expect("test precondition");
+
+    let error = remove_hook_path_commands(hooks, Path::new("/hooks/shepr-agent-state.sh"))
+        .expect_err("all event values must be arrays");
+
+    assert_eq!(
+        error.to_string(),
+        "hook entries for UnrelatedEvent must be an array"
+    );
+}
+
+#[test]
 fn install_mastracode_errors_when_event_value_not_array() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2454,6 +2471,37 @@ fn install_mastracode_errors_when_event_value_not_array() {
     assert!(
         err.contains("hook entries for SessionStart must be an array"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn install_codex_rejects_non_array_event_while_stripping_hook_paths() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let codex_dir = base.join(".codex");
+    fs::create_dir_all(&codex_dir).expect("test precondition");
+    let hooks_path = codex_dir.join(CODEX_HOOKS_NAME);
+    fs::write(&hooks_path, r#"{"hooks":{"UnrelatedEvent":{}}}"#).expect("test precondition");
+    env.set("HOME", &base);
+
+    let error = install_codex(&AgentIntegrationPaths::resolve())
+        .expect_err("malformed event list must be rejected during hook stripping")
+        .to_string();
+
+    assert!(
+        error.contains("hook entries for UnrelatedEvent must be an array"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(&hooks_path).expect("test precondition"),
+        r#"{"hooks":{"UnrelatedEvent":{}}}"#
+    );
+    assert!(
+        !codex_dir
+            .join(CODEX_HOOK_INSTALL_NAME)
+            .try_exists()
+            .expect("stat"),
+        "refused installs must not leave a hook asset"
     );
 }
 

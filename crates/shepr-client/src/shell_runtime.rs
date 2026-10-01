@@ -69,7 +69,9 @@ pub(super) fn dispatch_client_shell_actions(
                 target,
             } => {
                 // Selection and handoff state lives in the client loop. Finish dispatching the
-                // current shell input batch before the loop handles this activation.
+                // current shell input batch before the loop handles this activation. A pick of
+                // the displayed endpoint is suppressed while it owns the presentation, but can
+                // cancel a handoff when it is still the displayed source.
                 let already_owned = target.is_none()
                     && endpoints.active_id() == &endpoint_id
                     && active_endpoint_owns_presentation(presentation, endpoints);
@@ -236,9 +238,7 @@ fn local_activation_unavailable_notice(
         Some(endpoint::ClientEndpointStatus::Reconnecting) => {
             "Local is reconnecting; selection will resume when it is ready"
         }
-        Some(endpoint::ClientEndpointStatus::Attention) => {
-            "Local needs attention; selection will resume when it is ready"
-        }
+        Some(endpoint::ClientEndpointStatus::Attention) => "Local needs attention",
         Some(endpoint::ClientEndpointStatus::Online) | None => {
             "Local is waiting for its workspace snapshot; selection will resume when it is ready"
         }
@@ -811,7 +811,7 @@ mod tests {
     fn local_activation_notice_matches_the_current_endpoint_status() {
         assert_eq!(
             local_activation_unavailable_notice(Some(endpoint::ClientEndpointStatus::Attention)),
-            "Local needs attention; selection will resume when it is ready"
+            "Local needs attention"
         );
         assert_eq!(
             local_activation_unavailable_notice(Some(endpoint::ClientEndpointStatus::Reconnecting)),
@@ -857,6 +857,7 @@ mod tests {
         Box::new(shepr_protocol::ClientShellSnapshot {
             boot_id: crate::tests::test_boot_id(boot_id),
             revision: shepr_protocol::ProjectionRevision::new(1),
+            restore_notice: None,
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: Vec::new(),

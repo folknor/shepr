@@ -1422,7 +1422,7 @@ fn selecting_an_offline_active_machine_in_the_navigator_is_silent() {
 }
 
 #[test]
-fn clicking_an_online_active_machine_row_only_toggles_its_collapse_state() {
+fn clicking_an_online_active_machine_row_toggles_its_collapse_state_and_reselects_it() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
     state.compose(100, 28).expect("active remote frame");
@@ -1441,7 +1441,15 @@ fn clicking_an_online_active_machine_row_only_toggles_its_collapse_state() {
         modifiers: KeyModifiers::empty(),
     })]);
 
-    assert!(outcome.actions.is_empty());
+    // The targetless selection reaches the runtime, which drops it while this
+    // endpoint owns the presentation.
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint {
+            endpoint_id: selected,
+            target: None,
+        }] if *selected == endpoint_id
+    ));
     assert!(state.collapsed_endpoints.contains(&endpoint_id));
 }
 
@@ -1493,9 +1501,16 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
                 }]
             ));
         } else {
-            // The machine row of the displayed endpoint only toggles its
-            // collapse state; it no longer activates the endpoint.
-            assert!(outcome.actions.is_empty());
+            // The machine row of the displayed endpoint toggles its collapse
+            // state and submits a targetless selection, which cancels the
+            // switch away while Local is still displayed.
+            assert!(matches!(
+                outcome.actions.as_slice(),
+                [ClientShellAction::ActivateEndpoint {
+                    endpoint_id: ClientEndpointId::Local,
+                    target: None,
+                }]
+            ));
             assert!(state.collapsed_endpoints.contains(&ClientEndpointId::Local));
         }
     }

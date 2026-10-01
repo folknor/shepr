@@ -104,7 +104,14 @@ fn install_target_inner(
         Some(requirement) => enforce_agent_version(&requirement, VERSION_PROBE_TIMEOUT)?,
         None => None,
     };
-    let outcome = install_operation(paths, target)?;
+    // Agent processes do not honor Shepr's config lock. If an agent changes a
+    // config after the install read it, reload the config and retry once.
+    let outcome = match install_operation(paths, target) {
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            install_operation(paths, target)?
+        }
+        result => result?,
+    };
     Ok(InstallOutput {
         messages: install_messages(action_label(target), outcome),
         warnings: version_warning.into_iter().collect(),

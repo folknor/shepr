@@ -1,8 +1,7 @@
 # Defects: client shell
 
 Filed from the defect hunt over `crates/shepr-client/src/shell.rs` and
-`crates/shepr-client/src/shell/`. The restore-notice findings from this hunt are
-merged into CEND-001 in `notes/bugs-client-endpoints.md`.
+`crates/shepr-client/src/shell/`.
 
 1. An entry is removed entirely when completely resolved. No historical record
    stays here.
@@ -12,34 +11,6 @@ merged into CEND-001 in `notes/bugs-client-endpoints.md`.
    claim touches a documented contract, the relevant `reference/` or `docs/`
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
-
-## CSHELL-003 - A pane-split drag released during a projection gap drops the final ratio
-
-Where: the `ClientChromeDrag::PaneSplit` arms in `handle_mouse_with_accounting`
-(`shell/input/mouse.rs`).
-
-During the drag, every admitted `LayoutSetSplitRatio` bumps the projection
-revision. Until the matching surface arrives, `pane_split_target_is_current`
-returns `None`; drag events in that window are ignored, and the release sends its
-ratio only when the check returns `Some(true)`. The send throttle
-(`MOUSE_DRAG_SEND_INTERVAL`) means the last motion before release is often not
-the last ratio sent. A release in the gap, likely right after a send, leaves the
-split at the last throttled ratio rather than where the pointer was released.
-The release path exists to send that final ratio.
-
-Fix: on release, send the final ratio when the topology signature still matches
-the hit's, even during a revision gap, or defer it until the surface catches up.
-
-## CSHELL-004 - The navigate-mode bar hardcodes keys that are configurable
-
-Where: `render_mode_bar`, `ClientShellMode::Navigate` arm
-(`shell/presentation/render.rs`). The bar prints `esc back`, `↑/↓ workspace` and
-`tab pane`. Those actions (`navigate_back`, `navigate_workspace_up`/`down`,
-`navigate_cycle_pane_next` in `keybinding_table.rs`) are rebindable; the Prefix
-bar next to it (`prefix_rhs`) and the keybinding help overlay are
-config-driven. Claim broken (AGENTS.md): "The client applies its own config to
-everything it draws and interprets: keys, ...". After a rebind the bar
-advertises dead keys. See CSHELL-020.
 
 ## CSHELL-005 - "Cycle pane" picks its next pane from two different orders
 
@@ -52,18 +23,6 @@ filtered by focused workspace, in snapshot order. Both are labelled "cycle pane"
 in the binding table, so the same action can land on different panes by mode,
 and a zoomed workspace can cycle differently in each. Pick one source (the
 snapshot) for both.
-
-## CSHELL-006 - Copy-mode replay drops queued keys when the reply arrives in Prefix mode
-
-Where: `complete_copy_operation` (`shell/input/copy_mode.rs`). The prefix key is
-a copy-mode interrupt key, so it is not queued; it switches `mode` to Prefix. If
-the in-flight reply arrives before the prefix sequence finishes,
-`copy_mode_owns_input()` is false only because `mode != Copy`, and the `else`
-branch clears `copy_input_queue` with the comment "These keys belonged to the
-copy pane. Do not send them into a pane that gained focus while the request was
-outstanding". No pane gained focus; the keys are silently lost. Interrupt keys
-(Esc, prefix) also run ahead of keys typed before them that are still queued:
-`w v Esc` runs Esc first, then `v` starts a selection the user meant to cancel.
 
 ## CSHELL-007 - The "Action interrupted" notice fires for internal reads
 
@@ -109,15 +68,6 @@ the next motion sends an origin row the server no longer has. The module comment
 assumes the row still exists. Clamp the cursor to `retained_row` as
 `move_copy_cursor` already does.
 
-## CSHELL-016 - A parked copy mode makes every pane's output recompose the whole frame
-
-Hot path. `fast_path_blocker` sends every pane patch through a full `compose`
-while `copy_mode.is_some()` or `selection.is_some()`, whatever pane they belong
-to. Copy mode stays parked on a pane that lost focus, so leaving a pane in copy
-mode and moving on makes every byte of output in every other pane recompose the
-whole frame indefinitely. Scope the blocker to patches that touch the copy or
-selection pane.
-
 ## CSHELL-018 - Structural: a request ledger instead of per-feature in-flight bookkeeping
 
 In-flight state is spread across `pending_requests`, `pane_scroll_in_flight`,
@@ -127,7 +77,27 @@ and `PendingWorkspaceHighlight::request_id`. Cancellation now runs a rollback
 owned by each pending request kind, but ordinary completion still unwinds each
 feature's own maps and queues by hand (CSHELL-023 is a path that forgets). One
 ledger whose entries own both completion and rollback would make dropped
-follow-up work impossible by construction.
+follow-up work impossible by construction. A related leak: leaving copy mode
+behind a full queue (`abandon_copy_operation`) makes the abandoned request's
+completion and rollback inert but leaves its `pending_requests` entry, so a
+request that never answers holds one entry for the connection's life.
+
+## CSHELL-027 - A cursor-only change on the copy pane may take the patch fast path
+
+Lateral, `shell/presentation/surface_patch.rs`. The copy-mode and selection
+blockers on the patch fast path key on `patch.panes`, the panes whose metadata
+changed. A cursor-only change on the copy pane (DECSCUSR, or a cursor move with
+no content revision change) would take the fast path and apply the terminal
+cursor while copy mode is drawn there. Check whether a cursor change always
+moves `content_revision`; if not, the blocker should also fire when
+`patch.cursor` differs and the focused pane is the copy pane.
+
+## CSHELL-028 - The `SessionRestoreIncomplete` notice arm is reachable only from tests
+
+Lateral. The restore notice now travels in the client shell snapshot, so no
+server path sends `NoticeKind::SessionRestoreIncomplete` as a
+`ClientShellError` any more, yet `receive_server_notice` still formats it.
+Remove the arm, and the variant if nothing else uses it.
 
 ## CSHELL-023 - A result for a mismatched boot drops its pending entry without rollback
 
@@ -156,22 +126,3 @@ the reader), and a separately chosen presentable pair (snapshot plus surface at
 the same revision). The patch-rejection finding filed in
 `notes/bugs-rejected-candidates.md` then cannot happen, and `Applied`/`Rejected`
 regain their meaning.
-
-## CSHELL-020 - Structural: config-derived labels for every drawn key hint
-
-The mode bars, the navigator and help footers, and the copy-mode bar each
-hand-write key names. Deriving labels as the Prefix bar does prevents the next
-drift after CSHELL-004.
-
-## CSHELL-022 - Clicking the displayed endpoint's machine row no longer cancels a pending switch
-
-`handle_endpoint_machine_click` on the active endpoint's machine row now only
-toggles collapse and pushes no `ActivateEndpoint`, which removed a redundant
-re-activation. It also removed the one machine-row gesture that cancelled a
-pending switch: with a switch to a remote machine in flight and Local still
-displayed, clicking Local's machine row used to activate Local and so cancel
-the switch. The test
-`clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed` now
-expects no action for the machine row; only the workspace row still cancels.
-Decide whether a machine-row click on the displayed endpoint should activate it
-when a switch away from it is pending.

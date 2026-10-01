@@ -9,7 +9,7 @@ fn executable(path: &'static str) -> RemoteExecutable {
 /// A remote host reached through fake round trips. `fail_at` names the call (counted
 /// from zero over this fake's whole life) that times out, as an attempt deadline would.
 struct FakeHost {
-    login_shell: Option<&'static str>,
+    account_shell: Option<&'static str>,
     sh: Option<&'static str>,
     known: Vec<&'static str>,
     matching: &'static str,
@@ -17,22 +17,26 @@ struct FakeHost {
     fail_at: Vec<usize>,
     /// Calls that fail with an error other than a link failure.
     fail_other_at: Vec<usize>,
+    fail_authentication_wait_at: Vec<usize>,
+    fail_host_key_at: Vec<usize>,
 }
 
 impl FakeHost {
     fn new(
-        login_shell: Option<&'static str>,
+        account_shell: Option<&'static str>,
         known: Vec<&'static str>,
         matching: &'static str,
     ) -> Self {
         Self {
-            login_shell,
+            account_shell,
             sh: None,
             known,
             matching,
             calls: Vec::new(),
             fail_at: Vec::new(),
             fail_other_at: Vec::new(),
+            fail_authentication_wait_at: Vec::new(),
+            fail_host_key_at: Vec::new(),
         }
     }
 
@@ -41,6 +45,20 @@ impl FakeHost {
         self.calls.push(name);
         if self.fail_at.contains(&index) {
             return Err(attempt_deadline_passed());
+        }
+        if self.fail_authentication_wait_at.contains(&index) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                crate::SshFailureDiagnostic::authentication_wait_timeout(),
+            ));
+        }
+        if self.fail_host_key_at.contains(&index) {
+            return Err(io::Error::other(
+                crate::SshFailureDiagnostic::from_ssh_output(
+                    Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
+                    "Host key verification failed".into(),
+                ),
+            ));
         }
         if self.fail_other_at.contains(&index) {
             return Err(io::Error::other(
@@ -52,9 +70,9 @@ impl FakeHost {
 }
 
 impl DiscoverySteps for FakeHost {
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        self.call("login".into())?;
-        Ok(self.login_shell.map(executable))
+    fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+        self.call("account-shell".into())?;
+        Ok(self.account_shell.map(executable))
     }
 
     fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
@@ -88,12 +106,12 @@ fn uninterrupted_discovery_runs_each_round_trip_once() {
         .advance(&mut host)
         .expect("a matching candidate is found");
     assert_eq!(found.as_str(), "/home/u/.cargo/bin/shepr");
-    // The login shell found a path, so the /bin/sh fallback is skipped, and the
+    // The account shell found a path, so the /bin/sh fallback is skipped, and the
     // duplicate from the known locations is probed once.
     assert_eq!(
         host.calls,
         [
-            "login",
+            "account-shell",
             "known",
             "probe /usr/bin/shepr",
             "probe /home/u/.cargo/bin/shepr"
@@ -129,7 +147,7 @@ fn a_timed_out_attempt_resumes_at_the_round_trip_it_did_not_finish() {
     assert_eq!(
         host.calls,
         [
-            "login",
+            "account-shell",
             "sh",
             "known",
             "known",
@@ -158,7 +176,7 @@ fn a_first_round_trip_that_times_out_leaves_no_progress() {
 }
 
 #[test]
-fn progress_survives_only_link_failures() {
+fn progress_survives_link_and_authentication_wait_timeouts_but_not_ssh_failures() {
     let host = || {
         FakeHost::new(
             Some("/usr/bin/shepr"),
@@ -180,7 +198,29 @@ fn progress_survives_only_link_failures() {
     assert_eq!(
         timed_out.calls,
         [
-            "login",
+            "account-shell",
+            "known",
+            "probe /usr/bin/shepr",
+            "probe /home/u/.cargo/bin/shepr",
+            "probe /home/u/.cargo/bin/shepr",
+        ]
+    );
+
+    // A full round-trip timeout may be waiting for interactive authentication.
+    // It has no remote result, so completed discovery steps remain useful.
+    let mut authentication_wait = host();
+    authentication_wait.fail_authentication_wait_at = vec![3];
+    let mut progress = DiscoveryProgress::default();
+    let error = progress
+        .advance(&mut authentication_wait)
+        .expect_err("authentication wait times out");
+    assert!(crate::SshFailureDiagnostic::from_error(&error).is_authentication_wait_timeout());
+    assert!(progress.has_progress());
+    assert!(progress.advance(&mut authentication_wait).is_ok());
+    assert_eq!(
+        authentication_wait.calls,
+        [
+            "account-shell",
             "known",
             "probe /usr/bin/shepr",
             "probe /home/u/.cargo/bin/shepr",
@@ -199,11 +239,36 @@ fn progress_survives_only_link_failures() {
     assert_eq!(
         failed.calls,
         [
-            "login",
+            "account-shell",
             "known",
             "probe /usr/bin/shepr",
             "probe /home/u/.cargo/bin/shepr",
-            "login",
+            "account-shell",
+            "known",
+            "probe /usr/bin/shepr",
+            "probe /home/u/.cargo/bin/shepr",
+        ]
+    );
+
+    // An SSH failure is different: a changed host key means prior candidate
+    // data may describe another machine, so the next attempt starts over.
+    let mut host_key_changed = host();
+    host_key_changed.fail_host_key_at = vec![3];
+    let mut progress = DiscoveryProgress::default();
+    let error = progress
+        .advance(&mut host_key_changed)
+        .expect_err("host-key rejection");
+    assert!(crate::SshFailureDiagnostic::from_error(&error).is_host_key());
+    assert!(!progress.has_progress());
+    assert!(progress.advance(&mut host_key_changed).is_ok());
+    assert_eq!(
+        host_key_changed.calls,
+        [
+            "account-shell",
+            "known",
+            "probe /usr/bin/shepr",
+            "probe /home/u/.cargo/bin/shepr",
+            "account-shell",
             "known",
             "probe /usr/bin/shepr",
             "probe /home/u/.cargo/bin/shepr",
@@ -243,8 +308,8 @@ fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
     // And discovery keeps its progress across it.
     struct LinkDrop(FakeHost);
     impl DiscoverySteps for LinkDrop {
-        fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
-            self.0.path_via_login_shell()
+        fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+            self.0.path_via_account_shell()
         }
         fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
             self.0.path_via_sh()
@@ -277,7 +342,7 @@ fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
     assert!(progress.advance(&mut host).is_ok());
     assert_eq!(
         host.0.calls,
-        ["login", "known", "dropped", "probe /usr/bin/shepr"]
+        ["account-shell", "known", "dropped", "probe /usr/bin/shepr"]
     );
 }
 
@@ -326,7 +391,10 @@ fn exhausted_discovery_reports_not_ready_and_starts_over_next_time() {
     host.matching = "/usr/bin/shepr";
     host.calls.clear();
     assert!(progress.advance(&mut host).is_ok());
-    assert_eq!(host.calls, ["login", "known", "probe /usr/bin/shepr"]);
+    assert_eq!(
+        host.calls,
+        ["account-shell", "known", "probe /usr/bin/shepr"]
+    );
 }
 
 #[test]
@@ -455,7 +523,7 @@ fn remote_sibling_text_is_filtered_before_local_output() {
 fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
     struct QuotedInstall(Option<RejectedShellUnsafeCandidate>);
     impl DiscoverySteps for QuotedInstall {
-        fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+        fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
             Ok(
                 remote_executable_from_path_discovery_with_rejected_candidate(
                     "/home/a b/bin/shepr\n",
@@ -514,7 +582,7 @@ fn remote_path_discovery_uses_path_binary() {
 
 #[test]
 fn remote_path_discovery_ignores_binaries_that_need_quoting() {
-    // The bridge script must reach the login shell as one quoted word
+    // The bridge script must reach the account shell as one quoted word
     // with no quote inside, so a path needing quotes cannot be used.
     for discovered in ["/opt/shepr bin/shepr\n", "/opt/shepr's/bin/shepr\n"] {
         assert!(
@@ -605,7 +673,7 @@ struct RejectingHost {
 }
 
 impl DiscoverySteps for RejectingHost {
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+    fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
         Ok(Some(executable("/usr/bin/shepr")))
     }
 
@@ -693,4 +761,22 @@ fn the_first_candidate_mismatch_is_returned_when_none_match() {
     assert!(error.to_string().contains("different build"));
     assert!(!error.to_string().contains("matching Shepr is not ready"));
     assert_eq!(host.probes.len(), 2);
+}
+
+#[test]
+fn candidate_mismatch_class_excludes_other_remote_compatibility_errors() {
+    let mismatch = remote_candidate_mismatch("remote candidate has a different build".into());
+    let mismatch_diagnostic = crate::SshFailureDiagnostic::from_error(&mismatch);
+    assert!(is_remote_candidate_mismatch(&mismatch));
+    assert!(mismatch_diagnostic.is_remote_compatibility());
+
+    for message in [
+        "matching Shepr is not ready on build",
+        "remote Shepr server compatibility error on build",
+    ] {
+        let error = crate::remote_compatibility_error(message);
+        let diagnostic = crate::SshFailureDiagnostic::from_error(&error);
+        assert!(diagnostic.is_remote_compatibility(), "{message}");
+        assert!(!is_remote_candidate_mismatch(&error), "{message}");
+    }
 }

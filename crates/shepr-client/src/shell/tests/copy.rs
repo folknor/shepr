@@ -815,7 +815,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
 }
 
 #[test]
-fn keys_after_an_exit_key_reach_the_pane_while_a_copy_motion_is_in_flight() {
+fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -845,13 +845,30 @@ fn keys_after_an_exit_key_reach_the_pane_while_a_copy_motion_is_in_flight() {
         panic!("word motion should use endpoint semantics");
     };
     let request_id = request.id.clone();
-    // `q` leaves copy mode at once, although the motion is still in flight,
-    // so `x` right behind it is meant for the pane and goes there without
-    // waiting for the motion's reply.
+    // `q` waits behind the motion like every key typed in copy mode, so it
+    // cannot run ahead of input typed before it, and `x` waits behind `q`.
     let typed = state.handle_raw_events(vec![key(KeyCode::Char('q')), key(KeyCode::Char('x'))]);
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert!(typed.requests.is_empty());
+
+    // The reply applies, then `q` leaves copy mode and `x`, typed after the
+    // exit, reaches the pane.
+    let replayed = state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &request_id,
+        Ok(EndpointReply::PaneCopyMotion {
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            cursor: shepr_protocol::command::PaneTextPoint {
+                row: origin.row,
+                col: 3,
+            },
+        }),
+    );
     assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.copy_mode.is_none());
+    assert!(state.copy_input_queue.is_empty());
     assert!(
-        typed.requests.iter().any(|request| matches!(
+        replayed.requests.iter().any(|request| matches!(
             request,
             ClientMessage::ClientShellPaneInput { pane_id, events }
                 if pane_id == "w1:p1"
@@ -865,23 +882,6 @@ fn keys_after_an_exit_key_reach_the_pane_while_a_copy_motion_is_in_flight() {
         )),
         "the keystroke after the exit key must reach the pane"
     );
-
-    // The late reply belongs to a copy session that has ended: it neither
-    // brings copy mode back nor sends anything.
-    let late = state.handle_endpoint_result(
-        &crate::tests::test_boot_id("boot-1"),
-        &request_id,
-        Ok(EndpointReply::PaneCopyMotion {
-            pane_id: shepr_test_fixtures::id("w1:p1"),
-            cursor: shepr_protocol::command::PaneTextPoint {
-                row: origin.row,
-                col: 3,
-            },
-        }),
-    );
-    assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(state.copy_mode.is_none());
-    assert!(late.requests.is_empty());
 }
 
 #[test]
@@ -2207,7 +2207,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
 }
 
 #[test]
-fn copy_prefix_and_detach_pass_an_in_flight_copy_operation() {
+fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -2231,16 +2231,18 @@ fn copy_prefix_and_detach_pass_an_in_flight_copy_operation() {
     state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers),
     )]);
-    assert_eq!(state.mode, ClientShellMode::Prefix);
+    // The prefix waits behind the motion and the key typed before it.
+    assert_eq!(state.mode, ClientShellMode::Copy);
 
     let detach = state.handle_input_bytes(b"q");
-    assert!(detach.detach);
+    assert!(!detach.detach);
+    assert_eq!(state.copy_input_queue.len(), 3);
 
     let motion_id = match &motion.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
     };
-    state.handle_endpoint_result(
+    let replayed = state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &motion_id,
         Ok(EndpointReply::PaneCopyMotion {
@@ -2248,11 +2250,13 @@ fn copy_prefix_and_detach_pass_an_in_flight_copy_operation() {
             cursor: origin,
         }),
     );
+    // Replay runs `l`, then the prefix, then `q` as the prefix's detach.
+    assert!(replayed.detach);
     assert!(state.copy_input_queue.is_empty());
 }
 
 #[test]
-fn copy_mode_exit_keys_pass_an_in_flight_copy_operation() {
+fn copy_mode_exit_keys_act_after_earlier_queued_input() {
     for key in [
         shepr_termio::input::TerminalKey::new(KeyCode::Char('q'), KeyModifiers::empty()),
         shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
@@ -2270,14 +2274,103 @@ fn copy_mode_exit_keys_pass_an_in_flight_copy_operation() {
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         assert!(state.enter_copy_mode(&mut enter));
-        state.handle_input_bytes(b"w");
+        let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+        let motion = state.handle_input_bytes(b"w");
+        let motion_id = match &motion.actions[0] {
+            ClientShellAction::Endpoint { request, .. } => request.id.clone(),
+            _ => unreachable!(),
+        };
         state.handle_input_bytes(b"l");
 
         state.handle_raw_events(vec![RawInputEvent::Key(key)]);
 
+        // The exit key queues behind `l` and the motion it follows.
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert!(state.copy_operation_in_flight);
+        assert_eq!(state.copy_input_queue.len(), 2);
+
+        state.handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &motion_id,
+            Ok(EndpointReply::PaneCopyMotion {
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                cursor: origin,
+            }),
+        );
+
         assert_eq!(state.mode, ClientShellMode::Terminal);
         assert!(state.copy_mode.is_none());
         assert!(!state.copy_operation_in_flight);
+        assert!(state.copy_input_queue.is_empty());
+    }
+}
+
+#[test]
+fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_ignored() {
+    for exit_with_escape in [true, false] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        let mut pane_surface = surface();
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 10,
+            viewport_rows: 2,
+            history_origin: shepr_vt::AbsRow(0),
+        });
+        state.set_pane_surface(pane_surface);
+        state.compose(106, 20).expect("composed frame");
+        let mut enter = ClientShellInput::default();
+        assert!(state.enter_copy_mode(&mut enter));
+        let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+        let motion = state.handle_input_bytes(b"w");
+        let motion_id = match &motion.actions[0] {
+            ClientShellAction::Endpoint { request, .. } => request.id.clone(),
+            _ => unreachable!(),
+        };
+        for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
+            state.handle_input_bytes(b"j");
+        }
+        assert_eq!(
+            state.copy_input_queue.len(),
+            crate::limits::MAX_COPY_INPUT_QUEUE
+        );
+
+        let key = if exit_with_escape {
+            shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty())
+        } else {
+            let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
+            shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers)
+        };
+        state.handle_raw_events(vec![RawInputEvent::Key(key)]);
+
+        // The request that stopped answering and the keys behind it are given up.
+        assert!(!state.copy_operation_in_flight);
+        assert!(state.copy_input_queue.is_empty());
+        if exit_with_escape {
+            assert_eq!(state.mode, ClientShellMode::Terminal);
+            assert!(state.copy_mode.is_none());
+        } else {
+            assert_eq!(state.mode, ClientShellMode::Prefix);
+        }
+        let cursor_before = state.copy_mode.as_ref().map(|copy_mode| copy_mode.cursor);
+
+        let late = state.handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &motion_id,
+            Ok(EndpointReply::PaneCopyMotion {
+                pane_id: shepr_test_fixtures::id("w1:p1"),
+                cursor: shepr_protocol::command::PaneTextPoint {
+                    row: origin.row,
+                    col: origin.col.saturating_add(3),
+                },
+            }),
+        );
+        assert!(late.actions.is_empty());
+        assert!(late.requests.is_empty());
+        assert_eq!(
+            state.copy_mode.as_ref().map(|copy_mode| copy_mode.cursor),
+            cursor_before
+        );
         assert!(state.copy_input_queue.is_empty());
     }
 }
@@ -2431,7 +2524,13 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
         panic!("expected one copy request");
     };
     let old_id = request.id.clone();
+    // An exit key only acts ahead of the old request once the queue behind it
+    // is full; that abandons the old session with its request still pending.
+    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
+        state.handle_input_bytes(b"j");
+    }
     state.handle_input_bytes(b"q");
+    assert!(state.copy_mode.is_none());
     assert!(state.enter_copy_mode(&mut enter));
     let current = state.handle_input_bytes(b"w");
     let [ClientShellAction::Endpoint { request, .. }] = &current.actions[..] else {
