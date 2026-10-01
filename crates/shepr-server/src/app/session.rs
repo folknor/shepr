@@ -1172,9 +1172,19 @@ mod tests {
             vec![Some("healthy".to_owned())],
             "the saved session loaded and only the invalid workspace was dropped"
         );
+        let backups = data_dir.join("session-backups");
+        // Every client of this boot is told, naming where the original goes.
+        assert_eq!(
+            app.restore_notice,
+            Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                unusable: None,
+                dropped_workspaces: 1,
+                panes_pruned: false,
+                backup_dir: backups.display().to_string(),
+            })
+        );
 
         assert!(app.save_session_now(), "first save");
-        let backups = data_dir.join("session-backups");
         assert_eq!(directory_files(&backups), vec![original.clone()]);
         let saved = shepr_mux::persist::snapshot::parse_snapshot(
             &std::fs::read_to_string(&session_file).expect("read the new session"),
@@ -1195,6 +1205,82 @@ mod tests {
             vec![original],
             "a later save makes no second backup"
         );
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    /// A session file that does not parse restores nothing, like a missing
+    /// one, but unlike a missing one it is a whole saved session: clients are
+    /// told, and the first save backs the file up before replacing it.
+    #[test]
+    fn an_unusable_session_file_is_reported_and_backed_up() {
+        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+
+        let scratch = crate::test_support::ScratchDir::new("unusable-session-notice");
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
+            shepr_config::Config::default(),
+            None,
+            paths.clone(),
+        );
+        let data_dir = paths.data_dir().to_path_buf();
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
+        let original = b"{ this is not a session".to_vec();
+        std::fs::write(data_dir.join("session.json"), &original).expect("test precondition");
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_paths(
+            &config,
+            &paths,
+            lease,
+            super::super::AppPolicy::Production,
+            api_rx,
+            super::super::tests::test_clock(),
+        );
+        let backups = data_dir.join("session-backups");
+        let Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+            unusable: Some(reason),
+            dropped_workspaces: 0,
+            panes_pruned: false,
+            backup_dir,
+        }) = app.restore_notice.clone()
+        else {
+            panic!(
+                "an unusable session file is reported: {:?}",
+                app.restore_notice
+            );
+        };
+        assert!(reason.contains("parsed"), "{reason}");
+        assert_eq!(backup_dir, backups.display().to_string());
+
+        assert!(app.save_session_now(), "first save");
+        assert_eq!(directory_files(&backups), vec![original]);
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    #[test]
+    fn a_fresh_start_has_nothing_to_report() {
+        use crate::test_support::{AppPathsFixture as _, ValidatedConfigFixture as _};
+
+        let scratch = crate::test_support::ScratchDir::new("fresh-start-no-notice");
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let config = shepr_config::ValidatedConfig::test_from_config_with_paths(
+            shepr_config::Config::default(),
+            None,
+            paths.clone(),
+        );
+        let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
+            .expect("test session lease");
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_paths(
+            &config,
+            &paths,
+            lease,
+            super::super::AppPolicy::Production,
+            api_rx,
+            super::super::tests::test_clock(),
+        );
+        assert_eq!(app.restore_notice, None);
         app.policy = super::super::AppPolicy::Test;
     }
 }

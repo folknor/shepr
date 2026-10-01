@@ -768,9 +768,37 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
 }
 
 /// Reads the saved layout while the caller owns the data directory.
-pub fn load(lease: &DataDirLease) -> Option<SessionSnapshot> {
+/// What reading the saved session found.
+pub enum SessionLoad {
+    /// No session file, or no lease to read it under: a fresh start.
+    Missing,
+    Loaded(SessionSnapshot),
+    /// A session file exists but could not be read or parsed; the reason.
+    /// Nothing of it is restored, and the first save backs it up before
+    /// replacing it.
+    Unusable(String),
+}
+
+impl SessionLoad {
+    #[must_use]
+    pub fn into_snapshot(self) -> Option<SessionSnapshot> {
+        match self {
+            Self::Loaded(snapshot) => Some(snapshot),
+            Self::Missing | Self::Unusable(_) => None,
+        }
+    }
+}
+
+/// The directory a session file is backed up to before a save replaces one
+/// that restore could not fully use.
+#[must_use]
+pub fn session_backup_directory(data_dir: &Path) -> PathBuf {
+    backup_directory(&session_path(data_dir))
+}
+
+pub fn load(lease: &DataDirLease) -> SessionLoad {
     if !lease.is_active() {
-        return None;
+        return SessionLoad::Missing;
     }
     let path = session_path(lease.directory());
     let content = match read_session_file(&path) {
@@ -780,24 +808,24 @@ pub fn load(lease: &DataDirLease) -> Option<SessionSnapshot> {
                 event = "persist.restore", subsystem = "persist", outcome = "missing",
                 path = %path.display(), "session file is missing"
             );
-            return None;
+            return SessionLoad::Missing;
         }
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "read_error",
                 path = %path.display(), error = %err, "failed to read session file"
             );
-            return None;
+            return SessionLoad::Unusable(format!("it could not be read: {err}"));
         }
     };
     match parse_snapshot(&content) {
-        Ok(snapshot) => Some(snapshot),
+        Ok(snapshot) => SessionLoad::Loaded(snapshot),
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
                 path = %path.display(), error = %err, "failed to parse session file, ignoring"
             );
-            None
+            SessionLoad::Unusable(format!("it could not be parsed: {err}"))
         }
     }
 }
@@ -891,10 +919,24 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("released-session-lease");
         let mut lease = DataDirLease::acquire(&scratch).expect("lease");
         save_to_path(&session_path(lease.directory()), &empty_snapshot()).expect("save");
-        assert!(load(&lease).is_some());
+        assert!(matches!(load(&lease), SessionLoad::Loaded(_)));
         lease.release();
-        assert!(load(&lease).is_none());
+        assert!(matches!(load(&lease), SessionLoad::Missing));
         assert!(load_history(&lease).is_none());
+    }
+
+    #[test]
+    fn a_session_file_that_does_not_parse_is_unusable_not_missing() {
+        // Both restore nothing, but only a missing file is a fresh start; an
+        // unusable one is a whole saved session the user has to be told about.
+        let scratch = crate::test_support::ScratchDir::new("unusable-session");
+        let lease = DataDirLease::acquire(&scratch).expect("lease");
+        assert!(matches!(load(&lease), SessionLoad::Missing));
+        std::fs::write(session_path(lease.directory()), b"{ not a session").expect("write");
+        let SessionLoad::Unusable(reason) = load(&lease) else {
+            panic!("a damaged session file is unusable");
+        };
+        assert!(reason.contains("parsed"), "{reason}");
     }
 
     /// The reader admits the limit itself and refuses one byte more. The

@@ -121,6 +121,9 @@ pub struct App {
     pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
     pub(crate) paths: shepr_config::AppPaths,
+    /// Set when this boot's restore did not bring the saved session back in
+    /// full; sent to every client that connects, for the life of the boot.
+    pub(crate) restore_notice: Option<shepr_protocol::NoticeKind>,
 }
 
 pub(crate) use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT};
@@ -146,10 +149,30 @@ impl App {
         let mut restored_terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
         let mut pane_history_carry = shepr_mux::persist::HistoryCarry::default();
         let paths = paths.clone();
-        let snapshot = policy
+        let load = policy
             .persists_session()
-            .then(|| shepr_mux::persist::load(&lease))
-            .flatten();
+            .then(|| shepr_mux::persist::load(&lease));
+        let backup_dir = || {
+            shepr_mux::persist::session_backup_directory(lease.directory())
+                .display()
+                .to_string()
+        };
+        // What every client of this boot is told about a session that did
+        // not come back in full; `None` when there is nothing to tell.
+        let mut restore_notice = None;
+        let snapshot = match load {
+            Some(shepr_mux::persist::SessionLoad::Loaded(snapshot)) => Some(snapshot),
+            Some(shepr_mux::persist::SessionLoad::Unusable(reason)) => {
+                restore_notice = Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                    unusable: Some(reason),
+                    dropped_workspaces: 0,
+                    panes_pruned: false,
+                    backup_dir: backup_dir(),
+                });
+                None
+            }
+            Some(shepr_mux::persist::SessionLoad::Missing) | None => None,
+        };
         let restored_host_theme = snapshot
             .as_ref()
             .map_or_default(|snapshot| snapshot.host_theme.to_theme());
@@ -200,6 +223,12 @@ impl App {
                     restore_damage = restored.restore_damage,
                     "session restore discarded saved data; the saved session is backed up to session-backups before the first save"
                 );
+                restore_notice = Some(shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                    unusable: None,
+                    dropped_workspaces: restored.dropped_workspaces,
+                    panes_pruned: restored.restore_damage,
+                    backup_dir: backup_dir(),
+                });
             }
             let outcome = if restore_was_partial {
                 "partial"
@@ -303,6 +332,7 @@ impl App {
             render_dirty,
             full_redraw_pending: false,
             paths,
+            restore_notice,
         };
         app.configure_validated_window_title(config.ui().window_title.as_ref());
         app
@@ -1194,8 +1224,9 @@ mod tests {
 
         let lease =
             shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).expect("test lease");
-        let snapshot =
-            shepr_mux::persist::load(&lease).expect("checkpointed session should survive");
+        let snapshot = shepr_mux::persist::load(&lease)
+            .into_snapshot()
+            .expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].panes.len(), 2);
     }
@@ -1303,7 +1334,9 @@ mod tests {
 
             let lease = shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir())
                 .expect("test lease");
-            let snapshot = shepr_mux::persist::load(&lease).expect("newer session should be saved");
+            let snapshot = shepr_mux::persist::load(&lease)
+                .into_snapshot()
+                .expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
         }

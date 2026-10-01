@@ -288,16 +288,33 @@ impl ClientShellState {
         )
     }
 
-    pub(crate) fn receive_server_notice(&mut self, kind: &shepr_protocol::NoticeKind) -> bool {
+    /// Shows a notice `endpoint_id`'s server sent.
+    pub(crate) fn receive_server_notice(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        kind: &shepr_protocol::NoticeKind,
+    ) -> bool {
         let (code, title) = match kind {
-            shepr_protocol::NoticeKind::PaneInputDropped { .. } => {
-                ("pane_input_dropped", "Pane input dropped")
-            }
+            shepr_protocol::NoticeKind::PaneInputDropped { .. } => (
+                "pane_input_dropped".to_owned(),
+                "Pane input dropped".to_owned(),
+            ),
             shepr_protocol::NoticeKind::PasteRejected { .. } => {
-                ("paste_rejected", "Paste rejected")
+                ("paste_rejected".to_owned(), "Paste rejected".to_owned())
             }
-            shepr_protocol::NoticeKind::OversizedSurface { .. } => {
-                ("oversized_surface", "Screen too large")
+            shepr_protocol::NoticeKind::OversizedSurface { .. } => (
+                "oversized_surface".to_owned(),
+                "Screen too large".to_owned(),
+            ),
+            // The other notices answer something done on the active
+            // endpoint; this one arrives on connect from whichever machine
+            // restored, so it names that machine.
+            shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. } => {
+                let label = self.endpoint_label(endpoint_id);
+                (
+                    format!("session_restore_incomplete:{label}"),
+                    format!("{label}: saved session not fully restored"),
+                )
             }
         };
         self.push_endpoint_notice(

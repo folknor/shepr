@@ -2106,6 +2106,56 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
 }
 
 #[tokio::test]
+async fn every_client_of_a_partly_restored_boot_is_told_after_its_seed() {
+    let mut server = test_headless_server();
+    let notice = shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+        unusable: None,
+        dropped_workspaces: 1,
+        panes_pruned: true,
+        backup_dir: "/state/shepr/session-backups".to_owned(),
+    };
+    server.app.restore_notice = Some(notice.clone());
+
+    for client_id in [7, 8] {
+        let (control, _render) = connect_matching_test_shell(&mut server, client_id);
+        // The seed comes first, so the client keys the notice to this boot.
+        let _ = client_shell_snapshot(&control);
+        let message = read_server_message(
+            control
+                .recv_timeout(Duration::from_secs(1))
+                .expect("restore notice"),
+        );
+        assert_eq!(
+            message,
+            ServerMessage::ClientShellError {
+                kind: notice.clone()
+            },
+            "client {client_id}"
+        );
+    }
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_fully_restored_boot_sends_no_restore_notice() {
+    let mut server = test_headless_server();
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let _ = client_shell_snapshot(&control);
+    while let Ok(bytes) = control.try_recv() {
+        assert!(
+            !matches!(
+                read_server_message(bytes),
+                ServerMessage::ClientShellError {
+                    kind: shepr_protocol::NoticeKind::SessionRestoreIncomplete { .. }
+                }
+            ),
+            "no restore notice without a restore problem"
+        );
+    }
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("cached-cwd-first");

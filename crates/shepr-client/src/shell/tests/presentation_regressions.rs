@@ -22,10 +22,19 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
             },
             "Screen too large",
         ),
+        (
+            shepr_protocol::NoticeKind::SessionRestoreIncomplete {
+                unusable: None,
+                dropped_workspaces: 2,
+                panes_pruned: false,
+                backup_dir: "/state/shepr/session-backups".to_owned(),
+            },
+            "Local: saved session not fully restored",
+        ),
     ];
 
     for (kind, expected_title) in notices {
-        assert!(state.receive_server_notice(&kind));
+        assert!(state.receive_server_notice(&ClientEndpointId::Local, &kind));
         let notice = state
             .visible_endpoint_notice
             .as_ref()

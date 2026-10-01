@@ -145,6 +145,13 @@ impl ClientShellState {
                 kind: ClientEndpointNoticeKind::Unavailable,
                 code,
             },
+            // The TUI never prompts: machines connect in BatchMode and
+            // interactive authentication runs only at startup, before the TUI
+            // takes the terminal. Restarting the client is the way to
+            // authenticate on purpose: the servers keep running headless, so
+            // every pane and agent is still there when it reattaches, and an
+            // in-TUI prompt would need the terminal suspended and resumed
+            // around a foreground ssh for no gain.
             title: if diagnostic.requires_authentication {
                 format!(
                     "{}: restart shepr to authenticate",

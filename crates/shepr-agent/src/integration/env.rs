@@ -90,6 +90,16 @@ pub(crate) enum DirectoryKey {
 /// install (the server, at launch). Install and status code receives this
 /// value and never consults the process environment while it is choosing
 /// files to read or write.
+///
+/// The environment read is the server's, not that of the agents in its panes.
+/// A server started over SSH runs under a non-interactive shell, which reads
+/// only files like `~/.zshenv`, while panes run interactive login shells. An
+/// override such as `CLAUDE_CONFIG_DIR` exported only in an interactive rc
+/// file therefore reaches the agent but not the server, which then installs
+/// into the default directory. Such an override has to be exported where
+/// non-interactive shells read it. Reading each detected agent's own
+/// environment instead was considered and not built: shepr's owner sets none
+/// of these overrides.
 #[derive(Clone, Debug)]
 pub struct AgentIntegrationPaths {
     directories: HashMap<DirectoryKey, CapturedDirectory>,

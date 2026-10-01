@@ -19,7 +19,7 @@ pub mod snapshot;
 mod writer;
 
 pub use self::actor::{PendingSave, PersistJob, SaveCompletion, SessionBundle, SessionPersister};
-pub use self::io::{load, load_history};
+pub use self::io::{SessionLoad, load, load_history, session_backup_directory};
 pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::restore::restore;
 pub use self::snapshot::{
