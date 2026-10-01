@@ -78,12 +78,6 @@ impl TerminalState {
             && self.recent_agent_process_exit.is_none();
         let full_lifecycle_source =
             shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label);
-        let generation_gated = self
-            .suppressed_hook_source(&source)
-            .is_some_and(|suppressed| {
-                suppressed.agent_label == agent_label
-                    && suppressed.reason != FullLifecycleHookSuppressionReason::HookClear
-            });
         let session_anchored = self.hook_authority.as_ref().is_some_and(|authority| {
             authority.source == source
                 && authority.agent_label == agent_label
@@ -96,7 +90,25 @@ impl TerminalState {
             seq,
         );
         let selection_can_reconcile = unsequenced_selection && process_present;
-        if full_lifecycle_source && unsequenced_selection && !selection_can_reconcile {
+        let start_route = if full_lifecycle_source {
+            let mut empty_source = HookSourceState::default();
+            let record = self
+                .hook_sources
+                .get_mut(&source)
+                .unwrap_or(&mut empty_source);
+            match record.transition(HookSourceEvent::Start {
+                agent_label: &agent_label,
+                process_present,
+                session_anchored,
+                unsequenced_selection,
+            }) {
+                HookSourceEffects::Start(route) => route,
+                _ => return None,
+            }
+        } else {
+            HookStartRoute::Commit
+        };
+        if start_route == HookStartRoute::ParkSelection {
             let previous_session_ref = self
                 .hook_authority
                 .as_ref()
@@ -116,28 +128,28 @@ impl TerminalState {
             if !self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source) {
                 return None;
             }
-            self.hook_sources.entry(source).or_default().park_start(
-                SuppressedFullLifecycleHookReport {
-                    agent_label,
-                    session_ref: previous_session_ref,
-                    observed_at: now,
-                    reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
-                    pending_start: None,
-                    pending_replacement_report: None,
-                },
-                persisted_session,
-            );
+            self.hook_sources
+                .entry(source)
+                .or_default()
+                .transition(HookSourceEvent::ParkStart(
+                    SuppressedFullLifecycleHookReport {
+                        agent_label,
+                        session_ref: previous_session_ref,
+                        observed_at: now,
+                        reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
+                        pending_start: None,
+                        pending_replacement_report: None,
+                    },
+                    persisted_session,
+                ));
             return Some(TerminalStateMutation::default());
         }
-        if full_lifecycle_source
-            && !selection_can_reconcile
-            && (!process_present || generation_gated || !session_anchored)
-        {
+        if start_route == HookStartRoute::ParkRecognizedStart {
             if !Self::session_start_source_is_recognized(session_start_source) {
                 return None;
             }
             let seq = seq?;
-            if self.hook_seq_superseded(&source, seq, sample) {
+            if !self.hook_report_order_allows(&source, Some(seq), sample) {
                 return None;
             }
             if !self.hook_report_sequence_has_room(&source) {
@@ -155,7 +167,7 @@ impl TerminalState {
             self.hook_sources
                 .entry(source.clone())
                 .or_default()
-                .park_start(
+                .transition(HookSourceEvent::ParkStart(
                     SuppressedFullLifecycleHookReport {
                         agent_label: agent_label.clone(),
                         session_ref: None,
@@ -165,7 +177,7 @@ impl TerminalState {
                         pending_replacement_report: None,
                     },
                     persisted_session,
-                );
+                ));
 
             if process_present {
                 self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
@@ -230,19 +242,17 @@ impl TerminalState {
             return None;
         }
         if selection_can_reconcile {
-            let new_generation = self.suppressed_hook_source(&source).is_some()
-                || self
-                    .current_session_identity_for_persistence()
-                    .is_none_or(|current| {
-                        current.source.as_str() != source
-                            || current.agent.label() != agent_label
-                            || current.session_ref != session_ref
-                    });
-            self.activate_hook_source(&source);
-            // A trusted unsequenced selection starts one generation. Selecting
-            // the current session again must not revive its older state reports.
-            if new_generation {
-                self.clear_hook_report_sequence(&source);
+            let current_session_matches = self
+                .current_session_identity_for_persistence()
+                .is_some_and(|current| {
+                    current.source.as_str() == source
+                        && current.agent.label() == agent_label
+                        && current.session_ref == session_ref
+                });
+            if let Some(record) = self.hook_sources.get_mut(&source) {
+                record.transition(HookSourceEvent::Select {
+                    current_session_matches,
+                });
             }
         }
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
@@ -346,19 +356,21 @@ impl TerminalState {
     }
 
     pub(super) fn hook_report_order_allows(
-        &self,
+        &mut self,
         source: &str,
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
     ) -> bool {
         let sample = sample.into();
-        seq.map_or_else(
-            || {
-                self.hook_sources
-                    .get(source)
-                    .is_none_or(|record| record.sequence_value().is_none())
-            },
-            |seq| !self.hook_seq_superseded(source, seq, sample),
+        // Routing queries never insert a source or evict ordering history.
+        let mut empty_source = HookSourceState::default();
+        let record = self
+            .hook_sources
+            .get_mut(source)
+            .unwrap_or(&mut empty_source);
+        matches!(
+            record.transition(HookSourceEvent::OrderAllows(seq, sample)),
+            HookSourceEffects::OrderAllowed(true)
         )
     }
 
@@ -378,22 +390,6 @@ impl TerminalState {
         }
     }
 
-    /// Sequence numbers are wall-clock stamps, not monotonic observation times.
-    /// Within one generation they must increase unless a backward step in the
-    /// server's wall clock is corroborated by its monotonic clock. The caller supplies
-    /// the same clock pair to validation and acceptance.
-    /// Generation transitions also reset ordering. Mere silence never does.
-    pub(super) fn hook_seq_superseded(
-        &self,
-        source: &str,
-        seq: u64,
-        sample: HookClockSample,
-    ) -> bool {
-        self.hook_sources
-            .get(source)
-            .is_some_and(|record| record.seq_superseded(seq, sample.monotonic, sample.wall))
-    }
-
     pub(super) fn record_hook_seq(
         &mut self,
         source: String,
@@ -411,7 +407,7 @@ impl TerminalState {
         self.hook_sources
             .entry(source)
             .or_default()
-            .record_sequence(seq, sample);
+            .transition(HookSourceEvent::RecordSequence(seq, sample));
         true
     }
 
@@ -457,7 +453,7 @@ impl TerminalState {
 
     pub(super) fn clear_hook_report_sequence(&mut self, source: &str) {
         if let Some(record) = self.hook_sources.get_mut(source) {
-            record.clear_sequence();
+            record.transition(HookSourceEvent::ClearSequence);
         }
     }
 }

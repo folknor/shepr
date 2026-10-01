@@ -23,12 +23,14 @@
 //! asks each restart question through the `decide` callback, and reports the
 //! returned outcomes.
 
+use std::collections::HashMap;
 use std::io;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::SshFailureDiagnostic;
 use crate::machine::{MachineConfig, MachineLabel};
+use crate::machine_ssh::MachineProbe;
 use crate::{DifferentBuildServer, MachineSshCheck, RemoteStop};
 
 use crate::limits::MAX_RESTART_OFFERS;
@@ -307,12 +309,13 @@ pub fn restart_different_builds(
     }
 }
 
-/// The real ssh behind [`PreflightSsh`]: [`check_machine_ssh`](crate::check_machine_ssh)
+/// The real ssh behind [`PreflightSsh`]: one retained probe per configured machine,
 /// under one shared deadline per round, `ssh_authentication_command` on shepr's
 /// control socket, and [`stop_remote_server`](crate::stop_remote_server).
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_config::AppPaths,
     deadline: Mutex<Instant>,
+    probes: Mutex<HashMap<String, Arc<Mutex<MachineProbe>>>>,
 }
 
 impl<'a> MachineSshPreflight<'a> {
@@ -321,6 +324,7 @@ impl<'a> MachineSshPreflight<'a> {
         Self {
             paths,
             deadline: Mutex::new(round_deadline()),
+            probes: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -344,7 +348,19 @@ impl PreflightSsh for MachineSshPreflight<'_> {
             .deadline
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::check_machine_ssh(self.paths, &machine.ssh, deadline)
+        // Hold the map only while finding this machine's state. Different machines
+        // keep independent locks, so their SSH checks still run concurrently.
+        let probe = Arc::clone(
+            self.probes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(machine.label.as_str().to_owned())
+                .or_default(),
+        );
+        let mut probe = probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        probe.check(self.paths, &machine.ssh, deadline)
     }
 
     fn authenticate(&self, machine: &MachineConfig) -> io::Result<()> {

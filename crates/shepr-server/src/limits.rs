@@ -44,6 +44,10 @@ pub(crate) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Limit app events per loop pass so clients still get service.
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
+/// Refuse new checkout-root work when this combined count of worker threads
+/// and queued completions reaches the limit. Resume checks add at most one
+/// completion per restored agent pane in a finite restore batch.
+pub(crate) const MAX_WORKER_COMPLETION_BACKLOG: usize = 8;
 /// Limit API requests per loop pass so client and scheduled work still get service.
 pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
 /// Bound queued API requests. Each API connection queues one request and waits

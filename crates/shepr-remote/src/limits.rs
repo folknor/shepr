@@ -176,3 +176,6 @@ pub(crate) const SSH_KEEPALIVE: SshKeepalive = SshKeepalive {
     interval_secs: 15,
     count_max: 4,
 };
+
+/// Maximum label characters retained in a bridge socket file name.
+pub(crate) const BRIDGE_NAME_LABEL_CHARS: usize = 24;

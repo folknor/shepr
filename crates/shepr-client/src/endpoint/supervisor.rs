@@ -11,7 +11,6 @@ pub(crate) use crate::limits::MAX_RETRY_DELAY;
 use crate::limits::{
     ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, STABLE_CONNECTION_PERIOD,
 };
-use interprocess::TryClone as _;
 
 // An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());

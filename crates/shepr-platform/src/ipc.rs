@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
 
-pub type LocalListener = interprocess::local_socket::Listener;
-pub type LocalStream = interprocess::local_socket::Stream;
+pub type LocalListener = std::os::unix::net::UnixListener;
+pub type LocalStream = std::os::unix::net::UnixStream;
 
 pub enum LocalStreamReadCount {
     Data(usize),
@@ -546,9 +546,7 @@ pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result
     if unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(LocalStream::from(
-        interprocess::os::unix::uds_local_socket::Stream::from(UnixStream::from(socket)),
-    ))
+    Ok(UnixStream::from(socket))
 }
 
 /// Connects to a server socket and checks its owner before returning the
@@ -593,13 +591,8 @@ pub fn connect_trusted_local_stream_within(
 }
 
 pub fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
-    use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
-
-    let name = path.to_fs_name::<GenericFilePath>()?;
-    ListenerOptions::new()
-        .name(name)
-        .reclaim_name(false)
-        .create_sync()
+    // The caller owns socket path cleanup; dropping the listener only closes its fd.
+    LocalListener::bind(path)
 }
 
 /// Probe a local server socket and classify whether it is absent, stale, live,
@@ -1024,11 +1017,9 @@ fn peer_uid_is_same_effective_user(peer_uid: libc::uid_t, own_uid: libc::uid_t) 
 }
 
 fn peer_uid(stream: &LocalStream) -> io::Result<libc::uid_t> {
-    use std::os::fd::{AsFd as _, AsRawFd as _};
+    use std::os::fd::AsRawFd as _;
 
-    let fd = match stream {
-        LocalStream::UdSocket(inner) => inner.as_fd().as_raw_fd(),
-    };
+    let fd = stream.as_raw_fd();
     let mut cred = libc::ucred {
         pid: 0,
         uid: 0,
@@ -1107,11 +1098,7 @@ impl Read for LocalStreamReader<'_> {
 
 impl AsRawFd for LocalStreamReader<'_> {
     fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        use std::os::fd::AsFd as _;
-
-        match &*self.stream {
-            LocalStream::UdSocket(inner) => inner.as_fd().as_raw_fd(),
-        }
+        self.stream.as_raw_fd()
     }
 }
 
@@ -1448,8 +1435,6 @@ mod tests {
 
     #[test]
     fn private_listener_is_linked_into_place_and_never_replaces_a_path() {
-        use interprocess::local_socket::traits::Listener as _;
-
         let dir = test_socket_path("staging-dir");
         fs::create_dir_all(&dir).expect("test precondition");
         let path = dir.join("api.sock");
@@ -1514,27 +1499,51 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
-    fn connected_pair(name: &str) -> (LocalStream, LocalStream) {
-        use interprocess::local_socket::traits::Listener as _;
+    #[test]
+    fn nonblocking_listener_keeps_accepted_streams_blocking_and_leaves_path_on_drop() {
+        let scratch = shepr_test_support::ScratchDir::new("listener-lifetime");
+        let path = scratch.join("s.sock");
+        let listener = bind_private_local_listener(&path).expect("bind private listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set accept nonblocking");
+        let error = listener.accept().expect_err("empty backlog would block");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
 
+        let client = connect_trusted_local_stream(&path).expect("connect trusted client");
+        let (server, _) = listener.accept().expect("accept client");
+        assert!(peer_is_same_effective_user(&server).expect("read peer credentials"));
+        // SAFETY: F_GETFL only reads flags from the live accepted descriptor.
+        let flags = unsafe { libc::fcntl(server.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0, "read accepted stream flags");
+        assert_eq!(flags & libc::O_NONBLOCK, 0);
+        drop(server);
+        drop(client);
+        drop(listener);
+        let metadata = fs::symlink_metadata(&path).expect("listener drop retains its socket path");
+        assert!(metadata.file_type().is_socket());
+        assert_eq!(metadata.permissions().mode() & 0o777, PRIVATE_SOCKET_MODE);
+        assert!(matches!(probe(&path), Liveness::Stale));
+    }
+
+    fn connected_pair(name: &str) -> (LocalStream, LocalStream) {
         let path = test_socket_path(name);
         let listener = bind_local_listener(&path).expect("test precondition");
         let client = connect_local_stream(&path).expect("test precondition");
-        let server = listener.accept().expect("test precondition");
+        let server = listener.accept().expect("test precondition").0;
         fs::remove_file(&path).expect("remove the bound socket");
         (client, server)
     }
 
     #[test]
     fn deadline_reader_cuts_off_a_peer_at_the_overall_deadline() {
-        use interprocess::local_socket::traits::Listener as _;
         use std::io::Write as _;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let path = test_socket_path("deadline");
         let listener = bind_local_listener(&path).expect("test precondition");
         let mut client = connect_local_stream(&path).expect("test precondition");
-        let mut server = listener.accept().expect("test precondition");
+        let mut server = listener.accept().expect("test precondition").0;
         fs::remove_file(&path).expect("remove the bound socket");
         client.write_all(b"x").expect("test precondition");
         let started = Instant::now();

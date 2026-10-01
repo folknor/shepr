@@ -4,13 +4,6 @@ use crate::machine::RemoteExecutableError;
 use std::io;
 use std::process::Output;
 
-pub(super) fn locate_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutable> {
-    DiscoveryProgress::default().advance(&mut SshDiscovery {
-        ssh,
-        rejected_shell_unsafe_candidate: None,
-    })
-}
-
 /// The SSH commands full discovery is made of, one method per remote round trip. Only
 /// [`DiscoveryProgress`] sequences them; the seam exists so that sequencing, and resuming
 /// it, can be tested without a remote host.

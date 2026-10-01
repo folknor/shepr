@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
 use tracing::{debug, error, info, warn};
 
 use crate::limits::{
@@ -335,7 +334,7 @@ fn handle_connection(
     api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
 ) -> std::io::Result<()> {
-    if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
+    if let Err(err) = stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(error = %err, "api connection write timeout unavailable");
     }
 
@@ -501,7 +500,7 @@ fn read_request_line_until(
     let result = read_request_line_blocking(stream, deadline);
     // Later phases arm their own modes; don't leave a stale receive timeout.
     // A read error takes precedence over a failure to clear it.
-    let reset = stream.set_recv_timeout(None);
+    let reset = stream.set_read_timeout(None);
     let line = result?;
     reset?;
     Ok(line)
@@ -643,7 +642,6 @@ fn error_response_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::fs;
     use std::io::{BufRead, BufReader, Read};
@@ -679,7 +677,7 @@ mod tests {
         let path = unique_test_path(name);
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        let server = listener.accept().expect("test precondition");
+        let server = listener.accept().expect("test precondition").0;
         (client, server)
     }
 

@@ -13,16 +13,6 @@ Filed from the defect hunt over `crates/shepr-termio/src/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## INPLAT-013 - Structural: drop `interprocess` from `shepr-platform`
-
-Connect (`connect_local_stream_within`), peer credentials (`peer_uid`),
-nonblocking mode, shutdown and readiness polling are already raw libc or std.
-What the crate still provides is the `Listener` type and a one-variant
-`Stream::UdSocket` enum, which forces irrefutable `let LocalStream::UdSocket(..)
-= ..` destructuring in `client_stream.rs`, `remote_bridge_io.rs` and `ipc.rs`.
-`std::os::unix::net::{UnixListener, UnixStream}` would cover it, remove a
-dependency, and shrink the surface the client and API crates code against.
-
 ## INPLAT-014 - Structural: one primitive for runtime artifacts that outlive a killed owner
 
 Three schemes do the same job: socket staging directories with a `.owner`
@@ -44,20 +34,21 @@ the reply policy. Each hold has its own ad hoc expiry; the unterminated OSC
 10/11 hold (in `notes/bugs-rejected-candidates.md`) forgot one. A single
 `enum Held { Paste{..}, PasteTail, ControlString{family, bytes}, MouseTail{..},
 HostReplyEsc, .. }` where each variant gives a byte bound and a flush-count bound
-would make "every hold ends" a type-level property. The file is
-upstream-tracked, so this rewrite cuts against porting upstream fixes.
+would make "every hold ends" a type-level property.
 
-## INPLAT-020 - A pane cell holding an emoji with VS16 may hide the next character
+## INPLAT-020 - Pane cell width is inferred because the wire cell has no wide flag
 
-Lateral, suspected and pre-existing, `shepr-termio/src/blit.rs`. The terminal
-core (alacritty) lays out the warning sign followed by VS16 (`\u{26a0}\u{fe0f}`)
-as one narrow cell with the variation selector attached, and the next character
-in the following cell. The blitter measures that cell's symbol by the grapheme
-width rule (2 columns) and skips the following cell, so the next character would
-never reach the outer terminal. Check with a pane that runs
-`printf '\342\232\240\357\270\217x\n'`. If confirmed, pane cells should be placed
-by the grid cell's own wide flag rather than by measuring their symbol, while
-chrome keeps the grapheme rule.
+The blitter places pane cells by the spacer cells and visible successors the pane
+renderer sends, so an emoji with VS16 that alacritty stores in one narrow cell no
+longer hides the next character, and the full, diff and patch paths agree.
+Residue: the wire `CellData` (`shepr-protocol/src/frame.rs`) carries no wide flag,
+so a narrow VS16 pane cell followed by a real space, or at the row edge, is still
+treated as two columns; and client composition's `split_glyph_cells`
+(`shell/presentation/wire_cells.rs`) still sizes glyphs by grapheme width, so an
+overlay edge that splits such a cell blanks the emoji or its right neighbour.
+Carrying the grid cell's width from the pane renderer through `CellData` to the
+blitter and to composition removes both. Also: the `cell_width` doc in `blit.rs`
+says client composition uses it, but composition calls `text_width`.
 
 ## INPLAT-017 - Structural: an under-minimum `PaneGeometry` can still be built directly
 

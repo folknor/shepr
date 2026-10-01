@@ -660,13 +660,6 @@ expect = "seal paths ok"
 match = "last-line"
 stage = "pre-clippy"
 
-[[script_check]]
-name = "upstream-watch-paths"
-command = "python3 scripts/check_upstream_watch_paths.py"
-expect = "upstream watch paths ok"
-match = "last-line"
-stage = "pre-clippy"
-
 # The agent plugins that load into a JavaScript agent (Pi, Oh My Pi, opencode,
 # Kilo) are tested with bun, a development dependency.
 [[script_check]]
@@ -737,7 +730,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-platform-layer"
 from = "shepr-platform"
-allow = ["crossterm", "interprocess", "libc", "sha2", "shepr-core", "tracing", "tracing-subscriber"]
+allow = ["crossterm", "libc", "sha2", "shepr-core", "tracing", "tracing-subscriber"]
 kinds = ["normal"]
 
 # The VT scanner calls memchr directly in its per-PTY-chunk ground-state path.
@@ -837,7 +830,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-api-layer"
 from = "shepr-api"
-allow = ["interprocess", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
+allow = ["serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "tokio", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -849,13 +842,13 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-remote-layer"
 from = "shepr-remote"
-allow = ["interprocess", "serde", "serde_json", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "tracing"]
+allow = ["serde", "serde_json", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]
 name = "shepr-client-layer"
 from = "shepr-client"
-allow = ["base64", "crossterm", "ctrlc", "interprocess", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
 # Git command environment and deadline policy are owned by mux, which uses the
@@ -886,5 +879,5 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "interprocess", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
+allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
 kinds = ["normal"]

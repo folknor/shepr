@@ -64,6 +64,21 @@ impl HeadlessServer {
             let drained_changed = self.drain_all_internal_events_with_forwarding();
             match self.app.prepare_workspace_checkout_root(params) {
                 Ok((cwd, home)) => {
+                    if super::worker::completion_backlog(&self.worker_tx, &self.worker_rx)
+                        >= crate::limits::MAX_WORKER_COMPLETION_BACKLOG
+                    {
+                        self.queue_endpoint_reply(
+                            client_id,
+                            crate::server::client_commands::response_message(
+                                boot_id,
+                                request_id,
+                                Err(EndpointError::Rejected(
+                                    "checkout root worker limit reached; retry later".to_owned(),
+                                )),
+                            ),
+                        );
+                        return foreground_changed | drained_changed;
+                    }
                     let shutdown_message = crate::server::client_commands::error_message(
                         boot_id.clone(),
                         request_id.clone(),

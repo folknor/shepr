@@ -64,8 +64,6 @@ use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use interprocess::TryClone as _;
-use interprocess::local_socket::traits::Stream as _;
 use tracing::{info, warn};
 
 use shepr_platform::ipc::LocalStream;

@@ -1,11 +1,12 @@
 use std::io;
 use std::path::PathBuf;
 
+use crate::limits::BRIDGE_NAME_LABEL_CHARS;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
     DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_remote_candidate_mismatch,
-    is_ssh_link_failure, judge_remote_server, locate_remote_shepr, remote_server_status,
+    is_ssh_link_failure, judge_remote_server, remote_server_status,
     resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
 
@@ -26,54 +27,143 @@ pub fn check_machine_ssh(
     target: &SshTarget,
     deadline: std::time::Instant,
 ) -> io::Result<MachineSshCheck> {
-    let mut ssh = RemoteSsh::new(target.clone(), paths)?;
-    ssh.set_attempt_deadline(Some(deadline));
-    let cache = SshMetadataCache::new(paths, target);
-    let remote = resolve_remote_shepr(
-        &cache,
-        |candidate| verify_remote_shepr(&ssh, candidate),
-        || locate_remote_shepr(&ssh),
-    )?;
-    let status = remote_server_status(&ssh, &remote)?;
-    judge_remote_server(ssh.target(), &remote, &status)
+    MachineProbe::default().check(paths, target, deadline)
 }
 
-/// The remote executable for a check: the cached one when `verify` accepts it,
-/// otherwise whatever `discover` finds, which is then cached. A link failure while
-/// verifying says nothing about the cached path and is returned as it is. An absent
-/// or incompatible cached executable is dropped before discovery; other probe errors
-/// are returned without invalidating a path that may still be valid. Cache failures
-/// are logged and never fail the check.
-fn resolve_remote_shepr(
-    cache: &SshMetadataCache,
-    mut verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
-    discover: impl FnOnce() -> io::Result<RemoteExecutable>,
-) -> io::Result<RemoteExecutable> {
-    if let Some(cached) = cache.load() {
-        match verify(&cached) {
-            Ok(true) => return Ok(cached),
-            Err(error) if is_ssh_link_failure(&error) => return Err(error),
-            Err(error) if !is_remote_candidate_mismatch(&error) => return Err(error),
-            Ok(false) | Err(_) => {
-                if let Err(error) = cache.invalidate() {
-                    tracing::warn!(
-                        %error,
-                        path = %cache.path().display(),
-                        "could not drop stale SSH machine metadata"
-                    );
+/// One machine's executable resolution and server validation. Disk metadata is an
+/// untrusted hint until the installed client and sibling have been verified. A
+/// verified hint is reused during this process; only evidence about that executable
+/// invalidates it. Discovery itself owns the rule for retaining completed round
+/// trips across link failures and clearing them after authentication or host-key errors.
+#[derive(Default)]
+pub(crate) struct MachineProbe {
+    executable: ProbeExecutable,
+    discovery: DiscoveryProgress,
+}
+
+#[derive(Default)]
+enum ProbeExecutable {
+    #[default]
+    Unseeded,
+    Missing,
+    Hint(RemoteExecutable),
+    Verified(RemoteExecutable),
+}
+
+impl MachineProbe {
+    pub(crate) fn check(
+        &mut self,
+        paths: &shepr_config::AppPaths,
+        target: &SshTarget,
+        deadline: std::time::Instant,
+    ) -> io::Result<MachineSshCheck> {
+        let mut ssh = RemoteSsh::new(target.clone(), paths)?;
+        ssh.set_attempt_deadline(Some(deadline));
+        let cache = SshMetadataCache::new(paths, target);
+        self.advance(&ssh, &cache).map(|(_, check)| check)
+    }
+
+    fn advance(
+        &mut self,
+        ssh: &RemoteSsh,
+        cache: &SshMetadataCache,
+    ) -> io::Result<(RemoteExecutable, MachineSshCheck)> {
+        self.advance_with(
+            cache,
+            |candidate| verify_remote_shepr(ssh, candidate),
+            |progress| resume_installed_remote_shepr_discovery(ssh, progress),
+            |remote| {
+                remote_server_status(ssh, remote)
+                    .and_then(|status| judge_remote_server(ssh.target(), remote, &status))
+            },
+        )
+    }
+
+    /// The IO seam keeps the resolution and failure transitions identical for
+    /// startup and reconnect, and lets tests supply remote results without SSH.
+    fn advance_with(
+        &mut self,
+        cache: &SshMetadataCache,
+        verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
+        discover: impl FnOnce(&mut DiscoveryProgress) -> io::Result<RemoteExecutable>,
+        judge: impl FnOnce(&RemoteExecutable) -> io::Result<MachineSshCheck>,
+    ) -> io::Result<(RemoteExecutable, MachineSshCheck)> {
+        let remote = self.resolve(cache, verify, discover)?;
+        let result = judge(&remote);
+        if let Err(error) = &result {
+            self.observe_failure(cache, error);
+        }
+        result.map(|check| (remote, check))
+    }
+
+    fn resolve(
+        &mut self,
+        cache: &SshMetadataCache,
+        mut verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
+        discover: impl FnOnce(&mut DiscoveryProgress) -> io::Result<RemoteExecutable>,
+    ) -> io::Result<RemoteExecutable> {
+        if matches!(self.executable, ProbeExecutable::Unseeded) {
+            self.executable = cache
+                .load()
+                .map_or(ProbeExecutable::Missing, ProbeExecutable::Hint);
+        }
+        match &self.executable {
+            ProbeExecutable::Verified(remote) => return Ok(remote.clone()),
+            ProbeExecutable::Hint(cached) => {
+                let cached = cached.clone();
+                match verify(&cached) {
+                    Ok(true) => {
+                        self.executable = ProbeExecutable::Verified(cached.clone());
+                        return Ok(cached);
+                    }
+                    Err(error) if is_ssh_link_failure(&error) => return Err(error),
+                    Err(error) if !is_remote_candidate_mismatch(&error) => return Err(error),
+                    Ok(false) | Err(_) => self.invalidate(cache),
                 }
             }
+            ProbeExecutable::Unseeded | ProbeExecutable::Missing => {}
+        }
+        let discovered = discover(&mut self.discovery).inspect_err(|error| {
+            if self.discovery.has_progress() {
+                tracing::debug!(
+                    %error,
+                    path = %cache.path().display(),
+                    "SSH discovery stopped; the next attempt resumes it"
+                );
+            }
+        })?;
+        self.discovery = DiscoveryProgress::default();
+        self.executable = ProbeExecutable::Verified(discovered.clone());
+        if let Err(error) = cache.store(&discovered) {
+            tracing::warn!(
+                %error,
+                path = %cache.path().display(),
+                "could not cache SSH machine metadata; later connections rediscover the remote shepr"
+            );
+        }
+        Ok(discovered)
+    }
+
+    fn invalidate(&mut self, cache: &SshMetadataCache) {
+        self.executable = ProbeExecutable::Missing;
+        self.discovery = DiscoveryProgress::default();
+        if let Err(error) = cache.invalidate() {
+            tracing::warn!(
+                %error,
+                path = %cache.path().display(),
+                "could not drop stale SSH machine metadata"
+            );
         }
     }
-    let discovered = discover()?;
-    if let Err(error) = cache.store(&discovered) {
-        tracing::warn!(
-            %error,
-            path = %cache.path().display(),
-            "could not cache SSH machine metadata; later connections rediscover the remote shepr"
-        );
+
+    fn observe_failure(&mut self, cache: &SshMetadataCache, error: &io::Error) -> bool {
+        if remote_executable_must_be_rediscovered(error) {
+            self.invalidate(cache);
+            true
+        } else {
+            false
+        }
     }
-    Ok(discovered)
 }
 
 pub struct MachineSshBridge {
@@ -97,24 +187,13 @@ pub struct MachineSshStream {
 /// Connects one configured SSH machine repeatedly. The machine set is fixed at
 /// launch, so a connector lives as long as its client.
 ///
-/// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
-/// launch, one temporary managed ssh config (instead of a new directory per
-/// attempt), and the remote executable found by the last successful discovery.
-/// Discovery costs several SSH round trips (an account-shell `command -v`, a `/bin/sh`
-/// `command -v`, the candidate script, a status probe per candidate), so a
-/// reconnect launches the bridge straight from the remembered executable, seeded
-/// from the on-disk metadata cache at first use.
-///
-/// A remembered executable is only a hint. A remote command-not-found or
-/// not-executable result drops it and runs discovery once; handshake and remote
-/// launch errors leave the hint in place because they do not show that the
-/// executable moved, was removed or was upgraded.
-///
-/// Full discovery may not fit in one attempt on a slow link without connection
-/// sharing. When an attempt ends on a timeout or other link failure, what discovery
-/// completed is kept (`DiscoveryProgress`) and the next attempt
-/// resumes it, so every attempt still ends within its budget and discovery still
-/// finishes.
+/// It keeps the managed SSH config and its own `MachineProbe`, the same state
+/// machine the startup check uses. Each connection attempt queries the remote
+/// server's status and judges its build before starting a bridge, which costs
+/// one SSH round trip per attempt; the handshake still checks the identity of
+/// the server actually reached, since it can change between the probe and the
+/// bridge. Partial discovery survives link failures so a slow host can be
+/// resolved over several bounded attempts.
 pub struct MachineSshConnector {
     paths: shepr_config::AppPaths,
     label: MachineLabel,
@@ -126,11 +205,7 @@ pub struct MachineSshConnector {
 struct ConnectorState {
     ssh: Option<RemoteSsh>,
     launch_fatal_setup_error: Option<StoredSetupError>,
-    remote_shepr: Option<RemoteExecutable>,
-    /// Full discovery's completed round trips, while it has not finished. Only kept while
-    /// there is no remembered executable.
-    discovery: DiscoveryProgress,
-    seeded_from_disk: bool,
+    probe: MachineProbe,
 }
 
 fn ensure_managed_ssh_config(
@@ -260,22 +335,13 @@ impl MachineSshConnector {
         if let Some(error) = &state.launch_fatal_setup_error {
             return Err(error.to_io_error());
         }
-        if !state.seeded_from_disk {
-            state.seeded_from_disk = true;
-            state.remote_shepr = metadata_cache.load();
-        }
         // A missing managed config can mean its temporary directory was removed
         // while the client stayed open. Rebuild it as local setup rather than retrying
         // ssh with a path that no longer exists. If logind removed the XDG runtime
         // root itself, the resulting NotFound is shown as Attention and retried;
         // setup rebuilds once that root returns.
         ensure_managed_ssh_config(state, &self.target, &self.paths)?;
-        let ConnectorState {
-            ssh,
-            remote_shepr,
-            discovery,
-            ..
-        } = &mut *state;
+        let ConnectorState { ssh, probe, .. } = &mut *state;
         // Setup above either stored the transport or returned its setup error. Keep
         // this checked arm instead of panicking if the connector state changes later.
         let Some(ssh) = ssh.as_mut() else {
@@ -284,76 +350,37 @@ impl MachineSshConnector {
         ssh.set_attempt_deadline(Some(deadline));
         let ssh = &*ssh;
 
-        let discovered = if let Some(known) = remote_shepr.clone() {
-            match Self::attempt(
-                &self.paths,
-                &self.label,
-                ssh,
-                target,
-                &known,
-                deadline,
-                &mut establish,
-            ) {
-                Ok(connected) => return Ok(connected),
-                Err(error) if remote_executable_must_be_rediscovered(&error) => {
-                    tracing::debug!(
-                        %error,
-                        machine = %self.label,
-                        target = %self.target.as_str(),
-                        "remembered remote Shepr could not be executed; rediscovering"
-                    );
-                    *remote_shepr = None;
-                    resume_installed_remote_shepr_discovery(ssh, discovery)?
-                }
-                Err(error) => return Err(error),
-            }
-        } else {
-            resume_installed_remote_shepr_discovery(ssh, discovery).inspect_err(|error| {
-                if discovery.has_progress() {
-                    tracing::debug!(
-                        %error,
-                        machine = %self.label,
-                        target = %self.target.as_str(),
-                        "SSH discovery stopped; the next attempt resumes it"
-                    );
-                }
-            })?
-        };
-        *discovery = DiscoveryProgress::default();
-        // Remembered before the bridge starts: a link failure can retry this path
-        // without rediscovery. Only a remote command-not-found or not-executable
-        // result forgets it, so an unrelated server or launch failure does not pay
-        // discovery again on the next attempt.
-        *remote_shepr = Some(discovered.clone());
+        let (remote, check) = probe.advance(ssh, &metadata_cache)?;
+        ensure_machine_ready(target, check)?;
         match Self::attempt(
             &self.paths,
             &self.label,
             ssh,
             target,
-            &discovered,
+            &remote,
             deadline,
             &mut establish,
         ) {
-            Ok(connected) => {
-                // A cache failure does not undo this connection or this connector's
-                // in-memory hint; later processes must rediscover the executable.
-                if let Err(error) = metadata_cache.store(&discovered) {
-                    tracing::warn!(
-                        %error,
-                        machine = %self.label,
-                        target = %target.as_str(),
-                        path = %metadata_cache.path().display(),
-                        "could not cache SSH machine metadata; later connections rediscover the remote shepr"
-                    );
-                }
-                Ok(connected)
+            Ok(connected) => Ok(connected),
+            Err(error) if probe.observe_failure(&metadata_cache, &error) => {
+                // The remote command proved the path stale after probing. Resolve
+                // once more within the same deadline, through the same state machine.
+                let (remote, check) = probe.advance(ssh, &metadata_cache)?;
+                ensure_machine_ready(target, check)?;
+                Self::attempt(
+                    &self.paths,
+                    &self.label,
+                    ssh,
+                    target,
+                    &remote,
+                    deadline,
+                    &mut establish,
+                )
+                .inspect_err(|error| {
+                    probe.observe_failure(&metadata_cache, error);
+                })
             }
-            Err(error) => {
-                if remote_executable_must_be_rediscovered(&error) {
-                    *remote_shepr = None;
-                }
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -399,6 +426,22 @@ impl MachineSshConnector {
     }
 }
 
+/// Startup can offer a restart for this result. A running client's background
+/// attempt cannot ask for consent, so it reports the same finding as a typed
+/// compatibility failure. The server is left running in both cases.
+fn ensure_machine_ready(target: &SshTarget, check: MachineSshCheck) -> io::Result<()> {
+    match check {
+        MachineSshCheck::Ready => Ok(()),
+        MachineSshCheck::DifferentBuild(server) => {
+            Err(super::server_lifecycle::remote_server_compatibility_error(
+                target.as_str(),
+                Some(&server.version),
+                Some(&server.build_id),
+            ))
+        }
+    }
+}
+
 /// Only the POSIX shell's command-not-found (127) and not-executable (126)
 /// statuses, reported by ssh as the remote command's own exit status, prove
 /// that a remembered Shepr path is stale. The status is read from the typed
@@ -419,11 +462,6 @@ fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
 // machine, every connect attempt) binds a
 // socket of its own and removes it on drop. Two bridges for one machine never
 // contend for a path, so the busy-socket `AddrInUse` cannot arise between them.
-
-/// Longest run of label characters kept in a socket file name. Labels are
-/// free text, and a socket path has a hard length limit.
-// limits-exempt: bounds a decorative file name fragment, not behavior.
-const BRIDGE_NAME_LABEL_CHARS: usize = 24;
 
 /// The label reduced to a file name fragment: ASCII letters, digits, `-` and `_`
 /// only, at most `BRIDGE_NAME_LABEL_CHARS` of them. Other characters become
@@ -526,6 +564,14 @@ mod tests {
             "a missing local runtime root is actionable, not a dropped SSH link"
         );
         assert!(state.ssh.is_none(), "a failed setup keeps nothing to reuse");
+    }
+
+    fn resolve_remote_shepr(
+        cache: &SshMetadataCache,
+        verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
+        discover: impl FnOnce() -> io::Result<RemoteExecutable>,
+    ) -> io::Result<RemoteExecutable> {
+        MachineProbe::default().resolve(cache, verify, |_| discover())
     }
 
     fn cache_in(scratch: &shepr_test_support::ScratchDir) -> SshMetadataCache {
@@ -636,6 +682,266 @@ mod tests {
         .expect("resolved");
         assert_eq!(found, executable("/found/shepr"));
         assert_eq!(cache.load(), Some(executable("/found/shepr")));
+    }
+
+    #[test]
+    fn verified_discovery_is_cached_before_a_server_probe_failure_and_reused() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-probe-server-link");
+        let cache = cache_in(&scratch);
+        let mut probe = MachineProbe::default();
+        let error = probe
+            .advance_with(
+                &cache,
+                |_| panic!("empty cache"),
+                |_| Ok(executable("/found/shepr")),
+                |_| Err(io::Error::from(io::ErrorKind::TimedOut)),
+            )
+            .expect_err("server status timed out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(cache.load(), Some(executable("/found/shepr")));
+        let (remote, check) = probe
+            .advance_with(
+                &cache,
+                |_| panic!("already verified"),
+                |_| panic!("already discovered"),
+                |_| Ok(MachineSshCheck::Ready),
+            )
+            .expect("next attempt only probes server presence");
+        assert_eq!(remote, executable("/found/shepr"));
+        assert_eq!(check, MachineSshCheck::Ready);
+    }
+
+    #[test]
+    fn a_remote_exec_failure_drops_memory_and_disk_then_rediscovers() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-probe-stale-memory");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/old/shepr"))
+            .expect("test precondition");
+        let mut probe = MachineProbe::default();
+        probe
+            .resolve(&cache, |_| Ok(true), |_| panic!("verified cache"))
+            .expect("verified");
+        let error = io::Error::other(super::super::SshFailureDiagnostic::from_ssh_output(
+            Some(127),
+            "remote executable disappeared".into(),
+        ));
+        assert!(probe.observe_failure(&cache, &error));
+        assert!(cache.load().is_none());
+        let found = probe
+            .resolve(
+                &cache,
+                |_| panic!("stale hint was dropped"),
+                |_| Ok(executable("/new/shepr")),
+            )
+            .expect("rediscovered");
+        assert_eq!(found, executable("/new/shepr"));
+        assert_eq!(cache.load(), Some(found));
+    }
+
+    #[test]
+    fn cached_candidate_mismatch_rediscovery_uses_the_shared_typed_class() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-probe-candidate-build");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/old/shepr"))
+            .expect("test precondition");
+        let mut probe = MachineProbe::default();
+        let found = probe
+            .resolve(
+                &cache,
+                |_| {
+                    Err(crate::remote_candidate_mismatch_error(
+                        "installed pair changed",
+                    ))
+                },
+                |_| {
+                    assert!(cache.load().is_none(), "stale cache is removed first");
+                    Ok(executable("/new/shepr"))
+                },
+            )
+            .expect("a different installed pair triggers discovery");
+        assert_eq!(cache.load(), Some(found));
+    }
+
+    #[test]
+    fn a_server_status_exec_failure_invalidates_the_same_hint_as_a_bridge_failure() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-probe-status-exec");
+        let cache = cache_in(&scratch);
+        let mut probe = MachineProbe::default();
+        let error = probe
+            .advance_with(
+                &cache,
+                |_| panic!("empty cache"),
+                |_| Ok(executable("/found/shepr")),
+                |_| {
+                    Err(io::Error::other(
+                        crate::SshFailureDiagnostic::from_ssh_output(
+                            Some(126),
+                            "remote executable no longer executable".into(),
+                        ),
+                    ))
+                },
+            )
+            .expect_err("executable changed between discovery and server status");
+        assert!(remote_executable_must_be_rediscovered(&error));
+        assert!(cache.load().is_none());
+        assert!(matches!(probe.executable, ProbeExecutable::Missing));
+    }
+
+    #[test]
+    fn ssh_rejections_leave_the_disk_hint_untrusted_and_available_for_a_recheck() {
+        for message in [
+            "Permission denied (publickey)",
+            "Host key verification failed",
+        ] {
+            let scratch = shepr_test_support::ScratchDir::new("machine-probe-hint-rejection");
+            let cache = cache_in(&scratch);
+            cache
+                .store(&executable("/cached/shepr"))
+                .expect("test precondition");
+            let mut probe = MachineProbe::default();
+            let error = probe
+                .resolve(
+                    &cache,
+                    |_| {
+                        Err(io::Error::other(
+                            crate::SshFailureDiagnostic::from_ssh_output(
+                                Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
+                                message.into(),
+                            ),
+                        ))
+                    },
+                    |_| panic!("no remote result means no discovery fallback"),
+                )
+                .expect_err("SSH rejection");
+            assert!(crate::SshFailureDiagnostic::from_error(&error).needs_attention());
+            assert!(matches!(probe.executable, ProbeExecutable::Hint(_)));
+            assert_eq!(cache.load(), Some(executable("/cached/shepr")));
+            let found = probe
+                .resolve(
+                    &cache,
+                    |_| Ok(true),
+                    |_| panic!("hint verified after SSH recovers"),
+                )
+                .expect("recheck verifies the hint");
+            assert_eq!(found, executable("/cached/shepr"));
+        }
+    }
+
+    #[test]
+    fn server_mismatch_has_one_judgment_and_does_not_invalidate_the_install() {
+        let scratch = shepr_test_support::ScratchDir::new("machine-probe-server-build");
+        let cache = cache_in(&scratch);
+        let mut probe = MachineProbe::default();
+        let status = super::super::server_lifecycle::RemoteServerStatus::Running {
+            version: Some("old".into()),
+            build_id: Some(format!("{}-other", shepr_protocol::BUILD_ID)),
+            boot_id: Some("17-23".into()),
+        };
+        let (_, check) = probe
+            .advance_with(
+                &cache,
+                |_| panic!("empty cache"),
+                |_| Ok(executable("/found/shepr")),
+                |remote| judge_remote_server("build.example", remote, &status),
+            )
+            .expect("startup can offer a restart");
+        assert!(matches!(&check, MachineSshCheck::DifferentBuild(_)));
+        let target = SshTarget::parse("build.example").expect("test precondition");
+        let error = ensure_machine_ready(&target, check).expect_err("background needs attention");
+        assert!(crate::SshFailureDiagnostic::from_error(&error).is_remote_compatibility());
+        assert!(!probe.observe_failure(&cache, &error));
+        assert_eq!(cache.load(), Some(executable("/found/shepr")));
+    }
+
+    struct InterruptedDiscovery {
+        account_calls: usize,
+        interruption: Option<io::Error>,
+    }
+
+    impl super::super::discovery::DiscoverySteps for InterruptedDiscovery {
+        fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+            self.account_calls += 1;
+            Ok(Some(executable("/found/shepr")))
+        }
+
+        fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
+            panic!("account shell already found the candidate")
+        }
+
+        fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
+            if let Some(error) = self.interruption.take() {
+                Err(error)
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn matches(&mut self, _: &RemoteExecutable) -> io::Result<bool> {
+            Ok(true)
+        }
+
+        fn target(&self) -> &str {
+            "build.example"
+        }
+    }
+
+    #[test]
+    fn machine_probe_resumes_links_and_presence_waits_but_restarts_after_ssh_rejection() {
+        let failures = [
+            (io::Error::from(io::ErrorKind::TimedOut), 1),
+            (
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    crate::SshFailureDiagnostic::authentication_wait_timeout(),
+                ),
+                1,
+            ),
+            (
+                io::Error::other(crate::SshFailureDiagnostic::from_ssh_output(
+                    Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
+                    "Permission denied (publickey)".into(),
+                )),
+                2,
+            ),
+            (
+                io::Error::other(crate::SshFailureDiagnostic::from_ssh_output(
+                    Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
+                    "Host key verification failed".into(),
+                )),
+                2,
+            ),
+        ];
+        for (index, (failure, expected_account_calls)) in failures.into_iter().enumerate() {
+            let scratch =
+                shepr_test_support::ScratchDir::new(&format!("machine-probe-progress-{index}"));
+            let cache = cache_in(&scratch);
+            let mut probe = MachineProbe::default();
+            let mut discovery = InterruptedDiscovery {
+                account_calls: 0,
+                interruption: Some(failure),
+            };
+            assert!(
+                probe
+                    .resolve(
+                        &cache,
+                        |_| panic!("empty cache"),
+                        |progress| progress.advance(&mut discovery),
+                    )
+                    .is_err()
+            );
+            let found = probe
+                .resolve(
+                    &cache,
+                    |_| panic!("no completed discovery to verify"),
+                    |progress| progress.advance(&mut discovery),
+                )
+                .expect("next round completes discovery");
+            assert_eq!(found, executable("/found/shepr"));
+            assert_eq!(discovery.account_calls, expected_account_calls);
+            assert!(!probe.discovery.has_progress());
+        }
     }
 
     #[test]

@@ -82,12 +82,32 @@ impl SyncTimeoutRender {
     }
 }
 
+/// OSC reports and save observations belong to one cwd arbitration state.
+/// Keep the locks separate: a /proc read never holds either, and callers that
+/// need both take reported before remembered.
+#[derive(Default)]
+struct PaneCwdState {
+    reported: Mutex<Option<ReportedCwd>>,
+    remembered: Mutex<Option<PersistedCwd>>,
+}
+
+impl PaneCwdState {
+    fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
+        let reported = shepr_vt::lock_auxiliary(&self.reported);
+        let remembered = shepr_vt::lock_auxiliary(&self.remembered);
+        remembered_cwd_for_save(reported.clone(), remembered.clone())
+    }
+
+    fn resolve(&self, shell_cwd: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+        ReportedCwd::resolve(shepr_vt::lock_auxiliary(&self.reported).as_ref(), shell_cwd)
+    }
+}
+
 /// Reads a pane shell's live working directory from any thread, so a save can
 /// take the probe on the event loop and do the /proc read where the save runs.
 pub struct PaneCwdProbe {
     child_liveness: Arc<ChildLiveness>,
-    reported: Arc<Mutex<Option<ReportedCwd>>>,
-    remembered: Arc<Mutex<Option<PersistedCwd>>>,
+    cwd: Arc<PaneCwdState>,
 }
 
 impl PaneCwdProbe {
@@ -105,9 +125,9 @@ impl PaneCwdProbe {
         if self.child_liveness.live_pid() != Some(pid) {
             return self.remembered_cwd();
         }
-        let reported = shepr_vt::lock_auxiliary(&self.reported).clone();
+        let reported = shepr_vt::lock_auxiliary(&self.cwd.reported).clone();
         let cwd = ReportedCwd::resolve(reported.as_ref(), Some(shell_cwd))?;
-        *shepr_vt::lock_auxiliary(&self.remembered) = Some(PersistedCwd {
+        *shepr_vt::lock_auxiliary(&self.cwd.remembered) = Some(PersistedCwd {
             path: cwd.clone(),
             report_generation: reported.map(|reported| reported.generation),
         });
@@ -115,9 +135,7 @@ impl PaneCwdProbe {
     }
 
     fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        let reported = shepr_vt::lock_auxiliary(&self.reported);
-        let remembered = shepr_vt::lock_auxiliary(&self.remembered);
-        remembered_cwd_for_save(reported.clone(), remembered.clone())
+        self.cwd.remembered_cwd()
     }
 }
 
@@ -132,6 +150,9 @@ impl PaneCwdProbe {
 /// detached terminal, request a redundant render wake, and queue
 /// runtime-generation events; the app rejects those events after the pane
 /// runtime is removed or replaced.
+// Keep task capabilities separate: a cwd save probe must not retain the
+// terminal or actor, and the child watcher must survive runtime teardown.
+// Read effects already form the timer's single weakly-held ownership bundle.
 pub struct PaneRuntime {
     generation: crate::events::RuntimeGeneration,
     pane_id: PaneId,
@@ -140,8 +161,7 @@ pub struct PaneRuntime {
     current_size: Cell<shepr_core::geometry::PaneGeometry>,
     child_liveness: Arc<ChildLiveness>,
     teardown_tracker: Arc<super::teardown::PaneTeardownTracker>,
-    reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
-    persistence_cwd: Arc<Mutex<Option<PersistedCwd>>>,
+    cwd: Arc<PaneCwdState>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     // Detection is aborted directly. The child watcher must reap, and a
@@ -163,6 +183,8 @@ fn write_terminal_response(io: &dyn ChildIo, response: impl FnOnce() -> Option<B
 /// that the PTY reader routes, such as terminal replies, render requests,
 /// clipboard writes, cwd reports or synchronized-output timers.
 #[derive(Clone)]
+// This parser seam owns only terminal access. Sharing all runtime handles here
+// would keep cwd, child and detector state alive for a parser-only writer.
 pub struct PaneOutputWriter {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
@@ -303,7 +325,7 @@ fn publish_reported_cwd(
     pane_id: PaneId,
     child_liveness: &ChildLiveness,
     cwd: std::path::PathBuf,
-    reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
+    reported_cwd: &Mutex<Option<ReportedCwd>>,
     events: &crate::events::EventSender,
 ) {
     let Some(cwd) = UsableCwd::new(cwd) else {
@@ -358,12 +380,14 @@ fn publish_reported_cwd(
 
 /// What a pane's PTY read callback and its synchronized-output timer share,
 /// behind one `Arc`: a read that defers work clones one pointer, not a dozen.
+// Effects have their own lifetime: the sleeping timer upgrades a Weak to this
+// bundle, while child reaping and detection remain independently owned tasks.
 struct PaneReadEffects {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     render_notify: Arc<Notify>,
     render_dirty: Arc<RenderSignal>,
-    reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
+    cwd: Arc<PaneCwdState>,
     events: crate::events::EventSender,
     child_liveness: Arc<ChildLiveness>,
     sync_timeout_render: SyncTimeoutRender,
@@ -492,6 +516,39 @@ fn discard_initial_terminal_effects(terminal: &mut shepr_vt::Terminal) {
 }
 
 impl PaneReadEffects {
+    fn read(self: &Arc<Self>, output: &PaneOutputWriter, bytes: &[u8]) -> PtyReadResult {
+        let write = output.begin();
+        // Ticks an expired synchronized update first, then parses; the
+        // core lock is released when this returns.
+        let mut result = write.process(bytes, std::time::Instant::now());
+        if result.core_poisoned {
+            // The actor ends the loop and reports the pane dead.
+            return PtyReadResult {
+                terminal_responses: Vec::new(),
+                after_response_order: None,
+                core_broken: true,
+            };
+        }
+        let deferred_ticket = self.reserve_deferred(&result);
+        let terminal_responses = std::mem::take(&mut result.terminal_responses);
+        if let Some(delay) = result.render_delay {
+            self.arm_sync_timeout(delay);
+        }
+        let after_response_order: Option<Box<dyn FnOnce() + Send>> = self
+            .apply_immediate(result, deferred_ticket)
+            .map(|deferred| {
+                let effects = Arc::clone(self);
+                let run: Box<dyn FnOnce() + Send> =
+                    Box::new(move || effects.apply_deferred(deferred));
+                run
+            });
+        PtyReadResult {
+            terminal_responses,
+            after_response_order,
+            core_broken: false,
+        }
+    }
+
     /// Applies the effects that never block (render and title requests,
     /// clipboard writes) and returns the ones that may, if any. A read with
     /// nothing to defer, the common case, allocates nothing for them.
@@ -560,7 +617,7 @@ impl PaneReadEffects {
                     self.pane_id,
                     &self.child_liveness,
                     cwd,
-                    &self.reported_cwd,
+                    &self.cwd.reported,
                     &self.events,
                 );
             }
@@ -653,6 +710,192 @@ impl PaneReadEffects {
     }
 }
 
+// Normal closure is reported by the child watcher. Reader failure can leave
+// a live child without an output reader, so the app must tear the pane down.
+// IO failure checkpoints the usable terminal; a core panic does not. A later
+// watcher report is rejected after removal by the runtime generation.
+fn reader_exit_callback(
+    pane_id: PaneId,
+    events: crate::events::EventSender,
+) -> Box<dyn FnOnce(ReaderExit) + Send> {
+    Box::new(move |exit| {
+        let exit_reason = match exit {
+            ReaderExit::Closed => return,
+            ReaderExit::Panicked => shepr_platform::ChildExitReason::ReaderPanicked,
+            ReaderExit::IoFailed => shepr_platform::ChildExitReason::ReaderIoFailed,
+        };
+        if let Err(err) = events.blocking_send(AppEvent::PaneDied {
+            pane_id,
+            exit_reason,
+        }) {
+            error!(
+                pane = pane_id.raw(),
+                error = %err,
+                "failed to report a pane whose PTY reader failed"
+            );
+        }
+    })
+}
+
+fn prepare_terminal(
+    pane_id: PaneId,
+    geometry: shepr_core::geometry::PaneGeometry,
+    scrollback_limit_bytes: usize,
+    host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+    host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+    initial_history_ansi: Option<&str>,
+) -> Arc<PaneTerminal> {
+    let cols = geometry.cols();
+    let rows = geometry.rows();
+    let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
+    let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal);
+    // The cached size below claims the cell size, so the terminal learns it
+    // now: a later `resize` to the same geometry is a no-op and would never
+    // tell it. Nothing has enabled in-band size reports on a fresh
+    // terminal, so there is no reply to route.
+    let _ = pane_terminal.resize(geometry);
+    pane_terminal.apply_host_terminal_theme(host_terminal_theme);
+    let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
+    if let Some(ansi) = initial_history_ansi {
+        // Seeding records row provenance before the child can write. The
+        // detector excludes unchanged saved rows from its live snapshot.
+        pane_terminal.seed_history_ansi(ansi);
+    }
+    Arc::new(pane_terminal)
+}
+
+/// Startup borrows the owners it wires into the actor. On success the caller
+/// starts the child watcher; on failure this path tears down and reaps first.
+struct PtySetup<'a> {
+    pane_id: PaneId,
+    geometry: shepr_core::geometry::PaneGeometry,
+    cmd: &'a shepr_pty::PtyCommand,
+    terminal: &'a Arc<PaneTerminal>,
+    cwd_state: &'a Arc<PaneCwdState>,
+    events: &'a crate::events::EventSender,
+    render_notify: &'a Arc<Notify>,
+    render_dirty: &'a Arc<RenderSignal>,
+    teardown_tracker: &'a Arc<PaneTeardownTracker>,
+}
+
+struct StartedPty {
+    child: std::process::Child,
+    child_liveness: Arc<ChildLiveness>,
+    io: Box<dyn ChildIo>,
+}
+
+impl PtySetup<'_> {
+    fn start(self) -> std::io::Result<StartedPty> {
+        let Self {
+            pane_id,
+            geometry,
+            cmd,
+            terminal,
+            cwd_state,
+            events,
+            render_notify,
+            render_dirty,
+            teardown_tracker,
+        } = self;
+        let spawned = shepr_pty::backend::spawn_pty(geometry, cmd).inspect_err(
+            |err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"),
+        )?;
+
+        let mut child = spawned.child;
+        let master_fd = spawned.master_fd;
+        let pid = child.id();
+        crate::logging::pane_spawned(pane_id.raw(), pid);
+        // Opened before the watcher below exists, so nothing can have reaped
+        // the child yet and the pid is certainly still this child's.
+        let leader = shepr_platform::ProcessHandle::open(pid);
+        if leader.is_none() {
+            warn!(
+                pane = pane_id.raw(),
+                "no process handle for the pane's child; closing the pane cannot signal it directly"
+            );
+        }
+        let child_liveness = Arc::new(ChildLiveness::new(pid, leader));
+        let io: Box<dyn ChildIo> = {
+            // Failure cleanup and read effects use the same child identity.
+            let startup_child_liveness = Arc::clone(&child_liveness);
+            let health_terminal = Arc::clone(terminal);
+            let reader_exit_events = events.clone();
+            let effects = Arc::new(PaneReadEffects {
+                pane_id,
+                terminal: Arc::clone(terminal),
+                render_notify: Arc::clone(render_notify),
+                render_dirty: Arc::clone(render_dirty),
+                cwd: Arc::clone(cwd_state),
+                events: events.clone(),
+                child_liveness: Arc::clone(&child_liveness),
+                sync_timeout_render: SyncTimeoutRender::default(),
+                deferred_effect_order: Arc::default(),
+                timer_writer: std::sync::OnceLock::new(),
+                timer_reply_drop_reported: AtomicBool::new(false),
+                rt: tokio::runtime::Handle::current(),
+            });
+            let read_effects = Arc::clone(&effects);
+            let output = PaneOutputWriter {
+                pane_id,
+                terminal: Arc::clone(terminal),
+            };
+            let on_read = Box::new(move |bytes: &[u8]| read_effects.read(&output, bytes));
+            let on_reader_exit = reader_exit_callback(pane_id, reader_exit_events);
+            let actor = PtyIoActor::spawn(PtyIoActorConfig {
+                pane_id,
+                master_fd,
+                on_read,
+                on_reader_exit,
+                // A render, detection or API read that panicked while holding
+                // the core lock breaks it for good; end the pane within the
+                // actor's idle poll even if the child never prints again.
+                core_broken: Box::new(move || health_terminal.core_poisoned()),
+            });
+            let actor = match actor {
+                Ok(actor) => actor,
+                Err(err) => {
+                    // Actor startup consumes and closes the PTY master on
+                    // failure, but the child and any session members still
+                    // need the pane teardown sequence before we return.
+                    shutdown_pane_processes(
+                        pane_id,
+                        Arc::clone(&startup_child_liveness),
+                        teardown_tracker,
+                    );
+                    if let Err(kill_err) = child.kill() {
+                        warn!(
+                            pane = pane_id.raw(),
+                            pid,
+                            error = %kill_err,
+                            "failed to kill pane child after PTY actor startup failed"
+                        );
+                    }
+                    match child.wait() {
+                        Ok(status) => {
+                            crate::logging::pane_exited(pane_id.raw(), &status);
+                        }
+                        Err(wait_err) => {
+                            crate::logging::pane_exit_failed(pane_id.raw(), &wait_err.to_string());
+                        }
+                    }
+                    startup_child_liveness.mark_wait_completed();
+                    return Err(err);
+                }
+            };
+            // `timer_writer` was created empty above and this is its only
+            // `set`, so it cannot already hold a handle.
+            effects.timer_writer.set(actor.clone()).ok();
+            Box::new(actor)
+        };
+
+        Ok(StartedPty {
+            child,
+            child_liveness,
+            io,
+        })
+    }
+}
+
 impl PaneRuntime {
     pub fn generation(&self) -> crate::events::RuntimeGeneration {
         self.generation
@@ -739,172 +982,35 @@ impl PaneRuntime {
         let cols = geometry.cols();
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
-        let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
-        let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal);
-        // The cached size below claims the cell size, so the terminal learns it
-        // now: a later `resize` to the same geometry is a no-op and would never
-        // tell it. Nothing has enabled in-band size reports on a fresh
-        // terminal, so there is no reply to route.
-        let _ = pane_terminal.resize(geometry);
-        pane_terminal.apply_host_terminal_theme(host_terminal_theme);
-        let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
-        if let Some(ansi) = initial_history_ansi {
-            // Seeding records row provenance before the child can write. The
-            // detector excludes unchanged saved rows from its live snapshot.
-            pane_terminal.seed_history_ansi(ansi);
-        }
-        let terminal = Arc::new(pane_terminal);
+        let terminal = prepare_terminal(
+            pane_id,
+            geometry,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            initial_history_ansi,
+        );
 
-        let spawned = shepr_pty::backend::spawn_pty(geometry, &cmd).inspect_err(
-            |err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"),
-        )?;
-
-        let mut child = spawned.child;
-        let master_fd = spawned.master_fd;
-        let pid = child.id();
-        crate::logging::pane_spawned(pane_id.raw(), pid);
-        // Opened before the watcher below exists, so nothing can have reaped
-        // the child yet and the pid is certainly still this child's.
-        let leader = shepr_platform::ProcessHandle::open(pid);
-        if leader.is_none() {
-            warn!(
-                pane = pane_id.raw(),
-                "no process handle for the pane's child; closing the pane cannot signal it directly"
-            );
-        }
-        let child_liveness = Arc::new(ChildLiveness::new(pid, leader));
         let generation = crate::events::RuntimeGeneration::alloc();
         let events = crate::events::EventSender::runtime(events.clone(), pane_id, generation);
-        let reported_cwd = Arc::new(Mutex::new(None));
+        let cwd_state = Arc::new(PaneCwdState::default());
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
-        let io: Box<dyn ChildIo> = {
-            // The shadowed clone below moves into the read callback; the
-            // startup-failure path needs its own handle on the same liveness.
-            let startup_child_liveness = Arc::clone(&child_liveness);
-            let health_terminal = Arc::clone(&terminal);
-            let reader_exit_events = events.clone();
-            let effects = Arc::new(PaneReadEffects {
-                pane_id,
-                terminal: Arc::clone(&terminal),
-                render_notify: Arc::clone(render_notify),
-                render_dirty: Arc::clone(render_dirty),
-                reported_cwd: Arc::clone(&reported_cwd),
-                events: events.clone(),
-                child_liveness: Arc::clone(&child_liveness),
-                sync_timeout_render: SyncTimeoutRender::default(),
-                deferred_effect_order: Arc::default(),
-                timer_writer: std::sync::OnceLock::new(),
-                timer_reply_drop_reported: AtomicBool::new(false),
-                rt: tokio::runtime::Handle::current(),
-            });
-            let read_effects = Arc::clone(&effects);
-            let output = PaneOutputWriter {
-                pane_id,
-                terminal: Arc::clone(&terminal),
-            };
-            let on_read = Box::new(move |bytes: &[u8]| {
-                let write = output.begin();
-                // Ticks an expired synchronized update first, then parses; the
-                // core lock is released when this returns.
-                let mut result = write.process(bytes, std::time::Instant::now());
-                if result.core_poisoned {
-                    // The actor ends the loop and reports the pane dead.
-                    return PtyReadResult {
-                        terminal_responses: Vec::new(),
-                        after_response_order: None,
-                        core_broken: true,
-                    };
-                }
-                let deferred_ticket = read_effects.reserve_deferred(&result);
-                let terminal_responses = std::mem::take(&mut result.terminal_responses);
-                if let Some(delay) = result.render_delay {
-                    read_effects.arm_sync_timeout(delay);
-                }
-                let after_response_order: Option<Box<dyn FnOnce() + Send>> = read_effects
-                    .apply_immediate(result, deferred_ticket)
-                    .map(|deferred| {
-                        let effects = Arc::clone(&read_effects);
-                        let run: Box<dyn FnOnce() + Send> =
-                            Box::new(move || effects.apply_deferred(deferred));
-                        run
-                    });
-                PtyReadResult {
-                    terminal_responses,
-                    after_response_order,
-                    core_broken: false,
-                }
-            });
-            // Normal reader closure is followed by the child watcher reporting
-            // PaneDied. A terminal-core panic or a hard reader IO failure can
-            // leave the child alive with no reader, so report those exits and
-            // let the app remove the pane and tear down its session. The IO
-            // failure checkpoints the still-usable terminal; a panic does not.
-            // A later child-watcher report is dropped after pane removal.
-            let on_reader_exit: Box<dyn FnOnce(ReaderExit) + Send> = {
-                Box::new(move |exit: ReaderExit| {
-                    let exit_reason = match exit {
-                        ReaderExit::Closed => return,
-                        ReaderExit::Panicked => shepr_platform::ChildExitReason::ReaderPanicked,
-                        ReaderExit::IoFailed => shepr_platform::ChildExitReason::ReaderIoFailed,
-                    };
-                    if let Err(err) = reader_exit_events.blocking_send(AppEvent::PaneDied {
-                        pane_id,
-                        exit_reason,
-                    }) {
-                        error!(
-                            pane = pane_id.raw(),
-                            error = %err,
-                            "failed to report a pane whose PTY reader failed"
-                        );
-                    }
-                })
-            };
-            let actor = PtyIoActor::spawn(PtyIoActorConfig {
-                pane_id,
-                master_fd,
-                on_read,
-                on_reader_exit,
-                // A render, detection or API read that panicked while holding
-                // the core lock breaks it for good; end the pane within the
-                // actor's idle poll even if the child never prints again.
-                core_broken: Box::new(move || health_terminal.core_poisoned()),
-            });
-            let actor = match actor {
-                Ok(actor) => actor,
-                Err(err) => {
-                    // Actor startup consumes and closes the PTY master on
-                    // failure, but the child and any session members still
-                    // need the pane teardown sequence before we return.
-                    shutdown_pane_processes(
-                        pane_id,
-                        Arc::clone(&startup_child_liveness),
-                        &teardown_tracker,
-                    );
-                    if let Err(kill_err) = child.kill() {
-                        warn!(
-                            pane = pane_id.raw(),
-                            pid,
-                            error = %kill_err,
-                            "failed to kill pane child after PTY actor startup failed"
-                        );
-                    }
-                    match child.wait() {
-                        Ok(status) => {
-                            crate::logging::pane_exited(pane_id.raw(), &status);
-                        }
-                        Err(wait_err) => {
-                            crate::logging::pane_exit_failed(pane_id.raw(), &wait_err.to_string());
-                        }
-                    }
-                    startup_child_liveness.mark_wait_completed();
-                    return Err(err);
-                }
-            };
-            // `timer_writer` was created empty above and this is its only
-            // `set`, so it cannot already hold a handle.
-            effects.timer_writer.set(actor.clone()).ok();
-            Box::new(actor)
-        };
+        let StartedPty {
+            child,
+            child_liveness,
+            io,
+        } = PtySetup {
+            pane_id,
+            geometry,
+            cmd: &cmd,
+            terminal: &terminal,
+            cwd_state: &cwd_state,
+            events: &events,
+            render_notify,
+            render_dirty,
+            teardown_tracker: &teardown_tracker,
+        }
+        .start()?;
 
         // Actor setup failures reap the child above without publishing an exit
         // for a pane that was never constructed.
@@ -933,8 +1039,7 @@ impl PaneRuntime {
             current_size: Cell::new(geometry),
             child_liveness,
             teardown_tracker,
-            reported_cwd,
-            persistence_cwd: Arc::new(Mutex::new(None)),
+            cwd: cwd_state,
             full_lifecycle_authority_active,
             detect_reset_notify,
             detect_handle,
@@ -968,8 +1073,7 @@ impl PaneRuntime {
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             // No child, so no teardown is ever started through this tracker.
             teardown_tracker: Arc::default(),
-            reported_cwd: Arc::new(Mutex::new(None)),
-            persistence_cwd: Arc::new(Mutex::new(None)),
+            cwd: Arc::default(),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: detection_reset,
             detect_handle: None,
@@ -1320,19 +1424,14 @@ impl PaneRuntime {
                 .then_some(cwd)
                 .flatten()
         });
-        ReportedCwd::resolve(
-            shepr_vt::lock_auxiliary(&self.reported_cwd).as_ref(),
-            shell_cwd,
-        )
+        self.cwd.resolve(shell_cwd)
     }
 
     /// The cwd a save can use without a /proc read, using the same OSC 7
     /// arbitration as [`Self::cwd`]. A save's capture takes this on the event
     /// loop and lets [`PaneCwdProbe::read`] refresh it where the save runs.
     pub fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        let reported = shepr_vt::lock_auxiliary(&self.reported_cwd);
-        let persisted = shepr_vt::lock_auxiliary(&self.persistence_cwd);
-        remembered_cwd_for_save(reported.clone(), persisted.clone())
+        self.cwd.remembered_cwd()
     }
 
     /// What another thread needs to resolve this pane's best saved cwd (see
@@ -1340,8 +1439,7 @@ impl PaneRuntime {
     pub fn cwd_probe(&self) -> PaneCwdProbe {
         PaneCwdProbe {
             child_liveness: Arc::clone(&self.child_liveness),
-            reported: Arc::clone(&self.reported_cwd),
-            remembered: Arc::clone(&self.persistence_cwd),
+            cwd: Arc::clone(&self.cwd),
         }
     }
 
@@ -1499,6 +1597,38 @@ impl PaneRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn parser_writer_does_not_retain_cwd_state_after_runtime_drop() {
+        let runtime = PaneRuntime::test_with_screen_bytes(80, 24, b"");
+        let cwd = Arc::downgrade(&runtime.cwd);
+        let writer = runtime.output_writer();
+        drop(runtime);
+        assert!(cwd.upgrade().is_none());
+        writer.begin().write(b"still usable");
+    }
+
+    #[test]
+    fn reader_closure_leaves_exit_publication_to_child_watcher() {
+        let (events, mut rx) = mpsc::channel(1);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        reader_exit_callback(pane_id, events.into())(ReaderExit::Closed);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reader_io_failure_reports_the_pane_for_teardown() {
+        let (events, mut rx) = mpsc::channel(1);
+        let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+        reader_exit_callback(pane_id, events.into())(ReaderExit::IoFailed);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::PaneDied {
+                pane_id: reported,
+                exit_reason: shepr_platform::ChildExitReason::ReaderIoFailed,
+            }) if reported == pane_id
+        ));
+    }
     use shepr_agent::detect::Agent;
     use shepr_pty::PtyCommand;
     use shepr_test_support::fixture::{self, Held, Signal, Step};
@@ -1704,7 +1834,7 @@ mod tests {
             runtime.pane_id,
             &runtime.child_liveness,
             cwd.clone(),
-            &runtime.reported_cwd,
+            &runtime.cwd.reported,
             &events.clone().into(),
         );
         assert_eq!(
@@ -1737,11 +1867,11 @@ mod tests {
             runtime.pane_id,
             &runtime.child_liveness,
             cwd.clone(),
-            &runtime.reported_cwd,
+            &runtime.cwd.reported,
             &events.clone().into(),
         );
         assert!(
-            shepr_vt::lock_auxiliary(&runtime.reported_cwd).is_none(),
+            shepr_vt::lock_auxiliary(&runtime.cwd.reported).is_none(),
             "an unsent report must not occupy the dedupe slot"
         );
 
@@ -1750,7 +1880,7 @@ mod tests {
             runtime.pane_id,
             &runtime.child_liveness,
             cwd.clone(),
-            &runtime.reported_cwd,
+            &runtime.cwd.reported,
             &events.clone().into(),
         );
         let Ok(AppEvent::TerminalCwdReported { cwd: sent, .. }) = event_rx.try_recv() else {
@@ -1761,7 +1891,7 @@ mod tests {
     }
 
     fn reported_path(runtime: &PaneRuntime) -> Option<std::path::PathBuf> {
-        shepr_vt::lock_auxiliary(&runtime.reported_cwd)
+        shepr_vt::lock_auxiliary(&runtime.cwd.reported)
             .as_ref()
             .map(|reported| reported.path.clone())
     }
@@ -1811,7 +1941,7 @@ mod tests {
         let (events, mut event_rx) = mpsc::channel(4);
         let scratch = crate::test_support::ScratchDir::new("cwd-repeat");
         let cwd = scratch.to_path_buf();
-        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: cwd.clone(),
             shell_cwd_at_report: Some("/stale".into()),
             generation: 0,
@@ -1822,13 +1952,13 @@ mod tests {
             runtime.pane_id,
             &runtime.child_liveness,
             cwd.clone(),
-            &runtime.reported_cwd,
+            &runtime.cwd.reported,
             &events.clone().into(),
         );
 
         assert!(event_rx.try_recv().is_err(), "a repeat is not a new event");
         assert_eq!(
-            shepr_vt::lock_auxiliary(&runtime.reported_cwd).clone(),
+            shepr_vt::lock_auxiliary(&runtime.cwd.reported).clone(),
             Some(ReportedCwd {
                 path: cwd,
                 shell_cwd_at_report: None,
@@ -1887,7 +2017,7 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("follow-cwd");
         let cwd = scratch.to_path_buf();
-        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: cwd.clone(),
             shell_cwd_at_report: None,
             generation: 0,
@@ -2050,7 +2180,7 @@ mod tests {
             terminal: Arc::clone(&terminal),
             render_notify: Arc::new(Notify::new()),
             render_dirty: Arc::new(RenderSignal::new()),
-            reported_cwd: Arc::new(Mutex::new(None)),
+            cwd: Arc::default(),
             events: events.into(),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             sync_timeout_render: SyncTimeoutRender::default(),
@@ -2370,7 +2500,7 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
-        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(PersistedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: saved.clone(),
             report_generation: None,
         });
@@ -2379,7 +2509,7 @@ mod tests {
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_probe().read(), Some(saved.clone()));
         assert_eq!(runtime.remembered_cwd(), Some(saved));
-        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = None;
+        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = None;
         assert_eq!(runtime.remembered_cwd(), None);
     }
 
@@ -2420,11 +2550,11 @@ mod tests {
         let deleted_link = shepr_agent::detect::process_cwd(pid).expect("read unlinked cwd");
         assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
 
-        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(PersistedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: remembered.clone(),
             report_generation: Some(0),
         });
-        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: reported.clone(),
             shell_cwd_at_report: None,
             generation: 0,
@@ -2441,11 +2571,11 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("cwd-save-report-order");
         let probed = scratch.join("probed");
         let reported = scratch.join("reported");
-        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(PersistedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: probed,
             report_generation: Some(3),
         });
-        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: reported.clone(),
             shell_cwd_at_report: Some(scratch.join("shell")),
             generation: 4,
@@ -2504,7 +2634,7 @@ mod tests {
         let shell_cwd = shepr_agent::detect::process_cwd(pid).expect("read shell cwd");
         assert_eq!(shell_cwd, physical);
         runtime.child_liveness.set_pid_for_test(pid);
-        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: logical.clone(),
             shell_cwd_at_report: Some(shell_cwd),
             generation: 0,
@@ -2554,14 +2684,13 @@ mod tests {
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
             generation: crate::events::RuntimeGeneration::alloc(),
-            persistence_cwd: Arc::new(Mutex::new(None)),
             pane_id,
             terminal,
             io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             teardown_tracker: Arc::default(),
-            reported_cwd: Arc::new(Mutex::new(None)),
+            cwd: Arc::default(),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
@@ -2582,14 +2711,13 @@ mod tests {
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
             generation: crate::events::RuntimeGeneration::alloc(),
-            persistence_cwd: Arc::new(Mutex::new(None)),
             pane_id,
             terminal,
             io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             teardown_tracker: Arc::default(),
-            reported_cwd: Arc::new(Mutex::new(None)),
+            cwd: Arc::default(),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),

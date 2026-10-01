@@ -778,7 +778,6 @@ fn reachable_socket_paths(socket_paths: &[PathBuf]) -> std::io::Result<Vec<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
     use shepr_core::env::EnvVar;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
     use std::io::{BufRead, BufReader, Write};
@@ -819,7 +818,7 @@ mod tests {
         let listener =
             shepr_platform::ipc::bind_local_listener(&socket_path).expect("bind test stop socket");
         let handle = std::thread::spawn(move || {
-            let server = listener.accept().expect("accept stop request");
+            let server = listener.accept().expect("accept stop request").0;
             let mut request = String::new();
             BufReader::new(server)
                 .read_line(&mut request)

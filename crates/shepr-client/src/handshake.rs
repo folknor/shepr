@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use interprocess::local_socket::traits::Stream as _;
 use tracing::info;
 
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
@@ -167,7 +166,6 @@ fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
     use std::io;
 
     fn test_geometry() -> HandshakeGeometry {
@@ -182,7 +180,7 @@ mod tests {
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        let server = listener.accept().expect("test precondition");
+        let server = listener.accept().expect("test precondition").0;
         (client, server)
     }
 

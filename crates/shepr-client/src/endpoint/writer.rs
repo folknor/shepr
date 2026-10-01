@@ -3,8 +3,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::Stream as _;
-
 use super::EndpointTransport;
 use crate::limits::{
     ENDPOINT_IO_POLL_INTERVAL, ENDPOINT_WRITE_TIMEOUT, MAX_BATCH_BYTES, MAX_QUEUED_BATCHES,
@@ -313,11 +311,10 @@ mod tests {
     use std::time::Duration;
 
     fn streams() -> (LocalStream, LocalStream) {
-        use interprocess::local_socket::traits::Listener as _;
         let path = shepr_test_support::ScratchDir::new("writer").join("s.sock");
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
-        let accepting = std::thread::spawn(move || listener.accept().expect("test precondition"));
+        let accepting = std::thread::spawn(move || listener.accept().expect("test precondition").0);
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
         (client, accepting.join().expect("test precondition"))
     }

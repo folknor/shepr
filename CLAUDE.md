@@ -1,5 +1,12 @@
 @AGENTS.md
 
+## Upstream herdr
+
+No part of shepr is bound to upstream herdr's structure: refactor anything
+freely, and do not hold back a change to keep upstream fixes portable. Now and
+then we run `scripts/upstream_watch.py` just to see what upstream changed, in
+case one of those fixes is worth taking; its docstring has the flags.
+
 ## More rules
 
 ### Memory rules

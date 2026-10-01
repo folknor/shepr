@@ -8,7 +8,6 @@ publish = false
 base64 = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { workspace = true }
-interprocess = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,10 +1,6 @@
 use super::*;
 
 use super::process::{PipeCapture, kill_and_reap, kill_child};
-use interprocess::TryClone as _;
-use interprocess::local_socket::ListenerNonblockingMode;
-use interprocess::local_socket::traits::Listener as _;
-use interprocess::local_socket::traits::Stream as _;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -77,7 +73,7 @@ impl SshStdioBridge {
             identity: socket_identity.clone(),
         });
         let mut socket_cleanup = BridgeSocketStartupCleanup::new(&local_socket, &socket_identity);
-        listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
+        listener.set_nonblocking(true)?;
 
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
@@ -93,7 +89,7 @@ impl SshStdioBridge {
         let thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
-                    Ok(stream) => {
+                    Ok((stream, _)) => {
                         match shepr_platform::ipc::peer_is_same_user(&stream) {
                             Ok(true) => {}
                             Ok(false) => {

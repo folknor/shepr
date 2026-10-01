@@ -1,7 +1,8 @@
 # What each agent plugin sends over a scripted session, as its bun test
 # captures it (`contract_traces.ts` checks the match) and as the server crate's
-# `agent_integration_contract` test replays it into terminal state. Seqs are
-# stored as their rank in the run, and ids as `<source>:<rank>`.
+# `agent_integration_contract_tests` module in shepr-server replays it into
+# terminal state. Sequences use their rank in the run, and ids use
+# `<source>:<rank>`.
 
 # Pi: a path-form new session, its settled idle state, then an agent start that
 # re-reports the same session file before its working state.

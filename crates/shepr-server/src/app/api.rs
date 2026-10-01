@@ -165,23 +165,25 @@ impl EndpointContext {
 
 #[cfg(test)]
 impl App {
+    /// Runs the App API handler for a test whose state already includes all
+    /// internal events relevant to the request. Queue draining belongs to the
+    /// headless server, which also applies server-side event forwarding.
     pub(crate) fn handle_api_request(&mut self, request: shepr_api::schema::AppRequest) -> String {
         let id = request.id.clone();
-        self.drain_all_internal_events();
         shepr_api::error::encode_result(
             id,
             self.handle_api_request_after_internal_events_drained(request),
         )
     }
 
-    /// Runs one client-shell command the way the server loop does, after
-    /// draining pending internal events, for a requester that presents no
-    /// geometry. Only the answer is returned.
+    /// Runs the App handler for a test with explicitly prepared state and no
+    /// requester geometry. Pending events must be handled by the headless
+    /// server before a test relies on them.
     pub(crate) fn handle_endpoint_command(
         &mut self,
         command: EndpointCommand,
     ) -> Result<EndpointReply, EndpointError> {
-        self.handle_endpoint_command_in(command, &EndpointContext::without_geometry())
+        self.handle_endpoint_command_with_render(command, &EndpointContext::without_geometry())
             .result
     }
 
@@ -192,7 +194,6 @@ impl App {
         command: EndpointCommand,
         ctx: &EndpointContext,
     ) -> EndpointOutcome {
-        self.drain_all_internal_events();
         self.handle_endpoint_command_with_render(command, ctx)
     }
 }

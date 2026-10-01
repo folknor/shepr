@@ -40,23 +40,3 @@ the reader), and a separately chosen presentable pair (snapshot plus surface at
 the same revision). The patch-rejection finding filed in
 `notes/bugs-rejected-candidates.md` then cannot happen, and `Applied`/`Rejected`
 regain their meaning.
-
-## CSHELL-029 - The presentation topology signature ignores pane placement
-
-Lateral. The client's topology signature, used to check that a split drag still
-matches the surface it started on, does not cover where panes sit, so a pane
-swap by another client leaves it unchanged. Split commands are now addressed by
-child pane ids and the server refuses one whose children changed, so a stale
-drag can no longer move another split; the local check is just weaker than its
-name suggests. Include placement in the signature, or document what it covers.
-The split drag also infers each child's panes from geometry
-(`split_child_panes` classifies rects against the split position, and refuses
-a collapsed rectangle); carrying the child pane ids in `PaneSurfaceSplit` would
-remove the inference.
-
-## CSHELL-030 - A control character in a sidebar title span ends the row early
-
-Lateral. `put_spans` stops when `written < text_width(span)`, but `put_text`
-skips control and zero-width graphemes that `text_width` may still count, so a
-single control character in an agent title span cuts off the rest of the row.
-Measure and draw with the same skip rule.

@@ -29,7 +29,7 @@ fn warn_surface_encoding_failure(
 }
 
 /// Per-client render baseline: the last surface sent and its revision. The
-/// client-owned shell compares full frame data and skips identical frames.
+/// delta planner skips unchanged surfaces after its cell comparison pass.
 pub(crate) struct ClientRenderState {
     last_surface: Option<Box<PaneSurfaceFrame>>,
     surface_revision: SurfaceRevision,
@@ -70,16 +70,6 @@ impl ClientRenderState {
             surface_revision,
             recompute_pending,
         } = self;
-        if !*recompute_pending
-            && last_surface.as_deref().is_some_and(|last| {
-                last.projection_revision == surface.projection_revision
-                    && last.frame == surface.frame
-                    && last.panes == surface.panes
-                    && last.splits == surface.splits
-            })
-        {
-            return None;
-        }
         // The client accepts a surface only at its exact successor revision,
         // so an exhausted counter (one step per sent frame, unreachable in
         // practice) holds the last frame rather than repeating a revision.
@@ -88,31 +78,36 @@ impl ClientRenderState {
             return None;
         };
         surface.surface_revision = next_revision;
-        let mut message = ServerMessage::PaneSurface(surface);
-        let delta = last_surface.as_deref().and_then(|last| {
-            match shepr_protocol::surface_delta::message(last, &mut message) {
-                Ok(delta) => delta,
+        let plan = last_surface.as_deref().and_then(|last| {
+            match shepr_protocol::surface_delta::message(last, &surface) {
+                Ok(plan) => Some(plan),
                 Err(error) => {
-                    if let ServerMessage::PaneSurface(surface) = &message {
-                        warn_surface_encoding_failure("delta", &error, last, surface);
-                    }
+                    warn_surface_encoding_failure("delta", &error, last, &surface);
                     None
                 }
             }
         });
-        // A compact message owns only changed spans. Move the already rendered
-        // full surface into the committed baseline rather than cloning its grid.
-        let (message, committed_surface) = match (delta, message) {
-            (Some(compact), ServerMessage::PaneSurface(surface)) => (compact, surface),
-            (None, ServerMessage::PaneSurface(surface)) => {
-                let committed_surface = surface.clone();
-                (ServerMessage::PaneSurface(surface), committed_surface)
+        let (message, committed_surface) = match plan {
+            Some(shepr_protocol::surface_delta::SurfaceDeltaPlan::Unchanged(_message))
+                if !*recompute_pending =>
+            {
+                return None;
             }
-            _ => return None,
+            Some(
+                shepr_protocol::surface_delta::SurfaceDeltaPlan::Unchanged(message)
+                | shepr_protocol::surface_delta::SurfaceDeltaPlan::Compact(message),
+            ) => {
+                // Compact messages need the complete newly rendered grid for
+                // the next baseline. Full messages carry that grid themselves.
+                (message, Some(Box::new(surface)))
+            }
+            Some(shepr_protocol::surface_delta::SurfaceDeltaPlan::Full) | None => {
+                (ServerMessage::PaneSurface(surface), None)
+            }
         };
         Some(PreparedRender::Semantic {
             message,
-            committed_surface: Box::new(committed_surface),
+            committed_surface,
         })
     }
 
@@ -174,11 +169,24 @@ impl ClientRenderState {
     pub(crate) fn commit_sent_frame(&mut self, prepared: PreparedRender) {
         match prepared {
             PreparedRender::Semantic {
-                committed_surface, ..
+                message,
+                committed_surface,
             } => {
-                self.surface_revision = committed_surface.surface_revision;
-                self.last_surface = Some(committed_surface);
-                self.recompute_pending = false;
+                let committed_surface = match committed_surface {
+                    Some(surface) => Some(surface),
+                    None => match message {
+                        ServerMessage::PaneSurface(surface) => Some(Box::new(surface)),
+                        _ => None,
+                    },
+                };
+                if let Some(committed_surface) = committed_surface {
+                    self.surface_revision = committed_surface.surface_revision;
+                    self.last_surface = Some(committed_surface);
+                    self.recompute_pending = false;
+                } else {
+                    tracing::error!("full surface render did not contain a surface baseline");
+                    self.last_surface = None;
+                }
             }
             PreparedRender::SemanticPatch { patch, .. } => {
                 // Planning checked the baseline and the server does not yield
@@ -265,7 +273,7 @@ pub(super) fn apply_pane_surface_patch(
 pub(crate) enum PreparedRender {
     Semantic {
         message: ServerMessage,
-        committed_surface: Box<PaneSurfaceFrame>,
+        committed_surface: Option<Box<PaneSurfaceFrame>>,
     },
     SemanticPatch {
         message: ServerMessage,
@@ -290,6 +298,8 @@ pub(crate) fn render_surface_virtual(
     layout: crate::ui::SurfaceLayout,
     area: Rect,
 ) -> (FrameData, crate::ui::SurfaceLayout) {
+    // Full rendering materializes every cell for new surfaces and retained-path
+    // fallbacks; dirty-row updates take the retained renderer instead.
     let surface = crate::ui::SurfaceView {
         target: layout.target.as_ref(),
         pane_infos: &layout.pane_infos,
@@ -568,6 +578,25 @@ mod tests {
         state.commit_sent_frame(prepared);
 
         assert!(state.prepare_pane_surface(test_surface("second")).is_some());
+    }
+
+    #[test]
+    fn unchanged_full_render_is_skipped_after_the_delta_cell_scan() {
+        let mut state = ClientRenderState::new();
+        let surface = test_surface("same");
+        let initial = state
+            .prepare_pane_surface(surface.clone())
+            .expect("initial surface");
+        state.commit_sent_frame(initial);
+
+        assert!(state.prepare_pane_surface(surface).is_none());
+        assert_eq!(
+            state
+                .last_pane_surface()
+                .expect("committed surface")
+                .surface_revision,
+            1
+        );
     }
 
     #[test]

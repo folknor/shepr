@@ -35,7 +35,7 @@ enum RelayEvent {
 /// [`RemoteBridgeOutcome::IdleExpired`]; see that variant for what the caller
 /// owes. Without it the relay only ends when the server side closes.
 pub fn forward_remote_bridge_stdio(
-    stream: interprocess::local_socket::Stream,
+    stream: crate::ipc::LocalStream,
     idle_timeout: bool,
 ) -> std::io::Result<RemoteBridgeOutcome> {
     forward_remote_bridge_stdio_with_timeout(
@@ -45,10 +45,9 @@ pub fn forward_remote_bridge_stdio(
 }
 
 pub(super) fn forward_remote_bridge_stdio_with_timeout(
-    stream: interprocess::local_socket::Stream,
+    stream: crate::ipc::LocalStream,
     idle_timeout: Option<Duration>,
 ) -> std::io::Result<RemoteBridgeOutcome> {
-    use interprocess::TryClone as _;
     use remote_bridge::{Activity, TrackedIo};
     use std::os::fd::AsFd as _;
 
@@ -87,8 +86,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
         {
             tracing::warn!(error_kind = ?err.kind(), error = %err, "SSH bridge upload failed");
         }
-        let interprocess::local_socket::Stream::UdSocket(stream) = stdin_to_socket;
-        if let Err(err) = stream.inner().shutdown(std::net::Shutdown::Write)
+        if let Err(err) = stdin_to_socket.shutdown(std::net::Shutdown::Write)
             && !is_closed_socket(&err)
         {
             tracing::warn!(error = %err, "SSH bridge failed to half-close the server socket");
@@ -105,10 +103,9 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
         Ok(RelayEvent::Expired(idle_for)) => {
             // Unblocks both socket copies; stdin and stdout cannot be
             // interrupted, which is why the caller must end the process.
-            let interprocess::local_socket::Stream::UdSocket(socket) = &control;
             // The caller ends the process next, which closes the socket
             // regardless; a failure only delays the server noticing.
-            if let Err(err) = socket.inner().shutdown(std::net::Shutdown::Both)
+            if let Err(err) = control.shutdown(std::net::Shutdown::Both)
                 && !is_closed_socket(&err)
             {
                 tracing::warn!(error = %err, "SSH bridge failed to shut down the idle server socket");
@@ -161,9 +158,8 @@ impl RemoteBridgeWake {
         self.writer.shutdown(std::net::Shutdown::Write)
     }
 
-    pub fn wait(&self, stream: &interprocess::local_socket::Stream) -> std::io::Result<()> {
+    pub fn wait(&self, stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
         use std::os::fd::AsFd as _;
-        let interprocess::local_socket::Stream::UdSocket(stream) = stream;
         let mut descriptors = [
             libc::pollfd {
                 fd: stream.as_fd().as_raw_fd(),

@@ -33,6 +33,20 @@ pub(super) fn channel() -> (
     mpsc::unbounded_channel()
 }
 
+/// Counts worker threads that can still send, plus completions waiting for the
+/// event loop. The server owns one sender and each worker holds one clone until
+/// after its send. The short overlap between those states is counted twice and
+/// only makes admission conservative.
+pub(super) fn completion_backlog(
+    sender: &mpsc::UnboundedSender<WorkerCompletion>,
+    receiver: &mpsc::UnboundedReceiver<WorkerCompletion>,
+) -> usize {
+    sender
+        .strong_count()
+        .saturating_sub(1)
+        .saturating_add(receiver.len())
+}
+
 pub(super) fn default_checkout_root_runner() -> CheckoutRootRunner {
     Arc::new(|cwd| crate::app::App::checkout_root_for_worker(&cwd))
 }

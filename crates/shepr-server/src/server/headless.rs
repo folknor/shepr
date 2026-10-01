@@ -22,8 +22,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use interprocess::local_socket::ListenerNonblockingMode;
-use interprocess::local_socket::traits::Listener as _;
 use ratatui::layout::Rect;
 use tokio::io::unix::{AsyncFd, AsyncFdReadyGuard};
 use tokio::sync::mpsc;
@@ -217,7 +215,7 @@ impl HeadlessServer {
         info!(path = %client_path.display(), "client protocol socket listening");
 
         // Accept all queued connections when the listener becomes readable.
-        if let Err(error) = listener.set_nonblocking(ListenerNonblockingMode::Accept) {
+        if let Err(error) = listener.set_nonblocking(true) {
             if let Err(cleanup_error) =
                 remove_socket_file_if_owned(&client_path, &client_socket_identity)
                 && cleanup_error.kind() != io::ErrorKind::NotFound
@@ -296,9 +294,7 @@ impl HeadlessServer {
         // so nothing has changed since bootstrap left the session on disk.
         // Every failure inside the loop goes through `initiate_shutdown` and
         // the save after it.
-        let listener_fd = match &self.client_listener {
-            LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
-        };
+        let listener_fd = self.client_listener.as_fd().as_raw_fd();
         let client_listener_ready = AsyncFd::new(ListenerFd(listener_fd))?;
 
         // Register SIGINT handler for graceful shutdown.

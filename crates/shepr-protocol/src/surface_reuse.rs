@@ -600,8 +600,10 @@ impl Decoder {
                     &update.spans,
                 )
                 .map_err(SurfaceDecodeError::from)?;
-                // The returned full surface and the connection baseline each own their
-                // cells. Apply once to the baseline and copy only for the consumer.
+                // The decoder retains its cells for later updates while the
+                // caller owns the returned surface. FrameData uses Vec, so these
+                // independent owners require one grid copy until cell storage is
+                // shared or copy-on-write.
                 let surface = meta.clone().into_surface(
                     update.boot_id,
                     update.projection_revision,

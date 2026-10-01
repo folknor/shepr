@@ -3,7 +3,6 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::Stream as _;
 use serde::de::DeserializeOwned;
 
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
@@ -57,7 +56,7 @@ impl ApiClient {
         timeout: Duration,
     ) -> Result<serde_json::Value, ApiClientError> {
         let mut stream = self.connect(timeout)?;
-        stream.set_send_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
         write_request(&mut stream, request).map_err(normalize_socket_timeout)?;
 
         let deadline = deadline_after(timeout)?;
@@ -87,7 +86,7 @@ impl ApiClient {
         }
         // Some local socket wrappers reject SO_SNDTIMEO; the deadline reader
         // still bounds response reads in that case.
-        if let Err(error) = stream.set_send_timeout(Some(send_timeout))
+        if let Err(error) = stream.set_write_timeout(Some(send_timeout))
             && error.kind() != io::ErrorKind::InvalidInput
         {
             return Err(ApiClientDeadlineError::Request(error.into()));
@@ -260,14 +259,13 @@ mod tests {
 
     #[test]
     fn request_timeout_on_a_stalled_server_is_reported_as_timed_out() {
-        use interprocess::local_socket::traits::Listener as _;
         let scratch = shepr_test_support::ScratchDir::new("request-timeout");
         let path = scratch.join("api.sock");
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
-            let stream = listener.accept().expect("test precondition");
+            let stream = listener.accept().expect("test precondition").0;
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).expect("test precondition");
@@ -296,13 +294,12 @@ mod tests {
 
     #[test]
     fn partial_responses_cannot_extend_the_response_deadline() {
-        use interprocess::local_socket::traits::Listener as _;
         let scratch = shepr_test_support::ScratchDir::new("partial-response");
         let path = scratch.join("api.sock");
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let server = std::thread::spawn(move || {
-            let stream = listener.accept().expect("test precondition");
+            let stream = listener.accept().expect("test precondition").0;
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).expect("test precondition");

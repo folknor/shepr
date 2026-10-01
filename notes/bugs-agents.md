@@ -11,20 +11,19 @@ Filed from the defect hunt over `crates/shepr-agent/src/`.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## AGNT-011 - The Kimi version probe uses the server's PATH
+## AGNT-011 - Delete the Kimi version gate
 
-Lateral. The `KIMI_MIN_VERSION` gate (`integration/mod.rs`) runs `kimi
---version` from `/` with the server's `PATH`. A server started over SSH by a
-non-interactive shell often lacks the user's interactive `PATH` additions, so the
-probe fails, logs a warning and installs anyway. Matches the doc ("a warning when
-the version cannot be determined (install proceeds)"); noted because the warning
-appears on every install on such hosts.
+The Kimi install runs `kimi --version` with the server's `PATH` and refuses a
+version below `KIMI_MIN_VERSION`; when the probe cannot find or parse the
+binary it warns and installs anyway. A server started over SSH by a
+non-interactive shell usually lacks the `PATH` entry where `kimi` lives, so
+every launch on such a host logs that warning for nothing. Kimi is the only
+agent with a version requirement, so `integration/version.rs` exists for it
+alone.
 
-## AGNT-019 - Integration comments name the contract test by its old path
-
-Lateral. The server's agent integration contract test moved from the
-integration test `tests/agent_integration_contract.rs` into the crate as the
-`cfg(test)` module `agent_integration_contract_tests`. Comments in
-`crates/shepr-agent/src/integration/` (`mod.rs`, `contract_traces.toml`,
-`contract_traces.ts`) still call it the server crate's `agent_integration_contract`
-test. Update them.
+Owner's decision: delete the gate. Remove `integration/version.rs`,
+`KIMI_MIN_VERSION`, the version-probe limits it uses, the call site in the
+install path, the "requires kimi code ... or newer" install notice, and their
+tests. The owner installs and updates Kimi on each host by hand, so an
+outdated Kimi is theirs to notice. Update any doc or comment that describes
+the version check.

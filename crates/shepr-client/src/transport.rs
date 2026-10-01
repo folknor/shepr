@@ -220,7 +220,6 @@ impl io::Read for EndpointReader<'_> {
 mod tests {
     use super::*;
     use crate::endpoint::EndpointTransport as _;
-    use interprocess::local_socket::traits::{Listener as _, Stream as _};
     use std::io::{Read as _, Write as _};
     use std::time::{Duration, Instant};
 
@@ -309,7 +308,7 @@ mod tests {
         let path = scratch.join("s.sock");
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        let mut bridge = listener.accept().expect("test precondition");
+        let mut bridge = listener.accept().expect("test precondition").0;
         std::fs::remove_file(path).expect("test precondition");
         drop(listener);
         let mut reader_stream = client.try_clone().expect("test precondition");

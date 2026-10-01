@@ -29,7 +29,6 @@ clap = { version = "4.5", default-features = false, features = ["std", "help", "
 crossterm = { version = "0.29", default-features = false, features = ["bracketed-paste", "events"] }
 ctrlc = { version = "3", features = ["termination"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-interprocess = "2.4.2"
 jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst", "serde_json"] }
 # Also the PTY layer (crates/shepr-pty/src/backend.rs): openpty, session setup, pre-exec.
 libc = "0.2"

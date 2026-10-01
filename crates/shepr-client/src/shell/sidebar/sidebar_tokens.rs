@@ -58,7 +58,7 @@ impl<'de> serde::Deserialize<'de> for SectionSplit {
 }
 
 pub(super) fn display_width(text: &str) -> usize {
-    shepr_termio::blit::text_width(text)
+    super::render::rendered_text_width(text)
 }
 
 fn truncate_end(text: &str, max_width: usize) -> String {

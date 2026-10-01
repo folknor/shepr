@@ -73,38 +73,6 @@ impl App {
         .flatten()
         .min()
     }
-
-    /// App-only queue drain for tests that exercise App event handling without
-    /// a headless server. The production drain is owned by `HeadlessServer`,
-    /// which adds checkpoint holding, shutdown-signal handling and clipboard
-    /// forwarding before it calls this App's event handler. Server-loop tests
-    /// must use that forwarding path when asserting those effects.
-    #[cfg(test)]
-    pub(crate) fn drain_internal_events(&mut self) -> bool {
-        self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT)
-            .1
-    }
-
-    #[cfg(test)]
-    pub(crate) fn drain_all_internal_events(&mut self) -> bool {
-        // Match the API drain's entry snapshot so producers cannot extend it.
-        let queued_on_entry = self.event_rx.len();
-        self.drain_internal_events_up_to(queued_on_entry).1
-    }
-
-    #[cfg(test)]
-    fn drain_internal_events_up_to(&mut self, limit: usize) -> (bool, bool) {
-        let mut had_event = false;
-        let mut changed = false;
-        for _ in 0..limit {
-            let Ok(ev) = self.event_rx.try_recv() else {
-                break;
-            };
-            had_event = true;
-            changed |= self.handle_internal_event_with_render_impact(ev);
-        }
-        (had_event, changed)
-    }
 }
 
 #[cfg(test)]

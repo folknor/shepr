@@ -12,33 +12,42 @@ Filed from the defect hunt over `crates/shepr-mux/src/` `pane.rs`, `pane/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## PRUN-009 - Structural: one shared struct instead of about ten Arcs
+## PRUN-011 - Structural: finish hook arbitration as one per-source state machine
 
-`PaneRuntime`, `PaneReadEffects` and `PaneOutputWriter` each hold separate
-`Arc`s to the same items (`terminal`, `reported_cwd`, `child_liveness`,
-`full_lifecycle_authority_active`, `persistence_cwd`, `detect_reset_notify` and
-so on; the content revisions now live in the terminal core). One
-`Arc<PaneShared>` would make clone sites and ownership readable and make the
-drop story in PRUN-003 explicit (a `Weak<PaneShared>` in the timer).
+`terminal/state/source.rs` now holds a per-source (generation, event) to
+(generation, effects) table that centralises routing, and the exposed
+arbitration helpers dropped from 50 to 36. That pass deliberately kept the
+existing mutation algorithms in `hooks.rs`, `sessions.rs` and `detection.rs`
+intact to keep upstream herdr fixes portable; that constraint no longer exists.
+Residue: move the mutations themselves into the transitions, so the table's
+effects are what change state and the remaining `pub(super)` predicates and
+flag juggling (`hook_authority`, `persisted_agent_session`,
+`recent_agent_process_exit`, `pending_start`, `pending_replacement_report`,
+`stale_sessions`, sequence re-anchoring) collapse into the machine, with the
+`HookSourceState` invariants checked in one place. Leave room for a
+provisional process-exit release, the next change planned here.
 
-## PRUN-010 - Structural: `spawn_with_initial_history` still builds the terminal, PTY and reader inline
+## PRUN-018 - A new pane runtime test cannot fail
 
-The detection loop and child watching now live in `pane/detection_task.rs`
-(`DetectionTask`, one whole tick per `spawn_blocking` job) and
-`pane/child_watcher.rs`. Residue: terminal setup, PTY setup and the read and
-reader-exit callbacks are still built inline in `spawn_with_initial_history`,
-and `DetectionHandles` groups only the detector's inputs (see PRUN-009).
+Lateral, `pane/runtime.rs`. `parser_writer_does_not_retain_cwd_state_after_runtime_drop`
+builds its runtime through `with_child_io`, which has no read effects, and
+`PaneOutputWriter` has no cwd field, so the test cannot fail and does not
+exercise the production read-effects bundle. Rewrite it over a runtime with
+read effects, or delete it.
 
-## PRUN-011 - Structural: hook arbitration in `terminal/state` as one per-source state machine
+## PRUN-016 - A PTY actor startup failure kills and waits for the child synchronously
 
-Many flags drive the logic in `hooks.rs`, `sessions.rs`, `source.rs`,
-`detection.rs` and `lifecycle.rs`: `hook_authority`, `persisted_agent_session`,
-`recent_agent_process_exit`; the per-source `HookGeneration` (`Open`,
-`AwaitingProcess`, `Cleared`), `pending_start`, `pending_replacement_report`,
-`stale_sessions`; sequence re-anchoring. The entry points
-(`set_hook_report_at`, `set_agent_session_ref_*`,
-`set_detected_state_with_screen_signals_at`) each reimplement parts of the
-routing. No concrete defect found, but the hunter expects the next ones here. A
-single explicit `(generation, event) -> (generation, effects)` table would
-replace about a dozen `pub(super)` predicates and make the invariants in the
-`HookSourceState` doc checkable.
+Lateral, pre-existing, `pane/runtime.rs` (PTY startup in the pane spawn path).
+When the PTY actor fails to start, the spawn path kills the child and waits for
+it inline. If that runs on a Tokio worker, a child slow to die blocks the worker;
+the rest of the runtime hands unreaped children to the detached reaper instead.
+Use the same handoff here.
+
+## PRUN-017 - Process evidence after a hook clear discards a parked start
+
+Lateral, `terminal/state/source.rs` (the per-source hook state machine). When
+process evidence arrives after a hook clear, a parked start is discarded without
+being installed. The behaviour predates the state machine, which keeps it and
+pins it with a test. Decide whether it is intended (the clear means the parked
+start is stale) or whether the start should be installed; if intended, say why at
+the transition.

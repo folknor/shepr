@@ -1,7 +1,6 @@
 use std::io;
 use std::sync::Arc;
 
-use interprocess::local_socket::traits::Listener as _;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
@@ -44,7 +43,7 @@ pub(crate) fn accept_client_connection(
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
     let stream = match listener.accept() {
-        Ok(stream) => stream,
+        Ok((stream, _)) => stream,
         Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Err(err),
         Err(err) if accept_failed_for_one_connection(&err) => {
             warn!(error = %err, "client connection failed before it was accepted");

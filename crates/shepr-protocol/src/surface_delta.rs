@@ -121,16 +121,23 @@ fn encoded_size(value: &impl Serialize) -> Result<usize, SurfaceDeltaError> {
     super::codec::encoded_len(value).map_err(SurfaceDeltaError::Encoding)
 }
 
+/// Result of comparing a full candidate with its committed surface baseline.
+pub enum SurfaceDeltaPlan {
+    /// The candidate cannot be represented more cheaply as an update.
+    Full,
+    /// The content is unchanged. Keep the update only when a refresh is forced.
+    Unchanged(ServerMessage),
+    /// Send this update and retain the candidate as the new baseline.
+    Compact(ServerMessage),
+}
+
 pub fn message(
     last: &PaneSurfaceFrame,
-    full: &mut ServerMessage,
-) -> Result<Option<ServerMessage>, SurfaceDeltaError> {
-    let ServerMessage::PaneSurface(surface) = &*full else {
-        return Ok(None);
-    };
+    surface: &PaneSurfaceFrame,
+) -> Result<SurfaceDeltaPlan, SurfaceDeltaError> {
     let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
     else {
-        return Ok(None);
+        return Ok(SurfaceDeltaPlan::Full);
     };
     let baseline = super::surface_reuse::Baseline::new(
         &last.boot_id,
@@ -143,41 +150,53 @@ pub fn message(
         || last.frame.cells.len() != expected_cells
         || !metadata_fits(surface)
     {
-        return Ok(None);
+        return Ok(SurfaceDeltaPlan::Full);
     }
     // Every cell has a string length prefix, two color discriminants, a skip
     // byte and a hyperlink option tag: at least five bytes, even ignoring its
-    // symbol and style. This lower bound avoids counting the full grid while
-    // guaranteeing any chosen cell delta is smaller. It may miss useful deltas on
-    // small grids or when most of the full message consists of metadata.
+    // symbol and style. This lower bound avoids another full-grid serialization
+    // pass on this per-client path while guaranteeing any chosen cell delta is
+    // smaller. It may miss useful deltas on small grids or when most of the full
+    // message consists of metadata.
     let full_size = expected_cells.saturating_mul(5);
-    let ServerMessage::PaneSurface(surface) = full else {
-        return Ok(None);
+    let Some(rows) = changed_rows(&last.frame.cells, &surface.frame.cells, surface.frame.width)
+    else {
+        return Ok(SurfaceDeltaPlan::Full);
     };
+    let spans = rows
+        .into_iter()
+        .map(|row| PaneSurfacePatchRow {
+            x: row.x,
+            y: row.y,
+            cells: row.cells.to_vec(),
+        })
+        .collect();
+    let update = baseline.update(surface, spans, last);
+    // Metadata-only updates always retain the grid. Counting potentially large
+    // projection metadata cannot improve this choice. An unchanged result is
+    // reported separately so the caller can avoid sending it without comparing
+    // the cell grid a second time.
+    if update.spans.is_empty()
+        && matches!(
+            &update.meta,
+            Some(super::SurfaceMeta::Patch(meta))
+                if meta.panes.is_empty() && meta.cursor == last.frame.cursor
+        )
     {
-        let Some(rows) = changed_rows(&last.frame.cells, &surface.frame.cells, surface.frame.width)
-        else {
-            return Ok(None);
-        };
-        let spans = rows
-            .into_iter()
-            .map(|row| PaneSurfacePatchRow {
-                x: row.x,
-                y: row.y,
-                cells: row.cells.to_vec(),
-            })
-            .collect();
-        let update = baseline.update(surface, spans, last);
-        // Metadata-only updates always retain the grid. Counting potentially
-        // large projection metadata cannot improve this choice, and returning
-        // it here avoids a second whole-grid equality pass in the server.
-        let metadata_only = update.spans.is_empty();
-        let message = ServerMessage::SurfaceUpdate(update);
-        if metadata_only {
-            return Ok(Some(message));
-        }
-        let size = encoded_size(&message)?;
-        Ok((size < full_size).then_some(message))
+        return Ok(SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(
+            update,
+        )));
+    }
+    let metadata_only = update.spans.is_empty();
+    let message = ServerMessage::SurfaceUpdate(update);
+    if metadata_only {
+        return Ok(SurfaceDeltaPlan::Compact(message));
+    }
+    let size = encoded_size(&message)?;
+    if size < full_size {
+        Ok(SurfaceDeltaPlan::Compact(message))
+    } else {
+        Ok(SurfaceDeltaPlan::Full)
     }
 }
 
@@ -203,10 +222,11 @@ mod tests {
         let mut next = last.clone();
         next.surface_revision = super::super::SurfaceRevision::new(2);
         next.frame.cells[0].symbol = "z".into();
-        let mut full = ServerMessage::PaneSurface(next.clone());
-        let delta = message(&last, &mut full)
-            .expect("planning")
-            .expect("sparse delta");
+        let delta = match message(&last, &next).expect("planning") {
+            SurfaceDeltaPlan::Compact(delta) => delta,
+            _ => panic!("expected compact delta"),
+        };
+        let full = ServerMessage::PaneSurface(next.clone());
         assert!(encoded_size(&delta).expect("size") < encoded_size(&full).expect("size"));
         assert!(encoded_size(&delta).expect("size") < 1024);
         let mut decoder = super::super::surface_reuse::Decoder::default();
@@ -225,8 +245,20 @@ mod tests {
         for cell in &mut next.frame.cells {
             cell.symbol = "z".into();
         }
-        let mut full = ServerMessage::PaneSurface(next.clone());
-        assert!(message(&last, &mut full).expect("planning").is_none());
-        assert_eq!(full, ServerMessage::PaneSurface(next));
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Full
+        ));
+    }
+
+    #[test]
+    fn unchanged_surface_is_reported_after_the_cell_scan() {
+        let last = surface();
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
+        ));
     }
 }

@@ -12,7 +12,7 @@ fn upload_test_streams(
     let listener =
         shepr_platform::ipc::bind_private_local_listener(&socket).expect("test precondition");
     let client = shepr_platform::ipc::connect_local_stream(&socket).expect("test precondition");
-    let server = listener.accept().expect("test precondition");
+    let server = listener.accept().expect("test precondition").0;
     server.set_nonblocking(true).expect("test precondition");
     drop(listener);
     std::fs::remove_file(socket).expect("test precondition");
@@ -246,9 +246,7 @@ fn accepted_bridge_stream_is_reset_to_blocking() {
     use std::os::fd::AsRawFd as _;
 
     fn is_nonblocking(stream: &shepr_platform::ipc::LocalStream) -> bool {
-        let fd = match stream {
-            shepr_platform::ipc::LocalStream::UdSocket(stream) => stream.inner().as_raw_fd(),
-        };
+        let fd = stream.as_raw_fd();
         // SAFETY: F_GETFL only reads flags from the live descriptor owned by `stream`.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         assert!(flags >= 0, "fcntl(F_GETFL): {}", io::Error::last_os_error());
@@ -260,7 +258,7 @@ fn accepted_bridge_stream_is_reset_to_blocking() {
     let listener =
         shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind listener");
     let client = shepr_platform::ipc::connect_local_stream(&socket).expect("connect client");
-    let server = listener.accept().expect("accept client");
+    let server = listener.accept().expect("accept client").0;
 
     server
         .set_nonblocking(true)

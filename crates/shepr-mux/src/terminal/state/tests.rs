@@ -2466,14 +2466,16 @@ fn opencode_tui_selection_anchors_after_process_detection() {
         .hook_sources
         .entry("shepr:opencode".into())
         .or_default()
-        .release(SuppressedFullLifecycleHookReport {
-            agent_label: "opencode".into(),
-            session_ref: None,
-            observed_at: Instant::now(),
-            reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
-            pending_start: None,
-            pending_replacement_report: None,
-        });
+        .transition(HookSourceEvent::Release(
+            SuppressedFullLifecycleHookReport {
+                agent_label: "opencode".into(),
+                session_ref: None,
+                observed_at: Instant::now(),
+                reason: FullLifecycleHookSuppressionReason::AwaitingProcess,
+                pending_start: None,
+                pending_replacement_report: None,
+            },
+        ));
     let selected = terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode".into(),
@@ -3440,24 +3442,6 @@ fn stale_full_lifecycle_sessions_are_capped_per_source() {
             .first()
             .is_some_and(|first| first.session_ref == oldest_kept)
     );
-}
-
-#[test]
-fn hook_clock_reanchor_requires_a_corroborated_wall_clock_step() {
-    let accepted_at = Instant::now();
-    let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-    let sequence = HookSequence {
-        value: 1_000,
-        accepted_at,
-        accepted_wall_clock: wall,
-    };
-    let later = accepted_at + Duration::from_secs(10);
-    // A request arriving within the hook timeout is still a straggler.
-    assert!(sequence.supersedes(999, later, wall + Duration::from_secs(10)));
-    assert!(sequence.supersedes(1_000, later, wall + Duration::from_secs(10)));
-    // A monotonic/wall-clock discrepancy corroborates a backward clock step.
-    assert!(!sequence.supersedes(10, later, wall - Duration::from_secs(1)));
-    assert!(sequence.supersedes(10, accepted_at + Duration::from_secs(4), wall));
 }
 
 #[test]

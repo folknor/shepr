@@ -29,15 +29,6 @@ is the same class. A fix would make the detector's process-exit release
 provisional (held until the shell survives a short grace period or a later
 tick confirms it).
 
-## SAPP-007 - The test event drain skips the headless server's forwarding
-
-The test-only pane removal, navigation, swap and resize helpers are gone, and
-tests drive the production event handler, the typed endpoint dispatcher and the
-scheduled resume pass. Residue: the test queue drain in `app/runtime.rs` still
-calls App event handling without the headless server's checkpoint hold,
-shutdown-signal drop and clipboard forwarding (documented there), and a test of
-the per-tick drain limit belongs in `server/headless/tests/`.
-
 ## SAPP-012 - Structural: the pane-exit checkpoint as a typed state machine
 
 Outside the resolution loop: the owner resolves this directly. Do not assign it

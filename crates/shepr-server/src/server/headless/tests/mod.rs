@@ -88,6 +88,9 @@ pub(crate) fn dispatch_lifecycle_messages(
 #[path = "already_running.rs"]
 mod already_running_tests;
 #[cfg(test)]
+#[path = "internal_event_drain.rs"]
+mod internal_event_drain_tests;
+#[cfg(test)]
 #[path = "locations.rs"]
 mod locations_tests;
 #[cfg(test)]
@@ -107,11 +110,9 @@ async fn client_listener_readiness_wakes_for_new_connection() {
     let socket_path = crate::test_support::ScratchDir::new("listener-ready").join("client.sock");
     let listener = bind_local_listener(&socket_path).expect("bind test listener");
     listener
-        .set_nonblocking(ListenerNonblockingMode::Accept)
+        .set_nonblocking(true)
         .expect("set listener nonblocking");
-    let listener_fd = match &listener {
-        LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
-    };
+    let listener_fd = listener.as_fd().as_raw_fd();
     let ready = tokio::io::unix::AsyncFd::new(ListenerFd(listener_fd)).expect("register listener");
     let _client = shepr_platform::ipc::connect_local_stream(&socket_path).expect("connect client");
     let readiness = tokio::time::timeout(Duration::from_millis(500), ready.readable())
@@ -149,7 +150,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     let client_socket_identity =
         socket_file_identity(&socket_path).expect("test listener socket identity");
     listener
-        .set_nonblocking(ListenerNonblockingMode::Accept)
+        .set_nonblocking(true)
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let (_api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);

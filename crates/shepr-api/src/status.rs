@@ -85,7 +85,6 @@ pub fn read_runtime_status_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
     use std::io::{BufRead as _, BufReader};
 
     #[test]
@@ -96,7 +95,7 @@ mod tests {
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
-            let stream = listener.accept().expect("test precondition");
+            let stream = listener.accept().expect("test precondition").0;
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).expect("test precondition");
@@ -124,7 +123,7 @@ mod tests {
         let listener =
             shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
         let server = std::thread::spawn(move || {
-            let stream = listener.accept().expect("test precondition");
+            let stream = listener.accept().expect("test precondition").0;
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
             reader

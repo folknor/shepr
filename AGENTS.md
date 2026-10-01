@@ -352,28 +352,6 @@ with `waitid` when available; `Child::wait` runs in a blocking task as the
 fallback. If the watcher is dropped before reaping, the child is handed to a
 detached reaper thread.
 
-## Upstream tracking
-
-These parts of shepr still follow upstream herdr, and fixes to them are
-ported from it. `scripts/upstream_watch.py` reports upstream changes to their
-upstream counterparts since the commit in `scripts/upstream_baseline.txt`;
-its docstring says what each upstream path maps to.
-
-- `crates/shepr-agent/src/agent/`
-- `crates/shepr-agent/src/detect/`
-- `crates/shepr-agent/src/detect/manifests/`
-- `crates/shepr-agent/src/integration/`
-- `crates/shepr-agent/src/integration/assets/`
-- `crates/shepr-client/src/input.rs`
-- `crates/shepr-mux/src/pane/agent_detection.rs`
-- `crates/shepr-mux/src/terminal/state/`
-- `crates/shepr-server/src/app/`
-- `crates/shepr-termio/src/input/raw_input.rs`
-- `src/autodetect.rs`
-
-The list is the shepr side of the script's tables; the
-`upstream-watch-paths` check fails when the two differ.
-
 ## Rules
 
 ### General rules

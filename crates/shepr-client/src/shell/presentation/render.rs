@@ -338,10 +338,7 @@ pub(super) fn put_text(
     let limit = usize::from(width.min(buffer.area.right().saturating_sub(x)));
     let mut written = 0usize;
     for grapheme in text.graphemes(true) {
-        if grapheme.contains(char::is_control) {
-            continue;
-        }
-        let grapheme_width = shepr_termio::blit::text_width(grapheme);
+        let grapheme_width = rendered_grapheme_width(grapheme);
         if grapheme_width == 0 {
             continue;
         }
@@ -373,8 +370,22 @@ pub(super) fn put_text(
     u16::try_from(written).unwrap_or(u16::MAX)
 }
 
+fn rendered_grapheme_width(grapheme: &str) -> usize {
+    if grapheme.contains(char::is_control) {
+        0
+    } else {
+        shepr_termio::blit::text_width(grapheme)
+    }
+}
+
+pub(super) fn rendered_text_width(text: &str) -> usize {
+    text.graphemes(true).fold(0usize, |width, grapheme| {
+        width.saturating_add(rendered_grapheme_width(grapheme))
+    })
+}
+
 pub(super) fn display_width(text: &str) -> u16 {
-    u16::try_from(shepr_termio::blit::text_width(text)).unwrap_or(u16::MAX)
+    u16::try_from(rendered_text_width(text)).unwrap_or(u16::MAX)
 }
 
 pub(super) fn put_spans(
@@ -391,7 +402,7 @@ pub(super) fn put_spans(
     let mut x = area.x;
     let mut remaining = area.width;
     for span in spans {
-        let span_width = shepr_termio::blit::text_width(span.content.as_ref());
+        let span_width = rendered_text_width(span.content.as_ref());
         let written = put_text(
             buffer,
             x,
@@ -424,6 +435,27 @@ mod tests {
         assert_eq!(buffer[(1, 0)].symbol(), " ");
         assert_eq!(buffer[(2, 0)].symbol(), "a");
         assert_eq!(display_width("\u{2764}\u{fe0f}agent"), 7);
+    }
+
+    #[test]
+    fn put_spans_continues_after_skipping_control_graphemes() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 1));
+        let spans = [
+            ratatui::text::Span::raw("agent\u{7}"),
+            ratatui::text::Span::raw(" state"),
+        ];
+
+        put_spans(
+            &mut buffer,
+            Rect::new(0, 0, 12, 1),
+            &spans,
+            Style::default(),
+        );
+
+        assert_eq!(buffer[(4, 0)].symbol(), "t");
+        assert_eq!(buffer[(6, 0)].symbol(), "s");
+        assert_eq!(rendered_text_width("agent\u{7}"), 5);
+        assert_eq!(rendered_text_width("\u{301}"), 0);
     }
 
     #[test]

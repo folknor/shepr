@@ -12,8 +12,6 @@ use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use interprocess::TryClone as _;
-use interprocess::local_socket::traits::Stream as _;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -605,7 +603,7 @@ pub(crate) fn handle_client_handshake(
         .map_err(|error| io::Error::other(error.to_string()))?;
     write_framed_bytes(&mut stream, &welcome, CLIENT_WRITE_STALL_TIMEOUT)?;
 
-    stream.set_recv_timeout(None)?;
+    stream.set_read_timeout(None)?;
 
     // Create separate channels for reliable control messages and droppable renders.
     let write_stream = stream.try_clone()?;
@@ -742,8 +740,7 @@ fn client_writer_loop(
 }
 
 fn shutdown_client_connection(stream: &LocalStream) -> io::Result<()> {
-    let LocalStream::UdSocket(stream) = stream;
-    stream.inner().shutdown(Shutdown::Both)
+    stream.shutdown(Shutdown::Both)
 }
 
 fn write_framed_bytes(
@@ -958,7 +955,6 @@ pub(crate) use tests::RenderLaneReceiver;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interprocess::local_socket::traits::Listener as _;
     use std::path::PathBuf;
 
     /// How often a test reader re-checks the queue. The queue's condvar wakes one
@@ -1143,7 +1139,7 @@ mod tests {
         let path = crate::test_support::ScratchDir::new(name).join("s.sock");
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        let server = listener.accept().expect("test precondition");
+        let server = listener.accept().expect("test precondition").0;
         (client, server, TestSocketPath(path))
     }
 
@@ -1347,7 +1343,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-writer-event-backpressure");
         client_stream
-            .set_recv_timeout(Some(Duration::from_secs(1)))
+            .set_read_timeout(Some(Duration::from_secs(1)))
             .expect("test precondition");
         let (writer, queue) = test_queue_writer();
         writer
@@ -1394,7 +1390,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-writer-close-connection");
         client_stream
-            .set_recv_timeout(Some(Duration::from_secs(1)))
+            .set_read_timeout(Some(Duration::from_secs(1)))
             .expect("test precondition");
         let queue = ClientWriterQueue::new_for_connection(
             server_stream.try_clone().expect("clone shutdown handle"),
@@ -1531,7 +1527,7 @@ mod tests {
             );
         });
         client
-            .set_recv_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(Duration::from_secs(3)))
             .expect("test precondition");
         let mut received = 0;
         let mut buffer = [0; 16 * 1024];
@@ -1577,7 +1573,7 @@ mod tests {
         shepr_protocol::preamble::read_preamble(&mut client_stream).expect("server preamble");
         let mut rest = Vec::new();
         client_stream
-            .set_recv_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("test precondition");
         // The server hangs up without reading the hello, and Linux reports
         // closing a unix socket with unread data as a reset to the peer; a

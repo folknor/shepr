@@ -440,7 +440,7 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
 }
 
 fn display_width(text: &str) -> usize {
-    shepr_termio::blit::text_width(text)
+    super::render::rendered_text_width(text)
 }
 
 #[cfg(test)]

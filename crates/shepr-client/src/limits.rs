@@ -168,8 +168,8 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
 ///
 /// The budget is the same for every attempt, including one that has to run full
-/// discovery of the remote executable. Most attempts do not: a reconnect launches the
-/// bridge from the remembered executable.
+/// discovery of the remote executable. Most attempts do not: a reconnect queries the
+/// remote server's status and launches the bridge from the remembered executable.
 /// The managed ssh config makes every command after the first reuse one shared
 /// connection (ControlMaster), so only one cold connect is paid.
 /// The case that can overrun is a cache miss or a stale remembered path on a slow link
@@ -182,8 +182,8 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// discovery round trip may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget
 /// exceeds it by `shepr_core::limits::SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
 /// completes at least one, and discovery finishes after a bounded number of attempts;
-/// after that the bridge and handshake need to fit one attempt, as on every ordinary
-/// reconnect. A larger discovery budget would stretch the retry bound exactly where
+/// after that the server status query, the bridge and the handshake need to fit one
+/// attempt, as on every ordinary reconnect. A larger discovery budget would stretch the retry bound exactly where
 /// the link is slowest, and would still fail on an even slower link.
 pub(super) const ATTEMPT_BUDGET: Duration = shepr_core::limits::SSH_CONNECTION_ATTEMPT_BUDGET;
 

@@ -414,6 +414,15 @@ fn patch_cell_mut(rows: &mut [PaneSurfacePatchRow], x: u16, y: u16) -> Option<&m
     })
 }
 
+fn patch_cell_at(rows: &[PaneSurfacePatchRow], x: u16, y: u16) -> Option<&CellData> {
+    rows.iter().find_map(|row| {
+        if row.y != y || x < row.x {
+            return None;
+        }
+        row.cells.get(usize::from(x - row.x))
+    })
+}
+
 /// Whether `rows` may be drawn over `frame`: they obey the shared span rule and
 /// neither the new cells nor the cells they replace carry a hyperlink.
 fn patch_rows_fit(frame: &FrameData, rows: &[PaneSurfacePatchRow]) -> bool {
@@ -448,7 +457,7 @@ fn blit_patch_to(
     let mut last_sgr = String::new();
     let mut last_style = None;
     let mut active_hyperlink = None;
-    for row in rows {
+    for (row_index, row) in rows.iter().enumerate() {
         let mut invalidated = 0usize;
         let mut to_skip = 0usize;
         let mut next_inline_col = None;
@@ -457,6 +466,10 @@ fn blit_patch_to(
             let col = row.x + u16::try_from(offset).unwrap_or(u16::MAX);
             let idx = usize::from(row.y) * usize::from(frame.width) + usize::from(col);
             let prev_cell = &frame.cells[idx];
+            let grid_width = patch_cell_width(frame, rows, row_index, offset, col);
+            let grapheme_width = cell_width(cell);
+            let previous_width = cell_width(prev_cell);
+            let affected_width = cmp::max(grapheme_width, previous_width);
             if !cell.skip && (!cells_equal(cell, prev_cell) || invalidated > 0) && to_skip == 0 {
                 let cursor_position =
                     (next_inline_col != Some(col) || invalidated > 0).then_some((col, row.y));
@@ -469,11 +482,30 @@ fn blit_patch_to(
                     &mut active_hyperlink,
                     frame,
                 )?;
-                next_inline_col = (cell.symbol.is_ascii() && cell_width(cell) == 1)
-                    .then_some(col.saturating_add(1));
+                if affected_width > grid_width
+                    && let Some(next_col) = col
+                        .checked_add(1)
+                        .filter(|next_col| *next_col < frame.width)
+                    && patch_cell_at(rows, next_col, row.y).is_none()
+                    && let Some(next_index) = frame_cell_index(frame, next_col, row.y)
+                    && let Some(next_cell) = frame.cells.get(next_index)
+                {
+                    // A wide grapheme may cover the next host column even when the
+                    // pane grid cell does not. Repaint an omitted successor after it.
+                    write_cell(
+                        &mut writer,
+                        Some((next_col, row.y)),
+                        next_cell,
+                        &mut last_sgr,
+                        &mut last_style,
+                        &mut active_hyperlink,
+                        frame,
+                    )?;
+                }
+                next_inline_col =
+                    (cell.symbol.is_ascii() && grid_width == 1).then_some(col.saturating_add(1));
             }
-            to_skip = cell_width(cell).saturating_sub(1);
-            let affected_width = cmp::max(cell_width(cell), cell_width(prev_cell));
+            to_skip = grid_width.saturating_sub(1);
             invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
         }
     }
@@ -581,10 +613,71 @@ pub fn text_width(text: &str) -> usize {
     )
 }
 
-/// Terminal column width of one cell's symbol: the width rule output uses to skip the cells a
-/// wide glyph covers, and client composition uses to find glyph extents.
+/// Grapheme width of one cell's symbol, also used by client composition to find glyph extents.
+/// Pane output uses `frame_cell_width` to keep the terminal grid's spacer cells distinct from
+/// graphemes drawn by Ratatui.
 pub fn cell_width(cell: &CellData) -> usize {
     symbol_width(&cell.symbol)
+}
+
+/// Width of a cell in an output frame. Pane rendering represents a wide grid cell with an
+/// empty-symbol spacer in the following column; chrome represents its continuation as a space.
+fn frame_cell_width(frame: &FrameData, col: u16, row: u16) -> usize {
+    let Some(index) = frame_cell_index(frame, col, row) else {
+        return 0;
+    };
+    let Some(cell) = frame.cells.get(index) else {
+        return 0;
+    };
+    let next = col
+        .checked_add(1)
+        .filter(|next_col| *next_col < frame.width)
+        .and_then(|next_col| frame_cell_index(frame, next_col, row))
+        .and_then(|next_index| frame.cells.get(next_index));
+    cell_width_with_spacer(cell, next)
+}
+
+fn patch_cell_width(
+    frame: &FrameData,
+    rows: &[PaneSurfacePatchRow],
+    row_index: usize,
+    offset: usize,
+    col: u16,
+) -> usize {
+    let Some(row) = rows.get(row_index) else {
+        return 0;
+    };
+    let Some(cell) = row.cells.get(offset) else {
+        return 0;
+    };
+    let next = col
+        .checked_add(1)
+        .filter(|next_col| *next_col < frame.width);
+    let next_patch_cell = row
+        .cells
+        .get(offset.saturating_add(1))
+        .or_else(|| next.and_then(|next_col| patch_cell_at(rows, next_col, row.y)));
+    let next_frame_cell = next
+        .and_then(|next_col| frame_cell_index(frame, next_col, row.y))
+        .and_then(|next_index| frame.cells.get(next_index));
+    cell_width_with_spacer(cell, next_patch_cell.or(next_frame_cell))
+}
+
+fn cell_width_with_spacer(cell: &CellData, next: Option<&CellData>) -> usize {
+    if cell.symbol.is_empty() {
+        return cell_width(cell);
+    }
+    if next.is_some_and(|next| next.symbol.is_empty()) {
+        2
+    } else if cell_width(cell) > 1 && next.is_some_and(|next| next.symbol != " ") {
+        // A narrow pane cell may hold a VS16 grapheme whose host width is two.
+        // Its next grid cell stays in place, while Ratatui reserves a blank
+        // continuation for wide chrome. `CellData` has no wide flag, so a blank
+        // successor or row edge remains ambiguous.
+        1
+    } else {
+        cell_width(cell)
+    }
 }
 
 /// Terminal column width of `symbol`; see [`text_width`] and [`cell_width`].
@@ -714,7 +807,7 @@ fn write_all_cells(writer: &mut impl Write, frame: &FrameData) -> io::Result<()>
                 &mut active_hyperlink,
                 frame,
             )?;
-            let width = cell_width(cell);
+            let width = frame_cell_width(frame, col, row);
             next_inline_col =
                 (cell.symbol.is_ascii() && width == 1).then_some(col.saturating_add(1));
             to_skip = width.saturating_sub(1);
@@ -852,6 +945,7 @@ fn write_changed_cells(
             let idx = (row as usize) * (frame.width as usize) + (col as usize);
             let cell = &frame.cells[idx];
             let prev_cell = &prev.cells[idx];
+            let grid_width = frame_cell_width(frame, col, row);
 
             if !cell.skip
                 && (!cells_visually_equal(
@@ -873,12 +967,13 @@ fn write_changed_cells(
                     &mut active_hyperlink,
                     frame,
                 )?;
-                next_inline_col = (cell.symbol.is_ascii() && cell_width(cell) == 1)
-                    .then_some(col.saturating_add(1));
+                next_inline_col =
+                    (cell.symbol.is_ascii() && grid_width == 1).then_some(col.saturating_add(1));
             }
 
-            to_skip = cell_width(cell).saturating_sub(1);
-            let affected_width = cmp::max(cell_width(cell), cell_width(prev_cell));
+            to_skip = grid_width.saturating_sub(1);
+            let previous_width = cell_width(prev_cell);
+            let affected_width = cmp::max(cell_width(cell), previous_width);
             invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
         }
     }
@@ -986,6 +1081,57 @@ mod tests {
         assert_eq!(text_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"), 2);
         assert_eq!(text_width("ｶﾞx"), 3);
         assert_eq!(text_width("aﾞ"), 2);
+    }
+
+    #[test]
+    fn full_and_diff_redraw_keep_ascii_after_a_narrow_vs16_grid_cell() {
+        let frame = make_frame(
+            2,
+            1,
+            vec![default_cell("\u{26a0}\u{fe0f}"), default_cell("x")],
+        );
+        let mut full = Vec::new();
+        blit_frame_to(&mut full, &frame, None);
+        let full = String::from_utf8(full).expect("test precondition");
+        assert!(full.contains("\u{26a0}\u{fe0f}\x1b[1;2Hx"));
+
+        let previous = make_frame(2, 1, vec![default_cell("A"), default_cell("x")]);
+        let mut encoder = BlitEncoder::new();
+        let initial = encoder.encode(&previous, false);
+        encoder.commit(previous, &initial);
+        let diff = encoder.encode(&frame, false);
+        let diff_text = String::from_utf8(diff.bytes.clone()).expect("test precondition");
+        assert!(diff_text.contains("\u{26a0}\u{fe0f}\x1b[1;2Hx"));
+
+        let rows = [PaneSurfacePatchRow {
+            x: 0,
+            y: 0,
+            cells: vec![default_cell("\u{26a0}\u{fe0f}")],
+        }];
+        let patch = encoder
+            .encode_patch(&rows, None, false)
+            .expect("single-cell pane patch is valid");
+        assert_eq!(patch.bytes, diff.bytes);
+    }
+
+    #[test]
+    fn pane_wide_cells_use_their_empty_spacer_for_placement() {
+        let frame = make_frame(
+            3,
+            1,
+            vec![
+                default_cell(WIDE_GRAPHEME),
+                default_cell(""),
+                default_cell("Z"),
+            ],
+        );
+        let mut output = Vec::new();
+        blit_frame_to(&mut output, &frame, None);
+        let output = String::from_utf8(output).expect("test precondition");
+
+        assert!(output.contains("\x1b[1;1H"));
+        assert!(!output.contains("\x1b[1;2H"));
+        assert!(output.contains("\x1b[1;3H"));
     }
 
     fn linked_cell(symbol: &str, index: u32) -> CellData {

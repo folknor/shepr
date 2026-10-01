@@ -174,7 +174,7 @@ impl TerminalState {
             if let Some(source) = agent.and_then(Agent::integration_source)
                 && let Some(record) = self.hook_sources.get_mut(source)
             {
-                record.process_exited(now);
+                record.transition(HookSourceEvent::ProcessExited(now));
             }
 
             let official_session = self

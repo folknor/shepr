@@ -1,9 +1,9 @@
 // The agent plugins' side of the integration contract. A bun test that drives
 // a plugin through a scripted session passes the requests it captured here,
 // and they must equal the named trace in `contract_traces.toml`. The server
-// crate's `agent_integration_contract` test replays those same traces into
-// terminal state, so the two halves together check what a plugin really sends
-// against what the server accepts. Session ids and paths stay literal in the
+// crate's `agent_integration_contract_tests` module replays those same traces
+// into terminal state, so the two halves together check what a plugin really
+// sends against what the server accepts. Session ids and paths stay literal in
 // comparison; the Pi trace pins a path-form resume identity. bun is a
 // development dependency that the Rust tests do not have, which is why the
 // traces sit in a file between them.

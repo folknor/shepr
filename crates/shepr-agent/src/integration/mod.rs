@@ -74,8 +74,8 @@ const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 // no seq and puts a clock reading in the seq's unit there), and every socket
 // attempt waits at most 500 ms for the reply. `hook_assets_share_one_envelope`
 // in the tests holds the assets to it, and the server crate's
-// `agent_integration_contract` test replays each asset's scripted session
-// into terminal state.
+// `agent_integration_contract_tests` module replays each asset's scripted
+// session into terminal state.
 //
 // Each installed asset is standalone and translates that agent's own
 // lifecycle payload into the API request. Those payload decoders and

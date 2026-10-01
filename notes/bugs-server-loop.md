@@ -23,13 +23,6 @@ answers it on its connection thread.) Residue: the reservation in
 lock, so a listener can race into that gap. Closing it needs a shepr-platform
 IPC helper that hands the held lock to the binder.
 
-## SLOOP-024 - Other unbounded server queues and per-request threads
-
-Lateral. The headless worker completion channel (`headless/worker.rs`) is
-unbounded, and checkout-root handling (`headless/endpoint_requests.rs`) starts a
-thread per request with no evident in-flight limit. Check whether either can
-grow without bound under a flood of client requests, and bound them if so.
-
 ## SLOOP-025 - The API queue capacity matches the connection cap only by value
 
 Lateral. `API_REQUEST_CHANNEL_CAPACITY` (shepr-server `limits.rs`) equals
@@ -40,6 +33,14 @@ from it. Smaller hygiene from the same wave: the test-only `App::new` still take
 an unbounded API receiver it ignores (about 40 test call sites pass one), and
 the client socket reservation tests in `headless/bootstrap.rs` sit in a module
 named `startup_cwd_tests`.
+
+## SLOOP-026 - Client socket accepts start one thread per connection with no cap
+
+Lateral, `server/client_accept.rs`. Each accepted client socket gets its own
+handshake thread. The handshake deadline bounds each thread's life but not how
+many run at once, so a local connection flood can start threads without limit
+for the length of the deadline. Cap concurrent handshakes and refuse beyond it,
+as the API server does with its connection cap.
 
 ## SLOOP-004 - A slow client turns every drain of its render slot into a full render for everyone
 
@@ -76,7 +77,9 @@ the endpoint-reply outbox in the loop (held until after the render). SLOOP-001,
 SLOOP-003 (both residues) and the ghost-client finding in `notes/bugs-rejected-candidates.md`
 are each a place where two of these disagree. One per-client outbox type owning
 ordering, size policy, flush barriers and disconnect reporting would remove the
-class.
+class. A related case: endpoint replies in the outbox (`headless.rs`) can pile
+up behind one unresolved worker reply while a raw local client keeps sending
+commands, with no bound on the held replies.
 
 ## SLOOP-018 - Structural: render demand is stored edge-triggered state
 

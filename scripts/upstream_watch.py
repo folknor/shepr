@@ -13,9 +13,8 @@ detection manifests both as upstream bundles them and as it publishes them for
 over-the-air updates (a published manifest can be newer than the bundled one,
 and shepr, which has no over-the-air updates, ports it as a detection fix), the
 manifest check tooling, the detection and hook wiring with its tests, and host
-terminal input framing. The shepr side of every mapping is also listed in
-AGENTS.md ("Upstream tracking"); `scripts/check_upstream_watch_paths.py` keeps
-the two lists equal.
+terminal input framing. It is run now and then to see whether any upstream fix
+is worth taking; nothing in shepr is kept in upstream's shape for it.
 
   scripts/upstream_watch.py                report
   scripts/upstream_watch.py --diff         report with the upstream diffs
@@ -81,12 +80,6 @@ LOOSE = [
 ]
 
 WATCHED = sorted({p for p, _ in MAPPING} | {p for p, _, _ in LOOSE})
-
-
-def shepr_paths() -> list[str]:
-    """Every shepr file or directory a watched upstream path maps to: the list
-    AGENTS.md repeats."""
-    return sorted({mine for _, mine in MAPPING} | {mine for _, mine, _ in LOOSE if mine is not None})
 
 
 def git(*args: str, cwd=CLONE, check: bool = True) -> str:

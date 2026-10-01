@@ -635,6 +635,9 @@ impl HeadlessServer {
             else {
                 continue;
             };
+            // This connection's baseline advances only after its own send.
+            // FrameData owns a Vec, so the shared render result needs an owned
+            // cell grid for every connection that keeps a baseline.
             let frame =
                 std::sync::Arc::try_unwrap(frame).unwrap_or_else(|shared| shared.as_ref().clone());
 

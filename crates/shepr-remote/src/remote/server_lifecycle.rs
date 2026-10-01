@@ -114,7 +114,7 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
     })
 }
 
-fn remote_server_compatibility_error(
+pub(super) fn remote_server_compatibility_error(
     target: &str,
     version: Option<&str>,
     build_id: Option<&str>,

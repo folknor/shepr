@@ -10,7 +10,6 @@ bytes = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { workspace = true }
 futures-util = { workspace = true }
-interprocess = { workspace = true }
 libc = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
