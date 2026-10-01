@@ -419,14 +419,12 @@ impl HeadlessServer {
         }
     }
 
-    /// Releases what a launching `shepr` looks at, in the one order that keeps
-    /// it from being misled: first the data-directory lease (the session
-    /// writer retires, after the save still in flight), then the API socket
-    /// and last the client socket. A launcher that finds no client socket
-    /// starts a daemon, which must then find the lease free; the reverse
-    /// order would refuse it as already running for as long as this process
-    /// lingered. Every exit runs this, the error and unwind ones through
-    /// `Drop` too; each step is idempotent.
+    /// Runs the shared `ServerLifetime` release rule after the final save.
+    /// Retiring the writer waits for any save still in flight before releasing
+    /// its lease. Socket absence can then permit a launch attempt without
+    /// sending the successor into a lease held by this server's retiring writer.
+    /// Every exit runs this, including error and unwind exits through `Drop`;
+    /// each step is idempotent.
     pub(super) fn release_sockets_after_save(&mut self) {
         self.release_sockets_after_save_observed(|| {});
     }
@@ -438,11 +436,15 @@ impl HeadlessServer {
         &mut self,
         before_client_socket_removal: impl FnOnce(),
     ) {
-        self.app.retire_session_writer();
-        // Dropping the handle removes the API socket file.
-        drop(self._api_server.take());
-        before_client_socket_removal();
-        self.cleanup_sockets();
+        shepr_platform::ipc::ServerLifetime::release(
+            self,
+            |server| server.app.retire_session_writer(),
+            |server| drop(server._api_server.take()),
+            |server| {
+                before_client_socket_removal();
+                server.cleanup_sockets();
+            },
+        );
     }
 
     /// Removes socket files created by the server. A removal failure is

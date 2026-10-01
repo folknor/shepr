@@ -89,6 +89,8 @@ pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 /// hold the handshake thread open. The deadline leaves room for OS timer slack,
 /// thread scheduling, and cleanup overhead.
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
+/// Bound an excess client without monopolizing the refusal queue.
+pub(crate) const CLIENT_LIMIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
 /// Maximum time a client stream writer may make no progress before disconnecting it.
 pub(crate) const CLIENT_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// First retry after automatic workspace creation fails, such as when the

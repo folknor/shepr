@@ -1,6 +1,16 @@
 use super::*;
 
 impl TerminalState {
+    pub fn hook_authority(&self) -> Option<&HookAuthority> {
+        self.hook_authority.as_ref()
+    }
+
+    pub fn persisted_agent_session(
+        &self,
+    ) -> Option<&shepr_agent::agent::resume::PersistedAgentSession> {
+        self.persisted_agent_session.as_ref()
+    }
+
     pub fn set_persisted_agent_session(
         &mut self,
         session: shepr_agent::agent::resume::PersistedAgentSession,
@@ -43,5 +53,14 @@ impl TerminalState {
             session_start_source,
             sample: sample.into(),
         })
+    }
+}
+
+#[cfg(test)]
+impl TerminalState {
+    // Persistence tests deliberately model malformed authority which no report
+    // accepts. Keep that fixture seam out of the production API.
+    pub(crate) fn seed_hook_authority_for_test(&mut self, authority: Option<HookAuthority>) {
+        self.hook_authority = authority;
     }
 }

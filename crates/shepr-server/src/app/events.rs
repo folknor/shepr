@@ -426,6 +426,53 @@ mod runtime_generation_tests {
     use super::*;
     use crate::test_support::*;
 
+    #[test]
+    fn agent_release_before_shell_death_preserves_exit_checkpoint_identity() {
+        let _env = IsolatedEnv::new();
+        let mut app = App::new(
+            &shepr_config::ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("kill-ordering");
+        let pane_id = workspace.root_pane();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("terminal")
+            .clone();
+        let session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
+            "shepr:codex",
+            "codex",
+            shepr_agent::agent::resume::AgentSessionRef::id("killed-agent").expect("session"),
+        )
+        .expect("official identity");
+        let now = app.clock.now;
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.set_persisted_agent_session(session.clone());
+        terminal.set_detected_agent_process_at(shepr_agent::agent::Agent::Codex, now);
+        app.handle_internal_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(shepr_agent::agent::Agent::Codex),
+            state: shepr_agent::detect::AgentState::Idle,
+            visible_blocker: false,
+            process_exited: true,
+            observed_at: now,
+        });
+        assert_eq!(
+            app.state.terminals[&terminal_id].persisted_agent_session(),
+            Some(&session)
+        );
+        app.prepare_pane_exit(pane_id, shepr_platform::ChildExitReason::Interrupted);
+        // Preparation publishes the final exit before the checkpoint captures
+        // the still-present pane; removal happens only after that checkpoint.
+        assert!(app.state.workspaces[0].contains_pane(pane_id));
+        assert_eq!(
+            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            Some(session),
+        );
+    }
+
     #[tokio::test]
     async fn discarded_and_replaced_runtimes_cannot_remove_a_restored_pane() {
         let _env = IsolatedEnv::new();
@@ -468,9 +515,7 @@ mod runtime_generation_tests {
         );
         assert!(app.state.workspaces[0].contains_pane(pane_id));
         assert_eq!(
-            app.state.terminals[&terminal_id]
-                .persisted_agent_session
-                .as_ref(),
+            app.state.terminals[&terminal_id].persisted_agent_session(),
             Some(&session)
         );
         assert!(

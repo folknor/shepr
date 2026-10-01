@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime};
 // Effective state arbitration is intentionally centralized here. Full lifecycle
 // Shepr hook integrations are hook-authoritative while live; screen recovery
 // remains only for session-only/custom hook paths and fallback detection.
-// Process-exit updates clear matching hook authority before recomputing state.
+// Confirmed process-exit updates clear matching authority before recomputing state.
 
 use shepr_agent::agent::resume::AgentSessionStartSource;
 use shepr_agent::detect::{Agent, AgentState};
@@ -149,6 +149,26 @@ struct RecentAgentProcessExit {
     observed_at: Instant,
 }
 
+/// An agent can die before its shell under a session-wide signal or OOM kill.
+/// Keep all ownership intact until the live shell outlasts the release window.
+#[derive(Debug, Clone, Copy)]
+struct ProvisionalProcessExit {
+    agent: Option<Agent>,
+    observed_at: Instant,
+    cancelled: bool,
+    /// The latest agent-less detector observation inside the window. The
+    /// detector withdraws the exited identity right after reporting the exit;
+    /// a confirmed release applies that withdrawal after itself.
+    deferred: Option<DeferredDetection>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeferredDetection {
+    fallback_state: AgentState,
+    visible_blocker: bool,
+    observed_at: Instant,
+}
+
 /// Pure state for a server-owned terminal.
 ///
 /// One-to-one with a pane-backed PTY. Terminal identity, cwd, labels and
@@ -163,14 +183,15 @@ pub struct TerminalState {
     // State authority and resume ownership can belong to different sources.
     // These pane-wide output slots are written by source machine effects;
     // per-source copies would create competing owners and equality invariants.
-    pub hook_authority: Option<HookAuthority>,
-    pub persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
+    hook_authority: Option<HookAuthority>,
+    persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     hook_sources: HashMap<String, HookSourceState>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     process_evidence: AgentProcessEvidence,
+    provisional_process_exit: Option<ProvisionalProcessExit>,
     pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
     pub restore_error: Option<RestoreFailure>,
 }

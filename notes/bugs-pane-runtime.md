@@ -12,14 +12,20 @@ Filed from the defect hunt over `crates/shepr-mux/src/` `pane.rs`, `pane/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## PRUN-019 - Hook authority and the persisted session are still public fields
+## PRUN-020 - A cancelled provisional process-exit release can freeze the detector
 
-Lateral, `terminal/state/`. Hook arbitration is one per-source state machine,
-and in production `hook_authority` and `persisted_agent_session` are written only
-by its effects. But both are `pub` on `TerminalState`, so any crate can write them
-past the machine; only tests do today. Narrow them to read accessors plus test
-seams, so routing only through the machine is enforced, not a convention.
-Related: the `transition_tests` fixtures in `terminal/state/source.rs`
-(`session()`, `release()`, `record()`) build `shepr:claude` records, but Claude
-is not a full-lifecycle agent, so they model state production never reaches for
-Claude; use a full-lifecycle agent (Pi, Kimi, Kilo) so the fixtures read true.
+`terminal/state/` (`ProvisionalProcessExit`, `source/detection.rs`). A detector
+process-exit release is held for `AGENT_PROCESS_EXIT_RELEASE_GRACE` and
+cancelled by new process evidence or an ownership change. A cancelled marker is
+cleared only by a later detector update that names an agent. Until then every
+detector observation without an agent is dropped, the deferred withdrawal is
+never applied, and a later exit or confirmation is ignored. If ownership was
+replaced during the window (a custom hook commit, say) and no agent process
+comes back, the pane's detector state stays frozen. Bound it: once the grace
+has elapsed, clear a cancelled marker and apply its deferred withdrawal without
+the release. Related, smaller: during the window the dying agent's late hook
+reports are admitted as live because process evidence stays available, so the
+sidebar can briefly show them before confirmation clears the authority; and
+`DetectionTask::provisional_release` is not cleared on a detector reset
+(harmless, since the terminal ignores a confirmation for an exit it already
+resolved).

@@ -63,6 +63,13 @@ pub(crate) const MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES: usize = 32;
 /// malformed or unterminated control input.
 pub(crate) const MAX_DISCARDED_CONTROL_TAIL_BYTES: usize = 128;
 
+/// Maximum bytes retained for an incomplete CSI sequence.
+///
+/// Complete sequences are parsed before this bound is applied. The ceiling
+/// accommodates supported key encodings and mouse coordinates while bounding
+/// an unterminated CSI prefix.
+pub(crate) const MAX_INCOMPLETE_CSI_BYTES: usize = 128;
+
 /// Initial allocation for a UTF-8 mouse report.
 ///
 /// The initial capacity fits a complete supported report, including its escape

@@ -28,7 +28,7 @@ pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathB
     validate_ssh_runtime_dir(runtime_dir)?;
     super::owned_runtime::OwnedRuntimeEntry::create_directory(
         runtime_dir,
-        super::owned_runtime::RuntimeKind::SshConfig,
+        super::owned_runtime::DirectoryKind::SshConfig,
     )
     .map(super::owned_runtime::OwnedRuntimeEntry::into_path)
     .map_err(super::owned_runtime::RuntimeCreateError::into_io)

@@ -25,6 +25,129 @@ pub enum Liveness {
     Unreachable(io::Error),
 }
 
+/// The common lifetime contract for the two server endpoints. Startup takes
+/// the data lease, binds the API, reserves the client path, restores panes,
+/// then binds the client listener. Shutdown retains endpoints through the
+/// final save, retires the lease, removes the API, then removes the client.
+/// Socket absence alone permits a launch attempt; the lease remains the
+/// authority that prevents two owners, including before either socket binds.
+pub struct ServerLifetime;
+
+/// Resources reserved before restoring panes. Field order also retires the
+/// lease before the API when an unused reservation is dropped.
+pub struct ReservedServer<L, A> {
+    lease: L,
+    api: A,
+    client: SocketStartupLock,
+}
+
+impl ServerLifetime {
+    pub fn reserve<L, A, E>(
+        acquire_lease: impl FnOnce() -> Result<L, E>,
+        bind_api: impl FnOnce(&L) -> Result<A, E>,
+        reserve_client: impl FnOnce() -> Result<SocketStartupLock, E>,
+    ) -> Result<ReservedServer<L, A>, E> {
+        Self::in_resource_order(
+            acquire_lease,
+            |lease| lease.and_then(|lease| bind_api(&lease).map(|api| (lease, api))),
+            |resources| {
+                resources.and_then(|(lease, api)| match reserve_client() {
+                    Ok(client) => Ok(ReservedServer { lease, api, client }),
+                    Err(error) => {
+                        Self::release(
+                            &mut (Some(lease), Some(api)),
+                            |resources| drop(resources.0.take()),
+                            |resources| drop(resources.1.take()),
+                            |_| {},
+                        );
+                        Err(error)
+                    }
+                })
+            },
+        )
+    }
+
+    pub fn release<C>(
+        context: &mut C,
+        retire_lease: impl FnOnce(&mut C),
+        remove_api: impl FnOnce(&mut C),
+        remove_client: impl FnOnce(&mut C),
+    ) {
+        Self::in_resource_order(
+            || {
+                retire_lease(context);
+                context
+            },
+            |context| {
+                remove_api(context);
+                context
+            },
+            remove_client,
+        );
+    }
+
+    // One ordering primitive drives both acquisition and release. Passing the
+    // preceding result to the next step prevents independently scheduled steps.
+    fn in_resource_order<L, A, C>(
+        lease: impl FnOnce() -> L,
+        api: impl FnOnce(L) -> A,
+        client: impl FnOnce(A) -> C,
+    ) -> C {
+        client(api(lease()))
+    }
+
+    /// An inaccessible endpoint never proves absence or permits a successor.
+    pub fn endpoint_is_live(path: &Path) -> io::Result<bool> {
+        Self::liveness(probe(path))
+    }
+
+    pub fn liveness(value: Liveness) -> io::Result<bool> {
+        match value {
+            Liveness::Absent | Liveness::Stale => Ok(false),
+            Liveness::Live => Ok(true),
+            Liveness::Unreachable(error) => Err(error),
+        }
+    }
+
+    pub fn observe<T>(
+        api_live: bool,
+        client_live: bool,
+        status: Option<(T, bool)>,
+    ) -> ServerPresence<T> {
+        match (api_live, client_live) {
+            (false, false) => ServerPresence::Gone,
+            (true, false) => ServerPresence::Starting,
+            (false, true) => ServerPresence::Releasing,
+            (true, true) => match status {
+                Some((identity, true)) => ServerPresence::Stopping(identity),
+                Some((identity, false)) => ServerPresence::Running(identity),
+                None => ServerPresence::Unresponsive,
+            },
+        }
+    }
+}
+
+impl<L, A> ReservedServer<L, A> {
+    pub fn restore_and_bind<T, S, E>(
+        self,
+        restore: impl FnOnce(L) -> T,
+        bind_client: impl FnOnce(T, A, SocketStartupLock) -> Result<S, E>,
+    ) -> Result<S, E> {
+        let app = restore(self.lease);
+        bind_client(app, self.api, self.client)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerPresence<T> {
+    Gone,
+    Starting,
+    Running(T),
+    Stopping(T),
+    Releasing,
+    Unresponsive,
+}
+
 /// Another process already holds a server socket path: its startup lock, a
 /// live listener at the path, or a path that appeared while binding. A
 /// non-socket path already present during probing is reported as unreachable
@@ -276,6 +399,9 @@ pub fn bind_single_use_private_socket(
     match bound {
         Ok((listener, identity)) => Ok((listener, startup_lock, identity)),
         Err(error) => {
+            // A socket that could not be removed keeps its sidecar: the
+            // dead-owner sweep needs both artifacts to validate and reclaim
+            // this single-use path.
             if !listener_bound || super::owned_runtime::remove_file(path) {
                 super::release_single_use_socket_lock(path);
             }
@@ -321,7 +447,7 @@ fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartu
 /// because its owner cannot be established. Sidecars of shared socket paths
 /// are never written to, so they never qualify.
 pub fn sweep_abandoned_single_use_sockets(dir: &Path) {
-    super::owned_runtime::OwnedRuntimeEntry::sweep(dir, super::owned_runtime::RuntimeKind::Socket);
+    super::owned_runtime::OwnedRuntimeEntry::sweep_socket_sidecars(dir);
 }
 
 /// The sidecar file [`acquire_socket_startup_lock`] locks for `socket_path`.
@@ -654,9 +780,9 @@ fn socket_parent(path: &Path) -> io::Result<&Path> {
 }
 
 fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<LocalListener, StagedBindError> {
-    use super::owned_runtime::{OwnedRuntimeEntry, RuntimeCreateError, RuntimeKind};
+    use super::owned_runtime::{DirectoryKind, OwnedRuntimeEntry, RuntimeCreateError};
     let entry =
-        OwnedRuntimeEntry::create_directory(parent, RuntimeKind::Staging).map_err(|error| {
+        OwnedRuntimeEntry::create_directory(parent, DirectoryKind::Staging).map_err(|error| {
             match error {
                 RuntimeCreateError::RandomSource(error) => StagedBindError::RandomSource(error),
                 RuntimeCreateError::Io(error) => StagedBindError::Unavailable(error),
@@ -862,6 +988,106 @@ pub fn restrict_socket_permissions(path: &Path, mode: u32) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn server_lifetime_observes_all_endpoint_transitions_and_stopping_identity() {
+        assert_eq!(
+            ServerLifetime::observe::<()>(false, false, None),
+            ServerPresence::Gone
+        );
+        assert_eq!(
+            ServerLifetime::observe::<()>(true, false, None),
+            ServerPresence::Starting
+        );
+        assert_eq!(
+            ServerLifetime::observe::<()>(false, true, None),
+            ServerPresence::Releasing
+        );
+        assert_eq!(
+            ServerLifetime::observe::<()>(true, true, None),
+            ServerPresence::Unresponsive
+        );
+        assert_eq!(
+            ServerLifetime::observe(true, true, Some(("boot", false))),
+            ServerPresence::Running("boot")
+        );
+        assert_eq!(
+            ServerLifetime::observe(true, true, Some(("boot", true))),
+            ServerPresence::Stopping("boot")
+        );
+    }
+
+    #[test]
+    fn server_lifetime_orders_reservation_restore_bind_and_release() {
+        use std::cell::RefCell;
+        let scratch = shepr_test_support::ScratchDir::new("lifetime-order");
+        let path = scratch.join("client.sock");
+        let steps = RefCell::new(Vec::new());
+        let reserved = ServerLifetime::reserve(
+            || {
+                steps.borrow_mut().push("lease");
+                Ok::<_, io::Error>(())
+            },
+            |_| {
+                steps.borrow_mut().push("api");
+                Ok(())
+            },
+            || {
+                steps.borrow_mut().push("reserve");
+                acquire_socket_startup_lock(&path)
+            },
+        )
+        .expect("reservation");
+        let (_listener, _lock, identity) = reserved
+            .restore_and_bind(
+                |_| {
+                    steps.borrow_mut().push("restore");
+                    assert!(
+                        !path
+                            .try_exists()
+                            .expect("client not published before restore")
+                    );
+                    assert!(acquire_socket_startup_lock(&path).is_err());
+                },
+                |_, _, lock| {
+                    steps.borrow_mut().push("bind");
+                    bind_private_socket_with_lock(lock)
+                },
+            )
+            .expect("bind reserved client");
+        assert_eq!(
+            *steps.borrow(),
+            ["lease", "api", "reserve", "restore", "bind"]
+        );
+        let mut releases = Vec::new();
+        ServerLifetime::release(
+            &mut releases,
+            |steps| steps.push("lease"),
+            |steps| steps.push("api"),
+            |steps| steps.push("client"),
+        );
+        assert_eq!(releases, ["lease", "api", "client"]);
+        remove_socket_file_if_owned(&path, &identity).expect("cleanup");
+    }
+
+    #[test]
+    fn failed_client_reservation_retires_lease_before_api() {
+        use std::cell::RefCell;
+        struct Resource<'a>(&'a RefCell<Vec<&'static str>>, &'static str);
+        impl Drop for Resource<'_> {
+            fn drop(&mut self) {
+                self.0.borrow_mut().push(self.1);
+            }
+        }
+        let dropped = RefCell::new(Vec::new());
+        let result = ServerLifetime::reserve(
+            || Ok(Resource(&dropped, "lease")),
+            |_| Ok(Resource(&dropped, "api")),
+            || Err(io::Error::other("reservation refused")),
+        );
+        assert!(result.is_err());
+        assert_eq!(*dropped.borrow(), ["lease", "api"]);
+    }
 
     #[test]
     fn local_socket_connect_rejects_a_timeout_that_overflows_instant() {

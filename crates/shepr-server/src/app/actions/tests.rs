@@ -579,8 +579,8 @@ fn reserved_native_state_report_does_not_override_screen_state() {
         .get(&terminal_id)
         .expect("test precondition");
     assert_eq!(terminal.state, AgentState::Working);
-    assert!(terminal.hook_authority.is_none());
-    assert!(terminal.persisted_agent_session.is_some());
+    assert!(terminal.hook_authority().is_none());
+    assert!(terminal.persisted_agent_session().is_some());
 
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
@@ -635,8 +635,8 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
         .get(&terminal_id)
         .expect("test precondition");
     assert_eq!(terminal.state, AgentState::Idle);
-    assert!(terminal.hook_authority.is_none());
-    assert!(terminal.persisted_agent_session.is_some());
+    assert!(terminal.hook_authority().is_none());
+    assert!(terminal.persisted_agent_session().is_some());
 }
 
 #[test]

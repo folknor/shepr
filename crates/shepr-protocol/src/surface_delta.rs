@@ -67,6 +67,13 @@ fn unchanged_message(
     surface: &PaneSurfaceFrame,
     baseline: &super::surface_reuse::Baseline<'_>,
 ) -> SurfaceDeltaPlan {
+    // This path and unchanged_plan both require equal projection metadata at
+    // the same projection revision, so Baseline::update emits Patch metadata
+    // with only the cursor and an empty pane list, never the candidate's
+    // hyperlink or split tables. That is why neither checks metadata_fits: a
+    // live baseline passed the bounded wire serializers before it was
+    // committed, and the client rejects an invalid grid before retaining or
+    // applying an update.
     let update = baseline.update(surface, Vec::new(), last);
     SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(update))
 }
@@ -301,10 +308,7 @@ mod tests {
         let mut next = last.clone();
         next.surface_revision = super::super::SurfaceRevision::new(2);
 
-        assert!(matches!(
-            message(&last, &next).expect("planning"),
-            SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
-        ));
+        assert_unchanged_update_is_compact(message(&last, &next).expect("planning"));
     }
 
     #[test]
@@ -330,9 +334,20 @@ mod tests {
         let mut next = last.clone();
         next.surface_revision = super::super::SurfaceRevision::new(2);
 
+        assert_unchanged_update_is_compact(message(&last, &next).expect("planning"));
+    }
+
+    fn assert_unchanged_update_is_compact(plan: SurfaceDeltaPlan) {
+        let SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(update)) = plan else {
+            panic!("expected unchanged surface update");
+        };
+        assert!(update.spans.is_empty());
         assert!(matches!(
-            message(&last, &next).expect("planning"),
-            SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
+            &update.meta,
+            Some(super::super::SurfaceMeta::Patch(meta)) if meta.panes.is_empty()
         ));
+        let mut bytes = Vec::new();
+        super::super::write_message(&mut bytes, &ServerMessage::SurfaceUpdate(update))
+            .expect("compact unchanged update encodes");
     }
 }

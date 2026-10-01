@@ -246,15 +246,27 @@ integration reports through it.
   the client sends `server.stop_if_boot` with the id from `status server`, and
   the server compares it with its own boot. The distinct method name means an
   older server rejects the request as invalid instead of ignoring the guard
-  and stopping unconditionally. A server that replaced the observed one keeps
-  running (exit status 3). The cross-build JSON control surface is the `ping`
-  response identity (`version`, `build_id`, `boot_id`), its `stopping` flag
-  (read as false when an older build omits it) and the
-  `server.stop_if_boot` request; keep their literal JSON fixtures in the
-  `shepr-api` tests in sync with intentional wire changes. A launcher that
-  meets a server answering `stopping` treats it as no server and starts a
-  successor once its sockets go: the stopping server keeps them through its
-  final save but no longer accepts clients.
+  and stopping unconditionally. A server that replaced the observed one,
+  at any point while the stop waits for the sockets and the lease to go, keeps
+  running and is reported (exit status 3).
+- The cross-build JSON control surface is the `ping` response identity
+  (`version`, `build_id`, `boot_id`), its `stopping` flag (read as false when
+  an older build omits it) and the `server.stop_if_boot` request; keep their
+  literal JSON fixtures in the `shepr-api` tests in sync with intentional
+  wire changes.
+- One lifetime rule, `ServerLifetime` in `crates/shepr-platform/src/ipc.rs`,
+  orders a server's resources and tells the launcher and `server stop` what
+  they observe. Startup takes the data-directory lease, binds the API socket,
+  reserves the client socket, restores panes, then binds the client socket
+  through that reservation. Shutdown keeps both sockets through the final
+  save, then retires the lease, removes the API socket and removes the client
+  socket last. Only the API socket live reads as starting, only the client
+  socket as releasing, neither as gone, and both as running, stopping or
+  unresponsive by the `ping` answer. A launcher waits through starting and
+  releasing, treats a server answering `stopping` as no server (it no longer
+  accepts clients), and starts a successor once both sockets are gone. Socket
+  absence only permits a launch attempt: the lease decides which contender
+  owns the data directory, even before either socket exists.
 
 ## Principles
 

@@ -117,6 +117,7 @@ pub struct HeadlessServer {
     /// Kept alive only for its `Drop` impl, which tears down the JSON API socket server.
     _api_server: Option<shepr_api::ServerHandle>,
     client_listener: LocalListener,
+    active_client_connections: Arc<std::sync::atomic::AtomicUsize>,
     client_socket_path: PathBuf,
     client_socket_identity: SocketFileIdentity,
     clients: ClientRegistry,
@@ -208,29 +209,47 @@ impl HeadlessServer {
     /// [`shepr_platform::ipc::SocketBusy`] refusal naming it; [`run_server`]
     /// turns that into [`RunServerError::AlreadyRunning`].
     pub(super) fn new(
-        app: app::App,
+        mut app: app::App,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
-        api_server: Option<shepr_api::ServerHandle>,
+        mut api_server: Option<shepr_api::ServerHandle>,
         stop_requested: Arc<shepr_api::ServerStopSignal>,
         client_socket_reservation: SocketStartupLock,
     ) -> io::Result<Self> {
         let client_path = client_socket_reservation.socket_path().to_path_buf();
         let (listener, client_socket_startup_lock, client_socket_identity) =
-            bind_private_socket_with_lock(client_socket_reservation)?;
+            match bind_private_socket_with_lock(client_socket_reservation) {
+                Ok(bound) => bound,
+                Err(error) => {
+                    shepr_platform::ipc::ServerLifetime::release(
+                        &mut (&mut app, &mut api_server),
+                        |(app, _)| app.retire_session_writer(),
+                        |(_, api)| drop(api.take()),
+                        |_| {},
+                    );
+                    return Err(error);
+                }
+            };
         info!(path = %client_path.display(), "client protocol socket listening");
 
         // Accept all queued connections when the listener becomes readable.
         if let Err(error) = listener.set_nonblocking(true) {
-            if let Err(cleanup_error) =
-                remove_socket_file_if_owned(&client_path, &client_socket_identity)
-                && cleanup_error.kind() != io::ErrorKind::NotFound
-            {
-                warn!(
-                    path = %client_path.display(),
-                    error = %cleanup_error,
-                    "failed to remove client socket after listener setup failed"
-                );
-            }
+            shepr_platform::ipc::ServerLifetime::release(
+                &mut (&mut app, &mut api_server),
+                |(app, _)| app.retire_session_writer(),
+                |(_, api)| drop(api.take()),
+                |_| {
+                    if let Err(cleanup_error) =
+                        remove_socket_file_if_owned(&client_path, &client_socket_identity)
+                        && cleanup_error.kind() != io::ErrorKind::NotFound
+                    {
+                        warn!(
+                            path = %client_path.display(),
+                            error = %cleanup_error,
+                            "failed to remove client socket after listener setup failed"
+                        );
+                    }
+                },
+            );
             drop(listener);
             drop(client_socket_startup_lock);
             return Err(error);
@@ -247,6 +266,7 @@ impl HeadlessServer {
             client_listener: listener,
             client_socket_path: client_path,
             client_socket_identity,
+            active_client_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             clients: ClientRegistry::default(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
             shell_session_cache: None,
@@ -645,7 +665,6 @@ impl HeadlessServer {
         }
         // The save and the teardown wait can each take seconds.
         self.refresh_app_clock();
-        self.app.retire_session_writer();
         self.release_sockets_after_save();
 
         // A successor can start once the lease is free, while this process
@@ -801,6 +820,7 @@ impl HeadlessServer {
         accept_client_connection(
             &self.client_listener,
             &mut self.clients,
+            &self.active_client_connections,
             self.lifecycle.stop_signal(),
             &self.server_event_tx,
         )

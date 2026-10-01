@@ -20,21 +20,3 @@ public, so a value built directly can still be below the minimum, and the
 defensive clamps in `shepr-pty/src/fd.rs` and `shepr-vt/src/lib.rs` stay
 necessary. Private fields with a clamping constructor would make an
 under-minimum pane grid unrepresentable.
-
-## INPLAT-022 - `OwnedRuntimeEntry` mixes directory and socket-sidecar shapes
-
-Lateral, `shepr-platform/src/owned_runtime.rs`. `create_directory` returns an
-error for `RuntimeKind::Socket`, a sign the kind enum covers two shapes (the
-staging and SSH config directories, and the single-use socket sidecar). Split
-the directory kinds from the sidecar so that arm disappears. Also comment the
-deliberate branch in `bind_single_use_private_socket` that keeps the sidecar when
-removing the socket file fails (the sweep reclaims it later).
-
-## INPLAT-021 - A run of incomplete CSI prefixes has no cumulative byte cap
-
-Lateral, `shepr-termio/src/input/raw_input.rs`. The framer's holds are one
-`Held` enum with an ending rule per variant, and control strings are now charged
-as bytes arrive. Residue: a continuous stream of incomplete CSI prefixes relies
-on the idle flush to end its hold rather than on a cumulative byte bound, so
-input that never goes idle can keep it growing. Give the `Sequence` hold a byte
-bound like the control-string variants.

@@ -1,8 +1,8 @@
 use std::io;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::schema::{Method, Request, ResponseResult};
+use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStatus {
@@ -34,51 +34,115 @@ pub fn read_runtime_status_at(
         return Ok(None);
     }
 
-    let client = crate::client::ApiClient::for_socket(socket_path);
-    let request = Request {
-        id: "runtime:status".into(),
-        method: Method::Ping(crate::schema::PingParams::default()),
+    // clock-io-ok: one deadline bounds the real connect, write and status read.
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "status timeout is too large")
+    })?;
+    match read_runtime_status_until(socket_path, deadline) {
+        Ok(status) => Ok(Some(status)),
+        Err(error) if status_probe_has_no_answer(&error) => Ok(None),
+        Err(
+            ApiClientDeadlineError::Connect(error)
+            | ApiClientDeadlineError::Request(ApiClientError::Io(error)),
+        ) => Err(error),
+        Err(ApiClientDeadlineError::Request(error)) => Err(io::Error::other(error)),
+    }
+}
+
+/// Launch and conditional stop read the same identity and classify a lost
+/// status answer identically. A missing status answer does not prove absence;
+/// callers must still observe the endpoint lifetime before launching.
+pub(crate) fn read_runtime_status_until(
+    socket_path: &Path,
+    deadline: Instant,
+) -> Result<RuntimeStatus, ApiClientDeadlineError> {
+    ApiClient::for_socket(socket_path).status_until(deadline)
+}
+
+/// A transport close, refusal or timeout means the socket gave no status
+/// answer. Decoded API failures are not that: they are errors, never evidence
+/// that a server went away.
+pub(crate) fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool {
+    let no_answer_kind = |kind| {
+        matches!(
+            kind,
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::NotFound
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::NotConnected
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+        )
     };
-    let response = client
-        .request_value_with_timeout(&request, timeout)
-        .and_then(crate::client::parse_response_value);
-    let response = match response {
-        Ok(response) => response,
-        // A server that stalls or closes without a response has no usable
-        // status, the same as nothing listening. Callers turn `None` into
-        // "status API unavailable" guidance. A receive timeout on this socket
-        // is `EAGAIN`, i.e. `WouldBlock`; the client normalizes that to
-        // `TimedOut`, and both are accepted here so the mapping never depends
-        // on which layer reported it.
-        Err(crate::client::ApiClientError::EmptyResponse) => return Ok(None),
-        Err(crate::client::ApiClientError::Io(err))
-            if matches!(
-                err.kind(),
-                io::ErrorKind::ConnectionRefused
-                    | io::ErrorKind::NotFound
-                    | io::ErrorKind::TimedOut
-                    | io::ErrorKind::WouldBlock
-            ) =>
-        {
-            return Ok(None);
+    match error {
+        ApiClientDeadlineError::Connect(error)
+        | ApiClientDeadlineError::Request(ApiClientError::Io(error)) => {
+            no_answer_kind(error.kind())
         }
-        Err(err) => return Err(io::Error::other(err)),
+        ApiClientDeadlineError::Request(ApiClientError::EmptyResponse) => true,
+        ApiClientDeadlineError::Request(
+            ApiClientError::Json(_)
+            | ApiClientError::ErrorResponse(_)
+            | ApiClientError::UnexpectedResult(_),
+        ) => false,
+    }
+}
+
+/// Presence of one two-socket server, including its status identity when it
+/// answers. The lifetime contract lives in the platform layer; status supplies
+/// the boot identity and stopping latch, never a second absence predicate.
+pub type ServerPresence = shepr_platform::ipc::ServerPresence<RuntimeStatus>;
+
+pub fn read_server_presence_at(
+    client_socket: &Path,
+    api_socket: &Path,
+    timeout: Duration,
+) -> io::Result<ServerPresence> {
+    use shepr_platform::ipc::ServerLifetime;
+    let endpoint_is_live = |path: &Path| {
+        crate::server_stop::server_socket_is_live(path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot tell whether a shepr server listens at {}: {error}",
+                    path.display()
+                ),
+            )
+        })
     };
-    match response.result {
-        ResponseResult::Pong {
-            version,
-            build_id,
-            boot_id,
-            stopping,
-        } => Ok(Some(RuntimeStatus {
-            version: Some(version),
-            build_id,
-            boot_id,
-            stopping,
-        })),
-        result => Err(io::Error::other(format!(
-            "server status request returned unexpected result: {result:?}"
-        ))),
+    let client_live = endpoint_is_live(client_socket)?;
+    if !client_live {
+        return Ok(ServerLifetime::observe(
+            endpoint_is_live(api_socket)?,
+            false,
+            None,
+        ));
+    }
+    let status = read_runtime_status_at(api_socket, timeout).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "the shepr server at {} did not give a usable status answer: {error}",
+                client_socket.display()
+            ),
+        )
+    })?;
+    match status {
+        Some(status) => {
+            let stopping = status.stopping;
+            Ok(ServerLifetime::observe(
+                true,
+                true,
+                Some((status, stopping)),
+            ))
+        }
+        None => Ok(ServerLifetime::observe(
+            endpoint_is_live(api_socket)?,
+            true,
+            None,
+        )),
     }
 }
 
@@ -86,6 +150,35 @@ pub fn read_runtime_status_at(
 mod tests {
     use super::*;
     use std::io::{BufRead as _, BufReader};
+
+    #[test]
+    fn launch_and_stop_share_status_transport_failure_classification() {
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::NotFound,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::NotConnected,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::WouldBlock,
+        ] {
+            assert!(status_probe_has_no_answer(
+                &ApiClientDeadlineError::Connect(io::Error::from(kind),)
+            ));
+            assert!(status_probe_has_no_answer(
+                &ApiClientDeadlineError::Request(ApiClientError::Io(io::Error::from(kind)),)
+            ));
+        }
+        assert!(!status_probe_has_no_answer(
+            &ApiClientDeadlineError::Connect(io::Error::from(io::ErrorKind::PermissionDenied),)
+        ));
+        assert!(!status_probe_has_no_answer(
+            &ApiClientDeadlineError::Request(ApiClientError::UnexpectedResult(
+                "invalid status result".into()
+            ),)
+        ));
+    }
 
     #[test]
     fn stalled_server_reports_no_status_instead_of_an_error() {

@@ -178,3 +178,7 @@ pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = 
     (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),
     (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
 ];
+
+/// A detector release remains provisional while a session-wide kill can still
+/// reach the shell. The detector republishes after this live-shell interval.
+pub(crate) const AGENT_PROCESS_EXIT_RELEASE_GRACE: Duration = Duration::from_millis(750);

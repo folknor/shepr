@@ -7,31 +7,31 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use crate::limits::{
-    CLIENT_HANDSHAKE_REFUSAL_QUEUE_CAPACITY, CLIENT_WRITE_STALL_TIMEOUT,
-    MAX_ACTIVE_CLIENT_CONNECTIONS,
+    CLIENT_HANDSHAKE_REFUSAL_QUEUE_CAPACITY, CLIENT_LIMIT_HANDSHAKE_TIMEOUT,
+    CLIENT_WRITE_STALL_TIMEOUT, MAX_ACTIVE_CLIENT_CONNECTIONS,
 };
 use crate::server::client_transport::{self, ServerEvent};
 use crate::server::clients::ClientRegistry;
 use shepr_platform::ipc::{LocalListener, LocalStream};
 
-static ACTIVE_CLIENT_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
-
-struct ConnectionAdmission<'a> {
-    active: &'a AtomicUsize,
+struct ConnectionAdmission {
+    active: Arc<AtomicUsize>,
 }
 
-impl<'a> ConnectionAdmission<'a> {
-    fn try_acquire(active: &'a AtomicUsize) -> Option<Self> {
+impl ConnectionAdmission {
+    fn try_acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
         active
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_ACTIVE_CLIENT_CONNECTIONS).then_some(count + 1)
             })
             .ok()?;
-        Some(Self { active })
+        Some(Self {
+            active: Arc::clone(active),
+        })
     }
 }
 
-impl Drop for ConnectionAdmission<'_> {
+impl Drop for ConnectionAdmission {
     fn drop(&mut self) {
         self.active.fetch_sub(1, Ordering::Release);
     }
@@ -49,7 +49,7 @@ fn spawn_busy_client_refuser() -> Option<SyncSender<LocalStream>> {
         .name("shepr-client-refuser".into())
         .spawn(move || {
             for stream in receiver {
-                reject_busy_client(&stream);
+                reject_busy_client(stream);
             }
         });
     match spawned {
@@ -77,7 +77,28 @@ fn hand_off_busy_connection(stream: LocalStream) {
     }
 }
 
-fn reject_busy_client(stream: &LocalStream) {
+fn reject_busy_client(mut stream: LocalStream) {
+    // Send the identity first: clients wait for it before sending their hello.
+    if shepr_platform::write_client_stream(
+        &stream,
+        &shepr_protocol::preamble::local_preamble(),
+        CLIENT_WRITE_STALL_TIMEOUT,
+    )
+    .is_err()
+    {
+        return;
+    }
+    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(
+        &mut stream,
+        // clock-io-ok: bounds real reads from an excess client.
+        std::time::Instant::now() + CLIENT_LIMIT_HANDSHAKE_TIMEOUT,
+    );
+    if shepr_protocol::preamble::read_preamble(&mut reader).is_err()
+        || shepr_protocol::read_handshake_message::<_, shepr_protocol::ClientMessage>(&mut reader)
+            .is_err()
+    {
+        return;
+    }
     let limit = u32::try_from(MAX_ACTIVE_CLIENT_CONNECTIONS).unwrap_or(u32::MAX);
     let welcome = shepr_protocol::ServerMessage::EndpointWelcome(
         shepr_protocol::endpoint::EndpointServerWelcome::refused(
@@ -91,12 +112,8 @@ fn reject_busy_client(stream: &LocalStream) {
             return;
         }
     };
-    let preamble = shepr_protocol::preamble::local_preamble();
-    let mut response = Vec::with_capacity(preamble.len() + framed.len());
-    response.extend_from_slice(&preamble);
-    response.extend_from_slice(&framed);
     if let Err(err) =
-        shepr_platform::write_client_stream(stream, &response, CLIENT_WRITE_STALL_TIMEOUT)
+        shepr_platform::write_client_stream(&stream, &framed, CLIENT_WRITE_STALL_TIMEOUT)
     {
         debug!(error = %err, "failed to send client connection limit refusal");
     }
@@ -133,6 +150,7 @@ pub(crate) fn accept_resources_exhausted(err: &io::Error) -> bool {
 pub(crate) fn accept_client_connection(
     listener: &LocalListener,
     clients: &mut ClientRegistry,
+    active_connections: &Arc<AtomicUsize>,
     should_quit: &Arc<shepr_api::ServerStopSignal>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
@@ -168,7 +186,7 @@ pub(crate) fn accept_client_connection(
         }
     }
 
-    let Some(admission) = ConnectionAdmission::try_acquire(&ACTIVE_CLIENT_CONNECTIONS) else {
+    let Some(admission) = ConnectionAdmission::try_acquire(active_connections) else {
         hand_off_busy_connection(stream);
         return Ok(());
     };
@@ -207,7 +225,7 @@ mod tests {
 
     #[test]
     fn client_connection_admission_caps_handshake_workers_and_releases_slots() {
-        let active = AtomicUsize::new(0);
+        let active = Arc::new(AtomicUsize::new(0));
         let mut admissions = (0..MAX_ACTIVE_CLIENT_CONNECTIONS)
             .map(|_| ConnectionAdmission::try_acquire(&active).expect("available slot"))
             .collect::<Vec<_>>();
@@ -227,6 +245,75 @@ mod tests {
         drop(replacement);
         drop(admissions);
         assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn independent_servers_have_independent_admission_slots() {
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        let slots = (0..MAX_ACTIVE_CLIENT_CONNECTIONS)
+            .map(|_| ConnectionAdmission::try_acquire(&first).expect("first server slot"))
+            .collect::<Vec<_>>();
+        assert!(ConnectionAdmission::try_acquire(&first).is_none());
+        let other = ConnectionAdmission::try_acquire(&second).expect("second server slot");
+        assert_eq!(second.load(Ordering::Acquire), 1);
+        drop(slots);
+        assert_eq!(first.load(Ordering::Acquire), 0);
+        assert_eq!(second.load(Ordering::Acquire), 1);
+        drop(other);
+        assert_eq!(second.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn limit_refusal_waits_for_hello_after_publishing_its_preamble() {
+        let (mut client, server) = LocalStream::pair().expect("socket pair");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("client deadline");
+        let worker = std::thread::spawn(move || reject_busy_client(server));
+        shepr_protocol::preamble::read_preamble(&mut client).expect("server identity");
+        // A client may wait for the server's identity before sending its hello.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        shepr_protocol::preamble::write_preamble(&mut client).expect("client identity");
+        let hello = shepr_protocol::ClientMessage::EndpointHello(
+            shepr_protocol::endpoint::EndpointClientHello {
+                geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, true),
+                mouse_capture: true,
+                surface_active: true,
+            },
+        );
+        shepr_protocol::write_message(&mut client, &hello).expect("hello survives refusal");
+        let welcome: shepr_protocol::ServerMessage =
+            shepr_protocol::read_message(&mut client).expect("reliable refusal");
+        assert_eq!(
+            welcome,
+            shepr_protocol::ServerMessage::EndpointWelcome(
+                shepr_protocol::endpoint::EndpointServerWelcome::refused(
+                    shepr_protocol::HandshakeRefusal::ConnectionLimit(
+                        u32::try_from(MAX_ACTIVE_CLIENT_CONNECTIONS).expect("connection limit"),
+                    ),
+                ),
+            )
+        );
+        worker.join().expect("refuser worker");
+    }
+
+    #[test]
+    fn silent_excess_client_cannot_hold_the_refuser() {
+        let (mut client, server) = LocalStream::pair().expect("socket pair");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("client deadline");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            reject_busy_client(server);
+            done_tx.send(()).expect("report completion");
+        });
+        shepr_protocol::preamble::read_preamble(&mut client).expect("server identity");
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("bounded hello read finishes for a silent peer");
+        worker.join().expect("refuser worker");
     }
 
     #[test]

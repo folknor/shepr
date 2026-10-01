@@ -35,6 +35,7 @@ pub(super) struct DetectionTask {
     detector: DetectorState,
     next_wake: Duration,
     cancelled: Arc<AtomicBool>,
+    provisional_release: Option<StateChangedUpdate>,
 }
 
 /// Aborting an async task cannot stop a blocking job already running. Tell
@@ -59,6 +60,7 @@ impl DetectionTask {
             detector: DetectorState::new(Instant::now(), launch_purpose),
             next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
             cancelled: Arc::new(AtomicBool::new(false)),
+            provisional_release: None,
         };
         tokio::spawn(task.run()).abort_handle()
     }
@@ -211,7 +213,46 @@ impl DetectionTask {
         // Screen resume produces a new output. Keep the identity transition
         // from the probe so it is published before the resulting state.
         output.process_change = process_change;
-        Some(output)
+        self.confirm_live_shell_release(&mut output, now);
+        // Confirmation is evidence from this completed tick, so check child
+        // liveness again after all potentially blocking terminal work.
+        self.live(pid).then_some(output)
+    }
+
+    fn confirm_live_shell_release(&mut self, output: &mut TickOutput, now: Instant) {
+        if output
+            .process_change
+            .as_ref()
+            .is_some_and(|change| change.process_detected.is_some())
+            || output
+                .state_changed
+                .is_some_and(|update| update.agent.is_some() && !update.process_exited)
+        {
+            self.provisional_release = None;
+        }
+        if let Some(pending) = self.provisional_release {
+            let deadline = pending.observed_at + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
+            if now >= deadline {
+                self.provisional_release = None;
+                // Any later live-shell observation confirms the release at the
+                // terminal, so keep this tick's own update when it has one: the
+                // detector has already committed it. A quiet live shell has
+                // none, so republish the release itself.
+                if output.state_changed.is_none() {
+                    output.state_changed = Some(StateChangedUpdate {
+                        observed_at: now,
+                        ..pending
+                    });
+                }
+            } else {
+                output.next_wake = output.next_wake.min(deadline.duration_since(now));
+            }
+        } else if let Some(update) = output.state_changed.filter(|update| update.process_exited) {
+            self.provisional_release = Some(update);
+            output.next_wake = output
+                .next_wake
+                .min(crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE);
+        }
     }
 }
 
@@ -235,7 +276,113 @@ mod tests {
             detector: DetectorState::new(Instant::now(), LaunchPurpose::Fresh),
             next_wake: Duration::ZERO,
             cancelled: Arc::new(AtomicBool::new(false)),
+            provisional_release: None,
         }
+    }
+
+    fn quiet_output() -> TickOutput {
+        TickOutput {
+            probe: false,
+            screen: false,
+            process_change: None,
+            state_changed: None,
+            next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
+        }
+    }
+
+    #[test]
+    fn quiet_shell_tick_republishes_exit_after_grace() {
+        let mut task = task();
+        // clock-io-ok: synthetic detector confirmation times.
+        let now = Instant::now();
+        let mut output = quiet_output();
+        output.state_changed = Some(StateChangedUpdate {
+            agent: Some(shepr_agent::agent::Agent::Pi),
+            state: shepr_agent::detect::AgentState::Idle,
+            visible_blocker: false,
+            process_exited: true,
+            observed_at: now,
+        });
+        task.confirm_live_shell_release(&mut output, now);
+        let mut quiet = quiet_output();
+        let halfway = now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2;
+        task.confirm_live_shell_release(&mut quiet, halfway);
+        assert!(quiet.state_changed.is_none());
+        assert_eq!(
+            quiet.next_wake,
+            crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2
+        );
+        let confirmed_at = now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
+        let mut quiet = quiet_output();
+        task.confirm_live_shell_release(&mut quiet, confirmed_at);
+        let update = quiet.state_changed.expect("quiet shell confirms exit");
+        assert!(update.process_exited);
+        assert_eq!(update.observed_at, confirmed_at);
+        assert!(task.provisional_release.is_none());
+        let mut quiet = quiet_output();
+        task.confirm_live_shell_release(&mut quiet, confirmed_at);
+        assert!(quiet.state_changed.is_none());
+    }
+
+    #[test]
+    fn replacement_state_cancels_scheduled_confirmation() {
+        let mut task = task();
+        // clock-io-ok: synthetic detector confirmation times.
+        let now = Instant::now();
+        task.provisional_release = Some(StateChangedUpdate {
+            agent: Some(shepr_agent::agent::Agent::Pi),
+            state: shepr_agent::detect::AgentState::Idle,
+            visible_blocker: false,
+            process_exited: true,
+            observed_at: now,
+        });
+        let mut output = quiet_output();
+        output.state_changed = Some(StateChangedUpdate {
+            agent: Some(shepr_agent::agent::Agent::Pi),
+            state: shepr_agent::detect::AgentState::Working,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: now,
+        });
+        task.confirm_live_shell_release(&mut output, now);
+        assert!(task.provisional_release.is_none());
+        assert!(
+            !output
+                .state_changed
+                .expect("replacement state")
+                .process_exited
+        );
+    }
+
+    #[test]
+    fn confirming_tick_keeps_its_own_committed_update() {
+        let mut task = task();
+        // clock-io-ok: synthetic detector confirmation times.
+        let now = Instant::now();
+        task.provisional_release = Some(StateChangedUpdate {
+            agent: Some(shepr_agent::agent::Agent::Pi),
+            state: shepr_agent::detect::AgentState::Idle,
+            visible_blocker: false,
+            process_exited: true,
+            observed_at: now,
+        });
+        let confirmed_at = now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
+        let withdrawal = StateChangedUpdate {
+            agent: None,
+            state: shepr_agent::detect::AgentState::Unknown,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: confirmed_at,
+        };
+        let mut output = quiet_output();
+        output.state_changed = Some(withdrawal);
+        task.confirm_live_shell_release(&mut output, confirmed_at);
+        // The terminal confirms the release on any later observation, so the
+        // detector's own withdrawal is published instead of being replaced.
+        assert!(task.provisional_release.is_none());
+        let update = output.state_changed.expect("withdrawal");
+        assert!(update.agent.is_none());
+        assert!(!update.process_exited);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -12,7 +12,8 @@
 //!    stopping, or has released its API socket while the client socket remains,
 //!    is waited out until both sockets are gone. If the API socket is live
 //!    before the client socket appears, the launcher waits for that transition
-//!    to finish too.
+//!    to finish too. These states come from the shared `ServerLifetime` rule,
+//!    through the API presence reader.
 //! 2. Only for the build profile's own runtime address: take the launch lock
 //!    in the runtime directory, so simultaneous first clients start one
 //!    server, and probe again under it.
@@ -175,60 +176,18 @@ fn probe_server(paths: &shepr_config::AppPaths) -> io::Result<Probed> {
 /// The status request itself checks who serves the API socket before writing
 /// to it.
 fn probe_server_at(client_socket: &Path, api_socket: &Path) -> io::Result<Probed> {
-    match shepr_api::server_stop::server_socket_is_live(client_socket) {
-        Ok(false) => {
-            let sockets_stopped =
-                shepr_api::server_stop::server_sockets_are_stopped(&[client_socket, api_socket])
-                    .map_err(|error| {
-                        io::Error::new(
-                            error.kind(),
-                            format!(
-                                "cannot tell whether the shepr server sockets at {} and {} are stopped: {error}",
-                                client_socket.display(),
-                                api_socket.display()
-                            ),
-                        )
-                    })?;
-            return if sockets_stopped {
-                Ok(Probed::NoServer)
-            } else {
-                Ok(Probed::Starting)
-            };
-        }
-        Err(error) => {
-            tracing::warn!(path = %client_socket.display(), %error, "failed to check server socket");
-            return Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "cannot tell whether a shepr server listens at {}: {error}",
-                    client_socket.display()
-                ),
-            ));
-        }
-        Ok(true) => {}
-    }
-    match shepr_api::read_runtime_status_at(api_socket, STATUS_REQUEST_TIMEOUT) {
-        Ok(Some(status)) if status.stopping => Ok(Probed::Stopping),
-        Ok(Some(status)) => Ok(Probed::Running(status)),
-        Ok(None) => match shepr_api::server_stop::server_socket_is_live(api_socket) {
-            Ok(false) => Ok(Probed::Releasing),
-            Ok(true) => Ok(Probed::Unresponsive),
-            Err(error) => Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "cannot tell whether the shepr API socket at {} is live: {error}",
-                    api_socket.display()
-                ),
-            )),
+    use shepr_api::ServerPresence;
+    Ok(
+        match shepr_api::read_server_presence_at(client_socket, api_socket, STATUS_REQUEST_TIMEOUT)?
+        {
+            ServerPresence::Gone => Probed::NoServer,
+            ServerPresence::Starting => Probed::Starting,
+            ServerPresence::Running(status) => Probed::Running(status),
+            ServerPresence::Stopping(_) => Probed::Stopping,
+            ServerPresence::Releasing => Probed::Releasing,
+            ServerPresence::Unresponsive => Probed::Unresponsive,
         },
-        Err(error) => Err(io::Error::new(
-            error.kind(),
-            format!(
-                "the shepr server at {} did not give a usable status answer: {error}",
-                client_socket.display()
-            ),
-        )),
-    }
+    )
 }
 
 /// Waits through a server transition until both endpoint sockets disappear or
@@ -651,8 +610,9 @@ fn launch_daemon(
 /// that it is stopping is never returned, only polled past until its sockets
 /// go. While nothing listens, such a daemon is started again every
 /// [`DAEMON_RESTART_INTERVAL`]: the holder may be a server that is still
-/// stopping, whose lease outlives its sockets, and the launch is then owed a
-/// daemon of its own once the lease is free.
+/// starting before its API bind, or one that has released its sockets and
+/// still holds its lease. The launch is owed a daemon of its own once the
+/// lease is free.
 fn launch_with(
     files: &LaunchFiles<'_>,
     timeout: Duration,
@@ -773,9 +733,9 @@ fn launch_with(
             return Err(boot_timeout(files, timeout, exited.is_some()));
         }
         // The daemon gave way and nothing listens, so what it met was not a
-        // server that will answer: a holder that was still stopping (its
-        // lease can outlive its sockets when it exits by a path that drops
-        // them first) or still booting. Start another daemon, which the
+        // server that will answer: a holder still booting before its API bind,
+        // or an older server that released sockets before its lease. This
+        // build's shared lifetime rule retires the lease first. Retry; the
         // lease keeps from ever sharing the directory with the holder. A
         // holder that is a live, healthy server listens, which the probe
         // above turns into an answer instead of reaching here.

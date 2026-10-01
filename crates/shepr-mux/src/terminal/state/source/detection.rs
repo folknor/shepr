@@ -1,6 +1,85 @@
 use super::*;
 
 impl TerminalState {
+    pub(super) fn transition_provisional_detection(
+        &mut self,
+        agent: Option<Agent>,
+        fallback_state: AgentState,
+        visible_blocker: bool,
+        process_exited: bool,
+        now: Instant,
+    ) -> TerminalStateMutation {
+        if let Some(mut pending) = self.provisional_process_exit {
+            // Old queued observations neither confirm nor cancel a newer exit.
+            if now <= pending.observed_at {
+                return TerminalStateMutation::default();
+            }
+            if !process_exited && agent.is_some() {
+                self.provisional_process_exit = None;
+            } else {
+                if !process_exited {
+                    pending.deferred = Some(DeferredDetection {
+                        fallback_state,
+                        visible_blocker,
+                        observed_at: now,
+                    });
+                }
+                if pending.cancelled
+                    || now.saturating_duration_since(pending.observed_at)
+                        < crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE
+                {
+                    self.provisional_process_exit = Some(pending);
+                    return TerminalStateMutation::default();
+                }
+                self.provisional_process_exit = None;
+                // Confirmation proves shell survival, but must not promote an
+                // old detector observation above a newer custom hook report.
+                let release = self.transition_detection(
+                    pending.agent,
+                    AgentState::Idle,
+                    false,
+                    true,
+                    pending.observed_at,
+                );
+                let Some(deferred) = pending.deferred else {
+                    return release;
+                };
+                let withdrawal = self.transition_detection(
+                    None,
+                    deferred.fallback_state,
+                    deferred.visible_blocker,
+                    false,
+                    deferred.observed_at,
+                );
+                return TerminalStateMutation {
+                    effective_state_change: match (
+                        release.effective_state_change,
+                        withdrawal.effective_state_change,
+                    ) {
+                        (Some(first), Some(last)) => Some(EffectiveStateChange {
+                            previous_state: first.previous_state,
+                            state: last.state,
+                        }),
+                        (first, last) => last.or(first),
+                    },
+                    session_ref_changed: release.session_ref_changed
+                        || withdrawal.session_ref_changed,
+                    agent_released: release.agent_released || withdrawal.agent_released,
+                };
+            }
+        }
+        if process_exited {
+            self.provisional_process_exit = Some(ProvisionalProcessExit {
+                agent,
+                observed_at: now,
+                cancelled: false,
+                deferred: None,
+            });
+            return TerminalStateMutation::default();
+        }
+        self.transition_detection(agent, fallback_state, visible_blocker, false, now)
+    }
+
     pub(super) fn transition_detection(
         &mut self,
         agent: Option<Agent>,
@@ -152,8 +231,8 @@ impl TerminalState {
                     .as_ref()
                     .is_some_and(|session| Some(session.agent) == agent)
             {
-                // This is a release under a live pane child. Pane death uses
-                // set_pane_process_exit_at to retain interrupted sessions.
+                // A confirmed live-shell release clears the completed agent.
+                // Pane death retains the pre-release identity when interrupted.
                 self.apply_source_effect(HookSourceEffects::Commit {
                     authority: AuthorityEffect::Keep,
                     persisted: None,
@@ -204,13 +283,10 @@ impl TerminalState {
     ) -> TerminalStateMutation {
         let previous_session = self.current_session_identity_for_persistence();
         let agent = self.effective_known_agent().or(self.detected_agent);
-        let mut mutation = self.set_detected_state_with_screen_signals_at(
-            agent,
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
+        // Pane death wins over a provisional detector release. Apply the final
+        // release directly, retaining the pre-release identity for a checkpoint.
+        self.provisional_process_exit = None;
+        let mut mutation = self.transition_detection(agent, AgentState::Idle, false, true, now);
         if exit_reason.requires_session_checkpoint() {
             self.apply_source_effect(HookSourceEffects::Commit {
                 authority: AuthorityEffect::Keep,

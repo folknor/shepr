@@ -12,23 +12,6 @@ Filed from the defect hunt over `crates/shepr-server/src/app/`, `lib.rs`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SAPP-004 - A detector release applied while the pane shell lives still drops the resume identity
-
-A checkpointed pane exit (`Interrupted` or `ReaderIoFailed`) now keeps the
-agent's resume identity: once the pane child has exited, the server drops
-queued detector updates for that pane, the exit reason travels with the pane
-exit, the preservation rule lives in shepr-mux `terminal/state/detection.rs`,
-and an agent exiting under a live pane shell still clears it. Residue: a
-detector release applied while the pane shell is still alive clears the
-identity, even when the shell then dies from the same cause. A signal sent to
-the whole session or cgroup reaches the agent first (an interactive shell
-ignores SIGTERM until the escalation to SIGKILL), and an OOM kill can take the
-agent before the shell; either way the checkpoint saves no resume identity. The
-rarer case without a pidfd, where death is known only once the wait completes,
-is the same class. A fix would make the detector's process-exit release
-provisional (held until the shell survives a short grace period or a later
-tick confirms it).
-
 ## SAPP-012 - Structural: the pane-exit checkpoint as a typed state machine
 
 Outside the resolution loop: the owner resolves this directly. Do not assign it

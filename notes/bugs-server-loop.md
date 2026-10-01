@@ -12,30 +12,6 @@ Filed from the defect hunt over `crates/shepr-server/src/server/`,
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## SLOOP-028 - The connection-limit refusal can be lost, and its counter is process-wide
-
-Lateral, `server/client_accept.rs`. Client connections are capped and an
-over-cap client gets `HandshakeRefusal::ConnectionLimit`. But
-`reject_busy_client` writes the preamble and refusal and drops the stream
-without reading the client's preamble and hello, so a client that writes its
-hello after the close can get EPIPE and report a lost connection instead of the
-limit (it retries either way). A bounded read of the hello, or `shutdown(Write)`
-and a short drain, makes the message reliable. Separately, the admission counter
-`ACTIVE_CLIENT_CONNECTIONS` is a process-wide static shared by every
-`HeadlessServer` in the process, in-process test servers included; hold it on
-the server. Also: `HeadlessServer::new` binds the client socket at the path the
-startup reservation carries; a `debug_assert_eq!` that this equals
-`client_socket_path(&app.paths)` was removed (debug asserts are disallowed), so
-pin that equality with a bootstrap test instead.
-
-## SLOOP-029 - An Unchanged plan's metadata skips the size check
-
-Lateral, `server/render_stream.rs`. When `recompute_pending` is set, an
-Unchanged plan for an invalid grid or oversized metadata is still sent as an
-empty `SurfaceUpdate`. That is intended, but its metadata comes from
-`baseline.update` without the `metadata_fits` check the other paths apply.
-Confirm the metadata can never exceed the wire limits on that path, or check it.
-
 ## SLOOP-004 - A slow client turns every drain of its render slot into a full render for everyone
 
 Outside the resolution loop: the owner resolves this directly. Do not assign it

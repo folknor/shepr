@@ -761,7 +761,7 @@ mod tests {
                 session_ref: shepr_agent::agent::resume::AgentSessionRef::id("resume-test")
                     .expect("test precondition"),
             };
-            terminal.persisted_agent_session = Some(session.clone());
+            terminal.set_persisted_agent_session(session.clone());
             terminal.pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
                 "resume-test",
                 long_running_test_argv(),
@@ -782,7 +782,7 @@ mod tests {
             assert!(app.terminal_runtimes.get(&terminal_id).is_none());
             let terminal = &app.state.terminals[&terminal_id];
             assert!(terminal.pending_agent_resume_plan.is_none());
-            assert_eq!(terminal.persisted_agent_session.as_ref(), Some(&session));
+            assert_eq!(terminal.persisted_agent_session(), Some(&session));
             assert!(terminal.restore_error.is_some());
             // No process will ever run here: the seeded detection goes.
             assert_eq!(terminal.detected_agent, None);

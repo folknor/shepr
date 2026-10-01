@@ -7,8 +7,8 @@ use crate::host_term::theme::{
 use crate::input::{TerminalKey, parse_terminal_key_sequence};
 use crate::limits::{
     DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS, MAX_DISCARDED_CONTROL_TAIL_BYTES,
-    MAX_HOST_COLOR_QUERY_REPLIES, MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES, MAX_PENDING_PASTE_BYTES,
-    PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
+    MAX_HOST_COLOR_QUERY_REPLIES, MAX_INCOMPLETE_CSI_BYTES, MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES,
+    MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
 };
 
 // limits-exempt: ESC is the terminal-control introducer byte used by this parser.
@@ -360,16 +360,19 @@ enum Held {
     #[default]
     None,
     /// An ordinary incomplete escape/key prefix ends at the next idle flush,
-    /// which releases a parseable key or drops the prefix. An outstanding
-    /// host query or Escape disambiguation may transition it to the respective
-    /// one-flush HostReplyPrefix or MouseWait state instead.
+    /// which releases a parseable key or drops the prefix. An incomplete CSI
+    /// also ends when it reaches MAX_INCOMPLETE_CSI_BYTES and moves to the
+    /// bounded control-tail discard. Host queries or Escape disambiguation may
+    /// transition it to HostReplyPrefix or MouseWait first.
     Sequence,
     /// An incomplete mouse report ends at the first idle flush: SGR becomes
-    /// MouseTail, while other prefixes are released as keys or dropped. Host
-    /// Escape disambiguation may first transition it to MouseWait.
+    /// MouseTail, while other prefixes are released as keys or dropped. The
+    /// CSI byte bound can move an overlong prefix to control-tail discard.
+    /// Host Escape disambiguation may first transition it to MouseWait.
     MousePrefix,
     /// Legacy rxvt Alt+arrow may start with two Escapes. The first Escape is
     /// released at the first idle flush, or as soon as bytes rule the key out.
+    /// An overlong wrapped CSI moves to the bounded control-tail discard.
     DoubledEscape,
     /// A valid incomplete UTF-8 scalar (optionally preceded by Escape) survives
     /// idle flushes by design. Continuation or invalid input ends it; storage
@@ -807,6 +810,15 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         };
     }
 
+    fn discard_oversized_csi_prefix(&mut self) {
+        tracing::debug!(
+            len = self.buffer.len(),
+            max = MAX_INCOMPLETE_CSI_BYTES,
+            "discarding oversized incomplete CSI sequence and its bounded tail"
+        );
+        self.begin_control_tail(ControlStringFamily::HostReplyCsi);
+    }
+
     fn retain_timed_out_mouse_prefix(&mut self, prefix: Vec<u8>) {
         self.held = if prefix.len() < MAX_DISCARDED_CONTROL_TAIL_BYTES
             && plausible_sgr_mouse_prefix(&prefix)
@@ -892,6 +904,12 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 && !starts_with_complete_key_sequence(&self.buffer)
             {
                 if could_be_incomplete_doubled_escape_key_sequence(&self.buffer) {
+                    if self.buffer.len() >= MAX_INCOMPLETE_CSI_BYTES
+                        && has_csi_introducer_after_escape_prefix(&self.buffer)
+                    {
+                        self.discard_oversized_csi_prefix();
+                        continue;
+                    }
                     self.held = Held::DoubledEscape;
                     break;
                 }
@@ -909,6 +927,15 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             }
 
             let Some((event, consumed)) = extract_one_event(&self.buffer) else {
+                // An incomplete CSI remains whole in the buffer, so its length
+                // is the cumulative byte count across reads. Complete frames
+                // were extracted above before the bound is checked.
+                if self.buffer.len() >= MAX_INCOMPLETE_CSI_BYTES
+                    && has_csi_introducer_after_escape_prefix(&self.buffer)
+                {
+                    self.discard_oversized_csi_prefix();
+                    continue;
+                }
                 if let Some(ControlString::Incomplete { family }) = control_string(&self.buffer) {
                     if self.buffer.len() >= MAX_DISCARDED_CONTROL_TAIL_BYTES {
                         let keep_st = self.buffer[MAX_DISCARDED_CONTROL_TAIL_BYTES - 1] == ESC;
@@ -1342,6 +1369,11 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
     }
     std::str::from_utf8(&buffer[1..1 + escaped_char_width]).ok()?;
     Some(1 + escaped_char_width)
+}
+
+fn has_csi_introducer_after_escape_prefix(buffer: &[u8]) -> bool {
+    let escape_count = buffer.iter().take_while(|byte| **byte == ESC).count();
+    escape_count > 0 && buffer.get(escape_count) == Some(&b'[')
 }
 
 /// Keep a complete, parsed doubled-ESC key together for host input. Prefixes
@@ -3496,6 +3528,85 @@ mod tests {
         host.host_cell_size_query_sent();
         assert_eq!(host.flush_timeout(), vec![b"\x1b".to_vec()]);
         assert!(!host.has_pending_input());
+    }
+
+    #[test]
+    fn incomplete_csi_prefix_is_bounded_across_continuous_input() {
+        let mut framer = RawInputByteFramer::default();
+        assert!(framer.push(b"\x1b[").is_empty());
+
+        let before_limit = MAX_INCOMPLETE_CSI_BYTES - 1;
+        for _ in 2..before_limit {
+            assert!(framer.push(b"1").is_empty());
+        }
+        assert_eq!(framer.buffer.len(), before_limit);
+        assert!(matches!(framer.held, Held::Sequence));
+
+        assert!(framer.push(b"1").is_empty());
+        assert!(framer.buffer.is_empty());
+        assert!(matches!(
+            framer.held,
+            Held::ControlTail {
+                family: ControlStringFamily::HostReplyCsi,
+                bytes: 0,
+                ..
+            }
+        ));
+
+        let tail = [b'1'; MAX_DISCARDED_CONTROL_TAIL_BYTES];
+        assert!(framer.push(&tail).is_empty());
+        assert!(matches!(framer.held, Held::None));
+        assert_eq!(framer.push(b"x"), vec![b"x".to_vec()]);
+
+        let mut doubled = RawInputByteFramer::for_host_input();
+        assert!(doubled.push(b"\x1b\x1b[").is_empty());
+        for _ in 3..before_limit {
+            assert!(doubled.push(b"1").is_empty());
+        }
+        assert_eq!(doubled.buffer.len(), before_limit);
+        assert!(matches!(doubled.held, Held::DoubledEscape));
+        assert!(doubled.push(b"1").is_empty());
+        assert!(doubled.buffer.is_empty());
+        assert!(matches!(
+            doubled.held,
+            Held::ControlTail {
+                family: ControlStringFamily::HostReplyCsi,
+                bytes: 0,
+                ..
+            }
+        ));
+        assert!(doubled.push(&tail).is_empty());
+        assert_eq!(doubled.push(b"x"), vec![b"x".to_vec()]);
+    }
+
+    #[test]
+    fn complete_csi_ss3_and_maximum_coordinate_mouse_survive_split_reads() {
+        for sequence in [
+            b"\x1b[A".as_slice(),
+            b"\x1bOP".as_slice(),
+            b"\x1b[<0;65535;65535M".as_slice(),
+        ] {
+            let mut framer = RawInputFramer::default();
+            let mut events = Vec::new();
+            for byte in sequence {
+                events.extend(framer.push(std::slice::from_ref(byte)));
+            }
+
+            assert_eq!(events.len(), 1, "sequence: {sequence:?}");
+            match &events[0] {
+                RawInputEvent::Key(key) if sequence == b"\x1b[A".as_slice() => {
+                    assert_eq!(key.code, KeyCode::Up);
+                }
+                RawInputEvent::Key(key) if sequence == b"\x1bOP".as_slice() => {
+                    assert_eq!(key.code, KeyCode::F(1));
+                }
+                RawInputEvent::Mouse(mouse) if sequence == b"\x1b[<0;65535;65535M".as_slice() => {
+                    assert_eq!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
+                    assert_eq!((mouse.column, mouse.row), (u16::MAX - 1, u16::MAX - 1));
+                }
+                _ => panic!("unexpected event for sequence: {sequence:?}"),
+            }
+        }
     }
 
     #[test]

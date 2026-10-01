@@ -97,7 +97,7 @@ fn custom_state_reports_apply_beside_an_official_session_identity() {
             Some(session.clone()),
             "{source}"
         );
-        terminal.hook_authority = None;
+        terminal.seed_hook_authority_for_test(None);
     }
 }
 
@@ -117,7 +117,7 @@ fn process_exit_suppresses_only_full_lifecycle_sources() {
         .expect("test precondition");
         anchor_full_lifecycle_session(&mut terminal, agent, source, label, session_ref);
 
-        terminal.set_detected_state_with_screen_signals_at(
+        terminal.confirmed_detection_for_test(
             Some(agent),
             AgentState::Idle,
             false,
@@ -649,7 +649,7 @@ fn late_full_lifecycle_hook_with_same_session_after_process_exit_does_not_reacqu
         Some(20),
     );
 
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -739,7 +739,7 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
         Some(1000),
     );
     let process_exit_seen_at = Instant::now() + Duration::from_secs(1);
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -810,7 +810,7 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
         Some(1000),
         now,
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -889,7 +889,7 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
         Some(1000),
         now,
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -912,7 +912,7 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
         now + Duration::from_millis(3),
     );
 
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -954,7 +954,7 @@ fn queued_fresh_process_evidence_uses_process_exit_observation_time() {
         Some(1000),
         process_exit_at - Duration::from_millis(1),
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -1002,7 +1002,7 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
         Some(1000),
         now,
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -1063,7 +1063,7 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         Some(1000),
         now,
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -1177,7 +1177,7 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
         Some(1000),
         now,
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Omp),
         AgentState::Idle,
         false,
@@ -1829,7 +1829,7 @@ fn stale_process_exit_preserves_newer_custom_authority() {
         observed + Duration::from_secs(1),
     );
 
-    let mutation = terminal.set_detected_state_with_screen_signals_at(
+    let mutation = terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -1861,7 +1861,7 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
         Some(100),
         observed,
     );
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -1933,7 +1933,7 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
         observed + Duration::from_secs(1),
     );
 
-    terminal.set_detected_state_with_screen_signals_at(
+    terminal.confirmed_detection_for_test(
         Some(Agent::Codex),
         AgentState::Idle,
         false,
@@ -3174,7 +3174,7 @@ fn process_exit_clears_matching_persisted_session_ref() {
     });
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
-    let mutation = terminal.set_detected_state_with_screen_signals_at(
+    let mutation = terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,
@@ -3202,7 +3202,7 @@ fn process_exit_preserves_foreign_persisted_session_ref() {
     });
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
-    let mutation = terminal.set_detected_state_with_screen_signals_at(
+    let mutation = terminal.confirmed_detection_for_test(
         Some(Agent::Pi),
         AgentState::Idle,
         false,

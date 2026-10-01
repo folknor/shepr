@@ -66,6 +66,8 @@ impl TerminalState {
         }
     }
 
+    /// Process-exit observations are provisional until a live-shell detector
+    /// tick outlasts the release grace. Pane death resolves them with its reason.
     pub fn set_detected_state_with_screen_signals_at(
         &mut self,
         agent: Option<Agent>,

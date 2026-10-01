@@ -162,6 +162,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         client_listener: listener,
         client_socket_path: socket_path,
         client_socket_identity,
+        active_client_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         clients: ClientRegistry::default(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
         shell_session_cache: None,

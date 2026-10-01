@@ -1973,8 +1973,7 @@ mod tests {
             .expect("restored terminal should exist");
         assert_eq!(terminal.manual_label.as_deref(), Some("reviewer"));
         let session = terminal
-            .persisted_agent_session
-            .as_ref()
+            .persisted_agent_session()
             .expect("persisted agent session should survive restore");
         assert_eq!(session.source, "shepr:opencode");
         assert_eq!(session.agent, "opencode");

@@ -1139,21 +1139,22 @@ mod tests {
             let saved_ref = shepr_agent::agent::resume::AgentSessionRef::id("saved-session")
                 .expect("test session ref");
             let mut terminal = TerminalState::new(terminal_id.clone(), PathBuf::from("/"));
-            terminal.hook_authority = Some(crate::terminal::state::HookAuthority {
+            terminal.seed_hook_authority_for_test(Some(crate::terminal::state::HookAuthority {
                 source: source.into(),
                 agent_label: label.into(),
                 state: shepr_agent::detect::AgentState::Working,
                 reported_at: std::time::Instant::now(),
                 session_ref: Some(live_ref),
-            });
-            terminal.persisted_agent_session =
-                Some(shepr_agent::agent::resume::PersistedAgentSession {
+            }));
+            terminal.set_persisted_agent_session(
+                shepr_agent::agent::resume::PersistedAgentSession {
                     source: shepr_agent::agent::AgentSource::Official(
                         shepr_agent::agent::Agent::Claude,
                     ),
                     agent: shepr_agent::agent::Agent::Claude,
                     session_ref: saved_ref.clone(),
-                });
+                },
+            );
             let terminals = HashMap::from([(terminal_id, terminal)]);
 
             let snapshot = super::capture(

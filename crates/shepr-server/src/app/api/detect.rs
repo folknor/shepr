@@ -62,7 +62,7 @@ impl App {
         let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
-        if let Some(authority) = terminal.hook_authority.as_ref().filter(|authority| {
+        if let Some(authority) = terminal.hook_authority().filter(|authority| {
             let full_lifecycle = shepr_agent::detect::full_lifecycle_hook_authority(
                 &authority.source,
                 &authority.agent_label,

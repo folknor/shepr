@@ -415,6 +415,16 @@ mod tests {
             observed_at,
         });
 
+        assert_eq!(app.state.terminals[&terminal_id].state, AgentState::Working);
+        app.handle_internal_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Codex),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            process_exited: true,
+            observed_at: observed_at + std::time::Duration::from_secs(2),
+        });
+
         let terminal = &app.state.terminals[&terminal_id];
         assert_eq!(terminal.state, AgentState::Idle);
     }

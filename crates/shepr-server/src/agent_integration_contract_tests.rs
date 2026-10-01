@@ -403,8 +403,7 @@ fn replay_and_assert_contract(
     match contract.state {
         Some(expected_state) => {
             let authority = terminal
-                .hook_authority
-                .as_ref()
+                .hook_authority()
                 .unwrap_or_else(|| panic!("{} did not establish hook authority", contract.asset));
             assert_eq!(
                 authority.source,
@@ -415,7 +414,7 @@ fn replay_and_assert_contract(
             assert_eq!(authority.session_ref, Some(expected_session.session_ref));
         }
         None => assert!(
-            terminal.hook_authority.is_none(),
+            terminal.hook_authority().is_none(),
             "{} should report session identity without state authority",
             contract.asset
         ),

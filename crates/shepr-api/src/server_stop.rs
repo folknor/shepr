@@ -438,6 +438,9 @@ fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
     }
 }
 
+// Boot identity guards an occupant, not an endpoint lifetime. An API boot
+// that vanished can leave the client endpoint bound, or be replaced while
+// the lease wait runs. Completion therefore also uses ServerLifetime presence.
 enum BootProbe {
     Gone,
     Expected,
@@ -464,11 +467,10 @@ fn probe_boot(
 ) -> Result<BootProbe, ServerStopError> {
     // clock-io-ok: bounds one real status request on the socket.
     let probe_deadline = (Instant::now() + STOP_STATUS_PROBE_TIMEOUT).min(deadline);
-    let client = ApiClient::for_socket(socket_path);
-    match client.status_until(probe_deadline) {
+    match crate::status::read_runtime_status_until(socket_path, probe_deadline) {
         Ok(status) if status.boot_id == expected_boot_id => Ok(BootProbe::Expected),
         Ok(status) => Ok(BootProbe::Changed(status.boot_id)),
-        Err(error) if status_probe_has_no_answer(&error) => Ok(BootProbe::Gone),
+        Err(error) if crate::status::status_probe_has_no_answer(&error) => Ok(BootProbe::Gone),
         Err(error) => Err(status_probe_error(error, label)),
     }
 }
@@ -501,8 +503,9 @@ fn wait_until_boot_stops(
 }
 
 /// A conditional stop is complete for launchers only when the socket pair is
-/// gone too. The server drops its lease and API listener before its client
-/// listener, so the API boot can stop answering while the launcher's first
+/// gone too. Under the shared lifetime rule, the server retires its lease
+/// and API endpoint before its client endpoint, so the API boot can stop
+/// answering while the launcher's first
 /// socket is still live. Keep checking the API identity during that interval
 /// so a replacement is reported promptly.
 fn wait_until_sockets_stopped_or_new_boot(
@@ -578,37 +581,6 @@ fn wait_for_lease_release_or_new_boot(
             BootProbe::Gone | BootProbe::Expected => {}
         }
         std::thread::sleep(STOP_WAIT_POLL.min(remaining));
-    }
-}
-
-/// After the stop request was accepted, a transport close, refusal, or timeout
-/// means this socket did not answer the boot probe. Decoded API failures remain
-/// errors because they are not evidence that the named boot went away.
-fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool {
-    let no_answer_kind = |kind| {
-        matches!(
-            kind,
-            io::ErrorKind::ConnectionRefused
-                | io::ErrorKind::NotFound
-                | io::ErrorKind::BrokenPipe
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::UnexpectedEof
-                | io::ErrorKind::NotConnected
-                | io::ErrorKind::TimedOut
-                | io::ErrorKind::WouldBlock
-        )
-    };
-    match error {
-        ApiClientDeadlineError::Connect(error)
-        | ApiClientDeadlineError::Request(ApiClientError::Io(error)) => {
-            no_answer_kind(error.kind())
-        }
-        ApiClientDeadlineError::Request(ApiClientError::EmptyResponse) => true,
-        ApiClientDeadlineError::Request(
-            ApiClientError::Json(_)
-            | ApiClientError::ErrorResponse(_)
-            | ApiClientError::UnexpectedResult(_),
-        ) => false,
     }
 }
 
@@ -725,23 +697,16 @@ fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
 /// share this mapping so a successful conditional stop satisfies the
 /// launcher's socket-presence check.
 pub fn server_socket_is_live(socket_path: &Path) -> std::io::Result<bool> {
-    running_from_liveness(shepr_platform::ipc::probe(socket_path))
+    shepr_platform::ipc::ServerLifetime::endpoint_is_live(socket_path)
 }
 
 fn is_running_at(socket_path: &Path) -> std::io::Result<bool> {
     server_socket_is_live(socket_path)
 }
 
-fn running_from_liveness(liveness: shepr_platform::ipc::Liveness) -> std::io::Result<bool> {
-    match liveness {
-        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => Ok(false),
-        shepr_platform::ipc::Liveness::Live => Ok(true),
-        shepr_platform::ipc::Liveness::Unreachable(error) => Err(error),
-    }
-}
-
-/// Whether every server endpoint socket has no listener. Launcher and stop
-/// use this same predicate before treating a server as gone.
+/// Whether every server endpoint socket has no listener: the `Gone` presence
+/// of the shared server lifetime rule, which the launcher also waits for.
+/// Errors never prove absence.
 pub fn server_sockets_are_stopped<P: AsRef<Path>>(socket_paths: &[P]) -> std::io::Result<bool> {
     for path in socket_paths {
         if server_socket_is_live(path.as_ref())? {
@@ -773,6 +738,11 @@ fn reachable_socket_paths(socket_paths: &[PathBuf]) -> std::io::Result<Vec<PathB
         }
     }
     Ok(reachable)
+}
+
+#[cfg(test)]
+fn running_from_liveness(liveness: shepr_platform::ipc::Liveness) -> std::io::Result<bool> {
+    shepr_platform::ipc::ServerLifetime::liveness(liveness)
 }
 
 #[cfg(test)]

@@ -120,39 +120,37 @@ pub fn run_server(
     let startup_cwd = read_startup_cwd();
 
     let data_dir = paths.data_dir();
-    let lease = shepr_mux::persist::DataDirLease::acquire(data_dir).map_err(lease_error)?;
-
-    // A log file that cannot be opened does not stop the server; the ready
-    // notice says so instead of naming a log that is not being written.
-    let file_logging = shepr_platform::logging::init_file_logging(
-        data_dir,
-        shepr_platform::logging::SERVER_LOG_FILE,
-    )?;
-    if file_logging.unavailable.is_none() {
-        log_panics();
-    }
-    // Compile the bundled detection manifests off the tokio loop, before App
-    // restores PTYs whose detection workers consult them, and after logging
-    // starts, so a bundled manifest that fails to compile reaches the log.
-    shepr_agent::detect::manifest::compile_bundled_manifests();
-    spawn_integration_install();
 
     let (api_tx, api_rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
-    // Start the JSON API socket server.
-    let _api_server =
-        match shepr_api::start_server(api_tx.clone(), Arc::clone(&stop_requested), paths) {
-            Ok(server) => server,
-            Err(err) => return Err(startup_error(ServerSocket::Api, err)),
-        };
+    let reserved = shepr_platform::ipc::ServerLifetime::reserve(
+        || shepr_mux::persist::DataDirLease::acquire(data_dir).map_err(lease_error),
+        |_| {
+            // A log file that cannot be opened does not stop the server; the ready
+            // notice says so instead of naming a log that is not being written.
+            let file_logging = shepr_platform::logging::init_file_logging(
+                data_dir,
+                shepr_platform::logging::SERVER_LOG_FILE,
+            )?;
+            if file_logging.unavailable.is_none() {
+                log_panics();
+            }
+            // Compile the bundled detection manifests off the tokio loop, before App
+            // restores PTYs whose detection workers consult them, and after logging
+            // starts, so a bundled manifest that fails to compile reaches the log.
+            shepr_agent::detect::manifest::compile_bundled_manifests();
+            spawn_integration_install();
 
-    // A held lock or live path fails before App::with_paths can spawn shells.
-    // Hold the client socket's startup lock while restore launches saved panes.
-    // Do not bind its listener yet so launchers continue to see the API-first
-    // startup transition and wait until the server can accept clients.
-    let client_socket_startup_lock = reserve_client_socket_startup_lock(&client_socket)
-        .map_err(|error| startup_error(ServerSocket::Client, error))?;
+            let api = shepr_api::start_server(api_tx.clone(), Arc::clone(&stop_requested), paths)
+                .map_err(|error| startup_error(ServerSocket::Api, error))?;
+            Ok((api, file_logging))
+        },
+        || {
+            reserve_client_socket_startup_lock(&client_socket)
+                .map_err(|error| startup_error(ServerSocket::Client, error))
+        },
+    )?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -160,30 +158,24 @@ pub fn run_server(
         .map_err(io::Error::other)?;
 
     let result = rt.block_on(async move {
-        // Create the App (with AppState, event channels, etc.).
-        let mut app = app::App::with_paths(
-            config,
-            paths,
-            lease,
-            app::AppPolicy::Production,
-            super::sample_app_clock(),
-        );
-        seed_startup_workspace_if_empty(&mut app, startup_cwd);
-
-        // App restore is the last expensive startup step before the client
-        // listener appears. The reservation passes into the bind, so the
-        // startup lock is held without a gap from before restore until the
-        // listener stops.
-        let mut server = match HeadlessServer::new(
-            app,
-            api_rx,
-            Some(_api_server),
-            stop_requested,
-            client_socket_startup_lock,
-        ) {
-            Ok(server) => server,
-            Err(err) => return Err(startup_error(ServerSocket::Client, err)),
-        };
+        let (mut server, file_logging) = reserved.restore_and_bind(
+            |lease| {
+                let mut app = app::App::with_paths(
+                    config,
+                    paths,
+                    lease,
+                    app::AppPolicy::Production,
+                    super::sample_app_clock(),
+                );
+                seed_startup_workspace_if_empty(&mut app, startup_cwd);
+                app
+            },
+            |app, (api, file_logging), reservation| {
+                HeadlessServer::new(app, api_rx, Some(api), stop_requested, reservation)
+                    .map(|server| (server, file_logging))
+                    .map_err(|error| startup_error(ServerSocket::Client, error))
+            },
+        )?;
 
         let ready = ServerReady {
             api_socket,
@@ -212,17 +204,15 @@ pub fn run_server(
 
 fn reserve_client_socket_startup_lock(path: &std::path::Path) -> io::Result<SocketStartupLock> {
     let startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(path)?;
-    match shepr_platform::ipc::probe(path) {
-        shepr_platform::ipc::Liveness::Live => Err(io::Error::new(
+    if shepr_platform::ipc::ServerLifetime::endpoint_is_live(path)? {
+        Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             ClientSocketAlreadyLive {
                 path: path.to_path_buf(),
             },
-        )),
-        shepr_platform::ipc::Liveness::Unreachable(error) => Err(error),
-        shepr_platform::ipc::Liveness::Absent | shepr_platform::ipc::Liveness::Stale => {
-            Ok(startup_lock)
-        }
+        ))
+    } else {
+        Ok(startup_lock)
     }
 }
 
@@ -433,6 +423,55 @@ mod client_socket_reservation_and_startup_cwd_tests {
             .expect("still locked");
         let busy = shepr_platform::ipc::SocketBusy::from_io(&error).expect("busy");
         assert_eq!(busy.path(), path.as_path());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_reservation_binds_the_resolved_client_socket() {
+        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("bootstrap-client-path");
+        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+            shepr_config::ServerConfig::default(),
+            paths.clone(),
+        );
+        let expected = client_socket_path(&paths);
+        let (api_tx, api_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        let stop = Arc::new(shepr_api::ServerStopSignal::default());
+        let reserved = shepr_platform::ipc::ServerLifetime::reserve(
+            || shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).map_err(lease_error),
+            |_| {
+                shepr_api::start_server(api_tx, Arc::clone(&stop), &paths)
+                    .map_err(RunServerError::from)
+            },
+            || reserve_client_socket_startup_lock(&expected).map_err(RunServerError::from),
+        )
+        .expect("reserve bootstrap resources");
+        let server = reserved
+            .restore_and_bind(
+                |lease| {
+                    app::App::with_paths(
+                        &config,
+                        &paths,
+                        lease,
+                        app::AppPolicy::Test,
+                        super::super::sample_app_clock(),
+                    )
+                },
+                |app, api, reservation| {
+                    HeadlessServer::new(app, api_rx, Some(api), stop, reservation)
+                },
+            )
+            .expect("bind through bootstrap reservation");
+        assert_eq!(
+            server.client_socket_path,
+            client_socket_path(&server.app.paths)
+        );
+        assert_eq!(server.client_socket_path, expected);
+        let _client = shepr_platform::ipc::connect_local_stream(&expected)
+            .expect("the resolved client path has the listener");
+        drop(server);
+        assert!(!expected.try_exists().expect("client path released"));
     }
 
     fn resolve(raw: &std::ffi::OsStr) -> Option<PathBuf> {

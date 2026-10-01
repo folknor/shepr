@@ -9,10 +9,15 @@ use crate::process_identity::ProcessIdentity;
 const OWNER_MARKER: &str = ".owner";
 
 #[derive(Clone, Copy)]
-pub(crate) enum RuntimeKind {
+pub(crate) enum DirectoryKind {
     Staging,
     SshConfig,
-    Socket,
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeKind {
+    Directory(DirectoryKind),
+    SocketSidecar,
 }
 
 #[derive(Debug)]
@@ -48,17 +53,14 @@ pub(crate) struct OwnedRuntimeEntry {
 impl OwnedRuntimeEntry {
     pub(crate) fn create_directory(
         parent: &Path,
-        kind: RuntimeKind,
+        kind: DirectoryKind,
     ) -> Result<Self, RuntimeCreateError> {
-        Self::sweep(parent, kind);
+        Self::sweep_directory(parent, kind);
         for _ in 0..crate::limits::RANDOM_NAME_ATTEMPTS {
             let token = crate::unpredictable_token().map_err(RuntimeCreateError::RandomSource)?;
             let name = match kind {
-                RuntimeKind::Staging => format!(".s{token:016x}"),
-                RuntimeKind::SshConfig => format!("shepr-ssh-{token:016x}"),
-                RuntimeKind::Socket => {
-                    return Err(io::Error::other("socket is not a directory").into());
-                }
+                DirectoryKind::Staging => format!(".s{token:016x}"),
+                DirectoryKind::SshConfig => format!("shepr-ssh-{token:016x}"),
             };
             let path = parent.join(name);
             match fs::DirBuilder::new()
@@ -69,7 +71,7 @@ impl OwnedRuntimeEntry {
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }
-            match Self::create_marker(path.clone(), kind) {
+            match Self::create_marker(path.clone(), RuntimeKind::Directory(kind)) {
                 Ok(entry) => return Ok(entry),
                 Err(error) => {
                     remove_file(&path.join(OWNER_MARKER));
@@ -88,7 +90,7 @@ impl OwnedRuntimeEntry {
     }
 
     pub(crate) fn create_socket(path: &Path) -> io::Result<Self> {
-        Self::create_marker(path.to_path_buf(), RuntimeKind::Socket)
+        Self::create_marker(path.to_path_buf(), RuntimeKind::SocketSidecar)
     }
 
     fn create_marker(path: PathBuf, kind: RuntimeKind) -> io::Result<Self> {
@@ -142,7 +144,15 @@ impl OwnedRuntimeEntry {
         release(&self.path, self.kind, self.owner);
     }
 
-    pub(crate) fn sweep(parent: &Path, kind: RuntimeKind) {
+    pub(crate) fn sweep_directory(parent: &Path, kind: DirectoryKind) {
+        Self::sweep(parent, RuntimeKind::Directory(kind));
+    }
+
+    pub(crate) fn sweep_socket_sidecars(parent: &Path) {
+        Self::sweep(parent, RuntimeKind::SocketSidecar);
+    }
+
+    fn sweep(parent: &Path, kind: RuntimeKind) {
         let uid = crate::effective_uid();
         if !private_directory(parent, uid) {
             return;
@@ -155,17 +165,17 @@ impl OwnedRuntimeEntry {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
             let path = match kind {
-                RuntimeKind::Socket => {
+                RuntimeKind::SocketSidecar => {
                     let Some(socket) = name.strip_suffix(".lock").filter(|name| !name.is_empty())
                     else {
                         continue;
                     };
                     parent.join(socket)
                 }
-                RuntimeKind::Staging | RuntimeKind::SshConfig => {
-                    let prefix = match kind {
-                        RuntimeKind::Staging => ".s",
-                        _ => "shepr-ssh-",
+                RuntimeKind::Directory(directory_kind) => {
+                    let prefix = match directory_kind {
+                        DirectoryKind::Staging => ".s",
+                        DirectoryKind::SshConfig => "shepr-ssh-",
                     };
                     let Some(token) = name.strip_prefix(prefix) else {
                         continue;
@@ -178,7 +188,7 @@ impl OwnedRuntimeEntry {
                     entry.path()
                 }
             };
-            if !matches!(kind, RuntimeKind::Socket) && !private_directory(&path, uid) {
+            if !matches!(kind, RuntimeKind::SocketSidecar) && !private_directory(&path, uid) {
                 continue;
             }
             let marker = marker_path(&path, kind);
@@ -232,8 +242,8 @@ impl OwnedRuntimeEntry {
 
 fn marker_path(path: &Path, kind: RuntimeKind) -> PathBuf {
     match kind {
-        RuntimeKind::Socket => crate::ipc::socket_startup_lock_path(path),
-        _ => path.join(OWNER_MARKER),
+        RuntimeKind::SocketSidecar => crate::ipc::socket_startup_lock_path(path),
+        RuntimeKind::Directory(_) => path.join(OWNER_MARKER),
     }
 }
 
@@ -247,12 +257,15 @@ fn private_directory(path: &Path, uid: u32) -> bool {
 }
 
 fn contents_owned(path: &Path, kind: RuntimeKind, uid: u32) -> bool {
-    if matches!(kind, RuntimeKind::Socket) {
-        return match fs::symlink_metadata(path) {
-            Ok(metadata) => metadata.uid() == uid && metadata.file_type().is_socket(),
-            Err(error) => error.kind() == io::ErrorKind::NotFound,
-        };
-    }
+    let directory_kind = match kind {
+        RuntimeKind::SocketSidecar => {
+            return match fs::symlink_metadata(path) {
+                Ok(metadata) => metadata.uid() == uid && metadata.file_type().is_socket(),
+                Err(error) => error.kind() == io::ErrorKind::NotFound,
+            };
+        }
+        RuntimeKind::Directory(directory_kind) => directory_kind,
+    };
     let Ok(entries) = fs::read_dir(path) else {
         return false;
     };
@@ -269,10 +282,9 @@ fn contents_owned(path: &Path, kind: RuntimeKind, uid: u32) -> bool {
         if name == OWNER_MARKER && metadata.is_file() {
             marker_seen = true;
         } else {
-            let allowed = match kind {
-                RuntimeKind::Staging => name == "s" && metadata.file_type().is_socket(),
-                RuntimeKind::SshConfig => name == "config" && metadata.is_file(),
-                RuntimeKind::Socket => false,
+            let allowed = match directory_kind {
+                DirectoryKind::Staging => name == "s" && metadata.file_type().is_socket(),
+                DirectoryKind::SshConfig => name == "config" && metadata.is_file(),
             };
             if !allowed {
                 return false;
@@ -294,15 +306,18 @@ pub(crate) fn remove_file(path: &Path) -> bool {
 }
 
 fn release(path: &Path, kind: RuntimeKind, owner: Option<ProcessIdentity>) {
-    if matches!(kind, RuntimeKind::Socket) {
-        if remove_file(path) {
-            remove_file(&marker_path(path, kind));
+    let directory_kind = match kind {
+        RuntimeKind::SocketSidecar => {
+            if remove_file(path) {
+                remove_file(&marker_path(path, kind));
+            }
+            return;
         }
-        return;
-    }
-    let content = match kind {
-        RuntimeKind::Staging => "s",
-        _ => "config",
+        RuntimeKind::Directory(directory_kind) => directory_kind,
+    };
+    let content = match directory_kind {
+        DirectoryKind::Staging => "s",
+        DirectoryKind::SshConfig => "config",
     };
     if !remove_file(&path.join(content)) {
         return;
@@ -338,7 +353,7 @@ fn release(path: &Path, kind: RuntimeKind, owner: Option<ProcessIdentity>) {
 pub fn release_remote_ssh_config_dir(path: &Path) {
     release(
         path,
-        RuntimeKind::SshConfig,
+        RuntimeKind::Directory(DirectoryKind::SshConfig),
         ProcessIdentity::current().ok(),
     );
 }
@@ -346,7 +361,7 @@ pub fn release_remote_ssh_config_dir(path: &Path) {
 /// Removes a single-use socket sidecar while its owner still holds the lock.
 /// Shared socket sidecars must remain in place so binders lock one inode.
 pub fn release_single_use_socket_lock(path: &Path) {
-    remove_file(&marker_path(path, RuntimeKind::Socket));
+    remove_file(&marker_path(path, RuntimeKind::SocketSidecar));
 }
 
 #[cfg(test)]
@@ -375,8 +390,8 @@ mod tests {
     #[test]
     fn directory_sweeps_share_dead_owner_content_and_lock_checks() {
         for (kind, prefix, content) in [
-            (RuntimeKind::Staging, ".s", "s"),
-            (RuntimeKind::SshConfig, "shepr-ssh-", "config"),
+            (DirectoryKind::Staging, ".s", "s"),
+            (DirectoryKind::SshConfig, "shepr-ssh-", "config"),
         ] {
             let scratch = shepr_test_support::ScratchDir::new("owned-runtime-sweep");
             fs::set_permissions(scratch.path(), fs::Permissions::from_mode(0o700))
@@ -389,7 +404,7 @@ mod tests {
             };
             let abandoned = fixture(1, Some(dead.as_str()));
             match kind {
-                RuntimeKind::Staging => {
+                DirectoryKind::Staging => {
                     drop(
                         std::os::unix::net::UnixListener::bind(abandoned.join(content))
                             .expect("fixture socket"),
@@ -429,7 +444,7 @@ mod tests {
                 .expect("fixture path contains no nul");
             // SAFETY: fifo_path is a valid nul-terminated pathname.
             assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
-            OwnedRuntimeEntry::sweep(scratch.path(), kind);
+            OwnedRuntimeEntry::sweep_directory(scratch.path(), kind);
             assert!(!abandoned.try_exists().expect("stat abandoned entry"));
             for retained in [
                 unmarked,
@@ -456,7 +471,7 @@ mod tests {
     #[test]
     fn creation_marks_and_holds_until_release_or_transfer() {
         let scratch = shepr_test_support::ScratchDir::new("owned-runtime-lifetime");
-        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), RuntimeKind::SshConfig)
+        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::SshConfig)
             .expect("create directory");
         let path = entry.path().to_path_buf();
         assert_eq!(
@@ -468,7 +483,7 @@ mod tests {
         entry.release();
         assert!(!path.try_exists().expect("stat released directory"));
 
-        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), RuntimeKind::SshConfig)
+        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::SshConfig)
             .expect("create transferred directory");
         let path = entry.into_path();
         release_remote_ssh_config_dir(&path);
@@ -479,7 +494,7 @@ mod tests {
     #[test]
     fn failed_directory_release_restores_marker_without_recursing() {
         let scratch = shepr_test_support::ScratchDir::new("owned-runtime-release");
-        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), RuntimeKind::Staging)
+        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::Staging)
             .expect("create staging directory");
         let path = entry.path().to_path_buf();
         fs::create_dir(path.join("unexpected")).expect("unexpected directory");
