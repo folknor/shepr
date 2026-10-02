@@ -1,7 +1,7 @@
-use shepr_config::{
-    AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
-    SpacesSidebarConfig,
-};
+use shepr_config::AgentSidebarToken;
+
+use shepr_config::SpaceSidebarToken;
+use shepr_config::{AgentsSidebarConfig, SidebarTokenStyle, SpacesSidebarConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedToken {
@@ -165,14 +165,22 @@ pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'
 
 #[cfg(test)]
 impl ResolvedToken {
-    pub(super) fn unstyled(kind: ResolvedTokenKind) -> Self {
+    pub(in crate::shell) fn unstyled(kind: ResolvedTokenKind) -> Self {
         Self::new(kind, SidebarTokenStyle::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use ratatui::style::Color;
+    use ratatui::style::Modifier;
+    use ratatui::style::Style;
+
+    use super::AgentsSidebarConfig;
+    use crate::shell::sidebar::sidebar_tokens::{
+        AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    };
+    use crate::shell::sidebar::token_definitions::{agent_rows, space_rows};
     use shepr_config::AgentSidebarToken;
 
     struct Entry {
@@ -240,7 +248,6 @@ rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true
 
     #[test]
     fn conditional_style_survives_truncation_and_removes_theme_modifiers() {
-        use ratatui::style::{Color, Modifier, Style};
         let config: AgentsSidebarConfig = toml::from_str(r##"
 rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = "#f00", bold = false, dim = false }] }]]
 "##).expect("test precondition");
@@ -251,25 +258,27 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
             .fg(Color::Blue)
             .add_modifier(Modifier::BOLD | Modifier::DIM);
         for width in [4, 40] {
-            let spans = super::super::resolved_token_spans(
+            let spans = crate::shell::sidebar::sidebar_tokens::resolved_token_spans(
                 &rows[0],
-                super::super::super::status_glyph(
+                crate::shell::presentation::status::status_glyph(
                     shepr_protocol::AgentStatus::Working,
                     shepr_config::StatusIndicatorStyle::Dots,
                     &shepr_config::theme::Palette::catppuccin(),
                     false,
                 ),
-                super::super::TokenStyles {
+                crate::shell::sidebar::sidebar_tokens::TokenStyles {
                     state_text: theme,
                     primary: theme,
                     secondary: theme,
                     terminal_title: theme,
                 },
-                &super::super::Palette::catppuccin(),
+                &shepr_config::theme::Palette::catppuccin(),
                 width,
             );
             assert_eq!(spans.len(), 1);
-            assert!(super::super::display_width(&spans[0].content) <= width);
+            assert!(
+                crate::shell::sidebar::sidebar_tokens::display_width(&spans[0].content) <= width
+            );
             assert_eq!(spans[0].style.fg, Some(Color::Rgb(255, 0, 0)));
             assert!(
                 !spans[0]

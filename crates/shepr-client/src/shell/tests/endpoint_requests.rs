@@ -1,4 +1,29 @@
-use super::*;
+use crate::endpoint::EndpointChoice;
+use crate::endpoint::EndpointRegistry;
+use crate::endpoint::commands::EndpointCommandCancellation;
+use crate::endpoint::commands::EndpointCommands;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::ledger::{DropReason, Work};
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::state::{
+    ClientCopyOperation, ClientCopySearch, ClientRenameTarget, ClientShellConfig,
+    ClientShellOverlay,
+};
+use crossterm::event::{KeyCode, KeyModifiers};
+use shepr_config::ClientConfig;
+use shepr_protocol::command::EndpointCommand;
+
+use crate::shell::state::{
+    ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellState,
+};
+
+use shepr_protocol::ClientMessage;
+
+use shepr_protocol::command::EndpointReply;
+
+use crate::shell::tests::{snapshot, surface};
+use crate::tests::{test_pane_id, test_workspace_id};
+
 use crate::endpoint::ClientEndpointId;
 
 fn pending_request() -> (ClientShellState, Vec<ClientShellAction>) {
@@ -44,7 +69,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         assert!(state.drop_request(&id, DropReason::Interrupted));
         assert!(state.ledger.is_empty());
         assert!(state.scroll_lanes.is_idle());
-        assert!(state.visible_endpoint_notice.is_none());
+        assert!(state.notices.visible().is_none());
         state.set_snapshot(Box::new(snapshot()));
         let mut next = ClientShellInput::default();
         state.push_pane_scroll_offset(pane_id.clone(), 2, &mut next);
@@ -81,7 +106,7 @@ fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
     assert!(outcome.repaint);
     assert!(state.ledger.is_empty());
     assert!(state.scroll_lanes.is_idle());
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 #[test]
@@ -99,7 +124,7 @@ fn disconnecting_a_pending_scroll_does_not_show_an_interrupted_action_notice() {
 
     assert!(state.ledger.is_empty());
     assert!(state.scroll_lanes.is_idle());
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 struct TestTransport {
@@ -128,7 +153,6 @@ impl crate::endpoint::EndpointTransport for TestTransport {
 
 #[test]
 fn a_pick_is_applied_at_once_without_an_event_round_trip() {
-    use crate::endpoint::{EndpointChoice, EndpointRegistry, commands::EndpointCommands};
     let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
     let mut commands = EndpointCommands::default();
     let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
@@ -157,7 +181,6 @@ fn a_pick_is_applied_at_once_without_an_event_round_trip() {
 
 #[test]
 fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
-    use crate::endpoint::{EndpointChoice, EndpointRegistry, commands::EndpointCommands};
     for shown in [false, true] {
         let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
         let mut commands = EndpointCommands::default();
@@ -246,8 +269,8 @@ fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() 
         // may have reached the server.
         assert_eq!(
             state
-                .visible_endpoint_notice
-                .as_ref()
+                .notices
+                .visible()
                 .is_some_and(|notice| { notice.title == "Action interrupted" }),
             fail_send
         );
@@ -292,7 +315,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
     assert_eq!(cancelled.unsent, vec![stale_id.clone()]);
     assert!(cancelled.possibly_sent.is_empty());
     state.drop_request(&stale_id, DropReason::Unsent);
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
     assert!(
         commands
             .receive_response(
@@ -321,7 +344,6 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
 #[test]
 fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
     use crate::endpoint::EndpointRegistry;
-    use crate::endpoint::commands::{EndpointCommandCancellation, EndpointCommands};
 
     for connection_lost in [false, true] {
         let (mut state, actions) = pending_request();
@@ -360,10 +382,7 @@ fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
 
         assert!(outcome.repaint);
         assert!(state.ledger.is_empty());
-        let title = state
-            .visible_endpoint_notice
-            .as_ref()
-            .map(|notice| notice.title.as_str());
+        let title = state.notices.visible().map(|notice| notice.title.as_str());
         let expected = if connection_lost {
             "Action interrupted"
         } else {
@@ -427,8 +446,13 @@ fn server_errors_become_unavailable_or_rejected_notices() {
             request_id(&actions),
             Err(ClientShellEndpointError::Server(error)),
         );
-        let notice = state.visible_endpoint_notice.take().expect("notice");
-        (notice.key.kind, notice.key.code, notice.title, notice.body)
+        let notice = state.notices.visible().expect("notice");
+        (
+            notice.key.kind,
+            notice.key.code.clone(),
+            notice.title.clone(),
+            notice.body.clone(),
+        )
     };
 
     let (kind, code, title, body) = answer(EndpointError::ShuttingDown);
@@ -615,22 +639,14 @@ fn an_ignored_answer_still_reports_its_server_error() {
     assert!(out.repaint);
     assert!(out.actions.is_empty());
     assert!(s.copy_pipeline.is_awaiting(&current.clone().into()));
-    assert!(
-        s.endpoint_notice_seen
-            .iter()
-            .any(|k| k.kind == ClientEndpointNoticeKind::Timeout && k.code == "pane.copy_search")
-    );
+    assert!(s.notices.timeout_suppressed("pane.copy_search"));
     s.reset_copy_pipeline();
     let another = copy_search(&mut s);
     s.reset_copy_pipeline();
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
     answer(&mut s, &another, Ok(EndpointReply::Done));
-    assert!(
-        !s.endpoint_notice_seen
-            .iter()
-            .any(|k| k.kind == ClientEndpointNoticeKind::Timeout && k.code == "pane.copy_search")
-    );
+    assert!(!s.notices.timeout_suppressed("pane.copy_search"));
     assert!(s.copy_pipeline.is_awaiting(&current.into()));
 }
 #[test]
@@ -782,7 +798,7 @@ fn a_projection_reset_drops_every_request_with_its_feature_state() {
     assert!(s.mouse_selection.word_gesture.is_none());
     assert!(s.overlay.is_none());
     assert!(s.pending_workspace_highlight.is_none());
-    assert!(s.visible_endpoint_notice.is_none());
+    assert!(s.notices.visible().is_none());
 }
 #[test]
 fn a_failed_focus_releases_only_its_own_highlight() {
@@ -841,7 +857,7 @@ fn only_a_plain_request_shows_the_interruption_notice_and_only_when_it_may_have_
                 .expect("submit");
             s.drop_request(&id, reason);
             assert_eq!(
-                s.visible_endpoint_notice.is_some(),
+                s.notices.visible().is_some(),
                 plain && matches!(reason, DropReason::Interrupted)
             );
         }

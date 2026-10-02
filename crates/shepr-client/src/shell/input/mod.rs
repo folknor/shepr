@@ -1,7 +1,29 @@
-use super::*;
+use shepr_termio::input::KeybindAction;
+use shepr_termio::input::KeybindDispatch;
+use shepr_termio::input::KeybindMatch;
+
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::state::ClientShellOverlay;
+use crossterm::event::KeyEventKind;
+pub(in crate::shell) mod copy_mode;
+pub(in crate::shell) mod events;
+pub(in crate::shell) mod hit_test;
+pub(in crate::shell) mod mouse;
+pub(in crate::shell) mod scroll_lanes;
+pub(in crate::shell) mod word_bounds;
+pub(in crate::shell) mod word_selection;
+
+use crate::shell::state::{
+    ClientHelpOverlay, ClientInputContext, ClientNavigatorOverlay, ClientShellInput,
+    ClientShellMode, ClientShellState,
+};
+use shepr_protocol::ClientMessage;
+
+use crate::shell::input::events::PaneInputBatchAccounting;
+
 use crate::input_wire::WirePaneInput;
 use crate::limits::{CLIPBOARD_RESULT_QUEUE_CAPACITY, MODAL_PASTE_CLIPBOARD_TIMEOUT};
-use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_protocol::ClientPaneInputEvent;
 use shepr_termio::input::raw_input::RawInputEvent;
 
@@ -89,7 +111,7 @@ fn read_clipboard_text_bounded_with(
     }
 }
 
-pub(super) fn navigate_alias_matches(
+pub(in crate::shell) fn navigate_alias_matches(
     combo: (KeyCode, KeyModifiers),
     key: &shepr_termio::input::TerminalKey,
 ) -> bool {
@@ -154,7 +176,7 @@ fn resolve_navigate_binding(
     shepr_config::keybinding_table!(resolve_navigate)
 }
 
-pub(super) fn is_modal_paste_shortcut(key: &shepr_termio::input::TerminalKey) -> bool {
+pub(in crate::shell) fn is_modal_paste_shortcut(key: &shepr_termio::input::TerminalKey) -> bool {
     key.generated_text.as_deref().is_none_or(str::is_empty)
         && matches!(key.code, KeyCode::Char('v' | 'V'))
         && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
@@ -211,7 +233,7 @@ impl ClientShellState {
     /// under; it decides whether text key presses can hold input leases.
     pub(crate) fn handle_host_input(
         &mut self,
-        inputs: Vec<super::super::ParsedHostInput>,
+        inputs: Vec<crate::ParsedHostInput>,
         host_reports_all_keys: bool,
         now: std::time::Instant,
     ) -> ClientShellInput {
@@ -249,8 +271,7 @@ impl ClientShellState {
         event: &RawInputEvent,
         outcome: &mut ClientShellInput,
     ) {
-        if is_user_input(event) && self.endpoint_error.take().is_some() {
-            self.endpoint_error_deadline = None;
+        if is_user_input(event) && self.endpoint_error.dismiss() {
             outcome.repaint = true;
         }
     }
@@ -345,7 +366,7 @@ impl ClientShellState {
         false
     }
 
-    pub(super) fn handle_key(
+    pub(in crate::shell) fn handle_key(
         &mut self,
         key: shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
@@ -448,7 +469,7 @@ impl ClientShellState {
                 width_px: gesture.hit.pixel_width,
                 height_px: gesture.hit.pixel_height,
             });
-            super::push_target_event(
+            crate::shell::input::events::push_target_event(
                 gesture.hit.pane_id,
                 ClientPaneInputEvent::Mouse {
                     kind: shepr_protocol::ClientMouseKind::Up(
@@ -506,7 +527,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn modal_paste_target_active(&self) -> bool {
+    pub(in crate::shell) fn modal_paste_target_active(&self) -> bool {
         if self.overlay.is_none()
             && self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
@@ -538,7 +559,7 @@ impl ClientShellState {
         )
     }
 
-    pub(super) fn handle_modal_paste_shortcut_with(
+    pub(in crate::shell) fn handle_modal_paste_shortcut_with(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
@@ -663,7 +684,7 @@ impl ClientShellState {
 
     /// Return the copy session's mode when leaving a temporary mode. This does
     /// not decide whether copy currently owns input; `copy_mode_owns_input` does.
-    pub(super) fn copy_or_terminal_mode(&self) -> ClientShellMode {
+    pub(in crate::shell) fn copy_or_terminal_mode(&self) -> ClientShellMode {
         if self
             .copy_mode
             .as_ref()
@@ -693,8 +714,6 @@ impl ClientShellState {
         key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
-        use shepr_termio::input::{KeybindAction, KeybindDispatch, KeybindMatch};
-
         self.pending_workspace_highlight = None;
         if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
             self.mode = self.copy_or_terminal_mode();
@@ -830,8 +849,6 @@ impl ClientShellState {
         preserve_navigate: bool,
         outcome: &mut ClientShellInput,
     ) {
-        use shepr_termio::input::{KeybindAction, KeybindMatch};
-
         if !self.indexed_navigation_target_exists(binding) {
             return;
         }
@@ -859,12 +876,10 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn indexed_navigation_target_exists(
+    pub(in crate::shell) fn indexed_navigation_target_exists(
         &self,
         binding: &shepr_termio::input::KeybindMatch,
     ) -> bool {
-        use shepr_termio::input::{KeybindAction, KeybindMatch};
-
         match binding {
             KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => self
                 .snapshot
@@ -936,7 +951,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn focused_pane_id(&self) -> Option<shepr_protocol::PublicPaneId> {
+    pub(in crate::shell) fn focused_pane_id(&self) -> Option<shepr_protocol::PublicPaneId> {
         self.snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.focused_pane_id.clone())
@@ -950,7 +965,7 @@ impl ClientShellState {
         accounting: &mut PaneInputBatchAccounting,
     ) {
         if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
-            super::push_target_event(target, event, outcome, accounting);
+            crate::shell::input::events::push_target_event(target, event, outcome, accounting);
         }
     }
 
@@ -982,7 +997,7 @@ impl ClientShellState {
         let Some(pane_id) = self.focused_pane_id() else {
             return;
         };
-        super::push_target_event(pane_id, event, outcome, accounting);
+        crate::shell::input::events::push_target_event(pane_id, event, outcome, accounting);
     }
 }
 
@@ -1059,13 +1074,25 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::shell::state::ClientCopySelection;
+    use crate::shell::state::ClientShellConfig;
+    use shepr_config::ClientConfig;
+    use shepr_protocol::ClientPaneInputEvent;
+
+    use super::{navigate_indexed_binding_index, read_clipboard_text_bounded_with};
+    use crate::shell::input::events::PaneInputBatchAccounting;
+    use crate::shell::state::{
+        ClientCopyModeState, ClientShellInput, ClientShellMode, ClientShellState,
+    };
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use shepr_protocol::ClientMessage;
     use shepr_protocol::MAX_INPUT_PAYLOAD;
+    use shepr_termio::input::raw_input::RawInputEvent;
 
     fn shell() -> ClientShellState {
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        state.set_snapshot(Box::new(super::super::tests::snapshot()));
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
         state
     }
 

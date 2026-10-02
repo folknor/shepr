@@ -2065,6 +2065,51 @@ fn session_hooks_ignore_non_object_payloads_quietly() {
     }
 }
 
+/// A Claude background session (`/fork`, `/bg`, agent view) or Claude's own
+/// supervisor can carry the pane variables, but is never the pane's process:
+/// the Claude hook reports nothing there, and still reports for any other
+/// session kind.
+#[test]
+fn claude_hook_stays_silent_in_background_sessions() {
+    let env = IsolatedEnv::new();
+    require_python3();
+    let base = unique_base(&env);
+    let payload = br#"{"hook_event_name":"SessionStart","session_id":"abc","source":"fork"}"#;
+    let cases: [(&str, &str, bool); 6] = [
+        ("job-dir", "CLAUDE_JOB_DIR=/claude/jobs/abc", false),
+        ("bg", "CLAUDE_CODE_SESSION_KIND=bg", false),
+        ("daemon", "CLAUDE_CODE_SESSION_KIND=daemon", false),
+        (
+            "daemon-worker",
+            "CLAUDE_CODE_SESSION_KIND=daemon-worker",
+            false,
+        ),
+        ("other-kind", "CLAUDE_CODE_SESSION_KIND=interactive", true),
+        ("empty-job-dir", "CLAUDE_JOB_DIR=", true),
+    ];
+    for (name, assignment, reports) in cases {
+        let dir = base.join(name);
+        fs::create_dir_all(&dir).expect("test precondition");
+        let hook = dir.join("hook.sh");
+        fs::write(&hook, CLAUDE_HOOK_ASSET).expect("test precondition");
+        // `capture_hook` removes the Claude session variables a test run may
+        // inherit, so the one under test is set by `env` inside the command.
+        // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
+        let mut command = shepr_test_support::command_in_scratch("env", "claude-background-hook");
+        command
+            .arg(assignment)
+            .arg("sh")
+            .arg(&hook)
+            .arg("session")
+            .env("SHEPR_BUILD_PROFILE", "release");
+        let output =
+            shepr_test_support::capture_hook(command, &dir.join("s.sock"), &dir, "w1:p2", payload);
+        assert!(output.status.success(), "{name}: the hook failed");
+        assert!(output.stderr.is_empty(), "{name}: the hook wrote to stderr");
+        assert_eq!(!output.requests.is_empty(), reports, "{name}");
+    }
+}
+
 /// A python exception the payload tests cannot provoke must still not fail the
 /// agent's hook or print a traceback: every shell hook runs its python with
 /// stderr discarded and its exit status ignored.

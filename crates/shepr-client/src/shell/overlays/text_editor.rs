@@ -1,8 +1,9 @@
-use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::KeyEventKind;
+use crossterm::event::{KeyCode, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Default, PartialEq, Eq)]
-pub(super) struct TextEditor {
+pub(in crate::shell) struct TextEditor {
     text: String,
     cursor: usize,
     replace_on_type: bool,
@@ -262,7 +263,7 @@ impl TextEditor {
     }
 }
 
-pub(super) fn render(
+pub(in crate::shell) fn render(
     buffer: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,
     editor: &TextEditor,
@@ -276,7 +277,7 @@ pub(super) fn render(
     for x in area.x..area.right() {
         buffer[(x, area.y)].set_symbol(" ").set_style(style);
     }
-    super::render::put_text(buffer, area.x, area.y, area.width, text, style);
+    crate::shell::presentation::render::put_text(buffer, area.x, area.y, area.width, text, style);
     Some(shepr_protocol::CursorState {
         x: area.x + cursor,
         y: area.y,
@@ -287,7 +288,16 @@ pub(super) fn render(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::render;
+    use crossterm::event::KeyEventKind;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Style;
+
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use unicode_segmentation::UnicodeSegmentation;
+
+    use crate::shell::overlays::text_editor::TextEditor;
     use shepr_termio::input::TerminalKey;
 
     fn key(editor: &mut TextEditor, code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -473,7 +483,6 @@ mod tests {
 
     #[test]
     fn viewport_and_render_are_pure_and_grapheme_safe() {
-        use ratatui::{buffer::Buffer, layout::Rect, style::Style};
         for text in [
             "abcdefghijklmnopqrstuvwxyz",
             "e\u{301}中\u{1F469}\u{200D}\u{1F4BB}xyz",

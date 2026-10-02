@@ -1,4 +1,37 @@
-use super::*;
+use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::ledger::DropReason;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::presentation::render;
+use crate::shell::state::{
+    ClientChromeDrag, ClientCopyOperation, ClientCopySelection, ClientNavigatorFilter,
+    ClientNavigatorTarget, ClientShellAction, ClientShellConfig, ClientShellEndpointError,
+    ClientShellInput, ClientShellMode, ClientShellOverlay,
+};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::buffer::Buffer;
+use shepr_config::ClientConfig;
+use shepr_config::theme::Palette;
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_protocol::{AgentStatus, ClientMessage, ClientPaneInputEvent, FrameData};
+use shepr_protocol::{ClientShellAgent, ClientShellPane, ClientShellSnapshot, SurfaceRect};
+use shepr_termio::host_term::theme::DefaultColorKind;
+use shepr_termio::host_term::theme::HostAppearance;
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::{
+    ClientCopyModeState, ClientCopySearch, ClientCopySearchPrompt, ClientHelpOverlay,
+    ClientNavigatorOverlay, ClientShellState,
+};
+
+use crossterm::event::MouseEvent;
+
+use crate::shell::tests::{
+    cell_bg, cell_fg, cell_is_bold, cell_symbol_position, frame_rows, snapshot, surface,
+};
+
+use crate::shell::tests::{copy_search_result, pane_scroll_result};
+use crate::tests::{test_pane_id, test_workspace_id};
 
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
@@ -123,7 +156,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 #[test]
 fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use ratatui::style::Color;
-    use shepr_termio::host_term::theme::{DefaultColorKind, HostAppearance, RgbColor};
+    use shepr_termio::host_term::theme::RgbColor;
 
     for explicit_appearance in [false, true] {
         let mut config = ClientShellConfig::from_config(&ClientConfig::default());
@@ -358,7 +391,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
             }],
             cursor: updated.frame.cursor,
         }),
-        super::super::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
+        crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
     assert!(
         state
@@ -1304,8 +1337,9 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
         navigator.selected = None;
         let rows =
             render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-        let target =
-            super::super::aggregate_navigation::selected_navigator_target(&rows, navigator);
+        let target = crate::shell::navigation::aggregate_navigation::selected_navigator_target(
+            &rows, navigator,
+        );
         assert_eq!(
             target,
             matches.then(|| ClientNavigatorTarget::Pane {
@@ -1389,8 +1423,10 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         );
         if !expected.is_empty() {
             let selected =
-                super::super::aggregate_navigation::navigator_selected_index(&rows, navigator)
-                    .expect("search destination");
+                crate::shell::navigation::aggregate_navigation::navigator_selected_index(
+                    &rows, navigator,
+                )
+                .expect("search destination");
             assert!(matches!(
                 rows[selected].target,
                 ClientNavigatorTarget::Pane { .. }
@@ -1489,8 +1525,9 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
             usize::from(expected),
             "query={query:?}, filter={filter:?}"
         );
-        let target =
-            super::super::aggregate_navigation::selected_navigator_target(&rows, navigator);
+        let target = crate::shell::navigation::aggregate_navigation::selected_navigator_target(
+            &rows, navigator,
+        );
         assert_eq!(
             target,
             expected.then(|| ClientNavigatorTarget::Workspace {
@@ -1750,7 +1787,10 @@ fn navigator_narrow_layout_and_long_search_stay_inside_the_popup() {
         let frame = state.compose(width, height).expect("navigator frame");
         let popup = state.hits.navigator_popup;
         let cursor = frame.cursor.as_ref().expect("search cursor");
-        assert!(super::super::contains(popup, (cursor.x, cursor.y)));
+        assert!(crate::shell::input::hit_test::contains(
+            popup,
+            (cursor.x, cursor.y)
+        ));
         assert!(state.hits.navigator_rows.is_empty());
         assert!(popup.right() <= width && popup.bottom() <= height);
     }
@@ -2458,7 +2498,7 @@ fn deferred_copy_input_is_bounded() {
         state.copy_pipeline.keys_len(),
         crate::limits::MAX_COPY_INPUT_QUEUE
     );
-    assert!(state.endpoint_error.is_some());
+    assert!(state.endpoint_error.message().is_some());
 }
 
 #[test]
@@ -2500,7 +2540,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 assert!(!state.copy_pipeline.in_flight());
                 assert!(state.copy_pipeline.ops_is_empty());
                 assert!(state.copy_pipeline.keys_is_empty());
-                assert!(state.visible_endpoint_notice.is_none());
+                assert!(state.notices.visible().is_none());
                 assert!(state.scroll_lanes.is_idle());
                 assert_eq!(state.mode, ClientShellMode::Copy);
                 assert!(
@@ -2563,7 +2603,7 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     assert!(!state.copy_pipeline.in_flight());
     assert!(state.copy_pipeline.ops_is_empty());
     assert!(state.copy_pipeline.keys_is_empty());
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 #[test]

@@ -270,9 +270,16 @@ impl HookSessionPolicy {
     // own process: `--fork-session` and `/branch` switch the pane into the
     // fork (Claude Code reported these as `resume` before it added `fork`).
     // The payload does not say which kind of fork it is: a `/fork` background
-    // copy, which leaves the original in the pane, also reports `fork`, but it
-    // runs under Claude's supervisor process and reaches this pane only if
-    // that process carries the pane's environment.
+    // copy, which leaves the original in the pane, and a conversation moved to
+    // the background also report `fork`. Those run as background sessions
+    // under Claude's supervisor, whose environment is built from the
+    // dispatching shell's and so can carry the pane's variables. Claude marks
+    // every background session process with `CLAUDE_JOB_DIR` and
+    // `CLAUDE_CODE_SESSION_KIND=bg`, and the hook asset reports nothing when
+    // `CLAUDE_JOB_DIR` is set or the session kind is `bg` or one of the
+    // supervisor's own, so a `fork` that reaches this policy came from the
+    // pane's own process. Panes scrub both variables, so a server started
+    // from inside a background session does not silence its panes' hooks.
     const CLAUDE: Self = Self {
         replacement_starts: &[
             resume::AgentSessionStartSource::Resume,

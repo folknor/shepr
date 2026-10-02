@@ -1,23 +1,28 @@
-use super::*;
+use crate::endpoint::ClientEndpointId;
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::state::ClientShellMode;
+use crate::shell::state::{ClientShellInput, ClientShellState};
 
 /// A client-only preview. Snapshot identity prevents Enter from using a reused workspace ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct WorkspaceNavigationTarget {
-    pub(super) endpoint_id: ClientEndpointId,
-    pub(super) workspace_id: shepr_protocol::WorkspaceId,
+pub(in crate::shell) struct WorkspaceNavigationTarget {
+    pub(in crate::shell) endpoint_id: ClientEndpointId,
+    pub(in crate::shell) workspace_id: shepr_protocol::WorkspaceId,
     boot_id: shepr_protocol::BootId,
     generation: Option<u64>,
 }
 
 /// Display-only continuity while a direct focus request awaits its authoritative snapshot.
-pub(super) struct PendingWorkspaceHighlight {
-    pub(super) target: WorkspaceNavigationTarget,
-    pub(super) request_id: shepr_protocol::RequestId,
+pub(in crate::shell) struct PendingWorkspaceHighlight {
+    pub(in crate::shell) target: WorkspaceNavigationTarget,
+    pub(in crate::shell) request_id: shepr_protocol::RequestId,
     expires_at: std::time::Instant,
 }
 
 impl WorkspaceNavigationTarget {
-    pub(super) fn matches(
+    pub(in crate::shell) fn matches(
         &self,
         endpoint_id: &ClientEndpointId,
         workspace_id: &shepr_protocol::WorkspaceId,
@@ -26,7 +31,7 @@ impl WorkspaceNavigationTarget {
     }
 }
 
-pub(super) fn workspace_navigation_targets(
+pub(in crate::shell) fn workspace_navigation_targets(
     endpoints: &[ClientShellEndpoint],
 ) -> Vec<WorkspaceNavigationTarget> {
     let mut targets = Vec::new();
@@ -50,7 +55,7 @@ pub(super) fn workspace_navigation_targets(
 }
 
 impl ClientShellState {
-    pub(super) fn keep_workspace_highlight_until_snapshot(
+    pub(in crate::shell) fn keep_workspace_highlight_until_snapshot(
         &mut self,
         target: WorkspaceNavigationTarget,
         request_id: &str,
@@ -76,13 +81,13 @@ impl ClientShellState {
         false
     }
 
-    pub(super) fn workspace_highlight_deadline(&self) -> Option<std::time::Instant> {
+    pub(in crate::shell) fn workspace_highlight_deadline(&self) -> Option<std::time::Instant> {
         self.pending_workspace_highlight
             .as_ref()
             .map(|pending| pending.expires_at)
     }
 
-    pub(super) fn reconcile_pending_workspace_highlight(&mut self) {
+    pub(in crate::shell) fn reconcile_pending_workspace_highlight(&mut self) {
         if self
             .pending_workspace_highlight
             .as_ref()
@@ -99,7 +104,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn navigation_target(
+    pub(in crate::shell) fn navigation_target(
         &self,
         endpoint_id: &ClientEndpointId,
         workspace_id: &shepr_protocol::WorkspaceId,
@@ -117,12 +122,15 @@ impl ClientShellState {
         })
     }
 
-    pub(super) fn focused_navigation_target(&self) -> Option<WorkspaceNavigationTarget> {
+    pub(in crate::shell) fn focused_navigation_target(&self) -> Option<WorkspaceNavigationTarget> {
         let workspace_id = self.snapshot.as_deref()?.focused_workspace_id.as_ref()?;
         self.navigation_target(&self.active_endpoint_id, workspace_id)
     }
 
-    pub(super) fn navigation_target_valid(&self, target: &WorkspaceNavigationTarget) -> bool {
+    pub(in crate::shell) fn navigation_target_valid(
+        &self,
+        target: &WorkspaceNavigationTarget,
+    ) -> bool {
         self.endpoints.iter().any(|endpoint| {
             endpoint.endpoint_id == target.endpoint_id
                 && endpoint.status == ClientEndpointStatus::Online
@@ -137,13 +145,13 @@ impl ClientShellState {
         })
     }
 
-    pub(super) fn workspace_preview_action_blocked(&self) -> bool {
+    pub(in crate::shell) fn workspace_preview_action_blocked(&self) -> bool {
         self.navigate_workspace_id.as_ref().is_some_and(|target| {
             target.endpoint_id != self.active_endpoint_id || !self.navigation_target_valid(target)
         })
     }
 
-    pub(super) fn move_navigate_workspace(&mut self, delta: isize) {
+    pub(in crate::shell) fn move_navigate_workspace(&mut self, delta: isize) {
         let mut targets = workspace_navigation_targets(&self.endpoints);
         if targets.is_empty() {
             return;
@@ -152,8 +160,11 @@ impl ClientShellState {
             .navigate_workspace_id
             .as_ref()
             .and_then(|selected| targets.iter().position(|target| target == selected));
-        let Some(next) = super::aggregate_navigation::cycle_index(targets.len(), current, delta)
-        else {
+        let Some(next) = crate::shell::navigation::aggregate_navigation::cycle_index(
+            targets.len(),
+            current,
+            delta,
+        ) else {
             return;
         };
         let target = targets.swap_remove(next);
@@ -169,7 +180,7 @@ impl ClientShellState {
             self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface().is_none();
     }
 
-    pub(super) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {
         let Some(target) = self.navigate_workspace_id.clone() else {
             self.mode = self.copy_or_terminal_mode();
             outcome.repaint = true;

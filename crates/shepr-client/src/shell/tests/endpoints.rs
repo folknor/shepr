@@ -1,11 +1,38 @@
-use super::*;
+use crossterm::event::KeyCode;
+use shepr_config::AgentSidebarToken;
+use shepr_config::StatusIndicatorStyle;
+use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
+use shepr_protocol::AgentStatus;
+use shepr_protocol::ClientMessage;
+use shepr_protocol::command::EndpointCommand;
+use shepr_termio::input::raw_input::RawInputEvent;
 
-#[path = "workspace_navigation.rs"]
-mod workspace_navigation;
-use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
-use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::presentation::render;
+use crate::shell::state::{
+    ClientChromeDrag, ClientNavigatorTarget, ClientShellAction, ClientShellConfig,
+    ClientShellInput, ClientShellMode, ClientShellOverlay,
+};
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEventKind;
+use shepr_protocol::{
+    ClientShellAgent, ClientShellPane, ClientShellSnapshot, ClientShellWorkspace,
+};
 
-fn remote_machine() -> shepr_config::MachineConfig {
+use crate::shell::state::ClientShellState;
+
+use crossterm::event::MouseEvent;
+
+use crate::shell::tests::{cell_bg, cell_fg, frame_cell, snapshot, surface};
+use ratatui::layout::Rect;
+
+use crate::tests::{test_pane_id, test_workspace_id};
+
+use crate::endpoint::ClientEndpointId;
+use crossterm::event::KeyModifiers;
+
+pub(in crate::shell) fn remote_machine() -> shepr_config::MachineConfig {
     machine_named("Build", "dev@build.example")
 }
 
@@ -18,7 +45,10 @@ fn machine_named(label: &str, ssh: &str) -> shepr_config::MachineConfig {
 
 /// The first argument only documents which agent a test means; agents carry
 /// no name of their own.
-fn agent(status: shepr_protocol::AgentStatus, state_change_seq: u64) -> ClientShellAgent {
+pub(in crate::shell) fn agent(
+    status: shepr_protocol::AgentStatus,
+    state_change_seq: u64,
+) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
         workspace_id: test_workspace_id("w1"),
@@ -49,7 +79,7 @@ fn snapshot_with_agent(
     value
 }
 
-fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
+pub(in crate::shell) fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     state_with_machines(&[remote_machine()])
 }
 
@@ -208,7 +238,7 @@ fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
     local.focused_workspace_id = Some(test_workspace_id("w1"));
     state.set_snapshot(Box::new(local));
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
-    state.sidebar_collapsed = true;
+    state.chrome.set_collapsed(true);
     state.compose(100, 28).expect("collapsed sidebar");
 
     let first = state
@@ -340,10 +370,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
         assert!(outcome.repaint);
         assert!(!state.collapsed_endpoints.contains(&id));
-        let notice = state
-            .visible_endpoint_notice
-            .take()
-            .expect("test precondition");
+        let notice = state.notices.visible().expect("test precondition");
         assert!(notice.body.contains("Permission denied"));
         assert!(
             notice
@@ -507,7 +534,7 @@ fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
-    state.sidebar_collapsed = true;
+    state.chrome.set_collapsed(true);
 
     let mut first = snapshot_with_agent("old-boot", "w1:p1", AgentStatus::Idle, 10);
     first.agents.push(ClientShellAgent {
@@ -896,7 +923,7 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         state.config.palette.green
     );
 
-    state.sidebar_collapsed = true;
+    state.chrome.set_collapsed(true);
     let frame = state.compose(100, 28).expect("collapsed endpoint frame");
     let local = state
         .hits
@@ -937,7 +964,7 @@ fn local_and_ssh_sidebars_show_server_workspace_numbers() {
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
     for collapsed in [false, true] {
-        state.sidebar_collapsed = collapsed;
+        state.chrome.set_collapsed(collapsed);
         let frame = state.compose(100, 28).expect("workspace sidebar");
         let text = frame
             .cells
@@ -1177,7 +1204,6 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
 
 #[test]
 fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
-    use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
     use shepr_protocol::AgentStatus;
 
     let mut config = ClientConfig::default();
@@ -1393,7 +1419,7 @@ fn clicking_an_offline_active_machine_row_only_toggles_its_collapse_state() {
     assert!(outcome.actions.is_empty());
     assert!(outcome.repaint);
     assert!(state.collapsed_endpoints.contains(&endpoint_id));
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 #[test]
@@ -1413,7 +1439,7 @@ fn selecting_an_offline_active_machine_in_the_navigator_is_silent() {
     state.accept_navigator_selection(&mut outcome);
 
     assert!(outcome.actions.is_empty());
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
     assert!(matches!(
         state.overlay,
         Some(ClientShellOverlay::Navigator(_))
@@ -1546,7 +1572,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
             state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
             state.set_endpoint_snapshot(&other_id, Box::new(snapshot()));
             state.set_endpoint_status(&remote_id, status);
-            state.sidebar_collapsed = sidebar_collapsed;
+            state.chrome.set_collapsed(sidebar_collapsed);
 
             for collapsed in [true, false] {
                 let frame = state.compose(100, 28).expect("three machine frame");
@@ -1591,7 +1617,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                 assert_eq!(state.collapsed_endpoints.contains(&remote_id), collapsed);
                 assert!(!state.collapsed_endpoints.contains(&ClientEndpointId::Local));
                 assert!(!state.collapsed_endpoints.contains(&other_id));
-                assert!(state.endpoint_error.is_none());
+                assert!(state.endpoint_error.message().is_none());
 
                 state.compose(100, 28).expect("toggled machine frame");
                 assert_eq!(
@@ -1856,7 +1882,6 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
 
 #[test]
 fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
-    use shepr_config::{AgentSidebarToken, StatusIndicatorStyle};
     use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
@@ -2191,7 +2216,7 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
         .expect("remote endpoint");
     std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).workspaces[0]
         .agent_status = AgentStatus::Blocked;
-    state.sidebar_collapsed = true;
+    state.chrome.set_collapsed(true);
 
     let frame = state.compose(100, 28).expect("collapsed aggregate sidebar");
     let workspace = state
@@ -2272,7 +2297,21 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
 }
 
 mod surface_baseline {
-    use super::*;
+    use crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome;
+    use crate::shell::presentation::surface_patch::PatchPresentation;
+    use crate::shell::presentation::surfaces::PaneSurfaces;
+    use crate::shell::presentation::surfaces::PatchRejection;
+    use crate::shell::state::ClientShellConfig;
+    use crate::shell::state::ClientShellInput;
+    use crate::shell::state::ClientShellMode;
+    use shepr_config::ClientConfig;
+
+    use crate::endpoint::ClientEndpointId;
+
+    use crate::shell::state::ClientShellState;
+    use shepr_protocol::PaneSurfaceFrame;
+
+    use crate::shell::tests::{snapshot, surface};
     use shepr_protocol::PaneSurfacePatch;
     fn state() -> ClientShellState {
         let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));

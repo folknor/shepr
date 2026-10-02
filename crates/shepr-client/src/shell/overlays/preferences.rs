@@ -17,31 +17,34 @@ use serde::{Deserialize, Serialize};
 /// and is neither loaded nor stored once the key is set. Manual changes still
 /// apply for the rest of the session either way.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub(super) struct ClientChromePreferences {
+pub(in crate::shell) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_width: Option<u16>,
+    pub(in crate::shell) sidebar_width: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_section_split: Option<super::sidebar_tokens::SectionSplit>,
+    pub(in crate::shell) sidebar_section_split:
+        Option<crate::shell::sidebar::sidebar_tokens::SectionSplit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_collapsed: Option<bool>,
+    pub(in crate::shell) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) agent_panel_sort: Option<shepr_config::AgentPanelSortConfig>,
+    pub(in crate::shell) agent_panel_sort: Option<shepr_config::AgentPanelSortConfig>,
     /// Which of the values above client.toml sets. Taken from the config at
     /// launch, never from the file.
     #[serde(skip)]
-    pub(super) configured: ConfiguredChrome,
+    pub(in crate::shell) configured: ConfiguredChrome,
 }
 
 /// Which remembered chrome values have a `[ui]` key set in client.toml.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct ConfiguredChrome {
-    pub(super) sidebar_width: bool,
-    pub(super) sidebar_collapsed: bool,
-    pub(super) agent_panel_sort: bool,
+pub(in crate::shell) struct ConfiguredChrome {
+    pub(in crate::shell) sidebar_width: bool,
+    pub(in crate::shell) sidebar_collapsed: bool,
+    pub(in crate::shell) agent_panel_sort: bool,
 }
 
 impl ConfiguredChrome {
-    pub(super) fn from_validated_config(config: &shepr_config::ValidatedClientConfig) -> Self {
+    pub(in crate::shell) fn from_validated_config(
+        config: &shepr_config::ValidatedClientConfig,
+    ) -> Self {
         Self {
             sidebar_width: config
                 .provenance()
@@ -58,7 +61,7 @@ impl ConfiguredChrome {
 
 impl ClientChromePreferences {
     /// These preferences with every value client.toml owns dropped.
-    pub(super) fn without_configured(mut self, configured: ConfiguredChrome) -> Self {
+    pub(in crate::shell) fn without_configured(mut self, configured: ConfiguredChrome) -> Self {
         if configured.sidebar_width {
             self.sidebar_width = None;
         }
@@ -73,14 +76,15 @@ impl ClientChromePreferences {
     }
 }
 
-pub(super) fn path_for_local_endpoint(state_dir: &Path, socket_path: &Path) -> PathBuf {
-    let hash = super::topology::fnv1a64(socket_path.to_string_lossy().as_bytes());
+pub(in crate::shell) fn path_for_local_endpoint(state_dir: &Path, socket_path: &Path) -> PathBuf {
+    let hash =
+        crate::shell::presentation::topology::fnv1a64(socket_path.to_string_lossy().as_bytes());
     state_dir
         .join("client-shell")
         .join(format!("local-{hash:016x}.json"))
 }
 
-pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
+pub(in crate::shell) fn load(path: &Path) -> Option<ClientChromePreferences> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
@@ -106,7 +110,7 @@ pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
     }
 }
 
-pub(super) fn probe_writable(path: &Path) -> io::Result<()> {
+pub(in crate::shell) fn probe_writable(path: &Path) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -179,7 +183,10 @@ pub(super) fn probe_writable(path: &Path) -> io::Result<()> {
     })
 }
 
-pub(super) fn store(path: &Path, preferences: &ClientChromePreferences) -> Result<(), String> {
+pub(in crate::shell) fn store(
+    path: &Path,
+    preferences: &ClientChromePreferences,
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid client shell state path: {}", path.display()))?;
@@ -212,7 +219,10 @@ pub(super) fn store(path: &Path, preferences: &ClientChromePreferences) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Path;
+    use crate::shell::overlays::preferences::{
+        ClientChromePreferences, ConfiguredChrome, load, path_for_local_endpoint, store,
+    };
     use shepr_test_fixtures::*;
 
     #[test]
@@ -229,7 +239,7 @@ mod tests {
     fn configured_chrome_drops_only_the_values_config_owns() {
         let remembered = || ClientChromePreferences {
             sidebar_width: Some(31),
-            sidebar_section_split: super::super::sidebar_tokens::SectionSplit::new(0.3),
+            sidebar_section_split: crate::shell::sidebar::sidebar_tokens::SectionSplit::new(0.3),
             sidebar_collapsed: Some(true),
             agent_panel_sort: Some(shepr_config::AgentPanelSortConfig::Priority),
             configured: ConfiguredChrome::default(),
@@ -252,7 +262,7 @@ mod tests {
         assert_eq!(
             owned
                 .sidebar_section_split
-                .map(super::super::sidebar_tokens::SectionSplit::get),
+                .map(crate::shell::sidebar::sidebar_tokens::SectionSplit::get),
             Some(0.3)
         );
         assert_eq!(owned.configured, configured);

@@ -1,4 +1,13 @@
-use super::*;
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{
+    ClientShellConfig, ClientShellInput, ClientShellOverlay, ClientShellState,
+};
+use shepr_config::ClientConfig;
+
+use crate::shell::state::ClientHelpOverlay;
+
+use crate::shell::tests::{frame_rows, snapshot};
 
 #[test]
 fn endpoint_notice_expires_without_a_click() {
@@ -27,9 +36,9 @@ fn endpoint_notice_expires_without_a_click() {
     ));
     assert!(!state.tick_transient_banners(far));
     state.compose(106, 20).expect("replacement frame");
-    assert!(state.visible_endpoint_notice.is_some());
+    assert!(state.notices.visible().is_some());
     assert!(state.tick_transient_banners(far));
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 #[test]
@@ -38,10 +47,9 @@ fn transient_shell_deadlines_schedule_their_expiry() {
     state.set_snapshot(Box::new(snapshot()));
     state.set_endpoint_error("failure", state.now);
     state.compose(106, 20).expect("frame");
-    let error_deadline = state.endpoint_error_deadline.expect("error deadline");
+    let error_deadline = state.endpoint_error.deadline().expect("error deadline");
     assert_eq!(state.next_timer_deadline(), Some(error_deadline));
-    state.endpoint_error = None;
-    state.endpoint_error_deadline = None;
+    state.endpoint_error.dismiss();
 
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Rejected,
@@ -50,11 +58,7 @@ fn transient_shell_deadlines_schedule_their_expiry() {
         "body",
     ));
     state.compose(106, 20).expect("notice frame");
-    let notice_deadline = state
-        .endpoint_notice_deadline
-        .as_ref()
-        .map(|(_, _, deadline)| *deadline)
-        .expect("notice deadline");
+    let notice_deadline = state.notices.deadline().expect("notice deadline");
     assert_eq!(state.next_timer_deadline(), Some(notice_deadline));
 }
 

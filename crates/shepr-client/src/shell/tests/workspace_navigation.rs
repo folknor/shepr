@@ -1,4 +1,29 @@
-use super::*;
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::ledger::DropReason;
+use crate::shell::state::{
+    ClientCopySearch, ClientShellAction, ClientShellConfig, ClientShellEndpointError,
+    ClientShellInput, ClientShellMode, ClientShellOverlay,
+};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use shepr_config::ClientConfig;
+use shepr_config::theme::Palette;
+use shepr_protocol::AgentStatus;
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_protocol::{ClientShellSnapshot, SurfaceRect};
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::{ClientCopySearchPrompt, ClientShellState};
+
+use crate::endpoint::ClientEndpointId;
+
+use crossterm::event::MouseEvent;
+
+use crate::shell::tests::endpoints::{agent, remote_machine, state_with_remote};
+use crate::shell::tests::{cell_bg, snapshot, surface};
+use ratatui::layout::Rect;
+
+use crate::tests::test_workspace_id;
 
 fn workspaces(count: usize) -> ClientShellSnapshot {
     let mut projected = snapshot();
@@ -107,7 +132,7 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
             let mut state = ClientShellState::new(config);
             state.set_snapshot(Box::new(workspaces(3)));
             state.receive_pane_surface(surface());
-            state.sidebar_collapsed = compact;
+            state.chrome.set_collapsed(compact);
             state.compose(100, 28).expect("test precondition");
             enter_navigation(&mut state);
 
@@ -170,7 +195,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
     for (compact, cols) in [(true, 100), (false, 100), (false, 44)] {
         for terminal_theme in [false, true] {
             let (mut state, remote) = navigation_state(workspaces(2));
-            state.sidebar_collapsed = compact;
+            state.chrome.set_collapsed(compact);
             if terminal_theme {
                 state.config.palette = Palette::terminal();
             }
@@ -308,8 +333,8 @@ fn blocked_preview_notice_names_the_configured_open_key() {
     // The hint is the configured key's label, lowercase like every other
     // key label, so a rebound navigate_open_workspace is named correctly.
     let body = &state
-        .visible_endpoint_notice
-        .as_ref()
+        .notices
+        .visible()
         .expect("blocked preview notice")
         .body;
     assert!(body.contains("press enter before"), "{body}");
@@ -465,7 +490,7 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
         preview_key(&mut state, b"\r");
         assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
         assert_eq!(state.mode, ClientShellMode::Navigate);
-        assert!(state.visible_endpoint_notice.is_some());
+        assert!(state.notices.visible().is_some());
         assert!(
             !state.navigation_target_valid(
                 state
@@ -519,7 +544,7 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
         assert_eq!(state.navigate_workspace_id, selected);
         preview_key(&mut state, b"\r");
         assert_eq!(state.mode, ClientShellMode::Navigate);
-        assert!(state.visible_endpoint_notice.is_some());
+        assert!(state.notices.visible().is_some());
         for confirm in [false, true] {
             state.config.confirm_close = confirm;
             for key in [b"W", b"D"] {
@@ -539,7 +564,7 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
         let mut remote = workspaces(15);
         remote.boot_id = crate::tests::test_boot_id("remote-boot");
         state.set_endpoint_snapshot(&remote_id, Box::new(remote));
-        state.sidebar_collapsed = compact;
+        state.chrome.set_collapsed(compact);
         state.collapsed_endpoints.insert(remote_id.clone());
         state.compose(100, 18).expect("test precondition");
         enter_navigation(&mut state);
@@ -565,7 +590,7 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
 fn local_navigation_state(compact: bool) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.palette = Palette::terminal();
-    state.sidebar_collapsed = compact;
+    state.chrome.set_collapsed(compact);
     state.set_snapshot(Box::new(workspaces(3)));
     state.receive_pane_surface(surface());
     state.compose(100, 28).expect("test precondition");

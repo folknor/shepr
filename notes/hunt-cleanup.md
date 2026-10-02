@@ -133,7 +133,14 @@ Reported by mux-state and foundation.
 - `crates/shepr-client/src/shell/state.rs`: `MouseSelection` is built field by
   field in `ClientShellState::new`; a derived `Default` would do.
 
-(wave-1 review and gate, wave-3 review, wave-5 fixer and review)
+- `crates/shepr-client/src/shell/`: most items are `pub(in crate::shell)` where
+  only their parent module uses them, and `OverlayRender` and
+  `render_client_overlay` in `overlays/mod.rs` are `pub(crate)`; an item-level
+  visibility pass would make the new module tree mean something.
+- `Notices::queue_boot` calls `dismiss()` to show the first queued card; an
+  `advance` name would say what it does.
+
+(wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 review)
 
 ## CLN-024 - Leftovers in the terminal input crates
 

@@ -1,3 +1,4 @@
+use crate::shell::sidebar::sidebar_tokens::ResolvedTokenKind;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -5,17 +6,23 @@ use ratatui::{
 };
 use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId};
 
-use super::*;
+use crate::shell::presentation::status::{status_glyph, status_text};
+use crate::shell::sidebar::sidebar_tokens::{
+    AgentTokenContext, ResolvedToken, TokenStyles, resolved_token_spans, sidebar_agent_rows,
+};
+use crate::shell::state::{ClientShellConfig, ShellHitMap};
+use shepr_protocol::{ClientShellSnapshot, ClientShellWorkspace};
+use std::collections::HashMap;
 
-pub(super) struct AgentRow {
-    pub(super) pane_id: shepr_protocol::PublicPaneId,
-    pub(super) status: shepr_protocol::AgentStatus,
-    pub(super) focused: bool,
-    pub(super) rows: Vec<Vec<ResolvedToken>>,
-    pub(super) state_change_seq: u64,
+pub(in crate::shell) struct AgentRow {
+    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
+    pub(in crate::shell) status: shepr_protocol::AgentStatus,
+    pub(in crate::shell) focused: bool,
+    pub(in crate::shell) rows: Vec<Vec<ResolvedToken>>,
+    pub(in crate::shell) state_change_seq: u64,
 }
 
-pub(super) fn render_agent_panel_header(
+pub(in crate::shell) fn render_agent_panel_header(
     buffer: &mut Buffer,
     area: Rect,
     config: &ClientShellConfig,
@@ -75,7 +82,7 @@ pub(super) fn render_agent_panel_header(
     true
 }
 
-pub(super) fn render_agent_list<T>(
+pub(in crate::shell) fn render_agent_list<T>(
     buffer: &mut Buffer,
     area: Rect,
     rows: &[T],
@@ -125,8 +132,12 @@ pub(super) fn render_agent_list<T>(
             }
         })
         .collect::<Vec<_>>();
-    let metrics =
-        super::scroll::list_scroll_metrics(&row_heights, &gaps, body.height, *agent_scroll);
+    let metrics = crate::shell::navigation::scroll::list_scroll_metrics(
+        &row_heights,
+        &gaps,
+        body.height,
+        *agent_scroll,
+    );
     hits.agent_max_scroll = metrics.max_offset_from_bottom;
     hits.agent_scroll_metrics = Some(metrics);
     *agent_scroll = metrics
@@ -154,11 +165,16 @@ pub(super) fn render_agent_list<T>(
     if show_scrollbar {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         hits.agent_scrollbar = track;
-        super::scroll::render_list_scrollbar(buffer, track, metrics, &config.palette);
+        crate::shell::navigation::scroll::render_list_scrollbar(
+            buffer,
+            track,
+            metrics,
+            &config.palette,
+        );
     }
 }
 
-pub(super) fn agent_rows(
+pub(in crate::shell) fn agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     machine: Option<&str>,
@@ -245,7 +261,7 @@ impl<'a> AgentRowIndex<'a> {
     }
 }
 
-pub(super) fn render_agent_row(
+pub(in crate::shell) fn render_agent_row(
     buffer: &mut Buffer,
     rect: Rect,
     row: &AgentRow,
@@ -297,7 +313,7 @@ pub(super) fn render_agent_row(
                     .saturating_sub(u16::try_from(indent).unwrap_or(u16::MAX)),
             ),
         ));
-        super::render::put_spans(
+        crate::shell::presentation::render::put_spans(
             buffer,
             Rect::new(
                 rect.x,
@@ -312,17 +328,20 @@ pub(super) fn render_agent_row(
 }
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
-    super::render::put_text(buffer, x, y, width, text, style);
+    crate::shell::presentation::render::put_text(buffer, x, y, width, text, style);
 }
 
 fn display_width(text: &str) -> usize {
-    super::render::rendered_text_width(text)
+    crate::shell::presentation::render::rendered_text_width(text)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{display_width, put_text};
-    use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Style;
+
+    use crate::shell::presentation::render::{display_width, put_text};
 
     #[test]
     fn put_text_advances_by_display_width_and_clips_wide_characters() {

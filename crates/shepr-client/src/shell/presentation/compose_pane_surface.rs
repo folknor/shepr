@@ -1,11 +1,16 @@
-use super::composition::wire_cells::{blank, split_glyph_cells};
-use super::*;
+use crate::shell::presentation::wire_cells::{blank, split_glyph_cells};
+use ratatui::layout::Rect;
+use shepr_protocol::FrameData;
 
 /// Copies `source` cells into `target` at `area`, clipped to both, keeping each cell's
 /// underline shape and remapping hyperlinks into `target`'s table. It shares only the
 /// glyph repair with `wire_cells::overwrite`: a target glyph split by the pasted region
 /// loses its uncovered part, and a source glyph cut by the clip becomes a blank.
-pub(super) fn compose_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
+pub(in crate::shell) fn compose_pane_surface(
+    target: &mut FrameData,
+    source: &FrameData,
+    area: Rect,
+) {
     let target_width = usize::from(target.width);
     let source_width = usize::from(source.width);
     let copy_width = source
@@ -84,8 +89,13 @@ pub(super) fn compose_pane_surface(target: &mut FrameData, source: &FrameData, a
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use shepr_protocol::{CellData, WireColor};
+    use shepr_protocol::WireColor;
+
+    use crate::shell::presentation::compose_pane_surface::compose_pane_surface;
+    use ratatui::layout::Rect;
+    use shepr_protocol::FrameData;
+
+    use shepr_protocol::CellData;
     use shepr_vt::UnderlineStyle;
 
     /// One row of cells, one per char; `~` is an empty-symbol wide tail as pane surfaces

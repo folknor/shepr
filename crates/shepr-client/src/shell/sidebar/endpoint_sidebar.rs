@@ -1,8 +1,25 @@
-use super::render::{ShellRenderState, display_width, put_right_text, put_text};
-use super::*;
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::presentation::render::{
+    ShellRenderState, display_width, put_right_text, put_text,
+};
+use ratatui::buffer::Buffer;
+use ratatui::style::{Modifier, Style};
+
+use crate::shell::endpoints::{ClientShellEndpoint, MachineHit, endpoint_status_presentation};
+use crate::shell::state::{ClientShellConfig, ShellHitMap, WorkspaceHit};
+use shepr_protocol::ClientShellSnapshot;
+
+use ratatui::layout::Rect;
+use shepr_config::theme::Palette;
+
+use crate::shell::presentation::status::status_glyph;
+use crate::shell::sidebar::sidebar_tokens::{
+    expanded_sidebar_sections, sidebar_section_divider_rect,
+};
+
 use crate::limits::WORKSPACE_HEADER_ROWS;
 
-pub(super) fn render_collapsed(
+pub(in crate::shell) fn render_collapsed(
     buffer: &mut Buffer,
     area: Rect,
     config: &ClientShellConfig,
@@ -11,8 +28,9 @@ pub(super) fn render_collapsed(
 ) {
     let palette = &config.palette;
     let single_endpoint = state.endpoints.len() == 1;
-    super::render::render_sidebar_background(buffer, area, palette);
-    let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
+    crate::shell::presentation::render::render_sidebar_background(buffer, area, palette);
+    let (workspace_area, divider_y, detail_area) =
+        crate::shell::sidebar::collapsed_sidebar_sections(area);
     hits.workspace_body = workspace_area;
     let mut total_rows = 0usize;
     let mut selected_row = None;
@@ -49,7 +67,7 @@ pub(super) fn render_collapsed(
     if let Some(row) = selected_row.filter(|_| height > 0) {
         let row_heights = vec![1; total_rows];
         let gaps = vec![0; total_rows];
-        *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+        *state.workspace_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
             &row_heights,
             &gaps,
             workspace_area.height,
@@ -139,13 +157,14 @@ pub(super) fn render_collapsed(
             let selected = state.selected_workspace_id.is_some_and(|target| {
                 target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
             });
-            let selection_background = super::sidebar::workspace_selection_background(palette);
+            let selection_background =
+                crate::shell::sidebar::workspace_selection_background(palette);
             if selected {
                 buffer.set_style(rect, Style::default().bg(selection_background));
             } else if focused {
                 buffer.set_style(
                     rect,
-                    Style::default().bg(super::sidebar::workspace_active_background(
+                    Style::default().bg(crate::shell::sidebar::workspace_active_background(
                         palette,
                         state.selected_workspace_id.is_some(),
                     )),
@@ -163,7 +182,8 @@ pub(super) fn render_collapsed(
             } else {
                 format!(" {}", workspace.number)
             };
-            let number_width = super::render::display_width(&number).min(rect.width);
+            let number_width =
+                crate::shell::presentation::render::display_width(&number).min(rect.width);
             let dim = if stale {
                 Modifier::DIM
             } else {
@@ -209,7 +229,7 @@ pub(super) fn render_collapsed(
             Style::default().fg(palette.surface_dim),
         );
     }
-    super::endpoint_agents::render_collapsed(
+    crate::shell::sidebar::endpoint_agents::render_collapsed(
         buffer,
         detail_area,
         state.active_endpoint_id,
@@ -238,7 +258,7 @@ pub(super) fn render_collapsed(
     );
 }
 
-pub(super) fn render_expanded(
+pub(in crate::shell) fn render_expanded(
     buffer: &mut Buffer,
     area: Rect,
     active_snapshot: Option<&ClientShellSnapshot>,
@@ -248,7 +268,7 @@ pub(super) fn render_expanded(
 ) {
     let palette = &config.palette;
     let single_endpoint = state.endpoints.len() == 1;
-    super::render::render_sidebar_background(buffer, area, palette);
+    crate::shell::presentation::render::render_sidebar_background(buffer, area, palette);
     hits.sidebar_divider = if area.is_empty() {
         Rect::default()
     } else {
@@ -317,7 +337,7 @@ pub(super) fn render_expanded(
                     .as_deref()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(*entry)?;
-                        let len = super::sidebar::workspace_rows(
+                        let len = crate::shell::sidebar::workspace_rows(
                             workspace,
                             workspace.agent_status,
                             &config.spaces,
@@ -371,7 +391,7 @@ pub(super) fn render_expanded(
             Row::Endpoint(_) => false,
         });
         if let Some(selected_row) = selected_row {
-            *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+            *state.workspace_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
                 &row_heights,
                 &gaps,
                 body.height,
@@ -380,7 +400,7 @@ pub(super) fn render_expanded(
             );
         }
     }
-    let metrics = super::scroll::list_scroll_metrics(
+    let metrics = crate::shell::navigation::scroll::list_scroll_metrics(
         &row_heights,
         &gaps,
         body.height,
@@ -437,7 +457,8 @@ pub(super) fn render_expanded(
                     continue;
                 };
                 let status = workspace.agent_status;
-                let tokens = super::sidebar::workspace_rows(workspace, status, &config.spaces);
+                let tokens =
+                    crate::shell::sidebar::workspace_rows(workspace, status, &config.spaces);
                 let height = u16::try_from(tokens.len().max(1))
                     .unwrap_or(u16::MAX)
                     .min(body.height);
@@ -464,7 +485,7 @@ pub(super) fn render_expanded(
                     && state
                         .dragged_workspace_id
                         .is_some_and(|id| id.as_str() == workspace.workspace_id.as_str());
-                super::sidebar::render_workspace_rows(
+                crate::shell::sidebar::render_workspace_rows(
                     buffer,
                     nested,
                     workspace.number,
@@ -499,7 +520,7 @@ pub(super) fn render_expanded(
     if show_scrollbar {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         hits.workspace_scrollbar = track;
-        super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
+        crate::shell::navigation::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
 
     // Same drop marker as the single-machine sidebar draws while a workspace is dragged.
@@ -553,7 +574,7 @@ pub(super) fn render_expanded(
             Style::default().fg(palette.overlay0),
         );
     }
-    super::endpoint_agents::render_expanded(
+    crate::shell::sidebar::endpoint_agents::render_expanded(
         buffer,
         detail_area,
         state.active_endpoint_id,
@@ -595,7 +616,7 @@ fn render_endpoint_row(
     marker: &str,
     endpoint: &ClientShellEndpoint,
     highlighted: bool,
-    auth: &super::machine_diagnostics::MachineDiagnostics,
+    auth: &crate::shell::overlays::machine_diagnostics::MachineDiagnostics,
     palette: &Palette,
 ) -> Rect {
     if highlighted {

@@ -299,6 +299,11 @@ env_vocabulary! {
         ClaudeCodeSessionId => "CLAUDE_CODE_SESSION_ID",
         /// `CLAUDE_CODE_MESSAGING_TOKEN`: removed from panes, as `CLAUDECODE`.
         ClaudeCodeMessagingToken => "CLAUDE_CODE_MESSAGING_TOKEN",
+        /// `CLAUDE_JOB_DIR`: marks a Claude background session, removed from
+        /// panes because the Claude hook asset reports nothing under it.
+        ClaudeJobDir => "CLAUDE_JOB_DIR",
+        /// `CLAUDE_CODE_SESSION_KIND`: removed from panes, as `CLAUDE_JOB_DIR`.
+        ClaudeCodeSessionKind => "CLAUDE_CODE_SESSION_KIND",
         /// `CODEX_THREAD_ID`: an outer Codex session's marker, removed from
         /// panes.
         CodexThreadId => "CODEX_THREAD_ID",
@@ -870,6 +875,8 @@ mod tests {
                 "CLAUDE_CODE_CHILD_SESSION",
                 "CLAUDE_CODE_SESSION_ID",
                 "CLAUDE_CODE_MESSAGING_TOKEN",
+                "CLAUDE_JOB_DIR",
+                "CLAUDE_CODE_SESSION_KIND",
                 "CODEX_THREAD_ID",
                 "OMPCODE",
             ]

@@ -1,12 +1,27 @@
-use super::*;
+use crate::shell::overlays::text_editor;
+
+use crate::endpoint::ClientEndpointId;
+use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::navigation::workspace_navigation::WorkspaceNavigationTarget;
+use crate::shell::state::{
+    ClientCopyModeState, ClientShellConfig, ClientShellLayout, ClientShellMode, ShellHitMap,
+};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use shepr_config::LiveKeybindConfig;
+use shepr_config::theme::Palette;
+use shepr_protocol::ClientShellSnapshot;
+use std::collections::HashSet;
+
+use crate::shell::presentation::status::panel_contrast_fg;
+
 use unicode_segmentation::UnicodeSegmentation;
 
-#[path = "../overlays/overlays.rs"]
-mod overlays;
-#[path = "../sidebar/sidebar.rs"]
-pub(in crate::shell) mod sidebar;
-
-pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
+pub(in crate::shell) use crate::shell::overlays::{
+    render_client_overlay, render_context_menu, render_global_menu,
+};
 pub(in crate::shell) fn render_sidebar_background(
     buffer: &mut Buffer,
     area: Rect,
@@ -34,7 +49,7 @@ fn configured_key_labels(bindings: &[&shepr_config::ActionKeybinds]) -> String {
     }
 }
 
-pub(super) fn render_mode_bar(
+pub(in crate::shell) fn render_mode_bar(
     buffer: &mut Buffer,
     pane_area: Rect,
     mode: ClientShellMode,
@@ -254,24 +269,26 @@ pub(super) fn render_mode_bar(
     Some(bar)
 }
 
-pub(super) struct ShellRenderState<'a> {
-    pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
-    pub(super) endpoints: &'a [ClientShellEndpoint],
-    pub(super) active_endpoint_id: &'a ClientEndpointId,
-    pub(super) agent_panel_model: &'a super::aggregate_navigation::AgentPanelModel,
-    pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
-    pub(super) workspace_scroll: &'a mut usize,
-    pub(super) agent_scroll: &'a mut usize,
-    pub(super) reveal_focused_workspace: &'a mut bool,
-    pub(super) sidebar_collapsed: bool,
-    pub(super) sidebar_section_split: super::sidebar_tokens::SectionSplit,
-    pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
-    pub(super) reveal_navigation_workspace: &'a mut bool,
-    pub(super) dragged_workspace_id: Option<&'a shepr_protocol::WorkspaceId>,
-    pub(super) workspace_drop_indicator_row: Option<u16>,
+pub(in crate::shell) struct ShellRenderState<'a> {
+    pub(in crate::shell) machine_diagnostics:
+        &'a crate::shell::overlays::machine_diagnostics::MachineDiagnostics,
+    pub(in crate::shell) endpoints: &'a [ClientShellEndpoint],
+    pub(in crate::shell) active_endpoint_id: &'a ClientEndpointId,
+    pub(in crate::shell) agent_panel_model:
+        &'a crate::shell::navigation::aggregate_navigation::AgentPanelModel,
+    pub(in crate::shell) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
+    pub(in crate::shell) workspace_scroll: &'a mut usize,
+    pub(in crate::shell) agent_scroll: &'a mut usize,
+    pub(in crate::shell) reveal_focused_workspace: &'a mut bool,
+    pub(in crate::shell) sidebar_collapsed: bool,
+    pub(in crate::shell) sidebar_section_split: crate::shell::sidebar::sidebar_tokens::SectionSplit,
+    pub(in crate::shell) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
+    pub(in crate::shell) reveal_navigation_workspace: &'a mut bool,
+    pub(in crate::shell) dragged_workspace_id: Option<&'a shepr_protocol::WorkspaceId>,
+    pub(in crate::shell) workspace_drop_indicator_row: Option<u16>,
 }
 
-pub(super) fn render_shell(
+pub(in crate::shell) fn render_shell(
     buffer: &mut Buffer,
     layout: ClientShellLayout,
     snapshot: Option<&ClientShellSnapshot>,
@@ -281,7 +298,7 @@ pub(super) fn render_shell(
     let mut hits = ShellHitMap::default();
     if layout.sidebar.width > 0 {
         if state.sidebar_collapsed {
-            super::endpoint_sidebar::render_collapsed(
+            crate::shell::sidebar::endpoint_sidebar::render_collapsed(
                 buffer,
                 layout.sidebar,
                 config,
@@ -289,7 +306,7 @@ pub(super) fn render_shell(
                 &mut hits,
             );
         } else {
-            super::endpoint_sidebar::render_expanded(
+            crate::shell::sidebar::endpoint_sidebar::render_expanded(
                 buffer,
                 layout.sidebar,
                 snapshot,
@@ -315,7 +332,13 @@ pub(super) fn render_shell(
     hits
 }
 
-pub(super) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
+pub(in crate::shell) fn put_right_text(
+    buffer: &mut Buffer,
+    area: Rect,
+    y: u16,
+    text: &str,
+    style: Style,
+) {
     let width = display_width(text).min(area.width);
     put_text(
         buffer,
@@ -327,7 +350,7 @@ pub(super) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str
     );
 }
 
-pub(super) fn put_text(
+pub(in crate::shell) fn put_text(
     buffer: &mut Buffer,
     x: u16,
     y: u16,
@@ -386,17 +409,17 @@ fn rendered_grapheme_width(grapheme: &str) -> usize {
     }
 }
 
-pub(super) fn rendered_text_width(text: &str) -> usize {
+pub(in crate::shell) fn rendered_text_width(text: &str) -> usize {
     text.graphemes(true).fold(0usize, |width, grapheme| {
         width.saturating_add(rendered_grapheme_width(grapheme))
     })
 }
 
-pub(super) fn display_width(text: &str) -> u16 {
+pub(in crate::shell) fn display_width(text: &str) -> u16 {
     u16::try_from(rendered_text_width(text)).unwrap_or(u16::MAX)
 }
 
-pub(super) fn put_spans(
+pub(in crate::shell) fn put_spans(
     buffer: &mut Buffer,
     area: Rect,
     spans: &[ratatui::text::Span<'_>],
@@ -428,11 +451,19 @@ pub(super) fn put_spans(
 }
 
 #[cfg(test)]
-pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
+pub(in crate::shell) use crate::shell::navigation::aggregate_navigation::navigator_rows as client_navigator_rows;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use ratatui::buffer::Buffer;
+
+    use crate::shell::state::ClientShellMode;
+    use ratatui::layout::Rect;
+    use ratatui::style::Style;
+
+    use crate::shell::presentation::render::{
+        display_width, put_spans, render_mode_bar, rendered_text_width,
+    };
     use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
     #[test]

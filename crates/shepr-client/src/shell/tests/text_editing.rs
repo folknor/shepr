@@ -1,5 +1,27 @@
-use super::*;
-use shepr_termio::input::{KeybindAction, KeybindMatch, TerminalKey};
+use crate::endpoint::ClientEndpointId;
+use crate::shell::state::{
+    ClientNavigatorTarget, ClientRenameTarget, ClientShellAction, ClientShellConfig,
+    ClientShellEndpointError, ClientShellMode, ClientShellOverlay,
+};
+use shepr_config::ClientConfig;
+use shepr_protocol::command::EndpointCommand;
+use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
+use shepr_termio::input::KeybindAction;
+use shepr_termio::input::KeybindMatch;
+use shepr_termio::input::TerminalKey;
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::{
+    ClientHelpOverlay, ClientRenameOverlay, ClientShellInput, ClientShellState,
+};
+
+use crossterm::event::{KeyCode, KeyModifiers};
+use shepr_protocol::command::EndpointReply;
+
+use crate::shell::overlays::text_editor::TextEditor;
+
+use crate::shell::tests::{snapshot, surface};
+use crate::tests::test_pane_id;
 
 fn shell(field: usize) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));

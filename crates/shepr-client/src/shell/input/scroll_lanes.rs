@@ -1,9 +1,10 @@
-use super::*;
+use std::collections::HashMap;
+
 use shepr_protocol::{PublicPaneId, RequestId};
 /// Per-pane scroll requests: one in flight, the newest offset queued behind it, and the
 /// target offset until a surface shows it.
 #[derive(Default)]
-pub(super) struct ScrollLanes(HashMap<PublicPaneId, ScrollLane>);
+pub(in crate::shell) struct ScrollLanes(HashMap<PublicPaneId, ScrollLane>);
 #[derive(Default)]
 struct ScrollLane {
     /// The offset the user last asked for, until a surface shows it.
@@ -15,18 +16,18 @@ struct ScrollFlight {
     /// Queued work exists only inside the flight it waits behind.
     queued: Option<usize>,
 }
-pub(super) enum ScrollWant {
+pub(in crate::shell) enum ScrollWant {
     Send,
     Queued,
 }
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum ScrollAnswer {
+pub(in crate::shell) enum ScrollAnswer {
     Stale,
     Next(Option<usize>),
 }
 impl ScrollLanes {
     /// Records `offset` as the target; queues it (latest wins) behind a flight.
-    pub(super) fn want(&mut self, pane: &PublicPaneId, offset: usize) -> ScrollWant {
+    pub(in crate::shell) fn want(&mut self, pane: &PublicPaneId, offset: usize) -> ScrollWant {
         let lane = self.0.entry(pane.clone()).or_default();
         lane.target = Some(offset);
         if let Some(flight) = lane.flight.as_mut() {
@@ -38,7 +39,7 @@ impl ScrollLanes {
     }
     /// Every dispatch, a queued one included, records its offset as the target, so a
     /// surface still showing the confirmed in-between offset does not clear it.
-    pub(super) fn sent(&mut self, pane: PublicPaneId, request: RequestId, offset: usize) {
+    pub(in crate::shell) fn sent(&mut self, pane: PublicPaneId, request: RequestId, offset: usize) {
         self.0.insert(
             pane,
             ScrollLane {
@@ -50,12 +51,12 @@ impl ScrollLanes {
             },
         );
     }
-    pub(super) fn send_failed(&mut self, pane: &PublicPaneId) {
+    pub(in crate::shell) fn send_failed(&mut self, pane: &PublicPaneId) {
         self.0.remove(pane);
     }
     /// Do not resurrect a target a surface already showed, or replace a queued target
     /// with the intermediate offset confirmed by this answer.
-    pub(super) fn answered(
+    pub(in crate::shell) fn answered(
         &mut self,
         pane: &PublicPaneId,
         request: &RequestId,
@@ -78,7 +79,7 @@ impl ScrollLanes {
     }
     /// Removes the whole lane (target, flight and queued offset) when `request` is its
     /// flight. Returns whether it was.
-    pub(super) fn failed(&mut self, pane: &PublicPaneId, request: &RequestId) -> bool {
+    pub(in crate::shell) fn failed(&mut self, pane: &PublicPaneId, request: &RequestId) -> bool {
         if self
             .0
             .get(pane)
@@ -91,12 +92,12 @@ impl ScrollLanes {
             false
         }
     }
-    pub(super) fn target(&self, pane: &PublicPaneId) -> Option<usize> {
+    pub(in crate::shell) fn target(&self, pane: &PublicPaneId) -> Option<usize> {
         self.0.get(pane).and_then(|l| l.target)
     }
     /// A surface shows `offset` for `pane`: a target clamped to `max` that it shows is
     /// done, and an empty lane goes.
-    pub(super) fn shown(&mut self, pane: &PublicPaneId, offset: usize, max: usize) {
+    pub(in crate::shell) fn shown(&mut self, pane: &PublicPaneId, offset: usize, max: usize) {
         let Some(lane) = self.0.get_mut(pane) else {
             return;
         };
@@ -109,31 +110,32 @@ impl ScrollLanes {
     }
     /// Drops lanes of panes missing from a new snapshot, flights included; their ledger
     /// entries stay until answered, and the answer is then stale.
-    pub(super) fn retain_panes(&mut self, mut exists: impl FnMut(&PublicPaneId) -> bool) {
+    pub(in crate::shell) fn retain_panes(&mut self, mut exists: impl FnMut(&PublicPaneId) -> bool) {
         self.0.retain(|id, _| exists(id));
     }
-    pub(super) fn clear(&mut self) {
+    pub(in crate::shell) fn clear(&mut self) {
         self.0.clear();
     }
 }
 #[cfg(test)]
 impl ScrollLanes {
-    pub(super) fn queued(&self, pane: &PublicPaneId) -> Option<usize> {
+    pub(in crate::shell) fn queued(&self, pane: &PublicPaneId) -> Option<usize> {
         self.0
             .get(pane)
             .and_then(|l| l.flight.as_ref())
             .and_then(|f| f.queued)
     }
-    pub(super) fn in_flight(&self, pane: &PublicPaneId) -> bool {
+    pub(in crate::shell) fn in_flight(&self, pane: &PublicPaneId) -> bool {
         self.0.get(pane).is_some_and(|l| l.flight.is_some())
     }
-    pub(super) fn is_idle(&self) -> bool {
+    pub(in crate::shell) fn is_idle(&self) -> bool {
         self.0.is_empty()
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::PublicPaneId;
+    use crate::shell::input::scroll_lanes::{ScrollAnswer, ScrollLanes, ScrollWant};
     fn pane() -> PublicPaneId {
         crate::tests::test_pane_id("w1:p1")
     }

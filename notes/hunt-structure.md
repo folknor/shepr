@@ -566,26 +566,18 @@ other launch checks before `setup_terminal`. (client-core)
 
 ## Client shell
 
-## STR-042 - `ClientShellState` is a god object, and `shell/` directories are cosmetic
+## STR-042 - `ClientShellState` still owns the endpoint, presentation, mode and copy state
 
-About 58 fields, all `pub(super)`, mutated by `impl ClientShellState` blocks in
-some 25 files that all start with `use super::*`. Every file is hung off
-`shell.rs` with `#[path = ..]` as a flat sibling module and globbed into one
-namespace, and the module tree contradicts the folders (`overlays/overlays.rs`
-and `sidebar/sidebar.rs` are children of `presentation/render.rs`). Proposed
-components, each owning its fields and invariants, with the shell as a thin
-coordinator: `Endpoints` (list, active id, collapsed set; today `self.snapshot` is
-a deep clone of the active endpoint's, re-cloned per snapshot, and
-`active_snapshot_generation` mirrors `snapshot_generation`, each with its own
-"older revision" check), `Presentation` (surfaces, hits, the last composition,
-terminal size; today the shell's `last_composed_size` and `lib.rs`'s
-`reported_geometry` both hold it), `Mode`, `MouseSelection`, `CopySession`,
-`ChromeLayout` (width, collapse, split, sort with origins, persistence),
-`Notices`, `Timers`, `Requests` and `Overlay`. Make the folders the real module
-tree, drop every `#[path]` and `use super::*`, and give each component a narrow
-API. Tests poke private fields directly (`state.copy_mode =
-Some(ClientCopyModeState { ..19 fields.. })` in at least four test modules).
-`shepr-remote`'s `lib.rs` does the same flattening (eleven `#[path =
+The shell has a real module tree with no path attributes or parent globs, and
+`Notices`, `ChromeLayout` and `TransientError` own their fields. Still open:
+`ClientShellState` keeps about forty fields mutated from some nineteen files.
+`Endpoints` (list, active id, collapsed set; `active_snapshot_generation`
+mirrors `snapshot_generation`, each with its own "older revision" check),
+`Presentation` (surfaces, hits, the last composition, terminal size; the shell's
+`last_composed_size` and `lib.rs`'s `reported_geometry` both hold it), `Mode` and
+`CopySession` were deferred because their transitions coordinate several
+domains; a split needs those transitions reshaped first, not fields wrapped.
+Tests still build `ClientCopyModeState` field by field. `shepr-remote`'s `lib.rs` does the same flattening (eleven `#[path =
 "remote/x.rs"] mod x;` declarations, `use bridge::*` and friends, most modules
 beginning `use super::*`, `impl RemoteExecutable` methods in `launch.rs` for a
 type defined in `machine/executable.rs`, `SSH_OWN_FAILURE_EXIT_CODE` and
@@ -608,7 +600,8 @@ belongs to the caller. (client-shell)
 
 ## STR-044 - Overlays should be one module each
 
-Each overlay is spread across `state.rs` (types), `overlay_input.rs` (an `if
+The overlay files now sit in a real `shell/overlays/` module, but each overlay
+is still spread across `state.rs` (types), `overlay_input.rs` (an `if
 matches!` chain per overlay), `mouse.rs` (an arm per overlay), `overlays.rs`
 (render), `context_menu.rs`/`global_menu.rs` (items and actions) and
 `ShellHitMap` (flat `help_*`, `navigator_*`, `overlay_primary/clear/cancel`,

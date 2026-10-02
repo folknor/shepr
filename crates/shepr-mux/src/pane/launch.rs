@@ -89,6 +89,8 @@ fn pane_child_env_policy(variable: ChildEnv) -> PaneEnvPolicy {
         | ChildEnv::ClaudeCodeChildSession
         | ChildEnv::ClaudeCodeSessionId
         | ChildEnv::ClaudeCodeMessagingToken
+        | ChildEnv::ClaudeJobDir
+        | ChildEnv::ClaudeCodeSessionKind
         | ChildEnv::CodexThreadId
         | ChildEnv::Ompcode => PaneEnvPolicy::Scrubbed,
         ChildEnv::Term

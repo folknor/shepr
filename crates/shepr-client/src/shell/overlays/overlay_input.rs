@@ -2,10 +2,22 @@
 //! and pasted text land in these editors; input content must stay out of logs
 //! and error messages here (log lengths or content-free kinds instead).
 
-use super::*;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::ledger::Work;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{
+    ClientNavigatorFilter, ClientNavigatorTarget, ClientRenameTarget, ClientShellMode,
+    ClientShellOverlay,
+};
+use crossterm::event::KeyCode;
+
+use crate::shell::state::{
+    ClientConfirmCloseOverlay, ClientHelpOverlay, ClientNavigatorOverlay, ClientRenameOverlay,
+    ClientShellInput, ClientShellState,
+};
 
 impl ClientShellState {
-    pub(super) fn open_navigator_overlay(&mut self) {
+    pub(in crate::shell) fn open_navigator_overlay(&mut self) {
         let mut navigator = ClientNavigatorOverlay {
             query: TextEditor::default(),
             search_focused: false,
@@ -23,7 +35,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::Navigator(navigator));
     }
 
-    pub(super) fn move_navigator_selection(&mut self, delta: isize) {
+    pub(in crate::shell) fn move_navigator_selection(&mut self, delta: isize) {
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
@@ -34,8 +46,10 @@ impl ClientShellState {
             navigator.selected = None;
             return;
         }
-        let selected =
-            super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
+        let selected = crate::shell::navigation::aggregate_navigation::navigator_selected_index(
+            &rows, navigator,
+        )
+        .unwrap_or(0);
         let max_index = rows.len().saturating_sub(1);
         let next = selected
             .checked_add_signed(delta)
@@ -44,7 +58,7 @@ impl ClientShellState {
         navigator.selected = Some(rows[next].target.clone());
     }
 
-    pub(super) fn scroll_navigator_to(&mut self, scroll: usize, viewport_rows: usize) {
+    pub(in crate::shell) fn scroll_navigator_to(&mut self, scroll: usize, viewport_rows: usize) {
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
@@ -53,8 +67,10 @@ impl ClientShellState {
             .rows(&self.active_endpoint_id, navigator);
         let viewport_rows = viewport_rows.max(1);
         navigator.scroll = scroll.min(rows.len().saturating_sub(viewport_rows));
-        let selected =
-            super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
+        let selected = crate::shell::navigation::aggregate_navigation::navigator_selected_index(
+            &rows, navigator,
+        )
+        .unwrap_or(0);
         // Keep the selection in the dragged viewport so rendering does not snap back to it.
         let selected = selected.clamp(navigator.scroll, navigator.scroll + viewport_rows - 1);
         navigator.selected = rows.get(selected).map(|row| row.target.clone());
@@ -68,7 +84,9 @@ impl ClientShellState {
             .navigator_index
             .rows(&self.active_endpoint_id, navigator);
         let Some(selected) =
-            super::aggregate_navigation::navigator_selected_index(&rows, navigator)
+            crate::shell::navigation::aggregate_navigation::navigator_selected_index(
+                &rows, navigator,
+            )
         else {
             return;
         };
@@ -95,13 +113,15 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
         let target = self.overlay.as_ref().and_then(|overlay| match overlay {
             ClientShellOverlay::Navigator(navigator) => {
                 let rows = self
                     .navigator_index
                     .rows(&self.active_endpoint_id, navigator);
-                super::aggregate_navigation::selected_navigator_target(&rows, navigator)
+                crate::shell::navigation::aggregate_navigation::selected_navigator_target(
+                    &rows, navigator,
+                )
             }
             _ => None,
         });
@@ -135,7 +155,7 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn workspace_action_id(&self) -> Option<shepr_protocol::WorkspaceId> {
+    pub(in crate::shell) fn workspace_action_id(&self) -> Option<shepr_protocol::WorkspaceId> {
         self.navigate_workspace_id
             .as_ref()
             .filter(|target| {
@@ -153,7 +173,7 @@ impl ClientShellState {
     /// Opens the new-workspace name prompt with the path-based label and asks
     /// the active endpoint's server, local or remote, for the cwd's checkout
     /// root; the answer replaces the suggestion unless the user has edited it.
-    pub(super) fn open_new_workspace_overlay(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn open_new_workspace_overlay(&mut self, outcome: &mut ClientShellInput) {
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.snapshot.as_deref().and_then(|snapshot| {
             let workspace_id = source_workspace_id.as_ref()?;
@@ -199,7 +219,7 @@ impl ClientShellState {
     /// Applies the answer to a `workspace.checkout_root` request. An answer for
     /// an overlay that is gone or was reopened since is ignored, and a failed
     /// lookup keeps the path-based suggestion. Returns whether to repaint.
-    pub(super) fn complete_workspace_label_lookup(
+    pub(in crate::shell) fn complete_workspace_label_lookup(
         &mut self,
         request: &shepr_protocol::RequestId,
         result: Option<shepr_protocol::command::EndpointReply>,
@@ -242,7 +262,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn open_rename_workspace_overlay(&mut self) {
+    pub(in crate::shell) fn open_rename_workspace_overlay(&mut self) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
@@ -263,7 +283,7 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn open_rename_pane_overlay(&mut self) {
+    pub(in crate::shell) fn open_rename_pane_overlay(&mut self) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
@@ -285,7 +305,7 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
+    pub(in crate::shell) fn insert_overlay_text(&mut self, text: &str) -> bool {
         match self.overlay.as_mut() {
             Some(ClientShellOverlay::Rename(rename)) => {
                 rename.input.insert(text);
@@ -308,7 +328,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn route_overlay_key(
+    pub(in crate::shell) fn route_overlay_key(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
@@ -668,7 +688,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn save_rename_overlay(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn save_rename_overlay(&mut self, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.take() else {
             return;
         };
@@ -710,7 +730,7 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn accept_close_confirmation(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn accept_close_confirmation(&mut self, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.take() else {
             return;
         };
@@ -725,7 +745,10 @@ impl ClientShellState {
         );
     }
 
-    pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: shepr_protocol::WorkspaceId) {
+    pub(in crate::shell) fn open_confirm_close_overlay(
+        &mut self,
+        workspace_id: shepr_protocol::WorkspaceId,
+    ) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };

@@ -35,6 +35,7 @@ should.
 - The client's `present_frame` relies on the presentation gate never passing a pane frame while no endpoint is shown; the test that covered that through a frozen-frames check went with the check, and nothing at the gate replaces it.
 - `cwd_purposes_preserve_missing_absolute_state_without_filesystem_checks` passes no pane runtime, so the per-purpose runtime branches of the mux terminal cwd resolution have no test.
 - Navigator tests that call `render::client_navigator_rows` build a fresh index, so the cached `navigator_index` that production reads is not exercised.
+- The client shell's `Notices`, `ChromeLayout` and `TransientError` components have no unit tests of their own; they are covered only through `ClientShellState` tests.
 - The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
 
 # Possible capabilities

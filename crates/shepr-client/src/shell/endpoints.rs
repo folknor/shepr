@@ -1,4 +1,14 @@
-use super::*;
+use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::shell::ledger::DropReason;
+use crate::shell::presentation::surfaces::PaneSurfaces;
+use crate::shell::state::ClientShellState;
+use shepr_protocol::ClientShellSnapshot;
+use std::sync::Arc;
+
+use shepr_config::theme::Palette;
+use std::collections::HashMap;
+
+use ratatui::layout::Rect;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientShellEndpoint {
@@ -11,11 +21,11 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) agent_recency: HashMap<shepr_protocol::PublicPaneId, u64>,
 }
 
-pub(super) struct MachineHit {
-    pub(super) rect: Rect,
-    pub(super) status_badge: Rect,
-    pub(super) collapse_toggle: Rect,
-    pub(super) endpoint_id: ClientEndpointId,
+pub(in crate::shell) struct MachineHit {
+    pub(in crate::shell) rect: Rect,
+    pub(in crate::shell) status_badge: Rect,
+    pub(in crate::shell) collapse_toggle: Rect,
+    pub(in crate::shell) endpoint_id: ClientEndpointId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -319,18 +329,22 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn rebuild_agent_panel_model(&mut self) {
+    pub(in crate::shell) fn rebuild_agent_panel_model(&mut self) {
         self.agent_panel_model =
-            super::aggregate_navigation::AgentPanelModel::build(&self.endpoints, &self.config);
+            crate::shell::navigation::aggregate_navigation::AgentPanelModel::build(
+                &self.endpoints,
+                &self.config,
+            );
     }
 
     fn rebuild_endpoint_models(&mut self) {
         self.rebuild_agent_panel_model();
-        self.navigator_index = super::aggregate_navigation::NavigatorIndex::build(&self.endpoints);
+        self.navigator_index =
+            crate::shell::navigation::aggregate_navigation::NavigatorIndex::build(&self.endpoints);
     }
 }
 
-pub(super) fn endpoint_status_presentation(
+pub(in crate::shell) fn endpoint_status_presentation(
     status: ClientEndpointStatus,
     palette: &Palette,
 ) -> (&'static str, &'static str, ratatui::style::Color) {
@@ -342,7 +356,7 @@ pub(super) fn endpoint_status_presentation(
     }
 }
 
-pub(super) fn local_endpoint() -> ClientShellEndpoint {
+pub(in crate::shell) fn local_endpoint() -> ClientShellEndpoint {
     ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
         status: ClientEndpointStatus::Online,

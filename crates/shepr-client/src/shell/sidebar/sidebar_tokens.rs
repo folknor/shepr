@@ -1,13 +1,10 @@
-#[path = "token_definitions.rs"]
-mod tokens;
-
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::Span,
 };
 
-pub(super) use self::tokens::{
+pub(in crate::shell) use super::token_definitions::{
     AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
 };
@@ -18,19 +15,19 @@ use shepr_config::theme::Palette;
 /// Workspace share of the expanded sidebar, constrained before rendering.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(transparent)]
-pub(super) struct SectionSplit(f32);
+pub(in crate::shell) struct SectionSplit(f32);
 
 impl SectionSplit {
-    pub(super) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
+    pub(in crate::shell) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
 
-    pub(super) fn new(value: f32) -> Option<Self> {
+    pub(in crate::shell) fn new(value: f32) -> Option<Self> {
         (value.is_finite()
             && (shepr_core::layout::MIN_SPLIT_RATIO..=shepr_core::layout::MAX_SPLIT_RATIO)
                 .contains(&value))
         .then_some(Self(value))
     }
 
-    pub(super) fn from_drag(value: f32) -> Self {
+    pub(in crate::shell) fn from_drag(value: f32) -> Self {
         Self(if value.is_finite() {
             value.clamp(
                 shepr_core::layout::MIN_SPLIT_RATIO,
@@ -41,7 +38,7 @@ impl SectionSplit {
         })
     }
 
-    pub(super) fn get(self) -> f32 {
+    pub(in crate::shell) fn get(self) -> f32 {
         self.0
     }
 }
@@ -57,8 +54,8 @@ impl<'de> serde::Deserialize<'de> for SectionSplit {
     }
 }
 
-pub(super) fn display_width(text: &str) -> usize {
-    super::render::rendered_text_width(text)
+pub(in crate::shell) fn display_width(text: &str) -> usize {
+    crate::shell::presentation::render::rendered_text_width(text)
 }
 
 fn sidebar_sections_can_split(height: u16) -> bool {
@@ -117,7 +114,10 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
     )
 }
 
-pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: SectionSplit) -> (Rect, Rect) {
+pub(in crate::shell) fn expanded_sidebar_sections(
+    area: Rect,
+    split_ratio: SectionSplit,
+) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), Rect::default());
@@ -135,7 +135,10 @@ pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: SectionSplit) -
     )
 }
 
-pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: SectionSplit) -> Rect {
+pub(in crate::shell) fn sidebar_section_divider_rect(
+    area: Rect,
+    split_ratio: SectionSplit,
+) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || !sidebar_sections_can_split(content.height) {
         return Rect::default();
@@ -146,16 +149,16 @@ pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: SectionSplit
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct TokenStyles {
-    pub(super) state_text: Style,
-    pub(super) primary: Style,
-    pub(super) secondary: Style,
-    pub(super) terminal_title: Style,
+pub(in crate::shell) struct TokenStyles {
+    pub(in crate::shell) state_text: Style,
+    pub(in crate::shell) primary: Style,
+    pub(in crate::shell) secondary: Style,
+    pub(in crate::shell) terminal_title: Style,
 }
 
-pub(super) fn resolved_token_spans(
+pub(in crate::shell) fn resolved_token_spans(
     resolved: &[ResolvedToken],
-    state_glyph: super::StatusGlyph,
+    state_glyph: crate::shell::presentation::status::StatusGlyph,
     styles: TokenStyles,
     palette: &Palette,
     max_width: usize,
@@ -197,7 +200,12 @@ pub(super) fn resolved_token_spans(
             .sum::<usize>();
         let separators = indices
             .windows(2)
-            .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
+            .map(|pair| {
+                display_width(super::token_definitions::separator(
+                    &resolved[pair[0]],
+                    &resolved[pair[1]],
+                ))
+            })
             .sum::<usize>();
         content + separators
     };
@@ -225,7 +233,12 @@ pub(super) fn resolved_token_spans(
         .collect::<Vec<_>>();
     let separator_width = visible_indices
         .windows(2)
-        .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
+        .map(|pair| {
+            display_width(super::token_definitions::separator(
+                &resolved[pair[0]],
+                &resolved[pair[1]],
+            ))
+        })
         .sum::<usize>();
     let fixed_width = visible_indices
         .iter()
@@ -263,7 +276,7 @@ pub(super) fn resolved_token_spans(
         if position > 0 {
             let previous = &resolved[visible_indices[position - 1]];
             spans.push(Span::styled(
-                tokens::separator(previous, token),
+                super::token_definitions::separator(previous, token),
                 Style::default().fg(palette.overlay0),
             ));
         }
@@ -366,7 +379,7 @@ mod split_tests {
         let palette = super::Palette::default();
         let spans = super::resolved_token_spans(
             &[token],
-            super::super::StatusGlyph {
+            crate::shell::presentation::status::StatusGlyph {
                 text: "●",
                 style: ratatui::style::Style::default(),
             },

@@ -1,4 +1,21 @@
-use super::*;
+use crate::shell::overlays::preferences;
+use crate::shell::state::{
+    ClientContextMenuAction, ClientContextMenuTarget, ClientRenameTarget, ClientShellAction,
+    ClientShellConfig, ClientShellOverlay, ClientShellState,
+};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use shepr_config::ClientConfig;
+use shepr_protocol::FrameData;
+use shepr_protocol::command::EndpointCommand;
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::{ClientContextMenuOverlay, ClientGlobalMenuOverlay, ClientRenameOverlay};
+use shepr_protocol::{ClientShellWorkspace, SurfaceRect};
+
+use crate::shell::tests::{snapshot, surface};
+use crate::tests::{test_pane_id, test_workspace_id};
 
 #[test]
 fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
@@ -83,8 +100,11 @@ fn client_owned_sidebar_dividers_resize_live() {
             row: width_divider.y + 2,
             modifiers: KeyModifiers::empty(),
         })]);
-    assert_eq!(state.sidebar_width, 32);
-    assert!(state.sidebar_width_manual);
+    assert_eq!(state.chrome.width(), 32);
+    assert_eq!(
+        state.chrome.preferences().sidebar_width,
+        Some(state.chrome.width())
+    );
     assert!(resize.repaint);
     // The endpoint is resized once, on release, not once per column crossed.
     assert!(!resize.resize);
@@ -151,7 +171,7 @@ fn client_owned_sidebar_dividers_resize_live() {
         row: 20,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(state.sidebar_section_split.get() > 0.6);
+    assert!(state.chrome.split().get() > 0.6);
     assert!(split.repaint);
     assert!(!split.resize);
 }
@@ -346,7 +366,7 @@ fn lost_sidebar_drag_release_still_persists_the_width_on_the_next_press() {
     state.handle_raw_events(vec![mouse(MouseEventKind::Down(MouseButton::Left), 80)]);
     assert!(state.chrome_drag.is_none());
     let stored = preferences::load(&path).expect("preferences stored");
-    assert_eq!(stored.sidebar_width, Some(state.sidebar_width));
+    assert_eq!(stored.sidebar_width, Some(state.chrome.width()));
 }
 
 #[test]
@@ -375,7 +395,7 @@ fn focus_loss_persists_a_sidebar_drag_but_keeps_it_for_its_release() {
     state.handle_raw_events(vec![mouse(MouseEventKind::Drag(MouseButton::Left), 31)]);
     state.handle_raw_events(vec![RawInputEvent::OuterFocusLost]);
     let stored = preferences::load(&path).expect("preferences stored on focus loss");
-    assert_eq!(stored.sidebar_width, Some(state.sidebar_width));
+    assert_eq!(stored.sidebar_width, Some(state.chrome.width()));
     assert!(
         state.chrome_drag.is_some(),
         "the drag stays recorded so a release that still arrives finishes it"

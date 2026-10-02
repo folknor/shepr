@@ -1,11 +1,19 @@
 //! Request ownership. Work can carry typed text; log ids and kinds only.
-use super::*;
-use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
+
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::state::ClientShellAction;
+use crate::shell::state::{
+    ClientShellEndpointError, ClientShellEndpointRequest, ClientShellInput, ClientShellState,
+    TypedText,
+};
+use shepr_protocol::command::EndpointError;
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{BootId, RequestId};
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// The sole owner of issued request identities. Only answer and drop paths take entries.
-pub(super) struct Ledger {
+pub(in crate::shell) struct Ledger {
     next: u64,
     entries: HashMap<RequestId, Entry>,
 }
@@ -17,14 +25,19 @@ impl Default for Ledger {
         }
     }
 }
-pub(super) struct Entry {
-    pub(super) boot_id: BootId,
-    pub(super) method: String,
-    pub(super) work: Work,
+pub(in crate::shell) struct Entry {
+    pub(in crate::shell) boot_id: BootId,
+    pub(in crate::shell) method: String,
+    pub(in crate::shell) work: Work,
 }
 impl Ledger {
     /// Issues `client-shell:{n}` and records the entry.
-    pub(super) fn open(&mut self, boot_id: BootId, method: String, work: Work) -> RequestId {
+    pub(in crate::shell) fn open(
+        &mut self,
+        boot_id: BootId,
+        method: String,
+        work: Work,
+    ) -> RequestId {
         let id = Self::id_for(self.next);
         // A u64 counter of user requests does not run out in practice.
         self.next = self.next.saturating_add(1);
@@ -38,7 +51,7 @@ impl Ledger {
         );
         id
     }
-    pub(super) fn work(&self, id: &RequestId) -> Option<&Work> {
+    pub(in crate::shell) fn work(&self, id: &RequestId) -> Option<&Work> {
         self.entries.get(id).map(|e| &e.work)
     }
     fn id_for(serial: u64) -> RequestId {
@@ -46,7 +59,7 @@ impl Ledger {
     }
     /// The serial the next `open` issues. Serials only grow, so comparing two marks
     /// tells whether anything was opened between them, even if it was removed since.
-    pub(super) fn mark(&self) -> u64 {
+    pub(in crate::shell) fn mark(&self) -> u64 {
         self.next
     }
     /// The entries still held that were opened at or after `mark`.
@@ -56,10 +69,10 @@ impl Ledger {
             .filter(|id| self.entries.contains_key(id))
             .collect()
     }
-    pub(super) fn is_empty(&self) -> bool {
+    pub(in crate::shell) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    pub(super) fn ids(&self) -> Vec<RequestId> {
+    pub(in crate::shell) fn ids(&self) -> Vec<RequestId> {
         self.entries.keys().cloned().collect()
     }
     fn take(&mut self, id: &str) -> Option<Entry> {
@@ -68,7 +81,7 @@ impl Ledger {
 }
 /// What a request owns: the feature state its answer completes and its drop rolls back.
 #[derive(Debug)]
-pub(super) enum Work {
+pub(in crate::shell) enum Work {
     /// A command whose answer needs no shell state.
     Plain,
     SelectionCopy,
@@ -188,7 +201,7 @@ impl ClientShellState {
     /// Opens a ledger entry for `command` at the current snapshot's boot and appends the
     /// endpoint action. `None` (and no entry) when the endpoint is not online or has no
     /// snapshot.
-    pub(super) fn submit(
+    pub(in crate::shell) fn submit(
         &mut self,
         command: EndpointCommand,
         work: Work,
@@ -226,7 +239,7 @@ impl ClientShellState {
         Some(request_id)
     }
 
-    pub(super) fn push_endpoint_command(
+    pub(in crate::shell) fn push_endpoint_command(
         &mut self,
         command: EndpointCommand,
         outcome: &mut ClientShellInput,
@@ -268,11 +281,8 @@ impl ClientShellState {
             return outcome;
         }
         if result.is_ok() {
-            self.endpoint_notice_seen.remove(&ClientEndpointNoticeKey {
-                boot_id: Some(entry.boot_id.clone()),
-                kind: ClientEndpointNoticeKind::Timeout,
-                code: entry.method.clone(),
-            });
+            self.notices
+                .command_succeeded(&entry.boot_id, &entry.method);
         }
         if let Err(error) = &result {
             outcome.repaint |= self.release_highlight(request_id);
@@ -344,7 +354,7 @@ impl ClientShellState {
         };
         self.dropped_entry(entry, &request_id.into(), reason)
     }
-    pub(super) fn drop_all_requests(&mut self, reason: DropReason) -> bool {
+    pub(in crate::shell) fn drop_all_requests(&mut self, reason: DropReason) -> bool {
         if self.ledger.is_empty() {
             return false;
         }
@@ -378,27 +388,28 @@ impl ClientShellState {
 #[cfg(test)]
 impl Ledger {
     /// The one removal outside answer and drop, for tests that keep a single request.
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&RequestId) -> bool) {
+    pub(in crate::shell) fn retain(&mut self, mut keep: impl FnMut(&RequestId) -> bool) {
         self.entries.retain(|id, _| keep(id));
     }
-    pub(super) fn contains(&self, id: &str) -> bool {
+    pub(in crate::shell) fn contains(&self, id: &str) -> bool {
         self.entries.contains_key(id)
     }
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::shell) fn len(&self) -> usize {
         self.entries.len()
     }
 }
 #[cfg(test)]
 impl ClientShellState {
     /// Whether the ledger holds `id`. For `crate::tests`, which cannot see the
-    /// `pub(super)` `ledger` field.
+    /// `pub(in crate::shell)` `ledger` field.
     pub(crate) fn has_request(&self, id: &str) -> bool {
         self.ledger.contains(id)
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::shell::ledger::{Ledger, Work};
+
     #[test]
     fn ids_are_unique_and_never_reused() {
         let mut l = Ledger::default();

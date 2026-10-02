@@ -1,8 +1,10 @@
-use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
 
-use super::Palette;
+use shepr_config::theme::Palette;
 
-pub(super) fn list_scroll_metrics(
+pub(in crate::shell) fn list_scroll_metrics(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,
@@ -55,7 +57,7 @@ pub(super) fn list_scroll_metrics(
     }
 }
 
-pub(super) fn list_scroll_start_to_reveal(
+pub(in crate::shell) fn list_scroll_start_to_reveal(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,
@@ -78,7 +80,7 @@ pub(super) fn list_scroll_start_to_reveal(
     start
 }
 
-pub(super) fn render_list_scrollbar(
+pub(in crate::shell) fn render_list_scrollbar(
     buffer: &mut Buffer,
     track: Rect,
     metrics: shepr_termio::ScrollMetrics,
@@ -97,7 +99,7 @@ pub(super) fn render_list_scrollbar(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::shell::navigation::scroll::list_scroll_metrics;
 
     #[test]
     fn list_metrics_preserve_variable_rows_and_caller_owned_gap_policy() {

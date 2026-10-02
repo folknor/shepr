@@ -1,8 +1,21 @@
-use super::*;
+use shepr_protocol::command::PaneDirection;
+use shepr_protocol::command::PaneSwapParams;
+use shepr_protocol::command::SplitDirection;
+
+use crate::endpoint::ClientEndpointId;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::ledger::Work;
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{
+    ClientHelpOverlay, ClientShellAction, ClientShellInput, ClientShellState,
+};
+use crate::shell::state::{ClientShellMode, ClientShellOverlay};
+
 use shepr_protocol::command::EndpointCommand;
 
 impl ClientShellState {
-    pub(super) fn record_binding(
+    pub(in crate::shell) fn record_binding(
         &mut self,
         binding: &shepr_termio::input::KeybindMatch,
         outcome: &mut ClientShellInput,
@@ -16,8 +29,7 @@ impl ClientShellState {
             shepr_termio::input::KeybindMatch::Action(
                 shepr_termio::input::KeybindAction::ToggleSidebar,
             ) => {
-                self.sidebar_collapsed = !self.sidebar_collapsed;
-                self.sidebar_collapsed_manual = true;
+                self.chrome.toggle_collapsed();
                 self.reveal_navigation_workspace = true;
                 // The retained surface stays on screen, clipped to the new pane area, until the
                 // endpoint answers the resize.
@@ -139,7 +151,7 @@ impl ClientShellState {
     /// Copies the current selection. The read is by absolute row against the
     /// live terminal, with no content revision: output between the displayed
     /// frame and this request must not reject the copy.
-    pub(super) fn request_selection_copy(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn request_selection_copy(&mut self, outcome: &mut ClientShellInput) {
         let Some(selection) = self.mouse_selection.selection.as_ref() else {
             return;
         };
@@ -162,7 +174,7 @@ impl ClientShellState {
         );
     }
 
-    pub(super) fn push_endpoint_notice(
+    pub(in crate::shell) fn push_endpoint_notice(
         &mut self,
         kind: ClientEndpointNoticeKind,
         code: impl Into<String>,
@@ -179,7 +191,7 @@ impl ClientShellState {
         self.push_endpoint_notice_at_boot(boot_id, kind, code, title, body)
     }
 
-    pub(super) fn push_endpoint_notice_at_boot(
+    pub(in crate::shell) fn push_endpoint_notice_at_boot(
         &mut self,
         boot_id: Option<shepr_protocol::BootId>,
         kind: ClientEndpointNoticeKind,
@@ -187,48 +199,7 @@ impl ClientShellState {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> bool {
-        let key = ClientEndpointNoticeKey {
-            boot_id,
-            kind,
-            code: code.into(),
-        };
-        let body = body.into();
-        // Only timeouts are suppressed until a later success. Availability and rejection notices
-        // can recur after dismissal or expiry, while identical visible cards do not keep resetting
-        // their lifetime.
-        match kind {
-            ClientEndpointNoticeKind::Rejected | ClientEndpointNoticeKind::Unavailable => {
-                if self
-                    .visible_endpoint_notice
-                    .as_ref()
-                    .is_some_and(|notice| notice.key == key && notice.body == body)
-                {
-                    return false;
-                }
-            }
-            ClientEndpointNoticeKind::Timeout => {
-                if !self.endpoint_notice_seen.insert(key.clone()) {
-                    return false;
-                }
-            }
-        }
-        // A matching notice can return after the previous card was dismissed. Its next draw
-        // starts a fresh lifetime instead of inheriting the hidden card's deadline.
-        if self
-            .visible_endpoint_notice
-            .as_ref()
-            .is_some_and(|notice| self.restore_notice_seen.contains(&notice.key))
-            && let Some(notice) = self.visible_endpoint_notice.take()
-        {
-            self.restore_notice_queue.push_front(notice);
-        }
-        self.endpoint_notice_deadline = None;
-        self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
-            key,
-            title: title.into(),
-            body,
-        });
-        true
+        self.notices.push(boot_id, kind, code, title, body)
     }
 
     pub(crate) fn receive_paste_rejection(&mut self, message: String) -> bool {
@@ -285,25 +256,8 @@ impl ClientShellState {
         title: &str,
         body: String,
     ) -> bool {
-        let key = ClientEndpointNoticeKey {
-            boot_id: Some(boot_id.clone()),
-            kind: ClientEndpointNoticeKind::Rejected,
-            code: format!("{code}:{}", endpoint_id.storage_key()),
-        };
-        if !self.restore_notice_seen.insert(key.clone()) {
-            return false;
-        }
-        let label = endpoint_id.display_label();
-        self.restore_notice_queue
-            .push_back(ClientVisibleEndpointNotice {
-                key,
-                title: format!("{label}: {title}"),
-                body,
-            });
-        if self.visible_endpoint_notice.is_none() {
-            self.advance_endpoint_notice();
-        }
-        true
+        self.notices
+            .queue_boot(endpoint_id, boot_id, code, title, body)
     }
 
     /// Shows a notice an endpoint's server sent.
@@ -367,13 +321,13 @@ impl ClientShellState {
         outcome.actions
     }
 
-    pub(super) fn endpoint_command_for_action(
+    pub(in crate::shell) fn endpoint_command_for_action(
         &mut self,
         action: shepr_termio::input::KeybindAction,
     ) -> Option<EndpointCommand> {
         use shepr_protocol::command::{
-            PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
-            PaneSwapParams, PaneTarget, PaneZoomParams, SplitDirection, WorkspaceTarget,
+            PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams, PaneTarget,
+            PaneZoomParams, WorkspaceTarget,
         };
         use shepr_termio::input::KeybindAction;
 
@@ -401,7 +355,7 @@ impl ClientShellState {
             | KeybindAction::PreviousAgent
             | KeybindAction::NextAgent => {
                 let agents = self.agent_panel_model.targets();
-                let index = super::aggregate_navigation::agent_target_index(
+                let index = crate::shell::navigation::aggregate_navigation::agent_target_index(
                     agents,
                     &self.active_endpoint_id,
                     snapshot.focused_pane_id.as_deref(),
@@ -449,8 +403,11 @@ impl ClientShellState {
                 } else {
                     1
                 };
-                let next =
-                    super::aggregate_navigation::cycle_index(workspaces.len(), current, delta)?;
+                let next = crate::shell::navigation::aggregate_navigation::cycle_index(
+                    workspaces.len(),
+                    current,
+                    delta,
+                )?;
                 let workspace_id = workspaces[next].workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
@@ -507,7 +464,11 @@ impl ClientShellState {
                 } else {
                     1
                 };
-                let next = super::aggregate_navigation::cycle_index(panes.len(), current, delta)?;
+                let next = crate::shell::navigation::aggregate_navigation::cycle_index(
+                    panes.len(),
+                    current,
+                    delta,
+                )?;
                 Some(EndpointCommand::PaneFocus(PaneTarget {
                     pane_id: panes[next].pane_id.clone(),
                 }))

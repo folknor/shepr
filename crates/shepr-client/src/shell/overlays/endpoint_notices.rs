@@ -1,4 +1,13 @@
-use super::*;
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::notices::ClientVisibleEndpointNotice;
+use ratatui::buffer::Buffer;
+use ratatui::style::{Modifier, Style};
+
+use crate::shell::endpoints::endpoint_status_presentation;
+use ratatui::layout::Rect;
+use shepr_config::theme::Palette;
+
 use ratatui::{
     style::Color,
     text::{Line, Span},
@@ -83,7 +92,7 @@ fn render_notification_card(
 
 /// Draws the lifecycle banner on the first row of `area`, right-aligned, and returns the rect
 /// it cleared and painted (empty when nothing is drawn).
-pub(super) fn render_lifecycle_banner(
+pub(in crate::shell) fn render_lifecycle_banner(
     buffer: &mut Buffer,
     area: Rect,
     label: &str,
@@ -101,7 +110,7 @@ pub(super) fn render_lifecycle_banner(
     let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);
     Clear.render(rect, buffer);
     buffer.set_style(rect, Style::default().bg(palette.surface0));
-    super::render::put_text(
+    crate::shell::presentation::render::put_text(
         buffer,
         rect.x.saturating_add(1),
         rect.y,
@@ -113,7 +122,7 @@ pub(super) fn render_lifecycle_banner(
 }
 
 /// Draws the notice card and returns the rect it cleared and painted.
-pub(super) fn render_notice(
+pub(in crate::shell) fn render_notice(
     buffer: &mut Buffer,
     area: Rect,
     notice: &ClientVisibleEndpointNotice,
@@ -126,10 +135,9 @@ pub(super) fn render_notice(
         &notice.title,
         &notice.body,
         top_offset,
-        (!notice
-            .key
-            .code
-            .starts_with(super::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_PREFIX))
+        (!notice.key.code.starts_with(
+            crate::shell::overlays::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_PREFIX,
+        ))
         .then_some(crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS),
         match notice.key.kind {
             ClientEndpointNoticeKind::Rejected => palette.red,

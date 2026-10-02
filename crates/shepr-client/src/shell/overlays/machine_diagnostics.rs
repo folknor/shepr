@@ -1,16 +1,28 @@
 //! Machine status diagnostics. The badge handler sees every raw input event
 //! first; input content must stay out of logs and error messages here.
 
-use super::*;
-use crossterm::event::{MouseButton, MouseEventKind};
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEventKind;
+use ratatui::style::Modifier;
+
+use crate::endpoint::ClientEndpointId;
+use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::input::hit_test::contains;
+use crate::shell::overlays::notices::{ClientEndpointNoticeKey, ClientVisibleEndpointNotice};
+use crate::shell::state::{ClientShellInput, ClientShellState};
+use ratatui::style::Style;
+use shepr_config::theme::Palette;
+use std::collections::HashMap;
+
 use shepr_termio::input::raw_input::RawInputEvent;
 
 /// Code prefix of a notice opened from a machine badge. Only these explicitly
 /// opened cards grow to their full body; automatic notices are capped.
-pub(super) const MACHINE_DIAGNOSTIC_NOTICE_PREFIX: &str = "machine-diagnostic:";
+pub(in crate::shell) const MACHINE_DIAGNOSTIC_NOTICE_PREFIX: &str = "machine-diagnostic:";
 
 #[derive(Default)]
-pub(super) struct MachineDiagnostics {
+pub(in crate::shell) struct MachineDiagnostics {
     errors: HashMap<ClientEndpointId, MachineDiagnostic>,
     hover: Option<ClientEndpointId>,
 }
@@ -23,13 +35,13 @@ struct MachineDiagnostic {
 }
 
 impl MachineDiagnostics {
-    pub(super) fn required_for(&self, endpoint: &ClientShellEndpoint) -> bool {
+    pub(in crate::shell) fn required_for(&self, endpoint: &ClientShellEndpoint) -> bool {
         self.errors
             .get(&endpoint.endpoint_id)
             .is_some_and(|diagnostic| diagnostic.requires_authentication)
     }
 
-    pub(super) fn badge_style(
+    pub(in crate::shell) fn badge_style(
         &self,
         endpoint: &ClientShellEndpoint,
         palette: &Palette,
@@ -78,11 +90,11 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn clear_machine_diagnostic(&mut self, id: &ClientEndpointId) {
+    pub(in crate::shell) fn clear_machine_diagnostic(&mut self, id: &ClientEndpointId) {
         self.machine_diagnostics.errors.remove(id);
     }
 
-    pub(super) fn handle_machine_badge_event(
+    pub(in crate::shell) fn handle_machine_badge_event(
         &mut self,
         event: &RawInputEvent,
         outcome: &mut ClientShellInput,
@@ -131,15 +143,7 @@ impl ClientShellState {
         };
         let code = format!("{MACHINE_DIAGNOSTIC_NOTICE_PREFIX}{label}");
         // An explicit click can reopen its diagnostic, but must not replace another notice.
-        if self
-            .visible_endpoint_notice
-            .as_ref()
-            .is_some_and(|notice| notice.key.code != code)
-        {
-            return true;
-        }
-        self.endpoint_notice_deadline = None;
-        self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
+        let opened = self.notices.open_diagnostic(ClientVisibleEndpointNotice {
             key: ClientEndpointNoticeKey {
                 boot_id: None,
                 kind: ClientEndpointNoticeKind::Unavailable,
@@ -159,7 +163,7 @@ impl ClientShellState {
             },
             body: diagnostic.message.clone(),
         });
-        outcome.repaint = true;
+        outcome.repaint |= opened;
         true
     }
 }

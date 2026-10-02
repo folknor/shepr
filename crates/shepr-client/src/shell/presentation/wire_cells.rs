@@ -5,7 +5,11 @@
 //! wire form. Pane cells carry their terminal grid width; chrome cells keep the
 //! grapheme rule in `shepr_termio::blit::text_width`.
 
-use super::*;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use shepr_protocol::FrameData;
+
 use shepr_protocol::{CellData, GridCellWidth, WireColor, WireStyleFlags};
 
 /// Wire flag for each single-bit ratatui modifier that has one. Underline is not here: it
@@ -29,7 +33,7 @@ const FLAG_MODIFIERS: [(Modifier, WireStyleFlags); 8] = [
 /// removing it clears the shape. Symbol, skip and hyperlink are never touched. Underline
 /// colour has no wire form and is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct StylePatch {
+pub(in crate::shell) struct StylePatch {
     fg: Option<WireColor>,
     bg: Option<WireColor>,
     add: Modifier,
@@ -37,7 +41,7 @@ pub(super) struct StylePatch {
 }
 
 impl StylePatch {
-    pub(super) fn from_style(style: Style) -> Self {
+    pub(in crate::shell) fn from_style(style: Style) -> Self {
         Self {
             fg: style.fg.map(WireColor::from_ratatui),
             bg: style.bg.map(WireColor::from_ratatui),
@@ -74,14 +78,14 @@ impl StylePatch {
 }
 
 /// Restyles `cells` in place. Symbol, skip and hyperlink are preserved.
-pub(super) fn patch_style(cells: &mut [CellData], patch: StylePatch) {
+pub(in crate::shell) fn patch_style(cells: &mut [CellData], patch: StylePatch) {
     for cell in cells {
         patch.apply(cell);
     }
 }
 
 /// `patch_style` on the frame cell at `(x, y)`; a position outside the frame is ignored.
-pub(super) fn patch_cell(frame: &mut FrameData, x: u16, y: u16, patch: StylePatch) {
+pub(in crate::shell) fn patch_cell(frame: &mut FrameData, x: u16, y: u16, patch: StylePatch) {
     if x >= frame.width || y >= frame.height {
         return;
     }
@@ -92,7 +96,7 @@ pub(super) fn patch_cell(frame: &mut FrameData, x: u16, y: u16, patch: StylePatc
 }
 
 /// `patch_style` on every frame cell inside `rect`, clipped to the frame.
-pub(super) fn patch_rect(frame: &mut FrameData, rect: Rect, patch: StylePatch) {
+pub(in crate::shell) fn patch_rect(frame: &mut FrameData, rect: Rect, patch: StylePatch) {
     let width = usize::from(frame.width);
     let rect = rect.intersection(Rect::new(0, 0, frame.width, frame.height));
     if rect.is_empty() || frame.cells.len() != width * usize::from(frame.height) {
@@ -177,7 +181,7 @@ fn scratch_at(scratch: &Buffer, x: usize, y: u16) -> Option<&ratatui::buffer::Ce
 /// and the source before anything is written: an underlying glyph split by the union's
 /// boundary has its uncovered part blanked (a space in its own style, no skip, no link),
 /// and a scratch glyph that would cross the boundary becomes a blank.
-pub(super) fn overwrite(frame: &mut FrameData, rects: &[Rect], scratch: &Buffer) {
+pub(in crate::shell) fn overwrite(frame: &mut FrameData, rects: &[Rect], scratch: &Buffer) {
     let width = usize::from(frame.width);
     if width == 0 || frame.cells.len() != width * usize::from(frame.height) {
         return;
@@ -246,7 +250,15 @@ pub(super) fn overwrite(frame: &mut FrameData, rects: &[Rect], scratch: &Buffer)
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CellData, GridCellWidth, WireColor, WireStyleFlags};
+    use crate::shell::presentation::wire_cells::{
+        StylePatch, overwrite, patch_cell, patch_rect, patch_style,
+    };
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Modifier, Style};
+    use shepr_protocol::FrameData;
+
     use ratatui::style::Color;
     use shepr_vt::UnderlineStyle;
 

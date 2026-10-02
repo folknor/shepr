@@ -1,15 +1,15 @@
-use super::*;
+use ratatui::buffer::Buffer;
+
+use ratatui::layout::Rect;
+use shepr_protocol::{ClientShellSnapshot, ClientShellWorkspace, FrameData, PaneSurfaceFrame};
+
 use crate::tests::{test_pane_id, test_workspace_id};
-use crossterm::event::MouseEvent;
 use shepr_protocol::AgentStatus;
-use shepr_protocol::command::{EndpointCommand, EndpointReply};
-use shepr_protocol::{
-    ClientShellAgent, ClientShellPane, PaneSurfacePane, PaneSurfaceSplit,
-    PaneSurfaceSplitDirection, SurfaceRect,
-};
+use shepr_protocol::command::EndpointReply;
+use shepr_protocol::{ClientShellPane, PaneSurfacePane, SurfaceRect};
 mod text_editing;
 
-pub(super) fn snapshot() -> ClientShellSnapshot {
+pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("boot-1"),
         restore_notice: None,
@@ -42,7 +42,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
     }
 }
 
-fn surface() -> PaneSurfaceFrame {
+pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
     let surface_buffer = Buffer::with_lines(["LIVE", "PANE"]);
     PaneSurfaceFrame {
         boot_id: crate::tests::test_boot_id("boot-1"),
@@ -155,7 +155,7 @@ fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u1
     panic!("symbol {needle:?} not found in {area:?}: {visible:?}");
 }
 
-fn pane_scroll_result(
+pub(in crate::shell) fn pane_scroll_result(
     offset_from_bottom: u64,
     max_offset_from_bottom: u64,
     viewport_rows: u64,
@@ -173,7 +173,7 @@ fn pane_scroll_result(
     }
 }
 
-fn copy_search_result(
+pub(in crate::shell) fn copy_search_result(
     matches: Vec<shepr_protocol::command::PaneTextRange>,
     current: Option<u32>,
 ) -> EndpointReply {
@@ -191,8 +191,9 @@ mod chrome_context;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
-#[path = "input.rs"]
-mod input_domain;
 mod mouse_selection;
 mod presentation_regressions;
 mod startup_overlays;
+
+mod input_domain;
+mod workspace_navigation;

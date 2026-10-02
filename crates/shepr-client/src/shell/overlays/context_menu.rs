@@ -1,7 +1,17 @@
-use super::*;
+use shepr_protocol::command::PaneRightClickTarget;
+use shepr_protocol::command::PaneSwapParams;
+use shepr_protocol::command::SplitDirection;
+
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{
+    ClientContextMenuAction, ClientContextMenuItem, ClientContextMenuOverlay, ClientRenameOverlay,
+    ClientShellInput, ClientShellState,
+};
+use crate::shell::state::{ClientContextMenuTarget, ClientRenameTarget, ClientShellOverlay};
+use shepr_protocol::command::EndpointCommand;
 
 impl ClientContextMenuOverlay {
-    pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
+    pub(in crate::shell) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
         let item = |label, action| ClientContextMenuItem { label, action };
@@ -43,7 +53,7 @@ impl ClientContextMenuOverlay {
 }
 
 impl ClientShellState {
-    pub(super) fn open_workspace_context_menu(
+    pub(in crate::shell) fn open_workspace_context_menu(
         &mut self,
         workspace_id: shepr_protocol::WorkspaceId,
         x: u16,
@@ -67,7 +77,7 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn open_pane_context_menu(
+    pub(in crate::shell) fn open_pane_context_menu(
         &mut self,
         pane_id: shepr_protocol::PublicPaneId,
         x: u16,
@@ -96,7 +106,7 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn move_context_menu_selection(&mut self, delta: isize) {
+    pub(in crate::shell) fn move_context_menu_selection(&mut self, delta: isize) {
         let Some(ClientShellOverlay::ContextMenu(menu)) = self.overlay.as_mut() else {
             return;
         };
@@ -112,7 +122,7 @@ impl ClientShellState {
             .min(max_index);
     }
 
-    pub(super) fn activate_context_menu_item(
+    pub(in crate::shell) fn activate_context_menu_item(
         &mut self,
         index: usize,
         outcome: &mut ClientShellInput,
@@ -195,8 +205,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         use shepr_protocol::command::{
-            EndpointCommand, PaneInputSetParams, PaneRenameParams, PaneRightClickTarget,
-            PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomParams, SplitDirection,
+            PaneInputSetParams, PaneRenameParams, PaneSplitParams, PaneTarget, PaneZoomParams,
         };
 
         match action {

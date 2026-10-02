@@ -1,8 +1,27 @@
-use super::*;
+use super::compose_pane_surface::compose_pane_surface;
+use crate::shell::overlays::endpoint_notices;
 
-#[path = "wire_cells.rs"]
-pub(in crate::shell) mod wire_cells;
-use wire_cells::{StylePatch, overwrite, patch_cell, patch_rect, patch_style};
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::presentation::render;
+use crate::shell::state::{ClientChromeDrag, ClientShellMode, ClientShellOverlay};
+use ratatui::buffer::Buffer;
+use ratatui::style::{Modifier, Style};
+
+use super::wire_cells::StylePatch;
+
+use crate::shell::state::{ClientCopyModeState, ClientShellState, PaneHit, PaneSplitHit};
+
+use shepr_protocol::{FrameData, PaneSurfaceFrame};
+
+use ratatui::layout::Rect;
+use shepr_config::theme::Palette;
+
+use crate::shell::endpoints::endpoint_status_presentation;
+
+use crate::shell::presentation::status::panel_contrast_fg;
+use crate::shell::presentation::topology::pane_surface_topology_signature;
+
+use super::wire_cells::{overwrite, patch_cell, patch_rect, patch_style};
 
 impl ClientShellState {
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
@@ -68,8 +87,8 @@ impl ClientShellState {
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
-                sidebar_collapsed: layout.sidebar.width > 0 && self.sidebar_collapsed,
-                sidebar_section_split: self.sidebar_section_split,
+                sidebar_collapsed: layout.sidebar.width > 0 && self.chrome.collapsed(),
+                sidebar_section_split: self.chrome.split(),
                 selected_workspace_id: self
                     .navigate_workspace_id
                     .as_ref()
@@ -93,24 +112,27 @@ impl ClientShellState {
             });
         let healthy_local_chrome = self.snapshot.is_some()
             && self.endpoints.len() == 1
-            && !self.sidebar_collapsed
+            && !self.chrome.collapsed()
             && layout.sidebar.width > 0
             && self.endpoint_status(&self.active_endpoint_id) == Some(ClientEndpointStatus::Online);
         if !has_surface {
-            let message = self.endpoint_error.clone().unwrap_or_else(|| {
-                let status = self
-                    .endpoint_status(&self.active_endpoint_id)
-                    .unwrap_or(ClientEndpointStatus::Connecting);
-                let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
-                if self.endpoints.len() == 1 {
-                    format!("{}: {label}.", self.active_endpoint_label())
-                } else {
-                    format!(
-                        "{}: {label}. Select a connected machine.",
-                        self.active_endpoint_label()
-                    )
-                }
-            });
+            let message = self.endpoint_error.message().map_or_else(
+                || {
+                    let status = self
+                        .endpoint_status(&self.active_endpoint_id)
+                        .unwrap_or(ClientEndpointStatus::Connecting);
+                    let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
+                    if self.endpoints.len() == 1 {
+                        format!("{}: {label}.", self.active_endpoint_label())
+                    } else {
+                        format!(
+                            "{}: {label}. Select a connected machine.",
+                            self.active_endpoint_label()
+                        )
+                    }
+                },
+                str::to_owned,
+            );
             let message_area = if layout.sidebar.width > 0 {
                 layout.pane_surface
             } else {
@@ -119,7 +141,7 @@ impl ClientShellState {
             // The lifecycle banner already carries the placeholder status. A second status
             // line in the same row can be covered by that banner on narrow surfaces. An
             // endpoint error suppressed here still shows in the mode bar.
-            if (!healthy_local_chrome || self.endpoint_error.is_some())
+            if (!healthy_local_chrome || self.endpoint_error.message().is_some())
                 && active_lifecycle.is_none()
             {
                 render::put_text(
@@ -347,7 +369,7 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
         }
         self.hits.notification_toast = Rect::default();
-        if active_lifecycle.is_some() || self.visible_endpoint_notice.is_some() {
+        if active_lifecycle.is_some() || self.notices.visible().is_some() {
             // Banner and card are opaque: they draw into a fresh scratch buffer and return
             // their `Clear` rects, and the frame takes exactly those rects.
             let mut scratch = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -377,7 +399,7 @@ impl ClientShellState {
                 // An expanded sidebar has its header on row zero, even without a pane surface.
                 1
             };
-            if let Some(notice) = self.visible_endpoint_notice.as_ref() {
+            if let Some(notice) = self.notices.visible() {
                 self.hits.notification_toast = endpoint_notices::render_notice(
                     &mut scratch,
                     Rect::new(0, 0, cols, rows),
@@ -462,7 +484,7 @@ impl ClientShellState {
                         StylePatch::from_style(hint_style),
                     );
                     let mut scratch = Buffer::empty(Rect::new(0, 0, cols, rows));
-                    let written_to = super::render::put_text(
+                    let written_to = crate::shell::presentation::render::put_text(
                         &mut scratch,
                         0,
                         hint_row,
@@ -491,7 +513,7 @@ impl ClientShellState {
                 mode_bar_area,
                 self.mode,
                 self.copy_mode.as_ref(),
-                self.endpoint_error.as_deref(),
+                self.endpoint_error.message(),
                 &self.config.keybinds,
                 &self.config.palette,
             ) {
@@ -509,7 +531,7 @@ impl ClientShellState {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
         }
         // Both pane layers pass through the notice stage, so its lifetime starts here.
-        self.endpoint_notice_drawn(self.now);
+        self.notices.drawn(self.now);
         self.record_composed_frame();
         Some(frame)
     }
@@ -522,7 +544,7 @@ impl ClientShellState {
 
 /// Whether the retained surface reaches past the pane area it is drawn into. A smaller surface
 /// (the panes have not grown into a larger area yet) is drawn whole and its hits stay exact.
-pub(super) fn surface_overflows_area(surface: &PaneSurfaceFrame, area: Rect) -> bool {
+pub(in crate::shell) fn surface_overflows_area(surface: &PaneSurfaceFrame, area: Rect) -> bool {
     surface.frame.width > area.width || surface.frame.height > area.height
 }
 
@@ -669,7 +691,21 @@ fn render_client_copy_search_highlights(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::endpoint::ClientEndpointId;
+    use crate::endpoint::ClientEndpointStatus;
+    use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+    use crate::shell::state::ClientShellConfig;
+    use ratatui::buffer::Buffer;
+    use shepr_config::ClientConfig;
+    use shepr_config::SidebarCollapsedModeConfig;
+
+    use crate::shell::state::{ClientCopyModeState, ClientCopySearch, ClientShellState, PaneHit};
+
+    use super::render_client_copy_search_highlights;
+    use ratatui::layout::Rect;
+    use shepr_config::theme::Palette;
+    use shepr_protocol::FrameData;
+
     use shepr_protocol::command::{PaneTextPoint, PaneTextRange};
 
     fn frame_row_text(frame: &FrameData, y: u16) -> String {
@@ -766,7 +802,7 @@ mod tests {
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
-        state.sidebar_collapsed = true;
+        state.chrome.set_collapsed(true);
         state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
         assert!(state.push_endpoint_notice(
             ClientEndpointNoticeKind::Unavailable,
@@ -788,8 +824,8 @@ mod tests {
     fn online_placeholder_notice_starts_below_the_expanded_sidebar_header() {
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        state.sidebar_collapsed = false;
-        state.sidebar_width = 24;
+        state.chrome.set_collapsed(false);
+        state.chrome.set_width(24);
         state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
         assert!(state.push_endpoint_notice(
             ClientEndpointNoticeKind::Unavailable,

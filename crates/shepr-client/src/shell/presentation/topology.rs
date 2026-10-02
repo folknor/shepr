@@ -1,4 +1,4 @@
-use super::*;
+use shepr_protocol::PaneSurfaceFrame;
 
 struct Fnv64(u64);
 
@@ -23,13 +23,13 @@ impl Fnv64 {
     }
 }
 
-pub(super) fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(in crate::shell) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = Fnv64::new();
     hash.write(bytes);
     hash.finish()
 }
 
-pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
+pub(in crate::shell) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     fn write_delimited(hash: &mut Fnv64, bytes: &[u8]) {
         hash.write(bytes);
         hash.write_byte(0xff);
@@ -86,8 +86,10 @@ pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
     use super::pane_surface_topology_signature;
-    use ratatui::{buffer::Buffer, layout::Rect};
 
     fn split_surface() -> shepr_protocol::PaneSurfaceFrame {
         let left = shepr_protocol::SurfaceRect {

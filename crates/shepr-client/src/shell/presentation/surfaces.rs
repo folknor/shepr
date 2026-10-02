@@ -1,9 +1,10 @@
-use super::*;
+use shepr_protocol::{FrameData, PaneSurfaceFrame};
+
 use shepr_protocol::{BootId, PaneSurfacePatch, ProjectionRevision};
 /// The connection generation a baseline came from. `None` is a snapshot or surface
 /// set without a connection (tests); it is an identity like any other, never a
 /// wildcard.
-pub(super) type SurfaceGeneration = Option<u64>;
+pub(in crate::shell) type SurfaceGeneration = Option<u64>;
 
 /// The reader baseline and the last exact snapshot/surface pair have separate roles.
 /// Moving a snapshot past its surface copies nothing; only the first patch in that
@@ -16,7 +17,7 @@ pub(super) type SurfaceGeneration = Option<u64>;
 /// connection's snapshot or being dropped. The held presentation is presentation
 /// only and carries none.
 #[derive(Default)]
-pub(super) enum PaneSurfaces {
+pub(in crate::shell) enum PaneSurfaces {
     #[default]
     /// Nothing received or presented.
     Empty,
@@ -39,7 +40,7 @@ pub(super) enum PaneSurfaces {
         held: Option<PaneSurfaceFrame>,
     },
 }
-pub(super) enum Pairing {
+pub(in crate::shell) enum Pairing {
     /// Nothing on screen changed.
     Unchanged,
     /// The baseline is now the presented surface; `previous` is what was presented.
@@ -61,7 +62,7 @@ pub(crate) enum PatchRejection {
 }
 impl PaneSurfaces {
     /// What is on screen, possibly held while unpaired. This is what input reads.
-    pub(super) fn presented(&self) -> Option<&PaneSurfaceFrame> {
+    pub(in crate::shell) fn presented(&self) -> Option<&PaneSurfaceFrame> {
         match self {
             Self::Paired { surface: s, .. } | Self::Passed { surface: s, .. } | Self::Frozen(s) => {
                 Some(s)
@@ -71,14 +72,14 @@ impl PaneSurfaces {
         }
     }
     /// The exact snapshot pair, the only surface `compose` draws.
-    pub(super) fn paired(&self) -> Option<&PaneSurfaceFrame> {
+    pub(in crate::shell) fn paired(&self) -> Option<&PaneSurfaceFrame> {
         if let Self::Paired { surface, .. } = self {
             Some(surface)
         } else {
             None
         }
     }
-    pub(super) fn is_paired(&self) -> bool {
+    pub(in crate::shell) fn is_paired(&self) -> bool {
         matches!(self, Self::Paired { .. })
     }
     /// The shown connection's reader baseline, which every patch must follow, with
@@ -102,11 +103,11 @@ impl PaneSurfaces {
         }
     }
     /// The generation of the current baseline, if there is one.
-    pub(super) fn baseline_generation(&self) -> Option<SurfaceGeneration> {
+    pub(in crate::shell) fn baseline_generation(&self) -> Option<SurfaceGeneration> {
         self.tagged_baseline().map(|(_, generation)| generation)
     }
     /// A received surface that differs from what is presented and waits for its snapshot.
-    pub(super) fn waiting_baseline(&self) -> Option<&PaneSurfaceFrame> {
+    pub(in crate::shell) fn waiting_baseline(&self) -> Option<&PaneSurfaceFrame> {
         if let Self::Split { baseline, .. } = self {
             Some(baseline)
         } else {
@@ -115,7 +116,11 @@ impl PaneSurfaces {
     }
     /// Replaces the baseline with a full surface from connection `generation`, keeping
     /// what is presented. Never pairs.
-    pub(super) fn receive(&mut self, baseline: PaneSurfaceFrame, generation: SurfaceGeneration) {
+    pub(in crate::shell) fn receive(
+        &mut self,
+        baseline: PaneSurfaceFrame,
+        generation: SurfaceGeneration,
+    ) {
         let held = match std::mem::take(self) {
             Self::Paired { surface: s, .. } | Self::Passed { surface: s, .. } | Self::Frozen(s) => {
                 Some(s)
@@ -133,7 +138,7 @@ impl PaneSurfaces {
     /// boot and projection revision; otherwise the last presented pair is held. `Passed`
     /// that matches again is only for totality: a snapshot never moves back within one
     /// boot.
-    pub(super) fn pair(
+    pub(in crate::shell) fn pair(
         &mut self,
         boot: &BootId,
         revision: ProjectionRevision,
@@ -184,7 +189,7 @@ impl PaneSurfaces {
     /// The shown snapshot moved to connection `generation`. A baseline that already
     /// came from it (a surface that arrived before its snapshot) stays, with what is
     /// presented held; anything else keeps only the presentation, frozen.
-    pub(super) fn snapshot_generation_changed(&mut self, generation: SurfaceGeneration) {
+    pub(in crate::shell) fn snapshot_generation_changed(&mut self, generation: SurfaceGeneration) {
         *self = match std::mem::take(self) {
             split @ Self::Split {
                 generation: baseline_generation,
@@ -200,7 +205,11 @@ impl PaneSurfaces {
     /// The shown endpoint rebooted. Nothing presented may survive (pane IDs can be
     /// reused), but a baseline the incoming connection already sent for the new boot
     /// is kept, unpresented, so its next patch still has something to follow.
-    pub(super) fn reset_for_boot(&mut self, boot: &BootId, generation: SurfaceGeneration) {
+    pub(in crate::shell) fn reset_for_boot(
+        &mut self,
+        boot: &BootId,
+        generation: SurfaceGeneration,
+    ) {
         *self = match std::mem::take(self) {
             Self::Split {
                 baseline,
@@ -217,7 +226,7 @@ impl PaneSurfaces {
     /// The one validation per patch from connection `generation`, against
     /// `baseline()`. Changes nothing. A patch from another connection than the
     /// baseline's has no baseline to follow.
-    pub(super) fn validate(
+    pub(in crate::shell) fn validate(
         &self,
         patch: &PaneSurfacePatch,
         generation: SurfaceGeneration,
@@ -282,7 +291,7 @@ impl PaneSurfaces {
     /// Applies a patch `validate` accepted against this unchanged baseline, without
     /// repeating the row and pane checks. `Passed` makes the one grid copy here: the
     /// patched copy becomes the baseline and the passed pair stays held.
-    pub(super) fn apply_validated(
+    pub(in crate::shell) fn apply_validated(
         &mut self,
         patch: &PaneSurfacePatch,
     ) -> Result<(), PatchRejection> {
@@ -351,14 +360,20 @@ fn pane_geometry_matches(
 #[cfg(test)]
 impl PaneSurfaces {
     /// The shown connection's reader baseline, which every patch must follow.
-    pub(super) fn baseline(&self) -> Option<&PaneSurfaceFrame> {
+    pub(in crate::shell) fn baseline(&self) -> Option<&PaneSurfaceFrame> {
         self.tagged_baseline().map(|(surface, _)| surface)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::endpoint::ClientEndpointId;
+
+    use super::PaneSurfacePatch;
+    use crate::shell::presentation::surfaces::{
+        Pairing, PaneSurfaces, PatchRejection, SurfaceGeneration,
+    };
+    use shepr_protocol::{ClientSurfaceSize, PaneSurfaceFrame};
     fn surface(revision: u64) -> PaneSurfaceFrame {
         crate::tests::endpoint_choice::surface(
             &ClientEndpointId::Local,

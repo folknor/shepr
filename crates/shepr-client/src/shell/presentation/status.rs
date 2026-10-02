@@ -1,12 +1,14 @@
-use super::*;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use shepr_config::theme::Palette;
 
 #[derive(Clone, Copy)]
-pub(super) struct StatusGlyph {
-    pub(super) text: &'static str,
-    pub(super) style: Style,
+pub(in crate::shell) struct StatusGlyph {
+    pub(in crate::shell) text: &'static str,
+    pub(in crate::shell) style: Style,
 }
 
-pub(super) fn status_glyph(
+pub(in crate::shell) fn status_glyph(
     status: shepr_protocol::AgentStatus,
     indicator_style: shepr_config::StatusIndicatorStyle,
     palette: &Palette,
@@ -39,7 +41,7 @@ pub(super) fn status_glyph(
     }
 }
 
-pub(super) fn status_priority(status: shepr_protocol::AgentStatus) -> u8 {
+pub(in crate::shell) fn status_priority(status: shepr_protocol::AgentStatus) -> u8 {
     use shepr_protocol::AgentStatus;
     let state = match status {
         AgentStatus::Blocked => shepr_agent::detect::AgentState::Blocked,
@@ -49,7 +51,7 @@ pub(super) fn status_priority(status: shepr_protocol::AgentStatus) -> u8 {
     state.attention_rank()
 }
 
-pub(super) fn status_text(status: shepr_protocol::AgentStatus) -> &'static str {
+pub(in crate::shell) fn status_text(status: shepr_protocol::AgentStatus) -> &'static str {
     use shepr_protocol::AgentStatus;
     match status {
         AgentStatus::Working => "working",
@@ -58,7 +60,7 @@ pub(super) fn status_text(status: shepr_protocol::AgentStatus) -> &'static str {
     }
 }
 
-pub(super) fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
+pub(in crate::shell) fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
     match palette.panel_bg {
         ratatui::style::Color::Reset => palette.surface_dim,
         color => color,

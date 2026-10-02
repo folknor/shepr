@@ -1,11 +1,12 @@
-use super::*;
+use crate::shell::state::ClientShellOverlay;
+use crate::shell::state::{ClientGlobalMenuOverlay, ClientShellInput, ClientShellState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ClientGlobalMenuAction {
+pub(in crate::shell) enum ClientGlobalMenuAction {
     Binding(shepr_termio::input::KeybindAction),
 }
 
-pub(super) fn global_menu_items() -> Vec<(&'static str, ClientGlobalMenuAction)> {
+pub(in crate::shell) fn global_menu_items() -> Vec<(&'static str, ClientGlobalMenuAction)> {
     vec![
         (
             "keybinds",
@@ -19,7 +20,7 @@ pub(super) fn global_menu_items() -> Vec<(&'static str, ClientGlobalMenuAction)>
 }
 
 impl ClientShellState {
-    pub(super) fn toggle_global_menu(&mut self) {
+    pub(in crate::shell) fn toggle_global_menu(&mut self) {
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             self.overlay = None;
         } else {
@@ -30,7 +31,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn move_global_menu_selection(&mut self, delta: isize) {
+    pub(in crate::shell) fn move_global_menu_selection(&mut self, delta: isize) {
         let item_count = global_menu_items().len();
         let Some(ClientShellOverlay::GlobalMenu(menu)) = self.overlay.as_mut() else {
             return;
@@ -43,7 +44,7 @@ impl ClientShellState {
             .min(max_index);
     }
 
-    pub(super) fn activate_global_menu_item(
+    pub(in crate::shell) fn activate_global_menu_item(
         &mut self,
         index: usize,
         outcome: &mut ClientShellInput,

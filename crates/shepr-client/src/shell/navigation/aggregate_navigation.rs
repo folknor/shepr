@@ -1,29 +1,41 @@
 //! Endpoint-qualified rows shared by aggregate navigation surfaces.
 
-use super::*;
-pub(super) struct AggregateAgentTarget {
-    pub(super) endpoint_id: ClientEndpointId,
-    pub(super) pane_id: shepr_protocol::PublicPaneId,
+use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::state::{
+    ClientNavigatorFilter, ClientNavigatorOverlay, ClientNavigatorRow, ClientNavigatorTarget,
+    ClientShellConfig,
+};
+use std::collections::HashMap;
+
+use crate::shell::presentation::status::status_priority;
+
+pub(in crate::shell) struct AggregateAgentTarget {
+    pub(in crate::shell) endpoint_id: ClientEndpointId,
+    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
 }
 
-pub(super) struct AgentPanelRow {
-    pub(super) endpoint_id: ClientEndpointId,
-    pub(super) machine_label: String,
-    pub(super) stale: bool,
-    pub(super) agent: super::agent_sidebar::AgentRow,
+pub(in crate::shell) struct AgentPanelRow {
+    pub(in crate::shell) endpoint_id: ClientEndpointId,
+    pub(in crate::shell) machine_label: String,
+    pub(in crate::shell) stale: bool,
+    pub(in crate::shell) agent: crate::shell::sidebar::agent_sidebar::AgentRow,
     endpoint_order: usize,
     recency: u64,
 }
 
-pub(super) struct AgentPanelModel {
-    pub(super) rows: Vec<AgentPanelRow>,
+pub(in crate::shell) struct AgentPanelModel {
+    pub(in crate::shell) rows: Vec<AgentPanelRow>,
     targets: Vec<AggregateAgentTarget>,
 }
 
 impl AgentPanelModel {
     // Sidebar rows and keyboard targets share the same workspace filter and display order.
     // Token templates are prepared at refresh; painting only lays out these stored rows.
-    pub(super) fn build(endpoints: &[ClientShellEndpoint], config: &ClientShellConfig) -> Self {
+    pub(in crate::shell) fn build(
+        endpoints: &[ClientShellEndpoint],
+        config: &ClientShellConfig,
+    ) -> Self {
         let mut rows = Vec::new();
         for (endpoint_order, endpoint) in endpoints.iter().enumerate() {
             let Some(snapshot) = endpoint.snapshot.as_deref() else {
@@ -31,7 +43,7 @@ impl AgentPanelModel {
             };
             let machine = (endpoints.len() > 1).then(|| endpoint.endpoint_id.display_label());
             rows.extend(
-                super::agent_sidebar::agent_rows(snapshot, config, machine)
+                crate::shell::sidebar::agent_sidebar::agent_rows(snapshot, config, machine)
                     .into_iter()
                     .map(|agent| AgentPanelRow {
                         recency: endpoint
@@ -68,12 +80,16 @@ impl AgentPanelModel {
         Self { rows, targets }
     }
 
-    pub(super) fn targets(&self) -> &[AggregateAgentTarget] {
+    pub(in crate::shell) fn targets(&self) -> &[AggregateAgentTarget] {
         &self.targets
     }
 }
 
-pub(super) fn cycle_index(length: usize, current: Option<usize>, delta: isize) -> Option<usize> {
+pub(in crate::shell) fn cycle_index(
+    length: usize,
+    current: Option<usize>,
+    delta: isize,
+) -> Option<usize> {
     let length = isize::try_from(length).ok().filter(|length| *length > 0)?;
     let length_usize = usize::try_from(length).ok()?;
     let next = match current.filter(|index| *index < length_usize) {
@@ -93,7 +109,7 @@ pub(super) fn cycle_index(length: usize, current: Option<usize>, delta: isize) -
     usize::try_from(next).ok()
 }
 
-pub(super) fn agent_target_index(
+pub(in crate::shell) fn agent_target_index(
     targets: &[AggregateAgentTarget],
     active_endpoint_id: &ClientEndpointId,
     focused_pane_id: Option<&str>,
@@ -119,7 +135,7 @@ pub(super) fn agent_target_index(
     }
 }
 
-pub(super) struct NavigatorIndex {
+pub(in crate::shell) struct NavigatorIndex {
     federated: bool,
     endpoints: Vec<NavigatorEndpoint>,
 }
@@ -146,7 +162,7 @@ struct NavigatorPane {
 
 impl NavigatorIndex {
     // Snapshot text is normalized here so key and wheel events only normalize the query.
-    pub(super) fn build(endpoints: &[ClientShellEndpoint]) -> Self {
+    pub(in crate::shell) fn build(endpoints: &[ClientShellEndpoint]) -> Self {
         let federated = endpoints.len() > 1;
         let mut indexed_endpoints = Vec::with_capacity(endpoints.len());
         for endpoint in endpoints {
@@ -269,7 +285,7 @@ impl NavigatorIndex {
         }
     }
 
-    pub(super) fn endpoint_status(
+    pub(in crate::shell) fn endpoint_status(
         &self,
         endpoint_id: &ClientEndpointId,
     ) -> Option<ClientEndpointStatus> {
@@ -279,7 +295,7 @@ impl NavigatorIndex {
             .map(|endpoint| endpoint.status)
     }
 
-    pub(super) fn rows(
+    pub(in crate::shell) fn rows(
         &self,
         active_endpoint_id: &ClientEndpointId,
         navigator: &ClientNavigatorOverlay,
@@ -362,7 +378,7 @@ fn filter_status(filter: ClientNavigatorFilter, status: shepr_protocol::AgentSta
     }
 }
 
-pub(super) fn navigator_selected_index(
+pub(in crate::shell) fn navigator_selected_index(
     rows: &[ClientNavigatorRow],
     navigator: &ClientNavigatorOverlay,
 ) -> Option<usize> {
@@ -380,7 +396,7 @@ pub(super) fn navigator_selected_index(
     }
 }
 
-pub(super) fn selected_navigator_target(
+pub(in crate::shell) fn selected_navigator_target(
     rows: &[ClientNavigatorRow],
     navigator: &ClientNavigatorOverlay,
 ) -> Option<ClientNavigatorTarget> {
@@ -388,7 +404,7 @@ pub(super) fn selected_navigator_target(
 }
 
 #[cfg(test)]
-pub(super) fn navigator_rows(
+pub(in crate::shell) fn navigator_rows(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     navigator: &ClientNavigatorOverlay,

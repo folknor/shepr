@@ -261,7 +261,9 @@ fn is_trailing_token_wrapper(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::text_cells;
+    use crate::shell::input::word_bounds::word_bounds_at_column;
+    use unicode_segmentation::UnicodeSegmentation;
 
     fn selected_word(row: &str, col: u16) -> Option<String> {
         let (start, end) = word_bounds_at_column(row, col)?;

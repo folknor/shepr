@@ -1,13 +1,19 @@
-use super::render::put_text;
-use super::*;
+use crate::endpoint::ClientEndpointId;
+use crate::shell::presentation::render::put_text;
+use crate::shell::state::{ClientShellConfig, ClientShellState, ShellHitMap};
+use ratatui::buffer::Buffer;
+use ratatui::style::{Modifier, Style};
 
-pub(super) fn render_collapsed(
+use crate::shell::presentation::status::status_glyph;
+use ratatui::layout::Rect;
+
+pub(in crate::shell) fn render_collapsed(
     buffer: &mut Buffer,
     area: Rect,
     active_endpoint_id: &ClientEndpointId,
     single_endpoint: bool,
     config: &ClientShellConfig,
-    model: &super::aggregate_navigation::AgentPanelModel,
+    model: &crate::shell::navigation::aggregate_navigation::AgentPanelModel,
     hits: &mut ShellHitMap,
 ) {
     for (index, row) in model.rows.iter().take(area.height as usize).enumerate() {
@@ -65,20 +71,21 @@ pub(super) fn render_collapsed(
     }
 }
 
-pub(super) fn render_expanded(
+pub(in crate::shell) fn render_expanded(
     buffer: &mut Buffer,
     area: Rect,
     active_endpoint_id: &ClientEndpointId,
     single_endpoint: bool,
     config: &ClientShellConfig,
-    model: &super::aggregate_navigation::AgentPanelModel,
+    model: &crate::shell::navigation::aggregate_navigation::AgentPanelModel,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
-    if !super::agent_sidebar::render_agent_panel_header(buffer, area, config, hits) {
+    if !crate::shell::sidebar::agent_sidebar::render_agent_panel_header(buffer, area, config, hits)
+    {
         return;
     }
-    super::agent_sidebar::render_agent_list(
+    crate::shell::sidebar::agent_sidebar::render_agent_list(
         buffer,
         area,
         &model.rows,
@@ -89,7 +96,9 @@ pub(super) fn render_expanded(
         |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
             let focused = row.agent.focused && &row.endpoint_id == active_endpoint_id;
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, focused, config);
+            crate::shell::sidebar::agent_sidebar::render_agent_row(
+                buffer, rect, &row.agent, focused, config,
+            );
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -112,7 +121,7 @@ pub(super) fn render_expanded(
 }
 
 impl ClientShellState {
-    pub(super) fn reveal_endpoint_agent(
+    pub(in crate::shell) fn reveal_endpoint_agent(
         &mut self,
         endpoint_id: &ClientEndpointId,
         pane_id: &str,
@@ -135,7 +144,7 @@ impl ClientShellState {
         if let Some(last) = gaps.last_mut() {
             *last = 0;
         }
-        self.agent_scroll = super::scroll::list_scroll_start_to_reveal(
+        self.agent_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
             &heights,
             &gaps,
             body_height,

@@ -1,4 +1,36 @@
-use super::*;
+use crate::endpoint::ClientEndpointStatus;
+use crate::shell::state::ClientNavigatorFilter;
+use ratatui::style::Modifier;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
+mod context_menu;
+pub(in crate::shell) mod endpoint_notices;
+pub(in crate::shell) mod global_menu;
+pub(in crate::shell) mod machine_diagnostics;
+pub(in crate::shell) mod notices;
+mod overlay_input;
+pub(in crate::shell) mod preferences;
+pub(in crate::shell) mod text_editor;
+pub(in crate::shell) mod transient_error;
+
+use crate::endpoint::ClientEndpointId;
+use crate::shell::endpoints::endpoint_status_presentation;
+use crate::shell::presentation::render::{display_width, put_right_text, put_text};
+use crate::shell::state::{
+    ClientConfirmCloseOverlay, ClientContextMenuOverlay, ClientGlobalMenuOverlay,
+    ClientHelpOverlay, ClientNavigatorOverlay, ClientNavigatorTarget, ClientRenameOverlay,
+    ClientShellOverlay,
+};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use shepr_config::LiveKeybindConfig;
+use shepr_config::theme::Palette;
+
+use crate::shell::presentation::status::{panel_contrast_fg, status_glyph, status_text};
+
 use crate::limits::{
     MAX_NAVIGATOR_OVERLAY_HEIGHT, MAX_NAVIGATOR_OVERLAY_WIDTH, MIN_CONTEXT_MENU_WIDTH,
     MIN_NAVIGATOR_OVERLAY_HEIGHT, MIN_NAVIGATOR_OVERLAY_WIDTH,
@@ -35,7 +67,7 @@ pub(crate) struct OverlayRender {
 pub(crate) fn render_client_overlay(
     b: &mut Buffer,
     o: &ClientShellOverlay,
-    navigator_index: &super::aggregate_navigation::NavigatorIndex,
+    navigator_index: &crate::shell::navigation::aggregate_navigation::NavigatorIndex,
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
     p: &Palette,
@@ -64,7 +96,7 @@ pub(crate) fn render_global_menu(
     menu: &ClientGlobalMenuOverlay,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = super::super::global_menu::global_menu_items();
+    let items = crate::shell::overlays::global_menu::global_menu_items();
     let screen = buffer.area;
     let width = items
         .iter()
@@ -323,7 +355,7 @@ fn render_rename_overlay(
 fn render_navigator_overlay(
     b: &mut Buffer,
     n: &ClientNavigatorOverlay,
-    navigator_index: &super::aggregate_navigation::NavigatorIndex,
+    navigator_index: &crate::shell::navigation::aggregate_navigation::NavigatorIndex,
     active_endpoint_id: &ClientEndpointId,
     p: &Palette,
 ) -> Option<OverlayRender> {
@@ -419,7 +451,9 @@ fn render_navigator_overlay(
         Style::default().fg(p.surface1).bg(p.panel_bg),
     );
     let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
-    let selected = super::aggregate_navigation::navigator_selected_index(&rows, n).unwrap_or(0);
+    let selected =
+        crate::shell::navigation::aggregate_navigation::navigator_selected_index(&rows, n)
+            .unwrap_or(0);
     let max = rows.len().saturating_sub(body.height as usize);
     let scroll = n
         .scroll
@@ -693,8 +727,6 @@ fn help_lines(
     query: &str,
     palette: &Palette,
 ) -> Vec<ratatui::text::Line<'static>> {
-    use ratatui::text::{Line, Span};
-
     let groups = shepr_termio::input::filter_keybind_help_groups(
         shepr_termio::input::keybind_help_groups(&keybinds.keybinds, keybinds.prefix),
         query,
@@ -748,7 +780,7 @@ fn render_help_overlay(
     k: &LiveKeybindConfig,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    use ratatui::widgets::{Paragraph, Widget, Wrap};
+    use ratatui::widgets::Wrap;
 
     let q = popup(b.area, 76, 22)?;
     let i = panel(b, q, p.accent, p.panel_bg)?;
@@ -936,8 +968,13 @@ fn render_confirm_close_overlay(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use ratatui::style::Modifier;
+
+    use super::panel;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use ratatui::style::Color;
+    use ratatui::style::Style;
 
     #[test]
     fn panel_resets_every_cell_so_nothing_leaks_into_the_popup() {

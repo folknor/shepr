@@ -1,4 +1,24 @@
-use super::*;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{
+    ClientRenameTarget, ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellMode,
+    ClientShellOverlay,
+};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::buffer::Buffer;
+use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_protocol::{ClientMessage, ClientMousePosition, ClientPaneInputEvent};
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::{ClientRenameOverlay, ClientShellState};
+use shepr_protocol::{ClientShellWorkspace, FrameData};
+
+use crossterm::event::MouseEvent;
+
+use crate::shell::tests::copy_search_result;
+use crate::shell::tests::{frame_cell, frame_rows, snapshot, surface};
+
+use crate::tests::{test_pane_id, test_workspace_id};
 
 #[test]
 fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
@@ -10,14 +30,14 @@ fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
     let right_alias =
         shepr_config::navigate_alias!(Right).expect("the navigate table defines its right alias");
 
-    assert!(super::super::input::navigate_alias_matches(
+    assert!(crate::shell::input::navigate_alias_matches(
         left_alias, &left
     ));
-    assert!(super::super::input::navigate_alias_matches(
+    assert!(crate::shell::input::navigate_alias_matches(
         right_alias,
         &right
     ));
-    assert!(!super::super::input::navigate_alias_matches(
+    assert!(!crate::shell::input::navigate_alias_matches(
         left_alias,
         &modified_left
     ));
@@ -132,7 +152,7 @@ fn passive_host_events_do_not_dismiss_endpoint_errors() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     state.set_endpoint_error("action failed", now);
-    let deadline = state.endpoint_error_deadline;
+    let deadline = state.endpoint_error.deadline();
 
     for event in [
         RawInputEvent::Mouse(MouseEvent {
@@ -152,20 +172,20 @@ fn passive_host_events_do_not_dismiss_endpoint_errors() {
         },
     ] {
         state.handle_raw_events(vec![event]);
-        assert_eq!(state.endpoint_error.as_deref(), Some("action failed"));
-        assert_eq!(state.endpoint_error_deadline, deadline);
+        assert_eq!(state.endpoint_error.message(), Some("action failed"));
+        assert_eq!(state.endpoint_error.deadline(), deadline);
     }
 
     state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
             .with_kind(crossterm::event::KeyEventKind::Release),
     )]);
-    assert_eq!(state.endpoint_error.as_deref(), Some("action failed"));
+    assert_eq!(state.endpoint_error.message(), Some("action failed"));
 
     let key = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty()),
     )]);
-    assert!(state.endpoint_error.is_none());
+    assert!(state.endpoint_error.message().is_none());
     assert!(key.repaint);
 }
 
@@ -217,19 +237,19 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
 #[test]
 fn modal_paste_shortcut_is_ctrl_v() {
     let key = |code, modifiers| shepr_termio::input::TerminalKey::new(code, modifiers);
-    assert!(!super::super::input::is_modal_paste_shortcut(&key(
+    assert!(!crate::shell::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::CONTROL | KeyModifiers::ALT
     )));
-    assert!(super::super::input::is_modal_paste_shortcut(&key(
+    assert!(crate::shell::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::CONTROL
     )));
-    assert!(super::super::input::is_modal_paste_shortcut(&key(
+    assert!(crate::shell::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('V'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT
     )));
-    assert!(!super::super::input::is_modal_paste_shortcut(&key(
+    assert!(!crate::shell::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::SUPER
     )));
@@ -645,7 +665,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
     many.focused_workspace_id = Some(test_workspace_id("w30"));
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
-    state.sidebar_collapsed = true;
+    state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(many));
     state.receive_pane_surface(surface());
     state.compose(106, 20).expect("collapsed frame");

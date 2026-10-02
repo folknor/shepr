@@ -1,7 +1,11 @@
-use super::*;
+use crate::shell::state::ClientShellAction;
+
+use crate::endpoint::ClientEndpointId;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::state::{ClientShellInput, ClientShellState, ClientWorkspacePress};
 
 impl ClientShellState {
-    pub(super) fn active_endpoint_workspace_at(
+    pub(in crate::shell) fn active_endpoint_workspace_at(
         &self,
         point: (u16, u16),
     ) -> Option<shepr_protocol::WorkspaceId> {
@@ -9,12 +13,16 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|hit| {
-                hit.endpoint_id == self.active_endpoint_id && super::contains(hit.rect, point)
+                hit.endpoint_id == self.active_endpoint_id
+                    && crate::shell::input::hit_test::contains(hit.rect, point)
             })
             .map(|hit| hit.workspace_id.clone())
     }
 
-    pub(super) fn endpoint_workspace_is_draggable(&self, press: &ClientWorkspacePress) -> bool {
+    pub(in crate::shell) fn endpoint_workspace_is_draggable(
+        &self,
+        press: &ClientWorkspacePress,
+    ) -> bool {
         press.endpoint_id == self.active_endpoint_id
             && self.snapshot.as_deref().is_some_and(|snapshot| {
                 snapshot
@@ -24,7 +32,7 @@ impl ClientShellState {
             })
     }
 
-    pub(super) fn finish_endpoint_workspace_press(
+    pub(in crate::shell) fn finish_endpoint_workspace_press(
         &mut self,
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
@@ -36,7 +44,7 @@ impl ClientShellState {
         );
     }
 
-    pub(super) fn handle_endpoint_machine_click(
+    pub(in crate::shell) fn handle_endpoint_machine_click(
         &mut self,
         point: (u16, u16),
         outcome: &mut ClientShellInput,
@@ -45,12 +53,12 @@ impl ClientShellState {
             .hits
             .machines
             .iter()
-            .find(|hit| super::contains(hit.rect, point))
+            .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
         else {
             return false;
         };
         let endpoint_id = hit.endpoint_id.clone();
-        let collapse_toggle = super::contains(hit.collapse_toggle, point);
+        let collapse_toggle = crate::shell::input::hit_test::contains(hit.collapse_toggle, point);
         if collapse_toggle {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
@@ -76,7 +84,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn handle_endpoint_agent_click(
+    pub(in crate::shell) fn handle_endpoint_agent_click(
         &mut self,
         point: (u16, u16),
         outcome: &mut ClientShellInput,
@@ -85,7 +93,7 @@ impl ClientShellState {
             .hits
             .endpoint_agents
             .iter()
-            .find(|(rect, _, _)| super::contains(*rect, point))
+            .find(|(rect, _, _)| crate::shell::input::hit_test::contains(*rect, point))
             .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
         else {
             return false;
@@ -98,7 +106,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn handle_endpoint_navigation(
+    pub(in crate::shell) fn handle_endpoint_navigation(
         &mut self,
         action: shepr_termio::input::KeybindAction,
         outcome: &mut ClientShellInput,
@@ -112,7 +120,9 @@ impl ClientShellState {
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace
         ) {
             let workspaces =
-                super::workspace_navigation::workspace_navigation_targets(&self.endpoints);
+                crate::shell::navigation::workspace_navigation::workspace_navigation_targets(
+                    &self.endpoints,
+                );
             if workspaces.is_empty() {
                 return true;
             }
@@ -129,9 +139,11 @@ impl ClientShellState {
             } else {
                 1
             };
-            let Some(next) =
-                super::aggregate_navigation::cycle_index(workspaces.len(), current, delta)
-            else {
+            let Some(next) = crate::shell::navigation::aggregate_navigation::cycle_index(
+                workspaces.len(),
+                current,
+                delta,
+            ) else {
                 return true;
             };
             let target = &workspaces[next];
@@ -154,7 +166,7 @@ impl ClientShellState {
                 .snapshot
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
-            let Some(next) = super::aggregate_navigation::agent_target_index(
+            let Some(next) = crate::shell::navigation::aggregate_navigation::agent_target_index(
                 agents,
                 &self.active_endpoint_id,
                 focused,
@@ -185,7 +197,7 @@ impl ClientShellState {
         false
     }
 
-    pub(super) fn activate_endpoint(
+    pub(in crate::shell) fn activate_endpoint(
         &mut self,
         endpoint_id: ClientEndpointId,
         outcome: &mut ClientShellInput,
@@ -208,7 +220,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn focus_or_activate(
+    pub(in crate::shell) fn focus_or_activate(
         &mut self,
         endpoint_id: ClientEndpointId,
         target: ClientEndpointFocusTarget,
@@ -235,7 +247,13 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::shell::state::ClientShellAction;
+    use crate::shell::state::ClientShellConfig;
+    use ratatui::layout::Rect;
+
+    use crate::endpoint::ClientEndpointId;
+    use crate::shell::endpoints::MachineHit;
+    use crate::shell::state::{ClientShellInput, ClientShellState};
 
     #[test]
     fn displayed_machine_body_submits_a_targetless_selection() {

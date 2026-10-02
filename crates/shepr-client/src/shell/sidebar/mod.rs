@@ -1,4 +1,23 @@
-use super::*;
+pub(in crate::shell) mod chrome;
+use ratatui::style::{Modifier, Style};
+pub(in crate::shell) mod agent_sidebar;
+pub(in crate::shell) mod endpoint_agents;
+pub(in crate::shell) mod endpoint_sidebar;
+pub(in crate::shell) mod sidebar_tokens;
+mod token_definitions;
+
+use ratatui::buffer::Buffer;
+use shepr_protocol::ClientShellWorkspace;
+
+use crate::shell::presentation::render::{display_width, put_text};
+use crate::shell::sidebar::sidebar_tokens::{
+    ResolvedToken, SpaceTokenContext, TokenStyles, resolved_token_spans, sidebar_space_rows,
+};
+use ratatui::layout::Rect;
+use shepr_config::SpacesSidebarConfig;
+use shepr_config::theme::Palette;
+
+use crate::shell::presentation::status::{status_glyph, status_text};
 
 pub(in crate::shell) fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
     if palette.selection_bg == ratatui::style::Color::Reset {
@@ -120,7 +139,7 @@ pub(in crate::shell) fn render_workspace_rows(
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
         );
-        super::put_spans(
+        crate::shell::presentation::render::put_spans(
             buffer,
             Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
             &spans,

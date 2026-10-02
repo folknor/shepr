@@ -61,18 +61,6 @@ already admit that a parked start never expires and is not tied to a process,
 and that a replayed pane exit can consume a parked start. Neither is handled.
 (wave-2 fixer)
 
-## BUG-070 - A Claude background fork may take over the pane's session
-
-Claude's `fork` SessionStart source now counts as a session replacement,
-which is right for `--fork-session` and `/branch` (the pane's own process
-moves to the new id). The same source is sent for a `/fork` background copy,
-which runs under Claude's separate supervisor process and leaves the original
-in the pane. If that supervisor inherits the pane's environment, its hook
-reports through the pane and replaces the pane's session id with the
-background copy's. The payload does not say which kind of fork it is. Check
-whether a background fork reports through the pane; if it does, tell the two
-apart (process identity, or another payload field). (agents adjudication)
-
 ## BUG-043 - Untagged runtime events would skip the generation check
 
 `AppEvent::Runtime { pane_id, generation, event: Box<AppEvent> }` is optional:

@@ -1,4 +1,11 @@
-use super::*;
+use crate::shell::state::ClientShellMode;
+
+use crate::shell::state::ClientShellState;
+
+use crate::shell::presentation::surfaces::PatchRejection;
+use ratatui::layout::Rect;
+
+use crate::shell::presentation::surfaces;
 
 pub(crate) struct ClientComposedSurfacePatch {
     pub(crate) rows: Vec<shepr_protocol::PaneSurfacePatchRow>,
@@ -51,10 +58,9 @@ fn fast_path_blocker(
 ) -> Option<&'static str> {
     // Selection and copy mode affect pane cells only when their owner is patched. A parked
     // copy session must not send unrelated pane output through full-frame composition.
-    if state
-        .pane_surface()
-        .is_some_and(|surface| super::composition::surface_overflows_area(surface, area))
-    {
+    if state.pane_surface().is_some_and(|surface| {
+        crate::shell::presentation::composition::surface_overflows_area(surface, area)
+    }) {
         // A surface produced for a larger pane area (before a resize or sidebar toggle took
         // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
         // land on the mode bar or past the frame, so they go through compose too.
@@ -63,9 +69,9 @@ fn fast_path_blocker(
         Some("client_surface_patch.fallback.mode")
     } else if state.overlay.is_some() {
         Some("client_surface_patch.fallback.overlay")
-    } else if state.endpoint_error.is_some() {
+    } else if state.endpoint_error.message().is_some() {
         Some("client_surface_patch.fallback.endpoint_error")
-    } else if state.visible_endpoint_notice.is_some() {
+    } else if state.notices.visible().is_some() {
         // Notices are drawn over the panes; while one is up, pane updates go through a full
         // compose. Notices expire (see `tick_transient_banners`), so this only costs for as
         // long as one is on screen.
@@ -117,7 +123,7 @@ impl ClientShellState {
         self.apply_tagged_pane_surface_patch(patch, Some(generation))
     }
 
-    pub(super) fn apply_tagged_pane_surface_patch(
+    pub(in crate::shell) fn apply_tagged_pane_surface_patch(
         &mut self,
         patch: &shepr_protocol::PaneSurfacePatch,
         generation: surfaces::SurfaceGeneration,
@@ -210,7 +216,15 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::shell::state::ClientShellConfig;
+    use ratatui::buffer::Buffer;
+    use shepr_config::ClientConfig;
+    use shepr_protocol::FrameData;
+
+    use crate::shell::state::{ClientCopyModeState, ClientShellState};
+
+    use super::{fast_path_blocker, patch_updates_pane};
+    use ratatui::layout::Rect;
 
     fn cursor(x: u16) -> shepr_protocol::CursorState {
         shepr_protocol::CursorState {

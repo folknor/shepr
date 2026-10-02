@@ -1,4 +1,20 @@
-use super::*;
+use crate::endpoint::ClientEndpointId;
+use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{
+    ClientNavigatorTarget, ClientShellAction, ClientShellConfig, ClientShellInput,
+    ClientShellOverlay, ClientShellState,
+};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::ClientHelpOverlay;
+
+use crate::shell::tests::{frame_rows, snapshot, surface};
+
+use crate::tests::{test_pane_id, test_workspace_id};
 
 #[test]
 fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() {
@@ -26,10 +42,7 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
 
     for (kind, expected_title) in notices {
         assert!(state.receive_server_notice(&kind));
-        let notice = state
-            .visible_endpoint_notice
-            .as_ref()
-            .expect("notice shown");
+        let notice = state.notices.visible().expect("notice shown");
         assert_eq!(notice.title, expected_title);
         assert_eq!(notice.body, kind.to_string());
     }
@@ -39,7 +52,7 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
 fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
-    state.sidebar_collapsed = true;
+    state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(snapshot()));
 
     let frame = state.compose(100, 28).expect("unavailable view");
@@ -80,13 +93,13 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
         panic!("expected navigator");
     };
-    let rows = super::super::render::client_navigator_rows(
+    let rows = crate::shell::presentation::render::client_navigator_rows(
         &state.endpoints,
         &state.active_endpoint_id,
         navigator,
     );
     assert_eq!(
-        super::super::aggregate_navigation::navigator_selected_index(&rows, navigator),
+        crate::shell::navigation::aggregate_navigation::navigator_selected_index(&rows, navigator),
         Some(0)
     );
     let expected = rows[0].target.clone();
@@ -199,32 +212,18 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     assert!(!state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
     state.reset_endpoint_projection();
     assert_eq!(
-        state
-            .visible_endpoint_notice
-            .as_ref()
-            .expect("first card")
-            .key
-            .boot_id,
+        state.notices.visible().expect("first card").key.boot_id,
         Some(first)
     );
     let now = std::time::Instant::now();
-    state.endpoint_notice_drawn(now);
+    state.notices.drawn(now);
     assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
-        state
-            .visible_endpoint_notice
-            .as_ref()
-            .expect("second card")
-            .key
-            .boot_id,
+        state.notices.visible().expect("second card").key.boot_id,
         Some(second)
     );
     assert_eq!(
-        state
-            .visible_endpoint_notice
-            .as_ref()
-            .expect("remote card")
-            .title,
+        state.notices.visible().expect("remote card").title,
         "Build: saved session not fully restored"
     );
     // A queued card receives a full lifetime only after it is actually drawn.
@@ -245,12 +244,9 @@ fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
     // Every later projection of the same boot repeats the flag.
     assert!(!state.receive_session_saves_stopped(&ClientEndpointId::Local, &boot));
     let now = std::time::Instant::now();
-    state.endpoint_notice_drawn(now);
+    state.notices.drawn(now);
     assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
-    let card = state
-        .visible_endpoint_notice
-        .as_ref()
-        .expect("saves stopped card");
+    let card = state.notices.visible().expect("saves stopped card");
     assert!(
         card.title.ends_with(": session saves stopped"),
         "{}",
@@ -274,15 +270,10 @@ fn transient_cards_do_not_discard_queued_restore_cards() {
     state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind);
     state.receive_paste_rejection("too large".into());
     let now = std::time::Instant::now();
-    state.endpoint_notice_drawn(now);
+    state.notices.drawn(now);
     assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
-        state
-            .visible_endpoint_notice
-            .as_ref()
-            .expect("restore card")
-            .key
-            .boot_id,
+        state.notices.visible().expect("restore card").key.boot_id,
         Some(boot)
     );
 }
@@ -313,17 +304,17 @@ fn dismissing_a_restore_card_immediately_shows_the_next_queued_card() {
 
     assert_eq!(
         state
-            .visible_endpoint_notice
-            .as_ref()
+            .notices
+            .visible()
             .expect("second restore card")
             .key
             .boot_id,
         Some(second)
     );
-    assert!(state.restore_notice_queue.is_empty());
-    assert!(state.endpoint_notice_deadline.is_none());
+    assert_eq!(state.notices.queued(), 0);
+    assert!(state.notices.deadline().is_none());
     assert_eq!(state.next_timer_deadline(), None);
 
     state.compose(106, 20).expect("second notice frame");
-    assert!(state.endpoint_notice_deadline.is_some());
+    assert!(state.notices.deadline().is_some());
 }

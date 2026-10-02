@@ -1,22 +1,24 @@
-use super::*;
+use ratatui::layout::Rect;
+use shepr_config::LiveKeybindConfig;
+use shepr_config::SidebarCollapsedModeConfig;
+
+use crate::shell::state::{
+    ClientShellConfig, ClientShellInput, ClientShellLayout, ClientShellState,
+};
+use shepr_protocol::ClientSurfaceSize;
+
+use crate::shell::overlays::preferences;
 
 impl ClientShellState {
-    pub(super) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
         let Some(path) = self.config.preferences_path.as_deref() else {
             return;
         };
         let preferences = preferences::ClientChromePreferences {
-            sidebar_width: self.sidebar_width_manual.then_some(self.sidebar_width),
-            sidebar_section_split: self
-                .sidebar_section_split_manual
-                .then_some(self.sidebar_section_split),
-            sidebar_collapsed: self
-                .sidebar_collapsed_manual
-                .then_some(self.sidebar_collapsed),
             agent_panel_sort: self
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
-            configured: preferences::ConfiguredChrome::default(),
+            ..self.chrome.preferences()
         }
         // A value client.toml sets is only a session change: storing it would
         // bring it back if the key were later removed from the config.
@@ -79,7 +81,7 @@ impl ClientShellConfig {
         Ok(self.with_preferences_path(path))
     }
 
-    pub(super) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
+    pub(in crate::shell) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
         let configured = self.preferences.configured;
         self.preferences = preferences::load(&path)
             .unwrap_or_default()
@@ -88,15 +90,15 @@ impl ClientShellConfig {
         self
     }
 
-    pub(super) fn layout(
+    pub(in crate::shell) fn layout(
         &self,
         cols: u16,
         rows: u16,
         sidebar_collapsed: bool,
         sidebar_width: u16,
     ) -> ClientShellLayout {
-        // Expanded widths already come from the validated config or an input
-        // path that clamps user preferences and drag positions on entry.
+        // Expanded widths come from `ChromeLayout`, which clamps remembered
+        // and dragged widths on entry.
         let sidebar_width = if sidebar_collapsed {
             match self.sidebar_collapsed_mode {
                 SidebarCollapsedModeConfig::Compact => 4,
@@ -115,16 +117,9 @@ impl ClientShellConfig {
     }
 
     pub(crate) fn initial_surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {
-        let sidebar_collapsed = self
-            .preferences
-            .sidebar_collapsed
-            .unwrap_or(self.sidebar_start_collapsed);
-        let sidebar_width = match self.preferences.sidebar_width {
-            Some(width) => self.sidebar_bounds.clamp_width(width),
-            None => self.sidebar_width,
-        };
+        let chrome = crate::shell::sidebar::chrome::ChromeLayout::new(self);
         let surface = self
-            .layout(cols, rows, sidebar_collapsed, sidebar_width)
+            .layout(cols, rows, chrome.collapsed(), chrome.width())
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),
@@ -133,6 +128,9 @@ impl ClientShellConfig {
         .clamped()
     }
 }
+
+#[cfg(test)]
+use shepr_config::ClientConfig;
 
 #[cfg(test)]
 impl ClientShellConfig {
@@ -150,7 +148,10 @@ impl ClientShellConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::preferences;
+    use crate::shell::state::{ClientShellConfig, ClientShellInput, ClientShellState};
+    use shepr_config::ClientConfig;
+
     use shepr_test_fixtures::*;
 
     #[test]
@@ -200,18 +201,17 @@ mod tests {
         let mut state = ClientShellState::new(shell_config);
 
         // Set keys win; the unset one keeps the remembered toggle.
-        assert_eq!(state.sidebar_width, 24);
-        assert!(!state.sidebar_width_manual);
+        assert_eq!(state.chrome.width(), 24);
+        assert!(state.chrome.preferences().sidebar_width.is_none());
         assert_eq!(
             state.config.agent_panel_sort,
             shepr_config::AgentPanelSortConfig::Spaces
         );
-        assert!(state.sidebar_collapsed);
+        assert!(state.chrome.collapsed());
 
         // A manual change still applies for the session but is not stored
         // for a value the config owns.
-        state.sidebar_width = 30;
-        state.sidebar_width_manual = true;
+        state.chrome.set_width(30);
         state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
         state.agent_panel_sort_manual = true;
         state.persist_chrome_preferences(&mut ClientShellInput::default());

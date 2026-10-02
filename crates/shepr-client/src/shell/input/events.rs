@@ -1,9 +1,11 @@
-use super::*;
+use crate::shell::state::ClientShellInput;
+use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
+
 use shepr_protocol::InputBatchCharge;
 
 /// Cached charge of the latest pane-input message built for one input outcome.
 #[derive(Default)]
-pub(super) struct PaneInputBatchAccounting {
+pub(in crate::shell) struct PaneInputBatchAccounting {
     request_index: Option<usize>,
     charge: InputBatchCharge,
 }
@@ -15,7 +17,7 @@ impl PaneInputBatchAccounting {
     }
 }
 
-pub(super) fn target_event_message(
+pub(in crate::shell) fn target_event_message(
     target: shepr_protocol::PublicPaneId,
     event: ClientPaneInputEvent,
 ) -> ClientMessage {
@@ -27,7 +29,7 @@ pub(super) fn target_event_message(
 
 /// Adds an event to the pending target message while its grown
 /// `InputBatchCharge` still fits, the rule the server refuses a batch by.
-pub(super) fn push_target_event(
+pub(in crate::shell) fn push_target_event(
     target: shepr_protocol::PublicPaneId,
     event: ClientPaneInputEvent,
     outcome: &mut ClientShellInput,
@@ -64,7 +66,10 @@ pub(super) fn push_target_event(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::shell::input::events::{PaneInputBatchAccounting, push_target_event};
+    use crate::shell::state::ClientShellInput;
+    use shepr_protocol::InputBatchCharge;
+    use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
     use shepr_protocol::{MAX_INPUT_EVENT_BATCH, MAX_INPUT_PAYLOAD};
 
     fn batch(events: Vec<ClientPaneInputEvent>) -> Vec<ClientMessage> {

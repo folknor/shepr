@@ -23,11 +23,13 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Variables an agent sets in the processes it runs, which the shipped hooks
 /// read to decide whose session they report. A test run from inside one of
-/// those agents would inherit them: under Cursor the Claude hook stays silent,
-/// Grok's id overrides the scripted one, inside a Codex thread the Codex hook
-/// drops every report for another session, and a nested OMP extension stays
-/// passive.
-pub const INHERITED_AGENT_VARIABLES: [&str; 4] = [
+/// those agents would inherit them: under Cursor or inside a Claude background
+/// session the Claude hook stays silent, Grok's id overrides the scripted one,
+/// inside a Codex thread the Codex hook drops every report for another
+/// session, and a nested OMP extension stays passive.
+pub const INHERITED_AGENT_VARIABLES: [&str; 6] = [
+    "CLAUDE_CODE_SESSION_KIND",
+    "CLAUDE_JOB_DIR",
     "CODEX_THREAD_ID",
     "CURSOR_VERSION",
     "GROK_SESSION_ID",

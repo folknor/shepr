@@ -1,4 +1,25 @@
-use super::*;
+use crate::shell::state::{
+    ClientChromeDrag, ClientShellConfig, ClientShellEndpointError, ClientShellOverlay,
+};
+use crossterm::event::{KeyModifiers, MouseButton};
+use ratatui::buffer::Buffer;
+use shepr_config::ClientConfig;
+use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_protocol::{
+    ClientMessage, ClientMousePosition, ClientPaneInputEvent, FrameData, PaneSurfaceSplitDirection,
+};
+use shepr_termio::input::raw_input::RawInputEvent;
+
+use crate::shell::state::{
+    ClientContextMenuOverlay, ClientShellAction, ClientShellInput, ClientShellState,
+};
+
+use shepr_protocol::{PaneSurfaceSplit, SurfaceRect};
+
+use crossterm::event::{MouseEvent, MouseEventKind};
+
+use crate::shell::tests::{snapshot, surface};
+use crate::tests::test_pane_id;
 
 #[test]
 fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
@@ -435,7 +456,7 @@ fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
     assert!(outcome.repaint);
     assert!(state.ledger.is_empty());
     assert!(state.mouse_selection.word_gesture.is_none());
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 #[test]
@@ -450,7 +471,7 @@ fn disconnecting_a_pending_word_row_read_does_not_show_an_interrupted_action_not
 
     assert!(state.ledger.is_empty());
     assert!(state.mouse_selection.word_gesture.is_none());
-    assert!(state.visible_endpoint_notice.is_none());
+    assert!(state.notices.visible().is_none());
 }
 
 #[test]
@@ -942,7 +963,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             rows: vec![],
             cursor: scrolled.frame.cursor,
         }),
-        super::super::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
+        crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
     assert!(
         state

@@ -1,30 +1,30 @@
 //! Double-click word selection. Cached rows hold pane text read back from the
 //! endpoint; that content must stay out of logs and error messages here.
 
-use super::*;
+use crate::shell::ledger::Work;
 
-#[path = "word_bounds.rs"]
-mod word_bounds;
-use word_bounds::word_bounds_at_column;
+use crate::shell::state::{ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit};
+
+use super::word_bounds::word_bounds_at_column;
 
 /// Held second press. Keep only one row read in flight and use the latest
 /// pointer position when it returns, so remote latency cannot queue up motion.
 #[derive(Debug)]
-pub(super) struct ClientWordSelection {
-    pub(super) pane_id: shepr_protocol::PublicPaneId,
-    pub(super) focus_confirmed: bool,
+pub(in crate::shell) struct ClientWordSelection {
+    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
+    pub(in crate::shell) focus_confirmed: bool,
     anchor: (shepr_vt::AbsRow, u16),
     anchor_bounds: Option<(u16, u16)>,
     cursor: (shepr_vt::AbsRow, u16),
     end_col: u16,
     cached_row: Option<(shepr_vt::AbsRow, String)>,
     pending: Option<shepr_protocol::RequestId>,
-    pub(super) dragged: bool,
-    pub(super) released: bool,
+    pub(in crate::shell) dragged: bool,
+    pub(in crate::shell) released: bool,
 }
 
 impl ClientShellState {
-    pub(super) fn request_word_selection(
+    pub(in crate::shell) fn request_word_selection(
         &mut self,
         hit: &PaneHit,
         metrics: shepr_termio::ScrollMetrics,
@@ -89,7 +89,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn drag_word_selection(
+    pub(in crate::shell) fn drag_word_selection(
         &mut self,
         cursor: (shepr_vt::AbsRow, u16),
         outcome: &mut ClientShellInput,
@@ -106,7 +106,7 @@ impl ClientShellState {
         self.update_word_selection(outcome, now);
     }
 
-    pub(super) fn finish_word_selection(
+    pub(in crate::shell) fn finish_word_selection(
         &mut self,
         outcome: &mut ClientShellInput,
         now: std::time::Instant,
@@ -167,7 +167,10 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn drop_word_selection(&mut self, request: &shepr_protocol::RequestId) -> bool {
+    pub(in crate::shell) fn drop_word_selection(
+        &mut self,
+        request: &shepr_protocol::RequestId,
+    ) -> bool {
         if self
             .mouse_selection
             .word_gesture
@@ -181,7 +184,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn complete_word_selection_row(
+    pub(in crate::shell) fn complete_word_selection_row(
         &mut self,
         request: &shepr_protocol::RequestId,
         pane_id: &str,

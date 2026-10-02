@@ -2,8 +2,19 @@
 //! raw input; input content must stay out of logs and error messages here
 //! (log lengths or content-free kinds instead).
 
-use super::*;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crate::shell::ledger::Work;
+use crate::shell::overlays::text_editor::TextEditor;
+use crate::shell::state::{ClientCopySearch, ClientCopySelection, ClientShellMode};
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
+
+use crate::shell::input::events::PaneInputBatchAccounting;
+use crate::shell::state::{
+    ClientCopyModeState, ClientCopyOperation, ClientCopySearchPrompt, ClientCopySearchResult,
+    ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit, TypedText,
+};
+
+use std::collections::VecDeque;
 
 /// Copy-mode coordinates are absolute rows. Output leaves retained points in
 /// place; surface installation clamps evicted cursor and selection rows and
@@ -17,7 +28,7 @@ impl ClientCopyModeState {
     }
 
     /// The row at the top of the pane's viewport.
-    pub(super) fn viewport_top(&self) -> shepr_vt::AbsRow {
+    pub(in crate::shell) fn viewport_top(&self) -> shepr_vt::AbsRow {
         let from_origin = self
             .max_offset_from_bottom
             .saturating_sub(self.offset_from_bottom);
@@ -51,7 +62,7 @@ impl ClientCopyModeState {
 /// Operations only queue behind an awaiting request, except during dispatch. Keys
 /// also exist while a completed request's input is replayed.
 #[derive(Default)]
-pub(super) struct CopyPipeline {
+pub(in crate::shell) struct CopyPipeline {
     /// The one outstanding copy request. Only its answer applies; dropping it is what
     /// makes a late answer stale.
     awaiting: Option<shepr_protocol::RequestId>,
@@ -59,62 +70,62 @@ pub(super) struct CopyPipeline {
     keys: VecDeque<shepr_termio::input::TerminalKey>,
 }
 impl CopyPipeline {
-    pub(super) fn in_flight(&self) -> bool {
+    pub(in crate::shell) fn in_flight(&self) -> bool {
         self.awaiting.is_some()
     }
-    pub(super) fn is_awaiting(&self, id: &shepr_protocol::RequestId) -> bool {
+    pub(in crate::shell) fn is_awaiting(&self, id: &shepr_protocol::RequestId) -> bool {
         self.awaiting.as_ref() == Some(id)
     }
-    pub(super) fn awaiting(&self) -> Option<&shepr_protocol::RequestId> {
+    pub(in crate::shell) fn awaiting(&self) -> Option<&shepr_protocol::RequestId> {
         self.awaiting.as_ref()
     }
-    pub(super) fn begin(&mut self, id: shepr_protocol::RequestId) {
+    pub(in crate::shell) fn begin(&mut self, id: shepr_protocol::RequestId) {
         self.awaiting = Some(id);
     }
-    pub(super) fn finish(&mut self) {
+    pub(in crate::shell) fn finish(&mut self) {
         self.awaiting = None;
     }
-    pub(super) fn reset(&mut self) {
+    pub(in crate::shell) fn reset(&mut self) {
         self.awaiting = None;
         self.ops.clear();
         self.keys.clear();
     }
-    pub(super) fn push_op(&mut self, op: ClientCopyOperation) {
+    pub(in crate::shell) fn push_op(&mut self, op: ClientCopyOperation) {
         self.ops.push_back(op);
     }
-    pub(super) fn pop_op(&mut self) -> Option<ClientCopyOperation> {
+    pub(in crate::shell) fn pop_op(&mut self) -> Option<ClientCopyOperation> {
         self.ops.pop_front()
     }
-    pub(super) fn clear_ops(&mut self) {
+    pub(in crate::shell) fn clear_ops(&mut self) {
         self.ops.clear();
     }
-    pub(super) fn has_queued_search(&self) -> bool {
+    pub(in crate::shell) fn has_queued_search(&self) -> bool {
         self.ops
             .iter()
             .any(|op| matches!(op, ClientCopyOperation::Search { .. }))
     }
-    pub(super) fn push_key(&mut self, key: shepr_termio::input::TerminalKey) {
+    pub(in crate::shell) fn push_key(&mut self, key: shepr_termio::input::TerminalKey) {
         self.keys.push_back(key);
     }
-    pub(super) fn pop_key(&mut self) -> Option<shepr_termio::input::TerminalKey> {
+    pub(in crate::shell) fn pop_key(&mut self) -> Option<shepr_termio::input::TerminalKey> {
         self.keys.pop_front()
     }
-    pub(super) fn keys_len(&self) -> usize {
+    pub(in crate::shell) fn keys_len(&self) -> usize {
         self.keys.len()
     }
-    pub(super) fn take_keys(&mut self) -> VecDeque<shepr_termio::input::TerminalKey> {
+    pub(in crate::shell) fn take_keys(&mut self) -> VecDeque<shepr_termio::input::TerminalKey> {
         std::mem::take(&mut self.keys)
     }
-    pub(super) fn put_keys(&mut self, keys: VecDeque<shepr_termio::input::TerminalKey>) {
+    pub(in crate::shell) fn put_keys(&mut self, keys: VecDeque<shepr_termio::input::TerminalKey>) {
         self.keys = keys;
     }
-    pub(super) fn clear_keys(&mut self) {
+    pub(in crate::shell) fn clear_keys(&mut self) {
         self.keys.clear();
     }
 }
 
 impl ClientShellState {
-    pub(super) fn complete_copy_motion(
+    pub(in crate::shell) fn complete_copy_motion(
         &mut self,
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
@@ -149,7 +160,7 @@ impl ClientShellState {
         }
         repaint
     }
-    pub(super) fn complete_copy_search(
+    pub(in crate::shell) fn complete_copy_search(
         &mut self,
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
@@ -215,7 +226,10 @@ impl ClientShellState {
         }
         repaint
     }
-    pub(super) fn drop_copy_operation(&mut self, request: &shepr_protocol::RequestId) -> bool {
+    pub(in crate::shell) fn drop_copy_operation(
+        &mut self,
+        request: &shepr_protocol::RequestId,
+    ) -> bool {
         if !self.copy_pipeline.is_awaiting(request) {
             return false;
         }
@@ -234,7 +248,7 @@ impl ClientShellState {
 
     /// Copy accepts input only when its explicit mode is active, no overlay
     /// intercepts it, and the stored session still belongs to the focused pane.
-    pub(super) fn copy_mode_owns_input(&self) -> bool {
+    pub(in crate::shell) fn copy_mode_owns_input(&self) -> bool {
         self.mode == ClientShellMode::Copy
             && self.overlay.is_none()
             && self.copy_mode.as_ref().is_some_and(|copy_mode| {
@@ -246,7 +260,10 @@ impl ClientShellState {
     /// the search prompt the prefix and `q`. While a copy operation is in flight they
     /// queue in order like every other key; they only act out of order when the queue
     /// is full, as the way out of a request that stopped answering.
-    pub(super) fn copy_mode_interrupt_key(&self, key: &shepr_termio::input::TerminalKey) -> bool {
+    pub(in crate::shell) fn copy_mode_interrupt_key(
+        &self,
+        key: &shepr_termio::input::TerminalKey,
+    ) -> bool {
         if key.kind != crossterm::event::KeyEventKind::Press {
             return false;
         }
@@ -270,7 +287,7 @@ impl ClientShellState {
     /// Gives up on the in-flight copy operation and every key queued behind it. The
     /// request stays in the ledger; its answer, if one ever comes, belongs to an older
     /// copy session and is ignored.
-    pub(super) fn abandon_copy_operation(&mut self) {
+    pub(in crate::shell) fn abandon_copy_operation(&mut self) {
         self.reset_copy_pipeline();
         if let Some(copy_mode) = self.copy_mode.as_mut()
             && let Some(search) = copy_mode.search.as_mut()
@@ -279,11 +296,11 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn reset_copy_pipeline(&mut self) {
+    pub(in crate::shell) fn reset_copy_pipeline(&mut self) {
         self.copy_pipeline.reset();
     }
 
-    pub(super) fn enter_copy_mode(&mut self, outcome: &mut ClientShellInput) -> bool {
+    pub(in crate::shell) fn enter_copy_mode(&mut self, outcome: &mut ClientShellInput) -> bool {
         let pane_id = match self.focused_pane_id() {
             Some(pane_id) => pane_id,
             None => return false,
@@ -361,7 +378,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn route_copy_mode_key(
+    pub(in crate::shell) fn route_copy_mode_key(
         &mut self,
         key: &shepr_termio::input::TerminalKey,
         outcome: &mut ClientShellInput,
@@ -623,7 +640,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn insert_copy_search_text(&mut self, text: &str) -> bool {
+    pub(in crate::shell) fn insert_copy_search_text(&mut self, text: &str) -> bool {
         if !self.copy_mode_owns_input() {
             return false;
         }
@@ -738,7 +755,7 @@ impl ClientShellState {
         self.dispatch_next_copy_operation(outcome);
     }
 
-    pub(super) fn apply_copy_search_result(
+    pub(in crate::shell) fn apply_copy_search_result(
         &mut self,
         pane_id: &str,
         origin: shepr_protocol::command::PaneTextPoint,
@@ -789,7 +806,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn finish_copy_operation(
+    pub(in crate::shell) fn finish_copy_operation(
         &mut self,
         continue_queue: bool,
         outcome: &mut ClientShellInput,
@@ -834,7 +851,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn cancel_deferred_copy_after_search(&mut self, generation: u64) {
+    pub(in crate::shell) fn cancel_deferred_copy_after_search(&mut self, generation: u64) {
         if let Some(search) = self
             .copy_mode
             .as_mut()
@@ -1011,7 +1028,7 @@ impl ClientShellState {
 
     /// Project the copy selection's anchor and shape onto its current cursor range.
     /// The VT selection is the visible range; the copy state retains the anchor.
-    pub(super) fn sync_copy_selection(&mut self) {
+    pub(in crate::shell) fn sync_copy_selection(&mut self) {
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return;
         };
@@ -1050,7 +1067,10 @@ impl ClientShellState {
         self.dispatch_next_copy_operation(outcome);
     }
 
-    pub(super) fn dispatch_next_copy_operation(&mut self, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn dispatch_next_copy_operation(
+        &mut self,
+        outcome: &mut ClientShellInput,
+    ) {
         if self.copy_pipeline.in_flight() {
             return;
         }
@@ -1131,7 +1151,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn apply_copy_motion_target(
+    pub(in crate::shell) fn apply_copy_motion_target(
         &mut self,
         pane_id: &str,
         origin: shepr_protocol::command::PaneTextPoint,
@@ -1151,7 +1171,7 @@ impl ClientShellState {
         true
     }
 
-    pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
+    pub(in crate::shell) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
         let live_selection = self
             .mouse_selection
             .selection
@@ -1203,16 +1223,20 @@ impl ClientShellState {
 
 #[cfg(test)]
 impl CopyPipeline {
-    pub(super) fn keys_is_empty(&self) -> bool {
+    pub(in crate::shell) fn keys_is_empty(&self) -> bool {
         self.keys.is_empty()
     }
-    pub(super) fn ops_is_empty(&self) -> bool {
+    pub(in crate::shell) fn ops_is_empty(&self) -> bool {
         self.ops.is_empty()
     }
 }
 #[cfg(test)]
 mod pipeline_tests {
-    use super::*;
+    use crossterm::event::KeyCode;
+
+    use crate::shell::input::copy_mode::CopyPipeline;
+    use crate::shell::state::ClientCopyOperation;
+
     #[test]
     fn reset_clears_the_request_and_everything_queued() {
         let mut p = CopyPipeline::default();

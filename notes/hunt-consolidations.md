@@ -1033,20 +1033,13 @@ their own logging. (client-core)
 
 ## CON-104 - Notices: wording, deduplication and lifetime
 
-`"{label}: {message}"` is assembled in `handle_endpoint_supervisor`'s `Status`
-arm, its `Connected` failure branch, `run_client_loop` (with the literal
-`"Local"`), `reconcile::fail_move` callers, `endpoint_lost` and `waiting_notice`.
-In the shell, the Timeout notice key is built in `answer_request`'s error branch
-and rebuilt in its success branch to clear suppression;
-`push_endpoint_notice_at_boot` dedupes Rejected/Unavailable by equality with the
-visible card and Timeout by `endpoint_notice_seen`; `receive_restore_notice` has
-its own `restore_notice_seen`; `handle_machine_badge_event` bypasses both and
-writes `visible_endpoint_notice` directly; the visible notice's lifetime is a
-deadline tuple compared in `endpoint_notice_drawn`, `tick_transient_banners` and
-`next_timer_deadline` (the restore-queue stall is filed as a bug). Owner: a typed
-`EndpointNotice { endpoint, kind }` rendered once, and a `Notices` component
-(visible card, restore queue, seen sets, deadline) with `push`, `dismiss`,
-`drawn`, `tick` and `deadline`. Reported by client-core and client-shell.
+A `Notices` component in the client shell now owns suppression, the boot-card
+queue, diagnostic replacement, dismissal and drawn expiry. Still open: the
+wording. `"{label}: {message}"` is assembled in `handle_endpoint_supervisor`'s
+`Status` arm, its `Connected` failure branch, `run_client_loop`,
+`reconcile::fail_move` callers, `endpoint_lost` and `waiting_notice`; a typed
+`EndpointNotice { endpoint, kind }` rendered once would end that. Reported by
+client-core and client-shell.
 
 ## CON-108 - What does compose draw over pane cells?
 
