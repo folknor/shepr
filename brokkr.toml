@@ -745,7 +745,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-pty-layer"
 from = "shepr-pty"
-allow = ["bytes", "libc", "shepr-core", "tracing"]
+allow = ["bytes", "libc", "shepr-core", "shepr-platform", "tracing"]
 kinds = ["normal"]
 
 # `IsolatedEnv` isolates tests from `shepr_core::env`'s registry, so a

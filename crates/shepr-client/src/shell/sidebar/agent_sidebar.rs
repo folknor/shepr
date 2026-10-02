@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -190,149 +188,49 @@ pub(super) fn agent_rows(
     if snapshot.agents.is_empty() {
         return Vec::new();
     }
-    let index = AgentRowIndex::new(snapshot, config.agent_panel_sort);
-    index.items[index.agents.clone()]
+    let index = AgentRowIndex::new(snapshot);
+    index
+        .agents
         .iter()
-        .filter_map(|item| match item {
-            AgentRowIndexItem::Agent { agent, .. } => index.agent_row(agent, config, machine),
-            _ => None,
-        })
+        .filter_map(|agent| index.agent_row(agent, config, machine))
         .collect()
 }
 
 /// Snapshot-local joins for the agent panel. Build the indexes once per list
 /// render so each row resolves its related resources with keyed lookups.
 struct AgentRowIndex<'a> {
-    items: Vec<AgentRowIndexItem<'a>>,
-    agents: Range<usize>,
-    workspaces: Range<usize>,
-    panes: Range<usize>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum AgentRowIndexKind {
-    Agent,
-    Workspace,
-    Pane,
-}
-
-enum AgentRowIndexItem<'a> {
-    Agent {
-        agent: &'a ClientShellAgent,
-        order: usize,
-    },
-    Workspace(&'a ClientShellWorkspace),
-    Pane(&'a ClientShellPane),
-}
-
-impl AgentRowIndexItem<'_> {
-    fn kind(&self) -> AgentRowIndexKind {
-        match self {
-            Self::Agent { .. } => AgentRowIndexKind::Agent,
-            Self::Workspace(_) => AgentRowIndexKind::Workspace,
-            Self::Pane(_) => AgentRowIndexKind::Pane,
-        }
-    }
+    agents: &'a [ClientShellAgent],
+    workspaces: Vec<&'a ClientShellWorkspace>,
+    panes: Vec<&'a ClientShellPane>,
 }
 
 impl<'a> AgentRowIndex<'a> {
-    fn new(snapshot: &'a ClientShellSnapshot, sort: shepr_config::AgentPanelSortConfig) -> Self {
-        let capacity = snapshot
-            .agents
-            .len()
-            .saturating_add(snapshot.workspaces.len())
-            .saturating_add(snapshot.panes.len());
-        let mut items = Vec::with_capacity(capacity);
-        for (order, agent) in snapshot.agents.iter().enumerate() {
-            items.push(AgentRowIndexItem::Agent { agent, order });
-        }
-        items.extend(snapshot.workspaces.iter().map(AgentRowIndexItem::Workspace));
-        items.extend(snapshot.panes.iter().map(AgentRowIndexItem::Pane));
-        items.sort_unstable_by(|left, right| {
-            left.kind()
-                .cmp(&right.kind())
-                .then_with(|| match (left, right) {
-                    (
-                        AgentRowIndexItem::Agent {
-                            agent: left,
-                            order: left_order,
-                        },
-                        AgentRowIndexItem::Agent {
-                            agent: right,
-                            order: right_order,
-                        },
-                    ) if sort == shepr_config::AgentPanelSortConfig::Priority => (
-                        std::cmp::Reverse(status_priority(left.agent_status)),
-                        std::cmp::Reverse(left.state_change_seq),
-                        left_order,
-                    )
-                        .cmp(&(
-                            std::cmp::Reverse(status_priority(right.agent_status)),
-                            std::cmp::Reverse(right.state_change_seq),
-                            right_order,
-                        )),
-                    (
-                        AgentRowIndexItem::Agent {
-                            order: left_order, ..
-                        },
-                        AgentRowIndexItem::Agent {
-                            order: right_order, ..
-                        },
-                    ) => left_order.cmp(right_order),
-                    (AgentRowIndexItem::Workspace(left), AgentRowIndexItem::Workspace(right)) => {
-                        left.workspace_id.cmp(&right.workspace_id)
-                    }
-                    (AgentRowIndexItem::Pane(left), AgentRowIndexItem::Pane(right)) => {
-                        left.pane_id.cmp(&right.pane_id)
-                    }
-                    _ => std::cmp::Ordering::Equal,
-                })
-        });
-        let agents = Self::kind_range(&items, AgentRowIndexKind::Agent);
-        let workspaces = Self::kind_range(&items, AgentRowIndexKind::Workspace);
-        let panes = Self::kind_range(&items, AgentRowIndexKind::Pane);
+    fn new(snapshot: &'a ClientShellSnapshot) -> Self {
+        let mut workspaces = snapshot.workspaces.iter().collect::<Vec<_>>();
+        workspaces.sort_unstable_by(|left, right| left.workspace_id.cmp(&right.workspace_id));
+        let mut panes = snapshot.panes.iter().collect::<Vec<_>>();
+        panes.sort_unstable_by(|left, right| left.pane_id.cmp(&right.pane_id));
         Self {
-            agents,
+            agents: &snapshot.agents,
             workspaces,
             panes,
-            items,
         }
-    }
-
-    fn kind_range(items: &[AgentRowIndexItem<'_>], kind: AgentRowIndexKind) -> Range<usize> {
-        let start = items.partition_point(|item| item.kind() < kind);
-        let end = items.partition_point(|item| item.kind() <= kind);
-        start..end
     }
 
     fn workspace(&self, workspace_id: &str) -> Option<&'a ClientShellWorkspace> {
-        let items = &self.items[self.workspaces.clone()];
-        let index = items
-            .binary_search_by(|item| match item {
-                AgentRowIndexItem::Workspace(workspace) => {
-                    workspace.workspace_id.as_str().cmp(workspace_id)
-                }
-                _ => std::cmp::Ordering::Equal,
-            })
+        let index = self
+            .workspaces
+            .binary_search_by(|workspace| workspace.workspace_id.as_str().cmp(workspace_id))
             .ok()?;
-        match items[index] {
-            AgentRowIndexItem::Workspace(workspace) => Some(workspace),
-            _ => None,
-        }
+        Some(self.workspaces[index])
     }
 
     fn pane(&self, pane_id: &PublicPaneId) -> Option<&'a ClientShellPane> {
-        let items = &self.items[self.panes.clone()];
-        let index = items
-            .binary_search_by(|item| match item {
-                AgentRowIndexItem::Pane(pane) => pane.pane_id.cmp(pane_id),
-                _ => std::cmp::Ordering::Equal,
-            })
+        let index = self
+            .panes
+            .binary_search_by(|pane| pane.pane_id.cmp(pane_id))
             .ok()?;
-        match items[index] {
-            AgentRowIndexItem::Pane(pane) => Some(pane),
-            _ => None,
-        }
+        Some(self.panes[index])
     }
 
     fn agent_row(

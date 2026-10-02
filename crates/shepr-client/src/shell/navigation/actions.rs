@@ -264,8 +264,7 @@ impl ClientShellState {
                 body: notice.to_string(),
             });
         if self.visible_endpoint_notice.is_none() {
-            self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
-            self.endpoint_notice_deadline = None;
+            self.advance_endpoint_notice();
         }
         true
     }
@@ -364,9 +363,8 @@ impl ClientShellState {
             KeybindAction::FocusAgent(_)
             | KeybindAction::PreviousAgent
             | KeybindAction::NextAgent => {
-                let agents = super::aggregate_navigation::online_agent_targets(
+                let agents = super::aggregate_navigation::displayed_agent_targets(
                     &self.endpoints,
-                    &self.active_endpoint_id,
                     self.config.agent_panel_sort,
                 );
                 let index = super::aggregate_navigation::agent_target_index(
@@ -396,25 +394,20 @@ impl ClientShellState {
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }
             KeybindAction::SwitchWorkspace(index) => {
-                let entries = self.navigation_workspace_entries(snapshot);
-                let workspace_id = snapshot
-                    .workspaces
-                    .get(*entries.get(index)?)?
-                    .workspace_id
-                    .clone();
+                let workspace_id = snapshot.workspaces.get(index)?.workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id,
                 }))
             }
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => {
-                let entries = self.navigation_workspace_entries(snapshot);
-                if entries.is_empty() {
+                let workspaces = &snapshot.workspaces;
+                if workspaces.is_empty() {
                     return None;
                 }
-                let current = entries
+                let current = workspaces
                     .iter()
-                    .position(|entry| snapshot.workspaces[*entry].workspace_id == focused_workspace)
+                    .position(|workspace| workspace.workspace_id == focused_workspace)
                     .unwrap_or(0);
                 let delta = if action == KeybindAction::PreviousWorkspace {
                     -1
@@ -422,9 +415,9 @@ impl ClientShellState {
                     1
                 };
                 let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
-                let len_isize = isize::try_from(entries.len()).unwrap_or(isize::MAX);
+                let len_isize = isize::try_from(workspaces.len()).unwrap_or(isize::MAX);
                 let next = (current_isize + delta).rem_euclid(len_isize) as usize;
-                let workspace_id = snapshot.workspaces[entries[next]].workspace_id.clone();
+                let workspace_id = workspaces[next].workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id,

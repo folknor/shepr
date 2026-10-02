@@ -17,17 +17,15 @@
 //! that the shell already runs.
 
 use std::collections::HashMap;
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::limits::{
     LAUNCH_ACCEPT_RETRY_DELAY, LAUNCH_HELLO_TIMEOUT, LAUNCH_PARKED_CONNECTION_TTL,
-    LAUNCH_STATUS_RECORD_BYTES, PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES,
-    PASSWD_BUFFER_MAX_BYTES,
+    LAUNCH_STATUS_RECORD_BYTES,
 };
 use crate::locks::lock_auxiliary;
 
@@ -270,7 +268,7 @@ impl LaunchService {
             router,
             address,
             address_len,
-            passwd_home: passwd_home(),
+            passwd_home: crate::command::passwd_home(),
             next_ticket: std::sync::atomic::AtomicU64::new(1),
         })
     }
@@ -350,41 +348,31 @@ impl Router {
             if ready <= 0 {
                 continue;
             }
-            // SAFETY: accept4(2) with null address pointers returns a new fd
-            // or -1 and writes no memory of ours.
-            let fd = unsafe {
-                libc::accept4(
-                    self.listener.as_raw_fd(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    libc::SOCK_CLOEXEC,
-                )
-            };
-            if fd < 0 {
-                let error = io::Error::last_os_error();
-                match error.raw_os_error() {
-                    Some(libc::EINTR | libc::ECONNABORTED | libc::EPROTO | libc::EAGAIN) => {}
-                    Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM) => {
-                        if !exhausted {
-                            tracing::warn!(%error, "pane launch status listener is out of resources; retrying");
-                        }
-                        exhausted = true;
-                        std::thread::sleep(LAUNCH_ACCEPT_RETRY_DELAY);
+            let peer = match shepr_platform::ipc::accept_peer(
+                self.listener.as_raw_fd(),
+                shepr_platform::ipc::PeerAdmission::ExactOwner,
+            ) {
+                shepr_platform::ipc::Accepted::Peer(peer) => peer,
+                shepr_platform::ipc::Accepted::RetryNow => continue,
+                shepr_platform::ipc::Accepted::Backoff(error) => {
+                    if !exhausted {
+                        tracing::warn!(%error, "pane launch status listener failed; retrying");
                     }
-                    _ => {
-                        tracing::error!(%error, "pane launch status listener failed");
-                        return;
-                    }
+                    exhausted = true;
+                    std::thread::sleep(LAUNCH_ACCEPT_RETRY_DELAY);
+                    continue;
                 }
-                continue;
-            }
+                shepr_platform::ipc::Accepted::Fatal(error) => {
+                    tracing::error!(%error, "pane launch status listener is invalid");
+                    return;
+                }
+            };
             if exhausted {
                 tracing::info!("pane launch status listener recovered");
                 exhausted = false;
             }
-            // SAFETY: accept4 succeeded, so `fd` is a fresh fd nothing else owns.
-            let channel = unsafe { OwnedFd::from_raw_fd(fd) };
-            match accept_hello(&channel) {
+            let channel = peer.fd;
+            match accept_hello(&channel, peer.pid) {
                 Ok((ticket, pid)) => self.route(ticket, pid, channel),
                 Err(error) => {
                     tracing::warn!(%error, "dropping a pane launch status connection");
@@ -449,37 +437,11 @@ impl Drop for Registration {
     }
 }
 
-/// Checks the peer and reads its hello, bounded by `LAUNCH_HELLO_TIMEOUT` so
-/// a stray local connection cannot stall the listener, then leaves the
-/// channel nonblocking for its reader.
-fn accept_hello(channel: &OwnedFd) -> io::Result<(u64, u32)> {
-    // SAFETY: ucred is a plain C struct; all-zero is valid.
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
-        .map_err(|_| io::Error::other("ucred size does not fit socklen_t"))?;
-    // SAFETY: `credentials` and `length` are live writable locals sized for a
-    // ucred; SO_PEERCRED fills them for this connected socket.
-    if unsafe {
-        libc::getsockopt(
-            channel.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut credentials).cast(),
-            &mut length,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: geteuid(2) takes no arguments and cannot fail.
-    if credentials.uid != unsafe { libc::geteuid() } {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "launch status connection from another user",
-        ));
-    }
-    let pid = u32::try_from(credentials.pid)
-        .map_err(|_| protocol_error("launch status peer has no pid"))?;
+/// Reads the hello of a peer `accept_peer` already admitted (same user, with
+/// `pid` from its credentials), bounded by `LAUNCH_HELLO_TIMEOUT` so a stray
+/// local connection cannot stall the listener, then clears the receive
+/// timeout for the channel's reader.
+fn accept_hello(channel: &OwnedFd, pid: u32) -> io::Result<(u64, u32)> {
     let timeout = libc::timeval {
         tv_sec: libc::time_t::try_from(LAUNCH_HELLO_TIMEOUT.as_secs())
             .map_err(|_| io::Error::other("hello timeout out of range"))?,
@@ -540,49 +502,6 @@ fn set_receive_timeout(channel: &OwnedFd, timeout: &libc::timeval) -> io::Result
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-/// The current user's passwd home directory, read once per process.
-fn passwd_home() -> Option<OsString> {
-    let mut buf: Vec<libc::c_char> = vec![0; PASSWD_BUFFER_INITIAL_BYTES];
-    loop {
-        // SAFETY: an all-zero passwd value has null pointers and zero scalars,
-        // all valid initial values for getpwuid_r to overwrite.
-        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        // SAFETY: `entry`, `buf`, and `result` are writable values of the
-        // sizes required by getpwuid_r; the function does not retain them.
-        let status = unsafe {
-            libc::getpwuid_r(
-                libc::getuid(),
-                &mut entry,
-                buf.as_mut_ptr(),
-                buf.len(),
-                &mut result,
-            )
-        };
-        if status == libc::ERANGE && buf.len() < PASSWD_BUFFER_MAX_BYTES {
-            buf.resize(buf.len() * PASSWD_BUFFER_GROWTH_FACTOR, 0);
-            continue;
-        }
-        if status != 0 || result.is_null() || entry.pw_dir.is_null() {
-            return None;
-        }
-        // SAFETY: after a successful getpwuid_r call, pw_dir is a
-        // NUL-terminated string inside the still-live result buffer.
-        let bytes = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) }.to_bytes();
-        return Some(OsStr::from_bytes(bytes).to_owned());
-    }
-}
-
-/// A NUL-terminated copy of `value`, refusing an interior NUL.
-pub(crate) fn c_string(value: &OsStr, what: &str) -> io::Result<CString> {
-    CString::new(value.as_bytes()).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{what} contains a NUL byte"),
-        )
-    })
 }
 
 #[cfg(test)]

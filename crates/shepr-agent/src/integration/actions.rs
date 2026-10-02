@@ -2,6 +2,7 @@ use std::io;
 
 use crate::agent::IntegrationTarget;
 
+use super::config_file::is_config_changed;
 use super::env::AgentIntegrationPaths;
 use super::registry::{action_label, agent_present, install_operation, integration_status};
 use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
@@ -97,9 +98,7 @@ fn install_target_inner(
     // Agent processes do not honor Shepr's config lock. If an agent changes a
     // config after the install read it, reload the config and retry once.
     let outcome = match install_operation(paths, target) {
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            install_operation(paths, target)?
-        }
+        Err(error) if is_config_changed(&error) => install_operation(paths, target)?,
         result => result?,
     };
     Ok(InstallOutput {

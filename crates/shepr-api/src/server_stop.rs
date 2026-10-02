@@ -575,20 +575,13 @@ fn send_stop_request(
         });
     }
     let client = ApiClient::for_socket(socket_path);
-    match client.request_value_until(request, deadline) {
-        Ok(response) if response.get("error").is_some() => {
-            let error = &response["error"];
-            let refused_boot = error["code"].as_str()
-                == Some(crate::error::ApiErrorCode::ServerBootMismatch.as_str());
-            match expected_boot_id {
-                Some(expected) if refused_boot => Err(ServerStopError::BootMismatch {
-                    label: label.into(),
-                    expected_boot_id: expected.into(),
-                    detail: error["message"].as_str().unwrap_or_default().into(),
-                }),
-                _ => Err(ServerStopError::Protocol(error.to_string())),
-            }
-        }
+    match client.request_until(request, deadline) {
+        Ok(response) => match response.result {
+            crate::schema::ResponseResult::Ok {} => Ok(()),
+            result => Err(ServerStopError::Protocol(format!(
+                "unexpected stop result: {result:?}"
+            ))),
+        },
         Err(ApiClientDeadlineError::Connect(error)) => {
             Err(stop_socket_io_error(socket_path, label, error))
         }
@@ -602,7 +595,7 @@ fn send_stop_request(
         // that never arrived then ends in the wait's `TimedOut`, whose
         // wording reads as though the stop was delivered; that ambiguity is
         // accepted rather than resolved.
-        Ok(_) | Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(()),
+        Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(()),
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(error)))
             if stop_request_error_allows_wait(&error) =>
         {
@@ -613,7 +606,18 @@ fn send_stop_request(
             Err(ServerStopError::Protocol(error.to_string()))
         }
         Err(ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(response))) => {
-            Err(ServerStopError::Protocol(response.error.message))
+            match expected_boot_id {
+                Some(expected)
+                    if response.error.code == crate::error::ApiErrorCode::ServerBootMismatch =>
+                {
+                    Err(ServerStopError::BootMismatch {
+                        label: label.into(),
+                        expected_boot_id: expected.into(),
+                        detail: response.error.message,
+                    })
+                }
+                _ => Err(ServerStopError::Protocol(response.error.message)),
+            }
         }
         Err(ApiClientDeadlineError::Request(ApiClientError::UnexpectedResult(result))) => {
             Err(ServerStopError::Protocol(result))
@@ -979,6 +983,39 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_rejects_a_success_response_with_the_wrong_result() {
+        let scratch = ScratchDir::new("stop-wrong-result");
+        let socket_path = scratch.join("api.sock");
+        let reply = concat!(
+            r#"{"id":"cli:server:stop","result":{"type":"pong","version":"0.1.0","#,
+            r#""build_id":"build","boot_id":"17-23"}}"#,
+            "\n"
+        );
+        let (keep_running, handle) = serve_reply(&socket_path, reply);
+        let request = server_stop_request("cli:server:stop", None);
+
+        let error = send_stop_request(
+            &socket_path,
+            &request,
+            Instant::now() + Duration::from_secs(1),
+            "test server",
+            None,
+        )
+        .expect_err("a pong is not a stop acceptance");
+
+        keep_running.store(false, Ordering::Relaxed);
+        let requests = handle.join().expect("test precondition");
+        assert!(
+            matches!(
+                &error,
+                ServerStopError::Protocol(message) if message.contains("unexpected stop result")
+            ),
+            "{error}"
+        );
+        assert_eq!(requests.len(), 1, "{requests:?}");
+    }
+
+    #[test]
     fn a_stop_with_no_server_reports_not_running_without_starting_one() {
         let (_env, paths) = isolated_config_env();
         let error = stop_active_server(&paths, None).expect_err("nothing is listening");
@@ -1021,7 +1058,9 @@ mod tests {
                         // A client may close before reading this reply; the test
                         // asserts on the stop call's timeout, not on the reply. A
                         // Unix stream has nothing to flush.
-                        drop(stream.write_all(b"{\"id\":\"cli:server:stop\",\"result\":{}}\n"));
+                        drop(stream.write_all(
+                            b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n",
+                        ));
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));

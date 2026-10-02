@@ -49,6 +49,82 @@ pub fn accept_failed_for_one_connection(error: &io::Error) -> bool {
         )
 }
 
+/// Admission differs by purpose: command sockets admit root as well as the
+/// owner; a launch channel must belong to the user that forked the child.
+#[derive(Clone, Copy)]
+pub enum PeerAdmission {
+    OwnerOrRoot,
+    ExactOwner,
+}
+
+pub struct AdmittedPeer {
+    pub fd: std::os::fd::OwnedFd,
+    pub pid: u32,
+}
+
+pub enum Accepted {
+    Peer(AdmittedPeer),
+    RetryNow,
+    Backoff(io::Error),
+    Fatal(io::Error),
+}
+
+/// Accept and authenticate one connection. Unknown accept errors back off:
+/// only an invalid listener proves that keeping the listener is futile.
+pub fn accept_peer(listener: std::os::fd::RawFd, admission: PeerAdmission) -> Accepted {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // SAFETY: accept4 writes no address and returns a fresh close-on-exec fd.
+    let fd = unsafe {
+        libc::accept4(
+            listener,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            libc::SOCK_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return classify_accept_failure(io::Error::last_os_error());
+    }
+
+    // SAFETY: accept4 returned a new descriptor owned only here.
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    let credentials = match peer_credentials(fd.as_raw_fd()) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            tracing::warn!(%error, "could not authenticate accepted socket peer");
+            return Accepted::RetryNow;
+        }
+    };
+    let own_uid = super::effective_uid();
+    let admitted = match admission {
+        PeerAdmission::OwnerOrRoot => peer_uid_is_allowed_client(credentials.uid, own_uid),
+        PeerAdmission::ExactOwner => peer_uid_is_same_effective_user(credentials.uid, own_uid),
+    };
+    // A command peer outside our PID namespace may report pid zero. Launch
+    // peers are our own forked children and need a positive pid for routing.
+    if !admitted || (matches!(admission, PeerAdmission::ExactOwner) && credentials.pid <= 0) {
+        tracing::warn!("rejected accepted socket peer credentials");
+        return Accepted::RetryNow;
+    }
+    Accepted::Peer(AdmittedPeer {
+        fd,
+        pid: u32::try_from(credentials.pid).unwrap_or(0),
+    })
+}
+
+fn classify_accept_failure(error: io::Error) -> Accepted {
+    if error.kind() == io::ErrorKind::WouldBlock || accept_failed_for_one_connection(&error) {
+        Accepted::RetryNow
+    } else if matches!(
+        error.raw_os_error(),
+        Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK)
+    ) {
+        Accepted::Fatal(error)
+    } else {
+        Accepted::Backoff(error)
+    }
+}
+
 /// A peer's first byte, observed without consuming it.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FirstByte {
@@ -506,15 +582,7 @@ pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result
         }
     }
 
-    // SAFETY: fcntl(2) with F_GETFL/F_SETFL on a descriptor this function owns.
-    let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    if unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    super::set_fd_nonblocking(socket.as_raw_fd(), false)?;
     Ok(UnixStream::from(socket))
 }
 
@@ -794,9 +862,11 @@ fn peer_uid_is_same_effective_user(peer_uid: libc::uid_t, own_uid: libc::uid_t) 
 }
 
 fn peer_uid(stream: &LocalStream) -> io::Result<libc::uid_t> {
-    use std::os::fd::AsRawFd as _;
+    use std::os::fd::AsRawFd;
+    Ok(peer_credentials(stream.as_raw_fd())?.uid)
+}
 
-    let fd = stream.as_raw_fd();
+fn peer_credentials(fd: std::os::fd::RawFd) -> io::Result<libc::ucred> {
     let mut cred = libc::ucred {
         pid: 0,
         uid: 0,
@@ -828,7 +898,7 @@ fn peer_uid(stream: &LocalStream) -> io::Result<libc::uid_t> {
             "SO_PEERCRED returned a short credential record",
         ));
     }
-    Ok(cred.uid)
+    Ok(cred)
 }
 
 /// A local-socket adapter for the shared fd readiness deadline reader.
@@ -940,6 +1010,40 @@ pub fn restrict_socket_permissions(path: &Path, mode: u32) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn accept_failures_keep_transient_and_unknown_errors_retryable() {
+        for errno in [
+            libc::EINTR,
+            libc::ECONNABORTED,
+            libc::EPROTO,
+            libc::EPERM,
+            libc::EAGAIN,
+        ] {
+            assert!(matches!(
+                classify_accept_failure(io::Error::from_raw_os_error(errno)),
+                Accepted::RetryNow
+            ));
+        }
+        for errno in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::EIO,
+        ] {
+            assert!(matches!(
+                classify_accept_failure(io::Error::from_raw_os_error(errno)),
+                Accepted::Backoff(_)
+            ));
+        }
+        for errno in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK] {
+            assert!(matches!(
+                classify_accept_failure(io::Error::from_raw_os_error(errno)),
+                Accepted::Fatal(_)
+            ));
+        }
+    }
 
     #[test]
     fn bind_private_socket_is_owner_only_from_the_moment_it_is_reachable() {

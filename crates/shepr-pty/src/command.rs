@@ -9,9 +9,13 @@
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use crate::launch::c_string;
+use crate::limits::{
+    PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES, PASSWD_BUFFER_MAX_BYTES,
+};
+
 use shepr_core::env::{ChildEnv, EnvVar};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,10 +103,11 @@ impl PtyCommand {
             return Ok(vec![requested]);
         }
         let mut candidates: Vec<OsString> = Vec::new();
+        let home = shepr_core::pathutil::home_dir_from_env_value(self.get_env(EnvVar::Home)).ok();
         let absolute = |path: &OsStr| Path::new(path).is_absolute();
         for candidate in [
             self.cwd.as_deref(),
-            self.get_env(EnvVar::Home).filter(|home| absolute(home)),
+            home.as_deref().map(Path::as_os_str),
             passwd_home.filter(|home| absolute(home)),
             Some(OsStr::new("/")),
         ]
@@ -200,6 +205,49 @@ fn base_env() -> BTreeMap<OsString, OsString> {
     std::env::vars_os().collect()
 }
 
+/// The current user's passwd home directory, read once per process.
+pub(crate) fn passwd_home() -> Option<OsString> {
+    let mut buf: Vec<libc::c_char> = vec![0; PASSWD_BUFFER_INITIAL_BYTES];
+    loop {
+        // SAFETY: an all-zero passwd value has null pointers and zero scalars,
+        // all valid initial values for getpwuid_r to overwrite.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: `entry`, `buf`, and `result` are writable values of the
+        // sizes required by getpwuid_r; the function does not retain them.
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                &mut entry,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if status == libc::ERANGE && buf.len() < PASSWD_BUFFER_MAX_BYTES {
+            buf.resize(buf.len() * PASSWD_BUFFER_GROWTH_FACTOR, 0);
+            continue;
+        }
+        if status != 0 || result.is_null() || entry.pw_dir.is_null() {
+            return None;
+        }
+        // SAFETY: after a successful getpwuid_r call, pw_dir is a
+        // NUL-terminated string inside the still-live result buffer.
+        let bytes = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) }.to_bytes();
+        return Some(OsStr::from_bytes(bytes).to_owned());
+    }
+}
+
+/// A NUL-terminated copy of `value`, refusing an interior NUL.
+pub(crate) fn c_string(value: &OsStr, what: &str) -> io::Result<CString> {
+    CString::new(value.as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{what} contains a NUL byte"),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +270,19 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn padded_or_relative_home_is_not_a_cwd_fallback() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        for home in ["/home/pane ", "relative", ""] {
+            let mut command = PtyCommand::interactive_shell(fixture::path_str(), false);
+            command.env(EnvVar::Home, home);
+            assert_eq!(
+                command.cwd_candidates(None).expect("candidates"),
+                vec![OsString::from("/")]
+            );
+        }
     }
 
     #[test]

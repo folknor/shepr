@@ -88,6 +88,10 @@ fn request_refuses_repeated_keys_inside_params() {
     let one_guard =
         r#"{"id":"s","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23"}}"#;
     assert!(serde_json::from_str::<Request>(one_guard).is_ok());
+
+    let malformed_boot =
+        r#"{"id":"s","method":"server.stop_if_boot","params":{"expected_boot_id":"old-boot"}}"#;
+    assert!(serde_json::from_str::<Request>(malformed_boot).is_err());
 }
 
 #[test]
@@ -337,7 +341,7 @@ fn error_response_round_trips() {
     let response = ErrorResponse {
         id: "req_1".into(),
         error: ErrorBody {
-            code: "pane_not_found".into(),
+            code: crate::error::ApiErrorCode::PaneNotFound,
             message: "pane p_1 not found".into(),
         },
     };

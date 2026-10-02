@@ -24,7 +24,10 @@ mod ssh_paths;
 mod stderr_null;
 mod terminal_environment;
 
-pub use child_io::{ChildExitReason, classify_child_exit, poll_fd_readable, read_fd};
+pub use child_io::{
+    ChildExitReason, classify_child_exit, poll_fd_readable, poll_timeout_until, read_fd,
+    set_cloexec, set_fd_nonblocking, set_nonblocking,
+};
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
 pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
@@ -64,7 +67,7 @@ fn env_present(var: shepr_core::env::EnvVar) -> bool {
 }
 
 // Shared helpers for sibling platform modules.
-use child_io::{LimitedRead, poll_fd, poll_timeout_until, read_limited_reader};
+use child_io::{LimitedRead, poll_fd, read_limited_reader};
 use host::effective_uid;
 
 #[cfg(test)]

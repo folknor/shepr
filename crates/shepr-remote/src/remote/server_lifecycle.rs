@@ -15,11 +15,12 @@ pub(super) enum RemoteServerStatus {
 /// What the startup check learned about a machine that can be served.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MachineSshCheck {
-    /// A matching shepr pair is installed, and any server running there is this
-    /// build. A stopped server counts: the bridge starts one on attach.
+    /// A matching shepr pair is installed, and any server running or starting
+    /// there is this build. A stopped or stopping server counts: the bridge
+    /// starts one on attach.
     Ready,
-    /// A server of another build is running there, and the installed pair is
-    /// this build, so a restart would bring up the right one.
+    /// A server of another build is running or starting there, and the
+    /// installed pair is this build, so a restart would bring up the right one.
     DifferentBuild(DifferentBuildServer),
 }
 
@@ -106,19 +107,35 @@ pub(super) fn remote_server_status(
     parse_remote_server_status_json(stdout.trim())
 }
 
+/// Reads the remote `status server --json`. A starting server is judged like a
+/// running one: it already names its build and boot, and one of another build
+/// would refuse the bridge once it opens. A stopping server counts as none,
+/// since the bridge waits it out and starts a successor from the verified
+/// install. A server that listens but does not answer fails the check: the
+/// bridge could neither use nor replace it.
 pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
+    use shepr_api::schema::ServerPresenceJson;
     let parsed: shepr_api::schema::ServerStatusJson =
         serde_json::from_str(status).map_err(|err| {
             io::Error::other(format!("could not parse remote server status JSON: {err}"))
         })?;
-    if !parsed.running {
-        return Ok(RemoteServerStatus::NotRunning);
+    match parsed.presence {
+        ServerPresenceJson::Gone | ServerPresenceJson::Stopping => {
+            Ok(RemoteServerStatus::NotRunning)
+        }
+        ServerPresenceJson::Starting | ServerPresenceJson::Running => {
+            Ok(RemoteServerStatus::Running {
+                version: parsed.version,
+                build_id: parsed.build_id,
+                boot_id: parsed.boot_id,
+            })
+        }
+        // Not a link failure kind: SSH answered, the remote server did not.
+        ServerPresenceJson::Unresponsive => Err(io::Error::other(format!(
+            "the remote shepr server at {} is not answering status requests",
+            printable_remote_value(Some(&parsed.socket))
+        ))),
     }
-    Ok(RemoteServerStatus::Running {
-        version: parsed.version,
-        build_id: parsed.build_id,
-        boot_id: parsed.boot_id,
-    })
 }
 
 pub(super) fn remote_server_compatibility_error(

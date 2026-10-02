@@ -38,7 +38,7 @@ pub(super) fn was_reported(error: &super::CliError) -> bool {
 pub(super) fn reported_response(error: &super::CliError) -> Option<&ErrorResponse> {
     match error {
         super::CliError::Response(response)
-            if response.error.code == shepr_api::error::ApiErrorCode::ServerNotRunning.as_str() =>
+            if response.error.code == shepr_api::error::ApiErrorCode::ServerNotRunning =>
         {
             Some(response)
         }

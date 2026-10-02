@@ -773,13 +773,6 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn navigation_workspace_entries(
-        &self,
-        snapshot: &ClientShellSnapshot,
-    ) -> Vec<usize> {
-        render::workspace_entries(snapshot)
-    }
-
     pub(super) fn reveal_workspace(&mut self, workspace_id: &shepr_protocol::WorkspaceId) {
         if self.endpoints.len() > 1 {
             // The multi-endpoint sidebar scrolls a flattened row list with endpoint headers
@@ -802,9 +795,10 @@ impl ClientShellState {
             return;
         }
         let target = self.snapshot.as_deref().and_then(|snapshot| {
-            self.navigation_workspace_entries(snapshot)
+            snapshot
+                .workspaces
                 .iter()
-                .position(|entry| snapshot.workspaces[*entry].workspace_id == *workspace_id)
+                .position(|workspace| workspace.workspace_id == *workspace_id)
         });
         if let Some(target) = target {
             self.workspace_scroll = target.min(self.hits.workspace_max_scroll);
@@ -846,8 +840,7 @@ impl ClientShellState {
             .as_ref()
             .is_some_and(|notice| self.restore_notice_seen.contains(&notice.key))
         {
-            self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
-            self.endpoint_notice_deadline = None;
+            self.advance_endpoint_notice();
         }
         self.endpoint_error = None;
         self.endpoint_error_deadline = None;
@@ -1313,11 +1306,8 @@ impl ClientShellState {
     /// predecessor's. Returns whether anything was hidden.
     pub(crate) fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
         let mut repaint = false;
-        if self.visible_endpoint_notice.is_none()
-            && let Some(notice) = self.restore_notice_queue.pop_front()
-        {
-            self.visible_endpoint_notice = Some(notice);
-            self.endpoint_notice_deadline = None;
+        if self.visible_endpoint_notice.is_none() && !self.restore_notice_queue.is_empty() {
+            self.advance_endpoint_notice();
             repaint = true;
         }
 
@@ -1329,12 +1319,19 @@ impl ClientShellState {
                 })
         });
         if notice_expired {
-            self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
-            self.endpoint_notice_deadline = None;
+            self.advance_endpoint_notice();
             repaint = true;
         }
 
         repaint
+    }
+
+    /// Replace the visible card with the next queued restore card, if any. Every
+    /// path that retires the visible card (expiry, dismissal, a seen restore
+    /// card) goes through here so the queue never waits on an unrelated timer.
+    pub(super) fn advance_endpoint_notice(&mut self) {
+        self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
+        self.endpoint_notice_deadline = None;
     }
 
     pub(crate) fn next_timer_deadline(&self) -> Option<std::time::Instant> {

@@ -3,7 +3,7 @@ use shepr_protocol::{BootId, RequestId, ServerMessage};
 
 use crate::limits::MAX_ENDPOINT_RESPONSE_ENCODED_BYTES;
 
-pub(crate) use crate::limits::{MAX_ENDPOINT_BOOT_ID_BYTES, MAX_ENDPOINT_REQUEST_ID_BYTES};
+pub(crate) use crate::limits::MAX_ENDPOINT_REQUEST_ID_BYTES;
 
 /// The one response to an endpoint command. A large result (a selection of a
 /// long scrollback) crosses in as many frames as it needs, up to the control

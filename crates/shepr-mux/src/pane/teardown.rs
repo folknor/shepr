@@ -18,14 +18,14 @@ pub(super) struct ChildLiveness {
     /// server's own image (in chdir, or exec'ing) and nothing about it, cwd or
     /// foreground job, describes the pane's shell.
     launched: AtomicBool,
-    /// A pidfd or start-time handle opened before the child watcher starts.
+    /// The child's shared pidfd identity, acquired by PTY before returning.
     /// Teardown signals through it so a reused pid is never hit.
-    leader: Option<shepr_platform::ProcessHandle>,
+    leader: Option<Arc<shepr_platform::ProcessHandle>>,
 }
 
 impl ChildLiveness {
     /// A child known to run its program already.
-    pub(super) fn new(pid: u32, leader: Option<shepr_platform::ProcessHandle>) -> Self {
+    pub(super) fn new(pid: u32, leader: Option<Arc<shepr_platform::ProcessHandle>>) -> Self {
         Self {
             pid: AtomicU32::new(pid),
             wait_completed: AtomicBool::new(false),
@@ -35,7 +35,7 @@ impl ChildLiveness {
     }
 
     /// A child just forked, not yet past its exec.
-    pub(super) fn launching(pid: u32, leader: shepr_platform::ProcessHandle) -> Self {
+    pub(super) fn launching(pid: u32, leader: Arc<shepr_platform::ProcessHandle>) -> Self {
         Self {
             launched: AtomicBool::new(false),
             ..Self::new(pid, Some(leader))
@@ -52,7 +52,9 @@ impl ChildLiveness {
 
     /// The pid the pane owns, launched or not: teardown signals it.
     pub(super) fn pid(&self) -> u32 {
-        self.pid.load(Ordering::Acquire)
+        self.leader
+            .as_ref()
+            .map_or_else(|| self.pid.load(Ordering::Acquire), |leader| leader.pid())
     }
 
     /// The child pid while it names this unreaped child running the pane's
@@ -77,10 +79,9 @@ impl ChildLiveness {
 
     /// Whether the child has exited; a zombie counts as exited.
     pub(super) fn has_exited(&self) -> bool {
-        self.leader.as_ref().map_or_else(
-            || self.wait_completed(),
-            shepr_platform::ProcessHandle::has_exited,
-        )
+        self.leader
+            .as_ref()
+            .map_or_else(|| self.wait_completed(), |leader| leader.has_exited())
     }
 
     /// Whether the child has been reaped and its pid can be reused.
@@ -91,7 +92,7 @@ impl ChildLiveness {
     }
 
     pub(super) fn leader(&self) -> Option<&shepr_platform::ProcessHandle> {
-        self.leader.as_ref()
+        self.leader.as_deref()
     }
 }
 

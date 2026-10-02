@@ -101,6 +101,15 @@ impl ApiClient {
             .map_err(ApiClientDeadlineError::Request)
     }
 
+    pub(crate) fn request_until(
+        &self,
+        request: &Request,
+        deadline: Instant,
+    ) -> Result<SuccessResponse, ApiClientDeadlineError> {
+        let value = self.request_value_until(request, deadline)?;
+        parse_response_value(value).map_err(ApiClientDeadlineError::Request)
+    }
+
     pub fn status(&self) -> Result<crate::RuntimeStatus, ApiClientError> {
         let request = Request {
             id: "api-client:status".into(),
@@ -118,8 +127,7 @@ impl ApiClient {
             id: "api-client:status".into(),
             method: Method::Ping(PingParams::default()),
         };
-        let value = self.request_value_until(&request, deadline)?;
-        let response = parse_response_value(value).map_err(ApiClientDeadlineError::Request)?;
+        let response = self.request_until(&request, deadline)?;
         runtime_status(response).map_err(ApiClientDeadlineError::Request)
     }
 

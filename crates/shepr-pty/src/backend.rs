@@ -55,21 +55,21 @@ pub struct SpawnedPty {
     pub status: Registration,
 }
 
-/// The pane child, forked by shepr rather than std: its pid, and its exit
+/// The pane child, forked by shepr rather than std: its stable handle and exit
 /// status once reaped. Dropping it neither kills nor reaps the child.
 #[derive(Debug)]
 pub struct PaneChild {
-    pid: u32,
+    handle: std::sync::Arc<shepr_platform::ProcessHandle>,
     status: Option<ExitStatus>,
 }
 
 impl PaneChild {
     pub fn id(&self) -> u32 {
-        self.pid
+        self.handle.pid()
     }
 
     fn raw_pid(&self) -> io::Result<libc::pid_t> {
-        libc::pid_t::try_from(self.pid)
+        libc::pid_t::try_from(self.id())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pane pid out of range"))
     }
 
@@ -79,9 +79,7 @@ impl PaneChild {
         if self.status.is_some() {
             return Ok(());
         }
-        // SAFETY: kill(2) takes integers. The pid is this unreaped child's,
-        // which the kernel cannot reuse before it is reaped.
-        if unsafe { libc::kill(self.raw_pid()?, libc::SIGKILL) } != 0 {
+        if !self.handle.signal(shepr_platform::Signal::Kill) {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -98,9 +96,21 @@ impl PaneChild {
         self.wait_with(libc::WNOHANG)
     }
 
-    /// The child was reaped through its pidfd, outside this handle.
-    pub fn mark_reaped(&mut self, status: ExitStatus) {
+    /// The same stable identity used by waiting, signalling and observation.
+    pub fn handle(&self) -> std::sync::Arc<shepr_platform::ProcessHandle> {
+        std::sync::Arc::clone(&self.handle)
+    }
+
+    /// Reap through the child's pidfd after readiness was observed.
+    pub fn wait_pidfd(&mut self) -> io::Result<ExitStatus> {
+        use std::os::fd::AsFd;
+        if let Some(status) = self.status {
+            return Ok(status);
+        }
+        let pidfd = self.handle.try_clone_pidfd()?;
+        let status = shepr_platform::reap_pidfd(pidfd.as_fd())?;
         self.status = Some(status);
+        Ok(status)
     }
 
     fn wait_with(&mut self, flags: libc::c_int) -> io::Result<Option<ExitStatus>> {
@@ -230,12 +240,41 @@ pub fn spawn_pty(
     let plan = ChildPlan::new(&spec, slave.as_raw_fd(), address, address_len, ticket);
     let pid = fork_child(&plan)?;
     drop(slave);
+    // No watcher can reap this child yet, so pidfd_open names this fork.
+    let Some(handle) = shepr_platform::ProcessHandle::open(pid) else {
+        // SAFETY: this fork has never been handed to a waiter, so its pid
+        // cannot have been reused. This is only the failed acquisition path.
+        if unsafe { libc::kill(pid.cast_signed(), libc::SIGKILL) } != 0 {
+            tracing::warn!(pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
+        }
+        if let Err(error) = std::thread::Builder::new()
+            .name("shepr-launch-reaper".into())
+            .spawn(move || {
+                let mut status = 0;
+                loop {
+                    // SAFETY: this is our unreaped child and status is writable.
+                    let result = unsafe { libc::waitpid(pid.cast_signed(), &mut status, 0) };
+                    if result >= 0
+                        || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+                    {
+                        break;
+                    }
+                }
+            })
+        {
+            tracing::warn!(pid, %error, "could not start failed launch reaper");
+        }
+        return Err(io::Error::other("no process handle for the pane's child"));
+    };
     // Registered right after the fork: a connection that arrives first waits
     // for it.
     let status = service.register(ticket, pid, deliver);
     Ok(SpawnedPty {
         master_fd: master,
-        child: PaneChild { pid, status: None },
+        child: PaneChild {
+            handle: std::sync::Arc::new(handle),
+            status: None,
+        },
         cwd_candidates: spec
             .candidates
             .iter()

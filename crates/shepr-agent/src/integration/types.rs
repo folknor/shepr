@@ -81,7 +81,7 @@ pub(crate) struct IntegrationStatus {
     pub target: crate::agent::IntegrationTarget,
     pub path: PathBuf,
     pub state: IntegrationStatusKind,
-    /// Best-effort metadata from the managed file; byte equality determines state.
+    /// Logged as install diagnostics; exact asset bytes determine state.
     pub installed_version: Option<u32>,
 }
 

@@ -112,8 +112,6 @@ pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// Bound endpoint boot identifiers above the size of generated IDs.
-pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
 /// Bound endpoint request identifiers above the size of generated IDs.
 pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
 /// Refresh shell cwd projections periodically when no OSC 7 report arrives.

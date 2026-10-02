@@ -129,10 +129,10 @@ impl ClientShellState {
             let Some(snapshot) = endpoint.snapshot.as_deref() else {
                 continue;
             };
-            for entry in render::workspace_entries(snapshot) {
+            for workspace in &snapshot.workspaces {
                 targets.push(WorkspaceNavigationTarget {
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: snapshot.workspaces[entry].workspace_id.clone(),
+                    workspace_id: workspace.workspace_id.clone(),
                     boot_id: snapshot.boot_id.clone(),
                     generation: endpoint.snapshot_generation,
                 });

@@ -650,7 +650,7 @@ impl HeadlessServer {
                 outcome.promote.push(client_id);
                 continue;
             };
-            let serialized = match crate::server::outbox::frame_server_message(prepared.message()) {
+            let serialized = match shepr_protocol::encode_message(prepared.message()) {
                 Ok(serialized) => serialized,
                 Err(error) => {
                     warn!(

@@ -41,18 +41,11 @@ the arms it cares about. (foundation)
 
 ## CON-002 - What does this accept failure mean, and may this peer in?
 
-- `ipc::accept_failed_for_one_connection` (used by `shepr-api` `listener.rs`):
-  EINTR, ECONNABORTED, EPROTO, EPERM retry at once; everything else backs off.
-- `pty/src/launch.rs` `Router::accept_loop`: EINTR, ECONNABORTED, EPROTO, EAGAIN
-  retry; EMFILE, ENFILE, ENOBUFS, ENOMEM back off; anything else returns.
-- `remote/bridge.rs` accept thread: WouldBlock sleeps; everything else breaks.
-
-Peer admission is decided three times: `ipc::peer_is_same_user` (api listener,
-remote bridge) and an inline `SO_PEERCRED` plus `uid != geteuid()` in pty's
-`accept_hello`. They disagree, and two of the disagreements are filed as bugs.
-Owner: one platform accept helper returning `Accepted::{Peer(AdmittedPeer),
-RetryNow, Backoff, Fatal}` with the credential check folded in and the peer pid
-exposed; this needs pty to depend on platform (see the structure findings).
+Platform's `accept_peer` now owns accept-error classification and peer
+admission, and the PTY launch router and the remote bridge use it. The
+`shepr-api` listener (`listener.rs`) still calls the older
+`ipc::accept_failed_for_one_connection` and `ipc::peer_is_same_user`; migrate it
+to `accept_peer` and remove the old helpers if nothing else needs them.
 (foundation)
 
 ## CON-003 - Parsing `/proc/<pid>/stat`, and "is this process dead"
@@ -191,14 +184,6 @@ socket path is never checked up front; it fails at bind. Owner: core, through a
 `SocketPath` constructed with the check and used by `AppPaths` and the connect.
 (foundation)
 
-## CON-014 - How does a deadline become a poll timeout?
-
-`child_io.rs` `poll_timeout_until` (with `MIN_POLL_TIMEOUT_MILLISECONDS`) and
-`pty/src/fd.rs` `poll_pty_and_wake` (inline, with its own `MIN_POLL_TIMEOUT_MS`)
-each decide what "at least 1 ms" means. `set_nonblocking` also exists in
-`clipboard.rs`, `fd.rs` and inline in `ipc.rs` (duplicated code that the
-pty-on-platform move removes). (foundation)
-
 ## CON-015 - What does a pane's exit mean, and does it get a checkpoint?
 
 pty `ReaderExit::{ShutdownRequested, Closed, IoFailed, Panicked}` (severity by
@@ -221,13 +206,6 @@ Signalled(sig)}`. (foundation)
 afterwards); `terminal.default_shell` is trimmed in `validated.rs`;
 `PtyCommand::interactive_shell` trims again. Owner: config validation, once,
 under one rule. (foundation)
-
-## CON-017 - Is this HOME usable?
-
-`shepr-core/src/pathutil.rs` `home_dir_from_env_value` (absolute, no padding,
-UTF-8) exists for a HOME captured in a child environment, but
-`shepr-pty/src/command.rs` `cwd_candidates` uses `Path::is_absolute` only, so
-`"/home/me "` is refused by core and a cwd candidate to pty. (foundation)
 
 ## CON-018 - What does a child's environment contain, and under which policy?
 
@@ -1242,7 +1220,7 @@ owner one `palette_tokens!` list. (contracts)
 
 Copy-mode keys are routed by char literals in `route_copy_mode_key` and described
 by literals in `render_mode_bar` (`"h/j/k/l w/b/e { }"`, `"y/enter"`); resize keys
-by `route_resize_key` and the RESIZE bar text; navigator and Help footers state
+by `route_resize_key` and the resize bar text; navigator and Help footers state
 their keys as literals with a comment pointing at `route_overlay_key`.
 `copy_mode_command_char -> Option<char>` is a char-typed enum. Owner: a small
 command table per fixed-key surface (commands, keys, labels) that routing and

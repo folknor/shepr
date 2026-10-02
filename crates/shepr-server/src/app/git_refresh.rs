@@ -2,14 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use super::{App, GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
+use super::{App, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
+use crate::limits::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 use shepr_mux::events::AppEvent;
-use shepr_mux::git::{
-    GitReadError, GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus,
-};
+use shepr_mux::git::{GitReadError, GitStatusCacheEntry, WorkspaceGitStatus};
 
 pub(crate) struct GitRefreshScheduler {
-    pub(crate) last_git_remote_status_refresh: Instant,
+    pub(crate) next_git_remote_status_refresh: Instant,
     pub(crate) last_git_repo_discovery_refresh: Instant,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
@@ -21,7 +20,9 @@ pub(crate) struct GitRefreshScheduler {
 impl GitRefreshScheduler {
     pub(crate) fn new(now: Instant) -> Self {
         Self {
-            last_git_remote_status_refresh: now - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+            // The initial refresh is due immediately. Represent that directly
+            // instead of manufacturing an instant before the clock's origin.
+            next_git_remote_status_refresh: now,
             last_git_repo_discovery_refresh: now,
             git_refresh_in_flight: false,
             git_refresh_due_after_in_flight: false,
@@ -32,8 +33,10 @@ impl GitRefreshScheduler {
     }
 
     fn deadline(&self, has_workspaces: bool) -> Option<Instant> {
-        (!self.git_refresh_in_flight && has_workspaces)
-            .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
+        if self.git_refresh_in_flight || !has_workspaces {
+            return None;
+        }
+        Some(self.next_git_remote_status_refresh)
     }
 
     fn mark_due(&mut self, now: Instant) {
@@ -43,9 +46,7 @@ impl GitRefreshScheduler {
             self.git_refresh_due_after_in_flight = true;
             return;
         }
-        // As in `new`: a monotonic instant is never within the short refresh
-        // interval of the clock's origin by the time a server runs.
-        self.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        self.next_git_remote_status_refresh = now;
         self.git_refresh_due_after_in_flight = false;
     }
 
@@ -82,9 +83,14 @@ impl GitRefreshScheduler {
         if self.git_refresh_due_after_in_flight {
             self.mark_due(now);
         } else {
-            self.last_git_remote_status_refresh = now;
+            self.next_git_remote_status_refresh = refresh_deadline_after(now);
         }
     }
+}
+
+fn refresh_deadline_after(now: Instant) -> Instant {
+    now.checked_add(GIT_REMOTE_STATUS_REFRESH_INTERVAL)
+        .unwrap_or(now)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,17 +138,12 @@ impl App {
             || now.saturating_duration_since(self.git_refresh.last_git_repo_discovery_refresh)
                 >= GIT_REPO_DISCOVERY_REFRESH_INTERVAL;
         let workspaces = self.workspace_git_refresh_items(refresh_repo_discovery);
-        // Clients draw the sidebar from their own config, so the server
-        // always computes both Git values. Keep this demand full when porting
-        // upstream Git refresh changes, which derive it from sidebar rows.
-        let demand = GitStatusRefreshDemand {
-            branch: true,
-            ahead_behind: true,
-        };
+        // Each client draws the sidebar from its own config, so the server
+        // refresh always computes the complete Git status.
         if workspaces.is_empty() {
             self.git_refresh.git_status_cache.clear();
             self.git_refresh.reported_git_read_errors.clear();
-            self.git_refresh.last_git_remote_status_refresh = now;
+            self.git_refresh.next_git_remote_status_refresh = refresh_deadline_after(now);
             self.git_refresh.git_identity_refresh_requested = false;
             return;
         }
@@ -162,9 +163,8 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("shepr-git-refresh".into())
             .spawn(move || {
-                let output = refresh_output_or_empty(|| {
-                    refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand)
-                });
+                let output =
+                    refresh_output_or_empty(|| refresh_workspace_git_statuses(workspaces, &cache));
                 // Fails only once the app dropped its event receiver, which
                 // takes the in-flight flag this event would clear with it.
                 event_tx
@@ -177,7 +177,7 @@ impl App {
         if let Err(err) = spawned {
             tracing::warn!(error = %err, "failed to spawn git status refresh thread");
             self.git_refresh.git_refresh_in_flight = false;
-            self.git_refresh.last_git_remote_status_refresh = now;
+            self.git_refresh.next_git_remote_status_refresh = refresh_deadline_after(now);
         }
     }
 
@@ -274,20 +274,16 @@ fn refresh_output_or_empty(
     })
 }
 
-fn refresh_workspace_git_statuses_with_cache_and_demand(
+fn refresh_workspace_git_statuses(
     items: Vec<WorkspaceGitRefreshItem>,
     cache: &HashMap<PathBuf, GitStatusCacheEntry>,
-    demand: GitStatusRefreshDemand,
 ) -> WorkspaceGitRefreshOutput {
     let mut results = Vec::new();
     let mut cache_updates = Vec::new();
 
     for job in deduplicate_git_refresh_items(items, cache) {
-        let (snapshot, cache_entry) = shepr_mux::git::git_status_snapshot_for_cwd_with_demand(
-            &job.cache_key,
-            job.cached.as_ref(),
-            demand,
-        );
+        let (snapshot, cache_entry) =
+            shepr_mux::git::git_status_snapshot_for_cwd(&job.cache_key, job.cached.as_ref());
         if let Some(cache_entry) = cache_entry {
             cache_updates.push((job.cache_key.clone(), cache_entry));
         }
@@ -296,7 +292,6 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
                 target.workspace_id,
                 target.resolved_identity_cwd,
                 job.cache_key.clone(),
-                demand,
             )
         }));
     }
@@ -328,7 +323,7 @@ mod tests {
         std::fs::create_dir_all(repo.join(".git/refs/heads")).expect("create git refs dir");
         std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write git HEAD");
 
-        let output = refresh_workspace_git_statuses_with_cache_and_demand(
+        let output = refresh_workspace_git_statuses(
             vec![
                 WorkspaceGitRefreshItem {
                     workspace_id: "one".into(),
@@ -342,7 +337,6 @@ mod tests {
                 },
             ],
             &HashMap::new(),
-            GitStatusRefreshDemand::ALL,
         );
 
         assert_eq!(output.cache_updates.len(), 1);
@@ -369,10 +363,9 @@ mod tests {
             fingerprint: None,
             retry_after: None,
             snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
-                auto_label: "repo".into(),
+                repo_root: None,
                 branch: None,
                 ahead_behind: None,
-                space: None,
             },
             read_errors: vec![error.clone()],
         };
@@ -385,22 +378,15 @@ mod tests {
     }
 
     #[test]
-    fn shared_root_repo_refresh_keeps_workspace_specific_fallback_labels() {
+    fn shared_root_repo_refresh_keeps_workspace_specific_labels() {
         let cache_key = PathBuf::from("/");
         let cached = GitStatusCacheEntry {
             fingerprint: None,
             retry_after: Some(Instant::now() + std::time::Duration::from_secs(30)),
             snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
-                auto_label: "/".into(),
+                repo_root: Some(cache_key.clone()),
                 branch: Some("main".into()),
                 ahead_behind: None,
-                space: Some(shepr_mux::git::GitSpaceMetadata {
-                    key: "/.git".into(),
-                    checkout_key: "/".into(),
-                    repo_name: "repo".into(),
-                    repo_root: cache_key.clone(),
-                    is_linked_worktree: false,
-                }),
             },
             read_errors: Vec::new(),
         };
@@ -413,11 +399,7 @@ mod tests {
             })
             .collect();
 
-        let output = refresh_workspace_git_statuses_with_cache_and_demand(
-            items,
-            &HashMap::from([(cache_key, cached)]),
-            GitStatusRefreshDemand::ALL,
-        );
+        let output = refresh_workspace_git_statuses(items, &HashMap::from([(cache_key, cached)]));
 
         assert_eq!(output.cache_updates.len(), 1);
         assert_eq!(output.results.len(), 2);
@@ -479,10 +461,9 @@ mod tests {
             fingerprint: None,
             retry_after: None,
             snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
-                auto_label: "stale".into(),
+                repo_root: None,
                 branch: None,
                 ahead_behind: None,
-                space: None,
             },
             read_errors: Vec::new(),
         };
@@ -558,7 +539,7 @@ mod tests {
         ws.cached_git_status_key = ws.identity_cwd.clone();
         app.state.workspaces.push(ws);
         let now = Instant::now();
-        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.mark_git_status_refresh_due(now);
         app.start_git_status_refresh_if_due(now);
         assert!(app.git_refresh.git_refresh_in_flight);
         let AppEvent::GitStatusRefreshed { results, .. } =
@@ -585,7 +566,7 @@ mod tests {
         ws.identity_cwd = scratch.join("moved");
         app.state.workspaces.push(ws);
         let now = Instant::now();
-        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.mark_git_status_refresh_due(now);
 
         app.start_git_status_refresh_if_due(now);
 
@@ -609,7 +590,7 @@ mod tests {
         assert_eq!(items[0].cache_key_hint, None);
 
         let now = Instant::now();
-        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.mark_git_status_refresh_due(now);
         app.start_git_status_refresh_if_due(now);
         assert!(app.git_refresh.git_refresh_in_flight);
         wait_for_git_refresh(&mut app);
@@ -620,7 +601,7 @@ mod tests {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
-        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.mark_git_status_refresh_due(now);
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),
@@ -640,11 +621,7 @@ mod tests {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         let scratch = crate::test_support::ScratchDir::new("git-miss");
         let cwd = scratch.to_path_buf();
-        let (_, entry) = shepr_mux::git::git_status_snapshot_for_cwd_with_demand(
-            &cwd,
-            None,
-            GitStatusRefreshDemand::ALL,
-        );
+        let (_, entry) = shepr_mux::git::git_status_snapshot_for_cwd(&cwd, None);
         app.git_refresh
             .git_status_cache
             .insert(cwd.clone(), entry.expect("non-Git cache entry"));

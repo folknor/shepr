@@ -87,29 +87,18 @@ impl SshStdioBridge {
         let thread_failure_rx = Arc::clone(&failure_rx);
         let thread_socket = local_socket.clone();
         let thread = thread::spawn(move || {
+            use shepr_platform::ipc::{Accepted, PeerAdmission};
+            use std::os::fd::AsRawFd;
+            // Warn once per spell of resource exhaustion, not on every poll.
+            let mut backing_off = false;
             while !thread_stop.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        match shepr_platform::ipc::peer_is_same_user(&stream) {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                tracing::warn!(
-                                    target = %target.as_str(),
-                                    socket = %thread_socket.display(),
-                                    "rejected remote bridge socket peer with different credentials"
-                                );
-                                continue;
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    error = %err,
-                                    target = %target.as_str(),
-                                    socket = %thread_socket.display(),
-                                    "could not check remote bridge socket peer"
-                                );
-                                continue;
-                            }
-                        }
+                match shepr_platform::ipc::accept_peer(
+                    listener.as_raw_fd(),
+                    PeerAdmission::OwnerOrRoot,
+                ) {
+                    Accepted::Peer(peer) => {
+                        backing_off = false;
+                        let stream = shepr_platform::ipc::LocalStream::from(peer.fd);
                         discard_unclaimed_bridge_failure(&thread_failure_rx);
                         let stream = match prepare_remote_bridge_stream(stream) {
                             Ok(stream) => stream,
@@ -152,10 +141,22 @@ impl SshStdioBridge {
                             drop(failure_tx.try_send(err));
                         }
                     }
-                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    Accepted::RetryNow => {
                         thread::sleep(BRIDGE_ACCEPT_POLL);
                     }
-                    Err(err) => {
+                    Accepted::Backoff(err) => {
+                        if !backing_off {
+                            tracing::warn!(
+                                error = %err,
+                                target = %target.as_str(),
+                                socket = %thread_socket.display(),
+                                "remote bridge accept failed; retrying"
+                            );
+                        }
+                        backing_off = true;
+                        thread::sleep(BRIDGE_ACCEPT_POLL);
+                    }
+                    Accepted::Fatal(err) => {
                         tracing::warn!(
                             error = %err,
                             target = %target.as_str(),

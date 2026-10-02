@@ -484,9 +484,8 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
 fn agent_navigation_keeps_scroll_when_target_is_visible() {
     let (mut state, _) = state_with_scrollable_agents();
     let (_, endpoint_id, pane_id) = state.hits.endpoint_agents[1].clone();
-    let targets = super::super::aggregate_navigation::online_agent_targets(
+    let targets = super::super::aggregate_navigation::displayed_agent_targets(
         &state.endpoints,
-        &state.active_endpoint_id,
         state.config.agent_panel_sort,
     );
     let index = targets
@@ -609,9 +608,8 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
         .iter()
         .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
         .collect::<Vec<_>>();
-    let targets = super::super::aggregate_navigation::online_agent_targets(
+    let targets = super::super::aggregate_navigation::displayed_agent_targets(
         &state.endpoints,
-        &state.active_endpoint_id,
         state.config.agent_panel_sort,
     );
     let indexed = targets

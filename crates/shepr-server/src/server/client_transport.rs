@@ -54,17 +54,14 @@ impl shepr_api::ClientProtocolHandler for ClientTransportHandler {
     }
 }
 
-/// Why a client shell's geometry is refused, if it is. The limits are the
-/// protocol's own (`MAX_SURFACE_DIMENSION`, `MAX_SURFACE_CELLS`,
-/// `MAX_CELL_SIZE_PX`); a same-build client clamps to them before asking.
+/// Why a client shell's geometry is refused, if it is. The grid is already
+/// nonzero through `GridSize`; this checks the protocol's upper bounds. A
+/// same-build client clamps to them before asking.
 fn client_shell_geometry_error(
     surface_size: shepr_protocol::ClientSurfaceSize,
     cell_width_px: u32,
     cell_height_px: u32,
 ) -> Option<&'static str> {
-    if surface_size.cols == 0 || surface_size.rows == 0 {
-        return Some("client shell requires a non-empty pane surface");
-    }
     if surface_size.cols > shepr_protocol::MAX_SURFACE_DIMENSION
         || surface_size.rows > shepr_protocol::MAX_SURFACE_DIMENSION
         || usize::from(surface_size.cols) * usize::from(surface_size.rows)
@@ -126,6 +123,10 @@ fn send_client_disconnected(server_event_tx: &mpsc::Sender<ServerEvent>, client_
 
 /// Internal event sent from client transport threads to the main event loop.
 #[derive(Debug)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "every event comes from a client connection, so the prefix names the source"
+)]
 pub(crate) enum ServerEvent {
     /// A client-owned shell completed its dedicated handshake.
     ClientShellConnected {
@@ -140,11 +141,7 @@ pub(crate) enum ServerEvent {
         outbox: ClientOutbox,
     },
     /// A fully decoded interactive paste exceeded the text-input limit.
-    ClientPasteRejected {
-        client_id: ClientId,
-        size: usize,
-        max: usize,
-    },
+    ClientPasteRejected { client_id: ClientId, size: usize },
     /// A client-owned shell recomputed its pane viewport.
     ClientShellResize {
         client_id: ClientId,
@@ -181,13 +178,6 @@ pub(crate) enum ServerEvent {
     ClientDetach { client_id: ClientId },
     /// A client connection was lost.
     ClientDisconnected { client_id: ClientId },
-    /// A client writer drained its render slot and can accept another render.
-    /// A pure wake: the loop's next plan derives every client's surface debt
-    /// from its own state, so the event names no client.
-    ClientWriterDrained,
-    /// The logind monitor observed a host shutdown warning or cancellation and
-    /// woke the server loop to synchronize its shutdown state.
-    HostShutdownWake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,7 +239,8 @@ fn classify_input_event_size(
 /// `deadline` bounds reading the preamble and hello together and is counted
 /// from accept, so classification time is part of the handshake budget.
 /// `wake` is the server loop's outbox wake, raised when this connection's
-/// outbox closes or its control lane makes room for held replies.
+/// outbox closes, its control lane makes room for held replies, or its writer
+/// finishes a render frame.
 fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: ClientId,
@@ -334,11 +325,6 @@ fn handle_client_handshake(
         );
         return Ok(());
     };
-    let cell = shepr_protocol::ProtocolCellSize::from_wire(
-        hello.geometry.width(),
-        hello.geometry.height(),
-        hello.geometry.pixel_mouse,
-    );
     let incompatibility = client_shell_geometry_error(
         hello.geometry.surface_size(),
         hello.geometry.width(),
@@ -349,6 +335,14 @@ fn handle_client_handshake(
         write_endpoint_rejection(&mut stream, client_id, reason);
         return Ok(());
     }
+
+    // Oversized raw dimensions were rejected above, so `from_wire`'s
+    // oversize fallback cannot be reached on this transport path.
+    let cell = shepr_protocol::ProtocolCellSize::from_wire(
+        hello.geometry.width(),
+        hello.geometry.height(),
+        hello.geometry.pixel_mouse,
+    );
 
     if should_quit.is_requested() {
         return Ok(());
@@ -366,13 +360,12 @@ fn handle_client_handshake(
     // One outbox carries the reliable control lane and the droppable surface slot.
     let write_stream = stream.try_clone()?;
     let shutdown_stream = stream.try_clone()?;
-    let outbox = ClientOutbox::for_connection(shutdown_stream, wake);
+    let outbox = ClientOutbox::for_connection(shutdown_stream, Arc::clone(&wake));
     let writer_queue = outbox.queue_handle();
 
     // Spawn a writer thread that drains the outbox queue to the stream.
-    let writer_event_tx = server_event_tx.clone();
     std::thread::spawn(move || {
-        client_writer_loop(write_stream, client_id, &writer_queue, &writer_event_tx);
+        client_writer_loop(write_stream, client_id, &writer_queue, &wake);
     });
 
     if should_quit.is_requested() {
@@ -442,7 +435,7 @@ fn client_writer_loop(
     mut stream: LocalStream,
     client_id: ClientId,
     writer_queue: &Arc<OutboxQueue>,
-    server_event_tx: &mpsc::Sender<ServerEvent>,
+    wake: &tokio::sync::Notify,
 ) {
     while let Some(item) = writer_queue.recv() {
         let (result, completed_control_bytes) = match item {
@@ -454,16 +447,11 @@ fn client_writer_loop(
                 )
             }
             ClientWriteItem::Render(data) => {
-                // Report after this frame reaches the socket. Event-channel
-                // pressure must not hold back the frame this connection has
-                // already accepted from the server.
                 let result = write_framed_bytes(&mut stream, &data, CLIENT_WRITE_STALL_TIMEOUT);
                 if result.is_ok() {
-                    // The event is reliable: dropping it could leave the
-                    // server's surface debt waiting until another event wakes the loop.
-                    server_event_tx
-                        .blocking_send(ServerEvent::ClientWriterDrained)
-                        .ok();
+                    // The loop derives surface debt from client state, so all
+                    // completed render slots can share a coalescing wake.
+                    wake.notify_one();
                 }
                 (result, None)
             }
@@ -544,13 +532,6 @@ fn client_read_loop_with_endpoint_controls(
         let event = match msg {
             ClientMessage::ClientShellResize { geometry } => {
                 let surface_size = geometry.surface_size();
-                let cell = shepr_protocol::ProtocolCellSize::from_wire(
-                    geometry.width(),
-                    geometry.height(),
-                    geometry.pixel_mouse,
-                );
-                let (cell_width_px, cell_height_px, pixel_mouse) =
-                    (cell.width(), cell.height(), cell.exact);
                 if let Some(reason) =
                     client_shell_geometry_error(surface_size, geometry.width(), geometry.height())
                 {
@@ -558,6 +539,15 @@ fn client_read_loop_with_endpoint_controls(
                     send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
+                // Oversized raw dimensions were rejected above, so
+                // `from_wire`'s oversize fallback cannot be reached here.
+                let cell = shepr_protocol::ProtocolCellSize::from_wire(
+                    geometry.width(),
+                    geometry.height(),
+                    geometry.pixel_mouse,
+                );
+                let (cell_width_px, cell_height_px, pixel_mouse) =
+                    (cell.width(), cell.height(), cell.exact);
                 ServerEvent::ClientShellResize {
                     client_id,
                     surface_cols: surface_size.cols,
@@ -568,18 +558,6 @@ fn client_read_loop_with_endpoint_controls(
                 }
             }
             ClientMessage::ClientShellHostTheme { update } => {
-                if matches!(
-                    &update,
-                    shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors)
-                        if colors.len() > 256
-                ) {
-                    warn!(
-                        ?client_id,
-                        "invalid client shell host theme update, closing"
-                    );
-                    send_client_disconnected(server_event_tx, client_id);
-                    break;
-                }
                 ServerEvent::ClientShellHostTheme { client_id, update }
             }
             ClientMessage::ClientShellFocus { focused } => {
@@ -608,11 +586,7 @@ fn client_read_loop_with_endpoint_controls(
                             max = MAX_INPUT_PAYLOAD,
                             "oversized targeted pane paste, rejecting"
                         );
-                        ServerEvent::ClientPasteRejected {
-                            client_id,
-                            size,
-                            max: MAX_INPUT_PAYLOAD,
-                        }
+                        ServerEvent::ClientPasteRejected { client_id, size }
                     }
                     InputEventLimit::InputPayloadTooLarge { size } => {
                         warn!(
@@ -631,16 +605,12 @@ fn client_read_loop_with_endpoint_controls(
                 request_id,
                 command,
             } => {
-                // Both ids are echoed back and held with the reply until the
-                // render after the command, so they are bounded here; the
-                // command itself is bounded by `MAX_CLIENT_MESSAGE_SIZE`.
-                if boot_id.len() > crate::server::client_commands::MAX_ENDPOINT_BOOT_ID_BYTES
-                    || request_id.len()
-                        > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
+                // Request ids are echoed and held with replies. Boot ids are
+                // already canonical bounded values after protocol decoding.
+                if request_id.len() > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
                 {
                     warn!(
                         ?client_id,
-                        boot_id_size = boot_id.len(),
                         request_id_size = request_id.len(),
                         "oversized client shell endpoint command ids, closing"
                     );
@@ -794,35 +764,31 @@ mod tests {
         (ClientOutbox::from_queue(Arc::clone(&queue)), queue)
     }
 
-    fn frame_server_message(message: &ServerMessage) -> Vec<u8> {
+    fn encode_test_frame(message: &ServerMessage) -> Vec<u8> {
         shepr_protocol::encode_frame(message).expect("frame server message")
     }
 
     #[test]
-    fn client_writer_prioritizes_control_and_reports_render_drain() {
+    fn client_writer_prioritizes_control_before_render() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-writer-priority");
         let (writer, queue) = test_queue_writer();
         writer
             .queue_handle()
-            .try_send_render(frame_server_message(&ServerMessage::WindowTitle {
+            .try_send_render(encode_test_frame(&ServerMessage::WindowTitle {
                 title: Some("render".into()),
             }))
             .expect("queue render");
         writer
             .queue_handle()
-            .send_control(frame_server_message(&ServerMessage::WindowTitle {
+            .send_control(encode_test_frame(&ServerMessage::WindowTitle {
                 title: Some("control".into()),
             }))
             .expect("queue control");
 
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let writer_wake = Arc::clone(&wake);
         let handle = std::thread::spawn(move || {
-            client_writer_loop(
-                server_stream,
-                ClientId::test_new(9),
-                &queue,
-                &server_event_tx,
-            );
+            client_writer_loop(server_stream, ClientId::test_new(9), &queue, &writer_wake);
         });
 
         match shepr_protocol::read_message(&mut client_stream).expect("read control") {
@@ -833,20 +799,12 @@ mod tests {
             ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("render")),
             other => panic!("expected render message second, got {other:?}"),
         }
-        match server_event_rx
-            .blocking_recv()
-            .expect("writer drained render slot")
-        {
-            ServerEvent::ClientWriterDrained => {}
-            other => panic!("expected writer drained event, got {other:?}"),
-        }
-
         drop(writer);
         handle.join().expect("writer exits after senders drop");
     }
 
     #[test]
-    fn client_writer_delivers_render_before_waiting_for_drain_event_capacity() {
+    fn client_writer_wakes_without_using_the_server_event_channel() {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-writer-event-backpressure");
         client_stream
@@ -855,36 +813,30 @@ mod tests {
         let (writer, queue) = test_queue_writer();
         writer
             .queue_handle()
-            .try_send_render(frame_server_message(&ServerMessage::WindowTitle {
+            .try_send_render(encode_test_frame(&ServerMessage::WindowTitle {
                 title: Some("render".into()),
             }))
             .expect("queue render");
 
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(1);
-        server_event_tx
-            .try_send(ServerEvent::HostShutdownWake)
-            .expect("fill the server event channel");
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let writer_wake = Arc::clone(&wake);
         let handle = std::thread::spawn(move || {
-            client_writer_loop(
-                server_stream,
-                ClientId::test_new(10),
-                &queue,
-                &server_event_tx,
-            );
+            client_writer_loop(server_stream, ClientId::test_new(10), &queue, &writer_wake);
         });
 
         assert!(matches!(
             shepr_protocol::read_message(&mut client_stream).expect("render is written"),
             ServerMessage::WindowTitle { title: Some(title) } if title == "render"
         ));
-        assert!(matches!(
-            server_event_rx.blocking_recv(),
-            Some(ServerEvent::HostShutdownWake)
-        ));
-        assert!(matches!(
-            server_event_rx.blocking_recv(),
-            Some(ServerEvent::ClientWriterDrained)
-        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), wake.notified())
+                .await
+                .expect("render drain wakes the server loop");
+        });
 
         drop(writer);
         handle.join().expect("writer exits after handles drop");
@@ -917,15 +869,10 @@ mod tests {
     fn client_writer_exits_when_all_writer_handles_drop() {
         let (_client_stream, server_stream, _path) = local_stream_pair("client-writer-drop");
         let (writer, queue) = test_queue_writer();
-        let (server_event_tx, _server_event_rx) = mpsc::channel(4);
+        let wake = Arc::new(tokio::sync::Notify::new());
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(
-                server_stream,
-                ClientId::test_new(11),
-                &queue,
-                &server_event_tx,
-            );
+            client_writer_loop(server_stream, ClientId::test_new(11), &queue, &wake);
             done_tx
                 .send(())
                 .expect("test still waiting for the writer to exit");
@@ -943,15 +890,10 @@ mod tests {
             local_stream_pair("client-writer-clone-drop");
         let (writer, queue) = test_queue_writer();
         let cloned_writer = writer.control_sender();
-        let (server_event_tx, _server_event_rx) = mpsc::channel(4);
+        let wake = Arc::new(tokio::sync::Notify::new());
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(
-                server_stream,
-                ClientId::test_new(12),
-                &queue,
-                &server_event_tx,
-            );
+            client_writer_loop(server_stream, ClientId::test_new(12), &queue, &wake);
             done_tx
                 .send(())
                 .expect("test still waiting for the writer to exit");
@@ -987,15 +929,10 @@ mod tests {
         let (client_stream, server_stream, _path) =
             local_stream_pair("client-writer-socket-failure");
         let (writer, queue) = test_queue_writer();
-        let (server_event_tx, _server_event_rx) = mpsc::channel(4);
+        let wake = Arc::new(tokio::sync::Notify::new());
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(
-                server_stream,
-                ClientId::test_new(13),
-                &queue,
-                &server_event_tx,
-            );
+            client_writer_loop(server_stream, ClientId::test_new(13), &queue, &wake);
             done_tx
                 .send(())
                 .expect("test still waiting for the writer to exit");
@@ -1221,19 +1158,6 @@ mod tests {
             .join()
             .expect("handshake thread join")
             .expect("handshake thread result");
-    }
-
-    #[test]
-    fn client_shell_validation_rejects_empty_surface() {
-        assert!(shepr_core::geometry::GridSize::new(0, 29).is_none());
-        assert_eq!(
-            client_shell_geometry_error(
-                shepr_protocol::ClientSurfaceSize { cols: 0, rows: 29 },
-                8,
-                16
-            ),
-            Some("client shell requires a non-empty pane surface"),
-        );
     }
 
     #[test]

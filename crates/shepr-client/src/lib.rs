@@ -38,7 +38,6 @@ mod startup;
 mod state;
 mod terminal_geometry;
 mod terminal_setup;
-mod timer;
 mod transport;
 
 use clipboard_forwarding::forward_clipboard;
@@ -521,7 +520,6 @@ struct ClientLoop {
     supervisors: endpoint::EndpointSupervisors,
     endpoint_commands: endpoint::commands::EndpointCommands,
     next_view_serial: u64,
-    client_timer: timer::ClientLoopTimer,
     reported_cell_size: Arc<AtomicCellSize>,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
@@ -568,7 +566,6 @@ impl ClientLoop {
             supervisors,
             endpoint_commands: endpoint::commands::EndpointCommands::default(),
             next_view_serial: 1,
-            client_timer: timer::ClientLoopTimer::new(),
             reported_cell_size,
             event_tx,
             event_rx,
@@ -589,13 +586,7 @@ impl ClientLoop {
     /// Returns a quit request at once, else waits for the timer armed from the earliest
     /// pending deadline as of `now` or the shared event queue.
     async fn wait_for_next_event(&mut self, now: std::time::Instant) -> ClientLoopEvent {
-        let timer_deadline = self.next_timer_deadline(now).map(|deadline| {
-            self.client_timer
-                .deadline(now, deadline.saturating_duration_since(now))
-        });
-        if timer_deadline.is_none() {
-            self.client_timer.fired();
-        }
+        let timer_deadline = self.next_timer_deadline(now);
         if self.should_quit.load(Ordering::Acquire) {
             return ClientLoopEvent::Quit;
         }
@@ -612,6 +603,9 @@ impl ClientLoop {
 
     async fn run(&mut self) -> Result<(), ClientError> {
         let result = self.run_until_exit().await;
+        // Detach and terminal loss return through the same event path as Quit;
+        // flush regardless of which condition ended the loop.
+        self.state.output_writer.flush().ok();
         // Every way out, an error included, reports a latched panic instead.
         if self.fatal.is_latched() {
             return Err(ClientError::Panicked);
@@ -662,17 +656,9 @@ impl ClientLoop {
             // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
             if self.handle_event(event, now)? == ClientLoopAction::Exit {
-                if self.should_quit.load(Ordering::Acquire) {
-                    break;
-                }
-                return Ok(());
+                break;
             }
         }
-
-        // The registry owns the one best-effort Detach and flush during teardown.
-        // Terminal restore writes and flushes through its clone of this output descriptor next
-        // and logs its own failure, so a failure here would only be reported twice.
-        self.state.output_writer.flush().ok();
         Ok(())
     }
 
@@ -1262,13 +1248,11 @@ impl ClientLoop {
 
     fn handle_timer(&mut self, now: std::time::Instant) -> Result<ClientLoopAction, ClientError> {
         let Self {
-            client_timer,
             write_stream,
             state,
             endpoint_commands,
             ..
         } = self;
-        client_timer.fired();
         write_stream.tick_health(now);
         let expired_endpoints = endpoint_commands
             .expire(now)

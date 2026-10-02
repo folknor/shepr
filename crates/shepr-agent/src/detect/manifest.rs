@@ -140,7 +140,8 @@ pub(crate) struct AgentManifest {
 #[serde(deny_unknown_fields)]
 struct ManifestRule {
     id: String,
-    state: Option<ManifestState>,
+    #[serde(default = "default_state")]
+    state: ManifestState,
     #[serde(default)]
     priority: i32,
     #[serde(default = "default_region")]
@@ -310,8 +311,8 @@ fn final_sigma(text: &str, index: usize, case_ignorable: &Regex, cased: &Regex) 
         cased: &Regex,
     ) -> bool {
         for character in characters.by_ref() {
-            if !is_case_ignorable(character, case_ignorable) {
-                return is_cased(character, cased);
+            if !character_matches_unicode_property(character, case_ignorable) {
+                return character_matches_unicode_property(character, cased);
             }
         }
         false
@@ -325,12 +326,7 @@ fn final_sigma(text: &str, index: usize, case_ignorable: &Regex, cased: &Regex) 
         )
 }
 
-fn is_case_ignorable(character: char, property: &Regex) -> bool {
-    let mut encoded = [0; UTF8_MAX_BYTES_PER_CODEPOINT];
-    property.is_match(character.encode_utf8(&mut encoded))
-}
-
-fn is_cased(character: char, property: &Regex) -> bool {
+fn character_matches_unicode_property(character: char, property: &Regex) -> bool {
     let mut encoded = [0; UTF8_MAX_BYTES_PER_CODEPOINT];
     property.is_match(character.encode_utf8(&mut encoded))
 }
@@ -419,34 +415,25 @@ impl RegionSpec {
 
     /// Extract this region without building a line index for a detection tick.
     fn extract<'a>(self, input: DetectionInput<'a>) -> &'a str {
-        // OSC regions source from their dedicated fields, not the screen.
         match self {
-            Self::OscTitle => return input.osc_title,
-            Self::OscProgress => return input.osc_progress,
-            Self::WholeRecent => return input.screen,
-            Self::AfterLastHorizontalRule => return after_last_horizontal_rule(input.screen),
-            _ => {}
-        }
-        let content = input.screen;
-        match self {
-            Self::AfterLastPromptMarker => after_last_prompt_marker(content),
-            Self::BeforeCurrentPromptMarker => before_current_prompt_marker(content),
+            Self::OscTitle => input.osc_title,
+            Self::OscProgress => input.osc_progress,
+            Self::WholeRecent => input.screen,
+            Self::AfterLastHorizontalRule => after_last_horizontal_rule(input.screen),
+            Self::AfterLastPromptMarker => after_last_prompt_marker(input.screen),
+            Self::BeforeCurrentPromptMarker => before_current_prompt_marker(input.screen),
             Self::WholeRecentWithoutCurrentPromptMarker => {
-                whole_recent_without_current_prompt_marker(content)
+                whole_recent_without_current_prompt_marker(input.screen)
             }
-            Self::PromptBoxBody => prompt_box_body(content).unwrap_or(""),
+            Self::PromptBoxBody => prompt_box_body(input.screen).unwrap_or(""),
             Self::LastNonEmptyAbovePromptBox => {
-                let Some((top_start, _, _)) = prompt_box_bounds(content) else {
-                    return last_non_empty_line(content);
+                let Some((top_start, _, _)) = prompt_box_bounds(input.screen) else {
+                    return last_non_empty_line(input.screen);
                 };
-                last_non_empty_line(&content[..top_start.min(content.len())])
+                last_non_empty_line(&input.screen[..top_start.min(input.screen.len())])
             }
-            Self::BottomNonEmptyLines(count) => bottom_non_empty_lines(content, count),
-            Self::TopNonEmptyLines(count) => top_non_empty_lines(content, count),
-            Self::OscTitle
-            | Self::OscProgress
-            | Self::WholeRecent
-            | Self::AfterLastHorizontalRule => "",
+            Self::BottomNonEmptyLines(count) => bottom_non_empty_lines(input.screen, count),
+            Self::TopNonEmptyLines(count) => top_non_empty_lines(input.screen, count),
         }
     }
 }
@@ -493,6 +480,10 @@ fn default_region() -> String {
 
 fn default_fallback() -> ManifestFallback {
     ManifestFallback::Idle
+}
+
+fn default_state() -> ManifestState {
+    ManifestState::Unknown
 }
 
 const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
@@ -607,7 +598,7 @@ fn explain_with_manifest(
     loaded: Option<&LoadedManifest>,
 ) -> DetectionExplain {
     let Some(loaded) = loaded else {
-        return fallback_explain(Some(agent), None);
+        return fallback_explain(agent, None);
     };
     explain_loaded_manifest(agent, input, loaded)
 }
@@ -633,7 +624,7 @@ pub fn explain_for_label(agent_label: &str, input: DetectionInput<'_>) -> Detect
 }
 
 fn rule_state(rule: &ManifestRule) -> AgentState {
-    rule.state.map_or(AgentState::Unknown, AgentState::from)
+    rule.state.into()
 }
 
 fn rule_detection(rule: &ManifestRule) -> AgentDetection {
@@ -701,7 +692,7 @@ fn explain_loaded_manifest(
     }
 
     let Some(rule) = matched else {
-        return fallback_explain(Some(agent), Some((loaded, evaluated_rules)));
+        return fallback_explain(agent, Some((loaded, evaluated_rules)));
     };
 
     let detection = rule_detection(rule);
@@ -730,19 +721,18 @@ fn explain_loaded_manifest(
 }
 
 fn fallback_explain(
-    agent: Option<Agent>,
+    agent: Agent,
     context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
+    let manifest = context.as_ref().map(|(manifest, _)| *manifest);
     let manifest_fallback = context
         .as_ref()
         .map(|(manifest, _)| manifest.manifest.fallback);
     let evaluated_rules = context.map_or_else(Vec::new, |(_, evaluated)| evaluated);
 
     DetectionExplain {
-        agent: agent.map(|agent| agent_label(agent).to_string()),
-        state: agent.map_or(AgentState::Unknown, |_| {
-            manifest_fallback.map_or(AgentState::Unknown, AgentState::from)
-        }),
+        agent: Some(agent_label(agent).to_string()),
+        state: fallback_state(manifest),
         matched_rule: None,
         screen_detection_skipped: false,
         visible_idle: false,
@@ -750,13 +740,10 @@ fn fallback_explain(
         visible_working: false,
         skip_state_update: false,
         skipped_update_reason: None,
-        fallback_reason: match agent {
-            Some(_) if manifest_fallback.is_none() => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
-            Some(_) if manifest_fallback == Some(ManifestFallback::Unknown) => {
-                Some(UNKNOWN_MANIFEST_FALLBACK.to_string())
-            }
-            Some(_) => Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK.to_string()),
-            None => None,
+        fallback_reason: match manifest_fallback {
+            None => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
+            Some(ManifestFallback::Unknown) => Some(UNKNOWN_MANIFEST_FALLBACK.to_string()),
+            Some(ManifestFallback::Idle) => Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK.to_string()),
         },
         evaluated_rules,
     }
@@ -764,17 +751,17 @@ fn fallback_explain(
 
 fn loaded_manifest(mut manifest: AgentManifest) -> Result<LoadedManifest, String> {
     let unknown_is_stable = manifest.fallback == ManifestFallback::Unknown
-        || manifest.rules.iter().any(|rule| {
-            rule.state
-                .is_none_or(|state| state == ManifestState::Unknown)
-        });
+        || manifest
+            .rules
+            .iter()
+            .any(|rule| rule.state == ManifestState::Unknown);
     let CompiledManifest {
         compiled_rules,
         regions,
-    } = match manifest.compiled.take() {
-        Some(compiled) => compiled,
-        None => compile_manifest(&manifest)?,
-    };
+    } = manifest
+        .compiled
+        .take()
+        .ok_or_else(|| "manifest was not compiled before loading".to_string())?;
     let mut priority_order: Vec<usize> = (0..manifest.rules.len()).collect();
     // Stable sort: equal priorities keep manifest order, matching the
     // first-wins tie break in `explain_loaded_manifest`.
@@ -948,26 +935,26 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, Strin
         if rule.id.trim().is_empty() {
             return Err("manifest rule id must not be empty".to_string());
         }
-        if rule.visible_idle && rule.state != Some(ManifestState::Idle) {
+        if rule.visible_idle && rule.state != ManifestState::Idle {
             return Err(format!(
                 "rule {} uses visible_idle without state = \"idle\"",
                 rule.id
             ));
         }
-        if rule.visible_blocker && rule.state != Some(ManifestState::Blocked) {
+        if rule.visible_blocker && rule.state != ManifestState::Blocked {
             return Err(format!(
                 "rule {} uses visible_blocker without state = \"blocked\"",
                 rule.id
             ));
         }
-        if rule.visible_working && rule.state != Some(ManifestState::Working) {
+        if rule.visible_working && rule.state != ManifestState::Working {
             return Err(format!(
                 "rule {} uses visible_working without state = \"working\"",
                 rule.id
             ));
         }
         if rule.skip_state_update {
-            if rule.state != Some(ManifestState::Unknown) {
+            if rule.state != ManifestState::Unknown {
                 return Err(format!(
                     "rule {} uses skip_state_update without state = \"unknown\"",
                     rule.id
@@ -1307,9 +1294,8 @@ fn every_line_regex_matches(regexes: &[Regex], text: &str) -> bool {
         return true;
     }
     if regexes.len() > MAX_MATCHERS_PER_GATE {
-        return regexes
-            .iter()
-            .all(|regex| text.lines().any(|line| regex.is_match(line)));
+        // Validation rejects this shape; fail closed if an unvalidated gate reaches detection.
+        return false;
     }
 
     let mut matched = [false; MAX_MATCHERS_PER_GATE];

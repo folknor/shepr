@@ -262,10 +262,24 @@ fn classify_unix_input(
     geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
 ) -> Option<ParsedHostInput> {
     let pixel_mouse = if sgr_pixels && input.raw.starts_with(b"\x1b[<") {
-        let geometry = geometry?;
         let shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse) = &input.event else {
             return None;
         };
+        // In SGR pixel mode the report's coordinates are pixels, not cells.
+        // Without a pixel extent there is no way to map them to a cell, and
+        // passing them on as cells would aim the event at an unrelated cell
+        // (a sidebar button, another pane), so the report is dropped.
+        //
+        // The window is tiny by construction: pixel mode is only enabled after
+        // the client loop's window-size ioctl returned a full pixel extent,
+        // this thread rereads that same ioctl before every pixel-mode batch,
+        // and a later failed read keeps the last good extent. A drop needs the
+        // ioctl to fail on this thread's first read after succeeding on the
+        // client loop. Holding reports until an extent arrives would need a
+        // queue and a give-up rule for that window, and mapping from the
+        // reported cell pitch is not a substitute: the extent can include
+        // padding the pitch does not describe, so it would misplace clicks.
+        let geometry = geometry?;
         Some(shepr_termio::input::mouse::HostPixels {
             x: u32::from(mouse.column) + 1,
             y: u32::from(mouse.row) + 1,
@@ -369,6 +383,8 @@ mod tests {
                 geometry
             })
         );
+        // Pixel coordinates without an extent cannot name a cell; read as
+        // cells they would hit column 320, row 240.
         assert!(classify_unix_input(framed(&report).remove(0), true, None).is_none());
 
         for raw in [

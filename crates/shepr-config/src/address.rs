@@ -109,6 +109,7 @@ pub fn operator_entrypoint() -> String {
 
 fn shell_quote(value: &str) -> String {
     if !value.is_empty()
+        && !value.starts_with('=')
         && value.chars().all(|ch| {
             ch.is_ascii_alphanumeric()
                 || matches!(
@@ -125,6 +126,12 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leading_equals_sign_is_quoted_for_zsh() {
+        assert_eq!(shell_quote("=shepr"), "'=shepr'");
+        assert_eq!(shell_quote("/x/a=b.sock"), "/x/a=b.sock");
+    }
 
     #[test]
     fn runtime_address_guidance_is_plain() {

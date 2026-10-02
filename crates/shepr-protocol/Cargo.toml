@@ -11,7 +11,6 @@ serde = { workspace = true }
 shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
 shepr-vt = { path = "../shepr-vt" }
-tracing = { workspace = true }
 
 [dev-dependencies]
 shepr-test-support = { path = "../shepr-test-support" }

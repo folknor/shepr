@@ -182,8 +182,10 @@ enum LocalRestart {
     Declined,
     /// The server was stopped; the launch that follows starts one of this build.
     Stopped,
-    /// The named server stopped answering or a different boot answered; no
-    /// stop was sent to any replacement server.
+    /// The observed server was already gone; the launch that follows starts
+    /// one of this build.
+    NoServer,
+    /// A different boot answered; no stop was sent to that replacement server.
     OccupantChanged,
     /// The stop failed; the server may still be running.
     Failed(String),
@@ -215,7 +217,7 @@ fn restart_local(
         }
         match stop(&observed.boot_id) {
             Ok(()) => return LocalRestart::Stopped,
-            Err(ServerStopError::NotRunning { .. }) => return LocalRestart::OccupantChanged,
+            Err(ServerStopError::NotRunning { .. }) => return LocalRestart::NoServer,
             Err(error) if error.is_boot_mismatch() => match probe().filter(is_different) {
                 Some(next) if offer < MAX_LOCAL_OFFERS => observed = next,
                 _ => return LocalRestart::OccupantChanged,
@@ -234,6 +236,10 @@ fn local_notice(local: &LocalRestart) -> Option<String> {
         LocalRestart::NotNeeded | LocalRestart::NoTerminal | LocalRestart::Declined => None,
         LocalRestart::Stopped => Some(
             "shepr: stopped the local server of a different build; one of this build starts now."
+                .to_owned(),
+        ),
+        LocalRestart::NoServer => Some(
+            "shepr: the local server of a different build had already stopped; one of this build starts now."
                 .to_owned(),
         ),
         LocalRestart::OccupantChanged => Some(
@@ -362,6 +368,9 @@ fn restart_notice(machine: &MachineConfig, outcome: &PreflightOutcome) -> Option
         ),
         RestartResult::Stopped => format!(
             "stopped the shepr server of a different build on machine {label}; one of this build starts when the client attaches."
+        ),
+        RestartResult::NoServer => format!(
+            "the shepr server of a different build on machine {label} had already stopped; one of this build starts when the client attaches."
         ),
         RestartResult::OccupantChanged => match &outcome.check {
             MachineCheck::DifferentBuild(server) => format!(
@@ -782,6 +791,23 @@ mod tests {
         );
         assert_eq!(script.run(true), LocalRestart::OccupantChanged);
         assert_eq!(script.asked.len(), MAX_LOCAL_OFFERS);
+    }
+
+    #[test]
+    fn a_local_server_gone_before_its_stop_is_no_server_not_a_new_occupant() {
+        let mut script = LocalScript::new(
+            vec![Some(status(other_build(), "1-1"))],
+            vec![Err(ServerStopError::NotRunning {
+                label: "server".into(),
+                path: "/run/shepr/server.sock".into(),
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            })],
+            vec![true],
+        );
+        assert_eq!(script.run(true), LocalRestart::NoServer);
+        assert_eq!(script.stopped, ["1-1"]);
+        let notice = local_notice(&LocalRestart::NoServer).expect("a notice");
+        assert!(notice.contains("already stopped"), "{notice}");
     }
 
     #[test]

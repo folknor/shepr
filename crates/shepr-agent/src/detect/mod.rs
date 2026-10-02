@@ -85,6 +85,8 @@ pub struct AgentDetection {
     pub visible_working: bool,
 }
 
+/// The detector module keeps its public label facade while `Agent` owns the
+/// shared descriptor table and its label operations.
 pub fn agent_label(agent: Agent) -> &'static str {
     agent.label()
 }
@@ -94,6 +96,7 @@ pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     Agent::parse_label(&name)
 }
 
+/// Parse only canonical labels; [`parse_agent_label`] also accepts aliases.
 pub fn parse_canonical_agent_label(label: &str) -> Option<Agent> {
     Agent::parse_canonical_label(label)
 }
@@ -236,9 +239,7 @@ fn normalized_process_name(process: &ForegroundProcess) -> String {
         }
     }
 
-    if let Some(wrapped_agent) = argv0_agent_name(process.argv.as_deref(), cwd_pid).or_else(|| {
-        cmdline_argv0_agent_name(process.cmdline.as_deref().unwrap_or_default(), cwd_pid)
-    }) {
+    if let Some(wrapped_agent) = argv0_agent_name(process.argv.as_deref(), cwd_pid) {
         return wrapped_agent;
     }
 
@@ -430,10 +431,6 @@ fn argv0_agent_name(argv: Option<&[String]>, cwd_pid: Option<u32>) -> Option<Str
     agent_name_from_path_token(argv?.first()?, cwd_pid)
 }
 
-fn cmdline_argv0_agent_name(cmdline: &str, cwd_pid: Option<u32>) -> Option<String> {
-    agent_name_from_path_token(cmdline.split_whitespace().next()?, cwd_pid)
-}
-
 /// `cwd_pid` is the process the token came from; relative paths resolve
 /// against its working directory (see `resolved_agent_name_from_path_token`).
 fn agent_name_from_path_token(token: &str, cwd_pid: Option<u32>) -> Option<String> {
@@ -552,21 +549,8 @@ fn letta_first_arg_after_backend_selection(args: &[String]) -> Option<&str> {
 }
 
 fn is_interactive_letta_process(process: &ForegroundProcess) -> bool {
-    let parsed_cmdline;
-    let argv = if let Some(argv) = process.argv.as_deref() {
-        argv
-    } else {
-        parsed_cmdline = process
-            .cmdline
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(|arg| arg.trim_matches(|ch| matches!(ch, '\'' | '"')).to_string())
-            .collect::<Vec<_>>();
-        if parsed_cmdline.is_empty() {
-            return true;
-        }
-        &parsed_cmdline
+    let Some(argv) = process.argv.as_deref() else {
+        return true;
     };
 
     let cli_args =
@@ -734,7 +718,6 @@ mod tests {
             pid,
             name: name.to_string(),
             argv: Some(argv.iter().map(|arg| (*arg).to_string()).collect()),
-            cmdline: Some(argv.join(" ")),
         }
     }
 
@@ -1181,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn identify_agent_in_job_detects_nix_wrapped_codex_from_cmdline_argv0() {
+    fn identify_agent_in_job_detects_nix_wrapped_codex_from_argv0() {
         let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
@@ -1198,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn identify_agent_in_job_canonicalizes_nix_wrapped_aliases_from_cmdline_argv0() {
+    fn identify_agent_in_job_canonicalizes_nix_wrapped_aliases_from_argv0() {
         let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
@@ -1504,19 +1487,6 @@ mod tests {
             identify_agent_in_job(&job),
             Some((Agent::Codex, "codex".to_string()))
         );
-    }
-
-    #[test]
-    fn cmdline_argv0_agent_name_canonicalizes_known_aliases() {
-        assert_eq!(
-            cmdline_argv0_agent_name("/nix/store/example/bin/ghcs", None),
-            Some("copilot".to_string())
-        );
-    }
-
-    #[test]
-    fn cmdline_argv0_agent_name_requires_exact_agent_basename() {
-        assert_eq!(cmdline_argv0_agent_name("/tmp/my-codex-helper", None), None);
     }
 
     #[test]

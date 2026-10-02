@@ -8,11 +8,8 @@ mod status;
 use self::discovery::automatic_workspace_label;
 
 pub use self::{
-    discovery::{GitSpaceMetadata, fallback_label_from_cwd},
-    status::{
-        GitStatusCacheEntry, GitStatusRefreshDemand, git_status_cache_key,
-        git_status_snapshot_for_cwd_with_demand,
-    },
+    discovery::fallback_label_from_cwd,
+    status::{GitStatusCacheEntry, git_status_cache_key, git_status_snapshot_for_cwd},
 };
 pub use runner::{GitCommandError, run_git};
 
@@ -114,19 +111,16 @@ pub struct WorkspaceGitStatus {
     pub workspace_id: String,
     pub resolved_identity_cwd: PathBuf,
     pub status_cache_key: PathBuf,
-    pub demand: GitStatusRefreshDemand,
     pub auto_label: String,
     pub branch: Option<String>,
     pub ahead_behind: Option<AheadBehind>,
-    pub space: Option<GitSpaceMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatusSnapshot {
-    pub auto_label: String,
+    pub repo_root: Option<PathBuf>,
     pub branch: Option<String>,
     pub ahead_behind: Option<AheadBehind>,
-    pub space: Option<GitSpaceMetadata>,
 }
 
 impl WorkspaceGitStatusSnapshot {
@@ -135,21 +129,18 @@ impl WorkspaceGitStatusSnapshot {
         workspace_id: String,
         resolved_identity_cwd: PathBuf,
         status_cache_key: PathBuf,
-        demand: GitStatusRefreshDemand,
     ) -> WorkspaceGitStatus {
-        let auto_label = self.space.as_ref().map_or_else(
+        let auto_label = self.repo_root.as_ref().map_or_else(
             || fallback_label_from_cwd(&resolved_identity_cwd),
-            |space| automatic_workspace_label(&resolved_identity_cwd, &space.repo_root),
+            |repo_root| automatic_workspace_label(&resolved_identity_cwd, repo_root),
         );
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd,
             status_cache_key,
-            demand,
             auto_label,
             branch: self.branch,
             ahead_behind: self.ahead_behind,
-            space: self.space,
         }
     }
 }
@@ -159,6 +150,3 @@ mod config_tests;
 
 #[cfg(test)]
 pub mod test_support;
-
-#[cfg(test)]
-pub use self::status::git_status_snapshot_for_cwd;

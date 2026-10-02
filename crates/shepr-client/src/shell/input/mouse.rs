@@ -658,25 +658,20 @@ impl ClientShellState {
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
         let snapshot = self.snapshot.as_deref()?;
-        let entries = render::workspace_entries(snapshot);
         let last_hit = self
             .hits
             .workspaces
             .iter()
             .rev()
             .find(|hit| hit.endpoint_id == self.active_endpoint_id)?;
-        let last_position = entries.iter().position(|entry| {
-            snapshot
-                .workspaces
-                .get(*entry)
-                .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
-        })?;
-        let before = entries.get(last_position + 1).and_then(|entry| {
-            snapshot
-                .workspaces
-                .get(*entry)
-                .map(|workspace| workspace.workspace_id.clone())
-        });
+        let last_position = snapshot
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.workspace_id == last_hit.workspace_id)?;
+        let before = snapshot
+            .workspaces
+            .get(last_position + 1)
+            .map(|workspace| workspace.workspace_id.clone());
         let row = last_hit.rect.bottom();
         if row < drop_bottom {
             slots.push((before, row));
@@ -791,7 +786,7 @@ impl ClientShellState {
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && super::contains(self.hits.notification_toast, point)
         {
-            self.visible_endpoint_notice = None;
+            self.advance_endpoint_notice();
             outcome.repaint = true;
             return;
         }
@@ -1649,6 +1644,7 @@ impl ClientShellState {
                     } else {
                         ClientShellMode::Terminal
                     };
+                    self.navigate_workspace_id = None;
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {

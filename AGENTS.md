@@ -151,7 +151,7 @@ orientation, and nothing checks them:
 - `shepr-core`: shared geometry, layout and plain types.
 - `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing.
 - `shepr-vt`: terminal emulation and read formatting.
-- `shepr-pty`: PTY process launch and IO.
+- `shepr-pty`: PTY process launch and IO, using `shepr-platform` for fd plumbing, socket admission and process identities.
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: detection manifests and agent integrations.
 - `shepr-config`: configuration parsing and validation.
@@ -366,7 +366,7 @@ as controlling terminal, and
 Pane spawns run on the server's event loop, so nothing on the parent side of a
 launch touches the user's filesystem. A hung mount must stall only its own
 pane. `backend.rs` forks the child itself (not through `std::process::Command`,
-whose `spawn` waits for the child's chdir and exec) and returns with its pid.
+whose `spawn` waits for the child's chdir and exec) and returns with a pidfd-backed child handle.
 The child closes every inherited fd, does the chdir (with the
 `HOME`/passwd-home/`/` fallback unless the cwd is required, as for restored
 panes and agent resumes) and execs the absolute shell path config validation
@@ -385,9 +385,11 @@ decided. An ending recorded while the child may still be alive (a failed
 reader or wait, or a closed terminal whose child was not reaped in time)
 gives the launch a bounded time to settle, then settles it as
 unconfirmed, so a child stuck in its chdir cannot keep the pane from ending.
-The child is a `PaneChild`. The pane runtime watches its pidfd
-and reaps it with `waitid` when available, with a blocking `waitpid` as the
-fallback. If the watcher is dropped before reaping, the child is handed to a
+The child is a `PaneChild`, which owns the process identity acquired immediately
+after fork and its cached wait status. Mux shares that identity for liveness
+and teardown instead of opening another handle. The pane runtime watches its
+pidfd and asks `PaneChild` to reap with `waitid` when available, with a blocking
+`waitpid` as the fallback. If the watcher is dropped before reaping, the child is handed to a
 detached reaper thread.
 
 ## Rules

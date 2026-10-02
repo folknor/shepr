@@ -769,11 +769,10 @@ impl ClientShellState {
         if let Some(navigate_binding) = navigate_binding {
             match navigate_binding {
                 NavigateAction::SwitchWorkspace(index) => {
-                    let valid = self.snapshot.as_deref().is_some_and(|snapshot| {
-                        self.navigation_workspace_entries(snapshot)
-                            .get(index)
-                            .is_some()
-                    });
+                    let valid = self
+                        .snapshot
+                        .as_deref()
+                        .is_some_and(|snapshot| snapshot.workspaces.get(index).is_some());
                     if valid {
                         self.mode = ClientShellMode::Terminal;
                         self.navigate_workspace_id = None;
@@ -892,17 +891,13 @@ impl ClientShellState {
         use shepr_termio::input::{KeybindAction, KeybindMatch};
 
         match binding {
-            KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => {
-                self.snapshot.as_deref().is_some_and(|snapshot| {
-                    self.navigation_workspace_entries(snapshot)
-                        .get(*index)
-                        .is_some()
-                })
-            }
+            KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => self
+                .snapshot
+                .as_deref()
+                .is_some_and(|snapshot| snapshot.workspaces.get(*index).is_some()),
             KeybindMatch::Action(KeybindAction::FocusAgent(index)) => {
-                super::aggregate_navigation::online_agent_targets(
+                super::aggregate_navigation::displayed_agent_targets(
                     &self.endpoints,
-                    &self.active_endpoint_id,
                     self.config.agent_panel_sort,
                 )
                 .get(*index)

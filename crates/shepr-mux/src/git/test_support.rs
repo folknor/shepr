@@ -95,21 +95,6 @@ pub(super) fn write_fake_tracked_repo(root: &Path) {
     .expect("test precondition");
 }
 
-/// The Git space production derives for `cwd`: the `space` a branch-only
-/// status refresh reports, the same call the background refresh makes.
-pub(super) fn live_git_space(cwd: &Path) -> Option<crate::git::GitSpaceMetadata> {
-    super::status::git_status_snapshot_for_cwd_with_demand(
-        cwd,
-        None,
-        super::status::GitStatusRefreshDemand {
-            branch: true,
-            ahead_behind: false,
-        },
-    )
-    .0
-    .space
-}
-
 /// Runs the host's Git to build a fixture only Git can write: a reftable ref
 /// store, which is a binary format, or real commit objects for production's
 /// own `git rev-list` to walk. Only tests of production code that itself

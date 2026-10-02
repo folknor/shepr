@@ -156,14 +156,12 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
             workspace_id: first_id,
             resolved_identity_cwd: first_cwd.clone(),
             status_cache_key: first_cwd.clone(),
-            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: Some("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 2,
                 behind: 1,
             }),
-            space: None,
         },
         Some(first_cwd),
     )]);
@@ -199,14 +197,12 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
             workspace_id,
             resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
             status_cache_key: std::path::PathBuf::from("/definitely/not/current"),
-            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "stale".into(),
             branch: Some("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 0,
                 behind: 1,
             }),
-            space: None,
         },
         Some(current_cwd),
     )]);
@@ -220,37 +216,6 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
             behind: 0
         })
     );
-}
-
-#[test]
-fn apply_workspace_git_statuses_ignores_unrequested_branch_changes() {
-    let mut state = app_with_workspaces(&["one"]);
-    let workspace_id = state.workspaces[0].id.to_string();
-    let cwd = state.workspaces[0]
-        .resolved_identity_cwd()
-        .expect("test precondition");
-    state.workspaces[0].cached_auto_label = "one".into();
-    state.workspaces[0].cached_git_branch = Some("old".into());
-
-    let changed = state.apply_workspace_git_statuses(vec![(
-        WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
-            demand: shepr_mux::git::GitStatusRefreshDemand {
-                branch: false,
-                ahead_behind: true,
-            },
-            auto_label: "one".into(),
-            branch: Some("new".into()),
-            ahead_behind: None,
-            space: None,
-        },
-        Some(cwd),
-    )]);
-
-    assert!(!changed);
-    assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
 }
 
 #[test]
@@ -271,11 +236,9 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
-            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: None,
             ahead_behind: None,
-            space: None,
         },
         Some(cwd),
     )]);

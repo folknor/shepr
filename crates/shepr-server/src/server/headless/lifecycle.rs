@@ -211,32 +211,24 @@ impl ShutdownLifecycle {
     /// The canonical rejection of a JSON API request selected after the
     /// server entered its terminal stopping phase. An endpoint command gets
     /// `EndpointError::ShuttingDown` instead.
-    pub(super) fn shutdown_error(&self) -> Option<shepr_api::error::ApiError> {
-        if self.phase == ShutdownPhase::Stopping {
-            Some(shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::ServerUnavailable,
-                "server is shutting down",
-            ))
-        } else {
-            None
-        }
+    pub(super) fn shutdown_error(&self) -> shepr_api::error::ApiError {
+        assert_eq!(self.phase, ShutdownPhase::Stopping);
+        shepr_api::error::ApiError::new(
+            shepr_api::error::ApiErrorCode::ServerUnavailable,
+            "server is shutting down",
+        )
     }
 }
 
 impl HeadlessServer {
     pub(super) fn start_host_shutdown_monitor(&mut self) {
-        let wake_loop = self.server_event_tx.clone();
+        let wake_loop = Arc::clone(&self.outbox_wake);
         self.host_shutdown_monitor = Some(HostShutdownMonitor::start(
             Arc::clone(self.lifecycle.host_shutdown_request_flag()),
             move || {
-                // Only a wakeup: the monitor updates the request flag before
-                // calling this, and the loop reads the flag every iteration.
-                // A full channel already wakes the loop, and a closed one
-                // means the loop has exited.
-                let (Ok(())
-                | Err(
-                    mpsc::error::TrySendError::Full(_) | mpsc::error::TrySendError::Closed(_),
-                )) = wake_loop.try_send(ServerEvent::HostShutdownWake);
+                // The monitor updates the request flag first. The loop reads
+                // that state before its next internal-event batch.
+                wake_loop.notify_one();
             },
         ));
     }
@@ -244,7 +236,7 @@ impl HeadlessServer {
     /// Applies warning and cancellation notifications from logind to the
     /// lifecycle state machine. A warning checkpoints before freezing saves;
     /// cancellation thaws and marks the live session dirty again.
-    pub(super) fn sync_host_shutdown_freeze(&mut self, _now: Instant) {
+    pub(super) fn sync_host_shutdown_freeze(&mut self) {
         if self.lifecycle.phase() == ShutdownPhase::Stopping {
             return;
         }

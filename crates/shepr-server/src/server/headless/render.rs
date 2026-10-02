@@ -89,7 +89,7 @@ pub(super) struct SurfaceBoundary {
 impl Default for SurfaceBoundary {
     fn default() -> Self {
         Self {
-            encode: crate::server::outbox::frame_server_message,
+            encode: shepr_protocol::encode_message,
             render: render_client_shell_pane_surface,
         }
     }

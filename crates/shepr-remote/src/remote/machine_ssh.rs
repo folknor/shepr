@@ -221,22 +221,19 @@ fn ensure_managed_ssh_config(
 #[derive(Clone)]
 struct StoredSetupError {
     kind: io::ErrorKind,
-    message: String,
+    diagnostic: crate::SshFailureDiagnostic,
 }
 
 impl StoredSetupError {
     fn capture(error: &io::Error) -> Self {
         Self {
             kind: error.kind(),
-            message: error.to_string(),
+            diagnostic: crate::SshFailureDiagnostic::from_error(error),
         }
     }
 
     fn to_io_error(&self) -> io::Error {
-        crate::local_setup_error(
-            "machine SSH setup failed",
-            io::Error::new(self.kind, self.message.clone()),
-        )
+        io::Error::new(self.kind, self.diagnostic.clone())
     }
 }
 

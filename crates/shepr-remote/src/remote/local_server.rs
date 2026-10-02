@@ -78,6 +78,9 @@ pub fn ensure_running(
             return accept_running(paths, status, build_check);
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
+        Probed::Starting | Probed::Stopping if !paths.server_address().is_runtime_address() => {
+            return wait_for_overridden_server(paths, timeout, build_check);
+        }
         Probed::NoServer | Probed::Starting | Probed::Stopping => {}
     }
     require_own_runtime_address(paths)?;
@@ -165,9 +168,9 @@ fn probe_server_at(socket: &Path) -> io::Result<Probed> {
     Ok(
         match shepr_api::read_server_presence_at(socket, STATUS_REQUEST_TIMEOUT)? {
             ServerPresence::Gone => Probed::NoServer,
-            ServerPresence::Starting => Probed::Starting,
+            ServerPresence::Starting(_) => Probed::Starting,
             ServerPresence::Running(status) => Probed::Running(status),
-            ServerPresence::Stopping => Probed::Stopping,
+            ServerPresence::Stopping(_) => Probed::Stopping,
             ServerPresence::Unresponsive => Probed::Unresponsive,
         },
     )
@@ -206,6 +209,34 @@ fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) 
             timeout.as_millis()
         ),
     )
+}
+
+/// An override names an existing server and can never launch one. If that
+/// server is transitioning, wait for it to become attachable or disappear
+/// before reporting the stable result.
+fn wait_for_overridden_server(
+    paths: &shepr_config::AppPaths,
+    timeout: Duration,
+    build_check: BuildCheck,
+) -> io::Result<RuntimeStatus> {
+    // clock-io-ok: the launch budget measures real elapsed waiting on the socket
+    let deadline = Instant::now() + timeout;
+    loop {
+        match probe_server(paths)? {
+            Probed::Running(status) => return accept_running(paths, status, build_check),
+            Probed::NoServer => return Err(no_server_at_override(paths)),
+            Probed::Unresponsive => return Err(unresponsive_error(paths)),
+            Probed::Starting | Probed::Stopping => {
+                // clock-io-ok: measures the real time left of the socket wait.
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(server_transition_timeout(paths, timeout));
+                }
+                // clock-io-ok: waits for a real socket transition.
+                std::thread::sleep(SOCKET_POLL_INTERVAL.min(remaining));
+            }
+        }
+    }
 }
 
 fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
@@ -262,15 +293,20 @@ fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> io::Result<()>
     if address.is_runtime_address() {
         return Ok(());
     }
+    Err(no_server_at_override(paths))
+}
+
+fn no_server_at_override(paths: &shepr_config::AppPaths) -> io::Error {
+    let address = paths.server_address();
     let selected_by = EnvVar::SheprSocketPath;
-    Err(io::Error::new(
+    io::Error::new(
         io::ErrorKind::NotFound,
         format!(
             "no shepr server is running at {}, which {selected_by} selects. A client starts a server only for its own runtime address ({}); a socket override names a server that is already running.",
             address.socket().display(),
             paths.runtime_dir().display()
         ),
-    ))
+    )
 }
 
 // ---------------------------------------------------------------------------

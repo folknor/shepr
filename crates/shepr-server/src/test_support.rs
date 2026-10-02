@@ -346,18 +346,6 @@ impl TerminalStateFixture for TerminalState {
     }
 }
 
-pub(crate) trait GitStatusRefreshDemandFixture {
-    /// Every Git status field.
-    const ALL: Self;
-}
-
-impl GitStatusRefreshDemandFixture for shepr_mux::git::GitStatusRefreshDemand {
-    const ALL: Self = Self {
-        branch: true,
-        ahead_behind: true,
-    };
-}
-
 /// A canonical workspace ID that no live test workspace holds, for public
 /// pane IDs a pane kept from a workspace it has left. Workspace IDs come from
 /// a process-wide counter that tests never drive to the top of the number

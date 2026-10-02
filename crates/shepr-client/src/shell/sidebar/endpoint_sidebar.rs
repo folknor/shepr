@@ -286,9 +286,11 @@ pub(super) fn render_expanded(
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
             rows.extend(
-                super::sidebar::workspace_entries(snapshot)
-                    .into_iter()
-                    .map(|entry| Row::Workspace {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(entry, _)| Row::Workspace {
                         endpoint: endpoint_index,
                         entry,
                     }),

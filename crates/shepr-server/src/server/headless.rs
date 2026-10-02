@@ -139,7 +139,11 @@ pub struct HeadlessServer {
     host_shutdown_monitor: Option<lifecycle::HostShutdownMonitor>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
-    /// Sender for server events (cloned for each client thread).
+    /// Sender for server events; production hands its clone to the client
+    /// transport handler, tests inject events through this one.
+    // Only tests read it; production keeps the sender alive so the event
+    // channel cannot close while the handler still holds clones.
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the sender"))]
     server_event_tx: mpsc::Sender<ServerEvent>,
     /// Bounded requests received by the JSON API listener.
     api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
@@ -156,8 +160,9 @@ pub struct HeadlessServer {
     /// Set only while a ready held exit is routed back through the forwarding
     /// handler, which then skips its initial App preparation step.
     replaying_checkpointed_pane_exit: Option<u64>,
-    /// Raised by a client outbox when it closes, and when a control lane a
-    /// held reply waits on makes room; wakes an idle loop to reap or release.
+    /// Raised by client outboxes on closure or control-lane progress, client
+    /// writers after a render drains, and the host shutdown monitor. Wakes an
+    /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
     outbox_wake: Arc<tokio::sync::Notify>,
     worker_tx: tokio::sync::mpsc::UnboundedSender<worker::WorkerCompletion>,
     worker_rx: tokio::sync::mpsc::UnboundedReceiver<worker::WorkerCompletion>,
@@ -295,11 +300,7 @@ impl HeadlessServer {
 
             // Every pass through the loop starts with a fresh clock sample, so
             // the event and API handlers below read this iteration's time.
-            let iteration_start = self.refresh_app_clock();
-
-            // A host shutdown warning checkpoints the session and freezes
-            // saving; it does not stop the server (see `sync_host_shutdown_freeze`).
-            self.sync_host_shutdown_freeze(iteration_start);
+            self.refresh_app_clock();
 
             // Check if we should start shutting down. The drain applies queued
             // state and agent-session reports so the final save carries them;
@@ -455,6 +456,7 @@ impl HeadlessServer {
                 self.initiate_shutdown();
                 match event {
                     LoopEvent::Internal(ev) => {
+                        self.sync_host_shutdown_freeze();
                         self.handle_internal_event_with_forwarding(ev);
                     }
                     LoopEvent::ServerEvent(ServerEvent::ClientShellConnected {
@@ -478,6 +480,7 @@ impl HeadlessServer {
             match event {
                 LoopEvent::Timer => {}
                 LoopEvent::Internal(ev) => {
+                    self.sync_host_shutdown_freeze();
                     if self.handle_internal_event_with_forwarding(ev) {
                         self.mark_view_changed();
                     }
@@ -548,6 +551,8 @@ impl HeadlessServer {
             // A `server.stop` from the API sets the latch on another thread;
             // this is what wakes an idle loop to act on it.
             () = stop_signal.notified() => LoopEvent::Timer,
+            // Outbox progress, render completion, and host shutdown all wake
+            // the loop through this coalescing state-change notification.
             () = self.outbox_wake.notified() => LoopEvent::Timer,
             // The channel closes only if the API listener thread and every
             // connection worker holding a sender died, which also means the
@@ -1015,10 +1020,6 @@ impl HeadlessServer {
     /// Handles a server event, then reports any change in which panes hold
     /// terminal focus. Each arm records shared or client-local view changes.
     fn handle_server_event(&mut self, ev: ServerEvent) {
-        // Writer readiness only wakes the loop; its next plan derives surface debt.
-        if matches!(ev, ServerEvent::ClientWriterDrained) {
-            return;
-        }
         if matches!(
             &ev,
             ServerEvent::ClientDetach { client_id }
@@ -1027,9 +1028,8 @@ impl HeadlessServer {
         ) {
             return;
         }
-        // Pane input and writer drains, the per-keystroke and per-frame
-        // events, move no client's view and no outer focus. Failed sends close
-        // the outbox; registry changes wait for the next iteration's reap.
+        // Pane input events move no client's view or outer focus. Failed sends
+        // close the outbox; registry changes wait for the next iteration's reap.
         let may_move_focus = matches!(
             ev,
             ServerEvent::ClientShellConnected { .. }
@@ -1150,17 +1150,16 @@ impl HeadlessServer {
                     self.mark_view_changed();
                 }
             }
-            ServerEvent::ClientPasteRejected {
-                client_id,
-                size,
-                max,
-            } => {
+            ServerEvent::ClientPasteRejected { client_id, size } => {
                 // Every rejection is a separate user action, so each one is
                 // reported.
                 self.send_to_client(
                     client_id,
                     &ServerMessage::ClientShellError {
-                        kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
+                        kind: shepr_protocol::NoticeKind::PasteRejected {
+                            size,
+                            max: shepr_protocol::MAX_INPUT_PAYLOAD,
+                        },
                     },
                 );
             }
@@ -1369,12 +1368,6 @@ impl HeadlessServer {
                 info!(?client_id, "client disconnected");
                 self.mark_view_changed();
             }
-            // `handle_server_event` consumes writer-drain signals before
-            // application dispatch; retain that arm for enum exhaustiveness.
-            // The host-shutdown monitor updates its flag before sending its
-            // wake. The loop checks that flag to checkpoint and freeze saves;
-            // a host warning does not stop the server.
-            ServerEvent::ClientWriterDrained | ServerEvent::HostShutdownWake => {}
         }
     }
 
@@ -1426,7 +1419,7 @@ impl HeadlessServer {
             self.app.start_background_session_save();
         }
 
-        self.sync_host_shutdown_freeze(now);
+        let mut synced_host_shutdown_for_exits = false;
         for _ in 0..self.pending_checkpointed_pane_exits.len() {
             let Some(pending) = self.pending_checkpointed_pane_exits.pop_front() else {
                 break;
@@ -1435,6 +1428,12 @@ impl HeadlessServer {
                 .app
                 .pane_exit_checkpoint_generation_settled(pending.checkpoint_generation)
             {
+                if !synced_host_shutdown_for_exits {
+                    // Check immediately before replaying this separate
+                    // internal-event batch, after the main queue was drained.
+                    self.sync_host_shutdown_freeze();
+                    synced_host_shutdown_for_exits = true;
+                }
                 self.replaying_checkpointed_pane_exit = Some(pending.checkpoint_generation);
                 changed |= self.handle_internal_event_with_forwarding(pending.event);
             } else {

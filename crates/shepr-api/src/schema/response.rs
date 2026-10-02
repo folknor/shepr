@@ -16,14 +16,14 @@ pub struct ErrorResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
-    pub code: String,
+    pub code: crate::error::ApiErrorCode,
     pub message: String,
 }
 
 impl ErrorBody {
     pub fn new(code: &crate::error::ApiErrorCode, message: impl Into<String>) -> Self {
         Self {
-            code: code.as_str().to_owned(),
+            code: code.clone(),
             message: message.into(),
         }
     }

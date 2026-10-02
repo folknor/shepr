@@ -10,8 +10,8 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 /// named boot to stop answering. It exits with
 /// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answers
 /// the stop request or appears while the named boot shuts down, or
-/// `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when no server was left to
-/// stop.
+/// `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when the observed server was
+/// already gone by the time its stop request ran.
 pub fn stop_remote_server(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
@@ -29,13 +29,10 @@ pub fn stop_remote_server(
     if output.status.success() {
         return Ok(RemoteStop::Stopped);
     }
-    if matches!(
-        output.status.code(),
-        Some(
-            shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
-                | shepr_api::server_stop::NO_SERVER_EXIT_CODE
-        )
-    ) {
+    if output.status.code() == Some(shepr_api::server_stop::NO_SERVER_EXIT_CODE) {
+        return Ok(RemoteStop::NoServer);
+    }
+    if output.status.code() == Some(shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE) {
         return Ok(RemoteStop::BootChanged);
     }
     Err(command_failed("remote server stop failed", &output))
@@ -46,8 +43,9 @@ pub fn stop_remote_server(
 pub enum RemoteStop {
     /// The observed instance stopped answering and no replacement was found.
     Stopped,
-    /// A different boot answered, or none answered any more, while stopping the
-    /// instance that had been observed.
+    /// No server was present when the stop request ran.
+    NoServer,
+    /// A different boot answered while stopping the instance that had been observed.
     BootChanged,
 }
 
@@ -67,7 +65,7 @@ impl RemoteExecutable {
 
     pub(super) fn status_client_command(&self) -> String {
         let args = RemoteCliCommand::ClientStatus.args();
-        format!("test -x {} && {}", self.quoted(), self.command(&args))
+        self.command(&args)
     }
 
     pub(super) fn bridge_command(&self) -> String {

@@ -21,28 +21,6 @@ file's.
 
 ## Crate boundaries and dependency edges
 
-## STR-001 - Let shepr-pty depend on shepr-platform, and give the pane child one handle
-
-`brokkr.toml`'s `shepr-pty-layer` allows only `bytes`, `libc`, `shepr-core` and
-`tracing`, so pty reimplements platform plumbing (nonblocking fds, poll
-deadlines, peer credentials, accept errno triage) and mux glues one child
-together from two crates: `PtySetup::start` calls `spawn_pty`, then
-`ProcessHandle::open(pid)`, kills through `PaneChild::kill` (plain `kill(pid)`)
-on failure, and builds `ChildLiveness::launching(pid, leader)`. `PaneChild`
-reaps with `waitpid`, `ProcessHandle` probes and reaps with the pidfd, and
-`PaneChild::mark_reaped` keeps them in step by hand. Proposal: pty depends on
-platform; `spawn_pty` opens the pidfd right after the fork (or uses
-`clone3(CLONE_PIDFD)`) and `PaneChild` owns the `ProcessHandle`, so kill, wait
-and "was it reaped" have one owner; the launch router uses platform's accept
-helper and peer check; pty's `fd.rs` keeps only wake pipe and winsize code;
-`ChildLiveness` shrinks to wrapping the child's handle. Several consolidations
-(accept errors, poll deadlines, HOME) exist only because of this wall.
-pty internals to tidy on the way: `launch.rs` hosts `c_string` (used by
-`command.rs`) and `passwd_home`, both launch-spec building; `ReaderExit`'s
-severity is its declaration order (`derive(Ord)` plus `max`), so reordering
-variants changes behaviour; an explicit `severity()` would show it.
-(foundation)
-
 ## STR-002 - Platform hosts policy that is not platform
 
 - `ChildExitReason` and its checkpoint policy belong to mux (see the pane exit

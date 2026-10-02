@@ -4,35 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::limits::{MIN_POLL_TIMEOUT_MS, WAKE_PIPE_READ_BUFFER_BYTES};
+use crate::limits::WAKE_PIPE_READ_BUFFER_BYTES;
 
-pub(crate) fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
-    // SAFETY: F_GETFD/F_SETFD take and return integers and touch no memory;
-    // a bad fd fails with EBADF.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
+pub(crate) use shepr_platform::set_cloexec;
 
-pub(crate) fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
-    // SAFETY: F_GETFL/F_SETFL take and return integers and touch no memory;
-    // a bad fd fails with EBADF.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
+pub(crate) use shepr_platform::set_nonblocking;
 
 #[derive(Clone)]
 pub(crate) struct WakeWriter {
@@ -169,16 +145,11 @@ pub(crate) fn poll_pty_and_wake(
                     continue;
                 };
                 // clock-io-ok: the interrupted poll consumed real time.
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                let Some(timeout) = shepr_platform::poll_timeout_until(deadline, Instant::now())
+                else {
                     return Ok(PtyWakeReadiness::default());
-                }
-                remaining_timeout_ms = i32::try_from(
-                    remaining
-                        .as_millis()
-                        .clamp(MIN_POLL_TIMEOUT_MS, i32::MAX as u128),
-                )
-                .unwrap_or(i32::MAX);
+                };
+                remaining_timeout_ms = timeout;
                 continue;
             }
             return Err(err);

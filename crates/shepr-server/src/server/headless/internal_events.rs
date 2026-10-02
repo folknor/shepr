@@ -24,10 +24,6 @@ impl HeadlessServer {
             self.replaying_checkpointed_pane_exit = None;
             return false;
         };
-        // A host shutdown warning that arrived since the loop last looked is
-        // answered with its checkpoint before this event can change the
-        // layout; after that, saving is frozen and events apply normally.
-        self.sync_host_shutdown_freeze(self.app.clock.now);
         // After a termination signal, the panes are most likely dying from the
         // same teardown. Removing them would save a session with panes missing.
         // The checkpoint taken before a signal-killed pane is removed does not
@@ -133,7 +129,6 @@ impl HeadlessServer {
     /// `ServerMessage::Clipboard` to the clients viewing the writing pane.
     pub(super) fn drain_internal_events_with_forwarding(&mut self) -> bool {
         self.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_DRAIN_LIMIT)
-            .1
     }
 
     pub(super) fn drain_all_internal_events_with_forwarding(&mut self) -> bool {
@@ -142,22 +137,19 @@ impl HeadlessServer {
         // those belong to the next loop turn so they cannot starve the request.
         let queued_on_entry = self.app.event_rx.len();
         self.drain_internal_events_with_forwarding_up_to(queued_on_entry)
-            .1
     }
 
-    pub(super) fn drain_internal_events_with_forwarding_up_to(
-        &mut self,
-        limit: usize,
-    ) -> (bool, bool) {
-        let mut had_event = false;
+    pub(super) fn drain_internal_events_with_forwarding_up_to(&mut self, limit: usize) -> bool {
+        // Check once per batch before applying any event in it. The monitor
+        // wakes the loop when this flag changes, so a later batch observes it.
+        self.sync_host_shutdown_freeze();
         let mut changed = false;
         for _ in 0..limit {
             let Ok(ev) = self.app.event_rx.try_recv() else {
                 break;
             };
-            had_event = true;
             changed |= self.handle_internal_event_with_forwarding(ev);
         }
-        (had_event, changed)
+        changed
     }
 }

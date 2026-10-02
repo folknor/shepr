@@ -38,10 +38,10 @@ type ReaderExitCallback = Box<dyn FnOnce(ReaderExit) + Send + 'static>;
 /// Must be cheap (an atomic load): the actor asks on every loop iteration.
 type CoreBrokenCheck = Box<dyn Fn() -> bool + Send + 'static>;
 
-/// Why the actor's IO loop ended. Ordered by severity: when the loop sees
+/// Why the actor's IO loop ended. Ranked by explicit severity: when the loop sees
 /// more than one ending (a write failure, then EIO while draining the
 /// child's last output), the most severe one is reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderExit {
     /// The owner asked the actor to stop; the pane is already being torn down.
     ShutdownRequested,
@@ -59,6 +59,17 @@ pub enum ReaderExit {
     /// the master fd is closed, but the child may outlive the SIGHUP, so the
     /// owner must be told the pane is dead.
     Panicked,
+}
+
+impl ReaderExit {
+    fn severity(self) -> u8 {
+        match self {
+            Self::ShutdownRequested => 0,
+            Self::Closed => 1,
+            Self::IoFailed => 2,
+            Self::Panicked => 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,7 +561,9 @@ fn exit_for_pty_error(error: &std::io::Error) -> ReaderExit {
 
 impl PtyIoActorRunner {
     fn raise_exit(&mut self, exit: ReaderExit) {
-        self.exit_reason = self.exit_reason.max(exit);
+        if exit.severity() > self.exit_reason.severity() {
+            self.exit_reason = exit;
+        }
     }
 
     /// Runs the IO loop, then closes the master and the wake pipe before

@@ -317,7 +317,7 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
         Some(UNKNOWN_MANIFEST_FALLBACK)
     );
     let pi = bundled_loaded(Agent::Pi);
-    let other = fallback_explain(Some(Agent::Pi), Some((&pi, Vec::new())));
+    let other = fallback_explain(Agent::Pi, Some((&pi, Vec::new())));
     assert_eq!(other.state, AgentState::Idle);
     assert_eq!(
         other.fallback_reason.as_deref(),
@@ -333,7 +333,7 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
         let detection = detect_with_manifest(screen_input(" \n"), None);
         assert_eq!(detection.state, AgentState::Unknown);
         assert!(!detection.visible_idle);
-        let explain = fallback_explain(Some(agent), None);
+        let explain = fallback_explain(agent, None);
         assert_eq!(explain.state, AgentState::Unknown);
         assert_eq!(
             explain.fallback_reason.as_deref(),

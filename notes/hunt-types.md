@@ -1584,7 +1584,7 @@ mux-state.
   `frozen_session_policy` and `frozen_warning_generation`.
 - `GitRefreshScheduler`'s `git_refresh_in_flight`, `due_after_in_flight`,
   `git_identity_refresh_requested` and `last_git_remote_status_refresh = now -
-  INTERVAL` as the due-now sentinel.
+  the refresh interval` as the due-now sentinel.
 - `App::create_default_workspace`'s retry kept as two `Option`s.
 - `PaneSurfacePatch.surface_revision` and `PaneSurfaceFrame.surface_revision`
   set to `SurfaceRevision::new(0)` by the producer and overwritten by

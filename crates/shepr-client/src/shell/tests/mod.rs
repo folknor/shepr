@@ -21,6 +21,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             new_workspace_cwd: "/repo".into(),
             number: 1,
             label: "client-shell".into(),
+            // This protocol-owned metadata is present in the fixture but not rendered by the shell.
             custom_label: false,
             branch: Some("main".into()),
             git_ahead_behind: None,

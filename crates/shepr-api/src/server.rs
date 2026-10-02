@@ -638,7 +638,10 @@ mod tests {
         let response: ErrorResponse =
             serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
         assert_eq!(response.id, "busy-request");
-        assert_eq!(response.error.code, "endpoint_busy");
+        assert_eq!(
+            response.error.code,
+            crate::error::ApiErrorCode::EndpointBusy
+        );
         assert!(
             response
                 .error
@@ -1074,6 +1077,13 @@ mod tests {
                 r#"{"id":"first","id":"second","method":"ping","params":{}}"#,
                 "",
             ),
+            (
+                concat!(
+                    r#"{"id":"bad-boot","method":"server.stop_if_boot","params":{"#,
+                    r#""expected_boot_id":"old-boot"}}"#
+                ),
+                "bad-boot",
+            ),
             (r#"{"id":"truncated","method":"ping""#, ""),
             (r#"["not-an-object"]"#, ""),
         ];
@@ -1090,7 +1100,10 @@ mod tests {
             let response: ErrorResponse =
                 serde_json::from_str(&response).expect("test precondition");
             assert_eq!(response.id, expected_id, "{request}");
-            assert_eq!(response.error.code, "invalid_request");
+            assert_eq!(
+                response.error.code,
+                crate::error::ApiErrorCode::InvalidRequest
+            );
             assert!(response.error.message.starts_with("invalid request: "));
             assert!(
                 api_rx.try_recv().is_err(),

@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(response.id, "cli:detect:capture");
         assert_eq!(
             response.error.code,
-            shepr_api::error::ApiErrorCode::ServerNotRunning.as_str()
+            shepr_api::error::ApiErrorCode::ServerNotRunning
         );
         assert!(response.error.message.contains(&socket));
 

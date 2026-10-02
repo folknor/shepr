@@ -1,4 +1,4 @@
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use shepr_pty::backend::PaneChild;
@@ -179,20 +179,14 @@ async fn wait_for_child_exit(
         return wait_for_child_exit_blocking(child).await;
     }
 
-    match shepr_platform::reap_pidfd(async_pidfd.get_ref().as_fd()) {
-        Ok(status) => {
-            // waitid(P_PIDFD, WEXITED) reaped the child; record it so the
-            // handle never waits on a pid that may be reused.
-            if let Some(mut child) = child.take() {
-                child.mark_reaped(status);
-            }
-            Ok(status)
-        }
+    let Some(mut owned_child) = child.take() else {
+        return Err(std::io::Error::other("pane child was already reaped"));
+    };
+    match owned_child.wait_pidfd() {
+        Ok(status) => Ok(status),
         Err(err) => {
-            // Kernels may expose pidfd_open before waitid(P_PIDFD); the child
-            // is ready by now, so a blocking wait is only a short fallback.
             tracing::debug!(error = %err, "waitid on child pidfd failed; falling back to child wait");
-            wait_for_child_exit_blocking(child).await
+            wait_for_child_exit_blocking(UnreapedChild(Some(owned_child))).await
         }
     }
 }

@@ -1291,13 +1291,10 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "shepr-agent",
  "shepr-config",
- "shepr-core",
  "shepr-platform",
  "shepr-protocol",
  "shepr-test-support",
- "shepr-vt",
  "tokio",
  "tracing",
 ]
@@ -1411,7 +1408,6 @@ dependencies = [
  "shepr-core",
  "shepr-test-support",
  "shepr-vt",
- "tracing",
 ]
 
 [[package]]
@@ -1421,6 +1417,7 @@ dependencies = [
  "bytes",
  "libc",
  "shepr-core",
+ "shepr-platform",
  "shepr-test-support",
  "tracing",
 ]

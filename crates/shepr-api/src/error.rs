@@ -1,20 +1,47 @@
 use super::schema::{ErrorBody, ErrorResponse, ResponseResult, SuccessResponse};
 
 /// Stable error categories, with one source for enum variants and wire codes.
-/// Codes only go out (to the JSON socket and the CLI); nothing parses a wire
-/// code back into this enum.
 macro_rules! api_error_codes {
     ($($variant:ident => $wire:literal,)+) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum ApiErrorCode {
             $($variant,)+
+            /// A code introduced by a newer or different server build.
+            Unknown(String),
         }
 
         impl ApiErrorCode {
-            pub const fn as_str(self) -> &'static str {
+            pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $wire,)+
+                    Self::Unknown(value) => value,
                 }
+            }
+
+            fn from_wire(value: String) -> Self {
+                match value.as_str() {
+                    $($wire => Self::$variant,)+
+                    _ => Self::Unknown(value),
+                }
+            }
+        }
+
+        impl serde::Serialize for ApiErrorCode {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for ApiErrorCode {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+                Ok(Self::from_wire(value))
             }
         }
     };
@@ -159,6 +186,17 @@ mod tests {
         assert_eq!(
             error.into_body(),
             ErrorBody::new(&ApiErrorCode::PaneNotFound, "pane w1:p7 not found")
+        );
+    }
+
+    #[test]
+    fn unknown_wire_error_codes_are_preserved() {
+        let code: ApiErrorCode =
+            serde_json::from_str("\"new_server_error\"").expect("string error codes decode");
+        assert_eq!(code, ApiErrorCode::Unknown("new_server_error".into()));
+        assert_eq!(
+            serde_json::to_string(&code).expect("error codes encode as strings"),
+            "\"new_server_error\""
         );
     }
 }

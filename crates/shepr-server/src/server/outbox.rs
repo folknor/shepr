@@ -26,14 +26,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::Notify;
 use tracing::{debug, warn};
 
-/// Frames a message for the wire in one buffer; a payload past one frame
-/// goes out as several frames.
-pub(crate) fn frame_server_message(
-    message: &ServerMessage,
-) -> Result<Vec<u8>, shepr_protocol::FramingError> {
-    shepr_protocol::encode_message(message)
-}
-
 /// What happened to a message offered to a client.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Delivery {

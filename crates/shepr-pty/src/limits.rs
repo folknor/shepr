@@ -60,10 +60,6 @@ pub(crate) const ACTOR_INBOX_MAX_BYTES: usize = 256 * KIBIBYTE_BYTES;
 /// when many small writes consume little of the byte budget.
 pub(crate) const ACTOR_INBOX_MAX_ITEMS: usize = 1_024;
 
-/// Minimum positive poll timeout, in milliseconds, after rounding a deadline.
-/// A sub-millisecond remainder must not become a zero-time busy poll.
-pub(crate) const MIN_POLL_TIMEOUT_MS: u128 = 1;
-
 /// Maximum write operations one actor pump performs before polling again. The
 /// cap prevents continuous input from starving reads of child output.
 pub(crate) const MAX_WRITE_STEPS_PER_PUMP: usize = 64;

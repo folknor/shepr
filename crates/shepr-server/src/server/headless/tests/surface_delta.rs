@@ -140,8 +140,6 @@ async fn a_drained_slow_client_is_rendered_alone() {
         .last_pane_surface()
         .cloned();
     pair.render[1].recv().expect("slow first patch");
-    pair.server
-        .handle_server_event(ServerEvent::ClientWriterDrained);
     let report = pair.pass(false);
     assert_eq!(report.surface_renders, 1);
     assert_eq!(report.full, vec![ClientId::test_new(8)]);

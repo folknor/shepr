@@ -120,15 +120,11 @@ impl ClientShellState {
                         .snapshot
                         .as_deref()
                         .map_or_else(Vec::new, |snapshot| {
-                            render::workspace_entries(snapshot)
-                                .into_iter()
-                                .filter_map(|entry| {
-                                    snapshot.workspaces.get(entry).map(|workspace| {
-                                        (
-                                            endpoint.endpoint_id.clone(),
-                                            workspace.workspace_id.clone(),
-                                        )
-                                    })
+                            snapshot
+                                .workspaces
+                                .iter()
+                                .map(|workspace| {
+                                    (endpoint.endpoint_id.clone(), workspace.workspace_id.clone())
                                 })
                                 .collect()
                         })
@@ -165,9 +161,8 @@ impl ClientShellState {
             action,
             KeybindAction::PreviousAgent | KeybindAction::NextAgent | KeybindAction::FocusAgent(_)
         ) {
-            let agents = super::aggregate_navigation::online_agent_targets(
+            let agents = super::aggregate_navigation::displayed_agent_targets(
                 &self.endpoints,
-                &self.active_endpoint_id,
                 self.config.agent_panel_sort,
             );
             if agents.is_empty() {

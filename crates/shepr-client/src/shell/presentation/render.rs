@@ -8,8 +8,6 @@ pub(in crate::shell) mod sidebar;
 
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
-pub(super) use sidebar::workspace_entries;
-
 pub(in crate::shell) fn render_sidebar_background(
     buffer: &mut Buffer,
     area: Rect,

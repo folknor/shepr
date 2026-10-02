@@ -249,8 +249,8 @@ fn frame_text(frame: &FrameData) -> String {
 }
 
 #[test]
-fn frame_server_message_splits_payloads_over_the_frame_cap() {
-    let small = crate::server::outbox::frame_server_message(&ServerMessage::ClientShellError {
+fn server_message_encoding_splits_payloads_over_the_frame_cap() {
+    let small = shepr_protocol::encode_message(&ServerMessage::ClientShellError {
         kind: shepr_protocol::NoticeKind::PaneInputDropped {
             pane_id: shepr_protocol::PublicPaneId::new(
                 &crate::test_support::test_workspace_id("w1"),
@@ -268,10 +268,8 @@ fn frame_server_message_splits_payloads_over_the_frame_cap() {
     // Clipboard data past one frame crosses as a continued frame and a final
     // one, and reads back whole.
     let data = "x".repeat(MAX_FRAME_SIZE + 1);
-    let large = crate::server::outbox::frame_server_message(&ServerMessage::Clipboard {
-        data: data.clone(),
-    })
-    .expect("large message frames");
+    let large = shepr_protocol::encode_message(&ServerMessage::Clipboard { data: data.clone() })
+        .expect("large message frames");
     let first_prefix = u32::from_le_bytes(large[..4].try_into().expect("test precondition"));
     assert_ne!(first_prefix & (1 << 31), 0, "the first frame is continued");
     assert!(matches!(
@@ -488,7 +486,6 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
             .try_send(ServerEvent::ClientPasteRejected {
                 client_id: ClientId::test_new(42),
                 size: index + 1,
-                max: 1024,
             })
             .expect("test precondition");
     }
@@ -507,7 +504,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
             panic!("expected paste rejection notice");
         };
         assert_eq!(size, expected_size);
-        assert_eq!(max, 1024);
+        assert_eq!(max, shepr_protocol::MAX_INPUT_PAYLOAD);
     }
 
     assert!(!server.test_drain_server_events());
@@ -523,7 +520,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
             panic!("expected paste rejection notice");
         };
         assert_eq!(size, expected_size);
-        assert_eq!(max, 1024);
+        assert_eq!(max, shepr_protocol::MAX_INPUT_PAYLOAD);
     }
     assert_eq!(server.server_event_rx.len(), 0);
     shutdown_test_runtimes(&mut server);
@@ -791,9 +788,7 @@ async fn a_dequeued_new_client_waits_for_queued_commands_before_shutdown() {
 #[test]
 fn api_request_selected_during_shutdown_is_answered() {
     let mut server = test_headless_server();
-    assert!(server.lifecycle.shutdown_error().is_none());
     server.initiate_shutdown();
-    assert!(server.lifecycle.shutdown_error().is_some());
     let (request, response_rx) = shutdown_test_request("selected");
     server.reject_api_request_for_shutdown(&request);
     assert_server_unavailable(&response_rx, "selected");
@@ -2463,11 +2458,9 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
                 workspace_id: workspace_state_id,
                 resolved_identity_cwd: cwd.clone(),
                 status_cache_key: cwd,
-                demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
                 auto_label: "focus-reporting".into(),
                 branch: Some("feature".into()),
                 ahead_behind: None,
-                space: None,
             }],
             cache_updates: Vec::new(),
         })
@@ -3254,7 +3247,6 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
         slow_render.recv("slow queued first patch"),
         DecodedServerMessage::PaneSurfacePatch(_)
     ));
-    assert!(!server.test_handle_server_event(ServerEvent::ClientWriterDrained));
     server.render_now();
     assert!(matches!(
         slow_render.recv("slow full recovery surface"),
@@ -3303,7 +3295,6 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     ));
 
     let _ = slow_render.recv().expect("slow queued initial surface");
-    assert!(!server.test_handle_server_event(ServerEvent::ClientWriterDrained));
     server.render_now();
     assert!(matches!(
         read_server_message(slow_render.recv().expect("slow full recovery surface")),
@@ -4810,7 +4801,6 @@ async fn every_rejected_paste_is_reported_to_the_client_shell() {
         server.test_handle_server_event(ServerEvent::ClientPasteRejected {
             client_id: ClientId::test_new(7),
             size: 2_000_000,
-            max: 1_048_576,
         });
     }
     let pastes = notices();
@@ -4868,11 +4858,9 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "cached".into(),
             branch: None,
             ahead_behind: None,
-            space: None,
         }],
         cache_updates: Vec::new(),
     });
@@ -4894,11 +4882,9 @@ fn changed_git_refresh_requests_headless_render() {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: Some("changed".into()),
             ahead_behind: None,
-            space: None,
         }],
         cache_updates: Vec::new(),
     });
@@ -4920,7 +4906,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .store(true, Ordering::Release);
     // The test policy never saves, so the checkpoint writes nothing and the
     // real session file is untouched.
-    server.sync_host_shutdown_freeze(Instant::now());
+    server.sync_host_shutdown_freeze();
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     assert_eq!(server.lifecycle.frozen_session_policy(), Some(false));
     // Pretend saving was on before the warning, so the thaw has to restore it.
@@ -4945,7 +4931,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .lifecycle
         .host_shutdown_request_flag()
         .store(false, Ordering::Release);
-    server.sync_host_shutdown_freeze(Instant::now());
+    server.sync_host_shutdown_freeze();
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
     assert!(server.app.policy.persists_session());
     assert!(server.app.state.session_dirty);
@@ -5029,21 +5015,20 @@ async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
         .lifecycle
         .host_shutdown_request_flag()
         .store(true, Ordering::Release);
-    let warned_at = Instant::now();
-    server.sync_host_shutdown_freeze(warned_at);
+    server.sync_host_shutdown_freeze();
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
 
-    server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(30));
+    server.sync_host_shutdown_freeze();
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     assert!(server.lifecycle.host_shutdown_requested());
 
-    server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(60));
+    server.sync_host_shutdown_freeze();
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     server
         .lifecycle
         .host_shutdown_request_flag()
         .store(false, Ordering::Release);
-    server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(61));
+    server.sync_host_shutdown_freeze();
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
     assert!(!server.lifecycle.host_shutdown_requested());
     // No monitor ran before the warning, so none was started by the thaw.
@@ -5075,9 +5060,7 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     server.lifecycle.stop_signal().request();
 
     // The quit-path drain still consumes the queue ...
-    let (had_event, _) =
-        server.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_CHANNEL_CAPACITY);
-    assert!(had_event);
+    server.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_CHANNEL_CAPACITY);
     assert!(server.app.event_rx.try_recv().is_err());
     // ... but the pane stays in the layout the final save captures.
     assert!(server.app.find_pane(pane_id).is_some());
@@ -6193,27 +6176,6 @@ async fn unchanged_internal_events_leave_projection_and_sources_clean() {
     assert_eq!(server.app.state.shell_projection_revision, before);
     assert!(!server.immediate_pty_sources_dirty);
     assert!(!server.host_input_modes_dirty);
-}
-
-#[tokio::test]
-async fn writer_readiness_does_not_invalidate_application_or_input_sources() {
-    let mut server = test_headless_server();
-    install_shared_view_test_runtime(&mut server);
-    let (_control, _render) = connect_matching_test_shell(&mut server, 7);
-    server
-        .clients
-        .get_mut(&ClientId::test_new(7))
-        .expect("client")
-        .render_state
-        .owe();
-    server.immediate_pty_sources_dirty = false;
-    server.host_input_modes_dirty = false;
-    let before = server.app.state.shell_projection_revision;
-    assert!(!server.test_handle_server_event(ServerEvent::ClientWriterDrained));
-    assert_eq!(server.app.state.shell_projection_revision, before);
-    assert!(!server.immediate_pty_sources_dirty);
-    assert!(!server.host_input_modes_dirty);
-    shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]

@@ -39,8 +39,8 @@ pub(crate) struct Outcome {
 }
 
 use crate::limits::{
-    DEFAULT_WORKSPACE_RETRY_MAX, DEFAULT_WORKSPACE_RETRY_MIN, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
-    GIT_REPO_DISCOVERY_REFRESH_INTERVAL, PENDING_AGENT_RESUME_THEME_WAIT,
+    DEFAULT_WORKSPACE_RETRY_MAX, DEFAULT_WORKSPACE_RETRY_MIN, GIT_REPO_DISCOVERY_REFRESH_INTERVAL,
+    PENDING_AGENT_RESUME_THEME_WAIT,
 };
 
 use tokio::sync::{Notify, mpsc};
@@ -293,10 +293,9 @@ impl App {
 
         state.set_bookmark_index(active);
         state.terminals = restored_terminals;
-        // Restored workspaces get their Git identity (label, branch, space)
+        // Restored workspaces get their Git identity (label and status)
         // from the first background Git refresh, not from a synchronous walk
-        // here: the refresh is due immediately (see
-        // `last_git_remote_status_refresh` below) and discovers every
+        // here. The scheduler starts due immediately and discovers every
         // workspace whose resolved cwd differs from its cached identity.
 
         let mut app = Self {
@@ -592,7 +591,7 @@ mod tests {
         let mut app = test_app();
         app.git_refresh.git_refresh_in_flight = true;
         let previous_refresh = Instant::now() - Duration::from_secs(10);
-        app.git_refresh.last_git_remote_status_refresh = previous_refresh;
+        app.git_refresh.next_git_remote_status_refresh = previous_refresh;
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
@@ -600,7 +599,7 @@ mod tests {
         });
 
         assert!(!app.git_refresh.git_refresh_in_flight);
-        assert!(app.git_refresh.last_git_remote_status_refresh > previous_refresh);
+        assert!(app.git_refresh.next_git_remote_status_refresh > previous_refresh);
     }
 
     #[test]
@@ -618,14 +617,12 @@ mod tests {
                 workspace_id,
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
                 status_cache_key: resolved_identity_cwd,
-                demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("render-dirty-test".into()),
                 ahead_behind: Some(shepr_mux::git::AheadBehind {
                     ahead: 1,
                     behind: 0,
                 }),
-                space: None,
             }],
             cache_updates: Vec::new(),
         });

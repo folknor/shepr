@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-use shepr_api::client::ApiClientError;
-use shepr_api::schema::{ClientStatusJson, ServerStatusJson};
+use shepr_api::schema::{ClientStatusJson, ServerPresenceJson, ServerStatusJson};
+use shepr_api::{RuntimeStatus, ServerPresence};
 use shepr_remote::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_flag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,15 +47,7 @@ pub(super) fn run_status_command(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ServerRuntimeStatus {
-    Running {
-        version: Option<String>,
-        build_id: String,
-        boot_id: String,
-    },
-    NotRunning,
-}
+type ServerRuntimeStatus = ServerPresence;
 
 fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
@@ -142,48 +134,53 @@ fn print_server_status_body(
     server: &ServerRuntimeStatus,
     indent: &str,
 ) {
-    match server {
-        ServerRuntimeStatus::Running {
-            version,
-            build_id,
-            boot_id,
-        } => {
-            println!("{indent}status: running");
-            println!("{indent}version: {}", option_label(version.as_deref()));
-            println!("{indent}build_id: {build_id}");
-            println!("{indent}boot_id: {boot_id}");
-            println!(
-                "{indent}build_compatible: {}",
-                build_compatible_label(server)
-            );
-            println!("{indent}socket: {}", super::target::socket_label(paths));
-        }
-        ServerRuntimeStatus::NotRunning => {
-            println!("{indent}status: not running");
-            println!("{indent}socket: {}", super::target::socket_label(paths));
-        }
+    let label = match server {
+        ServerPresence::Gone => "not running",
+        ServerPresence::Starting(_) => "starting",
+        ServerPresence::Running(_) => "running",
+        ServerPresence::Stopping(_) => "stopping",
+        ServerPresence::Unresponsive => "unresponsive",
+    };
+    println!("{indent}status: {label}");
+    if let Some(status) = answered_status(server) {
+        print_runtime_identity(status, indent);
     }
+    if !matches!(server, ServerPresence::Gone) {
+        println!(
+            "{indent}build_compatible: {}",
+            build_compatible_label(server)
+        );
+    }
+    println!("{indent}socket: {}", super::target::socket_label(paths));
+}
+
+/// The identity a server answered with: present for starting, running and
+/// stopping servers, absent for a gone or unresponsive one.
+fn answered_status(server: &ServerRuntimeStatus) -> Option<&RuntimeStatus> {
+    match server {
+        ServerPresence::Starting(status)
+        | ServerPresence::Running(status)
+        | ServerPresence::Stopping(status) => Some(status),
+        ServerPresence::Gone | ServerPresence::Unresponsive => None,
+    }
+}
+
+fn print_runtime_identity(status: &RuntimeStatus, indent: &str) {
+    println!(
+        "{indent}version: {}",
+        option_label(status.version.as_deref())
+    );
+    println!("{indent}build_id: {}", status.build_id);
+    println!("{indent}boot_id: {}", status.boot_id);
 }
 
 fn read_server_runtime_status(
     paths: &super::target::CliContext,
 ) -> super::CliResult<ServerRuntimeStatus> {
-    let client = super::target::api_client(paths);
-    match client.status() {
-        Ok(status) => Ok(ServerRuntimeStatus::Running {
-            version: status.version,
-            build_id: status.build_id,
-            boot_id: status.boot_id,
-        }),
-        Err(ApiClientError::Io(error)) => {
-            match super::server_not_running_error(&client.socket_path()) {
-                Ok(true) => Ok(ServerRuntimeStatus::NotRunning),
-                Ok(false) => Err(error.into()),
-                Err(probe_error) => Err(probe_error),
-            }
-        }
-        Err(err) => Err(super::api_client_error_to_io(err).into()),
-    }
+    Ok(shepr_api::read_server_presence_at(
+        paths.server_address().socket(),
+        crate::limits::STATUS_ANSWER_TIMEOUT,
+    )?)
 }
 
 fn option_label(value: Option<&str>) -> &str {
@@ -191,10 +188,10 @@ fn option_label(value: Option<&str>) -> &str {
 }
 
 fn restart_needed_label(server: &ServerRuntimeStatus) -> &'static str {
-    if restart_needed_bool(server) {
-        "yes"
-    } else {
-        "no"
+    match server {
+        ServerPresence::Unresponsive => "unknown",
+        _ if restart_needed_bool(server) => "yes",
+        _ => "no",
     }
 }
 
@@ -223,29 +220,22 @@ fn server_status_json(
     paths: &super::target::CliContext,
     server: &ServerRuntimeStatus,
 ) -> ServerStatusJson {
-    match server {
-        ServerRuntimeStatus::Running {
-            version,
-            build_id,
-            boot_id,
-        } => ServerStatusJson {
-            running: true,
-            version: version.clone(),
-            build_id: Some(build_id.clone()),
-            boot_id: Some(boot_id.clone()),
-            compatible: build_compatible_bool(server),
-            socket: paths.server_address().socket().display().to_string(),
-            restart_needed: restart_needed_bool(server),
-        },
-        ServerRuntimeStatus::NotRunning => ServerStatusJson {
-            running: false,
-            version: None,
-            build_id: None,
-            boot_id: None,
-            compatible: None,
-            socket: paths.server_address().socket().display().to_string(),
-            restart_needed: false,
-        },
+    let presence = match server {
+        ServerPresence::Gone => ServerPresenceJson::Gone,
+        ServerPresence::Starting(_) => ServerPresenceJson::Starting,
+        ServerPresence::Running(_) => ServerPresenceJson::Running,
+        ServerPresence::Stopping(_) => ServerPresenceJson::Stopping,
+        ServerPresence::Unresponsive => ServerPresenceJson::Unresponsive,
+    };
+    let status = answered_status(server);
+    ServerStatusJson {
+        presence,
+        version: status.and_then(|status| status.version.clone()),
+        build_id: status.map(|status| status.build_id.clone()),
+        boot_id: status.map(|status| status.boot_id.clone()),
+        compatible: build_compatible_bool(server),
+        socket: paths.server_address().socket().display().to_string(),
+        restart_needed: restart_needed_bool(server),
     }
 }
 
@@ -264,18 +254,17 @@ fn build_compatible_label(server: &ServerRuntimeStatus) -> &'static str {
 }
 
 fn build_compatible_bool(server: &ServerRuntimeStatus) -> Option<bool> {
-    match server {
-        ServerRuntimeStatus::Running { build_id, .. } => {
-            Some(shepr_protocol::is_this_build(build_id))
-        }
-        ServerRuntimeStatus::NotRunning => None,
-    }
+    answered_status(server).map(|status| shepr_protocol::is_this_build(&status.build_id))
 }
 
+/// A starting or running server of another build needs a restart; a stopping
+/// one is already going away, and the successor is launched from this install.
 fn restart_needed_bool(server: &ServerRuntimeStatus) -> bool {
     match server {
-        ServerRuntimeStatus::Running { build_id, .. } => !shepr_protocol::is_this_build(build_id),
-        ServerRuntimeStatus::NotRunning => false,
+        ServerPresence::Starting(status) | ServerPresence::Running(status) => {
+            !shepr_protocol::is_this_build(&status.build_id)
+        }
+        ServerPresence::Stopping(_) | ServerPresence::Unresponsive | ServerPresence::Gone => false,
     }
 }
 
@@ -301,25 +290,81 @@ mod tests {
     use super::*;
     use shepr_test_fixtures::*;
 
-    fn running_server(version: Option<&str>, build_id: &str) -> ServerRuntimeStatus {
-        ServerRuntimeStatus::Running {
+    fn runtime_status(version: Option<&str>, build_id: &str) -> RuntimeStatus {
+        RuntimeStatus {
             version: version.map(str::to_owned),
             build_id: build_id.to_owned(),
             boot_id: "4242-1700000000".to_owned(),
+            stopping: false,
+            starting: false,
         }
+    }
+
+    fn running_server(version: Option<&str>, build_id: &str) -> ServerRuntimeStatus {
+        ServerPresence::Running(runtime_status(version, build_id))
+    }
+
+    fn test_paths() -> super::super::target::CliContext {
+        super::super::target::CliContext::test_local(shepr_config::AppPaths::test_default())
     }
 
     #[test]
     fn server_status_json_reports_the_running_boot() {
         let server = running_server(Some("test"), shepr_protocol::BUILD_ID);
-        let paths =
-            super::super::target::CliContext::test_local(shepr_config::AppPaths::test_default());
-        let value =
-            serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
+        let value = serde_json::to_value(server_status_json(&test_paths(), &server))
+            .expect("test precondition");
         assert!(value.get("capabilities").is_none());
-        assert_eq!(value["running"], true);
+        assert_eq!(value["presence"], "running");
         assert_eq!(value["boot_id"], "4242-1700000000");
         assert!(value.get("status").is_none());
+        assert!(value.get("running").is_none());
+    }
+
+    #[test]
+    fn every_presence_is_reported_by_name() {
+        let status = runtime_status(None, shepr_protocol::BUILD_ID);
+        for (server, name) in [
+            (ServerPresence::Gone, "gone"),
+            (ServerPresence::Starting(status.clone()), "starting"),
+            (ServerPresence::Running(status.clone()), "running"),
+            (ServerPresence::Stopping(status), "stopping"),
+            (ServerPresence::Unresponsive, "unresponsive"),
+        ] {
+            let value = serde_json::to_value(server_status_json(&test_paths(), &server))
+                .expect("test precondition");
+            assert_eq!(value["presence"], name);
+        }
+    }
+
+    #[test]
+    fn a_starting_server_of_another_build_needs_a_restart_and_a_stopping_one_does_not() {
+        let other = runtime_status(Some("0.0.0-old"), "ffffffffffffffff");
+        let starting = ServerPresence::Starting(other.clone());
+        let json = server_status_json(&test_paths(), &starting);
+        assert_eq!(json.presence, ServerPresenceJson::Starting);
+        assert_eq!(json.boot_id.as_deref(), Some("4242-1700000000"));
+        assert_eq!(json.compatible, Some(false));
+        assert!(json.restart_needed);
+        assert_eq!(restart_needed_label(&starting), "yes");
+
+        let stopping = ServerPresence::Stopping(other);
+        let json = server_status_json(&test_paths(), &stopping);
+        assert_eq!(json.presence, ServerPresenceJson::Stopping);
+        assert!(!json.restart_needed);
+        assert_eq!(restart_needed_label(&stopping), "no");
+    }
+
+    #[test]
+    fn an_unresponsive_server_has_no_identity() {
+        let server = ServerPresence::Unresponsive;
+        let json = server_status_json(&test_paths(), &server);
+        assert_eq!(json.presence, ServerPresenceJson::Unresponsive);
+        assert_eq!(json.version, None);
+        assert_eq!(json.build_id, None);
+        assert_eq!(json.boot_id, None);
+        assert_eq!(json.compatible, None);
+        assert!(!json.restart_needed);
+        assert_eq!(restart_needed_label(&server), "unknown");
     }
 
     #[test]

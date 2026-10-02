@@ -123,16 +123,12 @@ impl AppState {
             if ws.cached_git_status_key != result.status_cache_key {
                 ws.cached_git_status_key = result.status_cache_key;
             }
-            if result.demand.branch && ws.cached_git_branch != result.branch {
+            if ws.cached_git_branch != result.branch {
                 ws.cached_git_branch = result.branch;
                 changed = true;
             }
-            if result.demand.ahead_behind && ws.cached_git_ahead_behind != result.ahead_behind {
+            if ws.cached_git_ahead_behind != result.ahead_behind {
                 ws.cached_git_ahead_behind = result.ahead_behind;
-                changed = true;
-            }
-            if ws.cached_git_space != result.space {
-                ws.cached_git_space = result.space;
                 changed = true;
             }
         }

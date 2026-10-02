@@ -123,6 +123,9 @@ pub enum RestartResult {
     Declined,
     /// The server was stopped; the bridge starts one of this build on attach.
     Stopped,
+    /// The observed server was already gone; the bridge starts one of this
+    /// build on attach.
+    NoServer,
     /// A different boot answered the stop or appeared while the observed
     /// instance was shutting down. The outcome's check is the fresh one.
     OccupantChanged,
@@ -260,7 +263,8 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
 /// discovery) and a still-different server is offered again, up to
 /// [`MAX_RESTART_OFFERS`] times. A stopped machine's check becomes
 /// [`MachineCheck::Ready`], since the bridge starts a server of this build on
-/// attach.
+/// attach. If the observed server is already gone when its stop request runs,
+/// the check also becomes Ready without rediscovering or offering a new server.
 pub fn restart_different_builds(
     machines: &[MachineConfig],
     outcomes: &mut [PreflightOutcome],
@@ -286,6 +290,11 @@ pub fn restart_different_builds(
                 Ok(RemoteStop::Stopped) => {
                     outcome.check = MachineCheck::Ready;
                     outcome.restart = Some(RestartResult::Stopped);
+                    break;
+                }
+                Ok(RemoteStop::NoServer) => {
+                    outcome.check = MachineCheck::Ready;
+                    outcome.restart = Some(RestartResult::NoServer);
                     break;
                 }
                 Err(error) => {
@@ -427,6 +436,8 @@ mod tests {
         /// Another instance answered, and by the next check nothing needs a
         /// restart.
         ChangedToReady,
+        /// The observed instance was already gone when the stop ran.
+        NoServer,
         Fails,
     }
 
@@ -577,6 +588,7 @@ mod tests {
                     *locked(&self.ready_now) = true;
                     Ok(RemoteStop::BootChanged)
                 }
+                StopScript::NoServer => Ok(RemoteStop::NoServer),
                 StopScript::Fails => Err(io::Error::other("remote server stop failed: timed out")),
             }
         }
@@ -911,6 +923,17 @@ mod tests {
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
         assert_eq!(asked, ["stale boot-1"]);
         assert_eq!(outcomes[0].restart, Some(RestartResult::OccupantChanged));
+        assert!(matches!(outcomes[0].check, MachineCheck::Ready));
+    }
+
+    #[test]
+    fn a_server_gone_before_its_stop_is_ready_without_another_offer() {
+        let machines = [machine("stale")];
+        let ssh = FakeSsh::new(&[]).with_stops([StopScript::NoServer]);
+        let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
+        assert_eq!(asked, ["stale boot-1"]);
+        assert_eq!(ssh.entries(), ["stop stale boot-1"]);
+        assert_eq!(outcomes[0].restart, Some(RestartResult::NoServer));
         assert!(matches!(outcomes[0].check, MachineCheck::Ready));
     }
 

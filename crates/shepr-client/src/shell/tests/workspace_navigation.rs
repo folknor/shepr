@@ -22,6 +22,44 @@ fn navigation_state(mut projected: ClientShellSnapshot) -> (ClientShellState, Cl
     (state, remote)
 }
 
+#[test]
+fn pane_scrollbar_click_clears_a_workspace_preview_when_leaving_navigation() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(workspaces(2)));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 10,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    });
+    pane_surface.panes[0].scrollbar_rect = Some(SurfaceRect {
+        x: 3,
+        y: 0,
+        width: 1,
+        height: 2,
+    });
+    state.receive_pane_surface(pane_surface);
+    state.compose(100, 28).expect("pane frame");
+    enter_navigation(&mut state);
+    preview_key(&mut state, b"\x1b[B");
+    assert_selected(&state, &ClientEndpointId::Local, "w2");
+
+    let track = state.hits.panes[0]
+        .scrollbar_rect
+        .expect("pane scrollbar hit");
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: track.x,
+        row: track.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.navigate_workspace_id.is_none());
+    assert_eq!(state.workspace_action_id().as_deref(), Some("w1"));
+}
+
 fn preview_key(state: &mut ClientShellState, bytes: &[u8]) {
     let outcome = state.handle_input_bytes(bytes);
     assert!(outcome.actions.is_empty(), "{bytes:?}");

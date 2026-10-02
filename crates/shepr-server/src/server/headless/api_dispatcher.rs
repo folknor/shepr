@@ -44,12 +44,7 @@ impl super::HeadlessServer {
     }
 
     pub(super) fn reject_api_request_for_shutdown(&self, msg: &shepr_api::ApiRequestMessage) {
-        let error = self.lifecycle.shutdown_error().unwrap_or_else(|| {
-            shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::ServerUnavailable,
-                "server is shutting down",
-            )
-        });
+        let error = self.lifecycle.shutdown_error();
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
         let response = Err(error);

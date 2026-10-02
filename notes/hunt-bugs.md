@@ -19,23 +19,6 @@ raw reports are in the commit that precedes this file's.
 
 ## Defects
 
-## BUG-001 - Remote bridge listener stops accepting on any transient accept error
-
-`shepr-remote/src/remote/bridge.rs`: the accept thread breaks out of its loop
-on every error but `WouldBlock`, including `Interrupted`, `ConnectionAborted`
-and fd exhaustion (`EMFILE`). The bridge then accepts nothing until rebuilt.
-Platform's `ipc::accept_failed_for_one_connection` classifies exactly these as
-per-connection. (foundation)
-
-## BUG-002 - PTY launch status listener ends on EPERM and any unlisted errno
-
-`shepr-pty/src/launch.rs` `Router::accept_loop` returns on errors outside its
-retry and backoff lists, EPERM included (platform treats EPERM, a security
-module refusing one connection, as per-connection). Its own doc says a
-listener that stopped accepting leaves every later launch unsettled; launches
-then settle `Unconfirmed` after `LAUNCH_STATUS_AFTER_EXIT` and lose their
-failure reasons. (foundation)
-
 ## BUG-003 - Host terminal grid is clamped to the pane minimum
 
 `shepr_core::geometry::HostGeometry` wraps a `PaneGeometry`, whose constructor
@@ -48,35 +31,23 @@ composed for a larger grid. The test
 `client_host_size_clamps_the_grid_to_one_surface` asserts 1 column for a value
 the stored geometry can never hold. Reported by foundation and client-core.
 
-## BUG-004 - `shepr status server` reports a starting or stopping server as running
+## BUG-067 - Local restart reports "occupant changed" when the server simply went away after a boot mismatch
 
-`src/cli/status.rs` builds `ServerRuntimeStatus { Running, NotRunning }` from
-`ApiClient::status()` and ignores the `stopping` and `starting` flags, while
-`shepr_api::read_server_presence_at` classifies Gone, Starting, Running,
-Stopping and Unresponsive. A server still restoring, or already stopping,
-prints `status: running` and `build_compatible: yes`, and the JSON says
-`running: true`. Suggested owner: the CLI renders `ServerPresence`.
-(contracts)
+`src/preflight.rs` `restart_local`: on a boot mismatch, a follow-up probe that
+finds no server returns `LocalRestart::OccupantChanged`, though no server
+there means `NoServer`. (wave-1 review)
 
-## BUG-005 - A malformed `--expect-boot` value is reported as "the occupant changed"
+## BUG-068 - An unexpected stop reply is shown to the operator as Rust Debug output
 
-`ServerStopIfBootParams::expected_boot_id` is a `String` that is never parsed.
-A typo reaches the server, which answers `server_boot_mismatch`; the CLI exits
-with `BOOT_MISMATCH_EXIT_CODE`, and `shepr-remote::stop_remote_server` reads
-that exit as `RemoteStop::BootChanged`. A typed `BootId` in the schema would
-refuse it as `invalid_request`. (contracts)
+`crates/shepr-api/src/server_stop.rs` reports `unexpected stop result:
+{result:?}`, a Debug rendering in a user-facing message. (wave-1 review)
 
-## BUG-006 - `server_stop::send_stop_request` accepts any successful reply as a stop
+## BUG-069 - A local process can flood the server log through `accept_peer`
 
-It uses `request_value_until` (raw `Value`) and decides error-ness with
-`value.get("error").is_some()`, so its `Err(ApiClientError::ErrorResponse(..))`
-arm is unreachable and its `Ok(_)` arm takes any non-error success as "stop
-accepted" without checking it is `ResponseResult::Ok`. It also classifies the
-refusal by comparing `error["code"].as_str()` with
-`ApiErrorCode::ServerBootMismatch.as_str()`, although `ApiErrorCode`'s doc
-says nothing parses a wire code back. Suggested: one typed parse into
-`Result<ResponseResult, ErrorResponse>` shared with `client::parse_response_value`,
-and `Deserialize` for `ApiErrorCode` with an unknown fallback. (contracts)
+`crates/shepr-platform/src/ipc.rs` `accept_peer` logs a context-free warning
+for every rejected or unauthenticatable peer, so a local process connecting in
+a loop fills the log. The bridge and the launch router logged the same way
+before the helper existed. (wave-1 review)
 
 ## BUG-007 - The same unreadable remote status JSON is Attention through one command and a silent retry through the other
 
@@ -89,26 +60,6 @@ retry, preflight `Failed` with "the client keeps retrying it"). The decision is
 whichever `ErrorKind` the author picked. The structural cause is filed among
 the consolidations as the endpoint failure disposition. (edges)
 
-## BUG-008 - A starting server at a socket override is refused with the wrong cause
-
-`local_server::ensure_running`'s first probe treats `Starting` and `Stopping`
-like `NoServer` and falls through to `require_own_runtime_address`. With
-`SHEPR_SOCKET_PATH` naming a server that is still restoring, the TUI (or the
-remote bridge host) fails with "no shepr server is running at X, which
-SHEPR_SOCKET_PATH selects" instead of waiting through `Starting` as it does at
-the runtime address. A `Stopping` server at an override gets the same message.
-(edges)
-
-## BUG-009 - A server that simply exited is reported as "replaced"
-
-`stop_remote_server` folds `NO_SERVER_EXIT_CODE` into `RemoteStop::BootChanged`,
-and `restart_local` folds `ServerStopError::NotRunning` into
-`LocalRestart::OccupantChanged`. A server that exited before the stop landed is
-reported as "changed while it was being stopped; no stop was sent to a
-replacement". Keep "no server" as its own outcome. The local and remote paths
-also treat it differently (remote re-checks and may offer again, local does
-not). (edges)
-
 ## BUG-010 - The account-shell probe sends POSIX syntax to the account shell
 
 `RemoteSsh::user_shell_output` wraps `command -v shepr` in
@@ -118,29 +69,6 @@ account-shell PATH discovery can never succeed there; the nonzero exit is read
 as "not found" and discovery falls through to `/bin/sh` after a wasted cold
 round trip. Comments on `bridge_command` show the account shell is known not
 to be POSIX. (edges)
-
-## BUG-011 - `remote_client_status` runs `test -x` twice
-
-The command is `test -x X || exit 125; test -x X && X status client --json`,
-because `status_client_command` brings its own guard. If the file disappears
-between the two tests, the `&&` exits 1 and is reported as a probe failure,
-not as "vanished". The guard in `status_client_command` is redundant here and
-its only other use is a test. (edges)
-
-## BUG-012 - Launch-fatal SSH setup error message doubles its context
-
-`StoredSetupError::capture` keeps `error.to_string()`, which already carries
-"could not prepare local SSH paths: ...", and `to_io_error` wraps it again with
-`local_setup_error("machine SSH setup failed", ..)`. (edges)
-
-## BUG-013 - Operator guidance does not quote a leading `=`
-
-`shepr-config/src/address.rs::shell_quote` uses the same plain-word set as
-`shepr-remote/src/remote/launch.rs::shell_quote` but does not quote a leading
-`=`, which zsh expands. A dev entrypoint or socket override path starting with
-`=` is printed unquoted in `ServerAddress::stop_command` guidance the operator
-pastes. Reported by edges and contracts; the four quoting implementations are
-filed among the consolidations.
 
 ## BUG-014 - Remote bridge launch failures are retried forever
 
@@ -156,14 +84,6 @@ carrying the `DaemonExit` class, so the client can show Attention. (edges)
 `preflight::check_concurrently` converts a panicked check thread into
 `MachineCheck::Failed`. Everywhere else in the client a panic ends the process
 (`fatal_panic`). (edges, as a smell)
-
-## BUG-016 - Possible infinite loop in the OpenCode server plugin
-
-`assets/opencode/shepr-agent-state.js` resolves a child's root with
-`while (childSessions.has(rootSessionID)) rootSessionID = childSessions.get(rootSessionID);`
-and no cycle guard. A cyclic or self-parented `info.parentID` spins the user's
-opencode event loop forever. The Kilo copy of the same code has a `seen` set
-(`rootSessionOf`); the OpenCode copy was not updated. (agents)
 
 ## BUG-017 - `foreground_cwd` and the live identity cwd can be a deleted directory
 
@@ -253,14 +173,6 @@ foreground changed gets an epoch bump only, a reported one gets epoch plus
 recompute. server-app asks for verification; server-serving says the sites
 already disagree and one of the two behaviours is wrong.
 
-## BUG-026 - `Instant` underflow in the Git refresh scheduler
-
-`GitRefreshScheduler::new` and `mark_due` compute
-`now - GIT_REMOTE_STATUS_REFRESH_INTERVAL`. `Instant - Duration` panics on
-underflow; the comment assumes the monotonic clock is never within 1.5 s of its
-origin by the time a server runs. A server started very early after boot
-breaks that. (server-app)
-
 ## BUG-027 - A split host palette reply is replayed partially
 
 `input::send_unix_input_chunks` batches palette replies up to
@@ -289,12 +201,6 @@ or patch rejection). The status is always `Reconnecting`. A queue-full
 backpressure failure (`endpoint::writer::queue_full`, a local condition) is
 reported as "connection was lost". (client-core)
 
-## BUG-030 - Exit flush depends on how the client loop ended
-
-In `run_until_exit`, an `Exit` with `should_quit` set breaks out and flushes
-the output writer; an `Exit` from detach or a lost terminal returns `Ok(())`
-without the flush. (client-core)
-
 ## BUG-031 - Client exit is classified by coincidence
 
 `run_launched_client` treats `ConnectionLost` as a clean exit only when
@@ -310,39 +216,6 @@ without telling the shell. If the skip is reached with a command in flight,
 the shell's ledger entry is never answered or dropped. The hunter thinks event
 ordering makes the skip unreachable; if so the check and filter are dead.
 (client-core)
-
-## BUG-033 - An SGR pixel mouse event with no pixel extent is dropped
-
-`classify_unix_input` returns `None` (`let geometry = geometry?;`) for a pixel
-mouse report when no pixel extent has been read yet, discarding the click
-rather than falling back to cells or holding it. (client-core)
-
-## BUG-034 - `ClientLoopTimer` can wake for work that no longer exists
-
-The loop recomputes the earliest deadline each turn and hands it to
-`ClientLoopTimer::deadline`, which keeps the minimum of that and any earlier
-deadline not yet fired; the retained earlier one can belong to a committed
-move. Arming `sleep_until(next_timer_deadline)` directly removes the type.
-(client-core)
-
-## BUG-035 - A stale Navigate preview redirects later workspace actions
-
-In `handle_mouse_with_accounting`, a left press on a pane scrollbar sets
-`self.mode` to Copy or Terminal without clearing `navigate_workspace_id`.
-`workspace_action_id` and `workspace_preview_action_blocked` read
-`navigate_workspace_id` regardless of mode, so after previewing workspace B and
-clicking a pane scrollbar, a later close, rename or new-workspace binding in
-Terminal mode acts on B; with a preview on another endpoint, Rename and Close
-are refused with "Select an available workspace". The hunter rates it a likely
-bug; the structural fix is the mode enum filed among the consolidations.
-(client-shell)
-
-## BUG-036 - Queued restore notices stall after a click-dismiss
-
-Clicking the toast sets `visible_endpoint_notice = None` without popping
-`restore_notice_queue`. The pop happens in `tick_transient_banners`, but
-`next_timer_deadline` reports no deadline for an empty card, so the next queued
-notice waits for an unrelated timer. (client-shell)
 
 ## BUG-037 - Double-click word bounds may drift on emoji presentation sequences
 
@@ -422,12 +295,6 @@ An expired synchronized update flushed by `PaneTerminal::tick` bumps
 on the read's bytes being non-empty. Harmless while a PTY read is never empty.
 (mux-panes)
 
-## BUG-046 - `PaneChild::kill` signals by pid while a pidfd for the child exists
-
-It is safe only because every call happens before the child watcher can reap;
-that ordering is not expressed in any type. Giving the child one pidfd-backed
-handle (filed among the structure findings) removes it. (foundation)
-
 ## BUG-047 - One terminal-core lock per input accessor gives inconsistent mode snapshots
 
 `PaneTerminal`'s `mode_enabled`, `bracketed_paste_enabled`,
@@ -444,25 +311,6 @@ It is stored per server but comes from a process-global `OnceLock`, so two
 `HeadlessServer`s in one process (the netside test runs two) share a boot id
 and `StaleBoot` cannot tell them apart. Harmless in production.
 (server-serving)
-
-## BUG-049 - The integration installer retries on any `WouldBlock`
-
-`install_present_integrations` retries once on `ErrorKind::WouldBlock` to detect
-a concurrent agent edit; `config_changed_error` is the only intended producer,
-but any filesystem `WouldBlock` triggers the retry. A typed `ConfigChanged`
-error removes the overload. (agents)
-
-## BUG-050 - A host without `python3` installs every integration and never reports
-
-Every shell asset exits silently when `python3` is missing, so on such a host
-every integration installs as Current and never reports; it is
-indistinguishable from an idle agent. A status signal ("hook interpreter
-missing") would make it visible. (agents)
-
-## BUG-051 - A process stopped under a tracer is not treated as suspended
-
-`suspended_processes` checks `state != 'T'` only; a traced stop reports `'t'`.
-Probably fine; worth a comment if deliberate. (agents)
 
 ## BUG-052 - Indexing panics are one refactor away in `handle_layout_set_split_ratio`
 
@@ -510,22 +358,6 @@ It runs on every wake, sometimes twice, allocating and sorting
 terminal core of every visible pane (`synchronized_output_state`). A cached
 `held` per workspace per epoch, or a mux-side "synchronized output ended"
 signal, avoids the locks. (server-serving)
-
-## BUG-058 - `sync_host_shutdown_freeze` runs per internal event
-
-It runs at the top of every loop iteration, again in
-`handle_scheduled_tasks_headless`, and once per internal event (every PTY
-runtime event), and ignores its `_now` argument. Answering a pending warning
-once before each drain batch gives the same guarantee. (server-serving)
-
-## BUG-059 - Writer threads send a blocking wake per frame on the server event channel
-
-Writer threads do `blocking_send(ClientWriterDrained)` on the 64-slot
-`ServerEvent` channel after every render frame. With several clients at 60 fps
-these compete with input events for the channel and for
-`SERVER_EVENT_DRAIN_LIMIT`, and can block a writer on a full channel.
-`HostShutdownWake` is the same kind of dataless wake. The loop already has
-`outbox_wake: Notify`. (server-serving)
 
 ## BUG-060 - Per-loop scans in the app
 

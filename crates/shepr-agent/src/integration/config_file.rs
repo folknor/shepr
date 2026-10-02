@@ -173,6 +173,13 @@ pub(super) fn write_config_for_update(
     })
 }
 
+pub(super) fn is_config_changed(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<ConfigChanged>())
+        .is_some()
+}
+
 fn read_config_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(contents) => Ok(Some(contents)),
@@ -182,14 +189,23 @@ fn read_config_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 fn config_changed_error(path: &Path) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::WouldBlock,
-        format!(
-            "{} changed while Shepr was preparing an update",
-            path.display()
-        ),
-    )
+    io::Error::new(io::ErrorKind::WouldBlock, ConfigChanged(path.to_path_buf()))
 }
+
+#[derive(Debug)]
+struct ConfigChanged(PathBuf);
+
+impl std::fmt::Display for ConfigChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} changed while Shepr was preparing an update",
+            self.0.display()
+        )
+    }
+}
+
+impl std::error::Error for ConfigChanged {}
 
 struct Replacement {
     inner: AtomicReplace,

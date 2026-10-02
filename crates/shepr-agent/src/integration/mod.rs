@@ -53,8 +53,8 @@ const ANTIGRAVITY_CLI_HOOK_ASSET: &str =
 /// Antigravity CLI keys `hooks.json` by hook name, so every Shepr entry lives
 /// under one Shepr-owned block that install rewrites.
 const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
-// Kept as diagnostic metadata and for the shared asset-name audit; it never
-// determines whether an installed integration is current.
+// The shared asset-name audit accounts for this marker in the bundled hooks;
+// it is diagnostic metadata and never determines whether an install is current.
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");

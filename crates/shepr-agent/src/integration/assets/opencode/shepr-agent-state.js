@@ -188,7 +188,9 @@ export const SheprAgentStatePlugin = async () => {
         const state = CHILD_EVENT_STATES.get(type);
         if (state) {
           let rootSessionID = sessionID;
-          while (childSessions.has(rootSessionID)) {
+          const seen = new Set();
+          while (childSessions.has(rootSessionID) && !seen.has(rootSessionID)) {
+            seen.add(rootSessionID);
             rootSessionID = childSessions.get(rootSessionID);
           }
           await reportState(state, rootSessionID);

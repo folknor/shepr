@@ -38,10 +38,6 @@ pub(in crate::shell) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<
     )
 }
 
-pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<usize> {
-    (0..snapshot.workspaces.len()).collect()
-}
-
 pub(in crate::shell) fn workspace_rows(
     workspace: &ClientShellWorkspace,
     status: shepr_protocol::AgentStatus,

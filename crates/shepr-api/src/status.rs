@@ -99,12 +99,13 @@ pub enum ServerPresence {
     /// No live listener at the socket, including one that went away while its
     /// status answer was awaited.
     Gone,
-    /// Live, answering `starting`: still restoring panes.
-    Starting,
+    /// Live, answering `starting`: still restoring panes. The answer already
+    /// names the server's build and boot.
+    Starting(RuntimeStatus),
     /// Live and accepting TUI connections.
     Running(RuntimeStatus),
     /// Live, answering `stopping` (which wins over `starting`).
-    Stopping,
+    Stopping(RuntimeStatus),
     /// Live before and after a status request that got no answer.
     Unresponsive,
 }
@@ -138,8 +139,8 @@ pub fn read_server_presence_at(socket: &Path, timeout: Duration) -> io::Result<S
         )
     })?;
     match status {
-        Some(status) if status.stopping => Ok(ServerPresence::Stopping),
-        Some(status) if status.starting => Ok(ServerPresence::Starting),
+        Some(status) if status.stopping => Ok(ServerPresence::Stopping(status)),
+        Some(status) if status.starting => Ok(ServerPresence::Starting(status)),
         Some(status) => Ok(ServerPresence::Running(status)),
         None if !live()? => Ok(ServerPresence::Gone),
         None => Ok(ServerPresence::Unresponsive),
@@ -193,12 +194,18 @@ mod tests {
 
     #[test]
     fn a_starting_pong_is_starting() {
-        assert_eq!(pong_presence(false, true), ServerPresence::Starting);
+        assert!(matches!(
+            pong_presence(false, true),
+            ServerPresence::Starting(status) if status.build_id == "0123456789abcdef"
+        ));
     }
 
     #[test]
     fn stopping_wins_over_starting() {
-        assert_eq!(pong_presence(true, true), ServerPresence::Stopping);
+        assert!(matches!(
+            pong_presence(true, true),
+            ServerPresence::Stopping(_)
+        ));
     }
 
     #[test]

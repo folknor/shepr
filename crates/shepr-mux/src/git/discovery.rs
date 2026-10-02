@@ -8,20 +8,10 @@ use std::process::Output;
 use super::GitReadError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitSpaceMetadata {
-    pub key: String,
-    pub checkout_key: String,
-    pub repo_name: String,
-    pub repo_root: PathBuf,
-    pub is_linked_worktree: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitWorktreeInfo {
     pub repo_root: PathBuf,
     pub git_dir: PathBuf,
     pub git_common_dir: PathBuf,
-    pub is_linked_worktree: bool,
 }
 
 struct LocatedGitDir {
@@ -86,42 +76,6 @@ pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String 
     shepr_core::workspace_label::workspace_label_from_cwd(cwd, Some(repo_root), None)
 }
 
-pub(super) fn git_space_metadata_from_info(info: &GitWorktreeInfo) -> GitSpaceMetadata {
-    let key = canonicalize_best_effort_path(&info.git_common_dir)
-        .display()
-        .to_string();
-    let checkout_key = canonicalize_best_effort_path(&info.repo_root)
-        .display()
-        .to_string();
-    let common_dir_name = info
-        .git_common_dir
-        .file_name()
-        .and_then(|name| name.to_str());
-    let label_path = match common_dir_name {
-        Some(".git") => info.git_common_dir.parent().unwrap_or(&info.repo_root),
-        Some(".bare") => embedded_bare_repo_container(info).unwrap_or(&info.git_common_dir),
-        _ => &info.git_common_dir,
-    };
-    let repo_name = label_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("repo")
-        .to_string();
-    GitSpaceMetadata {
-        key,
-        checkout_key,
-        repo_name,
-        repo_root: info.repo_root.clone(),
-        is_linked_worktree: info.is_linked_worktree,
-    }
-}
-
-fn embedded_bare_repo_container(info: &GitWorktreeInfo) -> Option<&Path> {
-    let parent = info.git_common_dir.parent()?;
-    let parent_git_dir = git_dir_for_repo_root(parent)?;
-    (canonicalize_best_effort_path(&parent_git_dir) == info.git_common_dir).then_some(parent)
-}
-
 pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -129,7 +83,7 @@ pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
 /// The common directory a Git directory shares its refs with: itself unless
 /// a `commondir` file names another. `None` when `commondir` exists but
 /// cannot be read: taking the Git directory as its own common directory then
-/// would give a linked worktree the wrong space key.
+/// would read linked-worktree refs from the wrong directory.
 fn git_common_dir_for_git_dir(git_dir: &Path) -> Option<PathBuf> {
     let commondir = git_dir.join("commondir");
     let contents = match std::fs::read_to_string(&commondir) {
@@ -160,7 +114,6 @@ fn git_config_info(repo_root: &Path, git_dir: &Path) -> io::Result<GitWorktreeIn
     let git_common_dir = canonicalize_best_effort_path(&git_common_dir);
     Ok(GitWorktreeInfo {
         repo_root,
-        is_linked_worktree: git_dir != git_common_dir,
         git_dir,
         git_common_dir,
     })
@@ -256,33 +209,8 @@ fn is_file_entry(path: &Path) -> std::io::Result<bool> {
     Ok(matches!(entry_type(path)?, Some(kind) if kind.is_file()))
 }
 
-/// The Git directory for a checkout root, or `None` when `repo_root` is not
-/// one. Callers that only want an answer use this; an unreadable candidate is
-/// logged and gives `None`, since none of them can do more with it.
-pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
-    match locate_git_dir(repo_root) {
-        Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
-            Ok(true) => Some(git_dir.path),
-            Ok(false) => None,
-            Err(error) => {
-                tracing::debug!(
-                    path = %git_dir.path.join("HEAD").display(),
-                    %error,
-                    "git HEAD unreadable"
-                );
-                None
-            }
-        },
-        Ok(None) => None,
-        Err(error) => {
-            tracing::debug!(path = %repo_root.display(), %error, "git directory unreadable");
-            None
-        }
-    }
-}
-
-/// [`git_dir_for_repo_root`] with a stat or read error kept apart from "not a
-/// checkout root", so the discovery walk can stop instead of ascending.
+/// [`locate_git_dir`] with a stat or read error kept apart from "not a checkout
+/// root", so the discovery walk can stop instead of ascending.
 fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<LocatedGitDir>> {
     let git_path = repo_root.join(".git");
     match entry_type(&git_path)? {
@@ -738,7 +666,7 @@ mod tests {
 
     use super::*;
     use crate::git::test_support::{
-        add_linked_worktree, git_written_fixture, live_git_space, temp_test_dir, write_git_dir,
+        add_linked_worktree, git_written_fixture, temp_test_dir, write_git_dir,
     };
 
     #[test]
@@ -1146,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn git_space_metadata_supports_standalone_bare_repo() {
+    fn git_worktree_info_finds_standalone_bare_repo_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let bare = temp_test_dir("bare-space");
         write_git_dir(&bare, "main", true);
@@ -1154,31 +1082,23 @@ mod tests {
 
         let info = git_worktree_info(&nested).expect("bare repo should be discovered");
         assert_eq!(git_repo_root(&nested), Some(bare.clone()));
-        assert!(!info.is_linked_worktree);
         assert_eq!(info.git_dir, canonicalize_best_effort_path(&bare));
-
-        let metadata = live_git_space(&nested).expect("bare repo should map to a git space");
-        assert_eq!(
-            canonicalize_best_effort_path(&metadata.repo_root),
-            canonicalize_best_effort_path(&bare)
-        );
-        assert!(!metadata.is_linked_worktree);
+        assert_eq!(info.repo_root, bare);
     }
 
     #[test]
-    fn bare_source_and_linked_checkout_share_repo_name_but_not_auto_label() {
+    fn bare_source_and_linked_checkout_labels_use_each_checkout_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let (_, bare, checkout) =
             crate::git::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
 
-        let bare_space = live_git_space(&bare).expect("test precondition");
-        let checkout_space = live_git_space(&checkout).expect("test precondition");
-        let bare_auto_label = automatic_workspace_label(&bare, &bare_space.repo_root);
-        let checkout_auto_label = automatic_workspace_label(&checkout, &checkout_space.repo_root);
+        let bare_info = git_worktree_info(&bare).expect("test precondition");
+        let checkout_info = git_worktree_info(&checkout).expect("test precondition");
+        let bare_auto_label = automatic_workspace_label(&bare, &bare_info.repo_root);
+        let checkout_auto_label = automatic_workspace_label(&checkout, &checkout_info.repo_root);
 
-        assert_eq!(bare_space.key, checkout_space.key);
-        assert_eq!(bare_space.repo_name, ".bare");
-        assert_eq!(checkout_space.repo_name, bare_space.repo_name);
+        assert_eq!(bare_info.repo_root, bare);
+        assert_eq!(checkout_info.repo_root, checkout);
         assert_eq!(
             bare_auto_label,
             bare.file_name()
@@ -1197,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_dot_bare_source_and_checkout_use_container_repo_name() {
+    fn embedded_dot_bare_source_and_checkout_labels_use_each_checkout_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("embedded-dot-bare");
         let repo = base.join("reported-repo");
@@ -1207,32 +1127,34 @@ mod tests {
         std::fs::write(repo.join(".git"), "gitdir: ./.bare\n").expect("test precondition");
         add_linked_worktree(&bare, "develop", &checkout);
 
-        let source = live_git_space(&repo).expect("test precondition");
-        let linked = live_git_space(&checkout).expect("test precondition");
+        let source = git_worktree_info(&repo).expect("test precondition");
+        let linked = git_worktree_info(&checkout).expect("test precondition");
 
-        assert_eq!(source.repo_name, "reported-repo");
-        assert_eq!(linked.repo_name, source.repo_name);
+        assert_eq!(source.repo_root, repo);
+        assert_eq!(linked.repo_root, checkout);
+        assert_eq!(
+            automatic_workspace_label(&repo, &source.repo_root),
+            "reported-repo"
+        );
+        assert_eq!(
+            automatic_workspace_label(&checkout, &linked.repo_root),
+            "develop"
+        );
     }
 
     #[test]
-    fn git_space_metadata_marks_bare_dot_git_repo() {
+    fn git_worktree_info_finds_bare_dot_git_repo_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("bare-dot-git");
         write_git_dir(&root.join(".git"), "main", true);
 
         let info = git_worktree_info(&root).expect("bare .git repo should be discovered");
         assert_eq!(git_repo_root(&root), Some(root.clone()));
-        assert!(!info.is_linked_worktree);
         assert_eq!(
             info.git_dir,
             canonicalize_best_effort_path(&root.join(".git"))
         );
-
-        let metadata = live_git_space(&root).expect("bare .git repo should map to a git space");
-        assert_eq!(
-            canonicalize_best_effort_path(&metadata.repo_root),
-            canonicalize_best_effort_path(&root)
-        );
+        assert_eq!(info.repo_root, root);
     }
 
     #[test]

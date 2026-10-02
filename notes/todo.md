@@ -63,6 +63,14 @@ Kimi rewrites `config.toml` through a TOML serializer, the
 appends a second set of `[[hooks]]` beside the unmarked first, so each event
 fires twice. Nothing does this today; act if Kimi starts to.
 
+## Report a missing hook interpreter
+
+Every shell hook asset exits silently when `python3` is missing, so on such a
+host every integration installs as current and never reports; its panes read
+as idle agents. A status signal ("hook interpreter missing") would make that
+visible. Nothing claims hooks work without `python3` or that a broken hook is
+reported.
+
 ## Faster startup with unreachable machines
 
 Preflight blocks the TUI until every check of a round finishes, up to

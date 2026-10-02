@@ -232,7 +232,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
 }
 
 #[test]
-fn transient_cards_and_dismissal_do_not_discard_queued_restore_cards() {
+fn transient_cards_do_not_discard_queued_restore_cards() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let boot = crate::tests::test_boot_id("restored");
     let kind = shepr_protocol::SessionRestoreNotice {
@@ -252,4 +252,45 @@ fn transient_cards_and_dismissal_do_not_discard_queued_restore_cards() {
             .boot_id,
         Some(boot)
     );
+}
+
+#[test]
+fn dismissing_a_restore_card_immediately_shows_the_next_queued_card() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let first = crate::tests::test_boot_id("restored-first");
+    let second = crate::tests::test_boot_id("restored-second");
+    let remote = ClientEndpointId::Ssh(shepr_config::MachineLabel::parse("Build").expect("label"));
+    let kind = shepr_protocol::SessionRestoreNotice {
+        loss: shepr_protocol::SessionRestoreLoss::Panes,
+        backup_dir: "/state/session-backups".into(),
+    };
+    state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind);
+    state.receive_restore_notice(&remote, &second, &kind);
+    state.compose(106, 20).expect("first notice frame");
+    let toast = state.hits.notification_toast;
+    assert!(!toast.is_empty());
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: toast.x,
+        row: toast.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("second restore card")
+            .key
+            .boot_id,
+        Some(second)
+    );
+    assert!(state.restore_notice_queue.is_empty());
+    assert!(state.endpoint_notice_deadline.is_none());
+    assert_eq!(state.next_timer_deadline(), None);
+
+    state.compose(106, 20).expect("second notice frame");
+    assert!(state.endpoint_notice_deadline.is_some());
 }

@@ -30,36 +30,6 @@ Git subprocesses spawned by mux inherit the variables and apply them
 themselves. Delete the parser and keep the recognizer, or move it to
 `shepr-mux/src/git/config.rs` and wire it if that was the intent. (foundation)
 
-## CLN-002 - `GitSpaceMetadata` is computed, cached and diffed but never read
-
-`Workspace::cached_git_space` and `WorkspaceGitStatus::space` are computed on
-every refresh (`git_space_metadata_from_info`: two `canonicalize` calls plus
-`embedded_bare_repo_container`, another `locate_git_dir` and possibly a
-`git config` spawn), cached, and compared in `apply_workspace_git_statuses`,
-where a difference triggers a projection rebuild and a render. Nothing in the
-server, client or protocol reads `key`, `checkout_key`, `repo_name` or
-`is_linked_worktree`; only `repo_root` is used, for the label. `key` and
-`checkout_key` are also lossy `display().to_string()` renderings. Keep only
-`repo_root`. (mux-state)
-
-## CLN-003 - `GitStatusRefreshDemand` and the branch-only status path are unreachable
-
-The server always passes `{ branch: true, ahead_behind: true }` (with a comment
-saying to keep it full), yet mux implements a branch-only path in
-`git_status_snapshot_for_cwd_with_demand` with its own cache-merging rules,
-`WorkspaceGitStatus` carries the demand, and `apply_workspace_git_statuses`
-checks `demand.branch` and `demand.ahead_behind`. The `retry_after =
-Some(now)` "not computed" sentinel comes from that path. Delete the axis.
-Reported by mux-state and server-app.
-
-## CLN-004 - A second automatic-label algorithm in the Git status snapshot
-
-`git_status_snapshot_for_cwd_with_demand` computes `auto_label` from the cache
-key (so for a repo always the root's own name), and
-`WorkspaceGitStatusSnapshot::into_workspace_status` overwrites it from the real
-identity cwd. The first is read only as a cached value and in tests. Delete
-`auto_label` from the snapshot and the cache entry. (mux-state)
-
 ## CLN-005 - `AppState::should_quit` duplicates the lifecycle phase
 
 Only `HeadlessServer::initiate_shutdown` sets it, and that function also sets
@@ -73,24 +43,10 @@ residue. The stop signal is also called `stop_requested`, `stop_request`,
 
 ## CLN-006 - Dead checks in the server serving path
 
-- The fallback `ApiError` in `reject_api_request_for_shutdown`: every caller
-  runs after `initiate_shutdown`, so `shutdown_error()` is always `Some`.
-- `client_transport` bounds `boot_id.len()` against
-  `MAX_ENDPOINT_BOOT_ID_BYTES`; a `BootId` only decodes from its canonical
-  form, far below 128 bytes. `RequestId` is the one that needs a bound, in its
-  decode.
-- The read loop's host palette bound `colors.len() > 256` duplicates the
-  decoder's bound, which already refuses 257 entries.
-- `client_shell_geometry_error`'s empty-surface branch: `GridSize` is
-  `NonZeroU16`, so zero fails decode.
-- `ProtocolCellSize::from_wire` nulls oversize cells, but the transport's
-  refusal runs first, so that branch is dead.
-- `drain_internal_events_with_forwarding_up_to -> (bool, bool)`: the first
-  element is never read.
-- `ClientPasteRejected { size, max }` carries `max`, which is always
-  `MAX_INPUT_PAYLOAD`.
-- `frame_server_message` is a one-line alias of `encode_message` kept so
-  `SurfaceBoundary` has a function pointer to replace.
+- `ProtocolCellSize::from_wire` in `shepr-protocol` still nulls oversize
+  cells, a branch the server transport never reaches because its geometry
+  refusal runs first (commented at the transport call sites). Decide whether
+  protocol keeps it for other callers or drops it.
 
 (server-serving)
 
@@ -134,18 +90,10 @@ residue. The stop signal is also called `stop_requested`, `stop_request`,
 
 ## CLN-009 - Dead pieces in the client shell
 
-- `sidebar::workspace_entries` returns `(0..len).collect()`, the vestige of a
-  removed filter, yet six callers index through it while two iterate
-  directly.
-- `ClientShellWorkspace.custom_label` is not read anywhere in shell production
-  code.
-- `aggregate_agent_rows(_active_endpoint_id)` has an unused parameter.
-- `AgentRowIndex::new`'s sort is dead work: the panel reorders by
-  `aggregate_agent_rows` afterwards.
-- `online_agent_targets` is misnamed (its comment admits it).
-- `hit_test::contains` duplicates `Rect::contains`.
-
-(client-shell)
+`ClientShellWorkspace.custom_label` (defined in
+`crates/shepr-protocol/src/projection.rs`) is not read anywhere in shell
+production code; drop it from the projection or find the reader it was meant
+for. (client-shell)
 
 ## CLN-010 - Dead pieces in the edges
 
@@ -206,35 +154,6 @@ Reported by edges; contracts also notes the doubled compatibility derivation.
   first and last indexed keys, kept in step by hand.
 
 (contracts)
-
-## CLN-012 - Dead pieces in shepr-agent
-
-- `fallback_explain`'s `None` arms cannot run; both callers pass
-  `Some(agent)`. The fallback state is also computed both by `fallback_state`
-  and inside `fallback_explain`.
-- `RegionSpec::extract` has a second-stage match whose arm returning `""` is
-  unreachable.
-- `is_cased` and `is_case_ignorable` in `manifest.rs` are the same function.
-- `every_line_regex_matches` keeps a fallback for more than
-  `MAX_MATCHERS_PER_GATE` regexes, which validation forbids.
-- `loaded_manifest` `take()`s `AgentManifest.compiled` with a
-  `None => compile_manifest(..)` arm production never reaches (the loader is
-  filed among the structure findings).
-- `ForegroundProcess.cmdline` is always `argv.join(" ")` when argv exists, so
-  `cmdline_argv0_agent_name` and the Letta fallback re-split a string joined
-  from the vector they could use; the fallback can never fire with a value.
-- `IntegrationStatus.installed_version` reads a `SHEPR_INTEGRATION_VERSION=`
-  marker that is diagnostic only, bumped by hand in 16 assets and compared by
-  nothing. Drop it or derive it from the asset hash.
-- The Claude and Antigravity hooks send `agent_session_path`; both agents have
-  `SessionRefPolicy::Id`, so `session_ref_for_agent_report` drops it. Dead
-  wire data that suggests those agents resume by path.
-- `agent_label` and `parse_canonical_agent_label` in `detect` are one-line
-  re-exports of `Agent` methods: two names per operation.
-- `ManifestRule.state: Option<ManifestState>` where `None` and
-  `ManifestState::Unknown` both mean Unknown and no bundled rule uses `None`.
-
-(agents)
 
 ## CLN-013 - Dead pieces in the pane runtime
 
@@ -313,6 +232,26 @@ Reported by mux-state and foundation.
   probably fine, but it is the only effect with no trace.
 
 (terminal)
+
+## CLN-023 - Small leftovers from the first fixes
+
+- `crates/shepr-remote/src/remote/local_server.rs`:
+  `wait_for_overridden_server` repeats the poll loop of
+  `wait_for_server_socket_to_settle_until` (same deadline arithmetic and
+  sleep); it could call that function and then probe once.
+- `src/cli/status.rs`: `type ServerRuntimeStatus = ServerPresence;` only
+  renames; the functions could take `ServerPresence`.
+- `crates/shepr-client/src/shell/sidebar/endpoint_sidebar.rs`:
+  `.workspaces.iter().enumerate().map(|(entry, _)| ..)` is `0..len` spelled
+  the long way.
+- `crates/shepr-server/src/server/client_transport.rs`: with the two dataless
+  wakes gone, every `ServerEvent` variant starts with `Client`, held by an
+  `expect(clippy::enum_variant_names)`; drop the prefix instead.
+- `crates/shepr-server/src/server/headless.rs`: `server_event_tx` is read only
+  by tests and carries a non-test `expect(dead_code)`; a test seam stored in
+  production.
+
+(wave-1 review and gate)
 
 ## Test-only twins and test seams in production
 
@@ -393,12 +332,6 @@ agents and edges.
 Reported by edges, client-core and contracts.
 
 ## Unused dependencies and edges
-
-## CLN-019 - Dependencies with no use in the sources
-
-`shepr-api`'s `Cargo.toml` lists `shepr-agent`, `shepr-core` and `shepr-vt`;
-none is used in its sources. `shepr-protocol` lists `tracing`, unused. These
-edges inflate the layering picture `brokkr.toml` checks. (contracts)
 
 ## Stale documentation
 

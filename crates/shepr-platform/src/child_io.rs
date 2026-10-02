@@ -132,7 +132,7 @@ impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
 /// Milliseconds left until `deadline` as a poll timeout, at least 1 so a
 /// wait that is nearly due still sleeps instead of spinning. `None` once the
 /// deadline has passed.
-pub(super) fn poll_timeout_until(deadline: Instant, now: Instant) -> Option<i32> {
+pub fn poll_timeout_until(deadline: Instant, now: Instant) -> Option<i32> {
     let remaining = deadline.saturating_duration_since(now);
     if remaining.is_zero() {
         return None;
@@ -182,6 +182,44 @@ pub(crate) fn read_limited_reader(
             Err(err) => Err(err),
         };
     }
+}
+
+pub fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
+    set_fd_nonblocking(fd, true)
+}
+
+/// Change only O_NONBLOCK, preserving the descriptor's other status flags.
+pub fn set_fd_nonblocking(fd: RawFd, nonblocking: bool) -> std::io::Result<()> {
+    // SAFETY: F_GETFL/F_SETFL take and return integers and touch no memory;
+    // a bad fd fails with EBADF.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    let flags = if nonblocking {
+        flags | libc::O_NONBLOCK
+    } else {
+        flags & !libc::O_NONBLOCK
+    };
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+pub fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
+    // SAFETY: F_GETFD/F_SETFD take and return integers and touch no memory;
+    // a bad fd fails with EBADF.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

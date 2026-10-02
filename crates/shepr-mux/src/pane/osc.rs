@@ -478,7 +478,6 @@ mod tests {
                 pid: shell_pid,
                 name: "zsh".to_string(),
                 argv: Some(vec!["zsh".to_string()]),
-                cmdline: Some("zsh".to_string()),
             }],
         }
     }
@@ -896,7 +895,6 @@ mod tests {
                     pid: 42,
                     name: "droid".to_string(),
                     argv: Some(vec!["droid".to_string()]),
-                    cmdline: Some("droid".to_string()),
                 }],
             }),
         ));

@@ -71,8 +71,6 @@ report_seq = time.time_ns()
 request_id = f"{source}:{report_seq}"
 session_id = hook_input.get("session_id")
 agent_session_id = session_id if isinstance(session_id, str) and session_id else None
-transcript_path = hook_input.get("transcript_path")
-agent_session_path = transcript_path if isinstance(transcript_path, str) and transcript_path else None
 session_start_source = hook_input.get("source") if hook_event_name == "SessionStart" else None
 if not isinstance(session_start_source, str) or not session_start_source:
     session_start_source = None
@@ -84,8 +82,6 @@ if agent_session_id:
         "seq": report_seq,
         "agent_session_id": agent_session_id,
     }
-    if agent_session_path:
-        params["agent_session_path"] = agent_session_path
     if session_start_source:
         params["session_start_source"] = session_start_source
     request = {

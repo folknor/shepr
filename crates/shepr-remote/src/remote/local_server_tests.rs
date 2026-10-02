@@ -993,6 +993,26 @@ fn a_socket_override_never_starts_a_server() {
 }
 
 #[test]
+fn a_starting_server_at_a_socket_override_is_waited_on_not_refused() {
+    let env = IsolatedEnv::new();
+    let socket = env.path().join("starting.sock");
+    env.set(EnvVar::SheprSocketPath, &socket);
+    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let (release, server) = serve_starting_until_released(&socket);
+
+    let error = ensure_running(&paths, Duration::from_millis(300), BuildCheck::BeforeAttach)
+        .expect_err("a server that never finishes starting times out");
+    release.send(()).expect("release");
+    server.join().expect("server");
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
+    assert!(
+        error.to_string().contains("did not finish starting"),
+        "{error}"
+    );
+    assert_nothing_was_launched(&paths);
+}
+
+#[test]
 fn a_listener_that_does_not_answer_is_never_replaced() {
     let _env = IsolatedEnv::new();
     let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");

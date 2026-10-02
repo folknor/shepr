@@ -845,21 +845,7 @@ impl PtySetup<'_> {
         };
         let pid = child.id();
         crate::logging::pane_spawned(pane_id.raw(), pid);
-        // Opened before the watcher below exists, so nothing can have reaped
-        // the child yet and the pid is certainly still this child's. Without
-        // it the child could not be signalled safely while it is still in its
-        // chdir (before setsid, no session scan finds it), so the launch is
-        // refused.
-        let Some(leader) = shepr_platform::ProcessHandle::open(pid) else {
-            if let Err(kill_err) = child.kill() {
-                warn!(pane = pane_id.raw(), pid, error = %kill_err, "failed to kill pane child without a process handle");
-            }
-            super::child_watcher::reap_after_startup_failure(pane_id, child, None);
-            return Err(std::io::Error::other(
-                "no process handle for the pane's child",
-            ));
-        };
-        let child_liveness = Arc::new(ChildLiveness::launching(pid, leader));
+        let child_liveness = Arc::new(ChildLiveness::launching(pid, child.handle()));
         let io: Box<dyn ChildIo> = {
             // Failure cleanup and read effects use the same child identity.
             let startup_child_liveness = Arc::clone(&child_liveness);
@@ -2290,7 +2276,7 @@ mod tests {
         )
         .expect("spawn session");
         let leader_pid = spawned.child.id();
-        let leader = shepr_platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
+        let leader = spawned.child.handle();
         let child_liveness = Arc::new(ChildLiveness::new(leader_pid, Some(leader)));
         spawned.child.wait().expect("reap the leader");
         assert!(child_liveness.has_exited());
@@ -3000,7 +2986,6 @@ mod tests {
             pid,
             name: name.to_string(),
             argv: None,
-            cmdline: None,
         }
     }
 

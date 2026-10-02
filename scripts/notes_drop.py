@@ -19,7 +19,7 @@ def main() -> int:
             skipping = m.group(1) in ids
             if skipping:
                 dropped.add(m.group(1))
-        elif line.startswith("# "):
+        elif line.startswith("# ") or line.startswith("## "):
             skipping = False
         if not skipping:
             out.append(line)

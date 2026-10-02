@@ -77,7 +77,6 @@ pub(super) fn agent_target_index(
 
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
-    _active_endpoint_id: &ClientEndpointId,
     sort: shepr_config::AgentPanelSortConfig,
 ) -> Vec<AggregateAgentRow<'a>> {
     let mut rows = cached_endpoint_snapshots(endpoints)
@@ -132,14 +131,12 @@ fn sort_aggregate_rows(
     }
 }
 
-pub(super) fn online_agent_targets(
+pub(super) fn displayed_agent_targets(
     endpoints: &[ClientShellEndpoint],
-    active_endpoint_id: &ClientEndpointId,
     sort: shepr_config::AgentPanelSortConfig,
 ) -> Vec<AggregateAgentTarget> {
-    // Despite the historical name, this is the visible row order. Keeping stale rows here
-    // preserves displayed indices; focus_or_activate reports their unavailable state.
-    aggregate_agent_rows(endpoints, active_endpoint_id, sort)
+    // Keep stale rows in the displayed order so their indices stay aligned with the sidebar.
+    aggregate_agent_rows(endpoints, sort)
         .into_iter()
         .map(|row| AggregateAgentTarget {
             endpoint_id: row.endpoint.endpoint_id.clone(),

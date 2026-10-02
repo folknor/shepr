@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
-use crate::git::{AheadBehind, GitSpaceMetadata, fallback_label_from_cwd};
+use crate::git::{AheadBehind, fallback_label_from_cwd};
 use crate::limits::FIRST_WORKSPACE_NUMBER;
 use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::render_signal::RenderSignal;
@@ -129,8 +129,6 @@ pub struct Workspace {
     pub cached_git_branch: Option<String>,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
     pub cached_git_ahead_behind: Option<AheadBehind>,
-    /// Cached derived Git repo metadata for status display.
-    pub cached_git_space: Option<GitSpaceMetadata>,
     pub next_public_pane_number: usize,
     // Persistence reads the pane tree for snapshots and fills it during
     // restore; other crates use the accessors and workspace mutators.
@@ -144,8 +142,8 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// A workspace around a pane tree. The Git identity (repo label, branch,
-    /// space) is left undiscovered: finding it walks the filesystem up to `/`
+    /// A workspace around a pane tree. The Git identity (workspace label and
+    /// status) is left undiscovered: finding it walks the filesystem up to `/`
     /// and can spawn `git`, which must not run on the server's main loop. The
     /// background Git refresh discovers it, because an undiscovered identity
     /// never matches the workspace's resolved cwd.
@@ -168,7 +166,6 @@ impl Workspace {
             cached_git_status_key: PathBuf::new(),
             cached_git_branch: None,
             cached_git_ahead_behind: None,
-            cached_git_space: None,
             next_public_pane_number,
             root_pane,
             layout,
@@ -261,7 +258,7 @@ impl Workspace {
 
     /// Resets the cached Git identity to "not discovered yet": the label is
     /// the basename of `identity_cwd` (pure string work, no filesystem) and
-    /// there is no branch or space. The cached identity cwd is left empty, so
+    /// there is no Git status. The cached identity cwd is left empty, so
     /// it differs from every resolved cwd and the next background Git refresh
     /// rediscovers the real identity off the main loop.
     pub fn mark_identity_undiscovered(&mut self) {
@@ -270,7 +267,6 @@ impl Workspace {
         self.cached_git_status_key = self.identity_cwd.clone();
         self.cached_git_branch = None;
         self.cached_git_ahead_behind = None;
-        self.cached_git_space = None;
     }
 
     /// A new workspace with one shell pane whose PTY is spawned at `geometry`:
@@ -911,24 +907,17 @@ mod tests {
     }
 
     #[test]
-    fn linked_worktree_auto_label_uses_checkout_name_not_repo_name() {
+    fn linked_worktree_auto_label_uses_checkout_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let (_, repo, checkout) =
+        let (_, _, checkout) =
             crate::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 
         let (snapshot, _) = crate::git::git_status_snapshot_for_cwd(&checkout, None);
-        let space = snapshot.space;
-        let auto_label = snapshot.auto_label;
+        let status =
+            snapshot.into_workspace_status("workspace".into(), checkout.clone(), PathBuf::new());
 
         assert_eq!(
-            space.expect("test precondition").repo_name,
-            repo.file_name()
-                .expect("test precondition")
-                .to_str()
-                .expect("test precondition")
-        );
-        assert_eq!(
-            auto_label,
+            status.auto_label,
             checkout
                 .file_name()
                 .expect("test precondition")
@@ -1030,7 +1019,6 @@ mod tests {
 
         assert_eq!(ws.display_name(), "sub");
         assert_eq!(ws.branch(), None);
-        assert_eq!(ws.cached_git_space, None);
         assert_ne!(ws.cached_identity_cwd, ws.identity_cwd);
         assert!(ws.cached_identity_cwd.as_os_str().is_empty());
     }
