@@ -5,15 +5,8 @@ use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
-use crate::limits::{ENDPOINT_COMMAND_TIMEOUT, MAX_RETIRED_REQUESTS_PER_ENDPOINT};
+use crate::limits::ENDPOINT_COMMAND_TIMEOUT;
 use crate::shell::{ClientShellEndpointError, ClientShellEndpointRequest};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommandResponseKind {
-    Active,
-    Retired,
-    Untracked,
-}
 
 struct QueuedCommand {
     generation: ConnectionGeneration,
@@ -56,29 +49,6 @@ pub(crate) struct EndpointCommandCancellation {
 struct EndpointCommandLane {
     queued: VecDeque<QueuedCommand>,
     in_flight: Option<InFlightCommand>,
-    retired: VecDeque<RequestKey>,
-}
-
-impl EndpointCommandLane {
-    fn retire(&mut self, request: RequestKey) {
-        if self.retired.contains(&request) {
-            return;
-        }
-        if self.retired.len() == MAX_RETIRED_REQUESTS_PER_ENDPOINT {
-            self.retired.pop_front();
-        }
-        self.retired.push_back(request);
-    }
-
-    /// Whether `request` was retired, dropping its tombstone: its one response
-    /// has now arrived.
-    fn consume_retired(&mut self, request: &RequestKey) -> bool {
-        let Some(index) = self.retired.iter().position(|retired| retired == request) else {
-            return false;
-        };
-        self.retired.remove(index);
-        true
-    }
 }
 
 #[derive(Default)]
@@ -87,33 +57,6 @@ pub(crate) struct EndpointCommands {
 }
 
 impl EndpointCommands {
-    pub(crate) fn response_kind(
-        &self,
-        endpoint_id: &ClientEndpointId,
-        generation: u64,
-        boot_id: &str,
-        request_id: &str,
-    ) -> CommandResponseKind {
-        let Some(lane) = self.lanes.get(endpoint_id) else {
-            return CommandResponseKind::Untracked;
-        };
-        if lane.in_flight.as_ref().is_some_and(|command| {
-            command.key.generation == generation
-                && command.key.boot_id == boot_id
-                && command.key.request_id == request_id
-        }) {
-            return CommandResponseKind::Active;
-        }
-        if lane.retired.iter().any(|retired| {
-            retired.generation == generation
-                && retired.boot_id == boot_id
-                && retired.request_id == request_id
-        }) {
-            return CommandResponseKind::Retired;
-        }
-        CommandResponseKind::Untracked
-    }
-
     pub(crate) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
@@ -173,7 +116,7 @@ impl EndpointCommands {
     }
 
     /// Retire the complete lane when an endpoint stops being shown. The in-flight request is
-    /// tombstoned for a late endpoint-local response; every queued request is cancelled before
+    /// released so late responses are ignored; every queued request is cancelled before
     /// it can run while another endpoint is shown. Other endpoint lanes are deliberately
     /// untouched.
     pub(crate) fn retire_lane(
@@ -188,7 +131,6 @@ impl EndpointCommands {
             cancelled
                 .possibly_sent
                 .push(command.key.request_id.to_string());
-            lane.retire(command.key);
         }
         cancelled
             .unsent
@@ -213,7 +155,6 @@ impl EndpointCommands {
                     return None;
                 }
                 let command = lane.in_flight.take()?;
-                lane.retire(command.key.clone());
                 Some(EndpointCommandResult {
                     endpoint_id: endpoint_id.clone(),
                     generation: command.key.generation.get(),
@@ -225,9 +166,8 @@ impl EndpointCommands {
             .collect()
     }
 
-    /// Completes the in-flight command a response answers. A response to a
-    /// retired command only clears its tombstone, and one that matches
-    /// nothing in flight is ignored.
+    /// Completes only the in-flight command this response answers. Retired,
+    /// expired and unknown requests are ignored without retaining their identities.
     pub(crate) fn receive_response(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -242,9 +182,6 @@ impl EndpointCommands {
             boot_id: response_boot_id.clone(),
             request_id: response_request_id.clone(),
         };
-        if lane.consume_retired(&key) {
-            return None;
-        }
         if lane.in_flight.as_ref()?.key != key {
             return None;
         }
@@ -347,20 +284,29 @@ mod tests {
     }
 
     #[test]
-    fn response_kind_uses_tracked_identity_instead_of_id_text() {
+    fn a_response_matches_only_the_in_flight_request() {
         let mut commands = commands_with_in_flight();
-        assert_eq!(
-            commands.response_kind(&endpoint(), 1, &boot_a(), "request-a"),
-            CommandResponseKind::Active
-        );
-        assert_eq!(
-            commands.response_kind(&endpoint(), 1, &boot_a(), "client-shell-surface:1:on"),
-            CommandResponseKind::Untracked
-        );
-        commands.retire_lane(&endpoint());
-        assert_eq!(
-            commands.response_kind(&endpoint(), 1, &boot_a(), "request-a"),
-            CommandResponseKind::Retired
+        for (generation, boot, id) in [
+            (2, boot_a(), request_a()),
+            (1, boot_b(), request_a()),
+            (1, boot_a(), "other".into()),
+        ] {
+            assert!(
+                commands
+                    .receive_response(&endpoint(), generation, &boot, &id, Ok(EndpointReply::Done))
+                    .is_none()
+            );
+        }
+        assert!(
+            commands
+                .receive_response(
+                    &endpoint(),
+                    1,
+                    &boot_a(),
+                    &request_a(),
+                    Ok(EndpointReply::Done)
+                )
+                .is_some()
         );
     }
 
@@ -457,11 +403,6 @@ mod tests {
                 .is_none()
         );
         assert!(!has_in_flight(&commands));
-        assert_eq!(
-            commands.response_kind(&endpoint(), 1, &boot_a(), "request-a"),
-            CommandResponseKind::Untracked,
-            "the late response consumed its tombstone"
-        );
     }
 
     #[test]
@@ -576,29 +517,6 @@ mod tests {
             }
         );
         assert!(!commands.lanes.contains_key(&endpoint()));
-    }
-
-    #[test]
-    fn retired_request_tombstones_are_bounded() {
-        let mut lane = EndpointCommandLane::default();
-        for serial in 0..MAX_RETIRED_REQUESTS_PER_ENDPOINT + 10 {
-            lane.retire(RequestKey {
-                generation: ConnectionGeneration::new(1),
-                boot_id: boot_a(),
-                request_id: format!("request-{serial}").into(),
-            });
-        }
-        assert_eq!(lane.retired.len(), MAX_RETIRED_REQUESTS_PER_ENDPOINT);
-        assert!(!lane.retired.contains(&RequestKey {
-            generation: ConnectionGeneration::new(1),
-            boot_id: boot_a(),
-            request_id: "request-0".into(),
-        }));
-        assert!(lane.retired.contains(&RequestKey {
-            generation: ConnectionGeneration::new(1),
-            boot_id: boot_a(),
-            request_id: format!("request-{}", MAX_RETIRED_REQUESTS_PER_ENDPOINT + 9).into(),
-        }));
     }
 
     #[test]

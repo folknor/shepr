@@ -18,7 +18,7 @@ pub(super) struct ClientWordSelection {
     cursor: (shepr_vt::AbsRow, u16),
     end_col: u16,
     cached_row: Option<(shepr_vt::AbsRow, String)>,
-    pending_row: Option<shepr_vt::AbsRow>,
+    pending: Option<shepr_protocol::RequestId>,
     pub(super) dragged: bool,
     pub(super) released: bool,
 }
@@ -33,7 +33,6 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         let row = metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(viewport_row));
-        self.word_selection_generation = self.word_selection_generation.saturating_add(1);
         self.word_selection_gesture = Some(ClientWordSelection {
             pane_id: hit.pane_id.clone(),
             focus_confirmed: self
@@ -46,7 +45,7 @@ impl ClientShellState {
             cursor: (row, col),
             end_col: hit.inner_rect.width.saturating_sub(1),
             cached_row: None,
-            pending_row: None,
+            pending: None,
             dragged: false,
             released: false,
         });
@@ -67,10 +66,9 @@ impl ClientShellState {
         let Some(gesture) = self.word_selection_gesture.as_mut() else {
             return;
         };
-        if gesture.pending_row.is_some() {
+        if gesture.pending.is_some() {
             return;
         }
-        gesture.pending_row = Some(row);
         let pane_id = gesture.pane_id.clone();
         let params = shepr_protocol::command::PaneSelectionReadParams {
             pane_id: pane_id.clone(),
@@ -80,15 +78,15 @@ impl ClientShellState {
                 col: gesture.end_col,
             },
         };
-        if !self.push_endpoint_command_with_kind(
+        if let Some(id) = self.submit(
             shepr_protocol::command::EndpointCommand::PaneSelectionRead(params),
-            PendingEndpointKind::WordSelection {
-                pane_id,
-                absolute_row: row,
-                generation: self.word_selection_generation,
-            },
+            Work::WordSelection { pane_id, row },
             outcome,
         ) {
+            if let Some(gesture) = self.word_selection_gesture.as_mut() {
+                gesture.pending = Some(id);
+            }
+        } else {
             self.cancel_word_selection();
         }
     }
@@ -171,37 +169,34 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn cancel_word_selection_row(
-        &mut self,
-        pane_id: &str,
-        absolute_row: shepr_vt::AbsRow,
-        generation: u64,
-    ) -> bool {
-        if self.word_selection_generation != generation
-            || self.word_selection_gesture.as_ref().is_none_or(|gesture| {
-                gesture.pane_id != pane_id || gesture.pending_row != Some(absolute_row)
-            })
+    pub(super) fn drop_word_selection(&mut self, request: &shepr_protocol::RequestId) -> bool {
+        if self
+            .word_selection_gesture
+            .as_ref()
+            .is_some_and(|g| g.pending.as_ref() == Some(request))
         {
-            return false;
+            self.cancel_word_selection();
+            true
+        } else {
+            false
         }
-        self.cancel_word_selection();
-        true
     }
 
     pub(super) fn complete_word_selection_row(
         &mut self,
+        request: &shepr_protocol::RequestId,
         pane_id: &str,
         absolute_row: shepr_vt::AbsRow,
-        generation: u64,
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
-    ) -> (bool, Vec<ClientShellAction>) {
-        if self.word_selection_generation != generation
-            || self.word_selection_gesture.as_ref().is_none_or(|gesture| {
-                gesture.pane_id != pane_id || gesture.pending_row != Some(absolute_row)
-            })
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if self
+            .word_selection_gesture
+            .as_ref()
+            .is_none_or(|g| g.pending.as_ref() != Some(request))
         {
-            return (false, Vec::new());
+            return false;
         }
         if self
             .snapshot
@@ -209,7 +204,7 @@ impl ClientShellState {
             .is_none_or(|snapshot| !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id))
         {
             self.cancel_word_selection();
-            return (true, Vec::new());
+            return true;
         }
         let text = match result {
             Ok(shepr_protocol::command::EndpointReply::PaneSelection {
@@ -225,23 +220,22 @@ impl ClientShellState {
                     );
                 }
                 self.cancel_word_selection();
-                return (true, Vec::new());
+                return true;
             }
         };
         let Some(gesture) = self.word_selection_gesture.as_mut() else {
-            return (false, Vec::new());
+            return false;
         };
-        gesture.pending_row = None;
+        gesture.pending = None;
         if gesture.anchor_bounds.is_none() {
             gesture.anchor_bounds = word_bounds_at_column(&text, gesture.anchor.1);
             if gesture.anchor_bounds.is_none() {
                 self.cancel_word_selection();
-                return (true, Vec::new());
+                return true;
             }
         }
         gesture.cached_row = Some((absolute_row, text));
-        let mut outcome = ClientShellInput::default();
-        self.update_word_selection(&mut outcome, now);
-        (outcome.repaint, outcome.actions)
+        self.update_word_selection(outcome, now);
+        outcome.repaint
     }
 }

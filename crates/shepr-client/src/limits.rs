@@ -118,11 +118,6 @@ pub(super) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(6
 ///
 /// The deadline allows slow remote reads while preventing a request from waiting forever.
 pub(super) const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
-/// Maximum retired request IDs retained per endpoint to ignore late responses.
-///
-/// The window tolerates a burst of cancelled requests without unbounded per-endpoint growth.
-pub(super) const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
-
 /// How long a move may stay Preparing before it fails and the shown endpoint stays.
 pub(super) const ENDPOINT_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Endpoint heartbeat interval shared with the server's core timing policy.

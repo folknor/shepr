@@ -68,7 +68,7 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
             };
             let mut state = ClientShellState::new(config);
             state.set_snapshot(Box::new(workspaces(3)));
-            state.set_pane_surface(surface());
+            state.receive_pane_surface(surface());
             state.sidebar_collapsed = compact;
             state.compose(100, 28).expect("test precondition");
             enter_navigation(&mut state);
@@ -192,11 +192,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                 Some("w1")
             );
             assert_eq!(
-                state
-                    .pane_surface
-                    .as_ref()
-                    .expect("test precondition")
-                    .boot_id,
+                state.pane_surface().expect("test precondition").boot_id,
                 crate::tests::test_boot_id("boot-1")
             );
             let enter = state.handle_input_bytes(b"\r");
@@ -320,7 +316,7 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(100, 28).expect("test precondition");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     enter_navigation(&mut state);
@@ -458,7 +454,7 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
             7,
             Box::new(local.clone()),
         );
-        state.set_pane_surface(surface());
+        state.receive_pane_surface(surface());
         state.compose(100, 28).expect("test precondition");
         enter_navigation(&mut state);
         preview_key(&mut state, b"\x1b[B");
@@ -529,7 +525,7 @@ fn local_navigation_state(compact: bool) -> ClientShellState {
     state.config.palette = Palette::terminal();
     state.sidebar_collapsed = compact;
     state.set_snapshot(Box::new(workspaces(3)));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(100, 28).expect("test precondition");
     state
 }
@@ -583,7 +579,7 @@ fn set_local_focus(state: &mut ClientShellState, workspace_id: &str, revision: u
     state.set_snapshot(Box::new(snapshot));
     let mut frame = surface();
     frame.projection_revision = shepr_protocol::ProjectionRevision::new(revision);
-    state.set_pane_surface(frame);
+    state.receive_pane_surface(frame);
 }
 
 #[test]
@@ -607,7 +603,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
             assert_local_highlight(&mut state, "w3");
             state.invalidate_pane_surface();
             assert_local_highlight(&mut state, "w3");
-            state.set_pane_surface(surface());
+            state.receive_pane_surface(surface());
             if response_first {
                 state.handle_endpoint_result(
                     &crate::tests::test_boot_id("boot-1"),
@@ -640,7 +636,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         let request_id = request_local_navigation(&mut state, 2);
         assert_local_highlight(&mut state, "w3");
         if failure == "cancelled" {
-            assert!(state.cancel_endpoint_request(&request_id));
+            assert!(state.drop_request(&request_id, DropReason::Interrupted));
         } else {
             state.handle_endpoint_result(
                 &crate::tests::test_boot_id("boot-1"),
@@ -666,9 +662,9 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         let mut state = local_navigation_state(false);
         let old_request = request_local_navigation(&mut state, old_down);
         let latest_request = request_local_navigation(&mut state, 2);
-        state.cancel_endpoint_request(&old_request);
+        state.drop_request(&old_request, DropReason::Interrupted);
         assert_local_highlight(&mut state, "w3");
-        state.cancel_endpoint_request(&latest_request);
+        state.drop_request(&latest_request, DropReason::Interrupted);
         assert_local_highlight(&mut state, "w1");
     }
 }
@@ -725,7 +721,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
             .expect("test precondition")
             .boot_id
             .clone();
-        state.set_pane_surface(frame);
+        state.receive_pane_surface(frame);
         assert_local_highlight(&mut state, "w1");
     }
 }
@@ -749,7 +745,7 @@ fn navigation_highlight_yields_to_new_intent() {
     let [ClientShellAction::Endpoint { request, .. }] = unrelated.actions.as_slice() else {
         panic!("expected unrelated request");
     };
-    state.cancel_endpoint_request(&request.id);
+    state.drop_request(&request.id, DropReason::Interrupted);
     assert_local_highlight(&mut state, "w3");
     let mut focus = ClientShellInput::default();
     state.focus_or_activate(

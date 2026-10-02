@@ -173,7 +173,7 @@ pub fn commit_move(
     {
         return Err("endpoint projection is unavailable".into());
     }
-    shell.set_pane_surface(surface.clone());
+    shell.receive_pane_surface(surface.clone());
     let committed = choice.commit();
     endpoints.send_to(
         &target,

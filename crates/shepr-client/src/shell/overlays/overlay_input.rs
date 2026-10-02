@@ -169,24 +169,19 @@ impl ClientShellState {
             ),
             None => "workspace".to_owned(),
         };
-        let mut label_lookup_id = None;
+        let mut label_lookup = None;
         if let Some(cwd) = cwd.as_deref()
             && self.endpoint_is_online(&self.active_endpoint_id)
         {
-            let id = self.next_workspace_label_lookup_id;
-            self.next_workspace_label_lookup_id = id.wrapping_add(1).max(1);
-            let sent = self.push_endpoint_command_with_kind(
+            label_lookup = self.submit(
                 shepr_protocol::command::EndpointCommand::WorkspaceCheckoutRoot(
                     shepr_protocol::command::WorkspaceCheckoutRootParams {
                         cwd: cwd.to_owned(),
                     },
                 ),
-                PendingEndpointKind::WorkspaceLabel { lookup_id: id },
+                Work::WorkspaceLabel,
                 outcome,
             );
-            if sent {
-                label_lookup_id = Some(id);
-            }
         }
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new workspace",
@@ -194,7 +189,7 @@ impl ClientShellState {
             target: ClientRenameTarget::NewWorkspace {
                 cwd,
                 suggested_name,
-                label_lookup_id,
+                label_lookup,
             },
         }));
     }
@@ -204,8 +199,8 @@ impl ClientShellState {
     /// lookup keeps the path-based suggestion. Returns whether to repaint.
     pub(super) fn complete_workspace_label_lookup(
         &mut self,
-        id: u64,
-        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
+        request: &shepr_protocol::RequestId,
+        result: Option<shepr_protocol::command::EndpointReply>,
     ) -> bool {
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
             return false;
@@ -213,17 +208,17 @@ impl ClientShellState {
         let ClientRenameTarget::NewWorkspace {
             cwd,
             suggested_name,
-            label_lookup_id,
+            label_lookup,
             ..
         } = &mut rename.target
         else {
             return false;
         };
-        if *label_lookup_id != Some(id) {
+        if label_lookup.as_ref() != Some(request) {
             return false;
         }
-        *label_lookup_id = None;
-        let Ok(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot { root, home }) =
+        *label_lookup = None;
+        let Some(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot { root, home }) =
             result
         else {
             return false;

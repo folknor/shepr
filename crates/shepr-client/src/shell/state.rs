@@ -1,7 +1,8 @@
 //! Client shell state. Several types here derive `Debug` while carrying typed
 //! or pasted text (overlay `TextEditor`s, copy-mode search queries, queued
 //! keys, `ClientShellAction::ClipboardWrite` bytes, endpoint requests with
-//! labels): never log them with `{:?}`; log ids, lengths or kinds instead.
+//! labels, ledger `Work` search queries): never log them with `{:?}`; log ids,
+//! lengths or kinds instead.
 
 use super::*;
 
@@ -231,7 +232,7 @@ pub(super) enum ClientRenameTarget {
     NewWorkspace {
         cwd: Option<String>,
         suggested_name: String,
-        label_lookup_id: Option<u64>,
+        label_lookup: Option<shepr_protocol::RequestId>,
     },
     Workspace {
         workspace_id: shepr_protocol::WorkspaceId,
@@ -378,44 +379,6 @@ impl ClientShellOverlay {
     }
 }
 
-#[derive(Debug)]
-pub(super) enum PendingEndpointKind {
-    Generic,
-    SelectionCopy,
-    WorkspaceLabel {
-        lookup_id: u64,
-    },
-    PaneScroll {
-        pane_id: shepr_protocol::PublicPaneId,
-        serial: u64,
-    },
-    WordSelection {
-        pane_id: shepr_protocol::PublicPaneId,
-        absolute_row: shepr_vt::AbsRow,
-        generation: u64,
-    },
-    CopyMotion {
-        pane_id: shepr_protocol::PublicPaneId,
-        origin: shepr_protocol::command::PaneTextPoint,
-        session_generation: u64,
-    },
-    CopySearch {
-        pane_id: shepr_protocol::PublicPaneId,
-        origin: shepr_protocol::command::PaneTextPoint,
-        query: String,
-        direction: shepr_protocol::command::PaneCopySearchDirection,
-        repeat: bool,
-        generation: u64,
-        session_generation: u64,
-    },
-}
-
-pub(super) struct PendingEndpointRequest {
-    pub(super) boot_id: shepr_protocol::BootId,
-    pub(super) method_name: String,
-    pub(super) kind: PendingEndpointKind,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ClientEndpointNoticeKind {
     Rejected,
@@ -438,12 +401,11 @@ pub(super) struct ClientVisibleEndpointNotice {
     pub(super) body: String,
 }
 
-/// Why an endpoint command failed: the client raises `Timeout` and
-/// `Cancelled` itself; every other failure is the server's own typed error.
+/// Why an endpoint command failed: the client raises `Timeout`
+/// itself; every other failure is the server's own typed error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClientShellEndpointError {
     Timeout,
-    Cancelled,
     Server(shepr_protocol::command::EndpointError),
 }
 
@@ -451,9 +413,6 @@ impl std::fmt::Display for ClientShellEndpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Timeout => f.write_str("this server did not respond to the action"),
-            Self::Cancelled => {
-                f.write_str("This server action was interrupted. Check its state before retrying.")
-            }
             Self::Server(error) => std::fmt::Display::fmt(error, f),
         }
     }
@@ -576,6 +535,25 @@ pub(super) struct ClientCopyModeState {
     pub(super) copy_after_search: bool,
 }
 
+/// The selected pane as the previously presented surface showed it. The selection
+/// invalidation needs only this, so no previous surface is cloned, and an in-place patch
+/// can capture it before changing the surface.
+pub(super) enum PreviousPane {
+    /// Nothing was presented: nothing shows the selection's coordinates still describe
+    /// this pane's grid, and highlighting them could mark stale cells. Invalidate.
+    NoSurface,
+    /// No selection, or the pane is missing from a compared surface: keep it.
+    Absent,
+    /// Compare with the next surface.
+    Present(PaneFacts),
+}
+pub(super) struct PaneFacts {
+    inner_width: u16,
+    inner_height: u16,
+    alternate_screen_active: bool,
+    content_revision: u64,
+}
+
 pub struct ClientShellState {
     /// The client loop's time for the event being handled, set on each event,
     /// so shell code that stamps deadlines never reads the clock itself.
@@ -584,11 +562,10 @@ pub struct ClientShellState {
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
     pub(super) active_snapshot_generation: Option<u64>,
-    pub(super) pane_surface_generation: Option<u64>,
-    pub(super) pane_surface: Option<PaneSurfaceFrame>,
-    /// A future projection surface waits here until its matching snapshot arrives. The visible
-    /// pane surface always remains an exact snapshot pair.
-    pub(super) pending_pane_surface: Option<PaneSurfaceFrame>,
+    pub(super) surfaces: PaneSurfaces,
+    pub(super) ledger: Ledger,
+    pub(super) scroll_lanes: ScrollLanes,
+    pub(super) copy_pipeline: CopyPipeline,
     /// Identifies the currently active endpoint and its boot, so a switch of endpoint or a
     /// restart of its server is detectable when the next snapshot arrives.
     pub(super) active_boot_key: String,
@@ -618,7 +595,6 @@ pub struct ClientShellState {
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
-    pub(super) next_workspace_label_lookup_id: u64,
     pub(super) previous_pane_id: Option<shepr_protocol::PublicPaneId>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) selection: Option<shepr_vt::selection::Selection<shepr_protocol::PublicPaneId>>,
@@ -632,23 +608,12 @@ pub struct ClientShellState {
     pub(super) selection_autoscroll_deadline: Option<std::time::Instant>,
     pub(super) selection_highlight_clear_deadline: Option<std::time::Instant>,
     pub(super) word_selection_gesture: Option<ClientWordSelection>,
-    pub(super) word_selection_generation: u64,
     pub(super) copy_mode: Option<ClientCopyModeState>,
-    pub(super) copy_session_generation: u64,
-    pub(super) copy_operation_in_flight: bool,
-    pub(super) copy_operation_queue: VecDeque<ClientCopyOperation>,
-    pub(super) copy_input_queue: VecDeque<shepr_termio::input::TerminalKey>,
-    pub(super) next_scroll_serial: u64,
-    pub(super) pane_scroll_in_flight: HashMap<shepr_protocol::PublicPaneId, u64>,
-    pub(super) pane_scroll_queued: HashMap<shepr_protocol::PublicPaneId, usize>,
-    pub(super) pane_scroll_targets: HashMap<shepr_protocol::PublicPaneId, usize>,
     pub(super) host_mouse_pixels: Option<shepr_termio::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
     /// Whether the host sends every key, text keys included, as an escape
     /// code with its release (kitty REPORT_ALL_KEYS). Set per host input batch.
     pub(super) host_reports_all_keys: bool,
-    pub(super) next_request_id: u64,
-    pub(super) pending_requests: HashMap<shepr_protocol::RequestId, PendingEndpointRequest>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
     pub(super) restore_notice_seen: HashSet<ClientEndpointNoticeKey>,
@@ -719,9 +684,10 @@ impl ClientShellState {
             config,
             snapshot: None,
             active_snapshot_generation: None,
-            pane_surface_generation: None,
-            pane_surface: None,
-            pending_pane_surface: None,
+            surfaces: PaneSurfaces::default(),
+            ledger: Ledger::default(),
+            scroll_lanes: ScrollLanes::default(),
+            copy_pipeline: CopyPipeline::default(),
             active_boot_key: String::new(),
             sidebar_collapsed,
             sidebar_collapsed_manual: preferences.sidebar_collapsed.is_some(),
@@ -749,7 +715,6 @@ impl ClientShellState {
             pending_workspace_highlight: None,
             reveal_navigation_workspace: false,
             overlay,
-            next_workspace_label_lookup_id: 1,
             previous_pane_id: None,
             pane_mouse_gesture: None,
             selection: None,
@@ -759,21 +724,10 @@ impl ClientShellState {
             selection_autoscroll_deadline: None,
             selection_highlight_clear_deadline: None,
             word_selection_gesture: None,
-            word_selection_generation: 0,
             copy_mode: None,
-            copy_session_generation: 0,
-            copy_operation_in_flight: false,
-            copy_operation_queue: VecDeque::new(),
-            copy_input_queue: VecDeque::new(),
-            next_scroll_serial: 0,
-            pane_scroll_in_flight: HashMap::new(),
-            pane_scroll_queued: HashMap::new(),
-            pane_scroll_targets: HashMap::new(),
             host_mouse_pixels: None,
             input_leases: ClientInputLeases::default(),
             host_reports_all_keys: false,
-            next_request_id: 1,
-            pending_requests: HashMap::new(),
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
             restore_notice_seen: HashSet::new(),
@@ -787,7 +741,7 @@ impl ClientShellState {
     }
 
     pub(crate) fn presentation_log_context(&self) -> ClientPresentationLogContext {
-        let surface = self.pane_surface.as_ref();
+        let surface = self.pane_surface();
         let mut pane_ids: Vec<_> = surface.map_or_else(Vec::new, |surface| {
             surface
                 .panes
@@ -807,11 +761,7 @@ impl ClientShellState {
         let snapshot = self.snapshot.as_deref();
         ClientPresentationLogContext {
             endpoint: self.active_endpoint_id.storage_key(),
-            generation: if surface.is_some() {
-                self.pane_surface_generation
-            } else {
-                self.active_snapshot_generation
-            },
+            generation: self.active_snapshot_generation,
             boot_id: surface
                 .map(|surface| surface.boot_id.to_string())
                 .or_else(|| snapshot.map(|snapshot| snapshot.boot_id.to_string())),
@@ -878,8 +828,7 @@ impl ClientShellState {
 
     pub(super) fn reset_endpoint_projection(&mut self) {
         self.hits = ShellHitMap::default();
-        self.pane_surface = None;
-        self.pending_pane_surface = None;
+        self.surfaces = PaneSurfaces::default();
         self.input_leases = ClientInputLeases::default();
         self.chrome_drag = None;
         self.workspace_press = None;
@@ -889,10 +838,8 @@ impl ClientShellState {
         self.last_composed_size = None;
         self.last_composed_at = None;
         self.selection_repaint_deadline = None;
-        self.pending_requests.clear();
-        self.pane_scroll_in_flight.clear();
-        self.pane_scroll_queued.clear();
-        self.pane_scroll_targets.clear();
+        self.drop_all_requests(DropReason::Reset);
+        self.scroll_lanes.clear();
         self.endpoint_notice_seen.clear();
         if !self
             .visible_endpoint_notice
@@ -944,10 +891,10 @@ impl ClientShellState {
         {
             return;
         }
-        // Screen revisions restart per connection. Keep the displayed surface for selection
-        // content comparisons, but retire speculative frames from the old connection.
-        if generation_changed {
-            self.pending_pane_surface = None;
+        // A new connection loses the reader baseline but holds the last presented pair.
+        // The first snapshot is not a loss: its connection may have sent a surface first.
+        if self.active_snapshot_generation.is_some() && generation_changed {
+            self.surfaces.lose_baseline();
         }
         self.active_snapshot_generation = generation;
         self.active_boot_key = active_boot_key;
@@ -1084,112 +1031,116 @@ impl ClientShellState {
         let pane_exists = |pane_id: &shepr_protocol::PublicPaneId| {
             snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
         };
-        self.pane_scroll_in_flight
-            .retain(|pane_id, _| pane_exists(pane_id));
-        self.pane_scroll_queued
-            .retain(|pane_id, _| pane_exists(pane_id));
-        self.pane_scroll_targets
-            .retain(|pane_id, _| pane_exists(pane_id));
+        self.scroll_lanes.retain_panes(pane_exists);
 
         self.snapshot = Some(snapshot);
         self.reconcile_pending_workspace_highlight();
-        let pending_surface = self.pending_pane_surface.take();
-        if let Some(surface) = pending_surface {
-            let matching = self.snapshot.as_ref().is_some_and(|snapshot| {
-                surface.boot_id == snapshot.boot_id
-                    && surface.projection_revision == snapshot.revision
-            });
-            if matching {
-                self.install_pane_surface(surface, false);
-            } else if self.snapshot.as_ref().is_some_and(|snapshot| {
-                surface.boot_id == snapshot.boot_id
-                    && surface.projection_revision > snapshot.revision
-            }) {
-                self.pending_pane_surface = Some(surface);
-            }
-        }
+        self.pair_surfaces();
     }
 
-    pub(crate) fn set_pane_surface(&mut self, surface: PaneSurfaceFrame) {
+    /// The presented surface: what is on screen, possibly held while unpaired. Input
+    /// reads this.
+    pub(super) fn pane_surface(&self) -> Option<&PaneSurfaceFrame> {
+        self.surfaces.presented()
+    }
+
+    /// A full surface from the shown connection. It always becomes the baseline (the
+    /// reader enforces order and the shell mirrors it) and is presented once it pairs
+    /// with the snapshot.
+    pub(crate) fn receive_pane_surface(&mut self, surface: PaneSurfaceFrame) {
+        self.surfaces.receive(surface);
+        self.pair_surfaces();
+    }
+
+    /// Pairs the baseline with the snapshot and, when that changes what is presented,
+    /// runs the presentation effects. The effects never read `self.surfaces`, so it is
+    /// moved out around them; a panic in between leaves `Empty`, a valid state.
+    fn pair_surfaces(&mut self) {
         let Some(snapshot) = self.snapshot.as_ref() else {
             return;
         };
-        if surface.boot_id != snapshot.boot_id || surface.projection_revision < snapshot.revision {
-            return;
-        }
-        if self.pane_surface.as_ref().is_some_and(|current| {
-            self.pane_surface_generation == self.active_snapshot_generation
-                && current.boot_id == surface.boot_id
-                && (surface.projection_revision < current.projection_revision
-                    || (surface.projection_revision == current.projection_revision
-                        && surface.surface_revision < current.surface_revision))
-        }) {
-            return;
-        }
-        if snapshot.revision.checked_next() == Some(surface.projection_revision) {
-            // The next expected surface waits separately for its exact snapshot. Keeping the
-            // current pair avoids treating this speculative successor as presentation evidence.
-            // The visible pair and its hit map are untouched, so the hits stay live.
-            self.pending_pane_surface = Some(surface);
-            return;
-        }
-        // A surface that skips one or more revisions supersedes any retained pair, but is still
-        // not rendered until its matching snapshot arrives. Retain it monotonically so delayed
-        // intermediate surfaces cannot replace it.
-        self.install_pane_surface(surface, true);
-    }
-
-    fn install_pane_surface(&mut self, surface: PaneSurfaceFrame, retain_future: bool) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
-        if surface.boot_id != snapshot.boot_id
-            || surface.projection_revision < snapshot.revision
-            || (!retain_future && surface.projection_revision != snapshot.revision)
-            || self.pane_surface.as_ref().is_some_and(|current| {
-                self.pane_surface_generation == self.active_snapshot_generation
-                    && current.boot_id == surface.boot_id
-                    && (surface.projection_revision < current.projection_revision
-                        || (surface.projection_revision == current.projection_revision
-                            && surface.surface_revision < current.surface_revision))
-            })
+        if let Pairing::Presented { previous } =
+            self.surfaces.pair(&snapshot.boot_id, snapshot.revision)
         {
-            return;
+            let before = self.pane_facts_before(previous.as_ref());
+            let surfaces = std::mem::take(&mut self.surfaces);
+            if let Some(surface) = surfaces.paired() {
+                self.presented_surface_changed(before, surface);
+            }
+            self.surfaces = surfaces;
         }
-        // A retained future surface is not presentable yet; the exact-pair compose guard keeps
-        // it from replacing the visible frame. Its pane geometry no longer matches the pane
-        // hits on screen, so those go (pane input and copy mode read `pane_surface` alongside
-        // them). Chrome hits still match the visible frame and stay.
-        if surface.projection_revision != snapshot.revision {
-            self.hits.panes.clear();
-            self.hits.pane_splits.clear();
-        }
-        let selection_pane = match &self.word_selection_gesture {
-            Some(gesture) => Some(&gesture.pane_id),
-            None => self.selection.as_ref().map(|selection| &selection.pane_id),
+    }
+
+    /// Captures the selected (or word-gesture) pane as `previous` showed it.
+    pub(super) fn pane_facts_before(&self, previous: Option<&PaneSurfaceFrame>) -> PreviousPane {
+        let pane_id = self
+            .word_selection_gesture
+            .as_ref()
+            .map(|g| &g.pane_id)
+            .or_else(|| self.selection.as_ref().map(|s| &s.pane_id));
+        let Some(pane_id) = pane_id else {
+            return PreviousPane::Absent;
         };
-        let selection_invalidated = selection_pane.is_some_and(|pane_id| {
-            // With no surface to compare against, nothing shows the selection's coordinates
-            // still describe this pane's grid; highlighting them could mark stale cells.
-            let Some(previous_surface) = self.pane_surface.as_ref() else {
-                return true;
-            };
-            let previous = previous_surface
-                .panes
-                .iter()
-                .find(|pane| &pane.pane_id == pane_id);
-            let next = surface.panes.iter().find(|pane| &pane.pane_id == pane_id);
-            let (Some(previous), Some(next)) = (previous, next) else {
-                return false;
-            };
-            previous.inner_rect.width != next.inner_rect.width
-                || previous.inner_rect.height != next.inner_rect.height
-                || previous.alternate_screen_active != next.alternate_screen_active
-                // Ordinary selections are live buffer ranges. Only word gestures
-                // cache content-dependent boundaries that output can invalidate.
-                || (self.word_selection_gesture.is_some()
-                    && previous.content_revision != next.content_revision)
-        });
+        let Some(surface) = previous else {
+            return PreviousPane::NoSurface;
+        };
+        surface
+            .panes
+            .iter()
+            .find(|p| &p.pane_id == pane_id)
+            .map_or(PreviousPane::Absent, |p| {
+                PreviousPane::Present(PaneFacts {
+                    inner_width: p.inner_rect.width,
+                    inner_height: p.inner_rect.height,
+                    alternate_screen_active: p.alternate_screen_active,
+                    content_revision: p.content_revision,
+                })
+            })
+    }
+
+    /// A presented surface or patch shows `scroll` for `pane`: a scroll target it shows
+    /// is done.
+    pub(super) fn scroll_target_shown(
+        &mut self,
+        pane: &shepr_protocol::PublicPaneId,
+        scroll: Option<shepr_protocol::PaneSurfaceScrollMetrics>,
+    ) {
+        if let Some(scroll) = scroll {
+            self.scroll_lanes.shown(
+                pane,
+                usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX),
+                usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX),
+            );
+        }
+    }
+
+    /// Effects of a change to the presented surface, which the caller stores: invalidates
+    /// a selection or word gesture whose pane changed size or screen, drops scroll targets
+    /// the surface shows, and refreshes copy-mode geometry and clamping.
+    pub(super) fn presented_surface_changed(
+        &mut self,
+        before: PreviousPane,
+        surface: &PaneSurfaceFrame,
+    ) {
+        let pane_id = self
+            .word_selection_gesture
+            .as_ref()
+            .map(|g| &g.pane_id)
+            .or_else(|| self.selection.as_ref().map(|s| &s.pane_id));
+        let next = pane_id.and_then(|id| surface.panes.iter().find(|p| &p.pane_id == id));
+        let selection_invalidated = match (before, next) {
+            (PreviousPane::NoSurface, _) => true,
+            (PreviousPane::Present(previous), Some(next)) => {
+                previous.inner_width != next.inner_rect.width
+                    || previous.inner_height != next.inner_rect.height
+                    || previous.alternate_screen_active != next.alternate_screen_active
+                    // Ordinary selections are live buffer ranges. Only word gestures
+                    // cache content-dependent boundaries that output can invalidate.
+                    || (self.word_selection_gesture.is_some()
+                        && previous.content_revision != next.content_revision)
+            }
+            _ => false,
+        };
         if selection_invalidated {
             self.word_selection_gesture = None;
             self.selection = None;
@@ -1197,17 +1148,7 @@ impl ClientShellState {
             self.selection_highlight_clear_deadline = None;
         }
         for pane in &surface.panes {
-            let Some(target) = self.pane_scroll_targets.get(&pane.pane_id).copied() else {
-                continue;
-            };
-            let Some(scroll) = pane.scroll else {
-                continue;
-            };
-            let target =
-                target.min(usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX));
-            if usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX) == target {
-                self.pane_scroll_targets.remove(&pane.pane_id);
-            }
+            self.scroll_target_shown(&pane.pane_id, pane.scroll);
         }
         let mut invalidated_copy_pane = None;
         let mut clamped_copy_coordinates = false;
@@ -1238,7 +1179,7 @@ impl ClientShellState {
                 copy_mode.history_origin = scroll.history_origin;
                 let actual_offset =
                     usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
-                if !self.pane_scroll_targets.contains_key(&pane.pane_id) {
+                if self.scroll_lanes.target(&pane.pane_id).is_none() {
                     copy_mode.offset_from_bottom = actual_offset;
                 }
                 copy_mode.max_offset_from_bottom =
@@ -1276,8 +1217,6 @@ impl ClientShellState {
             self.stop_selection_autoscroll();
             self.selection_highlight_clear_deadline = None;
         }
-        self.pane_surface = Some(surface);
-        self.pane_surface_generation = self.active_snapshot_generation;
     }
 
     pub(crate) fn tick_selection_highlight(&mut self, now: std::time::Instant) -> bool {
@@ -1395,8 +1334,7 @@ impl ClientShellState {
     /// resized one arrives); tests use it to reach the placeholder.
     #[cfg(test)]
     pub(crate) fn invalidate_pane_surface(&mut self) {
-        self.pane_surface = None;
-        self.pending_pane_surface = None;
+        self.surfaces = PaneSurfaces::default();
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
     }

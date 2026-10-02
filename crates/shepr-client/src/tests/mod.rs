@@ -354,3 +354,5 @@ fn forward_clipboard_writes_osc52_to_the_supplied_test_sink() {
 }
 
 pub(crate) mod endpoint_choice;
+
+mod surface_baseline;

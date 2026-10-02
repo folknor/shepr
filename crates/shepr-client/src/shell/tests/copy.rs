@@ -81,7 +81,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
         viewport_rows: u64::from(area.height),
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("terminal frame");
     let mut outcome = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut outcome));
@@ -132,7 +132,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
         config.palette = Palette::terminal();
         let mut state = ClientShellState::new(config);
         state.set_snapshot(Box::new(snapshot()));
-        state.set_pane_surface(surface());
+        state.receive_pane_surface(surface());
         state.compose(106, 20).expect("composed frame");
         let pane = state.hits.panes[0].clone();
         for (kind, column) in [
@@ -205,7 +205,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
 fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
 
@@ -298,7 +298,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     for event in [
@@ -323,10 +323,10 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     ] {
         state.handle_raw_events(vec![RawInputEvent::Mouse(event)]);
         // Output can arrive between drag and release, including an in-flight revision.
-        let mut updated = state.pane_surface.clone().expect("pane surface");
+        let mut updated = state.pane_surface().cloned().expect("pane surface");
         updated.panes[0].content_revision += 1;
         updated.frame.cells[0].symbol = "x".into();
-        state.set_pane_surface(updated);
+        state.receive_pane_surface(updated);
     }
     assert!(
         state
@@ -336,7 +336,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     );
 
     // A patch that redraws selected text must retain the same live terminal range.
-    let mut updated = state.pane_surface.clone().expect("pane surface");
+    let mut updated = state.pane_surface().cloned().expect("pane surface");
     updated.panes[0].content_revision += 1;
     let mut cell = updated.frame.cells[0].clone();
     cell.symbol = "y".into();
@@ -423,7 +423,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     assert_eq!(pane.inner_rect.y, 1);
@@ -486,7 +486,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
 
     let mut enter = ClientShellInput::default();
@@ -611,7 +611,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             viewport_rows: 2,
             history_origin: shepr_vt::AbsRow(0),
         });
-        state.set_pane_surface(pane_surface.clone());
+        state.receive_pane_surface(pane_surface.clone());
         state.compose(106, 20).expect("composed frame");
         state.handle_input_bytes(b"\x02[");
         state.handle_input_bytes(selection_key);
@@ -628,7 +628,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             .expect("test precondition");
         pane_surface.panes[0].content_revision += 2;
         pane_surface.frame.cells[0].symbol = "X".into();
-        state.set_pane_surface(pane_surface);
+        state.receive_pane_surface(pane_surface);
         assert_eq!(state.mode, ClientShellMode::Copy);
         assert!(
             state
@@ -672,7 +672,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     state.handle_input_bytes(b"\x02[");
     let search = state.handle_input_bytes(b"/LIVE\r");
@@ -725,7 +725,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
             viewport_rows: 2,
             history_origin: shepr_vt::AbsRow(0),
         });
-        state.set_pane_surface(pane_surface.clone());
+        state.receive_pane_surface(pane_surface.clone());
         state.compose(106, 20).expect("composed frame");
         state.handle_input_bytes(b"\x02[");
         state.handle_input_bytes(b"vk");
@@ -740,7 +740,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
         } else {
             pane_surface.panes[0].inner_rect.width -= 1;
         }
-        state.set_pane_surface(pane_surface);
+        state.receive_pane_surface(pane_surface);
         assert!(state.selection.is_none());
         assert!(
             state
@@ -770,7 +770,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -827,7 +827,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -868,7 +868,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
     );
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(state.copy_mode.is_none());
-    assert!(state.copy_input_queue.is_empty());
+    assert!(state.copy_pipeline.keys_is_empty());
     assert!(
         replayed.requests.iter().any(|request| matches!(
             request,
@@ -897,7 +897,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -1020,13 +1020,13 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         &initial_scroll_id,
         Ok(pane_scroll_result(15, 20, 2)),
     );
-    let mut scrolled_surface = state.pane_surface.clone().expect("pane surface");
+    let mut scrolled_surface = state.pane_surface().cloned().expect("pane surface");
     scrolled_surface.panes[0]
         .scroll
         .as_mut()
         .expect("scroll metrics")
         .offset_from_bottom = 15;
-    state.set_pane_surface(scrolled_surface);
+    state.receive_pane_surface(scrolled_surface);
     let frame = state.compose(106, 20).expect("search frame");
     let hit = state.hits.panes[0].clone();
     let viewport_top = 5u16;
@@ -1149,7 +1149,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
 fn navigator_workspace_headings_use_the_active_themes_primary_text() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     for palette in [
         Palette::catppuccin(),
@@ -1202,7 +1202,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     snapshot.panes.push(pane);
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     let visible_rows = |state: &mut ClientShellState, height| {
         let frame = state.compose(106, height).expect("navigator frame");
@@ -1277,7 +1277,7 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
     projected.panes[0].label = Some("alpha beta gamma".into());
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("navigator");
@@ -1336,7 +1336,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     projected.agents = vec![first_agent, second_agent];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     for (query, filter, expected) in [
         ("", None, vec!["w1:p1", "w1:p2"]),
@@ -1520,7 +1520,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
     projected.workspaces.push(last);
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     let press = |state: &mut ClientShellState, code| {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
@@ -1579,7 +1579,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
 fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     state.compose(106, 24).expect("small navigator");
     assert!(state.hits.navigator_scrollbar.is_empty());
@@ -1729,7 +1729,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
 fn navigator_narrow_layout_and_long_search_stay_inside_the_popup() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.open_navigator_overlay();
     for (width, height) in [(24, 12), (50, 24), (106, 30)] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -1833,7 +1833,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
 fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
         &shepr_termio::input::KeybindMatch::Action(
@@ -1951,7 +1951,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -2025,13 +2025,13 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
 
     let mut other_surface = surface();
     other_surface.panes[0].pane_id = test_pane_id("w1:p2");
-    state.set_pane_surface(other_surface.clone());
+    state.receive_pane_surface(other_surface.clone());
     other_surface.surface_revision = other_surface
         .surface_revision
         .checked_next()
         .expect("test precondition");
     other_surface.panes[0].content_revision = 1;
-    state.set_pane_surface(other_surface);
+    state.receive_pane_surface(other_surface);
     assert!(state.selection.is_some());
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -2101,7 +2101,7 @@ fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
         width: 1,
         height: 2,
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2126,7 +2126,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
     config.ui.copy_on_select = false;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut selection = shepr_vt::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
@@ -2166,7 +2166,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -2219,7 +2219,7 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -2238,7 +2238,7 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
 
     let detach = state.handle_input_bytes(b"q");
     assert!(!detach.detach);
-    assert_eq!(state.copy_input_queue.len(), 3);
+    assert_eq!(state.copy_pipeline.keys_len(), 3);
 
     let motion_id = match &motion.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
@@ -2254,7 +2254,7 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
     );
     // Replay runs `l`, then the prefix, then `q` as the prefix's detach.
     assert!(replayed.detach);
-    assert!(state.copy_input_queue.is_empty());
+    assert!(state.copy_pipeline.keys_is_empty());
 }
 
 #[test]
@@ -2273,7 +2273,7 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
             viewport_rows: 2,
             history_origin: shepr_vt::AbsRow(0),
         });
-        state.set_pane_surface(pane_surface);
+        state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         assert!(state.enter_copy_mode(&mut enter));
@@ -2289,8 +2289,8 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
 
         // The exit key queues behind `l` and the motion it follows.
         assert_eq!(state.mode, ClientShellMode::Copy);
-        assert!(state.copy_operation_in_flight);
-        assert_eq!(state.copy_input_queue.len(), 2);
+        assert!(state.copy_pipeline.in_flight());
+        assert_eq!(state.copy_pipeline.keys_len(), 2);
 
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
@@ -2303,8 +2303,8 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
 
         assert_eq!(state.mode, ClientShellMode::Terminal);
         assert!(state.copy_mode.is_none());
-        assert!(!state.copy_operation_in_flight);
-        assert!(state.copy_input_queue.is_empty());
+        assert!(!state.copy_pipeline.in_flight());
+        assert!(state.copy_pipeline.keys_is_empty());
     }
 }
 
@@ -2321,7 +2321,7 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             viewport_rows: 2,
             history_origin: shepr_vt::AbsRow(0),
         });
-        state.set_pane_surface(pane_surface);
+        state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         assert!(state.enter_copy_mode(&mut enter));
@@ -2335,7 +2335,7 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             state.handle_input_bytes(b"j");
         }
         assert_eq!(
-            state.copy_input_queue.len(),
+            state.copy_pipeline.keys_len(),
             crate::limits::MAX_COPY_INPUT_QUEUE
         );
 
@@ -2348,8 +2348,8 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
         state.handle_raw_events(vec![RawInputEvent::Key(key)]);
 
         // The request that stopped answering and the keys behind it are given up.
-        assert!(!state.copy_operation_in_flight);
-        assert!(state.copy_input_queue.is_empty());
+        assert!(!state.copy_pipeline.in_flight());
+        assert!(state.copy_pipeline.keys_is_empty());
         if exit_with_escape {
             assert_eq!(state.mode, ClientShellMode::Terminal);
             assert!(state.copy_mode.is_none());
@@ -2375,7 +2375,7 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             state.copy_mode.as_ref().map(|copy_mode| copy_mode.cursor),
             cursor_before
         );
-        assert!(state.copy_input_queue.is_empty());
+        assert!(state.copy_pipeline.keys_is_empty());
     }
 }
 
@@ -2390,7 +2390,7 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2415,7 +2415,7 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
             .map(|copy_mode| copy_mode.cursor.col),
         Some(origin.col.saturating_add(1))
     );
-    assert!(state.copy_input_queue.is_empty());
+    assert!(state.copy_pipeline.keys_is_empty());
 }
 
 #[test]
@@ -2429,7 +2429,7 @@ fn deferred_copy_input_is_bounded() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2440,7 +2440,7 @@ fn deferred_copy_input_is_bounded() {
     }
 
     assert_eq!(
-        state.copy_input_queue.len(),
+        state.copy_pipeline.keys_len(),
         crate::limits::MAX_COPY_INPUT_QUEUE
     );
     assert!(state.endpoint_error.is_some());
@@ -2461,7 +2461,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                     viewport_rows: 2,
                     history_origin: shepr_vt::AbsRow(0),
                 });
-                state.set_pane_surface(pane_surface);
+                state.receive_pane_surface(pane_surface);
                 state.compose(106, 20).expect("composed frame");
                 let mut enter = ClientShellInput::default();
                 assert!(state.enter_copy_mode(&mut enter));
@@ -2473,21 +2473,20 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 let buffered = state.handle_input_bytes(queued);
                 assert!(buffered.actions.is_empty());
                 assert!(buffered.requests.is_empty());
-                assert!(!state.copy_input_queue.is_empty());
+                assert!(!state.copy_pipeline.keys_is_empty());
 
                 assert!(if unsent {
-                    state.cancel_unsent_endpoint_request(&request_id)
+                    state.drop_request(&request_id, DropReason::Unsent)
                 } else {
-                    state.cancel_endpoint_request(&request_id)
+                    state.drop_request(&request_id, DropReason::Interrupted)
                 });
 
-                assert!(state.pending_requests.is_empty());
-                assert!(!state.copy_operation_in_flight);
-                assert!(state.copy_operation_queue.is_empty());
-                assert!(state.copy_input_queue.is_empty());
+                assert!(state.ledger.is_empty());
+                assert!(!state.copy_pipeline.in_flight());
+                assert!(state.copy_pipeline.ops_is_empty());
+                assert!(state.copy_pipeline.keys_is_empty());
                 assert!(state.visible_endpoint_notice.is_none());
-                assert!(state.pane_scroll_in_flight.is_empty());
-                assert!(state.pane_scroll_queued.is_empty());
+                assert!(state.scroll_lanes.is_idle());
                 assert_eq!(state.mode, ClientShellMode::Copy);
                 assert!(
                     !state
@@ -2502,8 +2501,8 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                     next.actions.as_slice(),
                     [ClientShellAction::Endpoint { .. }]
                 ));
-                assert!(state.copy_operation_in_flight);
-                assert_eq!(state.pending_requests.len(), 1);
+                assert!(state.copy_pipeline.in_flight());
+                assert_eq!(state.ledger.len(), 1);
             }
         }
     }
@@ -2520,7 +2519,7 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2531,9 +2530,9 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     };
     let request_id = request.id.clone();
     assert!(state.handle_input_bytes(b"w").actions.is_empty());
-    assert!(!state.copy_input_queue.is_empty());
+    assert!(!state.copy_pipeline.keys_is_empty());
 
-    let outcome = state.handle_endpoint_result_at(
+    let outcome = state.answer_request(
         "replacement-boot",
         &request_id,
         Err(ClientShellEndpointError::Server(
@@ -2543,10 +2542,10 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     );
 
     assert!(outcome.repaint);
-    assert!(state.pending_requests.is_empty());
-    assert!(!state.copy_operation_in_flight);
-    assert!(state.copy_operation_queue.is_empty());
-    assert!(state.copy_input_queue.is_empty());
+    assert!(state.ledger.is_empty());
+    assert!(!state.copy_pipeline.in_flight());
+    assert!(state.copy_pipeline.ops_is_empty());
+    assert!(state.copy_pipeline.keys_is_empty());
     assert!(state.visible_endpoint_notice.is_none());
 }
 
@@ -2561,7 +2560,7 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2584,14 +2583,13 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
     };
     let current_id = request.id.clone();
     state.handle_input_bytes(b"l");
-    let generation = state.copy_session_generation;
 
-    state.cancel_unsent_endpoint_request(&old_id);
+    state.drop_request(&old_id, DropReason::Unsent);
 
-    assert_eq!(state.copy_session_generation, generation);
-    assert!(state.copy_operation_in_flight);
-    assert_eq!(state.copy_input_queue.len(), 1);
-    assert!(state.pending_requests.contains_key(current_id.as_str()));
+    assert!(state.copy_pipeline.is_awaiting(&current_id.clone().into()));
+    assert!(state.copy_pipeline.in_flight());
+    assert_eq!(state.copy_pipeline.keys_len(), 1);
+    assert!(state.ledger.contains(current_id.as_str()));
 }
 
 #[test]
@@ -2605,7 +2603,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2647,7 +2645,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
             .iter()
             .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
     );
-    assert!(state.copy_input_queue.is_empty());
+    assert!(state.copy_pipeline.keys_is_empty());
 }
 
 #[test]
@@ -2661,7 +2659,7 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut first = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut first));
@@ -2693,7 +2691,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -2749,7 +2747,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface.clone());
+    state.receive_pane_surface(pane_surface.clone());
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -2790,7 +2788,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .as_mut()
         .expect("scroll metrics")
         .history_origin = shepr_vt::AbsRow(5);
-    state.set_pane_surface(pane_surface.clone());
+    state.receive_pane_surface(pane_surface.clone());
     let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
     assert_eq!(copy_mode.search_matches, vec![found_on(6)]);
     assert_eq!(copy_mode.search_total, 1);
@@ -2817,7 +2815,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .checked_next()
         .expect("test precondition");
     pane_surface.panes[0].inner_rect.width -= 1;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
     assert!(copy_mode.search_matches.is_empty());
     assert_eq!(copy_mode.search_total, 0);
@@ -2828,7 +2826,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
 fn word_selection_result_survives_focus_snapshot_lag() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
     let hit = state.hits.panes[0].clone();
     let mut request = ClientShellInput::default();
@@ -2879,7 +2877,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             viewport_rows: 2,
             history_origin: shepr_vt::AbsRow(0),
         });
-        state.set_pane_surface(pane_surface);
+        state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         state.record_binding(
@@ -2961,4 +2959,82 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             Some(shepr_vt::AbsRow(19))
         );
     }
+}
+
+#[test]
+fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface(surface());
+    state.compose(106, 20).expect("compose");
+    assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
+    let out = state.handle_input_bytes(b"w");
+    let [ClientShellAction::Endpoint { request, .. }] = out.actions.as_slice() else {
+        panic!("request")
+    };
+    let id = request.id.clone();
+    for _ in 0..3 {
+        state.copy_pipeline.push_op(ClientCopyOperation::Search {
+            query: "needle".into(),
+            direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
+            repeat: false,
+        });
+    }
+    state.copy_mode.as_mut().expect("copy").copy_after_search = true;
+    state.handle_input_bytes(b"v");
+    assert_eq!(state.copy_pipeline.keys_len(), 1);
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    let cursor = state.copy_mode.as_ref().expect("copy").cursor;
+    state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &id,
+        Ok(EndpointReply::PaneCopyMotion {
+            pane_id: test_pane_id("w1:p1"),
+            cursor,
+        }),
+    );
+    assert!(!state.copy_pipeline.in_flight());
+    assert!(state.copy_pipeline.ops_is_empty());
+    assert!(state.copy_pipeline.keys_is_empty());
+    let copy = state.copy_mode.as_ref().expect("copy");
+    assert!(!copy.copy_after_search);
+    assert!(copy.selection.is_some(), "the queued key replayed");
+}
+#[test]
+fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface(surface());
+    state.compose(106, 20).expect("compose");
+    assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
+    let out = state.handle_input_bytes(b"/needle\r");
+    let [ClientShellAction::Endpoint { request, .. }] = out.actions.as_slice() else {
+        panic!("request")
+    };
+    let id = request.id.clone();
+    state.handle_input_bytes(b"w");
+    state.copy_mode.as_mut().expect("copy").copy_after_search = true;
+    let out = state.handle_endpoint_result(
+        &crate::tests::test_boot_id("boot-1"),
+        &id,
+        Ok(EndpointReply::PaneCopySearch {
+            pane_id: test_pane_id("w1:p1"),
+            matches: vec![],
+            total: 0,
+            current: None,
+            current_global: None,
+        }),
+    );
+    assert!(state.copy_mode.is_none());
+    assert!(!state.copy_pipeline.in_flight());
+    assert!(state.copy_pipeline.keys_is_empty());
+    assert!(state.copy_pipeline.ops_is_empty());
+    assert!(out.requests.is_empty());
+    assert!(out.actions.iter().all(|action| !matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. } if matches!(
+            request.command,
+            EndpointCommand::PaneCopyMotion(_) | EndpointCommand::PaneCopySearch(_)
+        )
+    )));
 }

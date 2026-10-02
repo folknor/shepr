@@ -173,31 +173,6 @@ channel resolves at once on every poll, so the loop would spin. It never closes
 in production only because `run_server` keeps its original `api_tx` alive in a
 local for the whole `block_on`; nothing documents that the local is load-bearing.
 
-## REJ-011 - Surface patches against a pending or dropped baseline fail the connection
-
-Class: latent (depends on a server ordering of snapshots, surfaces and patches
-the hunter did not establish). Scope: client shell.
-
-`apply_pane_surface_patch` (`shell/presentation/surface_patch.rs`),
-`set_pane_surface` and `install_pane_surface` (`shell/state.rs`); `lib.rs` fails
-the endpoint connection on `Rejected`.
-
-- `set_pane_surface` parks a surface whose `projection_revision` is
-  `snapshot.revision + 1` in `pending_pane_surface`, so `pane_surface` stays at N.
-  A patch built on that pending N+1 surface is checked only against
-  `pane_surface` and rejected. The state field comment allows this ordering ("A
-  future projection surface waits here until its matching snapshot arrives").
-- In the slow path (`fast_path_blocker` is `Some`), the patched copy goes through
-  `set_pane_surface(next)`. When the snapshot has moved past the visible surface
-  (the `projection_gap` case), `next` has `projection_revision <
-  snapshot.revision`; `set_pane_surface` silently returns and
-  `apply_pane_surface_patch` still reports `Applied(None)`. The shell's
-  `surface_revision` has not advanced, so the next patch on that baseline is
-  `Rejected` and the connection is torn down.
-
-The client code explicitly allows these orders, so its handling must not fail the
-connection. Fix direction: `notes/work.md` item 2.
-
 ## REJ-012 - A failed remove leaves the layout's placeholder as the root
 
 Class: latent (the uniqueness and count guards rule out the failing case today).

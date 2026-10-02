@@ -6,10 +6,10 @@ pub(super) fn cancel_endpoint_commands(
 ) -> bool {
     let mut repaint = false;
     for request_id in cancelled.unsent {
-        repaint |= shell.cancel_unsent_endpoint_request(&request_id);
+        repaint |= shell.drop_request(&request_id, shell::DropReason::Unsent);
     }
     for request_id in cancelled.possibly_sent {
-        repaint |= shell.cancel_endpoint_request(&request_id);
+        repaint |= shell.drop_request(&request_id, shell::DropReason::Interrupted);
     }
     repaint
 }
@@ -54,7 +54,7 @@ pub(super) fn dispatch_client_shell_actions(
                 } else {
                     // This action has not entered the endpoint send queue, so its outcome is
                     // known locally and must not be presented as an interrupted server action.
-                    repaint |= shell.cancel_unsent_endpoint_request(&request.id);
+                    repaint |= shell.drop_request(&request.id, shell::DropReason::Unsent);
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {

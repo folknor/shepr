@@ -100,90 +100,79 @@ impl ClientShellState {
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
-        self.pane_scroll_targets
-            .insert(pane_id.clone(), offset_from_bottom);
-        if self.pane_scroll_in_flight.contains_key(&pane_id) {
-            self.pane_scroll_queued.insert(pane_id, offset_from_bottom);
-            return;
+        if matches!(
+            self.scroll_lanes.want(&pane_id, offset_from_bottom),
+            ScrollWant::Send
+        ) {
+            self.dispatch_pane_scroll(pane_id, offset_from_bottom, outcome);
         }
-        self.dispatch_pane_scroll_offset(&pane_id, offset_from_bottom, outcome);
     }
-
-    fn dispatch_pane_scroll_offset(
+    fn dispatch_pane_scroll(
         &mut self,
-        pane_id: &shepr_protocol::PublicPaneId,
-        offset_from_bottom: usize,
+        pane_id: shepr_protocol::PublicPaneId,
+        offset: usize,
         outcome: &mut ClientShellInput,
     ) {
-        if self.snapshot.is_none() {
-            return;
-        }
-        self.next_scroll_serial = self.next_scroll_serial.saturating_add(1);
-        let serial = self.next_scroll_serial;
-        self.pane_scroll_targets
-            .insert(pane_id.to_owned(), offset_from_bottom);
-        self.pane_scroll_in_flight
-            .insert(pane_id.to_owned(), serial);
-        if !self.push_endpoint_command_with_kind(
+        let request = self.submit(
             shepr_protocol::command::EndpointCommand::PaneScroll(
                 shepr_protocol::command::PaneScrollParams {
                     pane_id: pane_id.clone(),
-                    offset_from_bottom: offset_from_bottom as u64,
+                    offset_from_bottom: offset as u64,
                 },
             ),
-            PendingEndpointKind::PaneScroll {
-                pane_id: pane_id.to_owned(),
-                serial,
+            Work::PaneScroll {
+                pane_id: pane_id.clone(),
             },
             outcome,
-        ) {
-            self.pane_scroll_targets.remove(pane_id);
-            self.pane_scroll_in_flight.remove(pane_id);
+        );
+        if let Some(id) = request {
+            self.scroll_lanes.sent(pane_id, id, offset);
+        } else {
+            self.scroll_lanes.send_failed(&pane_id);
         }
     }
-
-    pub(super) fn complete_pane_scroll(
+    pub(super) fn answer_pane_scroll(
         &mut self,
+        request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
-        serial: u64,
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        if self.pane_scroll_in_flight.get(pane_id).copied() != Some(serial) {
-            return false;
-        }
-        self.pane_scroll_in_flight.remove(pane_id);
-        let repaint = match result {
+        match result {
             Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane })
-                if pane.pane_id == *pane_id =>
+                if &pane.pane_id == pane_id =>
             {
-                if let Some(scroll) = pane.scroll
-                    && self.pane_scroll_targets.contains_key(pane_id)
-                {
-                    self.pane_scroll_targets.insert(
-                        pane_id.to_owned(),
-                        usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX),
-                    );
+                if let ScrollAnswer::Next(Some(offset)) = self.scroll_lanes.answered(
+                    pane_id,
+                    request,
+                    pane.scroll
+                        .map(|s| usize::try_from(s.offset_from_bottom).unwrap_or(usize::MAX)),
+                ) {
+                    self.dispatch_pane_scroll(pane_id.clone(), offset, outcome);
                 }
                 false
             }
             Ok(_) => {
-                self.pane_scroll_queued.remove(pane_id);
-                self.pane_scroll_targets.remove(pane_id);
-                self.set_endpoint_error("endpoint returned an unexpected pane-scroll result", now);
-                true
+                if self.scroll_lanes.failed(pane_id, request) {
+                    self.set_endpoint_error(
+                        "endpoint returned an unexpected pane-scroll result",
+                        now,
+                    );
+                    true
+                } else {
+                    false
+                }
             }
-            Err(_) => {
-                self.pane_scroll_queued.remove(pane_id);
-                self.pane_scroll_targets.remove(pane_id);
-                true
-            }
-        };
-        if let Some(offset) = self.pane_scroll_queued.remove(pane_id) {
-            self.dispatch_pane_scroll_offset(pane_id, offset, outcome);
+            Err(_) => self.scroll_lanes.failed(pane_id, request),
         }
-        repaint
+    }
+    pub(super) fn drop_pane_scroll(
+        &mut self,
+        request: &shepr_protocol::RequestId,
+        pane: &shepr_protocol::PublicPaneId,
+    ) -> bool {
+        self.scroll_lanes.failed(pane, request)
     }
 
     pub(super) fn stop_selection_autoscroll(&mut self) {
@@ -516,7 +505,7 @@ impl ClientShellState {
 
     fn pane_split_target_is_current(&self, hit: &PaneSplitHit, workspace_id: &str) -> Option<bool> {
         let snapshot = self.snapshot.as_deref()?;
-        let surface = self.pane_surface.as_ref()?;
+        let surface = self.pane_surface()?;
         if snapshot.revision != surface.projection_revision {
             return None;
         }
@@ -541,9 +530,9 @@ impl ClientShellState {
             surface.boot_id == snapshot.boot_id
                 && pane_surface_topology_signature(surface) == hit.topology_signature
         };
-        let current_matches = self.pane_surface.as_ref().is_some_and(matches_hit);
-        let pending_matches = self.pending_pane_surface.as_ref().is_none_or(matches_hit);
-        current_matches && pending_matches
+        let current_matches = self.pane_surface().is_some_and(matches_hit);
+        let waiting_matches = self.surfaces.waiting_baseline().is_none_or(matches_hit);
+        current_matches && waiting_matches
     }
 
     /// Capture the split's child identities from server surface coordinates.
@@ -555,7 +544,7 @@ impl ClientShellState {
         Vec<shepr_protocol::PublicPaneId>,
         Vec<shepr_protocol::PublicPaneId>,
     )> {
-        let surface = self.pane_surface.as_ref()?;
+        let surface = self.pane_surface()?;
         let split = surface.splits.iter().find(|split| split.path == path)?;
         // Collapsed rectangles cannot establish which side owns a pane.
         // Refuse to start a drag rather than construct an ambiguous identity.
@@ -1930,7 +1919,7 @@ mod tests {
 
     fn split_drag_state(with_changed_pending_topology: bool) -> ClientShellState {
         let mut snapshot = super::super::tests::snapshot();
-        snapshot.revision = shepr_protocol::ProjectionRevision::new(2);
+        snapshot.revision = shepr_protocol::ProjectionRevision::new(1);
         let boot_id = snapshot.boot_id.clone();
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -1938,9 +1927,12 @@ mod tests {
 
         let surface = split_surface(boot_id.clone(), 1, SplitBranch::First);
         let topology_signature = pane_surface_topology_signature(&surface);
-        state.pane_surface = Some(surface);
+        state.receive_pane_surface(surface);
+        let mut next = super::super::tests::snapshot();
+        next.revision = shepr_protocol::ProjectionRevision::new(2);
+        state.set_snapshot(Box::new(next));
         if with_changed_pending_topology {
-            state.pending_pane_surface = Some(split_surface(boot_id, 3, SplitBranch::Second));
+            state.receive_pane_surface(split_surface(boot_id, 3, SplitBranch::Second));
         }
         state.chrome_drag = Some(ClientChromeDrag::PaneSplit {
             first_panes: vec!["w1:p1".parse().expect("pane")],

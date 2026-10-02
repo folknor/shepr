@@ -173,7 +173,7 @@ impl Fixture {
         let size = state.shell.surface_size(100, 30);
         state
             .shell
-            .set_pane_surface(surface(&ClientEndpointId::Local, 1, size, "SOURCE"));
+            .receive_pane_surface(surface(&ClientEndpointId::Local, 1, size, "SOURCE"));
         let local = RecordingTransport::default();
         let target = RecordingTransport::default();
         let mut registry = EndpointRegistry::new_at(local.clone(), 1, now);
@@ -234,6 +234,29 @@ impl Fixture {
                 self.now,
             )
             .expect("message");
+    }
+    pub(crate) fn inbound_patch(
+        &mut self,
+        id: &ClientEndpointId,
+        patch: shepr_protocol::PaneSurfacePatch,
+    ) {
+        let generation = self
+            .client
+            .write_stream
+            .connection(id)
+            .expect("connection")
+            .generation
+            .get();
+        self.client
+            .handle_event(
+                ClientLoopEvent::ServerMessage {
+                    endpoint_id: id.clone(),
+                    generation,
+                    message: Box::new(DecodedServerMessage::PaneSurfacePatch(patch)),
+                },
+                self.now,
+            )
+            .expect("patch");
     }
     pub(crate) fn on_request(&self) -> shepr_protocol::RequestId {
         self.target
@@ -733,15 +756,7 @@ fn commit_retires_the_previous_command_lane() {
     );
     f.start();
     f.commit();
-    assert_eq!(
-        f.client.endpoint_commands.response_kind(
-            &ClientEndpointId::Local,
-            1,
-            &boot(&ClientEndpointId::Local),
-            &request_id
-        ),
-        endpoint::commands::CommandResponseKind::Retired
-    );
+    assert!(!f.client.state.shell.has_request(&request_id));
     assert_eq!(
         f.client
             .endpoint_commands

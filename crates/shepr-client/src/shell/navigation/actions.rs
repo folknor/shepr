@@ -1,56 +1,5 @@
 use super::*;
-use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
-
-impl PendingEndpointKind {
-    /// Read requests only supply client presentation state, so losing their connection is not
-    /// an interrupted user action with an unknown server-side outcome.
-    fn should_show_cancelled_notice(&self) -> bool {
-        matches!(self, Self::Generic)
-    }
-
-    /// Roll back only the state owned by this request. Cancellation cannot dispatch work:
-    /// its caller may have lost presentation or the connection that would carry that work.
-    fn cancel(self, shell: &mut ClientShellState) -> bool {
-        match self {
-            Self::Generic | Self::SelectionCopy => true,
-            Self::WorkspaceLabel { lookup_id } => shell.complete_workspace_label_lookup(
-                lookup_id,
-                Err(ClientShellEndpointError::Cancelled),
-            ),
-            Self::PaneScroll { pane_id, serial } => {
-                if shell.pane_scroll_in_flight.get(&pane_id).copied() != Some(serial) {
-                    return false;
-                }
-                shell.pane_scroll_in_flight.remove(&pane_id);
-                shell.pane_scroll_queued.remove(&pane_id);
-                shell.pane_scroll_targets.remove(&pane_id);
-                true
-            }
-            Self::WordSelection {
-                pane_id,
-                absolute_row,
-                generation,
-            } => shell.cancel_word_selection_row(&pane_id, absolute_row, generation),
-            Self::CopyMotion {
-                session_generation, ..
-            }
-            | Self::CopySearch {
-                session_generation, ..
-            } => {
-                if shell.copy_session_generation != session_generation {
-                    return false;
-                }
-                // Buffered keys depend on a result we will never apply. Discard them rather
-                // than replaying exits, new motions, or pane input into a frozen presentation.
-                shell.reset_copy_pipeline();
-                if let Some(copy_mode) = shell.copy_mode.as_mut() {
-                    copy_mode.copy_after_search = false;
-                }
-                true
-            }
-        }
-    }
-}
+use shepr_protocol::command::EndpointCommand;
 
 impl ClientShellState {
     pub(super) fn record_binding(
@@ -196,7 +145,7 @@ impl ClientShellState {
         };
         let pane_id = selection.pane_id.clone();
         let (anchor, cursor) = selection.ordered_cells();
-        self.push_endpoint_command_with_kind(
+        self.submit(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
                 pane_id,
                 anchor: shepr_protocol::command::PaneTextPoint {
@@ -208,17 +157,9 @@ impl ClientShellState {
                     col: cursor.1,
                 },
             }),
-            PendingEndpointKind::SelectionCopy,
+            Work::SelectionCopy,
             outcome,
         );
-    }
-
-    pub(super) fn push_endpoint_command(
-        &mut self,
-        command: EndpointCommand,
-        outcome: &mut ClientShellInput,
-    ) {
-        self.push_endpoint_command_with_kind(command, PendingEndpointKind::Generic, outcome);
     }
 
     pub(super) fn push_endpoint_notice(
@@ -238,7 +179,7 @@ impl ClientShellState {
         self.push_endpoint_notice_at_boot(boot_id, kind, code, title, body)
     }
 
-    fn push_endpoint_notice_at_boot(
+    pub(super) fn push_endpoint_notice_at_boot(
         &mut self,
         boot_id: Option<shepr_protocol::BootId>,
         kind: ClientEndpointNoticeKind,
@@ -286,54 +227,6 @@ impl ClientShellState {
             key,
             title: title.into(),
             body,
-        });
-        true
-    }
-
-    pub(super) fn push_endpoint_command_with_kind(
-        &mut self,
-        command: EndpointCommand,
-        kind: PendingEndpointKind,
-        outcome: &mut ClientShellInput,
-    ) -> bool {
-        let changes_focus = matches!(
-            &command,
-            EndpointCommand::WorkspaceFocus(_)
-                | EndpointCommand::PaneFocus(_)
-                | EndpointCommand::PaneFocusDirection(_)
-                | EndpointCommand::WorkspaceCreate(_)
-                | EndpointCommand::PaneSplit(_)
-        );
-        if changes_focus {
-            outcome.repaint |= self.pending_workspace_highlight.take().is_some();
-        }
-        if !self.endpoint_is_online(&self.active_endpoint_id) {
-            let label = self.active_endpoint_label().to_owned();
-            outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
-            return false;
-        }
-        let method_name = command.name().to_owned();
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return false;
-        };
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let request_id = shepr_protocol::RequestId::from(format!("client-shell:{request_id}"));
-        self.pending_requests.insert(
-            request_id.clone(),
-            PendingEndpointRequest {
-                boot_id: snapshot.boot_id.clone(),
-                method_name,
-                kind,
-            },
-        );
-        outcome.actions.push(ClientShellAction::Endpoint {
-            endpoint_id: self.active_endpoint_id.clone(),
-            boot_id: snapshot.boot_id.clone(),
-            request: Box::new(ClientShellEndpointRequest {
-                id: request_id.to_string(),
-                command,
-            }),
         });
         true
     }
@@ -429,320 +322,13 @@ impl ClientShellState {
             }
         };
         let mut outcome = ClientShellInput::default();
-        self.push_endpoint_command(command, &mut outcome);
-        if let (Some(workspace_id), Some(ClientShellAction::Endpoint { request, .. })) =
-            (workspace_id, outcome.actions.first())
+        let request = self.submit(command, Work::Plain, &mut outcome);
+        if let (Some(workspace_id), Some(request)) = (workspace_id, request)
             && let Some(target) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
         {
-            self.keep_workspace_highlight_until_snapshot(target, &request.id, self.now);
+            self.keep_workspace_highlight_until_snapshot(target, &request, self.now);
         }
         outcome.actions
-    }
-
-    fn cancel_endpoint_request_with_notice(
-        &mut self,
-        request_id: &str,
-        show_cancelled_notice: bool,
-    ) -> bool {
-        let Some(pending) = self.pending_requests.get(request_id) else {
-            return false;
-        };
-        let boot_id = pending.boot_id.clone();
-        // A cancellation is always an error result, and no error path schedules
-        // a deadline, so the instant is never compared; it only satisfies the
-        // shared result path.
-        let outcome = self.handle_endpoint_result_at_with_cancel_notice(
-            &boot_id,
-            request_id,
-            Err(ClientShellEndpointError::Cancelled),
-            self.now,
-            show_cancelled_notice,
-        );
-        // Cancellation uses the request kind's rollback, which produces only a repaint.
-        // Unlike an ordinary failed reply it must not release buffered input or start work.
-        if !(outcome.actions.is_empty() && outcome.requests.is_empty()) {
-            tracing::error!("a cancelled endpoint request produced actions or requests");
-        }
-        outcome.repaint
-    }
-
-    pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
-        self.cancel_endpoint_request_with_notice(request_id, true)
-    }
-
-    /// Completes a request rejected by the client before it entered the send queue. Its result
-    /// is known, so an interruption warning about an unknown server outcome would be misleading.
-    pub(crate) fn cancel_unsent_endpoint_request(&mut self, request_id: &str) -> bool {
-        self.cancel_endpoint_request_with_notice(request_id, false)
-    }
-
-    pub(crate) fn handle_endpoint_result_at(
-        &mut self,
-        boot_id: &str,
-        request_id: &str,
-        result: Result<EndpointReply, ClientShellEndpointError>,
-        now: std::time::Instant,
-    ) -> ClientShellInput {
-        self.handle_endpoint_result_at_with_cancel_notice(boot_id, request_id, result, now, true)
-    }
-
-    fn handle_endpoint_result_at_with_cancel_notice(
-        &mut self,
-        boot_id: &str,
-        request_id: &str,
-        result: Result<EndpointReply, ClientShellEndpointError>,
-        now: std::time::Instant,
-        show_cancelled_notice: bool,
-    ) -> ClientShellInput {
-        let mut outcome = ClientShellInput::default();
-        let (repaint, actions) = self.apply_endpoint_result(
-            boot_id,
-            request_id,
-            result,
-            &mut outcome,
-            now,
-            show_cancelled_notice,
-        );
-        outcome.repaint |= repaint;
-        outcome.actions.extend(actions);
-        outcome
-    }
-
-    fn apply_endpoint_result(
-        &mut self,
-        boot_id: &str,
-        request_id: &str,
-        result: Result<EndpointReply, ClientShellEndpointError>,
-        outcome: &mut ClientShellInput,
-        now: std::time::Instant,
-        show_cancelled_notice: bool,
-    ) -> (bool, Vec<ClientShellAction>) {
-        let Some(pending) = self.pending_requests.remove(request_id) else {
-            return (false, Vec::new());
-        };
-        let cancelled = matches!(&result, Err(ClientShellEndpointError::Cancelled));
-        if pending.boot_id != boot_id
-            || (!cancelled
-                && self
-                    .snapshot
-                    .as_deref()
-                    .is_none_or(|snapshot| snapshot.boot_id != boot_id))
-        {
-            let highlight_cleared = self
-                .pending_workspace_highlight
-                .as_ref()
-                .is_some_and(|pending| pending.request_id == request_id);
-            if highlight_cleared {
-                self.pending_workspace_highlight = None;
-            }
-            return (pending.kind.cancel(self) || highlight_cleared, Vec::new());
-        }
-        if result.is_ok() {
-            let timeout_key = ClientEndpointNoticeKey {
-                boot_id: Some(pending.boot_id.clone()),
-                kind: ClientEndpointNoticeKind::Timeout,
-                code: pending.method_name.clone(),
-            };
-            self.endpoint_notice_seen.remove(&timeout_key);
-        }
-        if let Err(error) = &result {
-            if self
-                .pending_workspace_highlight
-                .as_ref()
-                .is_some_and(|pending| pending.request_id == request_id)
-            {
-                self.pending_workspace_highlight = None;
-            }
-            if (show_cancelled_notice && pending.kind.should_show_cancelled_notice())
-                || !matches!(error, ClientShellEndpointError::Cancelled)
-            {
-                let message = error.to_string();
-                let (kind, notice_code, title, body) = match error {
-                    ClientShellEndpointError::Timeout => (
-                        ClientEndpointNoticeKind::Timeout,
-                        pending.method_name.clone(),
-                        "Server timed out",
-                        format!("This server did not respond to {}.", pending.method_name),
-                    ),
-                    ClientShellEndpointError::Cancelled => (
-                        ClientEndpointNoticeKind::Unavailable,
-                        "cancelled".to_owned(),
-                        "Action interrupted",
-                        message,
-                    ),
-                    ClientShellEndpointError::Server(EndpointError::ShuttingDown) => (
-                        ClientEndpointNoticeKind::Unavailable,
-                        "server".to_owned(),
-                        "Server unavailable",
-                        message,
-                    ),
-                    ClientShellEndpointError::Server(_) => (
-                        ClientEndpointNoticeKind::Rejected,
-                        format!("{}:{message}", pending.method_name),
-                        "Action rejected",
-                        message,
-                    ),
-                };
-                self.push_endpoint_notice_at_boot(
-                    Some(pending.boot_id.clone()),
-                    kind,
-                    notice_code,
-                    title,
-                    body,
-                );
-            }
-        }
-        if cancelled {
-            // The ledger entry owns rollback even when its snapshot is no longer presented.
-            // Generations and serials in the kind protect newer work from an old cancellation.
-            return (pending.kind.cancel(self), Vec::new());
-        }
-        match pending.kind {
-            PendingEndpointKind::Generic => {}
-            PendingEndpointKind::WorkspaceLabel { lookup_id } => {
-                return (
-                    self.complete_workspace_label_lookup(lookup_id, result),
-                    Vec::new(),
-                );
-            }
-            PendingEndpointKind::PaneScroll { pane_id, serial } => {
-                let repaint = self.complete_pane_scroll(&pane_id, serial, result, now, outcome);
-                return (repaint, Vec::new());
-            }
-            PendingEndpointKind::SelectionCopy => {
-                return match result {
-                    Ok(EndpointReply::PaneSelection { text, .. }) if !text.is_empty() => (
-                        false,
-                        vec![ClientShellAction::ClipboardWrite(text.into_bytes())],
-                    ),
-                    Ok(EndpointReply::PaneSelection { .. }) => {
-                        let shown = self.push_endpoint_notice(
-                            ClientEndpointNoticeKind::Rejected,
-                            "selection_empty",
-                            "Nothing copied",
-                            "The selection contained no text.",
-                        );
-                        (shown, Vec::new())
-                    }
-                    Ok(_) => {
-                        self.set_endpoint_error(
-                            "endpoint returned an unexpected selection result",
-                            now,
-                        );
-                        (true, Vec::new())
-                    }
-                    Err(_) => (true, Vec::new()),
-                };
-            }
-            PendingEndpointKind::WordSelection {
-                pane_id,
-                absolute_row,
-                generation,
-            } => {
-                return self.complete_word_selection_row(
-                    &pane_id,
-                    absolute_row,
-                    generation,
-                    result,
-                    now,
-                );
-            }
-            PendingEndpointKind::CopyMotion {
-                pane_id,
-                origin,
-                session_generation,
-            } => {
-                if self.copy_session_generation != session_generation {
-                    // The copy session that asked was left, re-entered or abandoned
-                    // behind a full input queue; its answer no longer applies.
-                    return (false, Vec::new());
-                }
-                let (repaint, continue_queue) = match result {
-                    Ok(EndpointReply::PaneCopyMotion {
-                        pane_id: returned_pane_id,
-                        cursor,
-                    }) if returned_pane_id == pane_id => (
-                        self.apply_copy_motion_target(&pane_id, origin, cursor, outcome),
-                        true,
-                    ),
-                    Ok(EndpointReply::PaneCopyMotion { .. }) => (false, false),
-                    Ok(_) => {
-                        self.set_endpoint_error(
-                            "endpoint returned an unexpected copy-motion result",
-                            now,
-                        );
-                        (true, false)
-                    }
-                    Err(_) => (true, false),
-                };
-                self.complete_copy_operation(session_generation, continue_queue, outcome);
-                return (repaint, Vec::new());
-            }
-            PendingEndpointKind::CopySearch {
-                pane_id,
-                origin,
-                query,
-                direction,
-                repeat,
-                generation,
-                session_generation,
-            } => {
-                if self.copy_session_generation != session_generation {
-                    // As for a copy motion: an older copy session's search result.
-                    return (false, Vec::new());
-                }
-                let (repaint, continue_queue) = match result {
-                    Ok(EndpointReply::PaneCopySearch {
-                        pane_id: returned_pane_id,
-                        matches,
-                        total,
-                        current,
-                        current_global,
-                    }) if returned_pane_id == pane_id => {
-                        let repaint = self.apply_copy_search_result(
-                            &pane_id,
-                            origin,
-                            query,
-                            direction,
-                            repeat,
-                            generation,
-                            ClientCopySearchResult {
-                                matches,
-                                total,
-                                current: current.and_then(|index| usize::try_from(index).ok()),
-                                current_global,
-                            },
-                            outcome,
-                        );
-                        if !repaint {
-                            self.cancel_deferred_copy_after_search(generation);
-                        }
-                        (repaint, repaint)
-                    }
-                    Ok(EndpointReply::PaneCopySearch { .. }) => {
-                        self.cancel_deferred_copy_after_search(generation);
-                        (false, false)
-                    }
-                    Ok(_) => {
-                        self.cancel_deferred_copy_after_search(generation);
-                        self.set_endpoint_error(
-                            "endpoint returned an unexpected copy-search result",
-                            now,
-                        );
-                        (true, false)
-                    }
-                    Err(_) => {
-                        self.cancel_deferred_copy_after_search(generation);
-                        (true, false)
-                    }
-                };
-                self.complete_copy_operation(session_generation, continue_queue, outcome);
-                return (repaint, Vec::new());
-            }
-        }
-        // Close confirmation is client-owned (`open_confirm_close_overlay` runs before the
-        // close is sent); endpoints close without asking back.
-        (result.is_err(), Vec::new())
     }
 
     pub(super) fn endpoint_command_for_action(
@@ -926,25 +512,5 @@ impl ClientShellState {
             }
             _ => None,
         }
-    }
-}
-
-#[cfg(test)]
-impl ClientShellState {
-    /// Applies an endpoint response and returns everything it produced.
-    ///
-    /// A copy-mode motion or search response replays the keys queued while it
-    /// was in flight, and those keys can yield pane input, a resize, a detach or
-    /// host queries, not just repaints and actions. The caller must route the
-    /// whole outcome (`finish_client_shell_input`), or the replayed keystrokes
-    /// are lost.
-    pub(crate) fn handle_endpoint_result(
-        &mut self,
-        boot_id: &str,
-        request_id: &str,
-        result: Result<EndpointReply, ClientShellEndpointError>,
-    ) -> ClientShellInput {
-        // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.handle_endpoint_result_at(boot_id, request_id, result, std::time::Instant::now())
     }
 }

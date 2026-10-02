@@ -11,7 +11,7 @@ fn shell(field: usize) -> ClientShellState {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(frame);
+    state.receive_pane_surface(frame);
     state.compose(106, 30).expect("initial shell");
     match field {
         0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
@@ -76,8 +76,8 @@ fn all_six_fields_route_shared_text_editing() {
 }
 
 /// Opens the new-workspace prompt and returns the checkout-root request it
-/// sent, with the request id and its lookup id.
-fn open_new_workspace(state: &mut ClientShellState) -> (String, u64, String) {
+/// sent, with its request id and the overlay's matching id.
+fn open_new_workspace(state: &mut ClientShellState) -> (String, shepr_protocol::RequestId, String) {
     let mut outcome = ClientShellInput::default();
     state.open_new_workspace_overlay(&mut outcome);
     let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
@@ -92,7 +92,7 @@ fn open_new_workspace(state: &mut ClientShellState) -> (String, u64, String) {
     let Some(ClientShellOverlay::Rename(ClientRenameOverlay {
         target:
             ClientRenameTarget::NewWorkspace {
-                label_lookup_id: Some(lookup_id),
+                label_lookup: Some(lookup_id),
                 ..
             },
         ..
@@ -100,7 +100,7 @@ fn open_new_workspace(state: &mut ClientShellState) -> (String, u64, String) {
     else {
         panic!("the overlay awaits a label lookup");
     };
-    (request.id.clone(), *lookup_id, params.cwd.clone())
+    (request.id.clone(), lookup_id.clone(), params.cwd.clone())
 }
 
 fn checkout_root_answer(root: Option<&str>) -> EndpointReply {
@@ -119,7 +119,7 @@ fn new_workspace_label_comes_from_the_endpoint_and_stale_answers_are_ignored() {
 
     let (current_request, current_id, _) = open_new_workspace(&mut state);
     assert_ne!(stale_id, current_id);
-    state.handle_endpoint_result_at(
+    state.answer_request(
         &boot_id,
         &stale_request,
         Ok(checkout_root_answer(Some("/elsewhere/stale-label"))),
@@ -127,7 +127,7 @@ fn new_workspace_label_comes_from_the_endpoint_and_stale_answers_are_ignored() {
     );
     assert_eq!(editor(&mut state).as_str(), "repo");
 
-    let outcome = state.handle_endpoint_result_at(
+    let outcome = state.answer_request(
         &boot_id,
         &current_request,
         Ok(checkout_root_answer(Some("/srv/checkout-label"))),
@@ -143,7 +143,7 @@ fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggesti
     let boot_id = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
     let (request, _, _) = open_new_workspace(&mut state);
     *editor(&mut state) = TextEditor::from("mine");
-    state.handle_endpoint_result_at(
+    state.answer_request(
         &boot_id,
         &request,
         Ok(checkout_root_answer(Some("/srv/checkout-label"))),
@@ -152,7 +152,7 @@ fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggesti
     assert_eq!(editor(&mut state).as_str(), "mine");
 
     let (request, _, _) = open_new_workspace(&mut state);
-    state.handle_endpoint_result_at(
+    state.answer_request(
         &boot_id,
         &request,
         Err(ClientShellEndpointError::Server(

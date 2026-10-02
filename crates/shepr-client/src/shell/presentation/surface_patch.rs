@@ -6,15 +6,18 @@ pub(crate) struct ClientComposedSurfacePatch {
 }
 
 pub(crate) enum ClientPaneSurfacePatchOutcome {
-    Rejected,
-    Applied(Option<ClientComposedSurfacePatch>),
+    /// The patch does not follow the reader baseline. Pairing never rejects a patch.
+    Rejected(PatchRejection),
+    Applied(PatchPresentation),
 }
 
-fn row_fits_frame(row: &shepr_protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
-    row.x
-        .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
-        <= frame.width
-        && row.y < frame.height
+pub(crate) enum PatchPresentation {
+    /// Only the baseline advanced; the last presented pair is unchanged.
+    Held,
+    /// The presented pair changed and needs full composition.
+    Compose,
+    /// The presented pair changed and only these composed rows need writing.
+    Rows(ClientComposedSurfacePatch),
 }
 
 fn patch_updates_pane<'a>(
@@ -31,7 +34,7 @@ fn copy_mode_cursor_changed_on_owner(
     let Some(copy_mode) = state.copy_mode.as_ref() else {
         return false;
     };
-    let Some(surface) = state.pane_surface.as_ref() else {
+    let Some(surface) = state.pane_surface() else {
         return false;
     };
     patch.cursor != surface.frame.cursor
@@ -39,13 +42,6 @@ fn copy_mode_cursor_changed_on_owner(
             .panes
             .iter()
             .any(|pane| pane.focused && pane.pane_id == copy_mode.pane_id)
-}
-
-fn apply_patch_to_surface(
-    surface: &mut shepr_protocol::PaneSurfaceFrame,
-    patch: &shepr_protocol::PaneSurfacePatch,
-) -> bool {
-    shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch).is_ok()
 }
 
 fn fast_path_blocker(
@@ -56,25 +52,13 @@ fn fast_path_blocker(
     // Selection and copy mode affect pane cells only when their owner is patched. A parked
     // copy session must not send unrelated pane output through full-frame composition.
     if state
-        .pane_surface
-        .as_ref()
+        .pane_surface()
         .is_some_and(|surface| super::composition::surface_overflows_area(surface, area))
     {
         // A surface produced for a larger pane area (before a resize or sidebar toggle took
         // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
         // land on the mode bar or past the frame, so they go through compose too.
         Some("client_surface_patch.fallback.geometry")
-    } else if state.pending_pane_surface.is_some()
-        || state.snapshot.as_deref().map(|snapshot| snapshot.revision)
-            != state
-                .pane_surface
-                .as_ref()
-                .map(|surface| surface.projection_revision)
-    {
-        // The snapshot moved past the visible surface. Hit maps stay live through that gap,
-        // so they no longer imply an exact pair; the compose fallback holds presentation
-        // until the matching surface arrives.
-        Some("client_surface_patch.fallback.projection_gap")
     } else if state.mode != ClientShellMode::Terminal {
         Some("client_surface_patch.fallback.mode")
     } else if state.overlay.is_some() {
@@ -117,78 +101,20 @@ fn fast_path_blocker(
     }
 }
 
-fn pane_geometry_matches(
-    left: &shepr_protocol::PaneSurfacePane,
-    right: &shepr_protocol::PaneSurfacePane,
-) -> bool {
-    left.pane_id == right.pane_id
-        && left.rect == right.rect
-        && left.inner_rect == right.inner_rect
-        && left.focused == right.focused
-        && left.pixel_width == right.pixel_width
-        && left.pixel_height == right.pixel_height
-}
-
 impl ClientShellState {
     pub(crate) fn apply_pane_surface_patch(
         &mut self,
         patch: &shepr_protocol::PaneSurfacePatch,
     ) -> ClientPaneSurfacePatchOutcome {
-        let Some(current) = self.pane_surface.as_ref() else {
-            return ClientPaneSurfacePatchOutcome::Rejected;
-        };
-        if self.pane_surface_generation != self.active_snapshot_generation
-            || patch.boot_id != current.boot_id
-            || patch.projection_revision != current.projection_revision
-            || patch.base_surface_revision != current.surface_revision
-            || current.surface_revision.checked_next() != Some(patch.surface_revision)
-        {
-            return ClientPaneSurfacePatchOutcome::Rejected;
+        if let Err(reason) = self.surfaces.validate(patch) {
+            return ClientPaneSurfacePatchOutcome::Rejected(reason);
         }
-
-        for updated in &patch.panes {
-            let Some(existing) = current
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == updated.pane_id)
-            else {
-                return ClientPaneSurfacePatchOutcome::Rejected;
+        if !self.surfaces.is_paired() {
+            return match self.surfaces.apply_validated(patch) {
+                Ok(()) => ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held),
+                Err(reason) => ClientPaneSurfacePatchOutcome::Rejected(reason),
             };
-            if !pane_geometry_matches(existing, updated) {
-                return ClientPaneSurfacePatchOutcome::Rejected;
-            }
         }
-        for row in &patch.rows {
-            if !row_fits_frame(row, &current.frame)
-                || row.cells.is_empty()
-                || !patch.panes.iter().any(|pane| {
-                    let terminal_row = row.x >= pane.inner_rect.x
-                        && row.y >= pane.inner_rect.y
-                        && row.y < pane.inner_rect.y.saturating_add(pane.inner_rect.height)
-                        && row
-                            .x
-                            .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
-                            <= pane.inner_rect.x.saturating_add(pane.inner_rect.width);
-                    let scrollbar_rect = pane.scrollbar_rect.or_else(|| {
-                        current
-                            .panes
-                            .iter()
-                            .find(|existing| existing.pane_id == pane.pane_id)
-                            .and_then(|existing| existing.scrollbar_rect)
-                    });
-                    let scrollbar_row = scrollbar_rect.is_some_and(|rect| {
-                        row.x == rect.x
-                            && row.y >= rect.y
-                            && row.y < rect.y.saturating_add(rect.height)
-                            && row.cells.len() == usize::from(rect.width)
-                    });
-                    terminal_row || scrollbar_row
-                })
-            {
-                return ClientPaneSurfacePatchOutcome::Rejected;
-            }
-        }
-
         let (cols, rows) = self.last_composed_size.unwrap_or_default();
         let area = self.layout(cols, rows).pane_surface;
         let fast_path_blocker = fast_path_blocker(self, patch, area);
@@ -214,12 +140,8 @@ impl ClientShellState {
                 }),
         });
         if let Some(area) = fast_path_area {
-            let applied = self
-                .pane_surface
-                .as_mut()
-                .is_some_and(|surface| apply_patch_to_surface(surface, patch));
-            if !applied {
-                return ClientPaneSurfacePatchOutcome::Rejected;
+            if let Err(reason) = self.surfaces.apply_validated(patch) {
+                return ClientPaneSurfacePatchOutcome::Rejected(reason);
             }
             for updated in &patch.panes {
                 let Some(hit) = self
@@ -250,25 +172,23 @@ impl ClientShellState {
                 hit.sgr_pixel_mouse = updated.sgr_pixel_mouse;
                 hit.pixel_width = updated.pixel_width;
                 hit.pixel_height = updated.pixel_height;
-                if let (Some(target), Some(scroll)) = (
-                    self.pane_scroll_targets.get(&updated.pane_id).copied(),
-                    updated.scroll,
-                ) {
-                    let target = target
-                        .min(usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX));
-                    if usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX) == target {
-                        self.pane_scroll_targets.remove(&updated.pane_id);
-                    }
-                }
+                self.scroll_target_shown(&updated.pane_id, updated.scroll);
             }
         } else {
-            let mut next = current.clone();
-            if !apply_patch_to_surface(&mut next, patch) {
-                return ClientPaneSurfacePatchOutcome::Rejected;
+            let before = self.pane_facts_before(self.surfaces.paired());
+            if let Err(reason) = self.surfaces.apply_validated(patch) {
+                return ClientPaneSurfacePatchOutcome::Rejected(reason);
             }
-            self.set_pane_surface(next);
+            let surfaces = std::mem::take(&mut self.surfaces);
+            if let Some(surface) = surfaces.paired() {
+                self.presented_surface_changed(before, surface);
+            }
+            self.surfaces = surfaces;
         }
-        ClientPaneSurfacePatchOutcome::Applied(composed_patch)
+        ClientPaneSurfacePatchOutcome::Applied(match composed_patch {
+            Some(c) => PatchPresentation::Rows(c),
+            None => PatchPresentation::Compose,
+        })
     }
 }
 
@@ -349,7 +269,7 @@ mod tests {
         };
         let snapshot = state.snapshot.as_deref().expect("snapshot installed");
         let buffer = Buffer::empty(Rect::new(0, 0, area.width, area.height));
-        state.pane_surface = Some(shepr_protocol::PaneSurfaceFrame {
+        state.receive_pane_surface(shepr_protocol::PaneSurfaceFrame {
             boot_id: snapshot.boot_id.clone(),
             projection_revision: snapshot.revision,
             surface_revision: shepr_protocol::SurfaceRevision::new(1),
@@ -387,7 +307,7 @@ mod tests {
         state: &ClientShellState,
         cursor: Option<shepr_protocol::CursorState>,
     ) -> shepr_protocol::PaneSurfacePatch {
-        let surface = state.pane_surface.as_ref().expect("surface installed");
+        let surface = state.pane_surface().expect("surface installed");
         shepr_protocol::PaneSurfacePatch {
             boot_id: surface.boot_id.clone(),
             projection_revision: surface.projection_revision,

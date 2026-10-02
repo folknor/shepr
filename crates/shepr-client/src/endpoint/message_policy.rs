@@ -14,16 +14,14 @@ pub(crate) enum PresentationDecision {
 pub(crate) struct PresentationGate {
     role: ConnectionRole,
     move_response: bool,
-    command_response: bool,
 }
 impl PresentationGate {
-    /// `move_response`: the message answers the move's on or focus request. `command_response`:
-    /// it answers the in-flight command or a tombstoned one.
-    pub(crate) fn new(role: ConnectionRole, move_response: bool, command_response: bool) -> Self {
+    /// `move_response`: the message answers the move's on or focus request. Shown
+    /// responses apply; the command lane accepts only its in-flight request.
+    pub(crate) fn new(role: ConnectionRole, move_response: bool) -> Self {
         Self {
             role,
             move_response,
-            command_response,
         }
     }
     pub(crate) fn decide(&self, message: &DecodedServerMessage) -> PresentationDecision {
@@ -44,7 +42,7 @@ impl PresentationGate {
             },
             DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse { .. }) => {
                 match self.role {
-                    Shown if self.command_response => Apply,
+                    Shown => Apply,
                     Target if self.move_response => Buffer,
                     _ => Drop,
                 }
@@ -66,7 +64,7 @@ mod tests {
     use ConnectionRole::*;
     use PresentationDecision::*;
     fn gate(role: ConnectionRole) -> PresentationGate {
-        PresentationGate::new(role, false, false)
+        PresentationGate::new(role, false)
     }
     fn wire(message: ServerMessage) -> DecodedServerMessage {
         DecodedServerMessage::Wire(message)
@@ -134,22 +132,19 @@ mod tests {
         }
     }
     #[test]
-    fn only_a_move_response_is_buffered_and_only_a_command_response_applies() {
+    fn only_a_move_response_is_buffered_and_a_shown_response_applies() {
         let r = response();
-        for role in [Shown, Target, Other] {
+        for role in [Target, Other] {
             assert_eq!(gate(role).decide(&r), Drop);
         }
-        assert_eq!(
-            PresentationGate::new(Target, true, false).decide(&r),
-            Buffer
-        );
-        assert_eq!(PresentationGate::new(Shown, false, true).decide(&r), Apply);
-        assert_eq!(PresentationGate::new(Other, true, true).decide(&r), Drop);
+        assert_eq!(PresentationGate::new(Target, true).decide(&r), Buffer);
+        assert_eq!(PresentationGate::new(Shown, false).decide(&r), Apply);
+        assert_eq!(PresentationGate::new(Other, true).decide(&r), Drop);
     }
     #[test]
-    fn a_tombstoned_response_of_the_shown_endpoint_applies() {
+    fn any_response_of_the_shown_endpoint_applies() {
         assert_eq!(
-            PresentationGate::new(Shown, false, true).decide(&response()),
+            PresentationGate::new(Shown, false).decide(&response()),
             Apply
         );
     }

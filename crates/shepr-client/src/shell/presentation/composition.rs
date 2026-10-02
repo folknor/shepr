@@ -21,16 +21,12 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
-        // A retained surface is presentable only with its matching snapshot and generation.
-        // A missing pair uses the placeholder layer; a pair awaiting coherence keeps the
-        // last frame until the matching projection arrives.
-        let has_surface = self.snapshot.is_some() && self.pane_surface.is_some();
-        if has_surface
-            && (self.pending_pane_surface.is_some()
-                || self.pane_surface_generation != self.active_snapshot_generation
-                || self.snapshot.as_deref()?.revision
-                    != self.pane_surface.as_ref()?.projection_revision)
-        {
+        // Only the exact snapshot pair is drawn. With nothing presented the placeholder
+        // layer is drawn; while a presented surface is held unpaired (the snapshot passed
+        // it, a baseline waits for its snapshot, or the connection was lost) the last
+        // frame stays on screen until the matching pair exists.
+        let has_surface = self.snapshot.is_some() && self.pane_surface().is_some();
+        if has_surface && !self.surfaces.is_paired() {
             return None;
         }
         let layout = self.layout(cols, rows);
@@ -139,7 +135,7 @@ impl ClientShellState {
         // them (lifecycle, notices, overlays and the mode bar) follows the same pipeline
         // when the pane area contains only a connection placeholder.
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
-        if let Some(surface) = self.pane_surface.as_ref().filter(|_| has_surface) {
+        if let Some(surface) = self.surfaces.paired().filter(|_| has_surface) {
             // The surface may have been produced for another layout: a resize or sidebar toggle
             // keeps the retained surface until the resized one arrives, a resize can race a surface
             // already in flight. `compose_pane_surface` clips the cells; the hits are clipped to

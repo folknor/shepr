@@ -19,6 +19,7 @@ mod config;
 mod context_menu;
 #[path = "shell/input/copy_mode.rs"]
 mod copy_mode;
+use copy_mode::CopyPipeline;
 #[path = "shell/sidebar/endpoint_agents.rs"]
 mod endpoint_agents;
 #[path = "shell/navigation/endpoint_navigation.rs"]
@@ -33,6 +34,9 @@ pub(super) use endpoints::*;
 mod global_menu;
 #[path = "shell/input/input.rs"]
 mod input;
+mod ledger;
+pub(super) use ledger::DropReason;
+use ledger::{Ledger, Work};
 #[path = "shell/input/mouse.rs"]
 mod mouse;
 #[path = "shell/overlays/overlay_input.rs"]
@@ -43,11 +47,18 @@ mod preferences;
 mod render;
 #[path = "shell/navigation/scroll.rs"]
 mod scroll;
+#[path = "shell/input/scroll_lanes.rs"]
+mod scroll_lanes;
+use scroll_lanes::{ScrollAnswer, ScrollLanes, ScrollWant};
 #[path = "shell/sidebar/sidebar_tokens.rs"]
 mod sidebar_tokens;
 mod state;
 #[path = "shell/presentation/surface_patch.rs"]
 mod surface_patch;
+#[path = "shell/presentation/surfaces.rs"]
+mod surfaces;
+pub(super) use surfaces::PatchRejection;
+use surfaces::{Pairing, PaneSurfaces};
 #[path = "shell/overlays/text_editor.rs"]
 mod text_editor;
 #[path = "shell/input/word_selection.rs"]
@@ -62,7 +73,9 @@ use sidebar_tokens::{
     sidebar_section_divider_rect, sidebar_space_rows,
 };
 pub use state::*;
-pub(super) use surface_patch::{ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome};
+pub(super) use surface_patch::{
+    ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome, PatchPresentation,
+};
 
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;

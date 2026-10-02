@@ -19,7 +19,7 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
         let mut third_surface_pane = pane_surface.panes[0].clone();
         third_surface_pane.pane_id = test_pane_id("w1:p3");
         pane_surface.panes.push(third_surface_pane);
-        state.set_pane_surface(pane_surface);
+        state.receive_pane_surface(pane_surface);
         state.mode = mode;
 
         let outcome = state.handle_input_bytes(b"\t");
@@ -249,7 +249,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
@@ -349,7 +349,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
@@ -525,7 +525,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
 fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
         &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
@@ -577,7 +577,7 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
 fn overlay_that_does_not_fit_still_presents_the_frame() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
         &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
@@ -624,7 +624,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
     state.sidebar_collapsed = true;
     state.set_snapshot(Box::new(many));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("collapsed frame");
     // The focused workspace is revealed, so it is on screen and clickable.
     assert!(
@@ -670,7 +670,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
 fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
         &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
@@ -704,8 +704,8 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
     // Parking the next revision's surface leaves the visible pair, and its hits, alone.
     let mut parked = surface();
     parked.projection_revision = shepr_protocol::ProjectionRevision::new(3);
-    state.set_pane_surface(parked);
-    assert!(state.pending_pane_surface.is_some());
+    state.receive_pane_surface(parked);
+    assert!(state.surfaces.waiting_baseline().is_some());
     assert!(!state.hits.panes.is_empty());
     assert_eq!(state.hits.help_popup, popup);
 }
@@ -744,7 +744,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
         None,
         &[((0, 0), "L".into(), "https://example.test".into())],
     );
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     let mut selection = shepr_vt::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
@@ -776,7 +776,7 @@ fn last_row_text(frame: &FrameData) -> String {
 fn overlay_that_gives_up_commits_nothing_but_the_hint_row() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let before = state.compose(106, 8).expect("frame without overlay");
     open_help(&mut state);
     let after = state.compose(106, 8).expect("frame with the overlay open");
@@ -799,7 +799,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
         cell.style.flags = WireStyleFlags::BOLD;
         cell.style.underline = shepr_vt::UnderlineStyle::Curly;
     }
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     let plain = state.compose(106, 30).expect("frame without overlay");
     let hit = state.hits.panes[0].clone();
     let pane_origin = (hit.inner_rect.x, hit.inner_rect.y);
@@ -838,7 +838,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
 fn mode_bar_is_drawn_only_while_no_overlay_is_open() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.mode = ClientShellMode::Prefix;
     let frame = state.compose(106, 30).expect("frame with the mode bar");
     assert!(frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));

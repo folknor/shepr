@@ -49,7 +49,7 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = None;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("pane frame");
     let pane = state.hits.panes[0].clone();
     let mut mouse = MouseEvent {
@@ -81,7 +81,7 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
 fn selection_release_copies_latest_position_before_deferred_paint() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
     let pane = state.hits.panes[0].clone();
     let mut mouse = MouseEvent {
@@ -142,7 +142,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
             shepr_core::geometry::SplitBranch::Second,
         ],
     });
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("split pane surface");
     let split = state.hits.pane_splits[0].clone();
 
@@ -187,7 +187,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
         ],
     });
     state.set_snapshot(Box::new(replacement));
-    state.set_pane_surface(replacement_surface);
+    state.receive_pane_surface(replacement_surface);
     let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
         column: split.area.x + 48,
@@ -241,7 +241,7 @@ fn disabled_mouse_chrome_removes_split_drag_hits() {
     });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("mouse-disabled shell");
     assert!(state.hits.pane_splits.is_empty());
 }
@@ -348,7 +348,7 @@ fn word_drag_state(copy_on_select: bool) -> ClientShellState {
     pane_surface.panes[0].rect.width = 19;
     pane_surface.panes[0].rect.height = 3;
     pane_surface.panes[0].inner_rect = pane_surface.panes[0].rect;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     state
 }
@@ -413,9 +413,9 @@ fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
     assert!(state.word_selection_gesture.is_some());
     // The first click also asked to focus the pane; that unrelated request
     // stays pending and is not part of this assertion.
-    state.pending_requests.retain(|id, _| id == &request_id);
+    state.ledger.retain(|id| id == &request_id);
 
-    let outcome = state.handle_endpoint_result_at(
+    let outcome = state.answer_request(
         "replacement-boot",
         &request_id,
         Err(ClientShellEndpointError::Server(
@@ -425,7 +425,7 @@ fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
     );
 
     assert!(outcome.repaint);
-    assert!(state.pending_requests.is_empty());
+    assert!(state.ledger.is_empty());
     assert!(state.word_selection_gesture.is_none());
     assert!(state.visible_endpoint_notice.is_none());
 }
@@ -436,11 +436,11 @@ fn disconnecting_a_pending_word_row_read_does_not_show_an_interrupted_action_not
     let request_id = start_word_drag(&mut state);
     // The first click also asked to focus the pane; a generic action does show
     // the interrupted notice, so leave only the word read pending.
-    state.pending_requests.retain(|id, _| id == &request_id);
+    state.ledger.retain(|id| id == &request_id);
 
     state.mark_endpoint_disconnected(&crate::endpoint::ClientEndpointId::Local);
 
-    assert!(state.pending_requests.is_empty());
+    assert!(state.ledger.is_empty());
     assert!(state.word_selection_gesture.is_none());
     assert!(state.visible_endpoint_notice.is_none());
 }
@@ -604,7 +604,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     };
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(focused_on("w1:p2")));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
     let pane = state.hits.panes[0].clone();
     assert_eq!(pane.pane_id, "w1:p1");
@@ -650,7 +650,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
 fn selection_in_focused_pane_still_ends_when_focus_moves() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
     let pane = state.hits.panes[0].clone();
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -676,18 +676,14 @@ fn double_click_drag_invalidates_cached_boundaries_outside_selected_cells() {
         let mut state = word_drag_state(copy_on_select);
         let initial = start_word_drag(&mut state);
         word_row_reply(&mut state, &initial, "alpha bravo charlie");
-        let mut changed = state
-            .pane_surface
-            .as_ref()
-            .expect("test precondition")
-            .clone();
+        let mut changed = state.pane_surface().expect("test precondition").clone();
         changed.surface_revision = changed
             .surface_revision
             .checked_next()
             .expect("test precondition");
         changed.panes[0].content_revision += 2;
         changed.frame.cells[14].symbol = " ".into();
-        state.set_pane_surface(changed);
+        state.receive_pane_surface(changed);
         assert!(
             state.selection.is_none(),
             "unchanged selected cells do not validate cached boundaries outside the selection"
@@ -712,11 +708,7 @@ fn reconnect_word_selection_tracks_content_changes() {
         let mut state = word_drag_state(true);
         let initial = start_word_drag(&mut state);
         word_row_reply(&mut state, &initial, "alpha bravo charlie");
-        let mut next_surface = state
-            .pane_surface
-            .as_ref()
-            .expect("test precondition")
-            .clone();
+        let mut next_surface = state.pane_surface().expect("test precondition").clone();
         if content_changed {
             next_surface.panes[0].content_revision += 2;
             next_surface.frame.cells[14].symbol = " ".into();
@@ -727,7 +719,7 @@ fn reconnect_word_selection_tracks_content_changes() {
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 1, snapshot);
         state.set_endpoint_status(&endpoint_id, crate::endpoint::ClientEndpointStatus::Online);
         assert!(state.activate_endpoint_projection(&endpoint_id));
-        state.set_pane_surface(next_surface);
+        state.receive_pane_surface(next_surface);
 
         assert_eq!(state.selection.is_some(), !content_changed);
         assert_eq!(state.word_selection_gesture.is_some(), !content_changed);
@@ -754,17 +746,13 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
             unfocused.panes.push(other);
             state.set_snapshot(Box::new(unfocused));
         } else {
-            let mut changed = state
-                .pane_surface
-                .as_ref()
-                .expect("test precondition")
-                .clone();
+            let mut changed = state.pane_surface().expect("test precondition").clone();
             changed.surface_revision = changed
                 .surface_revision
                 .checked_next()
                 .expect("test precondition");
             changed.panes[0].content_revision += 2;
-            state.set_pane_surface(changed);
+            state.receive_pane_surface(changed);
         }
         assert!(
             word_row_reply(&mut state, &initial, "alpha bravo charlie").is_empty(),
@@ -787,18 +775,14 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
             initial
         };
         word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 1, 8);
-        let mut resized = state
-            .pane_surface
-            .as_ref()
-            .expect("test precondition")
-            .clone();
+        let mut resized = state.pane_surface().expect("test precondition").clone();
         resized.surface_revision = resized
             .surface_revision
             .checked_next()
             .expect("test precondition");
         resized.panes[0].rect.width += 5;
         resized.panes[0].inner_rect.width += 5;
-        state.set_pane_surface(resized);
+        state.receive_pane_surface(resized);
         assert!(word_row_reply(&mut state, &pending, "alpha bravo charlie extra").is_empty());
         assert!(
             state.selection.is_none(),
@@ -866,7 +850,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         pane_surface.panes[0].alternate_screen_active = alternate_screen_active;
         pane_surface
     };
-    state.set_pane_surface(surface_at(1, 0, true));
+    state.receive_pane_surface(surface_at(1, 0, true));
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     let mouse = |kind, column, row| {
@@ -885,7 +869,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     )]);
     let mut updated_surface = surface_at(2, 2, true);
     updated_surface.frame.cells[0].symbol = "W".into();
-    state.set_pane_surface(updated_surface);
+    state.receive_pane_surface(updated_surface);
     state.compose(106, 20).expect("updated frame");
 
     let drag = state.handle_raw_events(vec![mouse(
@@ -904,7 +888,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
 
     let mut replaced_surface = surface_at(3, 4, true);
     replaced_surface.frame.cells[4].symbol = "X".into();
-    state.set_pane_surface(replaced_surface);
+    state.receive_pane_surface(replaced_surface);
     assert_eq!(
         state
             .selection
@@ -961,7 +945,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             surface_at(surface_revision, content_revision, alternate_screen_active);
         changed_surface.panes[0].inner_rect.width = width;
         changed_surface.panes[0].alternate_screen_active = alternate_screen_active;
-        state.set_pane_surface(changed_surface);
+        state.receive_pane_surface(changed_surface);
         assert!(state.selection.is_none());
     }
 }
@@ -972,7 +956,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
 
@@ -1039,7 +1023,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     pane_surface.panes[0].sgr_pixel_mouse = true;
     pane_surface.panes[0].pixel_width = 39;
     pane_surface.panes[0].pixel_height = 38;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
@@ -1105,7 +1089,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     state.set_snapshot(Box::new(snapshot));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    state.set_pane_surface(pane_surface);
+    state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
 
@@ -1149,7 +1133,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
 fn context_menu_keyboard_and_outside_click_are_client_owned() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
     let workspace = state.hits.workspaces[0].rect;
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {

@@ -164,7 +164,7 @@ impl ClientShellState {
         // unavailable-surface fallback) scroll to the selection on their next
         // render; the single-endpoint sidebar was revealed above.
         self.reveal_navigation_workspace =
-            self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface.is_none();
+            self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface().is_none();
     }
 
     pub(super) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {

@@ -17,7 +17,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(initial));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("full sidebar");
     assert!(state.hits.workspace_max_scroll > 0);
     assert!(
@@ -37,7 +37,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     let mut updated_surface = surface();
     updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     state.set_snapshot(Box::new(update));
-    state.set_pane_surface(updated_surface);
+    state.receive_pane_surface(updated_surface);
     state.compose(106, 2).expect("zero-height workspace body");
     assert!(state.reveal_focused_workspace);
     state.compose(106, 20).expect("updated full sidebar");
@@ -55,7 +55,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
 fn client_owned_sidebar_dividers_resize_live() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 30).expect("expanded sidebar");
     assert!(state.hits.machines.is_empty());
     let workspace_body = state.hits.workspace_body;
@@ -102,7 +102,7 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert!(!waiting_text.contains("Select a connected machine"));
     // The retained surface stays on screen while the drag is in progress.
     assert!(waiting_text.contains("LIVE"));
-    assert!(state.pane_surface.is_some());
+    assert!(state.pane_surface().is_some());
     assert!(!state.hits.panes.is_empty());
     assert!(state.hits.machines.is_empty());
     assert_eq!(state.hits.sidebar_divider.x, 31);
@@ -128,7 +128,7 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert!(release.resize);
     assert!(state.chrome_drag.is_none());
 
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let recovered_frame = state.compose(106, 30).expect("resized sidebar");
     let recovered_text: String = recovered_frame
         .cells
@@ -160,7 +160,7 @@ fn client_owned_sidebar_dividers_resize_live() {
 fn context_menus_capture_stable_targets_and_route_actions() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
 
     let workspace = state.hits.workspaces[0].rect;
@@ -245,7 +245,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
 fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 30).expect("shell frame");
     let launcher = state.hits.global_launcher;
     assert_ne!(launcher, Rect::default());
@@ -294,7 +294,7 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
 fn lost_sidebar_drag_release_still_resizes_on_the_next_press() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     state.compose(106, 30).expect("expanded sidebar");
     let divider = state.hits.sidebar_divider;
     let mouse = |kind, column| {
@@ -351,7 +351,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
     off_screen.rect = far;
     off_screen.inner_rect = far;
     oversized.panes.push(off_screen);
-    state.set_pane_surface(oversized);
+    state.receive_pane_surface(oversized);
 
     state.compose(106, 30).expect("clipped frame");
     let area = state.layout(106, 30).pane_surface;
@@ -376,6 +376,6 @@ fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     assert!(state.selection.is_none());
 }

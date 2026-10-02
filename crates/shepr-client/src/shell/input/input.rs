@@ -374,9 +374,9 @@ impl ClientShellState {
     ) {
         // Preserve input order through the outstanding read, including keys that interrupt copy
         // mode. Replaying the whole stream keeps Esc and the prefix behind the keys they follow.
-        if self.copy_operation_in_flight && self.copy_mode_owns_input() {
-            if self.copy_input_queue.len() < crate::limits::MAX_COPY_INPUT_QUEUE {
-                self.copy_input_queue.push_back(key);
+        if self.copy_pipeline.in_flight() && self.copy_mode_owns_input() {
+            if self.copy_pipeline.keys_len() < crate::limits::MAX_COPY_INPUT_QUEUE {
+                self.copy_pipeline.push_key(key);
                 return;
             }
             if !self.copy_mode_interrupt_key(&key) {
@@ -484,7 +484,7 @@ impl ClientShellState {
                 accounting,
             );
         }
-        self.copy_input_queue.clear();
+        self.copy_pipeline.clear_keys();
     }
 
     fn execute_repeat_plan(
@@ -1231,7 +1231,7 @@ mod tests {
         let mut state = shell();
         state.mode = ClientShellMode::Copy;
         state.copy_mode = Some(copy_mode_state());
-        state.copy_operation_in_flight = true;
+        state.copy_pipeline.begin("test-request".into());
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
         let prefix = state.config.keybinds.prefix;
@@ -1248,10 +1248,9 @@ mod tests {
         );
 
         assert_eq!(state.mode, ClientShellMode::Copy);
-        assert_eq!(state.copy_input_queue.len(), 2);
+        assert_eq!(state.copy_pipeline.keys_len(), 2);
 
-        let generation = state.copy_session_generation;
-        state.complete_copy_operation(generation, true, &mut outcome);
+        state.finish_copy_operation(true, &mut outcome);
 
         assert_eq!(state.mode, ClientShellMode::Prefix);
         assert!(
@@ -1260,7 +1259,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|copy_mode| copy_mode.selection.is_some())
         );
-        assert!(state.copy_input_queue.is_empty());
+        assert!(state.copy_pipeline.keys_is_empty());
     }
 
     #[test]
@@ -1276,7 +1275,7 @@ mod tests {
             test_pane_id(),
             shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         ));
-        state.copy_operation_in_flight = true;
+        state.copy_pipeline.begin("test-request".into());
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
 
@@ -1291,9 +1290,8 @@ mod tests {
             &mut accounting,
         );
 
-        assert_eq!(state.copy_input_queue.len(), 2);
-        let generation = state.copy_session_generation;
-        state.complete_copy_operation(generation, true, &mut outcome);
+        assert_eq!(state.copy_pipeline.keys_len(), 2);
+        state.finish_copy_operation(true, &mut outcome);
 
         assert_eq!(state.mode, ClientShellMode::Copy);
         assert!(
@@ -1303,6 +1301,6 @@ mod tests {
                 .is_some_and(|copy_mode| copy_mode.selection.is_none())
         );
         assert!(state.selection.is_none());
-        assert!(state.copy_input_queue.is_empty());
+        assert!(state.copy_pipeline.keys_is_empty());
     }
 }

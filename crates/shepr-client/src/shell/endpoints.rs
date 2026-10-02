@@ -71,12 +71,7 @@ impl ClientShellState {
     pub(crate) fn mark_endpoint_disconnected(&mut self, endpoint_id: &ClientEndpointId) {
         self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Reconnecting);
         if endpoint_id == &self.active_endpoint_id {
-            let pending = self.pending_requests.keys().cloned().collect::<Vec<_>>();
-            for request_id in pending {
-                self.cancel_endpoint_request(&request_id);
-            }
-            self.pane_scroll_in_flight.clear();
-            self.pane_scroll_queued.clear();
+            self.drop_all_requests(DropReason::Interrupted);
         }
     }
 
@@ -111,8 +106,7 @@ impl ClientShellState {
         let agent_scroll = self.agent_scroll;
         if switching_endpoint {
             self.active_endpoint_id = endpoint_id.clone();
-            self.pane_surface = None;
-            self.pending_pane_surface = None;
+            self.surfaces = PaneSurfaces::default();
         }
         self.apply_active_snapshot(snapshot, generation);
         if switching_endpoint {

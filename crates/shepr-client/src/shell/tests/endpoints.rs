@@ -62,7 +62,7 @@ fn state_with_machines(
     state.set_machines(machines);
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces[0].label = "remote-workspace".into();
@@ -667,14 +667,14 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
         assert!(state.activate_endpoint_projection(&endpoint_id));
         assert_eq!(state.agent_scroll, 6);
         assert_eq!(state.workspace_scroll, 0);
-        assert!(state.pane_surface.is_none());
+        assert!(state.pane_surface().is_none());
 
         let mut next_surface = surface();
         next_surface.boot_id = state
             .endpoint_boot_id(&endpoint_id)
             .expect("test precondition")
             .clone();
-        state.set_pane_surface(next_surface);
+        state.receive_pane_surface(next_surface);
         state.compose(100, 28).expect("test precondition");
         assert_eq!(state.agent_scroll, 6);
         assert_eq!(state.hits.endpoint_agents, visible);
@@ -758,7 +758,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
         viewport_rows: 2,
         history_origin: shepr_vt::AbsRow(0),
     });
-    state.set_pane_surface(local_surface);
+    state.receive_pane_surface(local_surface);
     state.compose(100, 28).expect("test precondition");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -766,7 +766,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
     assert!(state.activate_endpoint_projection(&remote));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.set_pane_surface(remote_surface);
+    state.receive_pane_surface(remote_surface);
     state.compose(100, 28).expect("test precondition");
 
     assert!(state.copy_mode.is_none());
@@ -808,7 +808,7 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
         state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
         state.set_endpoint_snapshot(&remote, Box::new(snapshot()));
         assert!(state.snapshot.is_none());
-        assert!(state.pane_surface.is_none());
+        assert!(state.pane_surface().is_none());
         let frame = state
             .compose(cols, rows)
             .expect("connection chrome without Local");
@@ -999,7 +999,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     state.set_snapshot(Box::new(update));
     let mut updated_surface = surface();
     updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
-    state.set_pane_surface(updated_surface);
+    state.receive_pane_surface(updated_surface);
     state.compose(106, 2).expect("zero-height workspace body");
     assert!(state.reveal_focused_workspace);
     state.compose(106, 20).expect("new workspace revealed");
@@ -1136,7 +1136,7 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.set_pane_surface(remote_surface);
+    state.receive_pane_surface(remote_surface);
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let machine = state
@@ -1198,7 +1198,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_snapshot(Box::new(local));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent(AgentStatus::Blocked, 1)];
@@ -1258,7 +1258,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_snapshot(Box::new(local));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent(AgentStatus::Idle, 1)];
@@ -1653,18 +1653,17 @@ fn future_surface_waits_for_its_exact_snapshot_revision() {
     let mut future = surface();
     future.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     future.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-    state.set_pane_surface(future);
+    state.receive_pane_surface(future);
     assert_eq!(
         state
-            .pane_surface
-            .as_ref()
+            .pane_surface()
             .map(|surface| surface.projection_revision),
         Some(shepr_protocol::ProjectionRevision::new(1))
     );
     assert_eq!(
         state
-            .pending_pane_surface
-            .as_ref()
+            .surfaces
+            .waiting_baseline()
             .map(|surface| surface.projection_revision),
         Some(shepr_protocol::ProjectionRevision::new(2))
     );
@@ -1674,12 +1673,11 @@ fn future_surface_waits_for_its_exact_snapshot_revision() {
     state.set_snapshot(Box::new(next));
     assert_eq!(
         state
-            .pane_surface
-            .as_ref()
+            .pane_surface()
             .map(|surface| surface.projection_revision),
         Some(shepr_protocol::ProjectionRevision::new(2))
     );
-    assert!(state.pending_pane_surface.is_none());
+    assert!(state.surfaces.waiting_baseline().is_none());
 }
 
 #[test]
@@ -1761,13 +1759,13 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         previous_surface.projection_revision =
             shepr_protocol::ProjectionRevision::new(previous_revision);
         previous_surface.surface_revision = shepr_protocol::SurfaceRevision::new(9);
-        state.set_pane_surface(previous_surface.clone());
+        state.receive_pane_surface(previous_surface.clone());
         previous_surface.projection_revision = previous_surface
             .projection_revision
             .checked_next()
             .expect("test precondition");
-        state.set_pane_surface(previous_surface);
-        assert!(state.pending_pane_surface.is_some());
+        state.receive_pane_surface(previous_surface);
+        assert!(state.surfaces.waiting_baseline().is_some());
         state.agent_scroll = 7;
 
         state.mark_endpoint_disconnected(&endpoint_id);
@@ -1781,8 +1779,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         );
         assert_eq!(
             state
-                .pane_surface
-                .as_ref()
+                .pane_surface()
                 .expect("test precondition")
                 .surface_revision,
             9
@@ -1795,7 +1792,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         reconnected_surface.boot_id = crate::tests::test_boot_id("shared-server-boot");
         reconnected_surface.projection_revision = shepr_protocol::ProjectionRevision::new(1);
         reconnected_surface.surface_revision = shepr_protocol::SurfaceRevision::new(1);
-        state.set_pane_surface(reconnected_surface);
+        state.receive_pane_surface(reconnected_surface);
 
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
@@ -1803,21 +1800,19 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         );
         assert_eq!(
             state
-                .pane_surface
-                .as_ref()
+                .pane_surface()
                 .expect("test precondition")
                 .projection_revision,
             1
         );
         assert_eq!(
             state
-                .pane_surface
-                .as_ref()
+                .pane_surface()
                 .expect("test precondition")
                 .surface_revision,
             1
         );
-        assert!(state.pending_pane_surface.is_none());
+        assert!(state.surfaces.waiting_baseline().is_none());
         assert_eq!(state.agent_scroll, 7);
         assert!(state.compose(106, 20).is_some());
     }
@@ -1883,7 +1878,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.set_pane_surface(remote_surface);
+    state.receive_pane_surface(remote_surface);
 
     state.mark_endpoint_disconnected(&endpoint_id);
     let frame = state.compose(100, 28).expect("frozen endpoint frame");
@@ -1967,7 +1962,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
 
     let mut local = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     local.set_snapshot(Box::new(snapshot()));
-    local.set_pane_surface(surface());
+    local.receive_pane_surface(surface());
     let frame = local.compose(100, 28).expect("local-only sidebar");
     assert!(local.hits.machines.is_empty());
     assert!(
@@ -2280,4 +2275,230 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "w1"
     ));
+}
+
+mod surface_baseline {
+    use super::*;
+    use shepr_protocol::PaneSurfacePatch;
+    fn state() -> ClientShellState {
+        let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        s.set_snapshot(Box::new(snapshot()));
+        s.receive_pane_surface(surface());
+        s
+    }
+    fn patch(s: &PaneSurfaceFrame) -> PaneSurfacePatch {
+        PaneSurfacePatch {
+            boot_id: s.boot_id.clone(),
+            projection_revision: s.projection_revision,
+            base_surface_revision: s.surface_revision,
+            surface_revision: s.surface_revision.checked_next().expect("next"),
+            rows: vec![],
+            panes: vec![],
+            cursor: None,
+        }
+    }
+    fn changed_patch(surface: &PaneSurfaceFrame, marker: &str) -> PaneSurfacePatch {
+        let mut p = patch(surface);
+        p.panes.push(surface.panes[0].clone());
+        let mut cell = shepr_protocol::CellData::blank();
+        cell.symbol = marker.into();
+        p.rows.push(shepr_protocol::PaneSurfacePatchRow {
+            x: 0,
+            y: 0,
+            cells: vec![cell],
+        });
+        p
+    }
+    #[test]
+    fn a_patch_on_a_surface_ahead_of_the_snapshot_advances_that_baseline() {
+        let mut s = state();
+        let mut next = surface();
+        next.projection_revision = 2.into();
+        s.receive_pane_surface(next);
+        let p = changed_patch(s.surfaces.baseline().expect("baseline"), "X");
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
+        ));
+        assert_eq!(s.pane_surface().expect("held").projection_revision, 1);
+        assert_ne!(s.pane_surface().expect("held").frame.cells[0].symbol, "X");
+        let mut next = snapshot();
+        next.revision = 2.into();
+        s.set_snapshot(Box::new(next));
+        assert_eq!(s.pane_surface().expect("paired").frame.cells[0].symbol, "X");
+        assert_eq!(
+            s.pane_surface().expect("paired").surface_revision,
+            p.surface_revision
+        );
+    }
+    #[test]
+    fn a_patch_after_the_snapshot_passed_the_surface_advances_the_baseline() {
+        let mut s = state();
+        let mut next = snapshot();
+        next.revision = 2.into();
+        s.set_snapshot(Box::new(next));
+        let p = patch(s.surfaces.baseline().expect("baseline"));
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
+        ));
+        assert_eq!(
+            s.surfaces.baseline().expect("baseline").surface_revision,
+            p.surface_revision
+        );
+        assert_ne!(
+            s.pane_surface().expect("held").surface_revision,
+            p.surface_revision
+        );
+        let second = changed_patch(s.surfaces.baseline().expect("baseline"), "X");
+        assert!(matches!(
+            s.apply_pane_surface_patch(&second),
+            ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
+        ));
+        assert_eq!(
+            s.surfaces.baseline().expect("baseline").frame.cells[0].symbol,
+            "X"
+        );
+        assert_ne!(s.pane_surface().expect("held").frame.cells[0].symbol, "X");
+        let mut next = surface();
+        next.projection_revision = 2.into();
+        s.receive_pane_surface(next);
+        assert!(s.surfaces.is_paired());
+    }
+    #[test]
+    fn a_new_generation_loses_the_baseline_but_keeps_the_held_pair() {
+        let mut s = state();
+        s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(snapshot()));
+        s.receive_pane_surface(surface());
+        s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 2, Box::new(snapshot()));
+        assert!(s.surfaces.baseline().is_none());
+        assert!(s.pane_surface().is_some());
+    }
+    #[test]
+    fn a_surface_before_the_first_snapshot_stays_the_baseline() {
+        let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        s.receive_pane_surface(surface());
+        s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(snapshot()));
+        assert!(s.surfaces.is_paired());
+        let p = patch(s.surfaces.baseline().expect("baseline"));
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Applied(_)
+        ));
+    }
+    #[test]
+    fn a_slow_path_patch_applies_in_place_and_composes() {
+        let mut s = state();
+        s.mode = ClientShellMode::Navigate;
+        let ptr = s
+            .surfaces
+            .baseline()
+            .expect("baseline")
+            .frame
+            .cells
+            .as_ptr();
+        let p = changed_patch(s.surfaces.baseline().expect("baseline"), "X");
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Compose)
+        ));
+        assert_eq!(
+            s.surfaces
+                .baseline()
+                .expect("baseline")
+                .frame
+                .cells
+                .as_ptr(),
+            ptr
+        );
+        assert_eq!(s.pane_surface().expect("paired").frame.cells[0].symbol, "X");
+    }
+    #[test]
+    fn a_rejected_patch_reports_its_reason() {
+        let mut s = state();
+        let mut p = patch(s.surfaces.baseline().expect("baseline"));
+        p.base_surface_revision = p.surface_revision;
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::DoesNotFollow)
+        ));
+        p = patch(s.surfaces.baseline().expect("baseline"));
+        let mut pane = s.surfaces.baseline().expect("baseline").panes[0].clone();
+        pane.inner_rect.width += 1;
+        p.panes.push(pane);
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::PaneGeometry)
+        ));
+        p.panes.clear();
+        p.rows.push(shepr_protocol::PaneSurfacePatchRow {
+            x: 0,
+            y: 0,
+            cells: vec![],
+        });
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::RowOutsideFrame)
+        ));
+        s.surfaces = PaneSurfaces::Empty;
+        assert!(matches!(
+            s.apply_pane_surface_patch(&p),
+            ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::NoBaseline)
+        ));
+    }
+    #[test]
+    fn a_surface_ahead_of_the_snapshot_keeps_the_pane_hits_live() {
+        let mut s = state();
+        s.compose(106, 20).expect("compose");
+        let count = s.hits.panes.len();
+        assert!(count > 0);
+        let mut future = surface();
+        future.projection_revision = 3.into();
+        s.receive_pane_surface(future);
+        assert_eq!(s.hits.panes.len(), count);
+        assert_eq!(s.pane_surface().expect("held").projection_revision, 1);
+    }
+    #[test]
+    fn compose_holds_the_last_frame_while_unpaired_and_draws_the_placeholder_when_nothing_was_presented()
+     {
+        let mut s = state();
+        s.compose(106, 20).expect("compose");
+        let mut future = surface();
+        future.projection_revision = 3.into();
+        s.receive_pane_surface(future.clone());
+        assert!(s.compose(106, 20).is_none());
+        s.invalidate_pane_surface();
+        s.receive_pane_surface(future);
+        assert!(s.compose(106, 20).is_some());
+        assert!(s.pane_surface().is_none());
+    }
+    #[test]
+    fn pairing_a_waiting_baseline_runs_the_selection_and_copy_mode_effects() {
+        let mut s = state();
+        s.compose(106, 20).expect("compose");
+        let mut input = ClientShellInput::default();
+        s.enter_copy_mode(&mut input);
+        let hit = s.hits.panes[0].clone();
+        let metrics = hit.scroll.expect("scroll");
+        s.request_word_selection(&hit, metrics, 0, 0, &mut input);
+        s.copy_mode.as_mut().expect("copy").cursor.row = shepr_vt::AbsRow(0);
+        let mut future = surface();
+        future.projection_revision = 2.into();
+        future.panes[0].inner_rect.width = 10;
+        future.panes[0]
+            .scroll
+            .as_mut()
+            .expect("scroll")
+            .history_origin = shepr_vt::AbsRow(100);
+        s.receive_pane_surface(future);
+        assert!(s.word_selection_gesture.is_some());
+        let mut next = snapshot();
+        next.revision = 2.into();
+        s.set_snapshot(Box::new(next));
+        assert!(s.word_selection_gesture.is_none());
+        assert_ne!(
+            s.copy_mode.as_ref().expect("copy").cursor.row,
+            shepr_vt::AbsRow(0)
+        );
+    }
 }

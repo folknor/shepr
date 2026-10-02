@@ -115,7 +115,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
 fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_terminal() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
+    state.receive_pane_surface(surface());
     let groups = shepr_termio::input::keybind_help_groups(
         &state.config.keybinds.keybinds,
         state.config.keybinds.prefix,

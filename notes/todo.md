@@ -55,6 +55,21 @@ restore runs this on the server's event loop, so a hung mount in the cwd,
 `HOME` or any `PATH` entry stalls the whole server, not just resume. This is
 wider than the note in `agent_resume.rs` acknowledges.
 
+## A reconnected connection's first surface can meet the old snapshot
+
+`PaneSurfaces` in `crates/shepr-client/src/shell/presentation/surfaces.rs`
+drops its baseline when the endpoint's connection generation changes from one
+connection to another. `receive_pane_surface` is not told which connection
+generation a surface came from. If a reconnected connection's first full
+surface reached the shell before its first snapshot, it could pair with the
+old connection's snapshot when their projection revisions happen to match, or
+else be dropped by `lose_baseline`, so the next patch is
+`Rejected(NoBaseline)` and the connection is torn down and reconnected. Today
+the server writes the snapshot before the surface, so neither happens; the
+code before the request-ledger rewrite relied on the same ordering. Fix: pass
+the message's connection generation into `receive_pane_surface` and drop a
+surface from any generation but the current one.
+
 # Possible capabilities
 
 Proposals that arrived as defects but would widen what shepr claims. None is

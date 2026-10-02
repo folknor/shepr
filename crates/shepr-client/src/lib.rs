@@ -884,22 +884,8 @@ impl ClientLoop {
                 .is_some_and(|p| p.accepts_response(endpoint_id, generation, boot_id, request_id)),
             _ => false,
         };
-        // The in-flight command or a tombstoned one: a late response to a retired or timed-out
-        // command still reaches `receive_response` and consumes its tombstone.
-        let command_response = match message.as_ref() {
-            DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse {
-                boot_id,
-                request_id,
-                ..
-            }) => {
-                endpoint_commands.response_kind(endpoint_id, generation, boot_id, request_id)
-                    != endpoint::commands::CommandResponseKind::Untracked
-            }
-            _ => false,
-        };
         let presentation_decision =
-            endpoint::PresentationGate::new(role, move_response, command_response)
-                .decide(message.as_ref());
+            endpoint::PresentationGate::new(role, move_response).decide(message.as_ref());
         if presentation_decision == endpoint::PresentationDecision::Drop {
             return Ok(ClientLoopAction::NextEvent);
         }
@@ -914,7 +900,9 @@ impl ClientLoop {
                 }
                 let outcome = state.shell.apply_pane_surface_patch(&patch);
                 let compose_fallback = match outcome {
-                    shell::ClientPaneSurfacePatchOutcome::Applied(Some(composed)) => {
+                    shell::ClientPaneSurfacePatchOutcome::Applied(
+                        shell::PatchPresentation::Rows(composed),
+                    ) => {
                         match state.present_surface_patch(composed) {
                             Ok(presented) => !presented,
                             Err(error) => {
@@ -938,15 +926,23 @@ impl ClientLoop {
                             }
                         }
                     }
-                    shell::ClientPaneSurfacePatchOutcome::Applied(None) => true,
-                    shell::ClientPaneSurfacePatchOutcome::Rejected => {
-                        // The reader already accepted this patch against its connection
-                        // baseline. The shell can reject it after presentation filtering has
-                        // advanced that baseline without its display; no repaint request can
-                        // repair the gap, so reconnect for a fresh full surface baseline.
+                    shell::ClientPaneSurfacePatchOutcome::Applied(
+                        shell::PatchPresentation::Compose,
+                    ) => true,
+                    shell::ClientPaneSurfacePatchOutcome::Applied(
+                        shell::PatchPresentation::Held,
+                    ) => false,
+                    shell::ClientPaneSurfacePatchOutcome::Rejected(reason) => {
+                        // The patch does not follow the shell's baseline, which mirrors the
+                        // reader's. Either the two disagree about a baseline both derive from
+                        // the same wire, or the server sent a patch the decoder accepts and the
+                        // shell does not (a pane geometry change, or a row outside every
+                        // patched pane; the decoder checks neither). Both are bugs, and
+                        // reconnecting for a fresh full surface baseline is the one response.
                         tracing::error!(
                             endpoint = %endpoint_id.storage_key(),
                             generation,
+                            ?reason,
                             "client shell rejected a pane surface patch; failing its connection"
                         );
                         write_stream.fail(
@@ -983,7 +979,7 @@ impl ClientLoop {
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                state.shell.set_pane_surface(surface);
+                state.shell.receive_pane_surface(surface);
                 let composed = state.shell.compose(
                     state.reported_geometry.cols(),
                     state.reported_geometry.rows(),
@@ -1049,7 +1045,7 @@ impl ClientLoop {
                 // releases the next queued command in this endpoint's lane.
                 let shell = &mut state.shell;
                 let outcome = if shell.endpoint_is_active(&completed.endpoint_id) {
-                    shell.handle_endpoint_result_at(
+                    shell.answer_request(
                         &completed.boot_id,
                         &completed.request_id,
                         completed.result,
@@ -1057,7 +1053,8 @@ impl ClientLoop {
                     )
                 } else {
                     shell::ClientShellInput {
-                        repaint: shell.cancel_endpoint_request(&completed.request_id),
+                        repaint: shell
+                            .drop_request(&completed.request_id, shell::DropReason::Interrupted),
                         ..Default::default()
                     }
                 };
@@ -1210,10 +1207,11 @@ impl ClientLoop {
             let mut outcome = shell.tick_selection_autoscroll(now);
             for expired in expired_endpoints {
                 if !shell.endpoint_is_active(&expired.endpoint_id) {
-                    outcome.repaint |= shell.cancel_endpoint_request(&expired.request_id);
+                    outcome.repaint |=
+                        shell.drop_request(&expired.request_id, shell::DropReason::Interrupted);
                     continue;
                 }
-                let expired_outcome = shell.handle_endpoint_result_at(
+                let expired_outcome = shell.answer_request(
                     &expired.boot_id,
                     &expired.request_id,
                     expired.result,
