@@ -219,7 +219,13 @@ impl PaneTerminal {
         // The runtime tick for a read: a synchronized update whose timeout
         // passed ends before these bytes are parsed, under the same lock, so
         // its effects are collected with theirs and its replies queue first.
+        // The flush changes the screen on its own, so it marks detection
+        // content changed exactly as the timer tick does, whatever the read
+        // carries.
         if core.terminal.tick(now) {
+            super::super::agent_detection::mark_detection_content_changed(
+                &mut core.detection_content_seq,
+            );
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
         let synchronized_output_before = core

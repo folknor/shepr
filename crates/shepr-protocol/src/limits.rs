@@ -102,6 +102,66 @@ impl crate::ClientPaneInputEvent {
     }
 }
 
+/// What one `ClientShellPaneInput` batch costs against `MAX_INPUT_EVENT_BATCH`
+/// and `MAX_INPUT_PAYLOAD`. The client batcher admits an event only while the
+/// grown charge still fits, and the server refuses a received batch whose
+/// charge does not, so both sides apply one admission rule and a batch the
+/// client built is never one the server refuses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputBatchCharge {
+    expanded_events: usize,
+    text_bytes: usize,
+}
+
+impl InputBatchCharge {
+    /// The charge of one event.
+    pub fn of(event: &crate::ClientPaneInputEvent) -> Self {
+        Self {
+            expanded_events: event.expanded_event_count(),
+            text_bytes: event.text_bytes(),
+        }
+    }
+
+    /// The charge of a whole batch.
+    pub fn of_events(events: &[crate::ClientPaneInputEvent]) -> Self {
+        events.iter().fold(Self::default(), |charge, event| {
+            charge.plus(Self::of(event))
+        })
+    }
+
+    /// This charge with `other` added.
+    #[must_use]
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            expanded_events: self.expanded_events.saturating_add(other.expanded_events),
+            text_bytes: self.text_bytes.saturating_add(other.text_bytes),
+        }
+    }
+
+    pub fn expanded_events(self) -> usize {
+        self.expanded_events
+    }
+
+    pub fn text_bytes(self) -> usize {
+        self.text_bytes
+    }
+
+    /// Whether the expanded event count is within `MAX_INPUT_EVENT_BATCH`.
+    pub fn events_fit(self) -> bool {
+        self.expanded_events <= MAX_INPUT_EVENT_BATCH
+    }
+
+    /// Whether the text bytes are within `MAX_INPUT_PAYLOAD`.
+    pub fn bytes_fit(self) -> bool {
+        self.text_bytes <= MAX_INPUT_PAYLOAD
+    }
+
+    /// Whether one message may carry a batch of this charge.
+    pub fn fits(self) -> bool {
+        self.events_fit() && self.bytes_fit()
+    }
+}
+
 /// Largest grid, in cells, a client may request for a pane surface. Surfaces
 /// cross in as many frames as they need, so this is not a frame budget: it
 /// bounds the grids the server keeps per pane and per client. It sits far above

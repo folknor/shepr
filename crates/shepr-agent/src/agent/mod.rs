@@ -256,11 +256,23 @@ impl HookSessionPolicy {
         unsequenced_selection: false,
         foreground_takeover: true,
     };
+    // Claude's SessionStart sources are this list plus `startup`, and the
+    // integration's hook matcher is built from it (`claude_settings`), so the
+    // sources Claude reports and the sources that replace stay one list.
+    // `startup` reports a new process, which has no live session in this pane
+    // to replace. Every other source puts a different session id in the pane's
+    // own process: `--fork-session` and `/branch` switch the pane into the
+    // fork (Claude Code reported these as `resume` before it added `fork`).
+    // The payload does not say which kind of fork it is: a `/fork` background
+    // copy, which leaves the original in the pane, also reports `fork`, but it
+    // runs under Claude's supervisor process and reaches this pane only if
+    // that process carries the pane's environment.
     const CLAUDE: Self = Self {
         replacement_starts: &[
-            resume::AgentSessionStartSource::Clear,
             resume::AgentSessionStartSource::Resume,
+            resume::AgentSessionStartSource::Clear,
             resume::AgentSessionStartSource::Compact,
+            resume::AgentSessionStartSource::Fork,
         ],
         ..Self::DEFAULT
     };

@@ -18,8 +18,7 @@ use tracing::{debug, warn};
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointServerWelcome;
 use shepr_protocol::{
-    self, ClientMessage, ClientPaneInputEvent, MAX_INPUT_EVENT_BATCH, MAX_INPUT_PAYLOAD,
-    ServerMessage,
+    self, ClientMessage, ClientPaneInputEvent, InputBatchCharge, MAX_INPUT_PAYLOAD, ServerMessage,
 };
 
 use crate::limits::{
@@ -188,43 +187,26 @@ enum InputEventLimit {
     InputPayloadTooLarge { size: usize },
 }
 
+/// Charges a received batch with the same `InputBatchCharge` the client
+/// batcher builds messages under. An oversized payload reads as a paste
+/// overflow when pastes carry all of its text, so the client can show its
+/// paste notice.
 fn pane_input_event_limit(events: &[ClientPaneInputEvent]) -> InputEventLimit {
-    let mut expanded_events = 0usize;
-    let mut paste_bytes = 0usize;
-    let mut input_bytes = 0usize;
-    for event in events {
-        expanded_events = expanded_events.saturating_add(event.expanded_event_count());
-        // Clients pre-check pastes with the same `text_bytes` accounting.
-        if matches!(event, ClientPaneInputEvent::Paste(_)) {
-            paste_bytes = paste_bytes.saturating_add(event.text_bytes());
-        } else {
-            input_bytes = input_bytes.saturating_add(event.text_bytes());
-        }
-    }
-
-    classify_input_event_size(expanded_events, paste_bytes, input_bytes)
-}
-
-fn classify_input_event_size(
-    expanded_events: usize,
-    paste_bytes: usize,
-    input_bytes: usize,
-) -> InputEventLimit {
-    if expanded_events > MAX_INPUT_EVENT_BATCH {
+    let charge = InputBatchCharge::of_events(events);
+    if !charge.events_fit() {
         return InputEventLimit::TooManyEvents;
     }
-
-    let payload_bytes = paste_bytes.saturating_add(input_bytes);
-    if payload_bytes <= MAX_INPUT_PAYLOAD {
-        InputEventLimit::WithinLimits
-    } else if input_bytes == 0 {
-        InputEventLimit::PasteTooLarge {
-            size: payload_bytes,
-        }
+    if charge.bytes_fit() {
+        return InputEventLimit::WithinLimits;
+    }
+    let size = charge.text_bytes();
+    let paste_only = events
+        .iter()
+        .all(|event| matches!(event, ClientPaneInputEvent::Paste(_)) || event.text_bytes() == 0);
+    if paste_only {
+        InputEventLimit::PasteTooLarge { size }
     } else {
-        InputEventLimit::InputPayloadTooLarge {
-            size: payload_bytes,
-        }
+        InputEventLimit::InputPayloadTooLarge { size }
     }
 }
 
@@ -672,6 +654,7 @@ fn client_read_loop_with_endpoint_controls(
 mod tests {
     use super::*;
     use crate::limits::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
+    use shepr_protocol::MAX_INPUT_EVENT_BATCH;
     use std::path::PathBuf;
     use std::sync::mpsc::{SendError, TrySendError};
     /// The client read loop - reads messages from the client and forwards to the server event channel.
@@ -1432,6 +1415,29 @@ mod tests {
         assert_eq!(
             pane_input_event_limit(&[oversized_scroll]),
             InputEventLimit::TooManyEvents
+        );
+    }
+
+    #[test]
+    fn an_oversized_payload_is_a_paste_overflow_only_when_pastes_carry_all_text() {
+        let paste = ClientPaneInputEvent::Paste("p".repeat(MAX_INPUT_PAYLOAD));
+        let empty_commit = ClientPaneInputEvent::TextCommit(String::new());
+        let size = MAX_INPUT_PAYLOAD + 1;
+        assert_eq!(
+            pane_input_event_limit(&[
+                paste.clone(),
+                empty_commit,
+                ClientPaneInputEvent::Paste("q".into())
+            ]),
+            InputEventLimit::PasteTooLarge { size }
+        );
+        assert_eq!(
+            pane_input_event_limit(&[paste.clone(), ClientPaneInputEvent::TextCommit("x".into())]),
+            InputEventLimit::InputPayloadTooLarge { size }
+        );
+        assert_eq!(
+            pane_input_event_limit(&[paste]),
+            InputEventLimit::WithinLimits
         );
     }
 

@@ -1392,7 +1392,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
         let command = Box::new(EndpointCommand::WorkspaceRename(
             shepr_protocol::command::WorkspaceRenameParams {
                 workspace_id: workspace_id.clone(),
-                label: label.into(),
+                label: Some(label.into()),
             },
         ));
         assert!(
@@ -1464,7 +1464,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
         command: Box::new(EndpointCommand::WorkspaceRename(
             shepr_protocol::command::WorkspaceRenameParams {
                 workspace_id,
-                label: "updated".into(),
+                label: Some("updated".into()),
             },
         )),
     });
@@ -1919,7 +1919,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
         command: Box::new(EndpointCommand::WorkspaceRename(
             shepr_protocol::command::WorkspaceRenameParams {
                 workspace_id,
-                label: "gone".into(),
+                label: Some("gone".into()),
             },
         )),
     });
@@ -2265,7 +2265,7 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
     let outcome = server.app.handle_endpoint_command_with_render(
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
             workspace_id: first.workspaces[0].workspace_id.clone(),
-            label: "renamed".into(),
+            label: Some("renamed".into()),
         }),
         &crate::app::EndpointContext::without_geometry(),
     );
@@ -2406,7 +2406,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         7,
         EndpointCommand::WorkspaceRename(WorkspaceRenameParams {
             workspace_id: workspace_id.clone(),
-            label: "named-workspace".into(),
+            label: Some("named-workspace".into()),
         }),
     ));
     let workspace = next_projection(&mut server, &control, &mut previous);
@@ -2499,7 +2499,7 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
         8,
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
             workspace_id: seed.workspaces[0].workspace_id.clone(),
-            label: "after-reconnect".into(),
+            label: Some("after-reconnect".into()),
         }),
     ));
     assert_eq!(

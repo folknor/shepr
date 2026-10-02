@@ -1,6 +1,12 @@
 use super::App;
 
 impl App {
+    /// Installs the host's light or dark appearance in every pane. Nothing
+    /// drawn reads it: it reaches panes only as their answer to a colour
+    /// scheme query and the mode 2031 notification, both written to the
+    /// pane's PTY by the runtime here. It is not saved with the session.
+    /// So unlike the theme it requests no render and marks nothing dirty; a
+    /// child that repaints in response does so through its own output.
     pub(crate) fn set_host_terminal_appearance_state(
         &mut self,
         appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
@@ -19,6 +25,12 @@ impl App {
         true
     }
 
+    /// Installs the host theme as every pane's default colours. Pane cells
+    /// are drawn with them and the session saves them, so a change marks the
+    /// session dirty and requests a render; the render request moves the
+    /// view epoch, sending every client through a full pass. Nothing else
+    /// reads the theme (projections and client chrome do not), so callers
+    /// need no invalidation of their own, whatever caused the change.
     pub(crate) fn set_host_terminal_theme(
         &mut self,
         theme: shepr_termio::host_term::theme::TerminalTheme,

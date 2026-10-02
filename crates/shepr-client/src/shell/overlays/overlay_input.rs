@@ -673,12 +673,15 @@ impl ClientShellState {
             return;
         };
         let trimmed = rename.input.trim();
+        // An empty rename clears the custom name, the same as the context
+        // menu's Clear, so the automatic label returns.
+        let label = (!trimmed.is_empty()).then(|| trimmed.to_owned());
         let command = match rename.target {
             ClientRenameTarget::NewWorkspace {
                 cwd,
                 suggested_name,
                 ..
-            } => Some(shepr_protocol::command::EndpointCommand::WorkspaceCreate(
+            } => shepr_protocol::command::EndpointCommand::WorkspaceCreate(
                 shepr_protocol::command::WorkspaceCreateParams {
                     // The prompt already resolved the directory the new
                     // workspace starts in; with none known the server picks.
@@ -686,30 +689,24 @@ impl ClientShellState {
                         Some(cwd) => shepr_protocol::command::WorkspaceCreateSource::Cwd(cwd),
                         None => shepr_protocol::command::WorkspaceCreateSource::Default,
                     },
-                    label: (!trimmed.is_empty() && trimmed != suggested_name)
-                        .then(|| trimmed.to_owned()),
+                    label: label.filter(|label| *label != suggested_name),
                 },
-            )),
-            ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
+            ),
+            ClientRenameTarget::Workspace { workspace_id } => {
                 shepr_protocol::command::EndpointCommand::WorkspaceRename(
                     shepr_protocol::command::WorkspaceRenameParams {
                         workspace_id,
-                        label: trimmed.to_owned(),
+                        label,
                     },
                 )
-            }),
+            }
             ClientRenameTarget::Pane { pane_id } => {
-                Some(shepr_protocol::command::EndpointCommand::PaneRename(
-                    shepr_protocol::command::PaneRenameParams {
-                        pane_id,
-                        label: Some(trimmed.to_owned()),
-                    },
-                ))
+                shepr_protocol::command::EndpointCommand::PaneRename(
+                    shepr_protocol::command::PaneRenameParams { pane_id, label },
+                )
             }
         };
-        if let Some(command) = command {
-            self.push_endpoint_command(command, outcome);
-        }
+        self.push_endpoint_command(command, outcome);
         outcome.repaint = true;
     }
 

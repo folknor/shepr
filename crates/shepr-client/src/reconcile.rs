@@ -31,15 +31,11 @@ impl ClientLoop {
     /// as an interrupted switch rather than a timeout.
     pub(super) fn reconcile(&mut self, now: std::time::Instant) -> Result<(), ClientError> {
         for failure in self.write_stream.take_failures() {
-            // `record_failure` removed the connection as it queued this failure; a live
-            // connection of another generation is a reconnect this failure must not end.
-            if self.write_stream.connection(&failure.endpoint_id).is_some()
-                && !self
-                    .write_stream
-                    .accepts(&failure.endpoint_id, failure.generation)
-            {
-                continue;
-            }
+            // `record_failure` removed the connection as it queued this failure, and no
+            // connection of another generation can have replaced it yet: a connection is only
+            // installed by its supervisor's attempt, the supervisor starts no attempt while its
+            // generation is connected, and only `endpoint_lost` below (`disconnected`) re-arms
+            // it. So every queued failure ends its endpoint's lane here.
             warn!(
                 endpoint = %failure.endpoint_id.storage_key(),
                 error = %failure.message,

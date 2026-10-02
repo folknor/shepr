@@ -288,20 +288,15 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
             }
             let result = press(&mut state, KeyCode::Enter, KeyModifiers::NONE);
             assert!(state.overlay.is_none());
-            if empty && field == 1 {
-                assert!(result.actions.is_empty());
-                continue;
-            }
             let [ClientShellAction::Endpoint { request, .. }] = &result.actions[..] else {
                 panic!("naming target {field}");
             };
-            let expected = if empty { "" } else { "X  ab" };
+            // An empty name is sent as no label, which clears a rename.
+            let expected = (!empty).then_some("X  ab");
             match &request.command {
-                EndpointCommand::WorkspaceCreate(v) => {
-                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
-                }
-                EndpointCommand::WorkspaceRename(v) => assert_eq!(v.label, expected),
-                EndpointCommand::PaneRename(v) => assert_eq!(v.label.as_deref(), Some(expected)),
+                EndpointCommand::WorkspaceCreate(v) => assert_eq!(v.label.as_deref(), expected),
+                EndpointCommand::WorkspaceRename(v) => assert_eq!(v.label.as_deref(), expected),
+                EndpointCommand::PaneRename(v) => assert_eq!(v.label.as_deref(), expected),
                 _ => panic!("wrong command"),
             }
         }

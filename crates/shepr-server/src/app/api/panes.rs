@@ -13,7 +13,7 @@ use shepr_protocol::command::{
 };
 
 use super::super::api_helpers::{
-    detect_state_from_api, normalize_reported_agent_label, pane_not_found,
+    detect_state_from_api, normalize_reported_agent_label, normalized_user_label, pane_not_found,
 };
 use super::endpoint::{
     EndpointEffects, Handled, HandlerError, HandlerResult, pane_missing, rejected,
@@ -188,10 +188,7 @@ impl App {
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
             return Err(pane_missing(&params.pane_id).into());
         };
-        let label = params
-            .label
-            .map(|label| label.trim().to_string())
-            .filter(|label| !label.is_empty());
+        let label = normalized_user_label(params.label);
         let changed = terminal.manual_label != label;
         if changed {
             match label {

@@ -4,22 +4,10 @@ use shepr_protocol::command::{
     WorkspaceCreateSource, WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
 };
 
+use super::super::api_helpers::normalized_user_label;
 use super::endpoint::{
     EndpointEffects, Handled, HandlerError, HandlerResult, rejected_with_effects, workspace_missing,
 };
-
-/// A workspace label as the server stores it: trimmed, and an empty one
-/// clears the custom name so the automatic label returns, as a pane rename does.
-fn normalized_workspace_label(label: String) -> Option<String> {
-    let trimmed = label.trim();
-    if trimmed.is_empty() {
-        None
-    } else if trimmed.len() == label.len() {
-        Some(label)
-    } else {
-        Some(trimmed.to_owned())
-    }
-}
 
 impl App {
     /// Creates a workspace and moves the requester onto it. Its first pane
@@ -48,7 +36,7 @@ impl App {
         let index = self.create_workspace(&cwd, geometry).map_err(|err| {
             EndpointError::Rejected(format!("the workspace could not be created: {err}"))
         })?;
-        if let Some(label) = params.label.and_then(normalized_workspace_label)
+        if let Some(label) = normalized_user_label(params.label)
             && let Some(workspace) = self.state.workspaces.get_mut(index)
         {
             workspace.set_custom_name(label);
@@ -87,7 +75,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(index) else {
             return Err(workspace_missing(&params.workspace_id).into());
         };
-        let label = normalized_workspace_label(params.label);
+        let label = normalized_user_label(params.label);
         let changed = ws.custom_name != label;
         if changed {
             ws.custom_name = label;
@@ -520,7 +508,7 @@ mod tests {
         assert_eq!(
             app.handle_workspace_rename(WorkspaceRenameParams {
                 workspace_id: gone.clone(),
-                label: "x".into(),
+                label: Some("x".into()),
             })
             .expect_err("the workspace is gone")
             .error,
@@ -566,7 +554,7 @@ mod tests {
 
         app.handle_workspace_rename(WorkspaceRenameParams {
             workspace_id,
-            label: "after".into(),
+            label: Some("after".into()),
         })
         .expect("the workspace is renamed");
 

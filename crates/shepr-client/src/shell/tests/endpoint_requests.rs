@@ -319,6 +319,65 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
 }
 
 #[test]
+fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
+    use crate::endpoint::EndpointRegistry;
+    use crate::endpoint::commands::{EndpointCommandCancellation, EndpointCommands};
+
+    for connection_lost in [false, true] {
+        let (mut state, actions) = pending_request();
+        let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
+        let mut commands = EndpointCommands::default();
+        for action in actions {
+            let ClientShellAction::Endpoint {
+                endpoint_id,
+                boot_id,
+                request,
+            } = action
+            else {
+                panic!("expected endpoint request");
+            };
+            commands.enqueue(endpoint_id, 1, boot_id, request);
+        }
+        let sent_at = std::time::Instant::now();
+        let cancelled = commands.send_next(&ClientEndpointId::Local, &mut endpoints, sent_at);
+        assert_eq!(cancelled, EndpointCommandCancellation::default());
+        assert!(!state.ledger.is_empty());
+        if connection_lost {
+            // A failed health check on the same timer tick removes the connection before the
+            // command expires; the lane disconnect comes only with the next reconcile.
+            endpoints.fail(
+                &ClientEndpointId::Local,
+                &std::io::Error::new(std::io::ErrorKind::TimedOut, "health check timed out"),
+            );
+        }
+
+        let outcome = crate::shell_runtime::settle_expired_endpoint_commands(
+            &mut commands,
+            &endpoints,
+            &mut state,
+            sent_at + crate::limits::ENDPOINT_COMMAND_TIMEOUT,
+        );
+
+        assert!(outcome.repaint);
+        assert!(state.ledger.is_empty());
+        let title = state
+            .visible_endpoint_notice
+            .as_ref()
+            .map(|notice| notice.title.as_str());
+        let expected = if connection_lost {
+            "Action interrupted"
+        } else {
+            "Server timed out"
+        };
+        assert_eq!(title, Some(expected));
+        assert_eq!(
+            commands.disconnect(&ClientEndpointId::Local),
+            EndpointCommandCancellation::default()
+        );
+    }
+}
+
+#[test]
 fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));

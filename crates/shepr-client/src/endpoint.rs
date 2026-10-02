@@ -30,9 +30,10 @@ impl ClientEndpointId {
     }
 
     /// The name the client shows for this endpoint: "Local", or the machine's configured label.
+    /// Machine labels refuse the local name, so the two never read alike.
     pub(crate) fn display_label(&self) -> &str {
         match self {
-            Self::Local => "Local",
+            Self::Local => shepr_config::LOCAL_ENDPOINT_LABEL,
             Self::Ssh(label) => label.as_str(),
         }
     }

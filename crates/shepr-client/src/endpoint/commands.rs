@@ -28,8 +28,9 @@ struct RequestKey {
 
 pub(crate) struct EndpointCommandResult {
     pub(crate) endpoint_id: ClientEndpointId,
-    /// The connection generation the command was sent on. A timed-out
-    /// command is only reported while that connection is still current.
+    /// The connection generation the command was sent on. A timed-out command is answered
+    /// with its timeout only while that connection is still current; otherwise it is
+    /// dropped as interrupted.
     pub(crate) generation: u64,
     pub(crate) boot_id: BootId,
     pub(crate) request_id: RequestId,

@@ -986,22 +986,24 @@ impl ClientShellState {
     /// Sends a paste to the focused pane, or rejects it locally when the
     /// server would.
     ///
-    /// The server caps the text of one input message at `MAX_INPUT_PAYLOAD`.
-    /// Checking here means an oversized paste never goes out: a paste past the
-    /// frame cap would otherwise make the server drop the connection, and
-    /// anything over the limit would only come back as a rejection anyway. A
-    /// paste that fits on its own but would cross either batch limit with the
-    /// pending message starts a new message instead of joining the batch.
+    /// The server refuses a message whose `InputBatchCharge` does not fit, and
+    /// a lone paste can only overflow its text bytes. Checking that charge here
+    /// means an oversized paste never goes out: a paste past the frame cap
+    /// would otherwise make the server drop the connection, and anything over
+    /// the limit would only come back as a rejection anyway. A paste that fits
+    /// on its own but would not fit with the pending message starts a new
+    /// message instead of joining the batch.
     fn push_focused_paste(
         &mut self,
         text: String,
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
-        let size = text.len();
-        if size > shepr_protocol::MAX_INPUT_PAYLOAD {
+        let event = ClientPaneInputEvent::Paste(text);
+        let charge = shepr_protocol::InputBatchCharge::of(&event);
+        if !charge.fits() {
             outcome.repaint |= self.receive_paste_rejection(paste_rejected_notice(
-                size,
+                charge.text_bytes(),
                 shepr_protocol::MAX_INPUT_PAYLOAD,
             ));
             return;
@@ -1009,7 +1011,6 @@ impl ClientShellState {
         let Some(pane_id) = self.focused_pane_id() else {
             return;
         };
-        let event = ClientPaneInputEvent::Paste(text);
         super::push_target_event(pane_id, event, outcome, accounting);
     }
 }

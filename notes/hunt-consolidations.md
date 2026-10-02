@@ -594,14 +594,6 @@ manifest order and keeps `previous.priority >= rule.priority`; a comment says
 they agree and only tie-covering tests check it. Owner: explain evaluates every
 rule then picks the winner by walking the same `priority_order`. (agents)
 
-## CON-048 - Claude session-start sources: matcher versus replacement policy
-
-`CLAUDE_SESSION_START_SOURCES` (the hook matcher) admits `startup`, `resume`,
-`clear`, `compact`, `fork`; `HookSessionPolicy::CLAUDE` treats only `clear`,
-`resume`, `compact` as replacements. `startup` reported but not a replacement may
-be deliberate; `fork` looks like drift. Which is intended cannot be read from the
-code; it needs a decision, then one list with a per-source role. (agents)
-
 ## CON-049 - Hook asset contracts are spelled in every asset
 
 Each of the 16 assets spells the environment gate (`SHEPR_BUILD_PROFILE =
@@ -1152,18 +1144,6 @@ back; they order their writes differently, compatible with a client that writes
 preamble and hello together but pinned by nothing. Owner: one handshake function
 returning `Hello | Foreign | Silent | NotShepr` (or a validated hello) and
 writing the preamble once by one rule. Reported by contracts and server-serving.
-
-## CON-083 - How is an input batch charged?
-
-`client_transport::pane_input_event_limit` and `classify_input_event_size` sum
-`expanded_event_count` and `text_bytes` against `MAX_INPUT_EVENT_BATCH` and
-`MAX_INPUT_PAYLOAD`; the client's `shell/input/events.rs` batching and
-`shell/input/input.rs` paste pre-check sum the same quantities against the same
-constants ("clients pre-check pastes with the same accounting"). contracts files
-the batch limit itself as a deliberate re-check at each chokepoint, not a
-finding; server-serving asks for one `InputBatchCharge { add, fits }` in protocol
-that classifies paste versus input overflow, so the sum is written once.
-Reported by server-serving; contracts' reading recorded alongside.
 
 ## CON-084 - Which methods does the socket thread answer?
 

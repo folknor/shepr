@@ -10,26 +10,31 @@ use jsonc_parser::{CollectOptions, ParseOptions, json, parse_to_ast};
 use serde_json::{Map, Value, json as serde_json_value};
 
 use crate::agent::resume::AgentSessionStartSource;
-use crate::agent::{IntegrationHookAction, IntegrationHookEvent};
+use crate::agent::{Agent, IntegrationHookAction, IntegrationHookEvent};
 
 use super::command::{hook_command, is_hook_command_for_path};
 use super::config_edit::{
     ensure_command_hook, ensure_hooks_object, remove_hook_path_commands_preserving,
 };
 
-// This is Claude's event-source subset; the shared source enum covers the
-// broader vocabulary reported by the other integrations.
-const CLAUDE_SESSION_START_SOURCES: &[AgentSessionStartSource] = &[
-    AgentSessionStartSource::Startup,
-    AgentSessionStartSource::Resume,
-    AgentSessionStartSource::Clear,
-    AgentSessionStartSource::Compact,
-    AgentSessionStartSource::Fork,
-];
+/// Claude's SessionStart sources: `startup`, which replaces nothing, then the
+/// sources Claude's hook session policy treats as replacements. Deriving the
+/// matcher from the policy keeps the reported and replacing sources one list;
+/// the policy says why each source has its role.
+fn claude_session_start_sources() -> impl Iterator<Item = AgentSessionStartSource> {
+    std::iter::once(AgentSessionStartSource::Startup).chain(
+        Agent::Claude
+            .descriptor()
+            .hook_session_policy
+            .replacement_starts
+            .iter()
+            .copied(),
+    )
+}
 
 pub(crate) fn claude_session_start_matcher() -> String {
     let mut matcher = String::from("^(");
-    for (index, source) in CLAUDE_SESSION_START_SOURCES.iter().enumerate() {
+    for (index, source) in claude_session_start_sources().enumerate() {
         if index > 0 {
             matcher.push('|');
         }
@@ -692,7 +697,7 @@ mod tests {
         let expected_matcher = claude_session_start_matcher();
         assert_eq!(matcher, expected_matcher.as_str());
         let pattern = regex::Regex::new(matcher).expect("test precondition");
-        for source in CLAUDE_SESSION_START_SOURCES {
+        for source in claude_session_start_sources() {
             assert!(
                 pattern.is_match(source.as_str()),
                 "Claude source: {source:?}"
@@ -701,6 +706,19 @@ mod tests {
         for source in ["new", "load", "", "future-source", "startup-extra"] {
             assert!(!pattern.is_match(source), "non-Claude source: {source}");
         }
+    }
+
+    #[test]
+    fn claude_startup_reports_without_replacing_and_every_other_source_replaces() {
+        let policy = Agent::Claude.descriptor().hook_session_policy;
+        for source in claude_session_start_sources() {
+            assert_eq!(
+                policy.allows_replacement(Some(source)),
+                source != AgentSessionStartSource::Startup,
+                "Claude source: {source:?}"
+            );
+        }
+        assert!(policy.allows_replacement(Some(AgentSessionStartSource::Fork)));
     }
 
     #[test]

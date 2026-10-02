@@ -21,6 +21,16 @@ impl BootId {
     /// The boot identity of this server process, built on first use and the
     /// same value on every later call, so every place that reports the boot
     /// (the client shell lane and the API's `ping`) reports one identity.
+    ///
+    /// It is process-global on purpose, not a shortcut for a per-server id:
+    /// `ping` and the `server.stop_if_boot` guard in `shepr-api` answer from
+    /// the socket listener without reaching any server instance, the launcher
+    /// reads the server's pid back out of it, and a stale-boot refusal on the
+    /// client shell lane must match what `ping` reported. One process runs one
+    /// server, so the process boot is the server boot. A test that builds two
+    /// servers in one process therefore gives both the same boot id and cannot
+    /// observe a stale-boot refusal between them; such a test supplies a
+    /// distinct id itself ([`BootId::from_process_clock`]).
     pub fn for_this_process() -> Self {
         static THIS_PROCESS: OnceLock<BootId> = OnceLock::new();
         THIS_PROCESS

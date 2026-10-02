@@ -1106,6 +1106,10 @@ ssh = "ssh://gpu.example"
                 "machine label must not be blank",
             ),
             (
+                "[[machines]]\nlabel = \"local\"\nssh = \"h\"\n",
+                "it is the name of the local server",
+            ),
+            (
                 "[[machines]]\nlabel = \"a\"\nssh = \"-oProxyCommand=x\"\n",
                 "must not start with",
             ),

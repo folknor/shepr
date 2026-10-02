@@ -282,7 +282,7 @@ mod tests {
             let outcome = app.handle_endpoint_command_with_render(
                 EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
                     workspace_id: workspace_id.clone(),
-                    label: label.into(),
+                    label: Some(label.into()),
                 }),
                 &EndpointContext::without_geometry(),
             );

@@ -14,6 +14,38 @@ pub(super) fn cancel_endpoint_commands(
     repaint
 }
 
+/// Settles every in-flight endpoint command whose deadline has passed, each exactly once.
+/// `expire` takes the command out of its lane, so whatever is not answered here is never
+/// reported by a later lane disconnect. A command whose endpoint is no longer active, or whose
+/// connection is gone, is dropped as interrupted: the timer tick that expires it can first
+/// record a failed health check, which removes the connection before the next reconcile
+/// disconnects the lane. Only a command still on its own connection to the active endpoint
+/// is answered with its timeout.
+pub(super) fn settle_expired_endpoint_commands(
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
+    endpoints: &endpoint::EndpointRegistry,
+    shell: &mut shell::ClientShellState,
+    now: std::time::Instant,
+) -> shell::ClientShellInput {
+    let mut outcome = shell::ClientShellInput::default();
+    for expired in endpoint_commands.expire(now) {
+        if !endpoints.accepts(&expired.endpoint_id, expired.generation)
+            || !shell.endpoint_is_active(&expired.endpoint_id)
+        {
+            outcome.repaint |=
+                shell.drop_request(&expired.request_id, shell::DropReason::Interrupted);
+            continue;
+        }
+        outcome.merge(shell.answer_request(
+            &expired.boot_id,
+            &expired.request_id,
+            expired.result,
+            now,
+        ));
+    }
+    outcome
+}
+
 /// Where pane input and endpoint commands go: the shown endpoint, while its connection exists
 /// and is viewed. During a move that is the source, which stays live until the commit.
 pub(super) fn input_endpoint<'a>(

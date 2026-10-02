@@ -22,7 +22,8 @@ pub use self::limits::{
     MAX_TERMINAL_GRID_DIMENSION, terminal_grid_cells,
 };
 pub use self::machine::{
-    IntoSshTarget, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
+    IntoSshTarget, LOCAL_ENDPOINT_LABEL, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
+    SshTargetError,
 };
 /// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
 /// or [`ValidatedServerConfig`], constructed through validation at launch or

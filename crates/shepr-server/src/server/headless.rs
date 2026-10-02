@@ -94,7 +94,12 @@ pub struct HeadlessServer {
     /// Kept alive only for its `Drop` impl, which tears down the server socket listener.
     _api_server: Option<shepr_api::ServerHandle>,
     clients: ClientRegistry,
-    /// Process-local identity used to reject shell replacements from an earlier server boot.
+    /// Identity used to reject shell replacements from an earlier server boot.
+    /// Production takes the process boot (`BootId::for_this_process`), the same
+    /// value `ping` reports and the stop guard compares, since one process runs
+    /// one server; it is held here so unit tests can set a fixed one. Two
+    /// servers built in one test process share the process boot and cannot
+    /// tell each other's boot apart.
     client_shell_boot_id: shepr_protocol::BootId,
     /// Shared session source for shell projections; `None` until a shell
     /// connection or render needs it.
@@ -600,6 +605,12 @@ impl HeadlessServer {
     /// no host color report yet leaves the current theme (a live client's, or
     /// the one saved with the session) in place. Its appearance still applies
     /// independently. Returns whether anything changed.
+    ///
+    /// Callers need no invalidation of their own, whatever made the theme
+    /// change: the app setters do all a change requires (see
+    /// `App::set_host_terminal_theme` and
+    /// `App::set_host_terminal_appearance_state`), so a caller may discard
+    /// the result.
     fn sync_host_theme_from_foreground(&mut self) -> bool {
         let Some(shell) = self
             .clients
@@ -629,6 +640,7 @@ impl HeadlessServer {
     fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
         let changed = self.clients.promote_to_foreground(client_id);
         if changed {
+            // The theme setters invalidate what a change reaches.
             self.sync_host_theme_from_foreground();
         }
         changed
@@ -637,6 +649,7 @@ impl HeadlessServer {
     fn promote_latest_remaining_client(&mut self) -> bool {
         let changed = self.clients.promote_latest_remaining();
         if changed {
+            // The theme setters invalidate what a change reaches.
             self.sync_host_theme_from_foreground();
         }
         changed
@@ -1214,11 +1227,13 @@ impl HeadlessServer {
                 if !client.shell_state().surface_active || !is_foreground {
                     return;
                 }
+                // Pane colours changed under every surface. The epoch alone
+                // sends every client through a full pass, which redraws the
+                // panes from their cores (the new defaults included) and
+                // diffs the result against its baseline; a forced recompute
+                // would add nothing. Bumping here only does early what the
+                // theme setter's own render request does at the next pass.
                 if self.sync_host_theme_from_foreground() {
-                    // Pane colours changed under every surface.
-                    for client in self.clients.values_mut() {
-                        client.request_recompute();
-                    }
                     self.mark_view_changed();
                 }
             }

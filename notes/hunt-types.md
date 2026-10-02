@@ -1620,11 +1620,15 @@ Reported by server-app, foundation, terminal, mux-state and client-shell.
 
 ## TYP-088 - Labels are normalized three ways
 
-`normalized_workspace_label` (trim, empty clears), the inline trim and filter in
-`handle_pane_rename`, and `normalize_reported_agent_label`; `pane_border_title`
-trims again at render. A `Label` (trimmed, non-empty) minted once would let the
-stores hold `Option<Label>`. (server-app; client-shell reports the matching
-empty-label inconsistency as a bug)
+User labels from the API go through one server helper,
+`normalized_user_label` in `crates/shepr-server/src/app/api_helpers.rs`
+(trim, empty clears). Labels restored from a saved session reach the pane
+through `set_manual_label` in shepr-mux without it, so `pane_border_title`
+still trims at render as the only guard for those. A `Label` (trimmed,
+non-empty) minted once, held as `Option<Label>` by the stores and by the saved
+schema, would cover restore too and let the render trim go.
+`normalize_reported_agent_label` stays separate: it also canonicalizes agent
+names. (server-app)
 
 ## TYP-089 - Closed-set environment values read as free text
 

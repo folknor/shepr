@@ -939,7 +939,7 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
         }),
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
             workspace_id: workspace_id.clone(),
-            label: "renamed".into(),
+            label: Some("renamed".into()),
         }),
         EndpointCommand::LayoutSetSplitRatio(shepr_protocol::command::LayoutSetSplitRatioParams {
             workspace_id: workspace_id.clone(),

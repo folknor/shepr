@@ -57,10 +57,11 @@ pub struct WorkspaceCloseParams {
     pub workspace_id: WorkspaceId,
 }
 
+/// `None` clears the custom name, as does a label that is empty once trimmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRenameParams {
     pub workspace_id: WorkspaceId,
-    pub label: String,
+    pub label: Option<String>,
 }
 
 /// Asks the server for the Git checkout root of a directory on the server's
@@ -243,6 +244,7 @@ pub struct PaneCopySearchParams {
     pub previous: Option<PaneTextRange>,
 }
 
+/// `None` clears the manual label, as does a label that is empty once trimmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneRenameParams {
     pub pane_id: PublicPaneId,

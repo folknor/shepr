@@ -1,18 +1,17 @@
 use super::*;
+use shepr_protocol::InputBatchCharge;
 
-/// Cached cost of the latest pane-input message built for one input outcome.
+/// Cached charge of the latest pane-input message built for one input outcome.
 #[derive(Default)]
 pub(super) struct PaneInputBatchAccounting {
     request_index: Option<usize>,
-    expanded_events: usize,
-    text_bytes: usize,
+    charge: InputBatchCharge,
 }
 
 impl PaneInputBatchAccounting {
-    fn record(&mut self, request_index: usize, expanded_events: usize, text_bytes: usize) {
+    fn record(&mut self, request_index: usize, charge: InputBatchCharge) {
         self.request_index = Some(request_index);
-        self.expanded_events = expanded_events;
-        self.text_bytes = text_bytes;
+        self.charge = charge;
     }
 }
 
@@ -26,7 +25,8 @@ pub(super) fn target_event_message(
     }
 }
 
-/// Adds an event to the pending target message while both server limits allow it.
+/// Adds an event to the pending target message while its grown
+/// `InputBatchCharge` still fits, the rule the server refuses a batch by.
 pub(super) fn push_target_event(
     target: shepr_protocol::PublicPaneId,
     event: ClientPaneInputEvent,
@@ -34,8 +34,7 @@ pub(super) fn push_target_event(
     accounting: &mut PaneInputBatchAccounting,
 ) {
     let request_index = outcome.requests.len().checked_sub(1);
-    let event_count = event.expanded_event_count();
-    let event_bytes = event.text_bytes();
+    let event_charge = InputBatchCharge::of(&event);
     if let Some(ClientMessage::ClientShellPaneInput {
         pane_id: pending_pane,
         events,
@@ -43,35 +42,23 @@ pub(super) fn push_target_event(
         && *pending_pane == target
     {
         let cached = request_index.is_some_and(|index| accounting.request_index == Some(index));
-        let (pending_count, pending_bytes) = if cached {
-            (accounting.expanded_events, accounting.text_bytes)
+        let pending = if cached {
+            accounting.charge
         } else {
-            events
-                .iter()
-                .fold((0usize, 0usize), |(count, bytes), event| {
-                    (
-                        count.saturating_add(event.expanded_event_count()),
-                        bytes.saturating_add(event.text_bytes()),
-                    )
-                })
+            InputBatchCharge::of_events(events)
         };
-        if pending_count.saturating_add(event_count) <= shepr_protocol::MAX_INPUT_EVENT_BATCH
-            && pending_bytes.saturating_add(event_bytes) <= shepr_protocol::MAX_INPUT_PAYLOAD
-        {
+        let grown = pending.plus(event_charge);
+        if grown.fits() {
             events.push(event);
             if let Some(request_index) = request_index {
-                accounting.record(
-                    request_index,
-                    pending_count.saturating_add(event_count),
-                    pending_bytes.saturating_add(event_bytes),
-                );
+                accounting.record(request_index, grown);
             }
             return;
         }
     }
     outcome.requests.push(target_event_message(target, event));
     if let Some(request_index) = outcome.requests.len().checked_sub(1) {
-        accounting.record(request_index, event_count, event_bytes);
+        accounting.record(request_index, event_charge);
     }
 }
 
@@ -99,12 +86,8 @@ mod tests {
                 let ClientMessage::ClientShellPaneInput { events, .. } = message else {
                     panic!("expected pane input, got {message:?}");
                 };
-                events.iter().fold((0, 0), |(count, bytes), event| {
-                    (
-                        count + event.expanded_event_count(),
-                        bytes + event.text_bytes(),
-                    )
-                })
+                let charge = InputBatchCharge::of_events(events);
+                (charge.expanded_events(), charge.text_bytes())
             })
             .collect()
     }

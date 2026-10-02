@@ -711,7 +711,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
 }
 
 #[test]
-fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
+fn rename_pane_empty_value_is_sent_as_a_clear_request() {
     let mut snapshot = snapshot();
     snapshot.panes[0].label = Some("build".into());
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -729,7 +729,7 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneRename(params)
-            if params.pane_id == "w1:p1" && params.label.as_deref() == Some("")
+            if params.pane_id == "w1:p1" && params.label.is_none()
     ));
 }
 

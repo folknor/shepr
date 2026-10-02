@@ -161,18 +161,6 @@ with `git_ref_storage_is_reftable`. The error is also the server's dedup key
 (`reported_git_read_errors`), so embedded `io::Error` text makes "the same
 error" depend on wording. (mux-state)
 
-## BUG-025 - Appearance changes may not be rendered
-
-`set_host_terminal_appearance_state` updates every runtime but requests no
-render and marks nothing dirty, while `set_host_terminal_theme` does both.
-`promote_client_to_foreground` and `promote_latest_remaining_client` discard
-the result of `sync_host_theme_from_foreground`; the `ClientShellHostTheme` arm
-requests a recompute on every client when the theme changes, and the connect
-arm marks the view changed without one. A theme that changes because the
-foreground changed gets an epoch bump only, a reported one gets epoch plus
-recompute. server-app asks for verification; server-serving says the sites
-already disagree and one of the two behaviours is wrong.
-
 ## BUG-027 - A split host palette reply is replayed partially
 
 `input::send_unix_input_chunks` batches palette replies up to
@@ -183,13 +171,6 @@ update, replacing the previous one wholesale. A reply that straddles an idle
 flush becomes two partial updates of which only the second is recorded, and
 `view::turn_on` replays that partial palette to every endpoint viewed later.
 Needs a slow host to trigger. (client-core)
-
-## BUG-028 - A machine may be labelled `Local`
-
-`MachineLabel::parse` and the duplicate-label validation accept `Local`, and
-`ClientEndpointId::display_label` returns `"Local"` for both, so notices, the
-sidebar and the navigator cannot tell them apart. Reserve the label or display
-Local differently. (client-core)
 
 ## BUG-029 - `endpoint_lost` discards the failure class
 
@@ -207,16 +188,6 @@ reported as "connection was lost". (client-core)
 terminal restoration also failed (`connection_lost_during_terminal_hangup`):
 two independent failures read as one cause by inference. (client-core)
 
-## BUG-032 - Possible request ledger leak after a skipped transport failure
-
-`reconcile` skips a queued transport failure when a connection of another
-generation is present, and nothing then disconnects the old command lane;
-`handle_timer` drops expired commands whose generation is no longer accepted
-without telling the shell. If the skip is reached with a command in flight,
-the shell's ledger entry is never answered or dropped. The hunter thinks event
-ordering makes the skip unreachable; if so the check and filter are dead.
-(client-core)
-
 ## BUG-037 - Double-click word bounds may drift on emoji presentation sequences
 
 `word_bounds_at_column` maps pane text to columns with
@@ -225,14 +196,6 @@ client's chrome use `shepr_termio::blit::text_width` per grapheme (tests pin
 VS16 emoji at width 2). The double-click column mapping may drift by one cell
 per such sequence. Unverified; the hunter suggests a test with
 `"\u{2764}\u{fe0f}"` before a word. (client-shell)
-
-## BUG-038 - Pane rename to empty sends `Some("")`
-
-Pane rename to empty sends `label: Some("")`, workspace rename treats empty as
-"do nothing", and the context menu's Clear sends `None`. Whether the server
-treats `Some("")` as a clear is decided elsewhere. One rule for "empty label"
-is wanted. (client-shell; server-app separately notes three label
-normalisations)
 
 ## BUG-039 - An OSC 7 URI with another scheme is taken as a literal path
 
@@ -266,6 +229,18 @@ kind gets different answers for the same planted file. (foundation)
 
 ## Latent defects
 
+## BUG-070 - A Claude background fork may take over the pane's session
+
+Claude's `fork` SessionStart source now counts as a session replacement,
+which is right for `--fork-session` and `/branch` (the pane's own process
+moves to the new id). The same source is sent for a `/fork` background copy,
+which runs under Claude's separate supervisor process and leaves the original
+in the pane. If that supervisor inherits the pane's environment, its hook
+reports through the pane and replaces the pane's session id with the
+background copy's. The payload does not say which kind of fork it is. Check
+whether a background fork reports through the pane; if it does, tell the two
+apart (process identity, or another payload field). (agents adjudication)
+
 ## BUG-043 - Untagged runtime events would skip the generation check
 
 `AppEvent::Runtime { pane_id, generation, event: Box<AppEvent> }` is optional:
@@ -287,14 +262,6 @@ while output is withheld. Today every `advance` sets `now` first, but nothing
 forces that order. Suggested `enum SyncState { Idle, Buffering { deadline } }`.
 (terminal)
 
-## BUG-045 - The detection sequence bump differs between the two sync-flush paths
-
-An expired synchronized update flushed by `PaneTerminal::tick` bumps
-`detection_content_seq`; the same flush inside `process_pty_bytes_locked` (via
-`core.terminal.tick(now)` before parsing) bumps only the sync epoch and relies
-on the read's bytes being non-empty. Harmless while a PTY read is never empty.
-(mux-panes)
-
 ## BUG-047 - One terminal-core lock per input accessor gives inconsistent mode snapshots
 
 `PaneTerminal`'s `mode_enabled`, `bracketed_paste_enabled`,
@@ -304,13 +271,6 @@ core lock. The server input path calls several in a row for one event
 (`sgr_pixel_mouse_enabled`, `wheel_routing`, then `encode_mouse_wheel`, which
 reads the modes again), so the child can change modes between them. An
 `InputModes` snapshot read under one lock fixes both. (terminal)
-
-## BUG-048 - `client_shell_boot_id` is process-global
-
-It is stored per server but comes from a process-global `OnceLock`, so two
-`HeadlessServer`s in one process (the netside test runs two) share a boot id
-and `StaleBoot` cannot tell them apart. Harmless in production.
-(server-serving)
 
 ## BUG-052 - Indexing panics are one refactor away in `handle_layout_set_split_ratio`
 

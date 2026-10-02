@@ -123,7 +123,14 @@ pub enum MachineLabelError {
     Blank,
     ControlCharacters,
     SurroundingWhitespace,
+    Reserved,
 }
+
+/// The name the client shows for its local endpoint. No machine label may take
+/// it in any ASCII case, so notices, the sidebar and the navigator (including
+/// sidebar rules matched with `ignore_case`) never confuse a machine with the
+/// local server.
+pub const LOCAL_ENDPOINT_LABEL: &str = "Local";
 
 impl fmt::Display for MachineLabelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -135,6 +142,11 @@ impl fmt::Display for MachineLabelError {
             Self::SurroundingWhitespace => {
                 formatter.write_str("machine label must not start or end with whitespace")
             }
+            Self::Reserved => write!(
+                formatter,
+                "machine label must not be {LOCAL_ENDPOINT_LABEL:?} in any case: \
+                 it is the name of the local server"
+            ),
         }
     }
 }
@@ -142,8 +154,9 @@ impl fmt::Display for MachineLabelError {
 impl std::error::Error for MachineLabelError {}
 
 /// The identifier of a configured machine: a nonblank string without control
-/// characters or leading and trailing whitespace, kept exactly as written.
-/// Inner spaces and non-ASCII characters are allowed.
+/// characters or leading and trailing whitespace, kept exactly as written,
+/// and not the local endpoint's name ([`LOCAL_ENDPOINT_LABEL`]) in any ASCII
+/// case. Inner spaces and non-ASCII characters are allowed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MachineLabel(String);
 
@@ -158,6 +171,9 @@ impl MachineLabel {
         }
         if value.trim() != value {
             return Err(MachineLabelError::SurroundingWhitespace);
+        }
+        if value.eq_ignore_ascii_case(LOCAL_ENDPOINT_LABEL) {
+            return Err(MachineLabelError::Reserved);
         }
         Ok(Self(value))
     }
@@ -264,6 +280,20 @@ mod tests {
             label.as_str(),
             "Bygg server \u{e6}\u{f8}\u{e5} \u{4e2d}\u{6587}"
         );
+    }
+
+    #[test]
+    fn machine_label_refuses_the_local_endpoint_name_in_any_case() {
+        for label in ["Local", "local", "LOCAL", "lOcAl"] {
+            assert_eq!(
+                MachineLabel::parse(label),
+                Err(MachineLabelError::Reserved),
+                "{label:?}"
+            );
+        }
+        for label in ["Localhost", "local box", "my local"] {
+            assert!(MachineLabel::parse(label).is_ok(), "{label:?}");
+        }
     }
 
     #[test]

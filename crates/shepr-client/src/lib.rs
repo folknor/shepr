@@ -1254,28 +1254,15 @@ impl ClientLoop {
             ..
         } = self;
         write_stream.tick_health(now);
-        let expired_endpoints = endpoint_commands
-            .expire(now)
-            .into_iter()
-            .filter(|expired| write_stream.accepts(&expired.endpoint_id, expired.generation))
-            .collect::<Vec<_>>();
         let shell = &mut state.shell;
         let (outcome, frame) = {
             let mut outcome = shell.tick_selection_autoscroll(now);
-            for expired in expired_endpoints {
-                if !shell.endpoint_is_active(&expired.endpoint_id) {
-                    outcome.repaint |=
-                        shell.drop_request(&expired.request_id, shell::DropReason::Interrupted);
-                    continue;
-                }
-                let expired_outcome = shell.answer_request(
-                    &expired.boot_id,
-                    &expired.request_id,
-                    expired.result,
-                    now,
-                );
-                outcome.merge(expired_outcome);
-            }
+            outcome.merge(settle_expired_endpoint_commands(
+                endpoint_commands,
+                write_stream,
+                shell,
+                now,
+            ));
             outcome.repaint |= shell.tick_selection_highlight(now)
                 | shell.tick_workspace_highlight(now)
                 | shell.tick_endpoint_error(now)
