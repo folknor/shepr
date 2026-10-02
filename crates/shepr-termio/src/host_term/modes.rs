@@ -41,20 +41,15 @@ pub fn restore_host_keyboard_protocol<W: Write>(
     modify_other_keys_active: bool,
     kitty_entry_active: bool,
 ) -> io::Result<()> {
+    // Every step runs even after a failure; the first error wins.
     let mut result = Ok(());
     if modify_other_keys_active {
-        let next = writer.write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE);
-        if result.is_ok() {
-            result = next;
-        }
+        result = result.and(writer.write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE));
     }
     if kitty_entry_active {
-        let next = writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE);
-        if result.is_ok() {
-            result = next;
-        }
+        result = result.and(writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE));
     }
-    result
+    result.and(writer.flush())
 }
 
 /// Selects the client's keyboard enhancement entry for shell input.
@@ -266,6 +261,14 @@ mod tests {
 
         assert!(output.is_empty());
         assert_eq!(active, HostKeyboardState::default());
+    }
+
+    #[test]
+    fn keyboard_restore_flushes_what_it_writes() {
+        let mut output = io::BufWriter::new(Vec::new());
+        restore_host_keyboard_protocol(&mut output, true, true).expect("test precondition");
+        assert_eq!(output.buffer(), b"", "nothing is left in the buffer");
+        assert_eq!(output.get_ref().as_slice(), b"\x1b[>4;0m\x1b[<1u");
     }
 
     #[test]

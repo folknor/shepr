@@ -416,6 +416,34 @@ fn headless_agent_list(server: &mut HeadlessServer) -> Vec<crate::app::SnapshotA
     server.app.session_snapshot().agents
 }
 
+#[tokio::test]
+async fn a_closed_api_channel_stops_being_selected() {
+    let mut server = test_headless_server();
+    let (api_tx, api_request_rx) = mpsc::channel(1);
+    drop(api_tx);
+    server.api_request_rx = api_request_rx;
+
+    // Wakeups left from setup are consumed first; a closed channel still
+    // selected would answer every wait at once and never let one go idle.
+    let mut went_idle = false;
+    for _ in 0..16 {
+        let wait = server.next_loop_event(None);
+        match tokio::time::timeout(Duration::from_millis(50), wait).await {
+            Ok(_) => {}
+            Err(_) => {
+                went_idle = true;
+                break;
+            }
+        }
+    }
+    assert!(!server.api_request_open, "the closed channel was noticed");
+    assert!(
+        went_idle,
+        "the loop waits instead of spinning on the closed channel"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
 #[test]
 fn server_stop_interrupts_server_event_backlog() {
     let mut server = test_headless_server();

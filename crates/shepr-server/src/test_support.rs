@@ -48,6 +48,9 @@ pub(crate) trait PaneRuntimeFixture: Sized {
         &self,
         bytes: Vec<u8>,
     ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<bool>);
+    /// Breaks the terminal core the way a parser panic does: another thread
+    /// panics while it holds the core, poisoning it.
+    fn test_break_terminal_core(&self);
     /// `(rows, cols)`.
     fn current_size(&self) -> (u16, u16);
 }
@@ -117,6 +120,17 @@ impl PaneRuntimeFixture for PaneRuntime {
             took_core
         });
         (release_tx, handle)
+    }
+
+    fn test_break_terminal_core(&self) {
+        let writer = self.output_writer();
+        let outcome = std::thread::spawn(move || {
+            let _core = writer.begin();
+            panic!("break the terminal core for a test");
+        })
+        .join();
+        assert!(outcome.is_err(), "the core holder panicked");
+        assert!(self.terminal_core_broken(), "the panic broke the core");
     }
 
     fn current_size(&self) -> (u16, u16) {

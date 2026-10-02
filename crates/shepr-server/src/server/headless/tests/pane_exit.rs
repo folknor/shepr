@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::AppPolicy;
 use shepr_mux::events::{AppEvent, RuntimeGeneration};
 
 /// A production-policy server with one pane whose runtime is live.
@@ -20,7 +19,7 @@ fn server_with_runtime_pane(
     let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     let generation = runtime.generation();
     server.app.insert_test_runtime(pane_id, runtime);
-    server.app.policy = AppPolicy::Production;
+    server.app.persist_for_test();
     (server, pane_id, generation)
 }
 
@@ -83,6 +82,30 @@ async fn wait_for_checkpoint(server: &mut HeadlessServer) {
 #[tokio::test]
 async fn live_runtime_exit_is_replayed_after_its_checkpoint() {
     let (mut server, pane_id, _generation, checkpoint_generation) = server_with_held_runtime_exit();
+
+    wait_for_checkpoint(&mut server).await;
+    assert!(
+        server
+            .app
+            .pane_exit_checkpoint_generation_settled(checkpoint_generation)
+    );
+    assert_eq!(server.pending_checkpointed_pane_exits.len(), 1);
+
+    let now = server.app.clock.now;
+    server.handle_scheduled_tasks_headless(now);
+
+    assert!(server.pending_checkpointed_pane_exits.is_empty());
+    assert!(server.app.find_pane(pane_id).is_none());
+    shutdown_test_runtimes(&mut server);
+}
+
+/// The checkpoint decision is made once, when the exit is prepared: a core
+/// that breaks while the exit waits does not change it, and the replay still
+/// removes the pane.
+#[tokio::test]
+async fn a_core_broken_while_the_exit_waits_still_replays_it() {
+    let (mut server, pane_id, _generation, checkpoint_generation) = server_with_held_runtime_exit();
+    server.app.test_runtime(pane_id).test_break_terminal_core();
 
     wait_for_checkpoint(&mut server).await;
     assert!(

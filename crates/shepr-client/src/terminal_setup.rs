@@ -40,6 +40,7 @@ pub(super) fn setup_terminal(
         host_modes: host_modes.clone(),
         output_writer: output_writer.clone(),
         restored: false,
+        restore_state: restore_terminal_state,
     };
     crossterm::terminal::enable_raw_mode()?;
     let mut output = output_writer.clone();
@@ -100,6 +101,8 @@ pub(super) struct TerminalGuard {
     host_modes: HostModes,
     output_writer: HostTerminalWriter,
     restored: bool,
+    /// `restore_terminal_state`; tests put a panicking one here.
+    restore_state: fn(&HostModes, &mut HostTerminalWriter) -> io::Result<()>,
 }
 
 fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u8>) {
@@ -532,20 +535,7 @@ impl HostModes {
     ) -> io::Result<()> {
         let mut state = self.state();
         state.pane_keyboard_report_all = enabled;
-        let desired = state.pane_keyboard_report_all || shell_requests_report_all;
-        if desired == state.keyboard_report_all_active {
-            return Ok(());
-        }
-        // Report-all replaces the client's current entry. The helper tracks
-        // whether that entry exists, so its first use never pops an outer one.
-        self.record_keyboard_entry();
-        shepr_termio::host_term::modes::set_host_kitty_keyboard_report_all(
-            writer,
-            &mut state.keyboard,
-            desired,
-        )?;
-        state.keyboard_report_all_active = desired;
-        Ok(())
+        self.apply_keyboard_report_all(writer, &mut state, shell_requests_report_all)
     }
 
     /// Whether the host was last told to report every key as an escape code,
@@ -560,10 +550,22 @@ impl HostModes {
         shell_requests_report_all: bool,
     ) -> io::Result<()> {
         let mut state = self.state();
+        self.apply_keyboard_report_all(writer, &mut state, shell_requests_report_all)
+    }
+
+    /// Reports every key while the pane or the shell asks for it.
+    fn apply_keyboard_report_all(
+        &self,
+        writer: &mut impl io::Write,
+        state: &mut HostModesState,
+        shell_requests_report_all: bool,
+    ) -> io::Result<()> {
         let desired = state.pane_keyboard_report_all || shell_requests_report_all;
         if desired == state.keyboard_report_all_active {
             return Ok(());
         }
+        // Report-all replaces the client's current entry. The helper tracks
+        // whether that entry exists, so its first use never pops an outer one.
         self.record_keyboard_entry();
         shepr_termio::host_term::modes::set_host_kitty_keyboard_report_all(
             writer,
@@ -776,7 +778,7 @@ impl TerminalGuard {
     pub(super) fn restore(mut self) -> io::Result<()> {
         self.restored = true;
         let mut output_writer = self.output_writer.clone();
-        restore_terminal_state(&self.host_modes, &mut output_writer)
+        (self.restore_state)(&self.host_modes, &mut output_writer)
     }
 }
 
@@ -787,6 +789,7 @@ impl Drop for TerminalGuard {
         }
         let mut output_writer = self.output_writer.clone();
         let host_modes = &self.host_modes;
+        let restore_state = self.restore_state;
         // This drop runs while a panic in terminal setup unwinds; a second
         // panic escaping it would abort before the client's finalization. A
         // panicked restore is not retried, and its payload is forgotten
@@ -797,7 +800,7 @@ impl Drop for TerminalGuard {
             reason = "a terminal restore during unwinding must not panic out of drop and abort the client's finalization"
         )]
         let restored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            restore_terminal_state(host_modes, &mut output_writer)
+            restore_state(host_modes, &mut output_writer)
         }));
         if let Err(payload) = restored {
             std::mem::forget(payload);
@@ -924,6 +927,53 @@ mod tests {
             host_mouse_capture_update(true, true, true, true, true),
             None
         );
+    }
+
+    static PANICKING_RESTORES: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn panicking_restore(_: &HostModes, _: &mut HostTerminalWriter) -> io::Result<()> {
+        PANICKING_RESTORES.fetch_add(1, Ordering::SeqCst);
+        panic!("terminal restore panicked");
+    }
+
+    fn guard_with_panicking_restore() -> TerminalGuard {
+        let sink = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .expect("open /dev/null");
+        TerminalGuard {
+            host_escape_disambiguation_active: false,
+            buffered_host_input: Vec::new(),
+            host_modes: HostModes::new(false, false),
+            output_writer: HostTerminalWriter(Arc::new(sink)),
+            restored: false,
+            restore_state: panicking_restore,
+        }
+    }
+
+    /// Setup panics with the half-built guard alive; its drop restores while
+    /// that panic unwinds, and the restore panics too. Escaping the drop would
+    /// abort the test binary, so reaching the assertions is the check.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the setup panic under test unwinds through the guard; catching it is how the test sees the process survive"
+    )]
+    fn a_panicking_restore_during_a_setup_panic_does_not_abort_and_a_restore_runs_once() {
+        let unwound = std::panic::catch_unwind(|| {
+            let _guard = guard_with_panicking_restore();
+            panic!("terminal setup panicked");
+        });
+        assert!(unwound.is_err(), "the setup panic reaches its catcher");
+        assert_eq!(PANICKING_RESTORES.load(Ordering::SeqCst), 1);
+
+        // An explicit restore that panics is not retried by the drop.
+        let fatal = crate::fatal_panic::FatalPanic::default();
+        let guard = guard_with_panicking_restore();
+        assert!(fatal.guard(|| guard.restore()).is_none());
+        assert!(fatal.is_latched());
+        assert_eq!(PANICKING_RESTORES.load(Ordering::SeqCst), 2);
     }
 
     #[test]

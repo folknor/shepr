@@ -1403,6 +1403,27 @@ mod client_timer_tests {
         assert!(matches!(run.await, Err(ClientError::Panicked)));
     }
 
+    /// A host helper thread can panic after launch checked the latch and
+    /// before the loop first waits; the loop ends without handling an event.
+    #[tokio::test(start_paused = true)]
+    async fn a_panic_latched_before_the_loop_starts_ends_it_at_once() {
+        let now = tokio::time::Instant::now().into_std();
+        let (mut client_loop, event_tx) =
+            test_client_loop(now, endpoint::EndpointRegistry::empty());
+        client_loop.fatal.latch();
+        event_tx
+            .try_send(ClientLoopEvent::Quit)
+            .expect("test precondition");
+        assert!(matches!(
+            client_loop.run().await,
+            Err(ClientError::Panicked)
+        ));
+        assert!(
+            client_loop.event_rx.try_recv().is_ok(),
+            "the queued event was never handled"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn quit_event_wakes_a_deadline_free_loop() {
         let now = tokio::time::Instant::now().into_std();

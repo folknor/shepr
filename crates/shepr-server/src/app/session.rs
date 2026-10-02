@@ -653,6 +653,23 @@ impl SessionSaver {
 
 #[cfg(test)]
 impl App {
+    /// Turns a test app into a persisting one, as production boots: the
+    /// lease-only persister gives way to a threaded one on the same data
+    /// directory, and the policy becomes Production. Tests set up their state
+    /// first, so that setup schedules no saves.
+    pub(crate) fn persist_for_test(&mut self) {
+        self.session_saver.persister.retire();
+        let lease = shepr_mux::persist::DataDirLease::acquire(self.paths.data_dir())
+            .expect("the test data directory lease is free");
+        self.session_saver.persister = shepr_mux::persist::SessionPersister::spawn(
+            lease,
+            false,
+            shepr_mux::persist::HistoryCarry::default(),
+            Arc::clone(&self.session_saver.save_finished),
+        );
+        self.policy = super::AppPolicy::Production;
+    }
+
     /// Blocks until the save in flight, if any, has finished, and records
     /// its outcome.
     pub(super) fn wait_for_session_save(&mut self) {
@@ -756,7 +773,7 @@ mod tests {
     fn two_pane_app(name: &str) -> (App, shepr_core::layout::PaneId, shepr_core::layout::PaneId) {
         use crate::test_support::WorkspaceFixture as _;
         let mut app = test_app();
-        app.policy = super::super::AppPolicy::Production;
+        app.persist_for_test();
         let mut workspace = shepr_mux::workspace::Workspace::test_new(name);
         let exiting = workspace.root_pane();
         let staying = workspace.test_split(shepr_core::layout::Direction::Horizontal);
@@ -910,7 +927,7 @@ mod tests {
     #[test]
     fn repeated_pane_exit_checkpoint_failures_release_the_held_exit() {
         let mut app = test_app();
-        app.policy = super::super::AppPolicy::Production;
+        app.persist_for_test();
         let generation = app.session_saver.exit.request(true).expect("held");
         for _ in 1..CHECKPOINT_MAX_FAILURES {
             app.finish_session_save(exit_kind(generation), disk_full());

@@ -87,14 +87,8 @@ until someone removes it by hand. Confirm the log names the path to remove.
 Not defects: paths with no test, and code that works but reads worse than it
 should.
 
-- No test forces a session persister job to panic, so `PersistState::run_guarded`'s latch is untested on both worker kinds; it needs a seam to inject a panicking job.
-- The headless loop's closed-API-channel arm (`api_request_open` in `crates/shepr-server/src/server/headless.rs`) has no test; the loop needs a full app to run.
-- The split's public number reaching the child's `SHEPR` pane id is not tested end to end; that needs a real spawn.
-- Client panic handling has untested paths: a panic in terminal setup whose restore also panics, a helper thread panicking during startup, and a pane core breaking between a pane exit's prepare and its replay on the server.
 - A delivered `server.stop` cannot make a wedged server loop finish; forcing that would need its own mechanism and a decision about the final save.
-- A non-persisting app (`Suspended`, or a test app) builds a full `SessionWriter` just to hold the data-directory lease, and server tests that flip a test app to Production exercise the inline persister, the path production almost never uses. A lease-only worker and spawned persisters in those tests would fix both.
-- `set_pane_keyboard_report_all` and `sync_shell_keyboard_report_all` in `crates/shepr-client/src/terminal_setup.rs` are near duplicates.
-- `restore_host_keyboard_protocol` in `crates/shepr-termio/src/host_term/modes.rs` does not flush; its one caller does, but a new caller that forgets would emit nothing.
+- The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
 
 # Possible capabilities
 

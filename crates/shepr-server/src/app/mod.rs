@@ -244,9 +244,9 @@ impl App {
         };
         // From here on the persister is the one owner of the data directory:
         // it holds the lease, the writer and the carried pane history. An app
-        // that persists nothing only holds the lease, so it gets no thread.
-        // Each finished job fires `save_finished`, which the event loop waits
-        // on to reap the save.
+        // that persists nothing only holds the lease, with no thread and no
+        // writer. Each finished job fires `save_finished`, which the event
+        // loop waits on to reap the save.
         let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
         let persister = if policy.persists_session() {
             shepr_mux::persist::SessionPersister::spawn(
@@ -256,10 +256,8 @@ impl App {
                 std::sync::Arc::clone(&save_finished),
             )
         } else {
-            shepr_mux::persist::SessionPersister::inline(
+            shepr_mux::persist::SessionPersister::lease_only(
                 lease,
-                protect_unloaded,
-                pane_history_carry,
                 std::sync::Arc::clone(&save_finished),
             )
         };
@@ -820,6 +818,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_split_pane_child_sees_the_public_id_the_reply_names() {
+        let _env = IsolatedEnv::new();
+        let scratch = crate::test_support::ScratchDir::new("split-pane-id");
+        let seen = scratch.join("pane-id");
+        let shell = shepr_test_support::fixture::stand_in(
+            scratch.path(),
+            "sh",
+            &[
+                shepr_test_support::fixture::Step::To(seen.clone()),
+                shepr_test_support::fixture::Step::PrintEnv("SHEPR_PANE_ID".into()),
+                shepr_test_support::fixture::Step::Sleep(Duration::from_secs(30)),
+            ],
+        );
+
+        let mut app = test_app();
+        app.state.settings.default_shell = shell.to_str().expect("test precondition").into();
+        // Its next public number differs from both its raw pane ids and its
+        // pane count, so only the number the split took can match.
+        app.state.workspaces = vec![Workspace::test_adversarial_identity_state()];
+        app.state.ensure_test_terminals();
+        app.state.set_bookmark_index(Some(0));
+        let command = split_of(&app, 0);
+
+        let outcome = app.handle_endpoint_command_in(command, &EndpointContext::without_geometry());
+        let Ok(EndpointReply::PaneInfo { pane }) = outcome.result else {
+            panic!("expected pane info");
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut child_pane_id = String::new();
+        while Instant::now() < deadline {
+            child_pane_id = std::fs::read_to_string(&seen).unwrap_or_default();
+            if child_pane_id.ends_with('\n') {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(child_pane_id.trim_end(), pane.pane_id.as_str());
+        let (ws_idx, pane_id) = app
+            .resolve_pane_id(&pane.pane_id)
+            .expect("the reply names a live pane");
+        assert_eq!(app.public_pane_id(ws_idx, pane_id), Some(pane.pane_id));
+
+        shut_down_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn pane_split_request_splits_in_half_and_keeps_default_input_routing() {
         let env = IsolatedEnv::new();
         env.set("SHELL", exiting_test_command());
@@ -965,7 +1010,7 @@ mod tests {
     #[test]
     fn session_dirty_flag_schedules_debounced_save() {
         let mut app = test_app();
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         let sample = AppClock {
             now: app.clock.now + Duration::from_secs(42),
             wall_now: app.clock.wall_now,
@@ -1011,7 +1056,7 @@ mod tests {
     #[test]
     fn due_session_save_starts_background_writer() {
         let mut app = test_app();
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         app.state.workspaces = vec![Workspace::test_new("autosave")];
         app.state.ensure_test_terminals();
         app.session_saver
@@ -1034,7 +1079,7 @@ mod tests {
     #[test]
     fn background_session_save_reschedules_when_writer_is_busy() {
         let mut app = test_app();
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         let release = app.session_saver.hold_test_save_in_flight();
         app.session_saver
             .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
@@ -1074,7 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
         let mut app = test_app();
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         let mut workspace = Workspace::test_new("preserved");
         let first_pane = workspace.root_pane();
         let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
@@ -1159,7 +1204,7 @@ mod tests {
             app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
             Some(session.clone()),
         );
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         app.state.mark_session_dirty();
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id,
@@ -1186,7 +1231,7 @@ mod tests {
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
         let mut app = test_app();
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         let workspace = Workspace::test_new("closed");
         let pane_id = workspace.root_pane();
         app.state.workspaces = vec![workspace];
@@ -1232,7 +1277,7 @@ mod tests {
     #[test]
     fn reader_panic_removes_the_pane_without_a_checkpoint() {
         let mut app = test_app();
-        app.policy = AppPolicy::Production;
+        app.persist_for_test();
         let workspace = Workspace::test_new("broken");
         let pane_id = workspace.root_pane();
         app.state.workspaces = vec![workspace];
@@ -1258,7 +1303,7 @@ mod tests {
     fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
         for another_interrupted_exit in [false, true] {
             let mut app = test_app();
-            app.policy = AppPolicy::Production;
+            app.persist_for_test();
             let workspace = Workspace::test_new("old");
             let pane_id = workspace.root_pane();
             app.state.workspaces = vec![workspace];

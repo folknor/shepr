@@ -430,60 +430,7 @@ impl HeadlessServer {
                 .map_or(next_deadline, |cwd| {
                     Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
                 });
-            let stop_signal = Arc::clone(self.lifecycle.stop_signal());
-            // A capped drain leaves queued work in its receiver. The matching
-            // receive branch stays ready and starts another pass immediately.
-            let event = {
-                // A closed receiver resolves at once on every poll, so a
-                // branch whose channel closed must stop being selected or the
-                // loop would spin on Timer events.
-                let api_open = self.api_request_open;
-                tokio::select! {
-                    // A `server.stop` from the API sets the latch on another
-                    // thread; this is what wakes an idle loop to act on it.
-                    () = stop_signal.notified() => LoopEvent::Timer,
-                    () = self.outbox_wake.notified() => LoopEvent::Timer,
-                    // The channel closes only if the API listener thread and
-                    // every connection worker holding a sender died, which also
-                    // means the socket is dead. Production keeps the sender in
-                    // the listener until this loop ends. Stop selecting it
-                    // rather than spin.
-                    maybe_api = self.api_request_rx.recv(), if api_open => match maybe_api {
-                        Some(msg) => LoopEvent::Api(Box::new(msg)),
-                        None => {
-                            self.api_request_open = false;
-                            tracing::error!(
-                                "API request channel closed; API requests are no longer served"
-                            );
-                            LoopEvent::Timer
-                        }
-                    },
-                    // App keeps the sender of its own event channel, so this
-                    // cannot close while the loop runs.
-                    maybe_ev = self.app.event_rx.recv() => match maybe_ev {
-                        Some(ev) => LoopEvent::Internal(ev),
-                        None => LoopEvent::Timer,
-                    },
-                    // The server holds a sender for its own event channel (it
-                    // is cloned to clients), so this cannot close while the
-                    // loop runs.
-                    maybe_server_ev = self.server_event_rx.recv() => match maybe_server_ev {
-                        Some(ev) => LoopEvent::ServerEvent(ev),
-                        None => LoopEvent::Timer,
-                    },
-                    // The server keeps the worker sender it hands to jobs, so
-                    // this cannot close while the loop runs.
-                    maybe_worker = self.worker_rx.recv() => match maybe_worker {
-                        Some(completion) => LoopEvent::WorkerCompletion(completion),
-                        None => LoopEvent::Timer,
-                    },
-                    _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
-                    // A save ended: the scheduled tasks reap it and start
-                    // whatever save waited for it.
-                    () = self.app.session_saver.save_finished().notified() => LoopEvent::Timer,
-                    _ = self.app.render_notify.notified() => LoopEvent::Timer,
-                }
-            };
+            let event = self.next_loop_event(next_deadline).await;
             // The wait above can last until the next deadline; dispatch reads
             // the time the event arrived, not the time the wait began.
             self.refresh_app_clock();
@@ -578,6 +525,60 @@ impl HeadlessServer {
         // rotation), so the two interleave lines and lose none.
         info!("headless server exiting");
         run_error.map_or(Ok(()), Err)
+    }
+
+    /// Waits for the next thing that needs the loop: an event, a wakeup or
+    /// the deadline. A capped drain leaves queued work in its receiver, so the
+    /// matching branch stays ready and starts another pass immediately.
+    async fn next_loop_event(&mut self, next_deadline: Option<Instant>) -> LoopEvent {
+        let stop_signal = Arc::clone(self.lifecycle.stop_signal());
+        // A closed receiver resolves at once on every poll, so a branch whose
+        // channel closed must stop being selected or the loop would spin on
+        // Timer events.
+        let api_open = self.api_request_open;
+        tokio::select! {
+            // A `server.stop` from the API sets the latch on another thread;
+            // this is what wakes an idle loop to act on it.
+            () = stop_signal.notified() => LoopEvent::Timer,
+            () = self.outbox_wake.notified() => LoopEvent::Timer,
+            // The channel closes only if the API listener thread and every
+            // connection worker holding a sender died, which also means the
+            // socket is dead. Production keeps the sender in the listener
+            // until this loop ends. Stop selecting it rather than spin.
+            maybe_api = self.api_request_rx.recv(), if api_open => match maybe_api {
+                Some(msg) => LoopEvent::Api(Box::new(msg)),
+                None => {
+                    self.api_request_open = false;
+                    tracing::error!(
+                        "API request channel closed; API requests are no longer served"
+                    );
+                    LoopEvent::Timer
+                }
+            },
+            // App keeps the sender of its own event channel, so this cannot
+            // close while the loop runs.
+            maybe_ev = self.app.event_rx.recv() => match maybe_ev {
+                Some(ev) => LoopEvent::Internal(ev),
+                None => LoopEvent::Timer,
+            },
+            // The server holds a sender for its own event channel (it is
+            // cloned to clients), so this cannot close while the loop runs.
+            maybe_server_ev = self.server_event_rx.recv() => match maybe_server_ev {
+                Some(ev) => LoopEvent::ServerEvent(ev),
+                None => LoopEvent::Timer,
+            },
+            // The server keeps the worker sender it hands to jobs, so this
+            // cannot close while the loop runs.
+            maybe_worker = self.worker_rx.recv() => match maybe_worker {
+                Some(completion) => LoopEvent::WorkerCompletion(completion),
+                None => LoopEvent::Timer,
+            },
+            _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
+            // A save ended: the scheduled tasks reap it and start whatever
+            // save waited for it.
+            () = self.app.session_saver.save_finished().notified() => LoopEvent::Timer,
+            _ = self.app.render_notify.notified() => LoopEvent::Timer,
+        }
     }
 
     /// Colours the panes with the foreground client's host theme: panes have

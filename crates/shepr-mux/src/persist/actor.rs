@@ -9,9 +9,10 @@
 //! layout and history files as one bundle) happens on the persister's thread, one
 //! job at a time and in the order they were submitted, so a history is always
 //! resolved against the carry state its predecessor left. The exception is an
-//! inline persister (no thread was asked for, or the thread could not be
-//! started): its jobs, expensive work included, run on the submitting thread,
-//! which for a server is the event loop.
+//! inline persister (the thread could not be started): its jobs, expensive
+//! work included, run on the submitting thread, which for a server is the
+//! event loop. An owner that persists nothing builds a lease-only persister,
+//! which holds the lease and no writer, and refuses every job.
 //!
 //! The lease is released only when the persister is retired, after every
 //! submitted job has finished or been abandoned.
@@ -131,6 +132,10 @@ fn abandoned() -> io::Error {
     io::Error::other("session persister ended before finishing the save")
 }
 
+fn lease_only() -> io::Error {
+    io::Error::other("this session persister only holds the data directory lease; it runs no saves")
+}
+
 /// The result of a job that panicked, and of every job after it: the
 /// persister is still alive and holds the lease, but runs no more saves.
 fn stopped_after_panic() -> io::Error {
@@ -155,12 +160,12 @@ impl PersistState {
         }
     }
 
-    /// Runs `job` under the persister's panic contract, whichever worker owns
-    /// the state. A job that panics fails, as does every later one, and the
+    /// Runs `work` under the persister's panic contract, whichever worker owns
+    /// the state. Work that panics fails, as does every later one, and the
     /// state is kept so the lease stays held until retirement. For an inline
     /// persister this means a panicking save no longer ends the server: it
     /// keeps running with saves off, which the error log says once.
-    fn run_guarded(&mut self, job: PersistJob, now: SystemTime) -> io::Result<()> {
+    fn run_guarded(&mut self, work: Work) -> io::Result<()> {
         if !self.accepting_jobs {
             return Err(stopped_after_panic());
         }
@@ -168,7 +173,7 @@ impl PersistState {
             clippy::disallowed_methods,
             reason = "the persister owns its job panics: a caught panic abandons that job and every later one, while the lease stays held until retirement"
         )]
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run(job, now)));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
         outcome.unwrap_or_else(|_| {
             // The state stays outside the unwind boundary. Its writer owns
             // the lease, so a failed persister cannot let another server
@@ -235,9 +240,12 @@ impl PersistState {
     }
 }
 
+/// One unit the worker runs against its state: a submitted job, bound to its
+/// time stamp, or in tests whatever the test needs to run there.
+type Work = Box<dyn FnOnce(&mut PersistState) -> io::Result<()> + Send>;
+
 struct Command {
-    job: PersistJob,
-    now: SystemTime,
+    work: Work,
     done: SaveCompletion,
 }
 
@@ -246,9 +254,10 @@ enum Worker {
         commands: mpsc::Sender<Command>,
         thread: std::thread::JoinHandle<()>,
     },
-    /// No thread (none could be started, or none was asked for): jobs run on
-    /// the caller's thread.
+    /// No thread could be started: jobs run on the caller's thread.
     Inline(Box<PersistState>),
+    /// Holds the lease for an owner that persists nothing; refuses jobs.
+    LeaseOnly(DataDirLease),
     Retired,
 }
 
@@ -260,21 +269,13 @@ pub struct SessionPersister {
 }
 
 impl SessionPersister {
-    /// Takes over the data directory `lease` guards without a thread: jobs run
-    /// on the submitting thread. For an owner that persists nothing, which
-    /// only holds the lease, so it does not pay a thread for it. `finished`
-    /// fires like a threaded persister's, before `submit` returns.
-    pub fn inline(
-        lease: DataDirLease,
-        protect_unloaded: bool,
-        history: HistoryCarry,
-        finished: Arc<Notify>,
-    ) -> Self {
+    /// Holds the data directory `lease` for an owner that persists nothing, so
+    /// no other server restores or replaces the files meanwhile. It has no
+    /// thread and no writer: every job fails without touching the files, and
+    /// retiring releases the lease. `finished` fires for each refused job.
+    pub fn lease_only(lease: DataDirLease, finished: Arc<Notify>) -> Self {
         Self {
-            worker: Worker::Inline(Box::new(PersistState::new(
-                SessionWriter::new(lease, protect_unloaded),
-                history,
-            ))),
+            worker: Worker::LeaseOnly(lease),
             finished,
         }
     }
@@ -301,8 +302,8 @@ impl SessionPersister {
                 let Ok(mut state) = state_receiver.recv() else {
                     return;
                 };
-                while let Ok(Command { job, now, done }) = command_receiver.recv() {
-                    done.complete(state.run_guarded(job, now));
+                while let Ok(Command { work, done }) = command_receiver.recv() {
+                    done.complete(state.run_guarded(work));
                 }
                 // Every sender is gone: the persister was retired or dropped,
                 // after the jobs queued before it were completed or abandoned.
@@ -331,19 +332,25 @@ impl SessionPersister {
 
     /// Queues `job`, stamped `now` (the time used for recovery-copy naming
     /// and cadence). Jobs run in submission order. After retirement a job is
-    /// accepted and does nothing, like a retired writer's. After a worker job
-    /// panics, this and later jobs are reported as abandoned while the worker
-    /// keeps the lease until retirement. Every job fires the completion
-    /// signal when it ends, including one that was refused.
+    /// accepted and does nothing, like a retired writer's. A lease-only
+    /// persister fails every job. After a worker job panics, this and later
+    /// jobs fail while the worker keeps the lease until retirement. Every job
+    /// fires the completion signal when it ends, including one that was
+    /// refused.
     pub fn submit(&mut self, job: PersistJob, now: SystemTime) -> PendingSave {
+        self.submit_work(Box::new(move |state| state.run(job, now)))
+    }
+
+    fn submit_work(&mut self, work: Work) -> PendingSave {
         let (done, pending) = PendingSave::signalled_channel(Some(Arc::clone(&self.finished)));
         match &mut self.worker {
             Worker::Thread { commands, .. } => {
-                if let Err(mpsc::SendError(command)) = commands.send(Command { job, now, done }) {
+                if let Err(mpsc::SendError(command)) = commands.send(Command { work, done }) {
                     command.done.complete(Err(abandoned()));
                 }
             }
-            Worker::Inline(state) => done.complete(state.run_guarded(job, now)),
+            Worker::Inline(state) => done.complete(state.run_guarded(work)),
+            Worker::LeaseOnly(_) => done.complete(Err(lease_only())),
             Worker::Retired => done.complete(Ok(())),
         }
         pending
@@ -367,6 +374,7 @@ impl SessionPersister {
                 }
             }
             Worker::Inline(mut state) => state.retire(),
+            Worker::LeaseOnly(mut lease) => lease.release(),
             Worker::Retired => {}
         }
     }
@@ -387,6 +395,23 @@ impl Drop for SessionPersister {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The inline fallback, built directly: jobs run on the submitting
+    /// thread, and `finished` fires before `submit` returns.
+    fn inline(
+        lease: DataDirLease,
+        protect_unloaded: bool,
+        history: HistoryCarry,
+        finished: Arc<Notify>,
+    ) -> SessionPersister {
+        SessionPersister {
+            worker: Worker::Inline(Box::new(PersistState::new(
+                SessionWriter::new(lease, protect_unloaded),
+                history,
+            ))),
+            finished,
+        }
+    }
 
     fn snapshot() -> SessionSnapshot {
         serde_json::from_value(serde_json::json!({
@@ -484,7 +509,7 @@ mod tests {
     fn an_inline_persister_runs_jobs_on_the_caller_and_releases_the_lease() {
         let scratch = crate::test_support::ScratchDir::new("persister-inline");
         let directory = scratch.join("data");
-        let mut persister = SessionPersister::inline(
+        let mut persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
             false,
             HistoryCarry::default(),
@@ -504,6 +529,121 @@ mod tests {
         );
         drop(persister);
         DataDirLease::acquire(&directory).expect("the lease is free after the drop");
+    }
+
+    #[tokio::test]
+    async fn a_lease_only_persister_holds_the_lease_and_refuses_jobs() {
+        let scratch = crate::test_support::ScratchDir::new("persister-lease-only");
+        let directory = scratch.join("data");
+        let finished = signal();
+        let mut persister = SessionPersister::lease_only(
+            DataDirLease::acquire(&directory).expect("lease"),
+            Arc::clone(&finished),
+        );
+        let refused = persister.submit(
+            PersistJob::Save(SessionBundle {
+                snapshot: snapshot(),
+                cwds: PendingCwds::default(),
+                history: None,
+            }),
+            SystemTime::now(),
+        );
+        signalled(&finished).await;
+        assert_eq!(
+            refused
+                .try_finish()
+                .expect("refused at once")
+                .expect_err("a lease-only persister runs no saves")
+                .to_string(),
+            lease_only().to_string()
+        );
+        assert!(
+            !directory
+                .join(super::super::io::SESSION_FILE_NAME)
+                .try_exists()
+                .expect("test stat"),
+            "nothing was written"
+        );
+        assert_eq!(
+            DataDirLease::acquire(&directory)
+                .err()
+                .map(|err| err.kind()),
+            Some(io::ErrorKind::ResourceBusy),
+            "the persister holds the lease"
+        );
+        persister.retire();
+        DataDirLease::acquire(&directory).expect("the lease is free after retiring");
+    }
+
+    /// A panicking job fails, every later job fails without running, and the
+    /// lease stays held until the persister is retired.
+    fn assert_a_panicking_job_stops_saves_and_keeps_the_lease(
+        directory: &std::path::Path,
+        mut persister: SessionPersister,
+    ) {
+        let now = SystemTime::now();
+        let panicked = persister
+            .submit_work(Box::new(|_| panic!("test job panicked")))
+            .wait();
+        assert_eq!(
+            panicked.expect_err("the panicking job fails").to_string(),
+            stopped_after_panic().to_string()
+        );
+        let later = persister
+            .submit(
+                PersistJob::Save(SessionBundle {
+                    snapshot: snapshot(),
+                    cwds: PendingCwds::default(),
+                    history: None,
+                }),
+                now,
+            )
+            .wait();
+        assert_eq!(
+            later.expect_err("a job after the panic fails").to_string(),
+            stopped_after_panic().to_string()
+        );
+        assert!(
+            !directory
+                .join(super::super::io::SESSION_FILE_NAME)
+                .try_exists()
+                .expect("test stat"),
+            "the job after the panic did not run"
+        );
+        assert_eq!(
+            DataDirLease::acquire(directory).err().map(|err| err.kind()),
+            Some(io::ErrorKind::ResourceBusy),
+            "the persister still holds the lease after the panic"
+        );
+        persister.retire();
+        DataDirLease::acquire(directory).expect("the lease is free after retiring");
+    }
+
+    #[test]
+    fn a_panicking_job_on_the_thread_stops_saves_and_keeps_the_lease() {
+        let scratch = crate::test_support::ScratchDir::new("persister-panic-thread");
+        let directory = scratch.join("data");
+        let persister = SessionPersister::spawn(
+            DataDirLease::acquire(&directory).expect("lease"),
+            false,
+            HistoryCarry::default(),
+            signal(),
+        );
+        assert!(matches!(persister.worker, Worker::Thread { .. }));
+        assert_a_panicking_job_stops_saves_and_keeps_the_lease(&directory, persister);
+    }
+
+    #[test]
+    fn a_panicking_inline_job_stops_saves_and_keeps_the_lease() {
+        let scratch = crate::test_support::ScratchDir::new("persister-panic-inline");
+        let directory = scratch.join("data");
+        let persister = inline(
+            DataDirLease::acquire(&directory).expect("lease"),
+            false,
+            HistoryCarry::default(),
+            signal(),
+        );
+        assert_a_panicking_job_stops_saves_and_keeps_the_lease(&directory, persister);
     }
 
     fn signal() -> Arc<Notify> {
@@ -550,7 +690,7 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("persister-inline-signal");
         let directory = scratch.join("data");
         let finished = signal();
-        let mut persister = SessionPersister::inline(
+        let mut persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
             false,
             HistoryCarry::default(),

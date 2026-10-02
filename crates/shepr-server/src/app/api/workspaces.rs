@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn workspace_rename_uses_the_shared_dirty_schedule() {
         let mut app = app();
-        app.policy = crate::app::AppPolicy::Production;
+        app.persist_for_test();
         app.state.workspaces = vec![Workspace::test_new("before")];
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
         let sample = crate::app::AppClock {
