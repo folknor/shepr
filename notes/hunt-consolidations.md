@@ -1005,8 +1005,9 @@ per pass. (server-serving)
 
 ## CON-077 - Is the server stopping?
 
-`stop_requested(should_quit)` is evaluated nine times per loop path;
-`handle_api_request_with_shutdown_check_inner` and `handle_client_shell_command`
+The stop check (now the lifecycle phase alone) is still evaluated at many
+points per loop path; `handle_api_request_with_shutdown_check_inner` and
+`handle_client_shell_command`
 each do "if stop requested, initiate shutdown, then if stopping, reject".
 `ClientShellSurfaceSet` and `WorkspaceCheckoutRoot` bypass the second check
 because they are dispatched earlier, safe only because `run` never dispatches

@@ -19,7 +19,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use ratatui::layout::Rect;
@@ -86,13 +85,19 @@ struct PendingCheckpointedPaneExit {
 // Headless server
 // ---------------------------------------------------------------------------
 
-/// The headless server - runs the shepr event loop without a real terminal.
+/// Coordinates the event loop without a real terminal. Lifecycle policy and
+/// asynchronous endpoint workers own their rules separately. Client geometry
+/// application stays here because it can start resumes and send focus reports;
+/// render coordination settles each connection's location, baseline and outbox
+/// against the same app revision, rather than owning a second client registry.
 pub struct HeadlessServer {
     app: app::App,
     view_epoch: ViewEpoch,
     headless_settled: ViewEpoch,
-    /// Kept alive only for its `Drop` impl, which tears down the server socket listener.
-    _api_server: Option<shepr_api::ServerHandle>,
+    /// The server socket: startup opens its TUI gate
+    /// (`open_client_protocol`), and dropping it tears down the listener and
+    /// removes the socket file (`release_socket_after_save`).
+    api_server: Option<shepr_api::ServerHandle>,
     clients: ClientRegistry,
     /// Identity used to reject shell replacements from an earlier server boot.
     /// Production takes the process boot (`BootId::for_this_process`), the same
@@ -138,17 +143,10 @@ pub struct HeadlessServer {
     retained_surface_fallbacks_reported: HashSet<&'static str>,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
-    /// Watches logind for shutdown warnings; `None` until `run` starts it.
-    /// Releasing a shutdown delay inhibitor leaves the monitor installed so it
-    /// can observe a cancellation and inhibit the next shutdown.
-    host_shutdown_monitor: Option<lifecycle::HostShutdownMonitor>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
-    /// Sender for server events; production hands its clone to the client
-    /// transport handler, tests inject events through this one.
-    // Only tests read it; production keeps the sender alive so the event
-    // channel cannot close while the handler still holds clones.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the sender"))]
+    /// Sender cloned into the client transport handler when startup opens
+    /// the protocol. Keeping it also prevents closure between loop passes.
     server_event_tx: mpsc::Sender<ServerEvent>,
     /// Bounded requests received by the JSON API listener.
     api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
@@ -169,43 +167,28 @@ pub struct HeadlessServer {
     /// writers after a render drains, and the host shutdown monitor. Wakes an
     /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
     outbox_wake: Arc<tokio::sync::Notify>,
-    worker_tx: tokio::sync::mpsc::UnboundedSender<worker::WorkerCompletion>,
-    worker_rx: tokio::sync::mpsc::UnboundedReceiver<worker::WorkerCompletion>,
-    checkout_root_runner: worker::CheckoutRootRunner,
+    workers: worker::EndpointWorkers,
 }
 
 impl HeadlessServer {
-    /// Creates the server once panes are restored: builds the server event
-    /// channel and, given the socket's handle (tests pass `None`), opens its
-    /// TUI gate with the client transport handler. From then on `ping`
-    /// answers without `starting` and TUI connections are served.
+    /// Builds the event-loop coordinator without admitting TUI clients.
+    /// Startup opens the client protocol explicitly after pane restore.
     pub(super) fn new(
         app: app::App,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
-        api_server: Option<shepr_api::ServerHandle>,
+        api_server: shepr_api::ServerHandle,
         stop_signal: Arc<shepr_api::ServerStopSignal>,
     ) -> Self {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
 
-        let (worker_tx, worker_rx) = worker::channel();
         let outbox_wake = Arc::new(tokio::sync::Notify::new());
 
-        if let Some(api) = &api_server {
-            api.client_gate().open(Arc::new(
-                crate::server::client_transport::ClientTransportHandler {
-                    server_event_tx: server_event_tx.clone(),
-                    stop_signal: Arc::clone(&stop_signal),
-                    wake: Arc::clone(&outbox_wake),
-                    ids: crate::server::clients::ClientIdAllocator::default(),
-                },
-            ));
-        }
         Self {
             app,
             view_epoch: ViewEpoch::INITIAL,
             headless_settled: ViewEpoch::ZERO,
-            _api_server: api_server,
+            api_server: Some(api_server),
             clients: ClientRegistry::default(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
             shell_session_cache: None,
@@ -216,7 +199,6 @@ impl HeadlessServer {
             retained_surface_fallback_reason: None,
             retained_surface_fallbacks_reported: HashSet::new(),
             lifecycle: ShutdownLifecycle::new(stop_signal),
-            host_shutdown_monitor: None,
             server_event_rx,
             server_event_tx,
             api_request_rx,
@@ -226,9 +208,22 @@ impl HeadlessServer {
             pending_checkpointed_pane_exits: VecDeque::new(),
             replaying_checkpointed_pane_exit: None,
             outbox_wake,
-            worker_tx,
-            worker_rx,
-            checkout_root_runner: worker::default_checkout_root_runner(),
+            workers: worker::EndpointWorkers::new(),
+        }
+    }
+
+    /// Opens the TUI gate after startup has restored panes. Until this step
+    /// the bound socket answers ping with `starting` and refuses TUI clients.
+    pub(super) fn open_client_protocol(&self) {
+        if let Some(api) = &self.api_server {
+            api.client_gate().open(Arc::new(
+                crate::server::client_transport::ClientTransportHandler {
+                    server_event_tx: self.server_event_tx.clone(),
+                    stop_signal: Arc::clone(self.lifecycle.stop_signal()),
+                    wake: Arc::clone(&self.outbox_wake),
+                    ids: crate::server::clients::ClientIdAllocator::default(),
+                },
+            ));
         }
     }
 
@@ -284,7 +279,8 @@ impl HeadlessServer {
         let stop_signal = Arc::clone(self.lifecycle.stop_signal());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
         ctrlc_handler(stop_signal, signal_quit)?;
-        self.start_host_shutdown_monitor();
+        self.lifecycle
+            .start_host_shutdown_monitor(&self.outbox_wake);
 
         let mut run_error = None;
         loop {
@@ -461,7 +457,7 @@ impl HeadlessServer {
                 self.initiate_shutdown();
                 match event {
                     LoopEvent::Internal(ev) => {
-                        self.sync_host_shutdown_freeze();
+                        self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
                         self.handle_internal_event_with_forwarding(ev);
                     }
                     LoopEvent::ServerEvent(ServerEvent::ClientShellConnected {
@@ -485,7 +481,7 @@ impl HeadlessServer {
             match event {
                 LoopEvent::Timer => {}
                 LoopEvent::Internal(ev) => {
-                    self.sync_host_shutdown_freeze();
+                    self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
                     if self.handle_internal_event_with_forwarding(ev) {
                         self.mark_view_changed();
                     }
@@ -587,7 +583,7 @@ impl HeadlessServer {
             },
             // The server keeps the worker sender it hands to jobs, so this
             // cannot close while the loop runs.
-            maybe_worker = self.worker_rx.recv() => match maybe_worker {
+            maybe_worker = self.workers.recv() => match maybe_worker {
                 Some(completion) => LoopEvent::WorkerCompletion(completion),
                 None => LoopEvent::Timer,
             },
@@ -1446,7 +1442,7 @@ impl HeadlessServer {
                 if !synced_host_shutdown_for_exits {
                     // Check immediately before replaying this separate
                     // internal-event batch, after the main queue was drained.
-                    self.sync_host_shutdown_freeze();
+                    self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
                     synced_host_shutdown_for_exits = true;
                 }
                 self.replaying_checkpointed_pane_exit = Some(pending.checkpoint_generation);
@@ -1470,29 +1466,9 @@ impl HeadlessServer {
     }
 
     fn handle_worker_completion(&mut self, completion: worker::WorkerCompletion) -> bool {
-        match completion {
-            worker::WorkerCompletion::CheckoutRoot {
-                ticket,
-                boot_id,
-                request_id,
-                home,
-                result,
-            } => {
-                let result = result
-                    .map(
-                        |root| shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot {
-                            root,
-                            home,
-                        },
-                    )
-                    .map_err(shepr_protocol::command::EndpointError::Rejected);
-                self.complete_endpoint_reply(
-                    ticket,
-                    &crate::server::client_commands::response_message(boot_id, request_id, result),
-                );
-                false
-            }
-        }
+        let (ticket, message) = completion.into_reply();
+        self.complete_endpoint_reply(ticket, &message);
+        false
     }
 }
 

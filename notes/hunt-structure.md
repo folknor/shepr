@@ -544,33 +544,6 @@ unrepresentable. `api_helpers.rs` is `pub(crate)` while holding one
 
 ## Server serving
 
-## STR-034 - `HeadlessServer` is the god object AGENTS.md forbids for `App`
-
-27 fields, and ten files add `impl HeadlessServer` blocks through `use super::*`,
-each reaching any field. Separable machines:
-
-- **Client views and registry**: `clients`, `focused_panes`, geometry
-  controllers, the foreground client and theme sync. The decisions in
-  `client_views.rs` are pure functions of registry, workspace order and focus,
-  and `ClientRegistry` already claims to be "pure client identity and ownership
-  state", but the rules live on `HeadlessServer`.
-- **Render scheduler**: `view_epoch`, `headless_settled`,
-  `shell_session_cache`, `shell_session_generation`, the retained fallback reason
-  and set, the dirty flags, plus the render cadence that lives on `App`.
-- **Endpoint dispatcher**: `worker_tx`/`worker_rx`, `checkout_root_runner`, reply
-  tickets; `endpoint_requests.rs` and `worker.rs` belong with
-  `client_commands.rs`.
-- **Lifecycle driver**: `lifecycle`, `host_shutdown_monitor`,
-  `shutdown_unregistered_clients`, `shutdown_flushes`,
-  `pending_checkpointed_pane_exits`, `replaying_checkpointed_pane_exit`.
-
-With `App` passed explicitly each part is testable alone. The 6464-line
-`headless/tests/mod.rs` (105 tests over shutdown, titles, endpoints, projections,
-retained patches, geometry, input, theme, clipboard and host shutdown) exists
-because the only test seam is a whole `HeadlessServer`; the sibling test files
-cover four topics. Most of the serving consolidations exist because nothing gives
-these machines a home. (server-serving)
-
 ## STR-035 - Client connection state exposes writable invariants
 
 All `ClientConnection` and `ClientShellState` fields are `pub(crate)`.
@@ -594,17 +567,6 @@ maps `TextCommit` to `Unsupported` and has an unused `Mouse` arm. A direct
 `ClientPaneInputEvent::Key -> TerminalKey` mapping removes the trait, the file and
 the unreachable error. `apply_scroll` round-trips modifiers through `u8`, and
 `lines.max(1)` is applied by both caller and callee. (server-serving)
-
-## STR-037 - `ServerEvent` mixes three channels, and the constructor opens the socket
-
-`ServerEvent` carries client transport events plus `ClientWriterDrained` and
-`HostShutdownWake`, dataless wakes that a `Notify` would carry (the cost is filed
-as a bug); removing them shrinks `ServerEvent` to client facts and removes the
-matching filter in `handle_server_event`. `HeadlessServer::new` opens the API
-socket's client gate, making the server publicly reachable from a constructor;
-tests rely on it. An explicit `open_client_protocol()` in `run_server` would make
-the documented startup order (lease, bind, restore, open) visible where it is
-documented. (server-serving)
 
 ## STR-038 - `client_shell.rs` is misnamed and does two jobs
 
@@ -781,6 +743,15 @@ the verified per-machine state from preflight to the connectors
 
 ## Tests
 
+## STR-050 - Endpoint worker replies are built in two places
+
+`EndpointWorkers` (`crates/shepr-server/src/server/headless/worker.rs`) owns
+worker admission, launch, completion delivery and turning a completion into a
+reply, but reserving reply tickets, the "worker limit reached" rejection and
+the spawn-failure rejection are still built on `HeadlessServer` in
+`headless/endpoint_requests.rs`. Move them into the worker owner so every
+reply it can produce comes from one place. (wave-4 review)
+
 ## STR-049 - Test layouts mirror accretion
 
 - `src/tests/mod.rs` in the client holds tests for `terminal_geometry`,
@@ -791,8 +762,11 @@ the verified per-machine state from preflight to the connectors
 - The client shell's `shell/tests/` groups by feature (`copy.rs` 3040 lines,
   `endpoints.rs` 2549 lines) while unit tests also sit in production files and
   some copy-mode tests live in `input/input.rs`.
-- The server's `headless/tests/mod.rs` is 6464 lines and 105 tests (see the
-  `HeadlessServer` entry).
+- The server's `headless/tests/mod.rs` holds over a hundred tests across
+  shutdown, titles, endpoints, projections, retained patches, geometry, input,
+  theme, clipboard and host shutdown, because a whole `HeadlessServer` was long
+  the only test seam; `ShutdownLifecycle` and `EndpointWorkers` can now be
+  tested alone.
 - Once components exist, tests should sit with the component they exercise and
   drive its API rather than writing `pub(super)` fields.
 

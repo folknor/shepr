@@ -11,6 +11,11 @@
 //! - Pane focus reporting follows the focused viewers (`sync_pane_focus`): a
 //!   pane holds terminal focus while some client whose outer terminal is
 //!   focused views it as its workspace's focused pane.
+//!
+//! These stay `HeadlessServer` methods rather than a client-view component:
+//! the size rule itself is a free function over `ClientRegistry`, but applying
+//! it resizes PTYs, starts pending agent resumes and sends pane focus reports,
+//! all through `App`.
 
 use super::*;
 use crate::app::SpawnGeometry;

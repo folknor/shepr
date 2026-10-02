@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::*;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::server::outbox::{ClientOutbox, RenderLaneReceiver};
@@ -147,14 +148,13 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     // fixture that dropped it would start every test loop with a closed API
     // channel. Tests that need to send swap in a channel of their own.
     std::mem::forget(api_tx);
-    let (worker_tx, worker_rx) = worker::channel();
     let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
 
     HeadlessServer {
         app,
         view_epoch: ViewEpoch::INITIAL,
         headless_settled: ViewEpoch::ZERO,
-        _api_server: None,
+        api_server: None,
         clients: ClientRegistry::default(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
         shell_session_cache: None,
@@ -165,7 +165,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         retained_surface_fallback_reason: None,
         retained_surface_fallbacks_reported: HashSet::new(),
         lifecycle: ShutdownLifecycle::new(stop_signal),
-        host_shutdown_monitor: None,
         server_event_rx,
         server_event_tx,
         api_request_rx,
@@ -175,9 +174,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
         replaying_checkpointed_pane_exit: None,
         outbox_wake: Arc::new(tokio::sync::Notify::new()),
-        worker_tx,
-        worker_rx,
-        checkout_root_runner: worker::default_checkout_root_runner(),
+        workers: worker::EndpointWorkers::new(),
     }
 }
 
@@ -1630,7 +1627,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
-    server.checkout_root_runner = std::sync::Arc::new(move |_| {
+    server.workers.set_runner(std::sync::Arc::new(move |_| {
         started_tx.send(()).map_err(|error| error.to_string())?;
         let released = release_rx
             .lock()
@@ -1640,7 +1637,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
             return Err("slow worker test gate timed out".to_owned());
         }
         Ok(Some("/checkout".to_owned()))
-    });
+    }));
 
     let started = std::time::Instant::now();
     server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
@@ -1707,7 +1704,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         .send(())
         .expect("checkout worker should still wait");
 
-    let completion = tokio::time::timeout(Duration::from_secs(1), server.worker_rx.recv())
+    let completion = tokio::time::timeout(Duration::from_secs(1), server.workers.recv())
         .await
         .expect("checkout completion should wake the loop")
         .expect("worker channel should stay open");
@@ -4906,7 +4903,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .store(true, Ordering::Release);
     // The test policy never saves, so the checkpoint writes nothing and the
     // real session file is untouched.
-    server.sync_host_shutdown_freeze();
+    server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     assert_eq!(server.lifecycle.frozen_session_policy(), Some(false));
     // Pretend saving was on before the warning, so the thaw has to restore it.
@@ -4931,7 +4928,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .lifecycle
         .host_shutdown_request_flag()
         .store(false, Ordering::Release);
-    server.sync_host_shutdown_freeze();
+    server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
     assert!(server.app.policy.persists_session());
     assert!(server.app.state.session_dirty);
@@ -5002,33 +4999,6 @@ async fn a_surface_larger_than_one_frame_crosses_in_parts() {
         .contains("too large")
     );
     shutdown_test_runtimes(&mut server);
-}
-
-#[tokio::test]
-async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
-    let mut server = test_headless_server();
-    server
-        .lifecycle
-        .host_shutdown_request_flag()
-        .store(true, Ordering::Release);
-    server.sync_host_shutdown_freeze();
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
-
-    server.sync_host_shutdown_freeze();
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
-    assert!(server.lifecycle.host_shutdown_requested());
-
-    server.sync_host_shutdown_freeze();
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
-    server
-        .lifecycle
-        .host_shutdown_request_flag()
-        .store(false, Ordering::Release);
-    server.sync_host_shutdown_freeze();
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
-    assert!(!server.lifecycle.host_shutdown_requested());
-    // No monitor ran before the warning, so none was started by the thaw.
-    assert!(server.host_shutdown_monitor.is_none());
 }
 
 #[tokio::test]

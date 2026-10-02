@@ -12,3 +12,6 @@ __pycache__
 .local
 .reports
 research/
+
+# Credential directory mounted read-only by the workspace sandbox.
+.aws/

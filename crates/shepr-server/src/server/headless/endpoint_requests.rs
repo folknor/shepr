@@ -71,9 +71,7 @@ impl HeadlessServer {
             }
             match self.app.prepare_workspace_checkout_root(params) {
                 Ok((cwd, home)) => {
-                    if super::worker::completion_backlog(&self.worker_tx, &self.worker_rx)
-                        >= crate::limits::MAX_WORKER_COMPLETION_BACKLOG
-                    {
+                    if !self.workers.can_admit() {
                         self.queue_endpoint_reply(
                             client_id,
                             &crate::server::client_commands::response_message(
@@ -95,9 +93,7 @@ impl HeadlessServer {
                     else {
                         return;
                     };
-                    if let Err(error) = super::worker::checkout_root(
-                        &self.worker_tx,
-                        std::sync::Arc::clone(&self.checkout_root_runner),
+                    if let Err(error) = self.workers.checkout_root(
                         ticket,
                         boot_id.clone(),
                         request_id.clone(),

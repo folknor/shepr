@@ -31,6 +31,7 @@ should.
 
 - A delivered `server.stop` cannot make a wedged server loop finish; forcing that would need its own mechanism and a decision about the final save.
 - The owned-runtime tests build fixture names with `DirectoryKind::directory_name` and `content_path`, the helpers under test, so nothing pins the literal directory prefixes and content names.
+- `bootstrap_opens_the_gate_after_restore` (`crates/shepr-server/src/server/headless/bootstrap.rs`) repeats `run_server`'s startup steps by hand instead of running them, so deleting `open_client_protocol()` from `run_server` would leave it green; only daemon-level tests would notice.
 - The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
 
 # Possible capabilities

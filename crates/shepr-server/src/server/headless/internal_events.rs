@@ -142,7 +142,7 @@ impl HeadlessServer {
     pub(super) fn drain_internal_events_with_forwarding_up_to(&mut self, limit: usize) -> bool {
         // Check once per batch before applying any event in it. The monitor
         // wakes the loop when this flag changes, so a later batch observes it.
-        self.sync_host_shutdown_freeze();
+        self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
         let mut changed = false;
         for _ in 0..limit {
             let Ok(ev) = self.app.event_rx.try_recv() else {

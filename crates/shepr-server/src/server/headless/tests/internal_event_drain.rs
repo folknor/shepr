@@ -156,7 +156,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
-    server.checkout_root_runner = std::sync::Arc::new(move |_| {
+    server.workers.set_runner(std::sync::Arc::new(move |_| {
         started_tx.send(()).map_err(|error| error.to_string())?;
         release_rx
             .lock()
@@ -164,7 +164,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| "checkout worker gate timed out".to_owned())?;
         Ok(Some("/checkout".to_owned()))
-    });
+    }));
 
     for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
         server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
@@ -208,7 +208,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             .expect("checkout workers should be waiting");
     }
     for _ in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
-        let completion = tokio::time::timeout(Duration::from_secs(1), server.worker_rx.recv())
+        let completion = tokio::time::timeout(Duration::from_secs(1), server.workers.recv())
             .await
             .expect("checkout worker should complete after release")
             .expect("worker channel should stay open");
@@ -237,8 +237,8 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
 
     for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
         server
-            .worker_tx
-            .send(worker::WorkerCompletion::CheckoutRoot {
+            .workers
+            .enqueue(worker::WorkerCompletion::CheckoutRoot {
                 ticket: super::super::ReplyTicket {
                     client_id,
                     seq: crate::server::outbox::ReplySeq::test_new(index as u64),
@@ -247,8 +247,7 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
                 request_id: format!("queued-{index}").into(),
                 home: None,
                 result: Ok(None),
-            })
-            .expect("worker completion channel should be open");
+            });
     }
 
     server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {

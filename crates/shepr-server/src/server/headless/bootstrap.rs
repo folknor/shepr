@@ -85,7 +85,7 @@ impl std::fmt::Display for ServerReady {
 /// Runs the headless server, in this order: take the data-directory lease;
 /// refuse a session path no save could replace; start file logging, the detection manifests and the integration installer;
 /// bind the socket, which answers `ping` as `starting` from then on; build the
-/// runtime; restore panes; build [`HeadlessServer`], which opens the TUI gate;
+/// runtime; restore panes; build [`HeadlessServer`]; open the TUI gate;
 /// report ready; run the loop. Shutdown keeps the socket through the final
 /// save, retires the lease, then removes the socket
 /// (`HeadlessServer::release_socket_after_save`).
@@ -165,7 +165,8 @@ pub fn run_server(
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
-        let mut server = HeadlessServer::new(app, api_rx, Some(api), stop_signal);
+        let mut server = HeadlessServer::new(app, api_rx, api, stop_signal);
+        server.open_client_protocol();
         let ready = ServerReady {
             socket,
             log_file: data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
@@ -330,7 +331,9 @@ mod startup_tests {
                 .expect("restore alone leaves gate closed")
                 .starting
         );
-        let server = HeadlessServer::new(app, rx, Some(api), stop);
+        let server = HeadlessServer::new(app, rx, api, stop);
+        assert!(client.status().expect("constructed pong").starting);
+        server.open_client_protocol();
         assert!(!client.status().expect("ready pong").starting);
         let mut peer = shepr_platform::ipc::connect_local_stream(paths.server_address().socket())
             .expect("TUI connect");

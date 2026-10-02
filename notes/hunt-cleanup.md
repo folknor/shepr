@@ -214,8 +214,7 @@ test green. Reported by mux-panes, mux-state and server-app.
 - `ClientOutbox.attached: bool` is false only for `detached()` fixtures, yet
   every presenting predicate in production checks it.
 - `client_read_loop_with_endpoint_controls(.., Option<&ControlSender>)` is
-  always `Some` in production; `HeadlessServer::new(.., api_server:
-  Option<ServerHandle>, ..)` is `None` only in tests.
+  always `Some` in production.
 - `SurfaceBoundary` holds function pointers for encode and render so a test can
   inject an oversize encode failure.
 - `ClientRegistry::get/get_mut/contains_key/Index` are generic over
