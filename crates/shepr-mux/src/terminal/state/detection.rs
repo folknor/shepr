@@ -66,8 +66,9 @@ impl TerminalState {
         }
     }
 
-    /// Process-exit observations are provisional until a live-shell detector
-    /// tick outlasts the release grace. Pane death resolves them with its reason.
+    /// A detector observation. A process exit releases the agent at once; the
+    /// identity it removes stays available to a checkpoint for a pane death
+    /// right after it (see `CheckpointCandidate`).
     pub fn set_detected_state_with_screen_signals_at(
         &mut self,
         agent: Option<Agent>,
@@ -87,15 +88,20 @@ impl TerminalState {
     }
 
     /// A pane exit ends hook authority, but an interrupted pane must retain
-    /// its resume identity for the checkpoint taken before layout removal.
-    /// Detector releases are only applied while the pane child is live; once
-    /// it exits, the watcher supplies the reason to this transition instead.
+    /// its resume identity for the checkpoint taken before layout removal:
+    /// the one it holds, or one a detector release removed within the grace
+    /// before `ended_at`, the time the pane's ending was recorded. Detector
+    /// releases are only applied while the pane child is live; once it exits,
+    /// this transition decides with the exit's reason.
     pub fn set_pane_process_exit_at(
         &mut self,
         exit_reason: shepr_platform::ChildExitReason,
-        now: Instant,
+        ended_at: Instant,
     ) -> TerminalStateMutation {
-        self.transition_hook_event(HookEvent::PaneExited { exit_reason, now })
-            .unwrap_or_default()
+        self.transition_hook_event(HookEvent::PaneExited {
+            exit_reason,
+            now: ended_at,
+        })
+        .unwrap_or_default()
     }
 }

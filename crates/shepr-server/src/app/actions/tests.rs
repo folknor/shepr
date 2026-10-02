@@ -899,7 +899,11 @@ fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
     );
 
     assert!(
-        state.publish_pane_process_exit_if_agent(pane_id, shepr_platform::ChildExitReason::Exited,),
+        state.publish_pane_process_exit(
+            pane_id,
+            shepr_platform::ChildExitReason::Exited,
+            std::time::Instant::now()
+        ),
         "the exit releases the agent"
     );
 

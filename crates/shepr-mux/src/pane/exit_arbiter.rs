@@ -20,12 +20,15 @@ use tokio::sync::Notify;
 pub(super) enum PaneEnding {
     /// The runtime was torn down on request: nothing is published.
     Silent,
-    /// The pane ended for `reason`, which is published as its death.
-    /// `child_exit_confirmed` says the child was reaped, so its launch status
-    /// channel is closed and settling the launch cannot wait on a live child.
+    /// The pane ended for `reason` at `ended_at`, which is published as its
+    /// death. `child_exit_confirmed` says the child was reaped, so its launch
+    /// status channel is closed and settling the launch cannot wait on a live
+    /// child. `ended_at` is when the observer saw the ending, not when the app
+    /// handles it: a checkpoint judges how close it followed an agent's exit.
     Observed {
         reason: ChildExitReason,
         child_exit_confirmed: bool,
+        ended_at: Instant,
     },
 }
 
@@ -99,28 +102,33 @@ impl PaneExitArbiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
 
-    const CLOSED: PaneEnding = PaneEnding::Observed {
-        reason: ChildExitReason::TerminalClosed,
-        child_exit_confirmed: false,
-    };
+    static CLOSED_AT: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+    fn closed() -> PaneEnding {
+        PaneEnding::Observed {
+            reason: ChildExitReason::TerminalClosed,
+            child_exit_confirmed: false,
+            ended_at: *CLOSED_AT,
+        }
+    }
 
     #[test]
     fn only_the_first_decision_wins() {
         let arbiter = PaneExitArbiter::default();
         assert!(arbiter.decide(PaneEnding::Silent));
-        assert!(!arbiter.decide(CLOSED));
-        assert!(!arbiter.decide_after(Duration::ZERO, CLOSED));
+        assert!(!arbiter.decide(closed()));
+        assert!(!arbiter.decide_after(Duration::ZERO, closed()));
         assert_eq!(arbiter.ending(), Some(PaneEnding::Silent));
     }
 
     #[test]
     fn an_undecided_grace_decides_at_its_deadline() {
         let arbiter = PaneExitArbiter::default();
-        assert!(arbiter.decide_after(Duration::from_millis(10), CLOSED));
+        assert!(arbiter.decide_after(Duration::from_millis(10), closed()));
         assert!(!arbiter.decide(PaneEnding::Silent));
-        assert_eq!(arbiter.ending(), Some(CLOSED));
+        assert_eq!(arbiter.ending(), Some(closed()));
     }
 
     #[test]
@@ -131,7 +139,7 @@ mod tests {
             std::thread::spawn(move || {
                 let started = Instant::now();
                 (
-                    arbiter.decide_after(Duration::from_secs(30), CLOSED),
+                    arbiter.decide_after(Duration::from_secs(30), closed()),
                     started.elapsed(),
                 )
             })
@@ -146,8 +154,8 @@ mod tests {
     #[tokio::test]
     async fn the_publisher_sees_a_decision_made_before_it_waits() {
         let arbiter = PaneExitArbiter::default();
-        arbiter.decide(CLOSED);
-        assert_eq!(arbiter.decided().await, CLOSED);
+        arbiter.decide(closed());
+        assert_eq!(arbiter.decided().await, closed());
     }
 
     #[tokio::test]

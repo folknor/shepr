@@ -188,8 +188,11 @@ pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = 
     (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
 ];
 
-/// A detector release remains provisional while a session-wide kill can still
-/// reach the shell. The detector republishes after this live-shell interval.
+/// How close a pane's signal death (or a signal shutdown, on either side) must
+/// follow an agent's exit for the resume identity that exit released to be
+/// saved anyway: long enough for a group kill to reach the shell after the
+/// agent, short enough that an unrelated shell death rarely revives an agent
+/// the user quit.
 pub(crate) const AGENT_PROCESS_EXIT_RELEASE_GRACE: Duration = Duration::from_millis(750);
 /// How long a pane launch whose child has exited still waits for that child's
 /// status channel. A child that connected before exiting is already in the

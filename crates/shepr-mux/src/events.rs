@@ -26,10 +26,12 @@ pub enum AppEvent {
         pane_id: PaneId,
         settlement: crate::pane::LaunchSettlement,
     },
-    /// A pane's child process exited.
+    /// A pane's child process exited. `ended_at` is when the ending was
+    /// observed, which can be well before the event is handled.
     PaneDied {
         pane_id: PaneId,
         exit_reason: shepr_platform::ChildExitReason,
+        ended_at: Instant,
     },
     /// Process detection identified an agent before its screen state was confirmed.
     AgentProcessDetected {

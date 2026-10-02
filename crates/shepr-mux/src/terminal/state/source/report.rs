@@ -163,6 +163,15 @@ impl TerminalState {
             HookSourceState::default().transition(event)
         };
         self.apply_source_effect(effect);
+        // A committed report naming a session (its own or one inherited
+        // above) is a selection, even of the same identity again.
+        if self
+            .hook_authority
+            .as_ref()
+            .is_some_and(|authority| authority.session_ref.is_some())
+        {
+            self.checkpoint_candidate = None;
+        }
         let current_session = self.current_session_identity_for_persistence();
         let effective_state_change =
             self.recompute_effective_state(previous_agent_label.as_deref(), previous_state);

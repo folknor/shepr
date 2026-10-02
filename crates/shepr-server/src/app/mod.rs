@@ -1137,10 +1137,12 @@ mod tests {
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id: first_pane,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            ended_at: std::time::Instant::now(),
         });
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id: second_pane,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            ended_at: std::time::Instant::now(),
         });
         assert!(app.state.workspaces.is_empty());
         let geometry = app.headless_spawn_geometry();
@@ -1216,6 +1218,7 @@ mod tests {
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            ended_at: std::time::Instant::now(),
         });
         app.save_session_before_teardown_async().await;
         app.retire_session_writer();
@@ -1235,6 +1238,109 @@ mod tests {
         assert_eq!(saved.session_ref, session.session_ref);
     }
 
+    /// A pane with a live agent session, ready to have its agent released by
+    /// the detector while its shell still runs.
+    async fn app_with_agent_session() -> (
+        App,
+        shepr_core::layout::PaneId,
+        shepr_protocol::TerminalId,
+        shepr_agent::agent::resume::PersistedAgentSession,
+    ) {
+        use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+        let mut app = test_app();
+        let geometry = app.headless_spawn_geometry();
+        assert!(app.create_default_workspace(geometry));
+        let pane_id = app.state.workspaces[0].root_pane();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("terminal")
+            .clone();
+        let session = PersistedAgentSession::from_report(
+            "shepr:claude",
+            "claude",
+            AgentSessionRef::id("group-killed").expect("session id"),
+        )
+        .expect("official session");
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.set_detected_agent_process_at(Agent::Claude, app.clock.now);
+        terminal.set_persisted_agent_session(session.clone());
+        (app, pane_id, terminal_id, session)
+    }
+
+    /// The detector's exit report for the pane's agent, then its withdrawal,
+    /// while the shell still runs.
+    fn release_agent(app: &mut App, pane_id: shepr_core::layout::PaneId) {
+        for (agent, process_exited) in [(Some(Agent::Claude), true), (None, false)] {
+            app.handle_internal_event(AppEvent::StateChanged {
+                pane_id,
+                agent,
+                state: AgentState::Idle,
+                visible_blocker: false,
+                process_exited,
+                observed_at: app.clock.now,
+            });
+        }
+    }
+
+    /// The resume identity the saved session holds for its only pane.
+    fn saved_agent_session(app: &App) -> shepr_mux::persist::snapshot::PaneAgentSessionSnapshot {
+        let lease =
+            shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).expect("test lease");
+        shepr_mux::persist::load(&lease)
+            .into_snapshot()
+            .expect("saved session")
+            .workspaces[0]
+            .panes
+            .values()
+            .next()
+            .and_then(|pane| pane.agent_session.clone())
+            .expect("saved resume identity")
+    }
+
+    #[tokio::test]
+    async fn a_signal_death_just_after_the_agents_exit_checkpoints_its_identity() {
+        let _env = crate::test_support::IsolatedEnv::new();
+        let (mut app, pane_id, terminal_id, session) = app_with_agent_session().await;
+        release_agent(&mut app, pane_id);
+        // The release took effect at once: no agent, nothing to resume.
+        assert_eq!(app.state.terminals[&terminal_id].detected_agent, None);
+        assert_eq!(
+            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            None
+        );
+        app.persist_for_test();
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            ended_at: app.clock.now + Duration::from_millis(100),
+        });
+        app.save_session_before_teardown_async().await;
+        app.retire_session_writer();
+        let saved = saved_agent_session(&app);
+        assert_eq!(saved.session_ref, session.session_ref);
+    }
+
+    #[tokio::test]
+    async fn a_signal_shutdown_just_after_the_agents_exit_saves_its_identity() {
+        let _env = crate::test_support::IsolatedEnv::new();
+        let (mut app, pane_id, terminal_id, session) = app_with_agent_session().await;
+        release_agent(&mut app, pane_id);
+        app.persist_for_test();
+        // The final save after a signal: the pane's death is never processed.
+        app.state
+            .adopt_checkpoint_candidates_for_shutdown(app.clock.now + Duration::from_millis(100));
+        assert_eq!(
+            app.state.terminals[&terminal_id]
+                .current_session_identity_for_persistence()
+                .map(|identity| identity.session_ref),
+            Some(session.session_ref.clone())
+        );
+        app.save_session_before_teardown_async().await;
+        app.retire_session_writer();
+        let saved = saved_agent_session(&app);
+        assert_eq!(saved.session_ref, session.session_ref);
+    }
+
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
         let mut app = test_app();
@@ -1248,6 +1354,7 @@ mod tests {
         app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            ended_at: std::time::Instant::now(),
         });
         // The app still holds the data-dir lease, so the checkpoint is parsed
         // directly rather than through `persist::load`.
@@ -1294,6 +1401,7 @@ mod tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::ReaderPanicked,
+            ended_at: std::time::Instant::now(),
         });
 
         assert!(app.state.workspaces.is_empty());
@@ -1320,6 +1428,7 @@ mod tests {
             app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
                 pane_id,
                 exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                ended_at: std::time::Instant::now(),
             });
             app.state.workspaces = vec![Workspace::test_new("newer")];
             app.state.set_bookmark_index(Some(0));
@@ -1329,6 +1438,7 @@ mod tests {
                 app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
                     pane_id: app.state.workspaces[0].root_pane(),
                     exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                    ended_at: std::time::Instant::now(),
                 });
             }
             app.save_session_before_teardown();

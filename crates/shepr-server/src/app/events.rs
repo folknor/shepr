@@ -154,8 +154,13 @@ impl App {
         &mut self,
         pane_id: shepr_core::layout::PaneId,
         exit_reason: shepr_platform::ChildExitReason,
+        ended_at: std::time::Instant,
     ) -> PreparedPaneExit {
-        self.publish_pane_process_exit(pane_id, exit_reason);
+        // Published before the checkpoint is requested: resolving the pane's
+        // saved identity (its own, or one a detector release took just
+        // before) marks the session dirty, so no older checkpoint can settle
+        // this exit without it.
+        self.publish_pane_process_exit(pane_id, exit_reason, ended_at);
         if self.pane_exit_needs_checkpoint(pane_id, exit_reason)
             && self.state.prepare_pane_removal_by_id(pane_id).is_some()
         {
@@ -245,10 +250,11 @@ impl App {
         if let AppEvent::PaneDied {
             pane_id,
             exit_reason,
+            ended_at,
         } = &ev
             && !pane_exit_prepared
         {
-            self.publish_pane_process_exit(*pane_id, *exit_reason);
+            self.publish_pane_process_exit(*pane_id, *exit_reason, *ended_at);
         }
 
         let mut removed = false;
@@ -264,6 +270,7 @@ impl App {
             AppEvent::PaneDied {
                 pane_id,
                 exit_reason,
+                ..
             } if pane_removal_plan.is_some() => prepared_checkpoint
                 .unwrap_or_else(|| self.pane_exit_needs_checkpoint(*pane_id, *exit_reason)),
             _ => false,
@@ -334,10 +341,11 @@ impl App {
         &mut self,
         pane_id: shepr_core::layout::PaneId,
         exit_reason: shepr_platform::ChildExitReason,
+        ended_at: std::time::Instant,
     ) {
         if self
             .state
-            .publish_pane_process_exit_if_agent(pane_id, exit_reason)
+            .publish_pane_process_exit(pane_id, exit_reason, ended_at)
         {
             self.sync_pane_lifecycle_authority_detection_pause(pane_id);
             self.state.mark_shell_projection_dirty();
@@ -406,6 +414,7 @@ mod pane_exit_event_tests {
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Exited,
+            ended_at: std::time::Instant::now(),
         });
     }
 
@@ -507,11 +516,18 @@ mod runtime_generation_tests {
             process_exited: true,
             observed_at: now,
         });
+        // The agent is released at once ...
         assert_eq!(
-            app.state.terminals[&terminal_id].persisted_agent_session(),
-            Some(&session)
+            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            None
         );
-        app.prepare_pane_exit(pane_id, shepr_platform::ChildExitReason::Interrupted);
+        // ... and the shell's signal death right after brings its identity
+        // back for the checkpoint.
+        app.prepare_pane_exit(
+            pane_id,
+            shepr_platform::ChildExitReason::Interrupted,
+            now + std::time::Duration::from_millis(100),
+        );
         // Preparation publishes the final exit before the checkpoint captures
         // the still-present pane; removal happens only after that checkpoint.
         assert!(app.state.workspaces[0].contains_pane(pane_id));
@@ -555,6 +571,7 @@ mod runtime_generation_tests {
             event: Box::new(AppEvent::PaneDied {
                 pane_id,
                 exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                ended_at: std::time::Instant::now(),
             }),
         };
         assert!(!app.handle_internal_event_with_view_change(died()));
@@ -584,6 +601,7 @@ mod runtime_generation_tests {
                 event: Box::new(AppEvent::PaneDied {
                     pane_id,
                     exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                    ended_at: std::time::Instant::now(),
                 }),
             })
             .is_some()

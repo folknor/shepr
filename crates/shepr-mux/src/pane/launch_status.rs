@@ -188,7 +188,10 @@ async fn coordinate<Claim>(
         tracing::error!(pane = pane_id.raw(), %error, "failed to send PaneLaunchSettled event");
         return;
     }
-    let PaneEnding::Observed { reason, .. } = arbiter.decided().await else {
+    let PaneEnding::Observed {
+        reason, ended_at, ..
+    } = arbiter.decided().await
+    else {
         return;
     };
     // Wait for channel capacity so this critical pane exit is not dropped.
@@ -196,6 +199,7 @@ async fn coordinate<Claim>(
         .send(AppEvent::PaneDied {
             pane_id,
             exit_reason: reason,
+            ended_at,
         })
         .await
     {
@@ -385,6 +389,7 @@ mod tests {
         arbiter.decide(PaneEnding::Observed {
             reason: ChildExitReason::Exited,
             child_exit_confirmed: true,
+            ended_at: std::time::Instant::now(),
         });
         // A reaped child still lets the settlement finish, failure included.
         let settling = async {
@@ -406,6 +411,7 @@ mod tests {
         arbiter.decide(PaneEnding::Observed {
             reason: ChildExitReason::ReaderIoFailed,
             child_exit_confirmed: false,
+            ended_at: std::time::Instant::now(),
         });
         // A status channel that never produces a record: a child stuck in its
         // chdir on a dead mount.
@@ -425,6 +431,7 @@ mod tests {
         arbiter.decide(PaneEnding::Observed {
             reason: ChildExitReason::TerminalClosed,
             child_exit_confirmed: false,
+            ended_at: std::time::Instant::now(),
         });
         let settling = async {
             tokio::time::sleep(Duration::from_millis(20)).await;

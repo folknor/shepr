@@ -269,6 +269,8 @@ impl TerminalState {
             HookSourceState::default().transition(event)
         };
         self.apply_source_effect(effect);
+        // A committed start is a selection, even of the same identity again.
+        self.checkpoint_candidate = None;
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {
             effective_state_change: self

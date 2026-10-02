@@ -43,10 +43,11 @@ pub(super) enum HookEvent {
 impl TerminalState {
     /// Effects are the only source-table output that writes pane ownership.
     /// Queries and parked reports never pass through a separate commit path.
-    /// Any change of the ownership identity moves `ownership_epoch`, which is
-    /// what voids a provisional process exit observed under the old owner.
+    /// A generic `Commit` is not a selection (detector withdrawals and pane
+    /// exits commit too), so it leaves the checkpoint candidate alone; the
+    /// selection paths discard it themselves. A parked start promoted by
+    /// process evidence is a selection.
     fn apply_source_effect(&mut self, effect: HookSourceEffects) {
-        let before = self.ownership_identity();
         match effect {
             HookSourceEffects::Commit {
                 authority,
@@ -60,30 +61,13 @@ impl TerminalState {
                 self.persisted_agent_session = persisted;
             }
             HookSourceEffects::ProcessObserved(Some((session, pending))) => {
+                self.checkpoint_candidate = None;
                 self.persisted_agent_session = Some(session);
                 if let Some(pending) = pending {
                     self.hook_authority = Some(pending.authority);
                 }
             }
-            _ => return,
-        }
-        if self.ownership_identity() != before {
-            self.ownership_epoch = self.ownership_epoch.wrapping_add(1);
-        }
-    }
-
-    /// Who owns the pane: the authority's identity (its state and report time
-    /// are not ownership) and the persisted session.
-    fn ownership_identity(&self) -> OwnershipIdentity {
-        OwnershipIdentity {
-            authority: self.hook_authority.as_ref().map(|authority| {
-                (
-                    authority.source.clone(),
-                    authority.agent_label.clone(),
-                    authority.session_ref.clone(),
-                )
-            }),
-            persisted: self.persisted_agent_session.clone(),
+            _ => {}
         }
     }
 
@@ -96,6 +80,7 @@ impl TerminalState {
     ) -> Option<TerminalStateMutation> {
         let mutation = match event {
             HookEvent::RestoreSession(session) => {
+                self.checkpoint_candidate = None;
                 self.apply_source_effect(HookSourceEffects::Commit {
                     authority: AuthorityEffect::Keep,
                     persisted: Some(session),
@@ -131,7 +116,7 @@ impl TerminalState {
                 visible_blocker,
                 process_exited,
                 now,
-            } => Some(self.transition_provisional_detection(
+            } => Some(self.transition_detector_observation(
                 agent,
                 fallback_state,
                 visible_blocker,
@@ -301,16 +286,6 @@ enum AuthorityEffect {
     Set(HookAuthority),
 }
 
-#[derive(PartialEq, Eq)]
-struct OwnershipIdentity {
-    authority: Option<(
-        String,
-        String,
-        Option<shepr_agent::agent::resume::AgentSessionRef>,
-    )>,
-    persisted: Option<shepr_agent::agent::resume::PersistedAgentSession>,
-}
-
 impl HookSourceState {
     /// Generation/event table. Report, Start and observation queries only decide
     /// routing; capacity, ordering and policy validation must succeed before a commit event. This
@@ -320,9 +295,7 @@ impl HookSourceState {
     /// AwaitingProcess + report parks, and + process requires a pending start.
     /// Cleared + report accepts only a different identified generation; process
     /// evidence reopens it without requiring a start. That distinction is why a
-    /// hook clear and a confirmed process exit cannot share one boolean gate.
-    /// A future provisional process release can be another event here without
-    /// changing the pane's public report/detection entry points.
+    /// hook clear and a process exit cannot share one boolean gate.
     /// The pane event boundary validates ownership and policy, then this table
     /// commits generation, ordering and ownership effects together. Public
     /// entry points only adapt their arguments into pane events.
@@ -2144,6 +2117,7 @@ impl TerminalState {
         .effective_state_change
     }
 
+    /// One detector observation, as the detector reports it: an exit once.
     fn confirmed_detection_for_test(
         &mut self,
         agent: Option<Agent>,
@@ -2152,25 +2126,12 @@ impl TerminalState {
         process_exited: bool,
         now: Instant,
     ) -> TerminalStateMutation {
-        if process_exited {
-            self.set_detected_state_with_screen_signals_at(
-                agent,
-                state,
-                visible_blocker,
-                true,
-                now,
-            );
-        }
         self.set_detected_state_with_screen_signals_at(
             agent,
             state,
             visible_blocker,
             process_exited,
-            if process_exited {
-                now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE
-            } else {
-                now
-            },
+            now,
         )
     }
 }
@@ -2223,40 +2184,45 @@ mod pane_exit_tests {
         }
     }
 
+    const GRACE: std::time::Duration = crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
+
+    /// The detector's exit report for Pi at `at`, then its withdrawal.
+    fn pi_exits(terminal: &mut TerminalState, at: Instant) -> TerminalStateMutation {
+        let release = terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            at,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            at + std::time::Duration::from_millis(1),
+        );
+        release
+    }
+
     #[test]
-    fn agent_exit_under_live_shell_clears_resume_identity() {
+    fn an_agent_exit_under_a_live_shell_releases_at_once() {
         let mut terminal = running_terminal();
-        // clock-io-ok: synthetic exit time for the transition under test.
+        // clock-io-ok: synthetic detector tick times.
         let now = Instant::now();
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        assert!(!mutation.session_ref_changed);
-        assert!(
-            terminal
-                .current_session_identity_for_persistence()
-                .is_some()
-        );
-        let confirmed_at = now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            confirmed_at,
-        );
+        let mutation = pi_exits(&mut terminal, now);
+        assert!(mutation.agent_released);
         assert!(mutation.session_ref_changed);
+        assert!(terminal.hook_authority.is_none());
         assert!(
             terminal
                 .current_session_identity_for_persistence()
                 .is_none()
         );
-        // A later interrupted shell exit cannot resurrect a completed agent.
-        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, confirmed_at);
+        assert!(terminal.effective_agent_label().is_none());
+        assert_eq!(terminal.detected_agent, None);
+        // A shell death after the grace finds nothing to bring back.
+        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE * 2);
         assert!(
             terminal
                 .current_session_identity_for_persistence()
@@ -2265,329 +2231,168 @@ mod pane_exit_tests {
     }
 
     #[test]
-    fn agent_killed_before_shell_keeps_checkpoint_identity() {
+    fn an_agent_killed_just_before_its_shell_keeps_the_checkpoint_identity() {
         for reason in [
             ChildExitReason::Interrupted,
             ChildExitReason::ReaderIoFailed,
+            ChildExitReason::TerminalClosed,
         ] {
             let mut terminal = running_terminal();
             let session = terminal.current_session_identity_for_persistence();
             // clock-io-ok: synthetic observation times for kill ordering.
             let now = Instant::now();
-            terminal.set_detected_state_with_screen_signals_at(
-                Some(Agent::Pi),
-                AgentState::Idle,
-                false,
-                true,
-                now,
+            pi_exits(&mut terminal, now);
+            let mutation = terminal.set_pane_process_exit_at(reason, now + GRACE / 2);
+            assert_eq!(
+                terminal.current_session_identity_for_persistence(),
+                session,
+                "{reason:?}"
             );
-            // The following identity withdrawal is also provisional.
-            terminal.set_detected_state_with_screen_signals_at(
-                None,
-                AgentState::Unknown,
-                false,
-                false,
-                now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
-            );
-            let mutation = terminal.set_pane_process_exit_at(
-                reason,
-                now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
-            );
-            assert_eq!(terminal.current_session_identity_for_persistence(), session);
-            assert!(!mutation.session_ref_changed);
-            assert!(terminal.provisional_process_exit.is_none());
+            // The saved identity changed back, so the session is dirty and no
+            // older checkpoint can settle this exit.
+            assert!(mutation.session_ref_changed, "{reason:?}");
+            assert!(terminal.hook_authority.is_none(), "{reason:?}");
         }
     }
 
     #[test]
-    fn later_absence_tick_confirms_live_shell_release() {
-        let mut terminal = running_terminal();
-        // clock-io-ok: synthetic detector tick times.
-        let now = Instant::now();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            None,
-            AgentState::Unknown,
-            false,
-            false,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
-        );
-        assert!(mutation.agent_released);
-        assert!(mutation.session_ref_changed);
-        assert!(
-            terminal
-                .current_session_identity_for_persistence()
-                .is_none()
-        );
-        // The confirming observation itself is applied after the release.
-        assert_eq!(terminal.detected_agent, None);
-    }
-
-    #[test]
-    fn confirmed_release_applies_the_withdrawal_seen_inside_the_window() {
-        let mut terminal = running_terminal();
-        // clock-io-ok: synthetic detector tick times.
-        let now = Instant::now();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        terminal.set_detected_state_with_screen_signals_at(
-            None,
-            AgentState::Unknown,
-            false,
-            false,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
-        );
-        assert_eq!(terminal.detected_agent, Some(Agent::Pi));
-        // The detector's quiet-shell repeat of the release confirms it.
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
-        );
-        assert!(mutation.agent_released);
-        assert!(
-            terminal
-                .current_session_identity_for_persistence()
-                .is_none()
-        );
-        assert_eq!(terminal.detected_agent, None);
-        assert_eq!(terminal.fallback_state, AgentState::Unknown);
-    }
-
-    #[test]
-    fn replacement_process_cancels_provisional_release() {
+    fn a_detector_exit_after_the_pane_ended_keeps_the_held_identity() {
         let mut terminal = running_terminal();
         let session = terminal.current_session_identity_for_persistence();
-        // clock-io-ok: synthetic detector tick times.
+        // clock-io-ok: synthetic reader failure and detector times.
         let now = Instant::now();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        terminal
-            .set_detected_agent_process_at(Agent::Pi, now + std::time::Duration::from_millis(1));
-        assert!(terminal.provisional_process_exit.is_none());
+        // The reader failed while the child still ran: the pane's ending is
+        // applied first, holding its identity for the checkpoint.
+        terminal.set_pane_process_exit_at(ChildExitReason::ReaderIoFailed, now);
+        assert_eq!(terminal.current_session_identity_for_persistence(), session);
+        // A detector exit still queued for it changes nothing.
+        let mutation = pi_exits(&mut terminal, now + std::time::Duration::from_millis(5));
+        assert!(!mutation.session_ref_changed);
         assert_eq!(terminal.current_session_identity_for_persistence(), session);
     }
 
     #[test]
-    fn committed_identity_voids_old_scheduled_release() {
+    fn a_normal_shell_exit_after_the_agent_brings_nothing_back() {
         let mut terminal = running_terminal();
-        // clock-io-ok: synthetic detector tick times.
+        // clock-io-ok: synthetic exit times.
         let now = Instant::now();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        let replacement = PersistedAgentSession::from_report(
-            "shepr:pi",
-            "pi",
-            AgentSessionRef::id("replacement").expect("replacement identity"),
-        )
-        .expect("official identity");
-        terminal.set_persisted_agent_session(replacement.clone());
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
-        );
-        assert!(!mutation.agent_released);
-        assert_eq!(terminal.persisted_agent_session(), Some(&replacement));
-        // The repeat resolved the marker instead of parking behind it.
-        assert!(terminal.provisional_process_exit.is_none());
-        terminal.set_detected_state_with_screen_signals_at(
-            None,
-            AgentState::Unknown,
-            false,
-            false,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE * 2,
-        );
-        assert_eq!(terminal.persisted_agent_session(), Some(&replacement));
-    }
-
-    /// A terminal whose agent is known only to the detector and a persisted
-    /// session, with no hook authority to arbitrate detector observations.
-    fn detector_only_terminal() -> (TerminalState, Instant) {
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
-        // clock-io-ok: synthetic observation time for this test terminal.
-        let now = Instant::now();
-        terminal.set_detected_agent_process_at(Agent::Pi, now);
-        terminal.set_persisted_agent_session(
-            PersistedAgentSession::from_report(
-                "shepr:pi",
-                "pi",
-                AgentSessionRef::id("first").expect("session id"),
-            )
-            .expect("official session"),
-        );
-        (terminal, now + std::time::Duration::from_millis(1))
-    }
-
-    #[test]
-    fn an_ownership_change_inside_the_window_no_longer_freezes_detection() {
-        let (mut terminal, now) = detector_only_terminal();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        let replacement = PersistedAgentSession::from_report(
-            "shepr:pi",
-            "pi",
-            AgentSessionRef::id("replacement").expect("replacement identity"),
-        )
-        .expect("official identity");
-        terminal.set_persisted_agent_session(replacement.clone());
-        terminal.set_detected_state_with_screen_signals_at(
-            None,
-            AgentState::Unknown,
-            false,
-            false,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
-        );
-        // The detector's one republish after the window resolves the voided
-        // exit and applies the withdrawal it deferred; nothing is released.
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
-        );
-        assert!(!mutation.agent_released);
-        assert!(terminal.provisional_process_exit.is_none());
-        assert_eq!(terminal.detected_agent, None);
-        assert_eq!(terminal.fallback_state, AgentState::Unknown);
-        assert_eq!(terminal.persisted_agent_session(), Some(&replacement));
-        // Later observations flow again.
-        terminal.set_detected_state_with_screen_signals_at(
-            None,
-            AgentState::Working,
-            false,
-            false,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE * 2,
-        );
-        assert_eq!(terminal.fallback_state, AgentState::Working);
-    }
-
-    #[test]
-    fn a_confirmed_release_without_a_withdrawal_still_drops_the_exited_agent() {
-        let mut terminal = running_terminal();
-        // clock-io-ok: synthetic detector tick times.
-        let now = Instant::now();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        // Only the detector's quiet-shell repeat arrives: no withdrawal.
-        let mutation = terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
-        );
-        assert!(mutation.agent_released);
-        assert!(terminal.process_evidence.exit().is_some());
-        assert_eq!(terminal.state, AgentState::Idle);
-        assert!(terminal.effective_agent_label().is_none());
-    }
-
-    #[test]
-    fn a_state_report_inside_the_window_does_not_void_the_release() {
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
-        // clock-io-ok: synthetic observation and report times.
-        let now = Instant::now();
-        terminal.set_detected_agent_process_at(Agent::Pi, now);
-        let report = |terminal: &mut TerminalState, at: Instant| {
-            terminal.set_hook_authority_at(
-                "custom-hook".into(),
-                "pi".into(),
-                AgentState::Working,
-                None,
-                None,
-                HookClockSample {
-                    monotonic: at,
-                    wall: std::time::SystemTime::now(),
-                },
-            );
-        };
-        report(&mut terminal, now + std::time::Duration::from_millis(1));
-        let exit_at = now + std::time::Duration::from_millis(2);
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            exit_at,
-        );
-        // The same authority reports again inside the window: state only, so
-        // ownership is unchanged and the release is confirmed, but the
-        // authority is newer than the exit and survives it.
-        let epoch = terminal.ownership_epoch;
-        report(
-            &mut terminal,
-            exit_at + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
-        );
-        assert_eq!(terminal.ownership_epoch, epoch);
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            exit_at + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
-        );
-        assert!(terminal.provisional_process_exit.is_none());
-        assert!(terminal.process_evidence.exit().is_some());
+        pi_exits(&mut terminal, now);
+        terminal.set_pane_process_exit_at(ChildExitReason::Exited, now + GRACE / 2);
         assert!(
             terminal
-                .hook_authority
-                .as_ref()
-                .is_some_and(|authority| authority.source == "custom-hook")
+                .current_session_identity_for_persistence()
+                .is_none()
         );
     }
 
     #[test]
-    fn clearing_the_authority_moves_the_ownership_epoch() {
+    fn a_new_agent_process_discards_the_candidate() {
         let mut terminal = running_terminal();
-        let epoch = terminal.ownership_epoch;
-        let persisted = terminal.persisted_agent_session.clone();
+        // clock-io-ok: synthetic detector tick times.
+        let now = Instant::now();
+        pi_exits(&mut terminal, now);
+        terminal
+            .set_detected_agent_process_at(Agent::Pi, now + std::time::Duration::from_millis(5));
+        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE / 2);
+        assert!(
+            terminal
+                .current_session_identity_for_persistence()
+                .is_none(),
+            "the new process is not the one that exited"
+        );
+    }
+
+    #[test]
+    fn an_older_agent_observation_does_not_discard_the_candidate() {
+        let mut terminal = running_terminal();
+        let session = terminal.current_session_identity_for_persistence();
+        // clock-io-ok: synthetic detector tick times.
+        let now = Instant::now() + std::time::Duration::from_secs(1);
+        pi_exits(&mut terminal, now);
+        terminal
+            .set_detected_agent_process_at(Agent::Pi, now - std::time::Duration::from_millis(5));
+        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE / 2);
+        assert_eq!(terminal.current_session_identity_for_persistence(), session);
+    }
+
+    #[test]
+    fn a_selection_after_the_release_discards_the_candidate() {
+        let mut terminal = running_terminal();
+        // clock-io-ok: synthetic detector tick times.
+        let now = Instant::now();
+        pi_exits(&mut terminal, now);
+        let replacement = PersistedAgentSession::from_report(
+            "shepr:pi",
+            "pi",
+            AgentSessionRef::id("replacement").expect("replacement identity"),
+        )
+        .expect("official identity");
+        terminal.set_persisted_agent_session(replacement.clone());
+        // The selection is cleared again; the released identity must not
+        // come back in its place.
         terminal.apply_source_effect(HookSourceEffects::Commit {
             authority: AuthorityEffect::Keep,
-            persisted: persisted.clone(),
+            persisted: None,
         });
-        assert_eq!(terminal.ownership_epoch, epoch, "no change, no move");
-        terminal.apply_source_effect(HookSourceEffects::Commit {
-            authority: AuthorityEffect::Clear,
-            persisted,
-        });
-        assert_ne!(terminal.ownership_epoch, epoch);
+        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE / 2);
+        assert!(
+            terminal
+                .current_session_identity_for_persistence()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_dying_agents_late_session_start_leaves_no_ghost_authority() {
+        let mut terminal = running_terminal();
+        // clock-io-ok: synthetic detector tick times.
+        let now = Instant::now();
+        pi_exits(&mut terminal, now);
+        // Pi's own `New` reaches the server after its exit was applied.
+        terminal.set_agent_session_ref_for_session_start(
+            "shepr:pi".into(),
+            "pi".into(),
+            Some(AgentSessionRef::id("late-new").expect("session id")),
+            Some(99),
+            Some("new"),
+        );
+        assert!(terminal.hook_authority.is_none());
+        assert!(terminal.effective_agent_label().is_none());
+        assert_eq!(terminal.state, AgentState::Unknown);
+    }
+
+    #[test]
+    fn a_signal_shutdown_adopts_a_candidate_on_either_side_of_the_signal() {
+        // (signal before the release, distance from it, adopted)
+        for (before, distance, adopted) in [
+            (true, GRACE / 2, true),
+            (false, GRACE / 2, true),
+            (false, GRACE * 2, false),
+            (true, GRACE * 2, false),
+        ] {
+            let mut terminal = running_terminal();
+            let session = terminal.current_session_identity_for_persistence();
+            // clock-io-ok: synthetic detector and signal times.
+            let now = Instant::now() + std::time::Duration::from_secs(10);
+            pi_exits(&mut terminal, now);
+            let signaled_at = if before {
+                now - distance
+            } else {
+                now + distance
+            };
+            let case = format!("before={before} distance={distance:?}");
+            assert_eq!(
+                terminal.adopt_checkpoint_candidate_for_shutdown(signaled_at),
+                adopted,
+                "{case}"
+            );
+            let expected = if adopted { session } else { None };
+            assert_eq!(
+                terminal.current_session_identity_for_persistence(),
+                expected,
+                "{case}"
+            );
+        }
     }
 
     fn official_session(agent: &str, id: &str) -> PersistedAgentSession {
@@ -2679,28 +2484,6 @@ mod pane_exit_tests {
             terminal.persisted_agent_session(),
             Some(&official_session("claude", "current"))
         );
-    }
-
-    #[test]
-    fn normal_shell_exit_during_provisional_window_clears_identity() {
-        let mut terminal = running_terminal();
-        // clock-io-ok: synthetic detector and shell exit times.
-        let now = Instant::now();
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::Pi),
-            AgentState::Idle,
-            false,
-            true,
-            now,
-        );
-        let mutation = terminal.set_pane_process_exit_at(ChildExitReason::Exited, now);
-        assert!(mutation.session_ref_changed);
-        assert!(
-            terminal
-                .current_session_identity_for_persistence()
-                .is_none()
-        );
-        assert!(terminal.provisional_process_exit.is_none());
     }
 
     #[test]

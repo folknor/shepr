@@ -35,6 +35,7 @@ fn deliver_interrupted_exit(
         event: Box::new(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            ended_at: std::time::Instant::now(),
         }),
     });
 }

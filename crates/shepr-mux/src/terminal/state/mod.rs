@@ -149,30 +149,36 @@ struct RecentAgentProcessExit {
     observed_at: Instant,
 }
 
-/// An agent can die before its shell under a session-wide signal or OOM kill.
-/// Keep all ownership intact until the live shell outlasts the release window.
-/// The first observation after the window always resolves the marker. If pane
-/// ownership changed during the window (`ownership_epoch` moved), the exit is
-/// void: it performs no release effects, since the new owner is not the agent
-/// that exited, and only its genuine detector withdrawal is applied, under the
-/// ordinary arbitration.
-#[derive(Debug, Clone, Copy)]
-struct ProvisionalProcessExit {
-    agent: Option<Agent>,
+/// The resume identity a detector release just removed, kept for one purpose:
+/// a group kill (a cgroup stop, a cgroup OOM kill, a signal to the pane's
+/// processes) can kill the agent a moment before its shell, and the release
+/// the agent's death causes would otherwise leave the checkpoint taken for the
+/// shell's death with nothing to resume. It is never ownership: hooks, the
+/// sidebar and ordinary saves never see it. Only a checkpoint-requiring pane
+/// ending within `AGENT_PROCESS_EXIT_RELEASE_GRACE` after it, or a signal
+/// shutdown within that grace on either side of it, turns it back into the
+/// pane's saved identity. Any later selection or new agent process discards
+/// it. The proximity cannot prove a shared kill: an agent the user quit just
+/// before an unrelated shell death is resumed too.
+#[derive(Debug, Clone)]
+struct CheckpointCandidate {
+    identity: shepr_agent::agent::resume::PersistedAgentSession,
     observed_at: Instant,
-    /// `TerminalState::ownership_epoch` when the exit was observed.
-    ownership_epoch: u64,
-    /// The latest agent-less detector observation inside the window. The
-    /// detector withdraws the exited identity right after reporting the exit;
-    /// a confirmed release applies that withdrawal after itself.
-    deferred: Option<DeferredDetection>,
 }
 
+/// Why a terminal's saved identity is being resolved, for the checkpoint
+/// candidate: an ordinary save never uses it.
 #[derive(Debug, Clone, Copy)]
-struct DeferredDetection {
-    fallback_state: AgentState,
-    visible_blocker: bool,
-    observed_at: Instant,
+pub enum CheckpointContext {
+    /// The pane's child ended for `reason` at `ended_at`.
+    PaneEnding {
+        reason: shepr_platform::ChildExitReason,
+        ended_at: Instant,
+    },
+    /// The server received its first termination signal at `signaled_at`;
+    /// pane deaths after it are not processed, so the final save resolves
+    /// candidates near it instead.
+    SignalShutdown { signaled_at: Instant },
 }
 
 /// Pure state for a server-owned terminal.
@@ -197,11 +203,14 @@ pub struct TerminalState {
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     process_evidence: AgentProcessEvidence,
-    /// Counts changes of pane ownership: the hook authority's identity
-    /// (presence, source, agent label, session ref) or the persisted session.
-    /// Bumped only in `apply_source_effect`, the one writer of both slots.
-    ownership_epoch: u64,
-    provisional_process_exit: Option<ProvisionalProcessExit>,
+    checkpoint_candidate: Option<CheckpointCandidate>,
+    /// The pane's ending was applied (`transition_pane_exit`). Detector
+    /// observations still queued for it change nothing after that: the
+    /// child can outlive a failed reader, and a late release would clear the
+    /// identity the pane's held checkpoint is saving. Hook reports are not
+    /// gated by it: one still in flight from the dead agent can change the
+    /// held pane's identity, as it could before this flag existed.
+    pane_ended: bool,
     pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
     pub restore_error: Option<RestoreFailure>,
 }

@@ -4933,6 +4933,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Exited,
+            ended_at: std::time::Instant::now(),
         })
     );
     assert!(server.app.find_pane(pane_id).is_none());
@@ -5063,12 +5064,14 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
         .try_send(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Exited,
+            ended_at: std::time::Instant::now(),
         })
         .expect("test precondition");
     server
         .lifecycle
         .signal_quit_request_flag()
-        .store(true, Ordering::Release);
+        .set(std::time::Instant::now())
+        .expect("the first signal");
     server.lifecycle.stop_signal().request();
 
     // The quit-path drain still consumes the queue ...
@@ -5127,7 +5130,8 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: shepr_platform::ChildExitReason::Exited
+            exit_reason: shepr_platform::ChildExitReason::Exited,
+            ended_at: std::time::Instant::now(),
         })
     );
 
@@ -5197,7 +5201,8 @@ async fn pane_death_reapplies_controller_geometry() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: shepr_platform::ChildExitReason::Exited
+            exit_reason: shepr_platform::ChildExitReason::Exited,
+            ended_at: std::time::Instant::now(),
         })
     );
 
@@ -6221,6 +6226,7 @@ async fn missing_pane_exit_has_no_invalidation() {
         !server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: shepr_core::layout::PaneId::alloc(),
             exit_reason: shepr_platform::ChildExitReason::Exited,
+            ended_at: std::time::Instant::now(),
         })
     );
     assert_eq!(server.app.state.shell_projection_revision, before);

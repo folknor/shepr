@@ -59,6 +59,7 @@ impl HeadlessServer {
             AppEvent::PaneDied {
                 pane_id,
                 exit_reason,
+                ended_at,
             } => {
                 // Publishing the process exit can change what the sidebar shows
                 // (the agent goes idle) even when the pane itself stays, held for
@@ -87,7 +88,9 @@ impl HeadlessServer {
                     }
                     crate::app::PreparedPaneExit::Held(generation)
                 } else {
-                    let prepared = self.app.prepare_pane_exit(*pane_id, *exit_reason);
+                    let prepared = self
+                        .app
+                        .prepare_pane_exit(*pane_id, *exit_reason, *ended_at);
                     if let Some(checkpoint_generation) = prepared.held_generation() {
                         // Keep the pre-exit layout live until its checkpoint is durable.
                         self.pending_checkpointed_pane_exits.push_back(

@@ -39,6 +39,9 @@ pub(super) fn spawn(
     // thread; waitid reaps it while a blocking wait remains the fallback.
     tokio::spawn(async move {
         let result = wait_for_child_exit(child, pidfd).await;
+        // clock-io-ok: the time the child's death was observed, which a
+        // checkpoint compares with an agent's exit just before it.
+        let ended_at = std::time::Instant::now();
         child_liveness.mark_wait_completed();
         // Recorded before logging, so nothing delays the decision. A failed
         // wait proves nothing about the child, which may still be alive.
@@ -47,6 +50,7 @@ pub(super) fn spawn(
                 PaneEnding::Observed {
                     reason: shepr_platform::classify_child_exit(&status),
                     child_exit_confirmed: true,
+                    ended_at,
                 },
                 Ok(status),
             ),
@@ -54,6 +58,7 @@ pub(super) fn spawn(
                 PaneEnding::Observed {
                     reason: shepr_platform::ChildExitReason::WaitFailed,
                     child_exit_confirmed: false,
+                    ended_at,
                 },
                 Err(error),
             ),

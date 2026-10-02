@@ -24,39 +24,6 @@ persistence, the server save and checkpoint paths, and
 `server.toml` setting rather than an experimental one, or remove it along with
 the history file and its restore path.
 
-# Open defects
-
-## A dying agent's late session start can leave a ghost authority
-
-During the provisional-exit grace (`AGENT_PROCESS_EXIT_RELEASE_GRACE`) process
-evidence stays available, so `transition_start` admits a recognized session
-replacement (Pi `New`, `Resume`, `Fork`) sent by the agent just before it died.
-That moves the ownership epoch, the exit is voided, and the replacement
-authority stays in charge with no process behind it.
-
-Not fixable with the evidence shepr has, which was argued to a conclusion:
-
-- A dying agent's late start and a genuine quick restart's start carry the
-  same payload, receipt time and probe observations. Timestamps (the
-  replacement process's start time against the hook's receipt) only rule
-  emitters out; an older background agent or a delayed delivery passes them.
-- Dropping every start received while an exit is pending trades the ghost for
-  a worse regression: integrations that report their session only at startup
-  (Claude, Copilot, Cursor, Droid, Grok) would lose a quick restart's resume
-  identity for good, which today survives.
-- Ancestry from the reporting socket's peer (`SO_PEERCRED`, then the ppid
-  chain) is not attribution: hook reporters outlive or are reparented away
-  from the agent, most agents run hooks through an extra shell (often in a new
-  session), and pids can be reused before the walk.
-
-What would close it: each report carrying a validated agent-runtime anchor
-(pid plus `/proc` start time). In-process integrations (the Pi extension and
-the other JS or TS plugins) can name themselves; each shell integration has to
-prove how its runtime is identified or report unknown, and unknown must never
-acquire ownership or cancel a release. The lifecycle would then key process
-generations, pending exits and session selections on those anchors instead of
-`ownership_epoch`.
-
 # Gaps and smells
 
 Not defects: paths with no test, and code that works but reads worse than it

@@ -1,7 +1,19 @@
 use super::*;
 
 impl TerminalState {
-    pub(super) fn transition_provisional_detection(
+    /// A detector observation. An agent's exit releases at once: the pane
+    /// shows no agent the moment its process is gone, and nothing has to
+    /// guess who owns the pane while a release waits. When the release
+    /// removes the pane's resume identity, that identity is kept aside as the
+    /// checkpoint candidate (see `CheckpointCandidate`); a later genuine
+    /// release replaces it. Newer accepted evidence of an agent process
+    /// discards it, since that process is not the one that exited.
+    ///
+    /// The detector reports an exit once (its exit bookkeeping survives
+    /// resets), but an old exit replayed to a pane whose sources moved on can
+    /// still act on them: `ProcessExited` consumes a start parked after the
+    /// genuine release. That is not guarded here.
+    pub(super) fn transition_detector_observation(
         &mut self,
         agent: Option<Agent>,
         fallback_state: AgentState,
@@ -9,121 +21,31 @@ impl TerminalState {
         process_exited: bool,
         now: Instant,
     ) -> TerminalStateMutation {
-        if let Some(mut pending) = self.provisional_process_exit {
-            // Old queued observations neither confirm nor cancel a newer exit.
-            if now <= pending.observed_at {
-                return TerminalStateMutation::default();
-            }
-            if !process_exited && agent.is_some() {
-                self.provisional_process_exit = None;
-            } else {
-                // The newest agent-less observation is the withdrawal to apply.
-                if !process_exited {
-                    pending.deferred = Some(DeferredDetection {
-                        fallback_state,
-                        visible_blocker,
-                        observed_at: now,
-                    });
-                }
-                if now.saturating_duration_since(pending.observed_at)
-                    < crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE
-                {
-                    self.provisional_process_exit = Some(pending);
-                    return TerminalStateMutation::default();
-                }
-                // Past the window the marker always resolves, so later
-                // observations flow again whatever happens below.
-                self.provisional_process_exit = None;
-                return self.confirm_provisional_process_exit(pending);
-            }
-        }
-        if process_exited {
-            self.provisional_process_exit = Some(ProvisionalProcessExit {
-                agent,
-                observed_at: now,
-                ownership_epoch: self.ownership_epoch,
-                deferred: None,
-            });
+        if self.pane_ended {
             return TerminalStateMutation::default();
         }
-        self.transition_detection(agent, fallback_state, visible_blocker, false, now)
-    }
-
-    /// The live shell outlasted the window. Decided once, against the epoch
-    /// before any release effect could move it.
-    fn confirm_provisional_process_exit(
-        &mut self,
-        pending: ProvisionalProcessExit,
-    ) -> TerminalStateMutation {
-        if pending.ownership_epoch != self.ownership_epoch {
-            // Ownership changed during the window: the exit belongs to a
-            // previous owner and performs no release effects (no slot, source
-            // generation, suppression or sequence change). A process-exit
-            // repeat is consumed; a genuine withdrawal keeps the ordinary
-            // arbitration against the new owner.
-            //
-            // Known gap: a session start the dying agent itself sent just
-            // before it died (Pi `New`, `Resume`, `Fork`) also moves the
-            // epoch, so its exit is voided and that authority stays with no
-            // process behind it. Nothing available tells it from a genuine
-            // quick restart's start: payload, receipt time and probes match,
-            // process start times only rule emitters out, and dropping starts
-            // received during the window would cost session-start-only
-            // integrations (Claude and others) their restart's resume
-            // identity for good. Ancestry from the reporting socket's peer is
-            // no anchor either: hook reporters outlive or are reparented away
-            // from their agent, and most agents run hooks through an extra
-            // shell. Closing it needs each report to carry a validated
-            // agent-runtime anchor (pid and /proc start time), and an
-            // unanchored report must never acquire ownership or cancel a
-            // release.
-            return pending
-                .deferred
-                .map_or_else(TerminalStateMutation::default, |deferred| {
-                    self.transition_detection(
-                        None,
-                        deferred.fallback_state,
-                        deferred.visible_blocker,
-                        false,
-                        deferred.observed_at,
-                    )
+        let previous_session = self.current_session_identity_for_persistence();
+        let mutation =
+            self.transition_detection(agent, fallback_state, visible_blocker, process_exited, now);
+        if process_exited {
+            if let Some(identity) = previous_session
+                && self.current_session_identity_for_persistence().is_none()
+            {
+                self.checkpoint_candidate = Some(CheckpointCandidate {
+                    identity,
+                    observed_at: now,
                 });
+            }
+        } else if agent.is_some()
+            && self.detected_agent == agent
+            && self
+                .checkpoint_candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.observed_at < now)
+        {
+            self.checkpoint_candidate = None;
         }
-        // Confirmation proves shell survival, but must not promote an old
-        // detector observation above a newer custom hook report.
-        let release = self.transition_detection(
-            pending.agent,
-            AgentState::Idle,
-            false,
-            true,
-            pending.observed_at,
-        );
-        // Without a withdrawal the release alone already records the exit
-        // evidence, which hides the exited agent from the effective state.
-        let Some(deferred) = pending.deferred else {
-            return release;
-        };
-        let withdrawal = self.transition_detection(
-            None,
-            deferred.fallback_state,
-            deferred.visible_blocker,
-            false,
-            deferred.observed_at,
-        );
-        TerminalStateMutation {
-            effective_state_change: match (
-                release.effective_state_change,
-                withdrawal.effective_state_change,
-            ) {
-                (Some(first), Some(last)) => Some(EffectiveStateChange {
-                    previous_state: first.previous_state,
-                    state: last.state,
-                }),
-                (first, last) => last.or(first),
-            },
-            session_ref_changed: release.session_ref_changed || withdrawal.session_ref_changed,
-            agent_released: release.agent_released || withdrawal.agent_released,
-        }
+        mutation
     }
 
     pub(super) fn transition_detection(
@@ -277,8 +199,8 @@ impl TerminalState {
                     .as_ref()
                     .is_some_and(|session| Some(session.agent) == agent)
             {
-                // A confirmed live-shell release clears the completed agent.
-                // Pane death retains the pre-release identity when interrupted.
+                // An exit under a live shell clears the completed agent. Pane
+                // death retains the pre-release identity when interrupted.
                 self.apply_source_effect(HookSourceEffects::Commit {
                     authority: AuthorityEffect::Keep,
                     persisted: None,
@@ -303,8 +225,7 @@ impl TerminalState {
             // not clear it. This only decides between the two slots: whether a
             // promoted parked start really belongs to the process now detected
             // is a separate attribution gap (a parked start has no expiry and
-            // carries no process identity), as is the ghost authority noted
-            // at `confirm_provisional_process_exit`.
+            // carries no process identity).
             let durable_session = match &self.persisted_agent_session {
                 Some(persisted) if agent == Some(persisted.agent) => Some(persisted.clone()),
                 persisted => self
@@ -347,18 +268,77 @@ impl TerminalState {
     ) -> TerminalStateMutation {
         let previous_session = self.current_session_identity_for_persistence();
         let agent = self.effective_known_agent().or(self.detected_agent);
-        // Pane death wins over a provisional detector release. Apply the final
-        // release directly, retaining the pre-release identity for a checkpoint.
-        self.provisional_process_exit = None;
+        // A pane's own death is never a candidate: it is resolved here.
+        let candidate = self.checkpoint_candidate.take();
+        self.pane_ended = true;
         let mut mutation = self.transition_detection(agent, AgentState::Idle, false, true, now);
         if exit_reason.requires_session_checkpoint() {
+            // What the pane held when it died; failing that, an identity a
+            // detector release removed just before, as a group kill that took
+            // the agent first leaves it. The pane is gone once its checkpoint
+            // settles, so writing it back into the slot only feeds that
+            // checkpoint, and it changes the saved identity, which marks the
+            // session dirty so an older checkpoint cannot settle this exit.
+            let identity = previous_session.clone().or_else(|| {
+                candidate
+                    .filter(|candidate| {
+                        candidate.qualifies(CheckpointContext::PaneEnding {
+                            reason: exit_reason,
+                            ended_at: now,
+                        })
+                    })
+                    .map(|candidate| candidate.identity)
+            });
             self.apply_source_effect(HookSourceEffects::Commit {
                 authority: AuthorityEffect::Keep,
-                persisted: previous_session.clone(),
+                persisted: identity,
             });
         }
         mutation.session_ref_changed =
             previous_session != self.current_session_identity_for_persistence();
         mutation
+    }
+
+    /// The final save after a termination signal: pane deaths are no longer
+    /// processed, so a pane whose agent a detector release took within the
+    /// grace of the signal, on either side of it, has its removed identity
+    /// written back for that save. Returns whether the saved identity changed.
+    pub fn adopt_checkpoint_candidate_for_shutdown(&mut self, signaled_at: Instant) -> bool {
+        if self.current_session_identity_for_persistence().is_some() {
+            return false;
+        }
+        let Some(candidate) = self.checkpoint_candidate.take().filter(|candidate| {
+            candidate.qualifies(CheckpointContext::SignalShutdown { signaled_at })
+        }) else {
+            return false;
+        };
+        self.apply_source_effect(HookSourceEffects::Commit {
+            authority: AuthorityEffect::Keep,
+            persisted: Some(candidate.identity),
+        });
+        true
+    }
+}
+
+impl CheckpointCandidate {
+    /// Whether `context` may turn this candidate back into the saved identity.
+    /// Lifetime is judged against the recorded ending, never the time it is
+    /// handled, so a qualifying ending delivered late still counts.
+    fn qualifies(&self, context: CheckpointContext) -> bool {
+        let grace = crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
+        match context {
+            CheckpointContext::PaneEnding { reason, ended_at } => {
+                reason.requires_session_checkpoint()
+                    && self.observed_at <= ended_at
+                    && ended_at.duration_since(self.observed_at) <= grace
+            }
+            // The release can land on either side of the signal: the agent
+            // may die from the same kill a moment before or after the server
+            // hears of it.
+            CheckpointContext::SignalShutdown { signaled_at } => {
+                self.observed_at.saturating_duration_since(signaled_at) <= grace
+                    && signaled_at.saturating_duration_since(self.observed_at) <= grace
+            }
+        }
     }
 }

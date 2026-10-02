@@ -730,9 +730,12 @@ fn reader_exit_callback(
     arbiter: Arc<PaneExitArbiter>,
     closed_grace: std::time::Duration,
 ) -> Box<dyn FnOnce(ReaderExit) + Send> {
+    // clock-io-ok: when the reader saw the ending (a closed terminal ends
+    // when it closed, not when its grace runs out).
     let ending = |reason| PaneEnding::Observed {
         reason,
         child_exit_confirmed: false,
+        ended_at: std::time::Instant::now(),
     };
     Box::new(move |exit| match exit {
         ReaderExit::ShutdownRequested => {}
@@ -1700,37 +1703,51 @@ mod tests {
 
     /// Runs the reader's exit callback and returns the ending it recorded,
     /// `None` when it recorded nothing new.
+    /// Runs the reader's exit callback and returns the reason it recorded and
+    /// whether it was a confirmed exit, `None` when it recorded nothing new.
     fn reader_exit(
         exit: ReaderExit,
         arbiter: &Arc<PaneExitArbiter>,
         grace: std::time::Duration,
-    ) -> Option<PaneEnding> {
+    ) -> Option<(shepr_platform::ChildExitReason, bool)> {
         let before = arbiter.ending();
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         reader_exit_callback(pane_id, Arc::clone(arbiter), grace)(exit);
         let after = arbiter.ending();
-        (after != before).then_some(after).flatten()
+        match after {
+            Some(PaneEnding::Observed {
+                reason,
+                child_exit_confirmed,
+                ..
+            }) if after != before => Some((reason, child_exit_confirmed)),
+            _ => None,
+        }
     }
 
-    fn unconfirmed(reason: shepr_platform::ChildExitReason) -> Option<PaneEnding> {
-        Some(PaneEnding::Observed {
-            reason,
-            child_exit_confirmed: false,
-        })
+    fn unconfirmed(
+        reason: shepr_platform::ChildExitReason,
+    ) -> Option<(shepr_platform::ChildExitReason, bool)> {
+        Some((reason, false))
     }
 
-    const REAPED: PaneEnding = PaneEnding::Observed {
-        reason: shepr_platform::ChildExitReason::Exited,
-        child_exit_confirmed: true,
-    };
+    static REAPED_AT: std::sync::LazyLock<std::time::Instant> =
+        std::sync::LazyLock::new(std::time::Instant::now);
+
+    fn reaped() -> PaneEnding {
+        PaneEnding::Observed {
+            reason: shepr_platform::ChildExitReason::Exited,
+            child_exit_confirmed: true,
+            ended_at: *REAPED_AT,
+        }
+    }
 
     #[test]
     fn a_closed_terminal_leaves_the_exit_to_a_watcher_that_reported() {
         let arbiter = Arc::new(PaneExitArbiter::default());
-        assert!(arbiter.decide(REAPED), "the watcher decides first");
+        assert!(arbiter.decide(reaped()), "the watcher decides first");
         let grace = std::time::Duration::from_secs(30);
         assert_eq!(reader_exit(ReaderExit::Closed, &arbiter, grace), None);
-        assert_eq!(arbiter.ending(), Some(REAPED));
+        assert_eq!(arbiter.ending(), Some(reaped()));
     }
 
     #[test]
@@ -1742,7 +1759,7 @@ mod tests {
             unconfirmed(shepr_platform::ChildExitReason::TerminalClosed)
         );
         assert!(
-            !arbiter.decide(REAPED),
+            !arbiter.decide(reaped()),
             "a later watcher report changes nothing"
         );
     }

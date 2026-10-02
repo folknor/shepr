@@ -505,6 +505,14 @@ impl HeadlessServer {
         if self.app.policy.persists_session()
             || self.lifecycle.frozen_session_policy().unwrap_or(false)
         {
+            // After a signal the panes' deaths were left unprocessed, so a
+            // pane whose agent died from the same kill just before it gets
+            // that identity back here.
+            if let Some(signaled_at) = self.lifecycle.signal_quit_at() {
+                self.app
+                    .state
+                    .adopt_checkpoint_candidates_for_shutdown(signaled_at);
+            }
             self.app.save_session_before_teardown_async().await;
         }
         self.app.terminal_runtimes.clear();
@@ -1514,11 +1522,16 @@ impl Drop for HeadlessServer {
 /// without the shutdown sequence that saves the session.
 fn ctrlc_handler(
     stop_requested: Arc<shepr_api::ServerStopSignal>,
-    signal_quit: Arc<AtomicBool>,
+    signal_quit: Arc<std::sync::OnceLock<std::time::Instant>>,
 ) -> io::Result<()> {
     ctrlc::set_handler(move || {
         // Before the stop request, so the loop never sees the quit without it.
-        signal_quit.store(true, Ordering::Release);
+        // The first signal's own time: the final save compares agent exits
+        // with it, and the loop may notice the signal much later. ctrlc runs
+        // this on its own thread, not in signal context.
+        // headless-clock-sample-ok: the moment the signal arrived, on the
+        // handler's thread, not a loop iteration's sample.
+        signal_quit.set(Instant::now()).ok();
         stop_requested.request();
     })
     .map_err(|err| io::Error::other(format!("installing the termination signal handler: {err}")))

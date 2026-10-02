@@ -304,22 +304,38 @@ impl AppState {
         }
     }
 
-    /// Marks the pane's agent idle because its process exited. Returns whether
-    /// that released the agent from the terminal.
-    pub(crate) fn publish_pane_process_exit_if_agent(
+    /// Applies the pane child's exit, observed at `ended_at`, to its terminal:
+    /// any agent is released, and a checkpointed exit resolves the identity
+    /// the checkpoint saves. It runs for every pane, agent or not: a detector
+    /// release just before can have left a pane presenting no agent whose
+    /// checkpoint still owes the identity that release removed. Returns
+    /// whether that released an agent.
+    pub(crate) fn publish_pane_process_exit(
         &mut self,
         pane_id: PaneId,
         exit_reason: shepr_platform::ChildExitReason,
+        ended_at: std::time::Instant,
     ) -> bool {
-        let observed_at = self.clock_now;
         let update = self.update_terminal_state(pane_id, |terminal| {
-            let agent = terminal.effective_known_agent().or(terminal.detected_agent);
-            if agent.is_none() && !terminal.full_lifecycle_hook_authority_active() {
-                return None;
-            }
-            Some(terminal.set_pane_process_exit_at(exit_reason, observed_at))
+            Some(terminal.set_pane_process_exit_at(exit_reason, ended_at))
         });
         update == StateUpdate::Released
+    }
+
+    /// The final save after a termination signal: every pane whose agent a
+    /// detector release took within the grace of `signaled_at` gets that
+    /// identity back for the save, since pane deaths are no longer processed.
+    pub(crate) fn adopt_checkpoint_candidates_for_shutdown(
+        &mut self,
+        signaled_at: std::time::Instant,
+    ) {
+        let mut adopted = false;
+        for terminal in self.terminals.values_mut() {
+            adopted |= terminal.adopt_checkpoint_candidate_for_shutdown(signaled_at);
+        }
+        if adopted {
+            self.mark_session_dirty();
+        }
     }
 
     /// State-level tests use this to exercise the pure reducer from an event.

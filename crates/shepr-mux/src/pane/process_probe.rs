@@ -785,10 +785,9 @@ impl DetectorState {
         // probe of a shell foreground report the same disappearance again.
         // The scheduler is reset only so the process is rechecked promptly.
         // This makes reset itself replay-free, not every exit delivery
-        // idempotent: `DetectionTask::provisional_release` deliberately
-        // republishes an exit as its live-shell confirmation, and the
-        // suspended-presence path in `observe_process_probe` clears the
-        // exit bookkeeping without publishing a presence event.
+        // idempotent: the suspended-presence path in `observe_process_probe`
+        // clears the exit bookkeeping without publishing a presence event, so
+        // the same agent can be reported gone again later.
         self.state = AgentState::Unknown;
         self.last_visible_idle = false;
         self.scheduler.reset();

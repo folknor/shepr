@@ -64,7 +64,9 @@ pub(super) struct ShutdownLifecycle {
     freeze: Option<HostShutdownFreeze>,
     stop_request: Arc<shepr_api::ServerStopSignal>,
     host_shutdown_request: Arc<AtomicBool>,
-    signal_quit_request: Arc<AtomicBool>,
+    /// When the first termination signal arrived, set by the signal handler.
+    /// Later signals leave it as it is.
+    signal_quit_request: Arc<std::sync::OnceLock<std::time::Instant>>,
 }
 
 impl ShutdownLifecycle {
@@ -74,7 +76,7 @@ impl ShutdownLifecycle {
             freeze: None,
             stop_request,
             host_shutdown_request: Arc::new(AtomicBool::new(false)),
-            signal_quit_request: Arc::new(AtomicBool::new(false)),
+            signal_quit_request: Arc::default(),
         }
     }
 
@@ -97,12 +99,17 @@ impl ShutdownLifecycle {
         &self.host_shutdown_request
     }
 
-    pub(super) fn signal_quit_request_flag(&self) -> &Arc<AtomicBool> {
+    pub(super) fn signal_quit_request_flag(&self) -> &Arc<std::sync::OnceLock<std::time::Instant>> {
         &self.signal_quit_request
     }
 
     pub(super) fn signal_quit_requested(&self) -> bool {
-        self.signal_quit_request.load(Ordering::Acquire)
+        self.signal_quit_request.get().is_some()
+    }
+
+    /// When the first termination signal arrived, if one has.
+    pub(super) fn signal_quit_at(&self) -> Option<std::time::Instant> {
+        self.signal_quit_request.get().copied()
     }
 
     pub(super) fn host_shutdown_requested(&self) -> bool {

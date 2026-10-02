@@ -21,8 +21,8 @@ impl TerminalState {
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
             process_evidence: AgentProcessEvidence::default(),
-            ownership_epoch: 0,
-            provisional_process_exit: None,
+            checkpoint_candidate: None,
+            pane_ended: false,
             pending_agent_resume_plan: None,
             restore_error: None,
         }
