@@ -891,10 +891,10 @@ impl ClientShellState {
         {
             return;
         }
-        // A new connection loses the reader baseline but holds the last presented pair.
-        // The first snapshot is not a loss: its connection may have sent a surface first.
-        if self.active_snapshot_generation.is_some() && generation_changed {
-            self.surfaces.lose_baseline();
+        // A new connection holds the last presented pair and keeps only a baseline it
+        // sent itself: its first surface may arrive before its first snapshot.
+        if generation_changed {
+            self.surfaces.snapshot_generation_changed(generation);
         }
         self.active_snapshot_generation = generation;
         self.active_boot_key = active_boot_key;
@@ -914,7 +914,12 @@ impl ClientShellState {
             let preview = (self.mode == ClientShellMode::Navigate)
                 .then(|| self.navigate_workspace_id.take())
                 .flatten();
+            // The reset drops everything presented, but not a baseline the incoming
+            // connection already sent for this boot: its next patch follows it.
+            let mut surfaces = std::mem::take(&mut self.surfaces);
+            surfaces.reset_for_boot(&snapshot.boot_id, generation);
             self.reset_endpoint_projection();
+            self.surfaces = surfaces;
             self.navigate_workspace_id = preview;
         } else if let Some(previous) = self
             .snapshot
@@ -1044,11 +1049,33 @@ impl ClientShellState {
         self.surfaces.presented()
     }
 
-    /// A full surface from the shown connection. It always becomes the baseline (the
-    /// reader enforces order and the shell mirrors it) and is presented once it pairs
-    /// with the snapshot.
-    pub(crate) fn receive_pane_surface(&mut self, surface: PaneSurfaceFrame) {
-        self.surfaces.receive(surface);
+    /// A full surface from the shown connection `generation`. It becomes the baseline
+    /// (the reader enforces order and the shell mirrors it) and is presented once it
+    /// pairs with that connection's snapshot, which may arrive after it.
+    pub(crate) fn receive_pane_surface_from(&mut self, surface: PaneSurfaceFrame, generation: u64) {
+        self.receive_tagged_pane_surface(surface, Some(generation));
+    }
+
+    pub(super) fn receive_tagged_pane_surface(
+        &mut self,
+        surface: PaneSurfaceFrame,
+        generation: surfaces::SurfaceGeneration,
+    ) {
+        // Routing admits only the shown connection, and generations only grow. This is
+        // the guard behind it: a surface from an older connection than the snapshot or
+        // the baseline must not replace a newer connection's baseline.
+        let newest = self
+            .active_snapshot_generation
+            .max(self.surfaces.baseline_generation().flatten());
+        if generation < newest {
+            tracing::warn!(
+                ?generation,
+                ?newest,
+                "dropping a pane surface from an older connection"
+            );
+            return;
+        }
+        self.surfaces.receive(surface, generation);
         self.pair_surfaces();
     }
 
@@ -1059,9 +1086,11 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_ref() else {
             return;
         };
-        if let Pairing::Presented { previous } =
-            self.surfaces.pair(&snapshot.boot_id, snapshot.revision)
-        {
+        if let Pairing::Presented { previous } = self.surfaces.pair(
+            &snapshot.boot_id,
+            snapshot.revision,
+            self.active_snapshot_generation,
+        ) {
             let before = self.pane_facts_before(previous.as_ref());
             let surfaces = std::mem::take(&mut self.surfaces);
             if let Some(surface) = surfaces.paired() {

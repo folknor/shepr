@@ -898,7 +898,9 @@ impl ClientLoop {
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                let outcome = state.shell.apply_pane_surface_patch(&patch);
+                let outcome = state
+                    .shell
+                    .apply_pane_surface_patch_from(&patch, generation);
                 let compose_fallback = match outcome {
                     shell::ClientPaneSurfacePatchOutcome::Applied(
                         shell::PatchPresentation::Rows(composed),
@@ -979,7 +981,7 @@ impl ClientLoop {
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                state.shell.receive_pane_surface(surface);
+                state.shell.receive_pane_surface_from(surface, generation);
                 let composed = state.shell.compose(
                     state.reported_geometry.cols(),
                     state.reported_geometry.rows(),

@@ -2377,12 +2377,57 @@ mod surface_baseline {
     #[test]
     fn a_surface_before_the_first_snapshot_stays_the_baseline() {
         let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        s.receive_pane_surface(surface());
+        s.receive_pane_surface_from(surface(), 1);
         s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(snapshot()));
         assert!(s.surfaces.is_paired());
         let p = patch(s.surfaces.baseline().expect("baseline"));
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, 1),
+            ClientPaneSurfacePatchOutcome::Applied(_)
+        ));
+    }
+    #[test]
+    fn a_reconnected_connections_surface_before_its_snapshot_is_kept_and_patched() {
+        let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(snapshot()));
+        s.receive_pane_surface_from(surface(), 1);
+        assert!(s.surfaces.is_paired());
+        // Same boot and projection revision as the old connection's snapshot: it
+        // must wait for its own snapshot rather than pair with the old one.
+        s.receive_pane_surface_from(surface(), 2);
+        assert!(!s.surfaces.is_paired());
+        assert!(s.pane_surface().is_some(), "the old pair stays held");
+        s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 2, Box::new(snapshot()));
+        assert!(s.surfaces.is_paired());
+        let p = patch(s.surfaces.baseline().expect("baseline"));
+        assert!(matches!(
+            s.apply_pane_surface_patch_from(&p, 2),
+            ClientPaneSurfacePatchOutcome::Applied(_)
+        ));
+        // A late full surface from the old connection cannot replace it.
+        s.receive_pane_surface_from(surface(), 1);
+        assert!(s.surfaces.is_paired());
+    }
+    #[test]
+    fn a_rebooted_servers_surface_before_its_snapshot_survives_the_reset() {
+        let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(snapshot()));
+        s.receive_pane_surface_from(surface(), 1);
+        let rebooted = crate::tests::test_boot_id("restarted-local");
+        let mut next_surface = surface();
+        next_surface.boot_id = rebooted.clone();
+        s.receive_pane_surface_from(next_surface, 2);
+        let mut next_snapshot = snapshot();
+        next_snapshot.boot_id = rebooted;
+        s.set_endpoint_snapshot_for_generation(
+            &ClientEndpointId::Local,
+            2,
+            Box::new(next_snapshot),
+        );
+        assert!(s.surfaces.is_paired());
+        let p = patch(s.surfaces.baseline().expect("baseline"));
+        assert!(matches!(
+            s.apply_pane_surface_patch_from(&p, 2),
             ClientPaneSurfacePatchOutcome::Applied(_)
         ));
     }

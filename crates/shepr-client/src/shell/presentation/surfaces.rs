@@ -1,22 +1,41 @@
 use super::*;
 use shepr_protocol::{BootId, PaneSurfacePatch, ProjectionRevision};
+/// The connection generation a baseline came from. `None` is a snapshot or surface
+/// set without a connection (tests); it is an identity like any other, never a
+/// wildcard.
+pub(super) type SurfaceGeneration = Option<u64>;
+
 /// The reader baseline and the last exact snapshot/surface pair have separate roles.
 /// Moving a snapshot past its surface copies nothing; only the first patch in that
 /// gap splits the two values. Full surfaces and pairing always move the grid.
+///
+/// Every baseline carries the connection generation it came from, so a surface is
+/// only ever paired with, and patched by, its own connection. That lets a connection
+/// send its first surface before its first snapshot: the baseline survives the
+/// snapshot's generation change (and a reboot reset) instead of meeting the old
+/// connection's snapshot or being dropped. The held presentation is presentation
+/// only and carries none.
 #[derive(Default)]
 pub(super) enum PaneSurfaces {
     #[default]
     /// Nothing received or presented.
     Empty,
     /// Exact snapshot pair, patched and presented in place.
-    Paired(PaneSurfaceFrame),
+    Paired {
+        surface: PaneSurfaceFrame,
+        generation: SurfaceGeneration,
+    },
     /// The snapshot passed this pair. It remains both baseline and held presentation.
-    Passed(PaneSurfaceFrame),
+    Passed {
+        surface: PaneSurfaceFrame,
+        generation: SurfaceGeneration,
+    },
     /// A lost connection leaves only the held presentation.
     Frozen(PaneSurfaceFrame),
     /// New baseline with a different held presentation, if anything was presented.
     Split {
         baseline: PaneSurfaceFrame,
+        generation: SurfaceGeneration,
         held: Option<PaneSurfaceFrame>,
     },
 }
@@ -44,28 +63,47 @@ impl PaneSurfaces {
     /// What is on screen, possibly held while unpaired. This is what input reads.
     pub(super) fn presented(&self) -> Option<&PaneSurfaceFrame> {
         match self {
-            Self::Paired(s) | Self::Passed(s) | Self::Frozen(s) => Some(s),
+            Self::Paired { surface: s, .. } | Self::Passed { surface: s, .. } | Self::Frozen(s) => {
+                Some(s)
+            }
             Self::Split { held, .. } => held.as_ref(),
             Self::Empty => None,
         }
     }
     /// The exact snapshot pair, the only surface `compose` draws.
     pub(super) fn paired(&self) -> Option<&PaneSurfaceFrame> {
-        if let Self::Paired(s) = self {
-            Some(s)
+        if let Self::Paired { surface, .. } = self {
+            Some(surface)
         } else {
             None
         }
     }
     pub(super) fn is_paired(&self) -> bool {
-        matches!(self, Self::Paired(_))
+        matches!(self, Self::Paired { .. })
     }
-    /// The shown connection's reader baseline, which every patch must follow.
-    pub(super) fn baseline(&self) -> Option<&PaneSurfaceFrame> {
+    /// The shown connection's reader baseline, which every patch must follow, with
+    /// the connection generation it came from.
+    fn tagged_baseline(&self) -> Option<(&PaneSurfaceFrame, SurfaceGeneration)> {
         match self {
-            Self::Paired(s) | Self::Passed(s) | Self::Split { baseline: s, .. } => Some(s),
-            _ => None,
+            Self::Paired {
+                surface,
+                generation,
+            }
+            | Self::Passed {
+                surface,
+                generation,
+            }
+            | Self::Split {
+                baseline: surface,
+                generation,
+                ..
+            } => Some((surface, *generation)),
+            Self::Frozen(_) | Self::Empty => None,
         }
+    }
+    /// The generation of the current baseline, if there is one.
+    pub(super) fn baseline_generation(&self) -> Option<SurfaceGeneration> {
+        self.tagged_baseline().map(|(_, generation)| generation)
     }
     /// A received surface that differs from what is presented and waits for its snapshot.
     pub(super) fn waiting_baseline(&self) -> Option<&PaneSurfaceFrame> {
@@ -75,26 +113,67 @@ impl PaneSurfaces {
             None
         }
     }
-    /// Replaces the baseline with a full surface, keeping what is presented. Never pairs.
-    pub(super) fn receive(&mut self, baseline: PaneSurfaceFrame) {
+    /// Replaces the baseline with a full surface from connection `generation`, keeping
+    /// what is presented. Never pairs.
+    pub(super) fn receive(&mut self, baseline: PaneSurfaceFrame, generation: SurfaceGeneration) {
         let held = match std::mem::take(self) {
-            Self::Paired(s) | Self::Passed(s) | Self::Frozen(s) => Some(s),
+            Self::Paired { surface: s, .. } | Self::Passed { surface: s, .. } | Self::Frozen(s) => {
+                Some(s)
+            }
             Self::Split { held, .. } => held,
             Self::Empty => None,
         };
-        *self = Self::Split { baseline, held };
+        *self = Self::Split {
+            baseline,
+            generation,
+            held,
+        };
     }
-    /// Presents the baseline exactly when it has the snapshot's boot and projection
-    /// revision; otherwise the last presented pair is held. `Passed` that matches again
-    /// is only for totality: a snapshot never moves back within one boot.
-    pub(super) fn pair(&mut self, boot: &BootId, revision: ProjectionRevision) -> Pairing {
-        let matches =
-            |s: &PaneSurfaceFrame| &s.boot_id == boot && s.projection_revision == revision;
+    /// Presents the baseline exactly when it has the snapshot's connection generation,
+    /// boot and projection revision; otherwise the last presented pair is held. `Passed`
+    /// that matches again is only for totality: a snapshot never moves back within one
+    /// boot.
+    pub(super) fn pair(
+        &mut self,
+        boot: &BootId,
+        revision: ProjectionRevision,
+        snapshot_generation: SurfaceGeneration,
+    ) -> Pairing {
+        let matches = |s: &PaneSurfaceFrame, generation: SurfaceGeneration| {
+            generation == snapshot_generation
+                && &s.boot_id == boot
+                && s.projection_revision == revision
+        };
         let (next, result) = match std::mem::take(self) {
-            Self::Paired(s) if !matches(&s) => (Self::Passed(s), Pairing::Passed),
-            Self::Passed(s) if matches(&s) => (Self::Paired(s), Pairing::Unchanged),
-            Self::Split { baseline, held } if matches(&baseline) => (
-                Self::Paired(baseline),
+            Self::Paired {
+                surface,
+                generation,
+            } if !matches(&surface, generation) => (
+                Self::Passed {
+                    surface,
+                    generation,
+                },
+                Pairing::Passed,
+            ),
+            Self::Passed {
+                surface,
+                generation,
+            } if matches(&surface, generation) => (
+                Self::Paired {
+                    surface,
+                    generation,
+                },
+                Pairing::Unchanged,
+            ),
+            Self::Split {
+                baseline,
+                generation,
+                held,
+            } if matches(&baseline, generation) => (
+                Self::Paired {
+                    surface: baseline,
+                    generation,
+                },
                 Pairing::Presented { previous: held },
             ),
             other => (other, Pairing::Unchanged),
@@ -102,19 +181,52 @@ impl PaneSurfaces {
         *self = next;
         result
     }
-    /// The connection changed: keep only what is presented, frozen, with no baseline.
-    pub(super) fn lose_baseline(&mut self) {
+    /// The shown snapshot moved to connection `generation`. A baseline that already
+    /// came from it (a surface that arrived before its snapshot) stays, with what is
+    /// presented held; anything else keeps only the presentation, frozen.
+    pub(super) fn snapshot_generation_changed(&mut self, generation: SurfaceGeneration) {
         *self = match std::mem::take(self) {
-            Self::Paired(s)
-            | Self::Passed(s)
+            split @ Self::Split {
+                generation: baseline_generation,
+                ..
+            } if baseline_generation == generation => split,
+            Self::Paired { surface: s, .. }
+            | Self::Passed { surface: s, .. }
             | Self::Frozen(s)
             | Self::Split { held: Some(s), .. } => Self::Frozen(s),
+            Self::Split { held: None, .. } | Self::Empty => Self::Empty,
+        };
+    }
+    /// The shown endpoint rebooted. Nothing presented may survive (pane IDs can be
+    /// reused), but a baseline the incoming connection already sent for the new boot
+    /// is kept, unpresented, so its next patch still has something to follow.
+    pub(super) fn reset_for_boot(&mut self, boot: &BootId, generation: SurfaceGeneration) {
+        *self = match std::mem::take(self) {
+            Self::Split {
+                baseline,
+                generation: baseline_generation,
+                ..
+            } if baseline_generation == generation && &baseline.boot_id == boot => Self::Split {
+                baseline,
+                generation,
+                held: None,
+            },
             _ => Self::Empty,
         };
     }
-    /// The one validation per patch, against `baseline()`. Changes nothing.
-    pub(super) fn validate(&self, patch: &PaneSurfacePatch) -> Result<(), PatchRejection> {
-        let current = self.baseline().ok_or(PatchRejection::NoBaseline)?;
+    /// The one validation per patch from connection `generation`, against
+    /// `baseline()`. Changes nothing. A patch from another connection than the
+    /// baseline's has no baseline to follow.
+    pub(super) fn validate(
+        &self,
+        patch: &PaneSurfacePatch,
+        generation: SurfaceGeneration,
+    ) -> Result<(), PatchRejection> {
+        let (current, baseline_generation) =
+            self.tagged_baseline().ok_or(PatchRejection::NoBaseline)?;
+        if baseline_generation != generation {
+            return Err(PatchRejection::NoBaseline);
+        }
         if patch.boot_id != current.boot_id
             || patch.projection_revision != current.projection_revision
             || patch.base_surface_revision != current.surface_revision
@@ -182,23 +294,32 @@ impl PaneSurfaces {
                 .map_err(|_| PatchRejection::DoesNotFollow)
         }
         match std::mem::take(self) {
-            Self::Passed(held) => {
+            Self::Passed {
+                surface: held,
+                generation,
+            } => {
                 let mut baseline = held.clone();
                 let applied = apply(&mut baseline, patch);
                 *self = if applied.is_ok() {
                     Self::Split {
                         baseline,
+                        generation,
                         held: Some(held),
                     }
                 } else {
-                    Self::Passed(held)
+                    Self::Passed {
+                        surface: held,
+                        generation,
+                    }
                 };
                 applied
             }
             mut other => {
                 let applied = match &mut other {
-                    Self::Paired(s) | Self::Split { baseline: s, .. } => apply(s, patch),
-                    Self::Passed(_) | Self::Frozen(_) | Self::Empty => {
+                    Self::Paired { surface: s, .. } | Self::Split { baseline: s, .. } => {
+                        apply(s, patch)
+                    }
+                    Self::Passed { .. } | Self::Frozen(_) | Self::Empty => {
                         Err(PatchRejection::NoBaseline)
                     }
                 };
@@ -228,6 +349,14 @@ fn pane_geometry_matches(
 }
 
 #[cfg(test)]
+impl PaneSurfaces {
+    /// The shown connection's reader baseline, which every patch must follow.
+    pub(super) fn baseline(&self) -> Option<&PaneSurfaceFrame> {
+        self.tagged_baseline().map(|(surface, _)| surface)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn surface(revision: u64) -> PaneSurfaceFrame {
@@ -250,18 +379,21 @@ mod tests {
         }
     }
     fn paired() -> PaneSurfaces {
+        paired_at(None)
+    }
+    fn paired_at(generation: SurfaceGeneration) -> PaneSurfaces {
         let s = surface(1);
         let boot = s.boot_id.clone();
         let mut surfaces = PaneSurfaces::default();
-        surfaces.receive(s);
-        surfaces.pair(&boot, 1.into());
+        surfaces.receive(s, generation);
+        surfaces.pair(&boot, 1.into(), generation);
         surfaces
     }
     #[test]
-    fn lose_baseline_of_a_split_with_nothing_held_is_empty() {
+    fn a_generation_change_with_nothing_held_and_no_new_baseline_is_empty() {
         let mut s = PaneSurfaces::default();
-        s.receive(surface(1));
-        s.lose_baseline();
+        s.receive(surface(1), Some(1));
+        s.snapshot_generation_changed(Some(2));
         assert!(matches!(s, PaneSurfaces::Empty));
     }
     #[test]
@@ -269,11 +401,11 @@ mod tests {
         let mut s = PaneSurfaces::default();
         let frame = surface(1);
         let boot = frame.boot_id.clone();
-        s.receive(frame);
+        s.receive(frame, None);
         assert!(s.baseline().is_some());
         assert!(s.presented().is_none());
         assert!(matches!(
-            s.pair(&boot, 1.into()),
+            s.pair(&boot, 1.into(), None),
             Pairing::Presented { previous: None }
         ));
         assert!(s.is_paired());
@@ -281,16 +413,16 @@ mod tests {
     #[test]
     fn a_surface_ahead_of_the_snapshot_waits_while_the_last_pair_is_held() {
         let mut s = paired();
-        s.receive(surface(2));
-        s.pair(&surface(1).boot_id, 1.into());
+        s.receive(surface(2), None);
+        s.pair(&surface(1).boot_id, 1.into(), None);
         assert_eq!(s.presented().expect("held").projection_revision, 1);
         assert_eq!(s.baseline().expect("baseline").projection_revision, 2);
     }
     #[test]
     fn a_surface_behind_the_snapshot_waits_for_a_newer_one() {
         let mut s = paired();
-        s.receive(surface(2));
-        s.pair(&surface(1).boot_id, 3.into());
+        s.receive(surface(2), None);
+        s.pair(&surface(1).boot_id, 3.into(), None);
         assert!(!s.is_paired());
         assert_eq!(s.presented().expect("held").projection_revision, 1);
     }
@@ -298,16 +430,16 @@ mod tests {
     fn a_snapshot_moving_past_a_pair_passes_it_without_a_copy() {
         let mut s = paired();
         let ptr = s.baseline().expect("baseline").frame.cells.as_ptr();
-        s.pair(&surface(1).boot_id, 2.into());
-        assert!(matches!(s, PaneSurfaces::Passed(_)));
+        s.pair(&surface(1).boot_id, 2.into(), None);
+        assert!(matches!(s, PaneSurfaces::Passed { .. }));
         assert_eq!(s.baseline().expect("baseline").frame.cells.as_ptr(), ptr);
     }
     #[test]
     fn the_first_patch_after_a_pass_splits_the_baseline_from_the_held_pair() {
         let mut s = paired();
-        s.pair(&surface(1).boot_id, 2.into());
+        s.pair(&surface(1).boot_id, 2.into(), None);
         let p = patch(s.baseline().expect("baseline"));
-        s.validate(&p).expect("valid");
+        s.validate(&p, None).expect("valid");
         s.apply_validated(&p).expect("apply");
         assert_eq!(s.presented().expect("held").surface_revision, 1);
         assert_eq!(s.baseline().expect("baseline").surface_revision, 2);
@@ -315,31 +447,77 @@ mod tests {
     #[test]
     fn a_full_surface_after_a_pass_replaces_the_baseline_without_a_copy() {
         let mut s = paired();
-        s.pair(&surface(1).boot_id, 2.into());
+        s.pair(&surface(1).boot_id, 2.into(), None);
         let f = surface(2);
         let ptr = f.frame.cells.as_ptr();
-        s.receive(f);
+        s.receive(f, None);
         assert_eq!(s.baseline().expect("baseline").frame.cells.as_ptr(), ptr);
     }
     #[test]
     fn a_different_boot_never_pairs() {
         let mut s = paired();
-        s.receive(surface(2));
-        s.pair(&crate::tests::test_boot_id("remote-boot"), 2.into());
+        s.receive(surface(2), None);
+        s.pair(&crate::tests::test_boot_id("remote-boot"), 2.into(), None);
         assert!(!s.is_paired());
     }
     #[test]
-    fn lose_baseline_keeps_only_the_held_pair() {
-        let mut s = paired();
-        s.receive(surface(2));
-        s.lose_baseline();
+    fn a_generation_change_keeps_only_the_held_pair() {
+        let mut s = paired_at(Some(1));
+        s.receive(surface(2), Some(1));
+        s.snapshot_generation_changed(Some(2));
         assert!(s.baseline().is_none());
         assert_eq!(s.presented().expect("held").surface_revision, 1);
     }
     #[test]
+    fn a_surface_from_another_connection_never_pairs_with_this_snapshot() {
+        // Same boot and projection revision, different connection: the old
+        // connection's snapshot must not present the new connection's surface.
+        let mut s = paired_at(Some(1));
+        s.receive(surface(1), Some(2));
+        assert!(matches!(
+            s.pair(&surface(1).boot_id, 1.into(), Some(1)),
+            Pairing::Unchanged
+        ));
+        assert!(!s.is_paired());
+    }
+    #[test]
+    fn a_surface_sent_before_its_snapshot_survives_the_generation_change() {
+        let mut s = paired_at(Some(1));
+        s.receive(surface(1), Some(2));
+        s.snapshot_generation_changed(Some(2));
+        assert_eq!(s.baseline_generation(), Some(Some(2)));
+        assert_eq!(s.presented().expect("held").surface_revision, 1);
+        assert!(matches!(
+            s.pair(&surface(1).boot_id, 1.into(), Some(2)),
+            Pairing::Presented { .. }
+        ));
+        let p = patch(s.baseline().expect("baseline"));
+        s.validate(&p, Some(2))
+            .expect("the new connection's patch follows");
+    }
+    #[test]
+    fn a_reboot_reset_keeps_the_incoming_connections_baseline_unpresented() {
+        let mut s = paired_at(Some(1));
+        let rebooted = crate::tests::test_boot_id("restarted-local");
+        let mut frame = surface(1);
+        frame.boot_id = rebooted.clone();
+        s.receive(frame, Some(2));
+        s.reset_for_boot(&rebooted, Some(2));
+        assert!(s.presented().is_none());
+        assert_eq!(s.baseline_generation(), Some(Some(2)));
+        s.reset_for_boot(&rebooted, Some(3));
+        assert!(matches!(s, PaneSurfaces::Empty));
+    }
+    #[test]
+    fn a_patch_from_another_connection_has_no_baseline() {
+        let s = paired_at(Some(1));
+        let p = patch(s.baseline().expect("baseline"));
+        assert_eq!(s.validate(&p, Some(2)), Err(PatchRejection::NoBaseline));
+    }
+    #[test]
     fn a_patch_without_a_baseline_is_rejected() {
         assert_eq!(
-            PaneSurfaces::default().validate(&patch(&surface(1))),
+            PaneSurfaces::default().validate(&patch(&surface(1)), None),
             Err(PatchRejection::NoBaseline)
         );
     }
@@ -347,7 +525,7 @@ mod tests {
     fn a_patch_that_does_not_follow_the_baseline_is_rejected_and_changes_nothing() {
         let s = paired();
         assert_eq!(
-            s.validate(&patch(&surface(2))),
+            s.validate(&patch(&surface(2)), None),
             Err(PatchRejection::DoesNotFollow)
         );
         assert_eq!(s.baseline().expect("baseline").surface_revision, 1);
@@ -355,9 +533,9 @@ mod tests {
     #[test]
     fn a_patch_on_a_waiting_baseline_leaves_the_held_pair_untouched() {
         let mut s = paired();
-        s.receive(surface(2));
+        s.receive(surface(2), None);
         let p = patch(s.baseline().expect("baseline"));
-        s.validate(&p).expect("valid");
+        s.validate(&p, None).expect("valid");
         s.apply_validated(&p).expect("apply");
         assert_eq!(s.presented().expect("held").surface_revision, 1);
         assert_eq!(s.baseline().expect("baseline").surface_revision, 3);

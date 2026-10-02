@@ -102,11 +102,22 @@ fn fast_path_blocker(
 }
 
 impl ClientShellState {
-    pub(crate) fn apply_pane_surface_patch(
+    /// A patch from the shown connection `generation`; it must follow that
+    /// connection's own baseline.
+    pub(crate) fn apply_pane_surface_patch_from(
         &mut self,
         patch: &shepr_protocol::PaneSurfacePatch,
+        generation: u64,
     ) -> ClientPaneSurfacePatchOutcome {
-        if let Err(reason) = self.surfaces.validate(patch) {
+        self.apply_tagged_pane_surface_patch(patch, Some(generation))
+    }
+
+    pub(super) fn apply_tagged_pane_surface_patch(
+        &mut self,
+        patch: &shepr_protocol::PaneSurfacePatch,
+        generation: surfaces::SurfaceGeneration,
+    ) -> ClientPaneSurfacePatchOutcome {
+        if let Err(reason) = self.surfaces.validate(patch, generation) {
             return ClientPaneSurfacePatchOutcome::Rejected(reason);
         }
         if !self.surfaces.is_paired() {
