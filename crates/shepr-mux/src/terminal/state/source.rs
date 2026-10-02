@@ -43,22 +43,15 @@ pub(super) enum HookEvent {
 impl TerminalState {
     /// Effects are the only source-table output that writes pane ownership.
     /// Queries and parked reports never pass through a separate commit path.
+    /// Any change of the ownership identity moves `ownership_epoch`, which is
+    /// what voids a provisional process exit observed under the old owner.
     fn apply_source_effect(&mut self, effect: HookSourceEffects) {
+        let before = self.ownership_identity();
         match effect {
             HookSourceEffects::Commit {
                 authority,
                 persisted,
             } => {
-                let owner_changed = self.persisted_agent_session != persisted
-                    || matches!(&authority, AuthorityEffect::Set(next) if
-                    self.hook_authority.as_ref().is_none_or(|current| {
-                        current.source != next.source
-                            || current.agent_label != next.agent_label
-                            || current.session_ref != next.session_ref
-                    }));
-                if owner_changed {
-                    self.cancel_provisional_process_exit();
-                }
                 match authority {
                     AuthorityEffect::Keep => {}
                     AuthorityEffect::Clear => self.hook_authority = None,
@@ -67,23 +60,30 @@ impl TerminalState {
                 self.persisted_agent_session = persisted;
             }
             HookSourceEffects::ProcessObserved(Some((session, pending))) => {
-                if self.persisted_agent_session.as_ref() != Some(&session) {
-                    self.cancel_provisional_process_exit();
-                }
                 self.persisted_agent_session = Some(session);
                 if let Some(pending) = pending {
                     self.hook_authority = Some(pending.authority);
                 }
             }
-            _ => {}
+            _ => return,
+        }
+        if self.ownership_identity() != before {
+            self.ownership_epoch = self.ownership_epoch.wrapping_add(1);
         }
     }
 
-    fn cancel_provisional_process_exit(&mut self) {
-        if let Some(pending) = &mut self.provisional_process_exit {
-            // Keep a cancelled marker until process presence returns: the
-            // detector's scheduled repeat belongs to this same old release.
-            pending.cancelled = true;
+    /// Who owns the pane: the authority's identity (its state and report time
+    /// are not ownership) and the persisted session.
+    fn ownership_identity(&self) -> OwnershipIdentity {
+        OwnershipIdentity {
+            authority: self.hook_authority.as_ref().map(|authority| {
+                (
+                    authority.source.clone(),
+                    authority.agent_label.clone(),
+                    authority.session_ref.clone(),
+                )
+            }),
+            persisted: self.persisted_agent_session.clone(),
         }
     }
 
@@ -299,6 +299,16 @@ enum AuthorityEffect {
     Keep,
     Clear,
     Set(HookAuthority),
+}
+
+#[derive(PartialEq, Eq)]
+struct OwnershipIdentity {
+    authority: Option<(
+        String,
+        String,
+        Option<shepr_agent::agent::resume::AgentSessionRef>,
+    )>,
+    persisted: Option<shepr_agent::agent::resume::PersistedAgentSession>,
 }
 
 impl HookSourceState {
@@ -2377,7 +2387,7 @@ mod pane_exit_tests {
     }
 
     #[test]
-    fn committed_identity_cancels_old_scheduled_release() {
+    fn committed_identity_voids_old_scheduled_release() {
         let mut terminal = running_terminal();
         // clock-io-ok: synthetic detector tick times.
         let now = Instant::now();
@@ -2404,6 +2414,8 @@ mod pane_exit_tests {
         );
         assert!(!mutation.agent_released);
         assert_eq!(terminal.persisted_agent_session(), Some(&replacement));
+        // The repeat resolved the marker instead of parking behind it.
+        assert!(terminal.provisional_process_exit.is_none());
         terminal.set_detected_state_with_screen_signals_at(
             None,
             AgentState::Unknown,
@@ -2412,6 +2424,170 @@ mod pane_exit_tests {
             now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE * 2,
         );
         assert_eq!(terminal.persisted_agent_session(), Some(&replacement));
+    }
+
+    /// A terminal whose agent is known only to the detector and a persisted
+    /// session, with no hook authority to arbitrate detector observations.
+    fn detector_only_terminal() -> (TerminalState, Instant) {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        // clock-io-ok: synthetic observation time for this test terminal.
+        let now = Instant::now();
+        terminal.set_detected_agent_process_at(Agent::Pi, now);
+        terminal.set_persisted_agent_session(
+            PersistedAgentSession::from_report(
+                "shepr:pi",
+                "pi",
+                AgentSessionRef::id("first").expect("session id"),
+            )
+            .expect("official session"),
+        );
+        (terminal, now + std::time::Duration::from_millis(1))
+    }
+
+    #[test]
+    fn an_ownership_change_inside_the_window_no_longer_freezes_detection() {
+        let (mut terminal, now) = detector_only_terminal();
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            now,
+        );
+        let replacement = PersistedAgentSession::from_report(
+            "shepr:pi",
+            "pi",
+            AgentSessionRef::id("replacement").expect("replacement identity"),
+        )
+        .expect("official identity");
+        terminal.set_persisted_agent_session(replacement.clone());
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
+        );
+        // The detector's one republish after the window resolves the voided
+        // exit and applies the withdrawal it deferred; nothing is released.
+        let mutation = terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
+        );
+        assert!(!mutation.agent_released);
+        assert!(terminal.provisional_process_exit.is_none());
+        assert_eq!(terminal.detected_agent, None);
+        assert_eq!(terminal.fallback_state, AgentState::Unknown);
+        assert_eq!(terminal.persisted_agent_session(), Some(&replacement));
+        // Later observations flow again.
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Working,
+            false,
+            false,
+            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE * 2,
+        );
+        assert_eq!(terminal.fallback_state, AgentState::Working);
+    }
+
+    #[test]
+    fn a_confirmed_release_without_a_withdrawal_still_drops_the_exited_agent() {
+        let mut terminal = running_terminal();
+        // clock-io-ok: synthetic detector tick times.
+        let now = Instant::now();
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            now,
+        );
+        // Only the detector's quiet-shell repeat arrives: no withdrawal.
+        let mutation = terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            now + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
+        );
+        assert!(mutation.agent_released);
+        assert!(terminal.process_evidence.exit().is_some());
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.effective_agent_label().is_none());
+    }
+
+    #[test]
+    fn a_state_report_inside_the_window_does_not_void_the_release() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        // clock-io-ok: synthetic observation and report times.
+        let now = Instant::now();
+        terminal.set_detected_agent_process_at(Agent::Pi, now);
+        let report = |terminal: &mut TerminalState, at: Instant| {
+            terminal.set_hook_authority_at(
+                "custom-hook".into(),
+                "pi".into(),
+                AgentState::Working,
+                None,
+                None,
+                HookClockSample {
+                    monotonic: at,
+                    wall: std::time::SystemTime::now(),
+                },
+            );
+        };
+        report(&mut terminal, now + std::time::Duration::from_millis(1));
+        let exit_at = now + std::time::Duration::from_millis(2);
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            exit_at,
+        );
+        // The same authority reports again inside the window: state only, so
+        // ownership is unchanged and the release is confirmed, but the
+        // authority is newer than the exit and survives it.
+        let epoch = terminal.ownership_epoch;
+        report(
+            &mut terminal,
+            exit_at + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE / 2,
+        );
+        assert_eq!(terminal.ownership_epoch, epoch);
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            exit_at + crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE,
+        );
+        assert!(terminal.provisional_process_exit.is_none());
+        assert!(terminal.process_evidence.exit().is_some());
+        assert!(
+            terminal
+                .hook_authority
+                .as_ref()
+                .is_some_and(|authority| authority.source == "custom-hook")
+        );
+    }
+
+    #[test]
+    fn clearing_the_authority_moves_the_ownership_epoch() {
+        let mut terminal = running_terminal();
+        let epoch = terminal.ownership_epoch;
+        let persisted = terminal.persisted_agent_session.clone();
+        terminal.apply_source_effect(HookSourceEffects::Commit {
+            authority: AuthorityEffect::Keep,
+            persisted: persisted.clone(),
+        });
+        assert_eq!(terminal.ownership_epoch, epoch, "no change, no move");
+        terminal.apply_source_effect(HookSourceEffects::Commit {
+            authority: AuthorityEffect::Clear,
+            persisted,
+        });
+        assert_ne!(terminal.ownership_epoch, epoch);
     }
 
     #[test]

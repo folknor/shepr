@@ -151,11 +151,17 @@ struct RecentAgentProcessExit {
 
 /// An agent can die before its shell under a session-wide signal or OOM kill.
 /// Keep all ownership intact until the live shell outlasts the release window.
+/// The first observation after the window always resolves the marker. If pane
+/// ownership changed during the window (`ownership_epoch` moved), the exit is
+/// void: it performs no release effects, since the new owner is not the agent
+/// that exited, and only its genuine detector withdrawal is applied, under the
+/// ordinary arbitration.
 #[derive(Debug, Clone, Copy)]
 struct ProvisionalProcessExit {
     agent: Option<Agent>,
     observed_at: Instant,
-    cancelled: bool,
+    /// `TerminalState::ownership_epoch` when the exit was observed.
+    ownership_epoch: u64,
     /// The latest agent-less detector observation inside the window. The
     /// detector withdraws the exited identity right after reporting the exit;
     /// a confirmed release applies that withdrawal after itself.
@@ -191,6 +197,10 @@ pub struct TerminalState {
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     process_evidence: AgentProcessEvidence,
+    /// Counts changes of pane ownership: the hook authority's identity
+    /// (presence, source, agent label, session ref) or the persisted session.
+    /// Bumped only in `apply_source_effect`, the one writer of both slots.
+    ownership_epoch: u64,
     provisional_process_exit: Option<ProvisionalProcessExit>,
     pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
     pub restore_error: Option<RestoreFailure>,

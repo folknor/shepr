@@ -17,6 +17,7 @@ impl TerminalState {
             if !process_exited && agent.is_some() {
                 self.provisional_process_exit = None;
             } else {
+                // The newest agent-less observation is the withdrawal to apply.
                 if !process_exited {
                     pending.deferred = Some(DeferredDetection {
                         fallback_state,
@@ -24,60 +25,89 @@ impl TerminalState {
                         observed_at: now,
                     });
                 }
-                if pending.cancelled
-                    || now.saturating_duration_since(pending.observed_at)
-                        < crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE
+                if now.saturating_duration_since(pending.observed_at)
+                    < crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE
                 {
                     self.provisional_process_exit = Some(pending);
                     return TerminalStateMutation::default();
                 }
+                // Past the window the marker always resolves, so later
+                // observations flow again whatever happens below.
                 self.provisional_process_exit = None;
-                // Confirmation proves shell survival, but must not promote an
-                // old detector observation above a newer custom hook report.
-                let release = self.transition_detection(
-                    pending.agent,
-                    AgentState::Idle,
-                    false,
-                    true,
-                    pending.observed_at,
-                );
-                let Some(deferred) = pending.deferred else {
-                    return release;
-                };
-                let withdrawal = self.transition_detection(
-                    None,
-                    deferred.fallback_state,
-                    deferred.visible_blocker,
-                    false,
-                    deferred.observed_at,
-                );
-                return TerminalStateMutation {
-                    effective_state_change: match (
-                        release.effective_state_change,
-                        withdrawal.effective_state_change,
-                    ) {
-                        (Some(first), Some(last)) => Some(EffectiveStateChange {
-                            previous_state: first.previous_state,
-                            state: last.state,
-                        }),
-                        (first, last) => last.or(first),
-                    },
-                    session_ref_changed: release.session_ref_changed
-                        || withdrawal.session_ref_changed,
-                    agent_released: release.agent_released || withdrawal.agent_released,
-                };
+                return self.confirm_provisional_process_exit(pending);
             }
         }
         if process_exited {
             self.provisional_process_exit = Some(ProvisionalProcessExit {
                 agent,
                 observed_at: now,
-                cancelled: false,
+                ownership_epoch: self.ownership_epoch,
                 deferred: None,
             });
             return TerminalStateMutation::default();
         }
         self.transition_detection(agent, fallback_state, visible_blocker, false, now)
+    }
+
+    /// The live shell outlasted the window. Decided once, against the epoch
+    /// before any release effect could move it.
+    fn confirm_provisional_process_exit(
+        &mut self,
+        pending: ProvisionalProcessExit,
+    ) -> TerminalStateMutation {
+        if pending.ownership_epoch != self.ownership_epoch {
+            // Ownership changed during the window: the exit belongs to a
+            // previous owner and performs no release effects (no slot, source
+            // generation, suppression or sequence change). A process-exit
+            // repeat is consumed; a genuine withdrawal keeps the ordinary
+            // arbitration against the new owner.
+            return pending
+                .deferred
+                .map_or_else(TerminalStateMutation::default, |deferred| {
+                    self.transition_detection(
+                        None,
+                        deferred.fallback_state,
+                        deferred.visible_blocker,
+                        false,
+                        deferred.observed_at,
+                    )
+                });
+        }
+        // Confirmation proves shell survival, but must not promote an old
+        // detector observation above a newer custom hook report.
+        let release = self.transition_detection(
+            pending.agent,
+            AgentState::Idle,
+            false,
+            true,
+            pending.observed_at,
+        );
+        // Without a withdrawal the release alone already records the exit
+        // evidence, which hides the exited agent from the effective state.
+        let Some(deferred) = pending.deferred else {
+            return release;
+        };
+        let withdrawal = self.transition_detection(
+            None,
+            deferred.fallback_state,
+            deferred.visible_blocker,
+            false,
+            deferred.observed_at,
+        );
+        TerminalStateMutation {
+            effective_state_change: match (
+                release.effective_state_change,
+                withdrawal.effective_state_change,
+            ) {
+                (Some(first), Some(last)) => Some(EffectiveStateChange {
+                    previous_state: first.previous_state,
+                    state: last.state,
+                }),
+                (first, last) => last.or(first),
+            },
+            session_ref_changed: release.session_ref_changed || withdrawal.session_ref_changed,
+            agent_released: release.agent_released || withdrawal.agent_released,
+        }
     }
 
     pub(super) fn transition_detection(

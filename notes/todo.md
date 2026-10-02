@@ -26,56 +26,6 @@ the history file and its restore path.
 
 # Open defects
 
-## A cancelled provisional process-exit release can freeze the detector
-
-Formerly PRUN-020. `terminal/state/` in shepr-mux (`ProvisionalProcessExit`,
-`source/detection.rs`). A detector process-exit release is held for
-`AGENT_PROCESS_EXIT_RELEASE_GRACE` and cancelled by new process evidence or an
-ownership change. A cancelled marker is cleared only by a later detector update
-that names an agent. Until then every detector observation without an agent is
-dropped, the deferred withdrawal is never applied, and a later exit or
-confirmation is ignored. If ownership was replaced during the window (a custom
-hook commit, say) and no agent process comes back, the pane's detector state
-stays frozen.
-
-Agreed design (sparred with codex to consensus):
-
-- Replace the `cancelled` flag with an ownership epoch. `TerminalState` holds an
-  `ownership_epoch: u64`, bumped in `apply_source_effect` whenever the authority
-  identity (presence, source, agent label, session ref) or the persisted session
-  slot differs after the effect from before it. That covers `Keep`, `Clear` and
-  `Set` commits, `RestoreSession` (a commit) and the `ProcessObserved`
-  authority install, and it catches ownership that changed away and back. The
-  marker records the epoch at exit. `cancel_provisional_process_exit` goes away.
-- The confirmation trigger is unchanged: the first post-grace observation that
-  does not name a live agent confirms. An agent-naming non-exit observation
-  still clears the marker as a replacement process. The detection task always
-  wakes at the deadline and either republishes the release or publishes its own
-  update, so every marker resolves at the first post-grace tick. Compare the
-  epoch once, before any release effect can itself bump it.
-- (a) Epoch unchanged: today's confirmed release. A real incoming or deferred
-  withdrawal keeps today's arbitration through `transition_detection`. When
-  neither exists, the detector fields are resolved directly (`detected_agent`
-  `None`, fallback `Idle`, no visible blocker, `fallback_observed_at` the
-  confirming tick) and the effective state recomputed, without ownership
-  arbitration. A fabricated observation fed through `transition_detection` would
-  clear a newer custom authority that the release deliberately preserved.
-- (b) Epoch changed: the old exit is void. The marker is cleared with no release
-  effects: no ownership slot, source generation, suppression, `ProcessExited` or
-  sequence change. A process-exit republish is consumed; the newer of the
-  deferred and incoming withdrawals goes through ordinary `transition_detection`
-  arbitration against the new owner. No synthesized withdrawal: keeping
-  `detected_agent` for a same-agent full-lifecycle owner keeps a quick restart
-  working. That is a new agent started inside the grace whose start hook landed
-  before the probe saw its process; its reports need `process_present`.
-- The mutation reported is the effective state and persistence identity before
-  confirmation against after the whole operation (release, withdrawal and direct
-  cleanup combined).
-- Claim to state in comments: the voided exit performs no release effects,
-  genuine withdrawals keep normal arbitration, and the provisional marker can no
-  longer freeze detection. It does not promise freedom from the stale-evidence
-  hazards below.
-
 ## Clearing hook authority can overwrite a newer persisted session
 
 Found while sparring the provisional-exit fix; exists without it. The
