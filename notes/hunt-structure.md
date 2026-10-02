@@ -314,25 +314,6 @@ public API. (terminal)
 
 ## Pane runtime and agent ownership
 
-## STR-019 - The hook-source machine is agent-domain logic living in mux under a misleading name
-
-`terminal/state/` is agent ownership and hook arbitration (`TerminalState`,
-about 3,000 production lines in `source.rs` and children); nothing in it touches
-a terminal, and "terminal" then means three things in mux (the VT wrapper in
-`pane/terminal/`, this record, and `TerminalId`). `HookSourceState`,
-`HookGeneration`, report and start routing, sequence re-anchoring against clock
-steps, stale-session retirement and the checkpoint candidate are pure functions
-of shepr-agent's descriptors plus the exit reason, using nothing from mux but
-`limits.rs` constants and `TerminalId` for a log field. Proposal: move the machine
-into shepr-agent as an `AgentOwnership` type over the typed report origin,
-deleting the string-pair predicates agent exports only for mux, and leave a thin
-renamed `TerminalState` (cwd, title, label, restore error, ownership); the 2,000+
-lines of transition tests move with it. With report parsing also in agent, the
-contract test (`agent_integration_contract_tests.rs`) and
-`agent_report_test_support.rs` (`AgentReportHarness`) can sit beside the assets
-and drive the parser plus the ownership type directly. Reported by mux-panes and
-server-app.
-
 ## STR-020 - `TerminalState` public fields bypass the arbitration it centralises
 
 Its module opens with "Effective state arbitration is intentionally centralized
@@ -343,7 +324,13 @@ here", but `state`, `detected_agent`, `fallback_state`, `terminal_title`,
 `detected_agent` and `state` directly, building states the machine cannot
 produce. Make the fields private, give the legitimate writers methods
 (`record_start_failure`, `clear_resume_plan`), and give tests a fixture
-constructor that goes through real transitions. (mux-panes)
+constructor that goes through real transitions. The ownership machine now
+lives in shepr-agent as `AgentOwnership`, and mux keeps compatibility shims
+for it: `Deref`/`DerefMut` from `TerminalState`, an `AgentOwnershipMutation as
+TerminalStateMutation` re-export and a forwarding
+`current_session_identity_for_persistence`; callers could import from
+`shepr_agent::ownership` directly, and `DerefMut` keeps the ownership fields
+writable. (mux-panes, wave-3 review)
 
 ## STR-021 - `PaneRuntime` is a 60-method facade, and `runtime.rs` holds five jobs
 

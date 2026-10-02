@@ -271,7 +271,7 @@ pub(super) fn terminal_collect_dirty_patch(
 /// display history, not evidence of what a later agent is doing.
 pub(super) fn terminal_detection_text(
     terminal: &shepr_vt::Terminal,
-) -> Result<String, shepr_vt::Error> {
+) -> Result<String, shepr_vt::ReadError> {
     let screen_rows = usize::from(terminal.rows()).max(1);
     let Some((start, end, _)) = terminal_recent_read_range(terminal, screen_rows)? else {
         return Ok(String::new());
@@ -297,11 +297,11 @@ pub(super) fn terminal_detection_text(
 /// alternate screen is active that is the full-screen program's frame, never
 /// the primary history (alacritty offers no access to the inactive grid).
 /// History persistence must not take that for history; it reads through
-/// [`PaneTerminal::read_primary_history`], which says so instead.
+/// [`PaneHistorySource::refresh`], which says so instead.
 pub(super) fn terminal_recent_read_range(
     terminal: &shepr_vt::Terminal,
     lines: usize,
-) -> Result<Option<(usize, usize, u16)>, shepr_vt::Error> {
+) -> Result<Option<(usize, usize, u16)>, shepr_vt::ReadError> {
     let total_rows = terminal.total_rows();
     let cols = terminal.cols();
     if total_rows == 0 || cols == 0 || lines == 0 {
@@ -609,7 +609,7 @@ pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
 pub(super) fn terminal_default_fg(
     color: shepr_vt::RgbColor,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
-    initial_default_foreground: Option<shepr_vt::RgbColor>,
+    initial_default_foreground: shepr_vt::RgbColor,
 ) -> Option<WireColor> {
     if let Some(host_foreground) = host_theme.foreground {
         if host_foreground == color {
@@ -617,7 +617,7 @@ pub(super) fn terminal_default_fg(
         } else {
             Some(terminal_color(color))
         }
-    } else if initial_default_foreground.is_some_and(|initial| initial != color) {
+    } else if initial_default_foreground != color {
         Some(terminal_color(color))
     } else {
         None
@@ -627,7 +627,7 @@ pub(super) fn terminal_default_fg(
 pub(super) fn terminal_default_bg(
     color: shepr_vt::RgbColor,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
-    initial_default_background: Option<shepr_vt::RgbColor>,
+    initial_default_background: shepr_vt::RgbColor,
 ) -> Option<WireColor> {
     if let Some(host_background) = host_theme.background {
         if host_background == color {
@@ -635,7 +635,7 @@ pub(super) fn terminal_default_bg(
         } else {
             Some(terminal_color(color))
         }
-    } else if initial_default_background.is_some_and(|initial| initial != color) {
+    } else if initial_default_background != color {
         Some(terminal_color(color))
     } else {
         None
@@ -713,7 +713,9 @@ pub(super) fn should_probe_host_terminal_theme_restore(core: &PaneTerminalCore) 
 }
 
 #[cfg(test)]
-pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, shepr_vt::Error> {
+pub(super) fn terminal_visible_ansi(
+    core: &PaneTerminalCore,
+) -> Result<String, shepr_vt::ReadError> {
     let rows = core.terminal.rows();
     let cols = core.terminal.cols();
     if rows == 0 || cols == 0 {
@@ -734,7 +736,7 @@ pub(super) fn terminal_visible_ansi(core: &PaneTerminalCore) -> Result<String, s
 pub(super) fn terminal_recent_ansi(
     core: &mut PaneTerminalCore,
     lines: usize,
-) -> Result<String, shepr_vt::Error> {
+) -> Result<String, shepr_vt::ReadError> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(String::new());
@@ -752,7 +754,7 @@ fn terminal_read_ansi_screen(
     terminal: &shepr_vt::Terminal,
     start: Point<ScreenRow>,
     end: Point<ScreenRow>,
-) -> Result<String, shepr_vt::Error> {
+) -> Result<String, shepr_vt::ReadError> {
     let (mut text, content_end) = terminal.read_ansi_screen_carrying(
         start,
         end,
@@ -769,7 +771,7 @@ fn terminal_text_rows(
     start: usize,
     end: usize,
     lines: usize,
-) -> Result<String, shepr_vt::Error> {
+) -> Result<String, shepr_vt::ReadError> {
     let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
     let mut scratch = String::new();
     for y in start..=end {
@@ -785,7 +787,7 @@ fn terminal_text_rows(
 pub(super) fn terminal_recent_text(
     core: &mut PaneTerminalCore,
     lines: usize,
-) -> Result<String, shepr_vt::Error> {
+) -> Result<String, shepr_vt::ReadError> {
     let terminal = &core.terminal;
     let Some((start, end, _)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(String::new());
@@ -798,7 +800,7 @@ pub(super) fn terminal_recent_text(
 pub(super) fn terminal_recent_text_unwrapped(
     core: &mut PaneTerminalCore,
     lines: usize,
-) -> Result<String, shepr_vt::Error> {
+) -> Result<String, shepr_vt::ReadError> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(String::new());

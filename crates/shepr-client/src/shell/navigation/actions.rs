@@ -293,7 +293,7 @@ impl ClientShellState {
         if !self.restore_notice_seen.insert(key.clone()) {
             return false;
         }
-        let label = self.endpoint_label(endpoint_id);
+        let label = endpoint_id.display_label();
         self.restore_notice_queue
             .push_back(ClientVisibleEndpointNotice {
                 key,

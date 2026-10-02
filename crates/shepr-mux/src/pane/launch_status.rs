@@ -280,8 +280,20 @@ async fn settle(
                     }
                 }
             }
-            Ok(RecordRead::Record(LaunchRecord::ChdirFailed(errno))) if selected.is_none() => {
-                let path = cwd_candidates.first().cloned().unwrap_or_default();
+            Ok(RecordRead::Record(LaunchRecord::ChdirFailed { index, errno }))
+                if selected.is_none() =>
+            {
+                let Some(path) = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| cwd_candidates.get(index))
+                    .cloned()
+                else {
+                    tracing::warn!(
+                        index,
+                        "pane launch reported an unknown failed cwd candidate"
+                    );
+                    return LaunchSettlement::Unconfirmed;
+                };
                 return LaunchSettlement::Failed(directory_failure(path, errno));
             }
             Ok(RecordRead::Record(LaunchRecord::ExecFailed(errno))) if selected.is_some() => {

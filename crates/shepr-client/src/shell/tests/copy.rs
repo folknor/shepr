@@ -35,7 +35,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
             direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
             query: TextEditor::default(),
         }),
-        search_query: String::new(),
+        search_query: TypedText::default(),
         search_direction: None,
         search_matches: Vec::new(),
         search_total: 0,

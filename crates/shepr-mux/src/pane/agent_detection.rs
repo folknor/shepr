@@ -87,8 +87,7 @@ pub(super) fn should_skip_idle_screen_scan(input: DetectionScreenReadInput) -> b
         return false;
     }
 
-    input.current_detection_content_seq.is_some()
-        && input.last_screen_scan_detection_content_seq == input.current_detection_content_seq
+    input.last_screen_scan_detection_content_seq == Some(input.current_detection_content_seq)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +103,7 @@ pub(super) struct DetectionScreenReadInput {
     pub(super) pending_idle_active: bool,
     pub(super) agent_changed: bool,
     pub(super) process_exited: bool,
-    pub(super) current_detection_content_seq: Option<u64>,
+    pub(super) current_detection_content_seq: u64,
     pub(super) last_screen_scan_detection_content_seq: Option<u64>,
 }
 
@@ -345,7 +344,7 @@ mod tests {
             pending_idle_active: false,
             agent_changed: false,
             process_exited: false,
-            current_detection_content_seq: Some(current_seq),
+            current_detection_content_seq: current_seq,
             last_screen_scan_detection_content_seq: Some(10),
         }
     }
@@ -477,12 +476,12 @@ mod tests {
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Skip
         );
-        input.current_detection_content_seq = Some(11);
+        input.current_detection_content_seq = 11;
         assert_eq!(
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Read
         );
-        input.current_detection_content_seq = Some(10);
+        input.current_detection_content_seq = 10;
         input.agent_changed = true;
         assert_eq!(
             decide_detection_screen_read(input),
@@ -505,7 +504,7 @@ mod tests {
                 decide_detection_screen_read(input),
                 DetectionScreenReadDecision::Skip
             );
-            input.current_detection_content_seq = Some(11);
+            input.current_detection_content_seq = 11;
             assert_eq!(
                 decide_detection_screen_read(input),
                 DetectionScreenReadDecision::Read
@@ -563,7 +562,7 @@ mod tests {
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Skip
         );
-        input.current_detection_content_seq = Some(11);
+        input.current_detection_content_seq = 11;
         assert_eq!(
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Read

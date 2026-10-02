@@ -14,6 +14,6 @@ impl TerminalState {
     }
 
     pub fn is_agent_terminal(&self) -> bool {
-        self.effective_agent_label().is_some()
+        self.ownership.has_agent()
     }
 }

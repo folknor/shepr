@@ -116,17 +116,6 @@ impl App {
         initial_cwd: &std::path::Path,
         geometry: SpawnGeometry,
     ) -> std::io::Result<usize> {
-        let index = self.create_workspace_without_save(initial_cwd, geometry)?;
-        Ok(index)
-    }
-
-    // Automatic replacement belongs to the checkpointed removal, so its
-    // caller decides whether this creation is a durable session mutation.
-    pub(super) fn create_workspace_without_save(
-        &mut self,
-        initial_cwd: &std::path::Path,
-        geometry: SpawnGeometry,
-    ) -> std::io::Result<usize> {
         let chrome = self.state.pane_geometry_in(geometry.area);
         let (ws, terminal, runtime) = Workspace::spawn(
             initial_cwd,
@@ -219,11 +208,9 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<(&shepr_mux::pane::PaneRuntime, shepr_protocol::WorkspaceId)> {
-        let runtime =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
-        Some((runtime, self.public_workspace_id(ws_idx)?))
+    ) -> Option<&shepr_mux::pane::PaneRuntime> {
+        self.state
+            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }
 
     /// `focused` is left false, as in `pane_info`; `fill_reply_focus` sets it.

@@ -138,14 +138,13 @@ and ctime ns (also reused under its history name for layout files in
 replace with equal size and mtime, which editors and `git config` both do.
 Owner: one `FileStamp` in platform with the persist semantics. (mux-state)
 
-## CON-013 - What is the Unix socket path limit?
+## CON-013 - The socket path type is thrown away after the check
 
-`shepr-core/src/socket_path.rs` says it is owned once and every site asks it;
-`ipc.rs` `connect_local_stream_within` decides with `bytes.len() >=
-address.sun_path.len()`. Same answer today, different source. The main server
-socket path is never checked up front; it fails at bind. Owner: core, through a
-`SocketPath` constructed with the check and used by `AppPaths` and the connect.
-(foundation)
+`SocketPath` in `crates/shepr-core/src/socket_path.rs` owns the length check
+and the platform connect uses it, but `resolve_paths_checked`
+(`crates/shepr-config/src/address.rs`) validates and drops it, so `AppPaths`
+and `ServerAddress` still hold a plain `PathBuf`. Carry `SocketPath` there so
+the check is a type fact. (wave-3 review)
 
 ## CON-015 - What does a pane's exit mean, and does it get a checkpoint?
 
@@ -380,14 +379,6 @@ event `set_options` emits. They agree. The handler cannot call `Terminal`
 methods because `with_handler` destructures twelve fields into it (filed among
 the structure findings). Owner: a `HistoryCapacity` the handler borrows.
 (terminal)
-
-## CON-034 - Is the alternate screen active?
-
-`rows.rs::primary_active`, `CoreHandler::primary_screen_active`, the
-`active_keyboard_depth` test and four raw `mode().contains(ALT_SCREEN)` checks in
-`lib.rs`; mux compares `active_screen() == Alternate` in many more places.
-`RowOrigin` and the keyboard-depth mirror depend on it meaning exactly
-alacritty's grid swap. One accessor should be the only reader. (terminal)
 
 ## CON-035 - Where does an OSC end?
 
@@ -1108,34 +1099,6 @@ and `PaneSwap` deserve an explicit answer. (client-shell)
 
 ## Config and keybindings
 
-## CON-086 - Navigate-mode arrow aliases and indexed bindings
-
-Aliases: the `keybinding_table!` navigate rows carry an alias column;
-`keybinds.rs::reserve_navigate_runtime_keys` hardcodes `KeyCode::Left`/`Right`
-instead of reading it; the client's `navigate_alias_matches_left`/`_right` build
-the combos again; termio `keybind_help.rs` maps the alias ident to `"left"` and
-`"right"`. Adding an alias updates help and matching only with two hand-written
-macro arms, and reservation not at all. Indexed bindings: `limits.rs` has the
-first and last indexed keys and a derived range syntax kept by hand; termio
-`indexed_label`/`indexed_range_prefix` hardcode `"1..9"`, a run of 9 and `b'1'`;
-the client's `navigate_indexed_binding_index` re-derives modifier equivalence and
-adds its own "exact modifiers first" preference outside
-`IndexedKeybind::matched_index`. Owner: a generated `NavigateAlias` enum with
-`combo()` and `label()`, and an `IndexedRange` type in config owning parse, label
-and matching. (contracts)
-
-## CON-087 - Modifier names, colour parsing and the palette token list
-
-`model.rs::RIGHT_CLICK_MODIFIER_ALIASES` and `keybinds.rs::parse_modifier_token`
-both decide what `ctrl`, `control`, `alt`, `option` and `meta` mean (the template
-promises right-click accepts keybinding aliases); owner one alias table with the
-right-click restriction on top. `sidebar.rs::SidebarTokenColor` and
-`theme_config.rs::try_parse_color` implement the hex rule twice (they accept
-different sets on purpose); owner one hex parser. The palette token list is
-written five times (`Palette` fields, `ParsedThemeColors` fields,
-`define_custom_theme_colors!`, `Palette::with_overrides` arms, test destructures);
-owner one `palette_tokens!` list. (contracts)
-
 ## CON-088 - Fixed-key surfaces: routing and help text
 
 Copy-mode keys are routed by char literals in `route_copy_mode_key` and described
@@ -1235,14 +1198,6 @@ diagnostic cannot say whether its text was sanitized (`from_message` and
 `with_context` accept anything). The local restart offer echoes the local
 socket's ids raw. Owner: a `RemoteText` newtype minted once at the SSH output
 boundary whose renderer is the only way to show it. (edges)
-
-## CON-096 - Stop outcomes and exit codes are encoded in one crate and decoded in another
-
-`src/cli/error.rs::CliError::exit_code` maps `ServerStopError` to
-`BOOT_MISMATCH_EXIT_CODE`/`NO_SERVER_EXIT_CODE`; `remote/launch.rs::stop_remote_server`
-maps them back (folding "no server" into "boot changed", filed as a bug).
-`DaemonExit` shows the right shape. Owner: `ServerStopExit` with `code()` and
-`from_code()` used by both. Reported by contracts and edges.
 
 ## Client
 
@@ -1373,16 +1328,6 @@ deadline tuple compared in `endpoint_notice_drawn`, `tick_transient_banners` and
 `EndpointNotice { endpoint, kind }` rendered once, and a `Notices` component
 (visible card, restore queue, seen sets, deadline) with `push`, `dismiss`,
 `drawn`, `tick` and `deadline`. Reported by client-core and client-shell.
-
-## CON-105 - Timer inventory
-
-`next_timer_deadline` enumerates six deadlines; `lib.rs` separately calls
-`tick_selection_autoscroll`, `tick_selection_highlight`,
-`tick_workspace_highlight`, `tick_endpoint_error` and `tick_transient_banners`.
-The two lists are kept in step by hand; `tick_transient_banners` also does work
-with no deadline. Only `word_selection` uses `limits::Deadline`. Owner: one
-`ShellTimers` registry or a `deadline()` plus `tick(now)` trait the shell
-iterates. (client-shell)
 
 ## CON-106 - Is copy mode the live mode?
 

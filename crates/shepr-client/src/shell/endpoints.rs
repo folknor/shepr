@@ -201,10 +201,6 @@ impl ClientShellState {
         self.outer_focused.unwrap_or(true)
     }
 
-    pub(crate) fn endpoint_label<'a>(&self, endpoint_id: &'a ClientEndpointId) -> &'a str {
-        endpoint_id.display_label()
-    }
-
     pub(crate) fn active_endpoint_label(&self) -> &str {
         self.active_endpoint_id.display_label()
     }

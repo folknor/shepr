@@ -1,12 +1,18 @@
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct TextEditor {
     text: String,
     cursor: usize,
     replace_on_type: bool,
     killed: String,
+}
+
+impl std::fmt::Debug for TextEditor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TextEditor([redacted])")
+    }
 }
 
 impl std::ops::Deref for TextEditor {

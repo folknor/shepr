@@ -182,7 +182,7 @@ fn retained_cursor(
         pane.pane.inner_rect.height,
     );
     runtime
-        .cursor_state(area, true)
+        .cursor_state(area)
         .map(|cursor| shepr_protocol::CursorState {
             x: cursor.x,
             y: cursor.y,
@@ -215,7 +215,7 @@ struct CollectedPanePatch {
     identity: ClientPaneIdentity,
     patch: shepr_mux::pane::TerminalDirtyPatch,
     content_revision: u64,
-    scroll_metrics: Option<shepr_mux::pane::ScrollMetrics>,
+    scroll_metrics: shepr_mux::pane::ScrollMetrics,
     mouse_reporting: bool,
     sgr_pixel_mouse: bool,
     alternate_screen_active: bool,
@@ -502,15 +502,11 @@ impl HeadlessServer {
             let Some(snapshot) = runtime.collect_dirty_patch_snapshot(width, height) else {
                 source_fallback!("terminal_snapshot", source);
             };
-            let patch = match snapshot.patch {
-                shepr_mux::pane::TerminalDirtyPatchOutcome::Clean => {
-                    shepr_mux::pane::TerminalDirtyPatch { rows: Vec::new() }
-                }
-                shepr_mux::pane::TerminalDirtyPatchOutcome::Patch(patch) => patch,
-                shepr_mux::pane::TerminalDirtyPatchOutcome::Fallback => {
-                    source_fallback!("terminal_patch", source);
-                }
-            };
+            // A fallback read yields no snapshot at all (`terminal_snapshot`
+            // above); `None` here means the terminal is clean.
+            let patch = snapshot
+                .patch
+                .unwrap_or(shepr_mux::pane::TerminalDirtyPatch { rows: Vec::new() });
             collected.push(CollectedPanePatch {
                 identity,
                 patch,
@@ -578,7 +574,7 @@ impl HeadlessServer {
                     pane,
                     recipient.panes[pane_index].reserved_scrollbar_gutter,
                     collected_pane.alternate_screen_active,
-                    collected_pane.scroll_metrics,
+                    Some(collected_pane.scroll_metrics),
                 ) else {
                     fallback!("scrollbar_patch", client_id, 'recipients);
                 };
@@ -587,13 +583,12 @@ impl HeadlessServer {
                 pane.mouse_reporting = collected_pane.mouse_reporting;
                 pane.sgr_pixel_mouse = collected_pane.sgr_pixel_mouse;
                 pane.alternate_screen_active = collected_pane.alternate_screen_active;
-                pane.scroll = collected_pane.scroll_metrics.map(|metrics| {
-                    shepr_protocol::PaneSurfaceScrollMetrics {
-                        offset_from_bottom: metrics.offset_from_bottom as u64,
-                        max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
-                        viewport_rows: metrics.viewport_rows as u64,
-                        history_origin: metrics.history_origin,
-                    }
+                let metrics = collected_pane.scroll_metrics;
+                pane.scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
+                    offset_from_bottom: metrics.offset_from_bottom as u64,
+                    max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
+                    viewport_rows: metrics.viewport_rows as u64,
+                    history_origin: metrics.history_origin,
                 });
                 metadata_changed |= *pane != previous_pane;
                 changed_panes.push(pane.clone());

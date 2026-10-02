@@ -25,28 +25,15 @@ fn indexed_label(bindings: &[IndexedKeybind]) -> String {
     let mut parts = Vec::new();
     let mut index = 0;
     while index < bindings.len() {
-        if let Some(prefix) = indexed_range_prefix(&bindings[index..]) {
-            parts.push(format!("{prefix}1..9"));
-            index += 9;
+        if let Some((label, count)) = IndexedKeybind::range_label(&bindings[index..]) {
+            parts.push(label);
+            index += count;
         } else {
             parts.push(bindings[index].label.clone());
             index += 1;
         }
     }
     parts.join(" / ")
-}
-
-fn indexed_range_prefix(bindings: &[IndexedKeybind]) -> Option<&str> {
-    let run = bindings.get(..9)?;
-    let prefix = run[0].label.strip_suffix('1')?;
-    for (offset, binding) in run.iter().enumerate() {
-        // `run` has exactly 9 elements, so offset is always < 9 and fits in a u8.
-        let digit = char::from(b'1' + u8::try_from(offset).unwrap_or(u8::MAX));
-        if binding.label.strip_suffix(digit) != Some(prefix) {
-            return None;
-        }
-    }
-    Some(prefix)
 }
 
 pub fn keybind_help_groups(
@@ -63,19 +50,8 @@ pub fn keybind_help_groups(
         ("panes", Vec::new()),
     ];
 
-    // The fixed arrow aliases of navigate rows, listed after the configured
-    // keys of the help row they belong to.
-    let mut navigate_aliases: Vec<(&'static str, &'static str, &'static str)> = Vec::new();
-    macro_rules! navigate_alias {
-        (None, $group:expr, $label:expr) => {};
-        (Left, $group:expr, $label:expr) => {
-            navigate_aliases.push(($group, $label, "left"))
-        };
-        (Right, $group:expr, $label:expr) => {
-            navigate_aliases.push(($group, $label, "right"))
-        };
-    }
-
+    // Navigate aliases follow the configured keys of the help row they belong to.
+    let mut navigate_aliases: Vec<(&'static str, &'static str, String)> = Vec::new();
     macro_rules! build_keybind_help {
         (
             actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
@@ -96,7 +72,9 @@ pub fn keybind_help_groups(
                     binding_label(&keybinds.navigate.$navigate_field),
                     $navigate_label,
                 );
-                navigate_alias!($navigate_alias, $navigate_group, $navigate_label);
+                if let Some(label) = shepr_config::navigate_alias_label!($navigate_alias) {
+                    navigate_aliases.push(($navigate_group, $navigate_label, label));
+                }
             )*
             $(
                 merge_help_entry(
@@ -104,11 +82,13 @@ pub fn keybind_help_groups(
                     indexed_label(&keybinds.navigate.$navigate_indexed_field),
                     $navigate_indexed_label,
                 );
-                navigate_alias!(
-                    $navigate_indexed_alias,
-                    $navigate_indexed_group,
-                    $navigate_indexed_label
-                );
+                if let Some(label) = shepr_config::navigate_alias_label!($navigate_indexed_alias) {
+                    navigate_aliases.push((
+                        $navigate_indexed_group,
+                        $navigate_indexed_label,
+                        label,
+                    ));
+                }
             )*
         };
     }
@@ -120,7 +100,7 @@ pub fn keybind_help_groups(
             .find(|existing| existing.1 == label)
         {
             existing.0.push_str(" / ");
-            existing.0.push_str(alias);
+            existing.0.push_str(&alias);
         }
     }
     groups

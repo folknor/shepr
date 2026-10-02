@@ -5,6 +5,11 @@
 //! one pane. It is a unit test of this crate so the harness that reaches those
 //! handlers stays test-only.
 
+// Keep this contract at the server boundary even though arbitration lives in
+// shepr-agent: replaying whole API requests verifies the actual handlers and
+// their parsing/admission path. Moving it below API/server would either invert
+// crate layering or replace that dispatch with a test-only copy.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;

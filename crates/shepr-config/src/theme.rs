@@ -45,71 +45,50 @@ define_builtin_themes! {
     "vesper" => vesper [],
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct ParsedThemeColors {
-    pub(crate) accent: Option<ratatui::style::Color>,
-    pub(crate) panel_bg: Option<ratatui::style::Color>,
-    pub(crate) sidebar_bg: Option<ratatui::style::Color>,
-    pub(crate) active_row_bg: Option<ratatui::style::Color>,
-    pub(crate) selection_bg: Option<ratatui::style::Color>,
-    pub(crate) surface0: Option<ratatui::style::Color>,
-    pub(crate) surface1: Option<ratatui::style::Color>,
-    pub(crate) surface_dim: Option<ratatui::style::Color>,
-    pub(crate) overlay0: Option<ratatui::style::Color>,
-    pub(crate) overlay1: Option<ratatui::style::Color>,
-    pub(crate) text: Option<ratatui::style::Color>,
-    pub(crate) subtext0: Option<ratatui::style::Color>,
-    pub(crate) mauve: Option<ratatui::style::Color>,
-    pub(crate) green: Option<ratatui::style::Color>,
-    pub(crate) yellow: Option<ratatui::style::Color>,
-    pub(crate) red: Option<ratatui::style::Color>,
-    pub(crate) blue: Option<ratatui::style::Color>,
-    pub(crate) teal: Option<ratatui::style::Color>,
-    pub(crate) peach: Option<ratatui::style::Color>,
+macro_rules! palette_tokens {
+    ($consumer:ident) => {
+        $consumer! {
+            (accent, "Primary accent (highlight, active borders)."),
+            (panel_bg, "Background for floating panels, overlays, and modals."),
+            (sidebar_bg, "Optional desktop sidebar background. Reset preserves the terminal background."),
+            (active_row_bg, "Background for the active workspace and focused agent rows."),
+            (selection_bg, "Background for the Navigate-mode cursor row in the sidebar."),
+            (surface0, "Subtle surface background for selected/focused items."),
+            (surface1, "Slightly lighter surface for hover/active states."),
+            (surface_dim, "Very dim surface for separators."),
+            (overlay0, "Muted text (secondary info, numbers)."),
+            (overlay1, "Slightly brighter overlay text."),
+            (text, "Main text color - soft white."),
+            (subtext0, "Subdued text (workspace numbers, dim labels)."),
+            (mauve, "Branch name / special label color."),
+            (green, "Idle state."),
+            (yellow, "Working / running states."),
+            (red, "Needs attention / blocked states."),
+            (blue, "Accent color."),
+            (teal, "Accent color."),
+            (peach, "Interrupted / warning states."),
+        }
+    };
 }
 
-/// Resolved colors used by the UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Palette {
-    /// Primary accent (highlight, active borders).
-    pub accent: Color,
-    /// Background for floating panels, overlays, and modals.
-    pub panel_bg: Color,
-    /// Optional desktop sidebar background. Reset preserves the terminal background.
-    pub sidebar_bg: Color,
-    /// Background for the active workspace and focused agent rows.
-    pub active_row_bg: Color,
-    /// Background for the Navigate-mode cursor row in the sidebar.
-    pub selection_bg: Color,
-    /// Subtle surface background for selected/focused items.
-    pub surface0: Color,
-    /// Slightly lighter surface for hover/active states.
-    pub surface1: Color,
-    /// Very dim surface for separators.
-    pub surface_dim: Color,
-    /// Muted text (secondary info, numbers).
-    pub overlay0: Color,
-    /// Slightly brighter overlay text.
-    pub overlay1: Color,
-    /// Main text color - soft white.
-    pub text: Color,
-    /// Subdued text (workspace numbers, dim labels).
-    pub subtext0: Color,
-    /// Branch name / special label color.
-    pub mauve: Color,
-    /// Idle state.
-    pub green: Color,
-    /// Working / running states.
-    pub yellow: Color,
-    /// Needs attention / blocked states.
-    pub red: Color,
-    /// Accent color.
-    pub blue: Color,
-    /// Accent color.
-    pub teal: Color,
-    /// Interrupted / warning states.
-    pub peach: Color,
+pub(crate) use palette_tokens;
+
+macro_rules! define_palette_types {
+    ($(($field:ident, $description:literal)),+ $(,)?) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct ParsedThemeColors {
+            $(pub(crate) $field: Option<Color>,)+
+        }
+
+        /// Resolved colors used by the UI.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct Palette {
+            $(#[doc = $description] pub $field: Color,)+
+        }
+    };
 }
+
+palette_tokens!(define_palette_types);
 
 impl Default for Palette {
     fn default() -> Self {
@@ -567,69 +546,25 @@ impl Palette {
             peach: Color::Rgb(255, 199, 153),
         }
     }
-
-    /// Apply custom color overrides on top of this palette.
-    pub(crate) fn with_overrides(mut self, custom: &ParsedThemeColors) -> Self {
-        if let Some(color) = custom.accent {
-            self.accent = color;
-        }
-        if let Some(color) = custom.panel_bg {
-            self.panel_bg = color;
-        }
-        if let Some(color) = custom.sidebar_bg {
-            self.sidebar_bg = color;
-        }
-        if let Some(color) = custom.active_row_bg {
-            self.active_row_bg = color;
-        }
-        if let Some(color) = custom.selection_bg {
-            self.selection_bg = color;
-        }
-        if let Some(color) = custom.surface0 {
-            self.surface0 = color;
-        }
-        if let Some(color) = custom.surface1 {
-            self.surface1 = color;
-        }
-        if let Some(color) = custom.surface_dim {
-            self.surface_dim = color;
-        }
-        if let Some(color) = custom.overlay0 {
-            self.overlay0 = color;
-        }
-        if let Some(color) = custom.overlay1 {
-            self.overlay1 = color;
-        }
-        if let Some(color) = custom.text {
-            self.text = color;
-        }
-        if let Some(color) = custom.subtext0 {
-            self.subtext0 = color;
-        }
-        if let Some(color) = custom.mauve {
-            self.mauve = color;
-        }
-        if let Some(color) = custom.green {
-            self.green = color;
-        }
-        if let Some(color) = custom.yellow {
-            self.yellow = color;
-        }
-        if let Some(color) = custom.red {
-            self.red = color;
-        }
-        if let Some(color) = custom.blue {
-            self.blue = color;
-        }
-        if let Some(color) = custom.teal {
-            self.teal = color;
-        }
-        if let Some(color) = custom.peach {
-            self.peach = color;
-        }
-        self
-    }
 }
+
+macro_rules! define_palette_overrides {
+    ($(($field:ident, $description:literal)),+ $(,)?) => {
+        impl Palette {
+            /// Apply custom color overrides on top of this palette.
+            pub(crate) fn with_overrides(mut self, custom: &ParsedThemeColors) -> Self {
+                $(
+                    if let Some(color) = custom.$field {
+                        self.$field = color;
+                    }
+                )+
+                self
+            }
+        }
+    };
+}
+
+palette_tokens!(define_palette_overrides);
 
 #[cfg(test)]
 mod tests {

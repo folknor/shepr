@@ -44,7 +44,6 @@ pub struct AppState {
     /// current on every change of workspace order. When the bookmarked
     /// workspace vanishes, the workspace now at this index takes its place.
     pub(super) bookmark_position: usize,
-    pub should_quit: bool,
     /// The geometry each workspace was last laid out in, keyed by
     /// `WorkspaceId::number()` (no allocation on lookup): the area and cell
     /// size the server last applied to that workspace's PTYs, or spawned its
@@ -288,21 +287,6 @@ impl AppState {
 #[cfg(test)]
 use crate::test_support::{ValidatedServerConfigFixture as _, WorkspaceFixture as _};
 
-#[cfg(test)]
-use crossterm::event::{KeyCode, KeyModifiers};
-
-#[cfg(test)]
-pub fn key_matches(
-    key: &crossterm::event::KeyEvent,
-    expected_code: KeyCode,
-    expected_mods: KeyModifiers,
-) -> bool {
-    shepr_config::terminal_key_matches_combo(
-        &shepr_termio::input::TerminalKey::from(*key),
-        (expected_code, expected_mods),
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -326,7 +310,6 @@ impl AppState {
             workspaces: Vec::new(),
             bookmark: None,
             bookmark_position: 0,
-            should_quit: false,
             workspace_geometry: std::collections::HashMap::new(),
             settings: AppSettings::from_config(&shepr_config::ValidatedServerConfig::test_default()),
             next_agent_state_change_seq: 0,
@@ -441,7 +424,6 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use crossterm::event::KeyEvent;
 
     #[test]
     fn pane_settings_use_the_resolved_absolute_shell() {
@@ -634,33 +616,6 @@ mod tests {
         state.ensure_test_terminals();
 
         state.assert_invariants_for_test();
-    }
-
-    #[test]
-    fn key_matches_requires_exact_modifiers() {
-        assert!(key_matches(
-            &KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
-            KeyCode::Char('b'),
-            KeyModifiers::CONTROL,
-        ));
-
-        assert!(!key_matches(
-            &KeyEvent::new(
-                KeyCode::Char('b'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-            KeyCode::Char('b'),
-            KeyModifiers::CONTROL,
-        ));
-    }
-
-    #[test]
-    fn key_matches_letters_case_insensitively() {
-        assert!(key_matches(
-            &KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT),
-            KeyCode::Char('b'),
-            KeyModifiers::SHIFT,
-        ));
     }
 
     #[test]

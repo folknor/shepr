@@ -10,17 +10,17 @@ mod start;
 /// They must not be duplicated in every source record. All arbitration writes
 /// to those slots belong to this machine, including detector and pane exits.
 pub(super) enum HookEvent {
-    RestoreSession(shepr_agent::agent::resume::PersistedAgentSession),
+    RestoreSession(crate::agent::resume::PersistedAgentSession),
     Report {
         origin: ReportOrigin,
         state: AgentState,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: HookClockSample,
     },
     Start {
         origin: ReportOrigin,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<AgentSessionStartSource>,
         sample: HookClockSample,
@@ -38,7 +38,7 @@ pub(super) enum HookEvent {
     },
 }
 
-impl TerminalState {
+impl AgentOwnership {
     /// Effects are the only source-table output that writes pane ownership.
     /// Queries and parked reports never pass through a separate commit path.
     /// A generic `Commit` is not a selection (detector withdrawals and pane
@@ -75,7 +75,7 @@ impl TerminalState {
     pub(super) fn transition_hook_event(
         &mut self,
         event: HookEvent,
-    ) -> Option<TerminalStateMutation> {
+    ) -> Option<AgentOwnershipMutation> {
         let mutation = match event {
             HookEvent::RestoreSession(session) => {
                 self.checkpoint_candidate = None;
@@ -186,23 +186,23 @@ enum HookSourceEvent<'a> {
         seq: Option<u64>,
         sample: HookClockSample,
         reanchor: bool,
-        persisted: Option<shepr_agent::agent::resume::PersistedAgentSession>,
+        persisted: Option<crate::agent::resume::PersistedAgentSession>,
     },
     CommitStart {
         seq: Option<u64>,
         sample: HookClockSample,
         selection: Option<bool>,
-        session: shepr_agent::agent::resume::PersistedAgentSession,
-        replaced: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session: crate::agent::resume::PersistedAgentSession,
+        replaced: Option<crate::agent::resume::AgentSessionRef>,
         forget_retired: bool,
         clear_authority: bool,
     },
     Report {
         agent_label: &'a ReportedAgent,
-        session_ref: &'a Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: &'a Option<crate::agent::resume::AgentSessionRef>,
         process_present: bool,
-        anchored_session_ref: Option<&'a shepr_agent::agent::resume::AgentSessionRef>,
-        authority_session_ref: Option<&'a shepr_agent::agent::resume::AgentSessionRef>,
+        anchored_session_ref: Option<&'a crate::agent::resume::AgentSessionRef>,
+        authority_session_ref: Option<&'a crate::agent::resume::AgentSessionRef>,
     },
     Start {
         agent_label: &'a ReportedAgent,
@@ -221,11 +221,11 @@ enum HookSourceEvent<'a> {
     DetectorObservation(Instant),
     ParkStart(
         SuppressedFullLifecycleHookReport,
-        shepr_agent::agent::resume::PersistedAgentSession,
+        crate::agent::resume::PersistedAgentSession,
     ),
     ParkOrderedStart(
         SuppressedFullLifecycleHookReport,
-        shepr_agent::agent::resume::PersistedAgentSession,
+        crate::agent::resume::PersistedAgentSession,
         u64,
         HookClockSample,
     ),
@@ -239,10 +239,7 @@ enum HookSourceEvent<'a> {
     ClearSequence,
     OrderAllows(Option<u64>, HookClockSample),
     Retire(StaleFullLifecycleHookSession),
-    Forget(
-        &'a ReportedAgent,
-        &'a shepr_agent::agent::resume::AgentSessionRef,
-    ),
+    Forget(&'a ReportedAgent, &'a crate::agent::resume::AgentSessionRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +252,7 @@ enum HookStartRoute {
 enum HookSourceEffects {
     Commit {
         authority: AuthorityEffect,
-        persisted: Option<shepr_agent::agent::resume::PersistedAgentSession>,
+        persisted: Option<crate::agent::resume::PersistedAgentSession>,
     },
     None,
     Report(FullLifecycleHookReportRoute),
@@ -266,7 +263,7 @@ enum HookSourceEffects {
     DetectorObservationAllowed(bool),
     ProcessObserved(
         Option<(
-            shepr_agent::agent::resume::PersistedAgentSession,
+            crate::agent::resume::PersistedAgentSession,
             Option<PendingFullLifecycleHookReport>,
         )>,
     ),
@@ -605,11 +602,7 @@ impl HookSourceState {
         self.stale_sessions.push(session);
     }
 
-    fn forget(
-        &mut self,
-        label: &ReportedAgent,
-        session: &shepr_agent::agent::resume::AgentSessionRef,
-    ) {
+    fn forget(&mut self, label: &ReportedAgent, session: &crate::agent::resume::AgentSessionRef) {
         self.stale_sessions
             .retain(|stale| &stale.agent_label != label || &stale.session_ref != session);
     }
@@ -617,7 +610,7 @@ impl HookSourceState {
     fn park_start(
         &mut self,
         mut initial: SuppressedFullLifecycleHookReport,
-        session: shepr_agent::agent::resume::PersistedAgentSession,
+        session: crate::agent::resume::PersistedAgentSession,
     ) {
         if self.suppressed().is_none() {
             initial.pending_start = Some(session);
@@ -714,7 +707,7 @@ impl HookSourceState {
     fn observe_process(
         &mut self,
     ) -> Option<(
-        shepr_agent::agent::resume::PersistedAgentSession,
+        crate::agent::resume::PersistedAgentSession,
         Option<PendingFullLifecycleHookReport>,
     )> {
         let start_seq = self.sequence.map(|sequence| sequence.value);
@@ -800,9 +793,9 @@ impl HookSequence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SuppressedFullLifecycleHookReport {
     agent_label: ReportedAgent,
-    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+    session_ref: Option<crate::agent::resume::AgentSessionRef>,
     observed_at: Instant,
-    pending_start: Option<shepr_agent::agent::resume::PersistedAgentSession>,
+    pending_start: Option<crate::agent::resume::PersistedAgentSession>,
     pending_replacement_report: Option<PendingFullLifecycleHookReport>,
 }
 
@@ -829,14 +822,13 @@ enum FullLifecycleHookReportRoute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StaleFullLifecycleHookSession {
     agent_label: ReportedAgent,
-    session_ref: shepr_agent::agent::resume::AgentSessionRef,
+    session_ref: crate::agent::resume::AgentSessionRef,
 }
 
-impl TerminalState {
+impl AgentOwnership {
     fn warn_unrecognized_hook_identity(&self, origin: &ReportOrigin) {
         if origin.official_agent().is_none() {
             tracing::warn!(
-                pane_id = ?self.id,
                 source = %origin.source(),
                 agent_label = %origin.label(),
                 "hook report uses a custom source or agent label"
@@ -901,7 +893,7 @@ impl TerminalState {
     fn suppress_full_lifecycle_hook_report_with_session_ref(
         &mut self,
         origin: &ReportOrigin,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         reason: FullLifecycleHookSuppressionReason,
         observed_at: Instant,
     ) {
@@ -928,7 +920,7 @@ impl TerminalState {
         &mut self,
         origin: &ReportOrigin,
         state: AgentState,
-        session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: HookClockSample,
     ) -> FullLifecycleHookReportRoute {
@@ -1031,8 +1023,8 @@ impl TerminalState {
     fn same_owner_full_lifecycle_hook_authority_session_ref(
         &self,
         origin: &ReportOrigin,
-        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
-    ) -> Option<shepr_agent::agent::resume::AgentSessionRef> {
+        session_ref: &crate::agent::resume::AgentSessionRef,
+    ) -> Option<crate::agent::resume::AgentSessionRef> {
         let authority = self.hook_authority.as_ref()?;
         if !authority.origin.is_full_lifecycle() || &authority.origin != origin {
             return None;
@@ -1095,14 +1087,14 @@ impl TerminalState {
     fn conflicting_same_owner_session_ref(
         &self,
         origin: &ReportOrigin,
-        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
+        session_ref: &crate::agent::resume::AgentSessionRef,
         session_start_source: Option<AgentSessionStartSource>,
-    ) -> Option<shepr_agent::agent::resume::AgentSessionRef> {
+    ) -> Option<crate::agent::resume::AgentSessionRef> {
         origin.official_agent()?;
         let current = self.current_session_identity_for_persistence()?;
         (origin.owns(&current)
-            && current.session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
-            && session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
+            && current.session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
+            && session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
             && &current.session_ref != session_ref
             && !origin.allows_session_replacement(session_start_source))
         .then_some(current.session_ref)
@@ -1127,7 +1119,7 @@ impl TerminalState {
     }
 }
 
-impl TerminalState {
+impl AgentOwnership {
     fn known_agent_label_conflicts_with_detected_agent(&self, origin: &ReportOrigin) -> bool {
         self.detected_agent
             .is_some_and(|detected| origin.known_agent().is_some_and(|agent| agent != detected))
@@ -1136,7 +1128,7 @@ impl TerminalState {
     fn foreground_agent_confirms_different_owner_takeover(
         &self,
         origin: &ReportOrigin,
-        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
+        session_ref: &crate::agent::resume::AgentSessionRef,
         session_start_source: Option<AgentSessionStartSource>,
     ) -> bool {
         origin
@@ -1149,7 +1141,7 @@ impl TerminalState {
     fn foreground_agent_confirms_hook_authority_takeover(
         &self,
         origin: &ReportOrigin,
-        session_ref: &Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
     ) -> bool {
         session_ref.as_ref().is_some_and(|session_ref| {
             self.foreground_agent_confirms_session_owner(origin, session_ref)
@@ -1159,13 +1151,13 @@ impl TerminalState {
     fn foreground_agent_confirms_session_owner(
         &self,
         origin: &ReportOrigin,
-        session_ref: &shepr_agent::agent::resume::AgentSessionRef,
+        session_ref: &crate::agent::resume::AgentSessionRef,
     ) -> bool {
         self.detected_agent.is_some()
             && origin.known_agent() == self.detected_agent
             && origin
                 .session(session_ref.clone())
-                .and_then(|session| shepr_agent::agent::resume::plan(&session))
+                .and_then(|session| crate::agent::resume::plan(&session))
                 .is_some()
     }
 
@@ -1236,7 +1228,7 @@ impl TerminalState {
 }
 
 #[cfg(test)]
-impl TerminalState {
+impl AgentOwnership {
     fn clear_hook_report_sequence(&mut self, source: &str) {
         self.clear_hook_source_sequence(&AgentSource::parse(source));
     }
@@ -1276,7 +1268,7 @@ impl TerminalState {
 }
 
 #[cfg(test)]
-impl TerminalState {
+impl AgentOwnership {
     fn check_hook_invariants(&self) {
         for record in self.hook_sources.values() {
             record.check_invariants();
@@ -1315,7 +1307,7 @@ impl HookSourceState {
 #[cfg(test)]
 mod transition_tests {
     use super::*;
-    use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use crate::agent::resume::{AgentSessionRef, PersistedAgentSession};
     use std::time::Duration;
 
     fn sample() -> HookClockSample {
@@ -1569,7 +1561,7 @@ mod transition_tests {
         assert_eq!(record.sequence_value(), Some(1));
         assert!(record.suppressed().is_none());
         assert_eq!(record.stale_sessions()[0].session_ref, identity("old"));
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let mut terminal = AgentOwnership::new();
         terminal.apply_source_effect(effect);
         assert_eq!(terminal.hook_authority, Some(authority));
         assert!(terminal.persisted_agent_session.is_none());
@@ -1595,7 +1587,7 @@ mod transition_tests {
         assert_eq!(record.sequence_value(), Some(21));
         assert_eq!(record.stale_sessions().len(), 1);
         assert_eq!(record.stale_sessions()[0].session_ref, identity("old"));
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let mut terminal = AgentOwnership::new();
         terminal.seed_hook_authority_for_test(Some(report("old", 20, clock).authority));
         terminal.apply_source_effect(effect);
         assert!(terminal.hook_authority.is_none());
@@ -1605,7 +1597,7 @@ mod transition_tests {
     #[test]
     fn process_after_clear_installs_parked_start_through_the_public_entry_points() {
         let clock = sample();
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let mut terminal = AgentOwnership::new();
         terminal.set_persisted_agent_session(session("old"));
         terminal.set_detected_agent_process_at(Agent::Pi, clock.monotonic);
         terminal
@@ -1954,7 +1946,7 @@ mod transition_tests {
 }
 
 #[cfg(test)]
-impl TerminalState {
+impl AgentOwnership {
     fn suppressed_hook_source(&self, source: &str) -> Option<&SuppressedFullLifecycleHookReport> {
         self.hook_sources
             .get(&AgentSource::parse(source))?
@@ -1977,22 +1969,22 @@ impl TerminalState {
         source: &str,
         agent_label: &str,
         state: AgentState,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
+    ) -> Option<AgentOwnershipMutation> {
         self.set_hook_authority_at(source, agent_label, state, session_ref, seq, Instant::now())
     }
 }
 
 #[cfg(test)]
-impl TerminalState {
+impl AgentOwnership {
     pub fn set_agent_session_ref(
         &mut self,
         source: &str,
         agent_label: &str,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-    ) -> Option<TerminalStateMutation> {
+    ) -> Option<AgentOwnershipMutation> {
         self.set_agent_session_ref_at(
             ReportOrigin::parse(source, agent_label).ok()?,
             session_ref,
@@ -2005,22 +1997,22 @@ impl TerminalState {
         &mut self,
         source: &str,
         agent_label: &str,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<&str>,
-    ) -> Option<TerminalStateMutation> {
+    ) -> Option<AgentOwnershipMutation> {
         self.set_agent_session_ref_for_typed_start_source_at(
             ReportOrigin::parse(source, agent_label).ok()?,
             session_ref,
             seq,
-            shepr_agent::agent::resume::normalize_session_start_source(session_start_source),
+            crate::agent::resume::normalize_session_start_source(session_start_source),
             Instant::now(),
         )
     }
 }
 
 #[cfg(test)]
-impl TerminalState {
+impl AgentOwnership {
     pub fn set_detected_state(
         &mut self,
         agent: Option<Agent>,
@@ -2033,7 +2025,7 @@ impl TerminalState {
         &mut self,
         agent: Option<Agent>,
         fallback_state: AgentState,
-    ) -> TerminalStateMutation {
+    ) -> AgentOwnershipMutation {
         self.set_detected_state_with_screen_signals_at(
             agent,
             fallback_state,
@@ -2069,7 +2061,7 @@ impl TerminalState {
         visible_blocker: bool,
         process_exited: bool,
         now: Instant,
-    ) -> TerminalStateMutation {
+    ) -> AgentOwnershipMutation {
         self.set_detected_state_with_screen_signals_at(
             agent,
             state,
@@ -2083,11 +2075,11 @@ impl TerminalState {
 #[cfg(test)]
 mod pane_exit_tests {
     use super::*;
-    use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use crate::agent::resume::{AgentSessionRef, PersistedAgentSession};
     use shepr_platform::ChildExitReason;
 
-    fn running_terminal() -> TerminalState {
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+    fn running_terminal() -> AgentOwnership {
+        let mut terminal = AgentOwnership::new();
         let session = PersistedAgentSession::from_report(
             "shepr:pi",
             "pi",
@@ -2130,7 +2122,7 @@ mod pane_exit_tests {
     const GRACE: std::time::Duration = crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
 
     /// The detector's exit report for Pi at `at`, then its withdrawal.
-    fn pi_exits(terminal: &mut TerminalState, at: Instant) -> TerminalStateMutation {
+    fn pi_exits(terminal: &mut AgentOwnership, at: Instant) -> AgentOwnershipMutation {
         let release = terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
@@ -2349,7 +2341,7 @@ mod pane_exit_tests {
 
     #[test]
     fn a_sessionless_authority_clear_keeps_the_persisted_identity() {
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let mut terminal = AgentOwnership::new();
         // clock-io-ok: synthetic observation and report times.
         let now = Instant::now();
         terminal.set_detected_agent_process_at(Agent::Claude, now);
@@ -2374,7 +2366,7 @@ mod pane_exit_tests {
 
     #[test]
     fn an_authority_clear_keeps_the_detected_agents_own_identity() {
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let mut terminal = AgentOwnership::new();
         // clock-io-ok: synthetic observation and report times.
         let now = Instant::now();
         terminal.set_detected_agent_process_at(Agent::Claude, now);
@@ -2401,7 +2393,7 @@ mod pane_exit_tests {
 
     #[test]
     fn an_authority_clear_away_from_its_agent_keeps_its_session() {
-        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        let mut terminal = AgentOwnership::new();
         // clock-io-ok: synthetic observation and report times.
         let now = Instant::now();
         terminal.set_detected_agent_process_at(Agent::Claude, now);

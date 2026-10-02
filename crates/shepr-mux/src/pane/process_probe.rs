@@ -119,7 +119,7 @@ pub(super) fn foreground_member_cwd_different_from_shell(
         if process.pid == shell_pid {
             continue;
         }
-        let Some(cwd) = absolute_process_cwd(process.pid) else {
+        let Some(cwd) = readlink_process_cwd(process.pid) else {
             continue;
         };
         if shell_cwd != Some(&cwd) {
@@ -180,16 +180,10 @@ fn foreground_shell_agent_action_with_suspended_agent(
     ForegroundShellAgentAction::ObserveProbe
 }
 
-/// Drops retained OSC evidence when changing away from an identified agent.
-/// First acquisition keeps bytes that the newly identified process may have
-/// emitted before the process probe recognized it.
-pub(super) fn clear_osc_evidence_for_agent_transition(
-    terminal: &PaneTerminal,
-    previous_agent: Option<Agent>,
-) {
-    if previous_agent.is_some() {
-        terminal.clear_agent_osc_state();
-    }
+/// Drops retained OSC evidence after the detector confirms a transition away
+/// from an identified agent.
+pub(super) fn clear_osc_evidence_for_agent_transition(terminal: &PaneTerminal) {
+    terminal.clear_agent_osc_state();
 }
 
 pub(super) fn foreground_group_changed(
@@ -464,7 +458,7 @@ pub(super) struct ScreenReadRequest {
     pub(super) agent: Option<Agent>,
     pub(super) agent_changed: bool,
     pub(super) process_exited: bool,
-    pub(super) detection_content_seq: Option<u64>,
+    pub(super) detection_content_seq: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -665,12 +659,12 @@ impl DetectorState {
             agent,
             agent_changed: self.tick_agent_changed,
             process_exited,
-            detection_content_seq: Some(input.content_seq),
+            detection_content_seq: input.content_seq,
         }) {
             return;
         }
         let (detection, changed) =
-            match self.cached_screen_detection(agent, process_exited, Some(input.content_seq)) {
+            match self.cached_screen_detection(agent, process_exited, input.content_seq) {
                 ScreenDetectionCacheLookup::Hit(result) => (result, false),
                 ScreenDetectionCacheLookup::Miss => {
                     if agent.is_some() && screen.is_none() {
@@ -678,7 +672,7 @@ impl DetectorState {
                         return;
                     }
                     let changed =
-                        self.observe_screen_sequence(Some(input.content_seq)) && agent.is_none();
+                        self.observe_screen_sequence(input.content_seq) && agent.is_none();
                     let content = screen.map_or("", |screen| screen.screen_text.as_str());
                     let title = screen.map_or("", |screen| screen.osc_title.as_str());
                     let progress = screen.map_or("", |screen| screen.osc_progress.as_str());
@@ -692,7 +686,7 @@ impl DetectorState {
                     self.remember_screen_detection(
                         agent,
                         process_exited,
-                        Some(input.content_seq),
+                        input.content_seq,
                         detection,
                     );
                     (detection, changed)
@@ -984,9 +978,9 @@ impl DetectorState {
         )
     }
 
-    fn observe_screen_sequence(&mut self, sequence: Option<u64>) -> bool {
-        let changed = self.last_screen_scan_detection_content_seq != sequence;
-        self.last_screen_scan_detection_content_seq = sequence;
+    fn observe_screen_sequence(&mut self, sequence: u64) -> bool {
+        let changed = self.last_screen_scan_detection_content_seq != Some(sequence);
+        self.last_screen_scan_detection_content_seq = Some(sequence);
         changed
     }
 
@@ -994,11 +988,8 @@ impl DetectorState {
         &self,
         agent: Option<Agent>,
         process_exited: bool,
-        detection_content_seq: Option<u64>,
+        detection_content_seq: u64,
     ) -> ScreenDetectionCacheLookup {
-        let Some(detection_content_seq) = detection_content_seq else {
-            return ScreenDetectionCacheLookup::Miss;
-        };
         match self.last_screen_detection {
             Some(entry)
                 if entry.agent == agent
@@ -1015,16 +1006,15 @@ impl DetectorState {
         &mut self,
         agent: Option<Agent>,
         process_exited: bool,
-        detection_content_seq: Option<u64>,
+        detection_content_seq: u64,
         result: Option<AgentDetection>,
     ) {
-        self.last_screen_detection =
-            detection_content_seq.map(|detection_content_seq| ScreenDetectionCacheEntry {
-                agent,
-                process_exited,
-                detection_content_seq,
-                result,
-            });
+        self.last_screen_detection = Some(ScreenDetectionCacheEntry {
+            agent,
+            process_exited,
+            detection_content_seq,
+            result,
+        });
     }
 
     fn note_content_change(&mut self, now: std::time::Instant, group_changed: bool, changed: bool) {
@@ -1616,21 +1606,21 @@ mod tests {
             agent: None,
             agent_changed: false,
             process_exited: false,
-            detection_content_seq: Some(1),
+            detection_content_seq: 1,
         }));
-        assert!(detector.observe_screen_sequence(Some(1)));
+        assert!(detector.observe_screen_sequence(1));
         assert!(detector.should_read_screen(ScreenReadRequest {
             agent: None,
             agent_changed: false,
             process_exited: false,
-            detection_content_seq: Some(1),
+            detection_content_seq: 1,
         }));
         detector.reset();
         assert!(detector.should_read_screen(ScreenReadRequest {
             agent: None,
             agent_changed: false,
             process_exited: false,
-            detection_content_seq: Some(2),
+            detection_content_seq: 2,
         }));
     }
 

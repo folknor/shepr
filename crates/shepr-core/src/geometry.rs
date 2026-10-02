@@ -165,35 +165,39 @@ impl PaneGeometry {
     }
 }
 
+/// Physical host geometry, whose grid may be smaller than a pane's minimum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostGeometry {
-    pub pane: PaneGeometry,
+    grid: GridSize,
+    cell: Option<CellPx>,
     pub exact: bool,
 }
 
 impl HostGeometry {
     pub fn new(cols: u16, rows: u16, width: u32, height: u32, exact: bool) -> Self {
-        let pane = PaneGeometry::new(cols, rows, width, height);
+        let grid = GridSize::clamped(cols, rows);
+        let cell = CellPx::new(width, height);
         Self {
-            pane,
-            exact: exact && pane.cell().is_some(),
+            grid,
+            cell,
+            exact: exact && cell.is_some(),
         }
     }
 
     pub fn cols(self) -> u16 {
-        self.pane.cols()
+        self.grid.cols.get()
     }
 
     pub fn rows(self) -> u16 {
-        self.pane.rows()
+        self.grid.rows.get()
     }
 
     pub fn cell_width(self) -> u32 {
-        self.pane.cell_width()
+        self.cell.map_or(0, |cell| cell.width.get())
     }
 
     pub fn cell_height(self) -> u32 {
-        self.pane.cell_height()
+        self.cell.map_or(0, |cell| cell.height.get())
     }
 }
 

@@ -1,10 +1,44 @@
-//! Client shell state. Several types here derive `Debug` while carrying typed
-//! or pasted text (overlay `TextEditor`s, copy-mode search queries, queued
-//! keys, `ClientShellAction::ClipboardWrite` bytes, endpoint requests with
-//! labels, ledger `Work` search queries): never log them with `{:?}`; log ids,
-//! lengths or kinds instead.
+//! Client shell state. `TextEditor`, `TypedText` and shell endpoint requests
+//! redact their contents in `Debug`; other types here may carry typed or pasted
+//! text (queued keys and clipboard bytes), so log ids, lengths or kinds instead.
 
 use super::*;
+
+/// User-entered text stored in shell state, with redacted debug output.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(super) struct TypedText(String);
+
+impl TypedText {
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl From<String> for TypedText {
+    fn from(text: String) -> Self {
+        Self(text)
+    }
+}
+
+impl From<&str> for TypedText {
+    fn from(text: &str) -> Self {
+        Self(text.to_owned())
+    }
+}
+
+impl std::fmt::Debug for TypedText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TypedText([redacted])")
+    }
+}
 
 pub struct ClientShellConfig {
     pub(super) sidebar_width: u16,
@@ -160,10 +194,18 @@ pub(super) struct WorkspaceHit {
 
 /// One command bound for the active endpoint, with the id its answer comes
 /// back under.
-#[derive(Debug)]
 pub(crate) struct ClientShellEndpointRequest {
     pub(crate) id: String,
     pub(crate) command: shepr_protocol::command::EndpointCommand,
+}
+
+impl std::fmt::Debug for ClientShellEndpointRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientShellEndpointRequest")
+            .field("id", &self.id)
+            .field("command", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -500,7 +542,7 @@ pub(super) struct ClientCopySearchPrompt {
 pub(super) enum ClientCopyOperation {
     Motion(shepr_protocol::command::PaneCopyMotion),
     Search {
-        query: String,
+        query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
     },
@@ -525,7 +567,7 @@ pub(super) struct ClientCopyModeState {
     pub(super) entry_offset_from_bottom: usize,
     pub(super) selection: Option<ClientCopySelection>,
     pub(super) search_prompt: Option<ClientCopySearchPrompt>,
-    pub(super) search_query: String,
+    pub(super) search_query: TypedText,
     pub(super) search_direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
     pub(super) search_matches: Vec<shepr_protocol::command::PaneTextRange>,
     pub(super) search_total: u64,
@@ -1340,12 +1382,6 @@ impl ClientShellState {
     /// out. A replacement notice carries its own lifetime, so it is not cut short by its
     /// predecessor's. Returns whether anything was hidden.
     pub(crate) fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
-        let mut repaint = false;
-        if self.visible_endpoint_notice.is_none() && !self.restore_notice_queue.is_empty() {
-            self.advance_endpoint_notice();
-            repaint = true;
-        }
-
         let notice_expired = self.visible_endpoint_notice.as_ref().is_some_and(|notice| {
             self.endpoint_notice_deadline
                 .as_ref()
@@ -1355,10 +1391,10 @@ impl ClientShellState {
         });
         if notice_expired {
             self.advance_endpoint_notice();
-            repaint = true;
+            return true;
         }
 
-        repaint
+        false
     }
 
     /// Replace the visible card with the next queued boot card (a restore or
@@ -1370,34 +1406,119 @@ impl ClientShellState {
     }
 
     pub(crate) fn next_timer_deadline(&self) -> Option<std::time::Instant> {
-        let notice_deadline = self.visible_endpoint_notice.as_ref().and_then(|notice| {
-            self.endpoint_notice_deadline
-                .as_ref()
-                .and_then(|(key, body, deadline)| {
-                    (key == &notice.key && body == &notice.body).then_some(*deadline)
-                })
-        });
-        self.selection_autoscroll_deadline
-            .into_iter()
-            .chain(self.selection_repaint_deadline)
-            .chain(self.selection_highlight_clear_deadline)
-            .chain(
-                self.endpoint_error_deadline
-                    .filter(|_| self.endpoint_error.is_some()),
-            )
-            .chain(notice_deadline)
-            .chain(self.workspace_highlight_deadline())
+        SHELL_TIMERS
+            .iter()
+            .filter_map(|timer| (timer.deadline)(self))
             .min()
     }
 
-    /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize
-    /// and sidebar changes no longer do this (the retained surface is drawn clipped until the
-    /// resized one arrives); tests use it to reach the placeholder.
-    #[cfg(test)]
-    pub(crate) fn invalidate_pane_surface(&mut self) {
-        self.surfaces = PaneSurfaces::default();
-        self.hits = ShellHitMap::default();
-        self.host_mouse_pixels = None;
+    /// Runs the registered timer handlers in one pass, retaining action and request order.
+    pub(crate) fn tick_timers(&mut self, now: std::time::Instant) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        for timer in SHELL_TIMERS {
+            outcome.merge((timer.tick)(self, now));
+        }
+        outcome
+    }
+}
+
+struct ShellTimer {
+    deadline: fn(&ClientShellState) -> Option<std::time::Instant>,
+    tick: fn(&mut ClientShellState, std::time::Instant) -> ClientShellInput,
+}
+
+// This is the single inventory used for both the client's wake deadline and timer work.
+const SHELL_TIMERS: &[ShellTimer] = &[
+    ShellTimer {
+        deadline: selection_timer_deadline,
+        tick: tick_selection_timer,
+    },
+    ShellTimer {
+        deadline: selection_highlight_deadline,
+        tick: tick_selection_highlight_timer,
+    },
+    ShellTimer {
+        deadline: workspace_highlight_deadline,
+        tick: tick_workspace_highlight_timer,
+    },
+    ShellTimer {
+        deadline: endpoint_error_deadline,
+        tick: tick_endpoint_error_timer,
+    },
+    ShellTimer {
+        deadline: endpoint_notice_deadline,
+        tick: tick_endpoint_notice_timer,
+    },
+];
+
+fn selection_timer_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
+    shell
+        .selection_autoscroll_deadline
+        .into_iter()
+        .chain(shell.selection_repaint_deadline)
+        .min()
+}
+
+fn selection_highlight_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
+    shell.selection_highlight_clear_deadline
+}
+
+fn workspace_highlight_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
+    shell.workspace_highlight_deadline()
+}
+
+fn endpoint_error_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
+    shell
+        .endpoint_error_deadline
+        .filter(|_| shell.endpoint_error.is_some())
+}
+
+fn endpoint_notice_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
+    let notice = shell.visible_endpoint_notice.as_ref()?;
+    shell
+        .endpoint_notice_deadline
+        .as_ref()
+        .and_then(|(key, body, deadline)| {
+            (key == &notice.key && body == &notice.body).then_some(*deadline)
+        })
+}
+
+fn tick_selection_timer(shell: &mut ClientShellState, now: std::time::Instant) -> ClientShellInput {
+    shell.tick_selection_autoscroll(now)
+}
+
+fn tick_selection_highlight_timer(
+    shell: &mut ClientShellState,
+    now: std::time::Instant,
+) -> ClientShellInput {
+    repaint_timer_outcome(shell.tick_selection_highlight(now))
+}
+
+fn tick_workspace_highlight_timer(
+    shell: &mut ClientShellState,
+    now: std::time::Instant,
+) -> ClientShellInput {
+    repaint_timer_outcome(shell.tick_workspace_highlight(now))
+}
+
+fn tick_endpoint_error_timer(
+    shell: &mut ClientShellState,
+    now: std::time::Instant,
+) -> ClientShellInput {
+    repaint_timer_outcome(shell.tick_endpoint_error(now))
+}
+
+fn tick_endpoint_notice_timer(
+    shell: &mut ClientShellState,
+    now: std::time::Instant,
+) -> ClientShellInput {
+    repaint_timer_outcome(shell.tick_transient_banners(now))
+}
+
+fn repaint_timer_outcome(repaint: bool) -> ClientShellInput {
+    ClientShellInput {
+        repaint,
+        ..ClientShellInput::default()
     }
 }
 
@@ -1413,5 +1534,14 @@ impl ClientShellState {
     pub fn new(config: ClientShellConfig) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
         Self::new_at(config, std::time::Instant::now())
+    }
+
+    /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize
+    /// and sidebar changes no longer do this (the retained surface is drawn clipped until the
+    /// resized one arrives); tests use it to reach the placeholder.
+    pub(crate) fn invalidate_pane_surface(&mut self) {
+        self.surfaces = PaneSurfaces::default();
+        self.hits = ShellHitMap::default();
+        self.host_mouse_pixels = None;
     }
 }

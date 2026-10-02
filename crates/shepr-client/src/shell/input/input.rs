@@ -89,12 +89,11 @@ fn read_clipboard_text_bounded_with(
     }
 }
 
-fn navigate_alias_matches_left(key: &shepr_termio::input::TerminalKey) -> bool {
-    shepr_config::terminal_key_matches_combo(key, (KeyCode::Left, KeyModifiers::empty()))
-}
-
-fn navigate_alias_matches_right(key: &shepr_termio::input::TerminalKey) -> bool {
-    shepr_config::terminal_key_matches_combo(key, (KeyCode::Right, KeyModifiers::empty()))
+pub(super) fn navigate_alias_matches(
+    combo: (KeyCode, KeyModifiers),
+    key: &shepr_termio::input::TerminalKey,
+) -> bool {
+    shepr_config::terminal_key_matches_combo(key, combo)
 }
 
 macro_rules! define_navigate_actions {
@@ -118,37 +117,13 @@ fn navigate_indexed_binding_index(
     bindings: &[shepr_config::IndexedKeybind],
     key: &shepr_termio::input::TerminalKey,
 ) -> Option<usize> {
-    let actual_modifiers = shepr_config::normalize_key_combo((key.code, key.modifiers)).1;
-    for exact_modifiers in [true, false] {
-        for binding in bindings {
-            let expected_modifiers = shepr_config::normalize_key_combo(binding.trigger.combo()).1;
-            if binding.trigger.is_direct()
-                && (actual_modifiers == expected_modifiers) == exact_modifiers
-                && let Some(index) = binding.matched_index(key)
-            {
-                return Some(index);
-            }
-        }
-    }
-    None
+    shepr_config::IndexedKeybind::matched_range_index(bindings, key)
 }
 
 fn resolve_navigate_binding(
     keybinds: &shepr_config::Keybinds,
     key: &shepr_termio::input::TerminalKey,
 ) -> Option<NavigateAction> {
-    macro_rules! alias_matches {
-        (None, $key:expr) => {
-            false
-        };
-        (Left, $key:expr) => {
-            navigate_alias_matches_left($key)
-        };
-        (Right, $key:expr) => {
-            navigate_alias_matches_right($key)
-        };
-    }
-
     macro_rules! resolve_navigate {
         (
             actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
@@ -158,7 +133,8 @@ fn resolve_navigate_binding(
         ) => {{
             $(
                 if keybinds.navigate.$navigate_field.matches_direct_key(key)
-                    || alias_matches!($navigate_alias, key)
+                    || shepr_config::navigate_alias!($navigate_alias)
+                        .is_some_and(|combo| navigate_alias_matches(combo, key))
                 {
                     return Some(NavigateAction::$navigate_variant);
                 }
@@ -1098,6 +1074,15 @@ mod tests {
         state
     }
 
+    #[test]
+    fn navigate_indexed_helper_uses_the_configured_range_matcher() {
+        let state = shell();
+        let bindings = &state.config.keybinds.keybinds.navigate.switch_workspace;
+        let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('3'), KeyModifiers::empty());
+
+        assert_eq!(navigate_indexed_binding_index(bindings, &key), Some(2));
+    }
+
     fn test_pane_id() -> shepr_protocol::PublicPaneId {
         let workspace =
             shepr_protocol::WorkspaceId::from_number(1).expect("one-based workspace number");
@@ -1119,7 +1104,7 @@ mod tests {
             entry_offset_from_bottom: 0,
             selection: None,
             search_prompt: None,
-            search_query: String::new(),
+            search_query: TypedText::default(),
             search_direction: None,
             search_matches: Vec::new(),
             search_total: 0,

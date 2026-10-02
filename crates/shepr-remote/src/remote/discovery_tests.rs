@@ -10,7 +10,6 @@ fn executable(path: &'static str) -> RemoteExecutable {
 /// from zero over this fake's whole life) that times out, as an attempt deadline would.
 struct FakeHost {
     account_shell: Option<&'static str>,
-    sh: Option<&'static str>,
     known: Vec<&'static str>,
     matching: &'static str,
     calls: Vec<String>,
@@ -29,7 +28,6 @@ impl FakeHost {
     ) -> Self {
         Self {
             account_shell,
-            sh: None,
             known,
             matching,
             calls: Vec::new(),
@@ -75,11 +73,6 @@ impl DiscoverySteps for FakeHost {
         Ok(self.account_shell.map(executable))
     }
 
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        self.call("sh".into())?;
-        Ok(self.sh.map(executable))
-    }
-
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
         self.call("known".into())?;
         Ok(self.known.iter().map(|path| executable(path)).collect())
@@ -106,8 +99,8 @@ fn uninterrupted_discovery_runs_each_round_trip_once() {
         .advance(&mut host)
         .expect("a matching candidate is found");
     assert_eq!(found.as_str(), "/home/u/.cargo/bin/shepr");
-    // The account shell found a path, so the /bin/sh fallback is skipped, and the
-    // duplicate from the known locations is probed once.
+    // The account-shell environment supplied the path, and its duplicate from
+    // the known locations is probed once.
     assert_eq!(
         host.calls,
         [
@@ -126,9 +119,9 @@ fn a_timed_out_attempt_resumes_at_the_round_trip_it_did_not_finish() {
         vec!["/home/u/.cargo/bin/shepr", "/home/u/.local/bin/shepr"],
         "/home/u/.local/bin/shepr",
     );
-    host.sh = Some("/opt/shepr");
-    // Every attempt runs out of time after two round trips.
-    host.fail_at = vec![2, 5, 8];
+    // The first candidate probe runs out of time and resumes without repeating
+    // the completed PATH and known-location round trips.
+    host.fail_at = vec![2];
     let mut progress = DiscoveryProgress::default();
     let mut attempts = 0;
     let found = loop {
@@ -148,10 +141,7 @@ fn a_timed_out_attempt_resumes_at_the_round_trip_it_did_not_finish() {
         host.calls,
         [
             "account-shell",
-            "sh",
             "known",
-            "known",
-            "probe /opt/shepr",
             "probe /home/u/.cargo/bin/shepr",
             "probe /home/u/.cargo/bin/shepr",
             "probe /home/u/.local/bin/shepr",
@@ -310,9 +300,6 @@ fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
     impl DiscoverySteps for LinkDrop {
         fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
             self.0.path_via_account_shell()
-        }
-        fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-            self.0.path_via_sh()
         }
         fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
             self.0.known_locations()
@@ -531,9 +518,6 @@ fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
                 ),
             )
         }
-        fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-            Ok(None)
-        }
         fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
             Ok(Vec::new())
         }
@@ -675,10 +659,6 @@ struct RejectingHost {
 impl DiscoverySteps for RejectingHost {
     fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
         Ok(Some(executable("/usr/bin/shepr")))
-    }
-
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        Ok(None)
     }
 
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {

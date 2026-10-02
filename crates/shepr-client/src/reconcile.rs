@@ -77,7 +77,7 @@ impl ClientLoop {
             &mut self.next_view_serial,
             now,
         ) {
-            let message = format!("{} is not ready", self.state.shell.endpoint_label(&to));
+            let message = format!("{} is not ready", to.display_label());
             present_notice(&mut self.state, message);
         }
         view::send_focus(&mut self.state.choice, &mut self.write_stream);
@@ -127,7 +127,7 @@ impl ClientLoop {
     /// step of this same turn turns it off.
     fn fail_move(&mut self, notice: impl FnOnce(&str) -> String) {
         if let Some(failed) = self.state.choice.fail_move() {
-            let message = notice(self.state.shell.endpoint_label(&failed.to));
+            let message = notice(failed.to.display_label());
             present_notice(&mut self.state, message);
         }
     }
@@ -151,7 +151,7 @@ impl ClientLoop {
         cancel_endpoint_commands(&mut self.state.shell, cancelled);
         self.state.shell.mark_endpoint_disconnected(id);
         self.state.shell.set_endpoint_status(id, status);
-        let label = self.state.shell.endpoint_label(id);
+        let label = id.display_label();
         match lost {
             Lost::Shown => {
                 let message = format!("{label} {notice}");

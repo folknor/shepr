@@ -24,6 +24,8 @@ mod preflight;
 mod process;
 #[path = "remote/server_lifecycle.rs"]
 mod server_lifecycle;
+#[path = "remote/shell_command.rs"]
+mod shell_command;
 #[path = "remote/ssh.rs"]
 mod ssh;
 
@@ -32,6 +34,7 @@ use bridge::*;
 use discovery::*;
 use launch::*;
 use server_lifecycle::*;
+use shell_command::*;
 use ssh::*;
 
 pub use crate::machine::SshTarget;

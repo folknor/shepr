@@ -25,7 +25,7 @@ pub struct ThemeConfig {
 }
 
 macro_rules! define_custom_theme_colors {
-    ($($field:ident),+ $(,)?) => {
+    ($(($field:ident, $description:literal)),+ $(,)?) => {
         /// Per-token color overrides. All fields optional - only set what you want to change.
         #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
         #[serde(default)]
@@ -58,27 +58,7 @@ macro_rules! define_custom_theme_colors {
     };
 }
 
-define_custom_theme_colors!(
-    accent,
-    panel_bg,
-    sidebar_bg,
-    active_row_bg,
-    selection_bg,
-    surface0,
-    surface1,
-    surface_dim,
-    overlay0,
-    overlay1,
-    text,
-    subtext0,
-    mauve,
-    green,
-    yellow,
-    red,
-    blue,
-    teal,
-    peach,
-);
+crate::theme::palette_tokens!(define_custom_theme_colors);
 
 fn parse_configured_color(
     field: &str,
@@ -148,28 +128,8 @@ pub(crate) fn try_parse_color(s: &str) -> Option<ratatui::style::Color> {
         _ => {}
     }
 
-    // Check the digits as bytes before slicing: a byte length of 6 or 3 says
-    // nothing about character boundaries ("#aééb" is 6 bytes), and
-    // `from_str_radix` would also accept a leading '+'.
-    if let Some(hex) = s.strip_prefix('#')
-        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        // Every byte is an ASCII hex digit here, so the arithmetic stays in range.
-        let digit = |byte: u8| match byte {
-            b'0'..=b'9' => byte - b'0',
-            _ => byte.to_ascii_lowercase() - b'a' + 10,
-        };
-        match *hex.as_bytes() {
-            [r1, r2, g1, g2, b1, b2] => {
-                return Some(Color::Rgb(
-                    digit(r1) * 16 + digit(r2),
-                    digit(g1) * 16 + digit(g2),
-                    digit(b1) * 16 + digit(b2),
-                ));
-            }
-            [r, g, b] => return Some(Color::Rgb(digit(r) * 17, digit(g) * 17, digit(b) * 17)),
-            _ => {}
-        }
+    if let Some((red, green, blue)) = try_parse_hex_rgb(&s) {
+        return Some(Color::Rgb(red, green, blue));
     }
 
     if let Some(inner) = s.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
@@ -204,6 +164,28 @@ pub(crate) fn try_parse_color(s: &str) -> Option<ratatui::style::Color> {
         "lightcyan" => Color::LightCyan,
         _ => return None,
     })
+}
+
+/// Parse a strict `#RGB` or `#RRGGBB` string without trimming or normalization.
+pub(crate) fn try_parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.strip_prefix('#')?;
+    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => byte - b'0',
+        _ => byte.to_ascii_lowercase() - b'a' + 10,
+    };
+    match *hex.as_bytes() {
+        [r1, r2, g1, g2, b1, b2] => Some((
+            digit(r1) * 16 + digit(r2),
+            digit(g1) * 16 + digit(g2),
+            digit(b1) * 16 + digit(b2),
+        )),
+        [r, g, b] => Some((digit(r) * 17, digit(g) * 17, digit(b) * 17)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

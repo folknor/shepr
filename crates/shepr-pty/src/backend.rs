@@ -48,8 +48,8 @@ pub(crate) struct OpenedPty {
 pub struct SpawnedPty {
     pub master_fd: OwnedFd,
     pub child: PaneChild,
-    /// The directories the child tries, in order; its `ChdirOk` names one by
-    /// index.
+    /// The directories the child tries, in order; its chdir status record names
+    /// a candidate by index.
     pub cwd_candidates: Vec<std::path::PathBuf>,
     /// The launch's claim on the child's status channel.
     pub status: Registration,
@@ -486,19 +486,19 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
         child_exit(EXIT_SETUP_FAILED);
     }
     let mut selected = None;
-    let mut requested_errno = 0;
+    let mut last_failed_candidate = None;
     for (index, dir) in plan.dirs.iter().enumerate() {
         // SAFETY: `dir` points at a NUL-terminated string the fork copied.
         if unsafe { libc::chdir(*dir) } == 0 {
             selected = Some(index);
             break;
         }
-        if index == 0 {
-            requested_errno = errno();
-        }
+        last_failed_candidate = Some((u32::try_from(index).unwrap_or(u32::MAX), errno()));
     }
     let Some(index) = selected else {
-        send_record(status, &launch::chdir_failed_record(requested_errno));
+        if let Some((index, errno)) = last_failed_candidate {
+            send_record(status, &launch::chdir_failed_record(index, errno));
+        }
         child_exit(EXIT_LAUNCH_FAILED);
     };
     send_record(
@@ -822,7 +822,13 @@ mod tests {
         cmd.cwd(scratch.join("missing"));
         cmd.require_cwd();
         let (mut spawned, records) = spawn_and_read_status(&cmd);
-        assert_eq!(records, [LaunchRecord::ChdirFailed(libc::ENOENT)]);
+        assert_eq!(
+            records,
+            [LaunchRecord::ChdirFailed {
+                index: 0,
+                errno: libc::ENOENT,
+            }]
+        );
         spawned.child.wait().expect("reap the failed launch");
     }
 

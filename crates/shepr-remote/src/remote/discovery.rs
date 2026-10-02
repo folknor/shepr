@@ -8,13 +8,10 @@ use std::process::Output;
 /// [`DiscoveryProgress`] sequences them; the seam exists so that sequencing, and resuming
 /// it, can be tested without a remote host.
 pub(super) trait DiscoverySteps {
-    /// `command -v` through sshd's non-login command in the account's configured shell.
-    /// No login mode is requested: profile scripts can print into the path result,
-    /// prompt without a terminal, or run arbitrary setup commands. The known-path
-    /// probe below covers the standard install directories independently.
+    /// `command -v` under `/bin/sh`, started by sshd's non-login account shell so
+    /// its environment supplies the PATH. The known-path probe below covers the
+    /// standard install directories independently.
     fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>>;
-    /// `command -v` through `/bin/sh`, for account shells such as xonsh that reject it.
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>>;
     /// Executables in `$CARGO_HOME/bin` (or `$HOME/.cargo/bin`) and `$HOME/.local/bin`.
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>>;
     /// Whether `candidate` passes the caller's verification.
@@ -40,19 +37,8 @@ pub(super) struct SshDiscovery<'a> {
 
 impl DiscoverySteps for SshDiscovery<'_> {
     fn path_via_account_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        let output = self
-            .ssh
-            .user_shell_output(&format!("command -v {REMOTE_INSTALL_NAME}"))?;
-        path_lookup_result_with_rejected_candidate(
-            &output,
-            &mut self.rejected_shell_unsafe_candidate,
-        )
-    }
-
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-        let output = self
-            .ssh
-            .sh_output(&format!("command -v {REMOTE_INSTALL_NAME}\n"))?;
+        let script = PosixScript::new(format!("command -v {REMOTE_INSTALL_NAME}"));
+        let output = self.ssh.sh_output(&script)?;
         path_lookup_result_with_rejected_candidate(
             &output,
             &mut self.rejected_shell_unsafe_candidate,
@@ -60,9 +46,8 @@ impl DiscoverySteps for SshDiscovery<'_> {
     }
 
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
-        let output = self
-            .ssh
-            .sh_output(&known_remote_binary_candidate_script())?;
+        let script = PosixScript::new(known_remote_binary_candidate_script());
+        let output = self.ssh.sh_output(&script)?;
         if !output.status.success() {
             return Err(command_failed("remote binary discovery failed", &output));
         }
@@ -124,15 +109,14 @@ fn path_lookup_result_with_rejected_candidate(
 /// What full discovery of the remote executable has learned so far: the result of every
 /// SSH round trip that already completed.
 ///
-/// Discovery is several round trips (an account-shell `command -v`, a `/bin/sh` `command -v`
-/// when that finds nothing, the known-locations script, then a status probe per candidate
-/// until one matches), and without connection sharing each is a cold SSH connect. On a
-/// slow enough link they do not all fit in one connection attempt's budget. A configured
-/// machine's connector keeps its progress across attempts, so the next attempt resumes
-/// with the first round trip that has not completed instead of starting over. Every
-/// round trip is capped well below the attempt budget, so each attempt completes at
-/// least one and discovery finishes after a bounded number of attempts, each of which
-/// still ends within the budget.
+/// Discovery is several round trips (an account-shell environment `command -v`, the
+/// known-locations script, then a status probe per candidate until one matches), and
+/// without connection sharing each is a cold SSH connect. On a slow enough link they do
+/// not all fit in one connection attempt's budget. A configured machine's connector keeps
+/// its progress across attempts, so the next attempt resumes with the first round trip
+/// that has not completed instead of starting over. Every round trip is capped well below
+/// the attempt budget, so each attempt completes at least one and discovery finishes after
+/// a bounded number of attempts, each of which still ends within the budget.
 ///
 /// Progress survives transient network failures and full round-trip timeouts that may
 /// be waiting for authentication, because no remote command returned a result. Any SSH
@@ -143,7 +127,6 @@ fn path_lookup_result_with_rejected_candidate(
 #[derive(Default)]
 pub(crate) struct DiscoveryProgress {
     account_shell_path: Option<Option<RemoteExecutable>>,
-    sh_path: Option<Option<RemoteExecutable>>,
     /// Every candidate in probe order, once the known-locations script has run.
     candidates: Option<Vec<RemoteExecutable>>,
     /// How many of `candidates` were probed and did not match.
@@ -189,16 +172,7 @@ impl DiscoveryProgress {
             self.account_shell_path = Some(steps.path_via_account_shell()?);
             self.remember_rejected_candidate(steps);
         }
-        let mut path_candidate = self.account_shell_path.clone().flatten();
-        if path_candidate.is_none() {
-            // Non-POSIX account shells such as xonsh reject `command -v`; retry through
-            // /bin/sh while retaining the account-shell probe for its PATH.
-            if self.sh_path.is_none() {
-                self.sh_path = Some(steps.path_via_sh()?);
-                self.remember_rejected_candidate(steps);
-            }
-            path_candidate = self.sh_path.clone().flatten();
-        }
+        let path_candidate = self.account_shell_path.clone().flatten();
         if self.candidates.is_none() {
             let mut candidates = Vec::new();
             if let Some(candidate) = path_candidate {
@@ -378,11 +352,12 @@ pub(super) fn remote_client_status(
     // a diagnostic the operator needs to see.
     // limits-exempt: a shell exit status chosen for the remote command contract, not a bound.
     const CANDIDATE_NOT_EXECUTABLE: i32 = 125;
-    let status_command = remote_shepr.status_client_command();
-    let command = format!(
-        "test -x {} || exit {CANDIDATE_NOT_EXECUTABLE}; {status_command}",
+    let status_command = PosixScript::new(remote_shepr.status_client_command());
+    let command = PosixScript::new(format!(
+        "test -x {} || exit {CANDIDATE_NOT_EXECUTABLE}; {}",
         remote_shepr.quoted(),
-    );
+        status_command.as_str(),
+    ));
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         if output.status.code() == Some(CANDIDATE_NOT_EXECUTABLE) {

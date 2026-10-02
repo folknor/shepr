@@ -17,13 +17,38 @@ use crate::limits::{
 /// the address, so a caller that ran it over SSH can tell "the server already
 /// exited" from any other failure without parsing stderr.
 // limits-exempt: process exit status shared by the server stop command and its SSH caller.
-pub const NO_SERVER_EXIT_CODE: i32 = 4;
+const NO_SERVER_EXIT_CODE: i32 = 4;
 
 /// The exit status `shepr server stop --expect-boot` ends with when a different
 /// boot is found, either at the stop request or while the named boot shuts
 /// down, so an SSH caller can identify a changed occupant without parsing stderr.
 // limits-exempt: process exit status shared by the server stop command and its SSH caller.
-pub const BOOT_MISMATCH_EXIT_CODE: i32 = 3;
+const BOOT_MISMATCH_EXIT_CODE: i32 = 3;
+
+/// A server-stop outcome that a caller can distinguish by process exit code.
+/// The CLI uses this to encode the outcome; SSH callers use it to decode it.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerStopExit {
+    NoServer = NO_SERVER_EXIT_CODE,
+    BootMismatch = BOOT_MISMATCH_EXIT_CODE,
+}
+
+impl ServerStopExit {
+    /// The process exit status for this stop outcome.
+    pub const fn code(self) -> i32 {
+        self as i32
+    }
+
+    /// Decodes a process exit status emitted by `shepr server stop`.
+    pub const fn from_code(code: i32) -> Option<Self> {
+        match code {
+            NO_SERVER_EXIT_CODE => Some(Self::NoServer),
+            BOOT_MISMATCH_EXIT_CODE => Some(Self::BootMismatch),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum ServerStopError {
@@ -578,9 +603,9 @@ fn send_stop_request(
     match client.request_until(request, deadline) {
         Ok(response) => match response.result {
             crate::schema::ResponseResult::Ok {} => Ok(()),
-            result => Err(ServerStopError::Protocol(format!(
-                "unexpected stop result: {result:?}"
-            ))),
+            _ => Err(ServerStopError::Protocol(
+                "unexpected stop result from server".into(),
+            )),
         },
         Err(ApiClientDeadlineError::Connect(error)) => {
             Err(stop_socket_io_error(socket_path, label, error))
@@ -1008,7 +1033,8 @@ mod tests {
         assert!(
             matches!(
                 &error,
-                ServerStopError::Protocol(message) if message.contains("unexpected stop result")
+                ServerStopError::Protocol(message)
+                    if message == "unexpected stop result from server"
             ),
             "{error}"
         );

@@ -785,7 +785,7 @@ fn configured_machines_start_connecting_without_a_snapshot() {
     let machine = remote_machine();
     let remote = ClientEndpointId::Ssh(machine.label.clone());
     state.set_machines(&[machine]);
-    assert_eq!(state.endpoint_label(&remote), "Build");
+    assert_eq!(remote.display_label(), "Build");
     assert_eq!(
         state.endpoint_status(&remote),
         Some(ClientEndpointStatus::Connecting)

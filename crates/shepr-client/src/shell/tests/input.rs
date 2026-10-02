@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
+    let left = shepr_termio::input::TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
+    let right = shepr_termio::input::TerminalKey::new(KeyCode::Right, KeyModifiers::empty());
+    let modified_left = shepr_termio::input::TerminalKey::new(KeyCode::Left, KeyModifiers::SHIFT);
+    let left_alias =
+        shepr_config::navigate_alias!(Left).expect("the navigate table defines its left alias");
+    let right_alias =
+        shepr_config::navigate_alias!(Right).expect("the navigate table defines its right alias");
+
+    assert!(super::super::input::navigate_alias_matches(
+        left_alias, &left
+    ));
+    assert!(super::super::input::navigate_alias_matches(
+        right_alias,
+        &right
+    ));
+    assert!(!super::super::input::navigate_alias_matches(
+        left_alias,
+        &modified_left
+    ));
+}
+
+#[test]
 fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
     for mode in [ClientShellMode::Prefix, ClientShellMode::Navigate] {
         let mut state =

@@ -273,8 +273,9 @@ fn transient_cards_do_not_discard_queued_restore_cards() {
     };
     state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind);
     state.receive_paste_rejection("too large".into());
-    state.visible_endpoint_notice = None;
-    assert!(state.tick_transient_banners(std::time::Instant::now()));
+    let now = std::time::Instant::now();
+    state.endpoint_notice_drawn(now);
+    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
         state
             .visible_endpoint_notice

@@ -1,14 +1,14 @@
 use super::*;
 
-impl TerminalState {
+impl AgentOwnership {
     pub(super) fn transition_start(
         &mut self,
         origin: &ReportOrigin,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
+        session_start_source: Option<crate::agent::resume::AgentSessionStartSource>,
         sample: impl Into<HookClockSample>,
-    ) -> Option<TerminalStateMutation> {
+    ) -> Option<AgentOwnershipMutation> {
         let sample = sample.into();
         let now = sample.monotonic;
         self.warn_unrecognized_hook_identity(origin);
@@ -87,7 +87,7 @@ impl TerminalState {
                     },
                     persisted_session,
                 ));
-            return Some(TerminalStateMutation::default());
+            return Some(AgentOwnershipMutation::default());
         }
         if start_route == HookStartRoute::ParkRecognizedStart {
             if !Self::session_start_source_is_recognized(session_start_source) {
@@ -126,30 +126,29 @@ impl TerminalState {
             if process_present {
                 self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
                 let current_session = self.current_session_identity_for_persistence();
-                return Some(TerminalStateMutation {
+                return Some(AgentOwnershipMutation {
                     effective_state_change: self
                         .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                     session_ref_changed: previous_session != current_session,
                     agent_released: false,
                 });
             }
-            return Some(TerminalStateMutation::default());
+            return Some(AgentOwnershipMutation::default());
         }
         let session_replacement_allowed = origin.allows_session_replacement(session_start_source);
         let session_agent = origin.official_agent()?;
-        let replacing_identity_only_session = session_agent
-            .descriptor()
-            .session_identity_only_integration
-            && session_replacement_allowed
-            && self
-                .current_session_identity_for_persistence()
-                .is_some_and(|current| {
-                    origin.owns(&current)
-                        && current.session_ref.kind()
-                            == shepr_agent::agent::resume::AgentSessionRefKind::Id
-                        && session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
-                        && current.session_ref != session_ref
-                });
+        let replacing_identity_only_session =
+            session_agent.descriptor().session_identity_only_integration
+                && session_replacement_allowed
+                && self
+                    .current_session_identity_for_persistence()
+                    .is_some_and(|current| {
+                        origin.owns(&current)
+                            && current.session_ref.kind()
+                                == crate::agent::resume::AgentSessionRefKind::Id
+                            && session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
+                            && current.session_ref != session_ref
+                    });
         if replacing_identity_only_session && !process_present {
             return None;
         }
@@ -224,7 +223,7 @@ impl TerminalState {
         // A committed start is a selection, even of the same identity again.
         self.checkpoint_candidate = None;
         let current_session = self.current_session_identity_for_persistence();
-        Some(TerminalStateMutation {
+        Some(AgentOwnershipMutation {
             effective_state_change: self
                 .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
             session_ref_changed: previous_session != current_session,

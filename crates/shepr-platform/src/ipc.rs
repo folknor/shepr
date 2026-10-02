@@ -4,9 +4,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
+use shepr_core::socket_path::SocketPath;
 
 pub type LocalListener = std::os::unix::net::UnixListener;
 pub type LocalStream = std::os::unix::net::UnixStream;
@@ -91,7 +93,7 @@ pub fn accept_peer(listener: std::os::fd::RawFd, admission: PeerAdmission) -> Ac
     let credentials = match peer_credentials(fd.as_raw_fd()) {
         Ok(credentials) => credentials,
         Err(error) => {
-            tracing::warn!(%error, "could not authenticate accepted socket peer");
+            warn_peer_rejection("credential lookup failed", Some(&error));
             return Accepted::RetryNow;
         }
     };
@@ -103,13 +105,62 @@ pub fn accept_peer(listener: std::os::fd::RawFd, admission: PeerAdmission) -> Ac
     // A command peer outside our PID namespace may report pid zero. Launch
     // peers are our own forked children and need a positive pid for routing.
     if !admitted || (matches!(admission, PeerAdmission::ExactOwner) && credentials.pid <= 0) {
-        tracing::warn!("rejected accepted socket peer credentials");
+        warn_peer_rejection("credentials were not admitted", None);
         return Accepted::RetryNow;
     }
     Accepted::Peer(AdmittedPeer {
         fd,
         pid: u32::try_from(credentials.pid).unwrap_or(0),
     })
+}
+
+use super::limits::PEER_REJECTION_WARNING_INTERVAL;
+
+struct PeerRejectionWarningState {
+    last_warning: Option<Instant>,
+    suppressed: u64,
+}
+
+static PEER_REJECTION_WARNING_STATE: OnceLock<Mutex<PeerRejectionWarningState>> = OnceLock::new();
+
+/// Rejected local peers are expected to be able to reach the socket. Keep one
+/// noisy process from turning repeated failed admission into an unbounded log
+/// stream, while periodically reporting the reason and number suppressed.
+fn warn_peer_rejection(reason: &'static str, error: Option<&io::Error>) {
+    let state = PEER_REJECTION_WARNING_STATE.get_or_init(|| {
+        Mutex::new(PeerRejectionWarningState {
+            last_warning: None,
+            suppressed: 0,
+        })
+    });
+    // clock-io-ok: the warning rate limit measures real time between accepts.
+    let now = Instant::now();
+    let suppressed = {
+        let mut state = match state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let should_warn = match state.last_warning {
+            None => true,
+            Some(last) => now.saturating_duration_since(last) >= PEER_REJECTION_WARNING_INTERVAL,
+        };
+        if should_warn {
+            state.last_warning = Some(now);
+            Some(std::mem::take(&mut state.suppressed))
+        } else {
+            state.suppressed = state.suppressed.saturating_add(1);
+            None
+        }
+    };
+    let Some(suppressed) = suppressed else {
+        return;
+    };
+    tracing::warn!(
+        reason,
+        error = ?error,
+        suppressed,
+        "accepted socket peer was not admitted; further rejection warnings are rate-limited"
+    );
 }
 
 fn classify_accept_failure(error: io::Error) -> Accepted {
@@ -508,16 +559,11 @@ pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result
         )
     })?;
 
-    let bytes = path.as_os_str().as_bytes();
+    let socket_path = SocketPath::new(path.to_path_buf())?;
+    let bytes = socket_path.as_path().as_os_str().as_bytes();
     // SAFETY: `sockaddr_un` is plain data for which all-zero bytes is a valid
     // (empty) value.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.len() >= address.sun_path.len() || bytes.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("socket path {} cannot be connected to", path.display()),
-        ));
-    }
     address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)
         .map_err(|_| io::Error::other("AF_UNIX does not fit sa_family_t"))?;
     for (target, byte) in address.sun_path.iter_mut().zip(bytes) {

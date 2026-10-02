@@ -81,7 +81,7 @@ pub struct App {
     pub(crate) resume_schedule: resume_schedule::ResumeSchedule,
     /// True after a live foreground client reports host colors this boot. A
     /// restored session theme remains the fallback until this report arrives.
-    pub(crate) live_host_theme_reported: bool,
+    live_host_theme_reported: bool,
     /// The next time automatic workspace creation may retry after a failure;
     /// the loop's deadline wakes it then.
     default_workspace_retry_at: Option<Instant>,
@@ -280,7 +280,6 @@ impl App {
             workspaces,
             bookmark: None,
             bookmark_position: 0,
-            should_quit: false,
             workspace_geometry: std::collections::HashMap::new(),
             settings,
             next_agent_state_change_seq: 0,
@@ -378,7 +377,7 @@ impl App {
         let cwd = self.resolve_new_terminal_cwd(None);
         let preserve_checkpoint = self.preserves_pane_exit_checkpoint();
 
-        match self.create_workspace_without_save(&cwd, geometry) {
+        match self.create_workspace(&cwd, geometry) {
             Ok(_index) => {
                 self.default_workspace_retry_delay = None;
                 // Callers include non-mutating API requests and client
@@ -424,12 +423,12 @@ mod tests {
         EndpointCommand, EndpointReply, PaneSplitParams, PaneTarget, SplitDirection,
     };
 
-    // Tests build apps that never persist their session; `AppPolicy::Test`
-    // names that intent and behaves exactly as `Suspended`.
+    // Test constructors say why session restore and persistence are disabled;
+    // the runtime policy name `Suspended` describes a different server state.
     impl AppPolicy {
         #[expect(
             non_upper_case_globals,
-            reason = "spelled like a variant so call sites read as one"
+            reason = "spelled like a variant so test constructors read as one"
         )]
         pub(crate) const Test: Self = Self::Suspended;
     }
@@ -560,7 +559,7 @@ mod tests {
             original
         );
 
-        app.policy = AppPolicy::Test;
+        app.policy = AppPolicy::Suspended;
     }
 
     #[test]
@@ -1094,14 +1093,14 @@ mod tests {
         assert!(app.session_saver.autosave_deadline().is_some());
 
         release.complete(Ok(()));
-        app.policy = AppPolicy::Test;
+        app.policy = AppPolicy::Suspended;
         app.save_session_now();
     }
 
     #[test]
     fn final_session_save_joins_background_writer_before_returning() {
         let mut app = test_app();
-        app.policy = AppPolicy::Test;
+        app.policy = AppPolicy::Suspended;
         let release = app.session_saver.hold_test_save_in_flight();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let releaser = std::thread::spawn(move || {

@@ -97,8 +97,8 @@ pub(super) fn remote_server_status(
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<RemoteServerStatus> {
     let args = RemoteCliCommand::ServerStatus.args();
-    let command = remote_shepr.command(&args);
-    let output = ssh.sh_output(&command)?;
+    let script = remote_shepr.command_as_posix_script(&args);
+    let output = ssh.sh_output(&script)?;
     if !output.status.success() {
         return Err(command_failed("remote server status failed", &output));
     }

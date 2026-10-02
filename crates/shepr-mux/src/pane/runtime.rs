@@ -25,9 +25,11 @@ use shepr_pty::ChildIo;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
 
 pub struct TerminalDirtyPatchSnapshot {
-    pub patch: TerminalDirtyPatchOutcome,
+    /// `None` means the terminal is clean. An unavailable or fallback read
+    /// produces no snapshot.
+    pub patch: Option<TerminalDirtyPatch>,
     pub content_revision: u64,
-    pub scroll_metrics: Option<ScrollMetrics>,
+    pub scroll_metrics: ScrollMetrics,
     pub mouse_reporting: bool,
     pub sgr_pixel_mouse: bool,
     pub alternate_screen_active: bool,
@@ -840,9 +842,7 @@ impl PtySetup<'_> {
             channel: status_channel,
             registration: spawned.status,
             cwd_candidates: spawned.cwd_candidates,
-            program: cmd
-                .get_env(shepr_core::env::ChildEnv::Shell)
-                .map_or_else(String::new, |shell| shell.to_string_lossy().into_owned()),
+            program: cmd.program().to_string_lossy().into_owned(),
         };
         let pid = child.id();
         crate::logging::pane_spawned(pane_id.raw(), pid);
@@ -1275,10 +1275,7 @@ impl PaneRuntime {
         self.terminal.alternate_screen_active()
     }
 
-    pub fn cursor_state(&self, area: Rect, show_cursor: bool) -> Option<TerminalCursorState> {
-        if !show_cursor {
-            return None;
-        }
+    pub fn cursor_state(&self, area: Rect) -> Option<TerminalCursorState> {
         let cursor = self.terminal.cursor_state()?;
         if cursor.x >= area.width || cursor.y >= area.height {
             return None;
@@ -1302,6 +1299,7 @@ impl PaneRuntime {
         self.terminal.synchronized_output_state()
     }
 
+    /// Live text returned by the server's detect capture API.
     pub fn detection_text(&self) -> String {
         self.terminal.detection_text()
     }
@@ -1315,11 +1313,6 @@ impl PaneRuntime {
     /// Unchanged seeded history rows are excluded from the screen text.
     pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
         self.terminal.agent_detection_inputs()
-    }
-
-    /// The pane's primary-screen history, read now with nothing cached.
-    pub fn snapshot_history(&self) -> Option<String> {
-        self.terminal.primary_history_ansi()
     }
 
     /// A handle that reads this pane's history from any thread, so a save
@@ -1568,7 +1561,6 @@ impl PaneRuntime {
         let cwd = leader_cwd.or_else(|| {
             let shell_cwd = readlink_process_cwd(pid);
             foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref())
-                .filter(|cwd| !crate::workspace::process_cwd_is_deleted(cwd))
         });
         (self.child_liveness.live_pid() == Some(pid))
             .then_some(cwd)
@@ -1856,7 +1848,7 @@ mod tests {
             .expect("snapshot");
         assert!(snapshot.content_revision > before);
         assert_eq!(snapshot.content_revision, runtime.content_seq());
-        assert_eq!(snapshot.scroll_metrics, runtime.scroll_metrics());
+        assert_eq!(Some(snapshot.scroll_metrics), runtime.scroll_metrics());
         let before_theme = snapshot.content_revision;
         runtime
             .terminal
@@ -1885,7 +1877,7 @@ mod tests {
             .collect_dirty_patch_snapshot(10, 5)
             .expect("test precondition");
         assert!(snapshot.content_revision > before);
-        assert!(!matches!(snapshot.patch, TerminalDirtyPatchOutcome::Clean));
+        assert!(snapshot.patch.is_some());
         let metrics = runtime.scroll_metrics().expect("test precondition");
         assert_eq!(metrics.max_offset_from_bottom, 0);
         assert_eq!(metrics.offset_from_bottom, 0);
@@ -1939,7 +1931,7 @@ mod tests {
         let snapshot = runtime
             .collect_dirty_patch_snapshot(20, 4)
             .expect("mode snapshot");
-        assert!(matches!(snapshot.patch, TerminalDirtyPatchOutcome::Clean));
+        assert!(snapshot.patch.is_none());
         assert_eq!(snapshot.content_revision, runtime.content_seq());
         assert!(snapshot.content_revision.is_multiple_of(2));
         assert!(snapshot.mouse_reporting);
@@ -1966,20 +1958,17 @@ mod tests {
         let scrolled = runtime
             .collect_dirty_patch_snapshot(20, 4)
             .expect("scrolled snapshot");
-        assert_eq!(
-            scrolled.scroll_metrics.expect("metrics").offset_from_bottom,
-            1
-        );
+        assert_eq!(scrolled.scroll_metrics.offset_from_bottom, 1);
         runtime.scroll_reset();
         runtime.resize(shepr_core::geometry::PaneGeometry::new(24, 5, 0, 0));
         let resized = runtime
             .collect_dirty_patch_snapshot(24, 5)
             .expect("resized snapshot");
-        let metrics = resized.scroll_metrics.expect("resized metrics");
+        let metrics = resized.scroll_metrics;
         assert_eq!(metrics.offset_from_bottom, 0);
         assert_eq!(metrics.viewport_rows, 5);
         assert!(resized.content_revision.is_multiple_of(2));
-        let TerminalDirtyPatchOutcome::Patch(patch) = resized.patch else {
+        let Some(patch) = resized.patch else {
             panic!("resize must dirty the viewport");
         };
         assert_eq!(patch.rows.len(), 5);
@@ -2239,14 +2228,15 @@ mod tests {
     #[tokio::test]
     async fn alternate_screen_does_not_replace_primary_saved_history() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let source = runtime.history_source();
+        let mut history = PaneHistoryCache::default();
         runtime.test_process_pty_bytes(b"primary history");
-        assert!(
-            runtime
-                .snapshot_history()
-                .is_some_and(|text| text.contains("primary history"))
-        );
+        assert!(source.refresh(&mut history));
+        assert!(history.text().contains("primary history"));
+        let saved_history = history.text();
         runtime.test_process_pty_bytes(b"\x1b[?1049halt frame");
-        assert_eq!(runtime.snapshot_history(), None);
+        assert!(!source.refresh(&mut history));
+        assert_eq!(history.text(), saved_history);
     }
 
     #[test]
@@ -2474,7 +2464,7 @@ mod tests {
     }
 
     /// The `TERM` and `COLORTERM` a pane child sees, one per line.
-    fn capture_terminal_identity(extra_env: &[(&str, &str)]) -> String {
+    fn capture_terminal_identity() -> String {
         let scratch = crate::test_support::ScratchDir::new("pane-term");
         let output_path = scratch.join("output.txt");
         let process = fixture::stand_in(
@@ -2492,13 +2482,9 @@ mod tests {
         cmd.env("TERM", "xterm-ghostty");
         cmd.env("COLORTERM", "falsecolor");
         apply_pane_terminal_env(&mut cmd);
-        let extra_env = extra_env
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect();
         apply_pane_launch_env(
             &mut cmd,
-            &PaneLaunchEnv::from_extra(extra_env, "/run/user/1000/shepr-test.sock".into()),
+            &PaneLaunchEnv::new("/run/user/1000/shepr-test.sock".into()),
         );
 
         let mut spawned = shepr_pty::backend::spawn_pty(
@@ -2647,17 +2633,11 @@ mod tests {
 
     #[test]
     fn pane_terminal_identity_overrides_outer_terminal_env() {
-        let output = capture_terminal_identity(&[]);
+        let output = capture_terminal_identity();
         assert_eq!(
             output,
             format!("{}\n{}\n", shepr_vt::PANE_TERM, shepr_vt::PANE_COLORTERM)
         );
-    }
-
-    #[test]
-    fn pane_terminal_identity_allows_explicit_override() {
-        let output = capture_terminal_identity(&[("TERM", "vt100"), ("COLORTERM", "24bit")]);
-        assert_eq!(output, "vt100\n24bit\n");
     }
 
     #[tokio::test]
@@ -2947,16 +2927,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_agent_acquisition_keeps_osc_evidence_replacement_clears_it() {
+    async fn agent_transition_clears_retained_osc_evidence() {
         let runtime = PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]2;startup title\x1b\\\x1b]9;4;1;\x1b\\");
 
-        clear_osc_evidence_for_agent_transition(&runtime.terminal, None);
         let inputs = runtime.agent_detection_inputs();
         assert_eq!(inputs.osc_title, "startup title");
         assert_eq!(inputs.osc_progress, "4;1;");
 
-        clear_osc_evidence_for_agent_transition(&runtime.terminal, Some(Agent::Claude));
+        clear_osc_evidence_for_agent_transition(&runtime.terminal);
         let inputs = runtime.agent_detection_inputs();
         assert_eq!(inputs.osc_title, "");
         assert_eq!(inputs.osc_progress, "");

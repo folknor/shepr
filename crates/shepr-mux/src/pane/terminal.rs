@@ -105,12 +105,6 @@ impl std::fmt::Display for PaneClearError {
 
 impl std::error::Error for PaneClearError {}
 
-impl From<PaneClearError> for String {
-    fn from(value: PaneClearError) -> Self {
-        value.to_string()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalDirtyPatch {
     pub rows: Vec<(u16, Vec<CellData>)>,
@@ -192,8 +186,8 @@ pub(crate) struct PaneTerminalCore {
     /// (`history.rs`).
     history_epoch: u64,
     pub render_state: shepr_vt::RenderState,
-    pub initial_default_foreground: Option<shepr_vt::RgbColor>,
-    pub initial_default_background: Option<shepr_vt::RgbColor>,
+    pub initial_default_foreground: shepr_vt::RgbColor,
+    pub initial_default_background: shepr_vt::RgbColor,
     pub host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back

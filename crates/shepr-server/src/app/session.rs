@@ -880,7 +880,7 @@ mod tests {
         );
         assert!(!app.preserves_pane_exit_checkpoint());
         assert_eq!(saved_pane_counts(&app), vec![2]);
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -906,7 +906,7 @@ mod tests {
         app.start_background_session_save();
         app.wait_for_session_save();
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -928,7 +928,7 @@ mod tests {
             crate::app::PreparedPaneExit::Settled,
             "the checkpoint on disk already holds the second pane"
         );
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[tokio::test]
@@ -956,7 +956,7 @@ mod tests {
             "the final save keeps the layout the checkpoint saved"
         );
         app.retire_session_writer();
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[tokio::test]
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(saved_pane_counts(&app), vec![2]);
         assert!(app.preserves_pane_exit_checkpoint());
         app.retire_session_writer();
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     fn exit_kind(generation: u64) -> SaveKind {
@@ -1018,7 +1018,7 @@ mod tests {
         assert!(!app.pane_exit_checkpoint_generation_settled(next));
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         app.wait_for_session_save();
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1041,7 +1041,7 @@ mod tests {
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         assert_eq!(app.request_pane_exit_checkpoint(), None);
         assert_eq!(app.session_saver.deadline(), None);
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(app.session_saver.exit.retry_at(), None);
         app.wait_for_session_save();
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1254,7 +1254,7 @@ mod tests {
             app.session_saver.autosave_deadline(),
             Some(app.clock.now + SESSION_SAVE_RETRY_MIN * 64)
         );
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1268,7 +1268,7 @@ mod tests {
         app.wait_for_session_save();
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1280,7 +1280,7 @@ mod tests {
         assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
         assert_eq!(app.take_host_shutdown_checkpoint_result(), None);
         assert_eq!(saved_pane_counts(&app), vec![2]);
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1297,7 +1297,7 @@ mod tests {
         assert_eq!(saved_pane_counts(&app), vec![1]);
         assert!(!app.preserves_pane_exit_checkpoint());
         assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1315,7 +1315,7 @@ mod tests {
         assert!(!app.preserves_pane_exit_checkpoint());
         assert!(app.session_saver.exit.preserved().is_none());
         app.wait_for_session_save();
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1344,7 +1344,7 @@ mod tests {
         app.wait_for_session_save();
         assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
         assert_eq!(saved_pane_counts(&app), vec![2]);
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[tokio::test]
@@ -1382,7 +1382,7 @@ mod tests {
         app.save_session_before_teardown_async().await;
         assert_eq!(saved_pane_counts(&app), vec![3]);
         app.retire_session_writer();
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     fn directory_files(directory: &std::path::Path) -> Vec<Vec<u8>> {
@@ -1511,7 +1511,7 @@ mod tests {
             vec![original],
             "a later save makes no second backup"
         );
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     /// A session file that does not parse restores nothing, like a missing
@@ -1556,7 +1556,7 @@ mod tests {
 
         assert!(app.save_session_now(), "first save");
         assert_eq!(directory_files(&backups), vec![original]);
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 
     #[test]
@@ -1579,6 +1579,6 @@ mod tests {
             super::super::tests::test_clock(),
         );
         assert_eq!(app.restore_notice, None);
-        app.policy = super::super::AppPolicy::Test;
+        app.policy = super::super::AppPolicy::Suspended;
     }
 }

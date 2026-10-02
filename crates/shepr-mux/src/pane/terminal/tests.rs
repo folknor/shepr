@@ -3934,20 +3934,24 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
 #[test]
 fn primary_history_is_unavailable_on_the_alternate_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
-    let pane = PaneTerminal::new(terminal);
+    let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
+    let source = PaneHistorySource(std::sync::Arc::clone(&pane));
+    let mut cache = PaneHistoryCache::default();
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"history one\r\nhistory two\r\nprompt");
     assert!(
-        pane.primary_history_ansi()
+        source
+            .read(&mut cache)
             .is_some_and(|ansi| ansi.contains("history one"))
     );
 
     pane.process_pty_bytes(pane_id, b"\x1b[?1049h\x1b[2J\x1b[Hfull-screen frame");
-    assert_eq!(pane.primary_history_ansi(), None);
+    assert_eq!(source.read(&mut cache), None);
 
     pane.process_pty_bytes(pane_id, b"\x1b[?1049l");
     assert!(
-        pane.primary_history_ansi()
+        source
+            .read(&mut cache)
             .is_some_and(|ansi| ansi.contains("history one") && !ansi.contains("full-screen"))
     );
 }

@@ -225,8 +225,8 @@ impl RotatingFileGuard {
 }
 
 /// Configuration and recovery state for one log file shared by processes.
-/// The open descriptor is reused; every write checks the path inode so another
-/// process can rotate without leaving this writer appending to an old generation.
+/// The open descriptor and its byte count are reused; periodic path checks
+/// notice another process replacing or rotating the current generation.
 struct RotatingFileState {
     path: PathBuf,
     max_bytes: u64,
@@ -241,11 +241,18 @@ struct OpenLogFile {
     file: File,
     dev: u64,
     ino: u64,
+    size: u64,
+    writes_since_path_check: u8,
 }
 
 /// Log files hold pane activity and error details; keep them private to the
 /// user like the rest of the data directory's state.
 const LOG_FILE_MODE: u32 = super::limits::PRIVATE_FILE_MODE;
+
+// Avoids a path stat for every trace record while still noticing another
+// process replacing or rotating the shared log file regularly. A stale
+// descriptor can receive at most this many local writes before it is checked.
+use super::limits::PATH_RECHECK_AFTER_WRITES;
 
 impl RotatingFileState {
     /// Write one chunk. The local state mutex protects the cached descriptor;
@@ -272,23 +279,30 @@ impl RotatingFileState {
                 .as_ref()
                 .ok_or_else(|| io::Error::other("rotating log writer has no open current file"))?;
             let lock = FileLock::shared(&current.file)?;
-            // Check every record so a second process's rotation cannot leave
-            // this cached descriptor appending to the previous generation.
-            let path_metadata = match fs::metadata(&self.path) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    drop(lock);
-                    self.current_file = None;
-                    continue;
-                }
-                Err(error) => return Err(error),
+            let path_metadata = if current.writes_since_path_check >= PATH_RECHECK_AFTER_WRITES {
+                Some(match fs::metadata(&self.path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        drop(lock);
+                        self.current_file = None;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                })
+            } else {
+                None
             };
-            if !current.matches(&path_metadata) {
+            if path_metadata
+                .as_ref()
+                .is_some_and(|metadata| !current.matches(metadata))
+            {
                 drop(lock);
                 self.current_file = None;
                 continue;
             }
-            let size = path_metadata.len();
+            let size = path_metadata
+                .as_ref()
+                .map_or(current.size, fs::Metadata::len);
             if self.exceeds_limit(size, incoming_len) {
                 drop(lock);
                 self.rotate_if_needed(incoming_len)?;
@@ -298,7 +312,18 @@ impl RotatingFileState {
             // returning an error, and replaying the whole buffer would duplicate it.
             let mut append = &current.file;
             append.write_all(write_buf)?;
+            let next_size = size.saturating_add(incoming_len);
+            let next_writes_since_path_check = if path_metadata.is_some() {
+                1
+            } else {
+                current.writes_since_path_check.saturating_add(1)
+            };
             drop(lock);
+            let Some(current) = self.current_file.as_mut() else {
+                return Err(io::Error::other("rotating log writer lost its open file"));
+            };
+            current.size = next_size;
+            current.writes_since_path_check = next_writes_since_path_check;
             return Ok(buf.len());
         }
     }
@@ -333,7 +358,13 @@ impl RotatingFileState {
                 self.current_file = None;
                 return Ok(());
             }
+            let current_size = path_metadata.len();
             drop(lock);
+            let Some(current) = self.current_file.as_mut() else {
+                return Err(io::Error::other("rotating log writer lost its open file"));
+            };
+            current.size = current_size;
+            current.writes_since_path_check = 0;
             return Ok(());
         }
     }
@@ -357,6 +388,8 @@ impl RotatingFileState {
             file,
             dev: metadata.dev(),
             ino: metadata.ino(),
+            size: metadata.len(),
+            writes_since_path_check: 0,
         });
         Ok(())
     }
@@ -471,6 +504,15 @@ mod tests {
         shepr_test_support::ScratchDir::new(name).join("shepr.log")
     }
 
+    /// Models the writer having made enough writes since it last looked at the
+    /// log path that its next write checks the path again.
+    fn let_path_check_come_due(writer: &RotatingFileMakeWriter) {
+        let mut state = writer.state.lock().expect("test lock");
+        if let Some(current) = state.current_file.as_mut() {
+            current.writes_since_path_check = PATH_RECHECK_AFTER_WRITES;
+        }
+    }
+
     #[test]
     fn log_filter_defaults_when_unset_and_refuses_bad_directives() {
         assert!(log_filter(None).is_ok());
@@ -562,13 +604,16 @@ mod tests {
             .write_all(b"aaaaaaaaaa")
             .expect("first write");
         // The second writer has written nothing itself, but the file is
-        // already 10 bytes: its write crosses the shared limit and rotates.
+        // already 10 bytes: once its path check comes due, its write crosses
+        // the shared limit and rotates.
+        let_path_check_come_due(&second);
         second
             .make_writer()
             .write_all(b"bbbbbbbbbb")
             .expect("second write");
         // The first writer must follow the rotation instead of appending to
-        // the file that was moved away.
+        // the file that was moved away, once its path check comes due.
+        let_path_check_come_due(&first);
         first.make_writer().write_all(b"cc").expect("third write");
 
         let current = fs::read_to_string(&path).expect("current log");
@@ -587,6 +632,7 @@ mod tests {
         let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
         writer.make_writer().write_all(b"before").expect("write");
         fs::remove_file(&path).expect("simulated rotation by another process");
+        let_path_check_come_due(&writer);
         writer.make_writer().write_all(b"after").expect("write");
 
         let contents = fs::read_to_string(&path);
@@ -602,6 +648,7 @@ mod tests {
 
         let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
         fs::remove_dir_all(&dir).expect("simulated lost log directory");
+        let_path_check_come_due(&writer);
         // The directory is gone: the write fails, but the caller is not told.
         writer.make_writer().write_all(b"lost").expect("write");
         fs::create_dir_all(&dir).expect("log directory restored");

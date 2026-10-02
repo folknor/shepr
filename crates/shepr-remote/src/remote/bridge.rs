@@ -44,7 +44,7 @@ impl SshStdioBridge {
         let executable_path = remote_shepr.as_str().to_owned();
         let bridge = Self::start_command(
             target,
-            remote_shepr.bridge_command(),
+            remote_shepr.bridge_command_as_account_shell(),
             local_socket,
             ssh_options,
         )?;
@@ -59,7 +59,7 @@ impl SshStdioBridge {
 
     pub(crate) fn start_command(
         target: SshTarget,
-        remote_command: String,
+        remote_command: AccountShellCommand,
         local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
     ) -> io::Result<Self> {
@@ -406,7 +406,7 @@ impl BridgeUpload {
 pub(super) fn bridge_connection(
     stream: shepr_platform::ipc::LocalStream,
     target: &SshTarget,
-    remote_command: &str,
+    remote_command: &AccountShellCommand,
     ssh_options: Option<&ManagedSshOptions>,
     bridge_stop: &Arc<AtomicBool>,
 ) -> io::Result<()> {
@@ -416,7 +416,7 @@ pub(super) fn bridge_connection(
     command
         .arg("-T")
         .arg(target.as_str())
-        .arg(remote_command)
+        .arg(remote_command.as_str())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

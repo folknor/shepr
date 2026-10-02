@@ -1,3 +1,20 @@
+/// The key combo of a navigate row's fixed arrow alias, by the alias column's
+/// identifier in `keybinding_table!` (`None` for a row without one).
+#[macro_export]
+macro_rules! navigate_alias {
+    ($alias:ident) => {
+        $crate::Keybinds::navigate_alias_combo_from_table(stringify!($alias))
+    };
+}
+
+/// The help label of a navigate row's fixed arrow alias, as `navigate_alias!`.
+#[macro_export]
+macro_rules! navigate_alias_label {
+    ($alias:ident) => {
+        $crate::Keybinds::navigate_alias_label_from_table(stringify!($alias))
+    };
+}
+
 /// The one list of configurable keybindings. Each consumer is a macro that
 /// receives every row and generates its part: the `[keys]` config fields and
 /// defaults, the resolved keybinds, the apply step, the action enums,

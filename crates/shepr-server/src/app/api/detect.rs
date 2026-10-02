@@ -23,18 +23,18 @@ impl App {
     /// when manifest work needs it. The screen is the whole detection snapshot,
     /// never the scrolled viewport.
     pub(super) fn handle_detect_capture(&mut self, target: &PaneTarget) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
+        let Ok(public_id) = target.pane_id.parse::<shepr_protocol::PublicPaneId>() else {
             return Err(pane_not_found(&target.pane_id));
         };
-        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
+        let Some((ws_idx, pane_id)) = self.resolve_pane_id(&public_id) else {
             return Err(pane_not_found(&target.pane_id));
         };
-        let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
+        let Some(pane) = self.lookup_runtime(ws_idx, pane_id) else {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
 
         success(ResponseResult::DetectCapture {
-            pane_id: public_pane_id,
+            pane_id: public_id,
             capture: detection_capture(pane),
         })
     }
@@ -59,7 +59,7 @@ impl App {
         // Keep detect explain's runtime requirement even when hook authority
         // can describe the state; failed restores keep the same
         // pane_terminal_unavailable response as detect capture.
-        let Some((pane, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
+        let Some(pane) = self.lookup_runtime(ws_idx, pane_id) else {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
         if let Some(authority) = terminal.hook_authority().filter(|authority| {

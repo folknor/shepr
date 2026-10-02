@@ -7,7 +7,7 @@ pub(super) struct EffectiveAgent<'a> {
     pub(super) full_lifecycle_hook: bool,
 }
 
-impl TerminalState {
+impl AgentOwnership {
     fn fallback_not_older_than_hook(&self) -> bool {
         self.hook_authority.as_ref().is_none_or(|authority| {
             self.fallback_observed_at

@@ -302,7 +302,7 @@ mod tests {
             entry_offset_from_bottom: 0,
             selection: None,
             search_prompt: None,
-            search_query: String::new(),
+            search_query: TypedText::default(),
             search_direction: None,
             search_matches: Vec::new(),
             search_total: 0,

@@ -64,7 +64,7 @@ use std::sync::Mutex;
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Column;
-use alacritty_terminal::term::{Term, TermMode, color};
+use alacritty_terminal::term::{Term, color};
 use vte::ansi::cursor_icon::CursorIcon;
 use vte::ansi::{
     Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
@@ -181,7 +181,7 @@ impl<T: EventListener> CoreHandler<'_, T> {
     /// A purge leaves no retained history whose old capacity must be
     /// preserved, so restore the byte-budget limit at the current width.
     fn restore_scrollback_budget_after_history_purge(&mut self) {
-        if !self.primary_screen_active() || self.term.history_size() != 0 {
+        if !super::primary_screen_active(self.term) || self.term.history_size() != 0 {
             return;
         }
         let history_limit = super::scrollback_lines(self.max_scrollback, self.term.columns());
@@ -197,12 +197,8 @@ impl<T: EventListener> CoreHandler<'_, T> {
         *self.history_limit = history_limit;
     }
 
-    fn primary_screen_active(&self) -> bool {
-        !self.term.mode().contains(TermMode::ALT_SCREEN)
-    }
-
     fn active_keyboard_depth(&mut self) -> &mut usize {
-        let alternate_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
+        let alternate_screen = !super::primary_screen_active(self.term);
         self.keyboard_depth.active(alternate_screen)
     }
 
@@ -420,7 +416,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     /// counted as evicted (their rows are freed, so the row tracker could not
     /// follow them).
     fn clear_screen(&mut self, mode: ClearMode) {
-        if matches!(mode, ClearMode::Saved) && self.primary_screen_active() {
+        if matches!(mode, ClearMode::Saved) && super::primary_screen_active(self.term) {
             self.settle_rows();
             let purged = self.term.history_size();
             Handler::clear_screen(self.term, mode);

@@ -8,24 +8,36 @@ impl TerminalState {
                 .flatten()
         })
     }
+}
 
-    pub(super) fn recompute_effective_state(
-        &mut self,
-        previous_agent_label: Option<&str>,
-        previous_state: AgentState,
-    ) -> Option<EffectiveStateChange> {
-        let effective = self.effective_agent();
-        let state = effective.state;
-        let agent_label = effective.label;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shepr_agent::detect::Agent;
 
-        if previous_agent_label == agent_label && previous_state == state {
-            return None;
-        }
+    #[test]
+    fn border_label_prefers_manual_label_over_agent_label() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            false,
+            Instant::now(),
+        );
 
-        self.state = state;
-        Some(EffectiveStateChange {
-            previous_state,
-            state,
-        })
+        assert_eq!(terminal.border_label(false), None);
+        assert_eq!(terminal.border_label(true).as_deref(), Some("claude"));
+
+        terminal.set_manual_label(" reviewer ".into());
+        assert_eq!(terminal.border_label(false).as_deref(), Some("reviewer"));
+        assert_eq!(terminal.border_label(true).as_deref(), Some("reviewer"));
+
+        terminal.set_manual_label("   ".into());
+        assert_eq!(terminal.border_label(true).as_deref(), Some("claude"));
+
+        terminal.set_manual_label("reviewer".into());
+        terminal.clear_manual_label();
+        assert_eq!(terminal.border_label(true).as_deref(), Some("claude"));
     }
 }

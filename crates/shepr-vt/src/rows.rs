@@ -44,7 +44,7 @@
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Line;
-use alacritty_terminal::term::{Term, TermMode};
+use alacritty_terminal::term::Term;
 
 #[derive(Debug, Default)]
 pub(super) struct RowOrigin {
@@ -71,10 +71,6 @@ struct Anchor {
     pushed: usize,
 }
 
-fn primary_active<T>(term: &Term<T>) -> bool {
-    !term.mode().contains(TermMode::ALT_SCREEN)
-}
-
 fn row_identity<T>(term: &Term<T>, line: Line) -> usize {
     term.grid()[line][..].as_ptr().addr()
 }
@@ -96,7 +92,7 @@ impl RowOrigin {
     /// [`RowOrigin::finish`] closes. Constant time.
     pub(super) fn begin<T: EventListener>(&mut self, term: &Term<T>) {
         self.anchor = None;
-        if !primary_active(term) {
+        if !super::primary_screen_active(term) {
             return;
         }
         let history = term.history_size();
@@ -159,7 +155,7 @@ impl RowOrigin {
         let Some(anchor) = self.anchor.take() else {
             return;
         };
-        if !primary_active(term) {
+        if !super::primary_screen_active(term) {
             // Screen switches settle the count before they happen, so this
             // only runs if one slipped past the handler. The primary rows
             // cannot be inspected any more: count all of them as gone.
@@ -211,7 +207,7 @@ impl RowOrigin {
     /// without a batch (see [`RowOrigin::invalidate_primary`]).
     pub(super) fn observe<T: EventListener>(&mut self, term: &Term<T>) {
         self.anchor = None;
-        if primary_active(term) {
+        if super::primary_screen_active(term) {
             self.primary_total = term.total_lines();
         }
     }
@@ -227,7 +223,7 @@ impl RowOrigin {
     /// Counts every line of the primary screen as gone: RIS, and reflows
     /// that re-wrap every line so that no earlier id may keep naming one.
     pub(super) fn invalidate_primary<T: EventListener>(&mut self, term: &Term<T>) {
-        let total = if primary_active(term) {
+        let total = if super::primary_screen_active(term) {
             term.total_lines()
         } else {
             self.primary_total

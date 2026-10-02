@@ -241,15 +241,128 @@ pub struct IndexedKeybind {
     pub label: String,
 }
 
+/// The configured digit range shared by indexed bindings and their help labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexedRange {
+    modifiers: KeyModifiers,
+}
+
+impl IndexedRange {
+    fn parse(s: &str) -> Option<Self> {
+        let syntax = Self::syntax();
+        let mut modifiers = KeyModifiers::empty();
+        let mut saw_range = false;
+        for part in s.split('+') {
+            let trimmed = part.trim();
+            if trimmed == syntax.as_str() {
+                if saw_range {
+                    return None;
+                }
+                saw_range = true;
+            } else {
+                modifiers |= parse_modifier_token(trimmed)?;
+            }
+        }
+        saw_range.then_some(Self { modifiers })
+    }
+
+    /// Return the range syntax derived from the configured first and last keys.
+    fn syntax() -> String {
+        format!("{FIRST_INDEXED_BINDING_KEY}..{LAST_INDEXED_BINDING_KEY}")
+    }
+
+    fn expand(self, prefix: bool) -> Vec<ResolvedBinding> {
+        (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+            .map(|key| {
+                let combo = (KeyCode::Char(key), self.modifiers);
+                let key_label = format_key_combo(combo);
+                ResolvedBinding {
+                    trigger: if prefix {
+                        BindingTrigger::Prefix(combo)
+                    } else {
+                        BindingTrigger::Direct(combo)
+                    },
+                    label: if prefix {
+                        format!("prefix+{key_label}")
+                    } else {
+                        key_label
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Compress a complete ordered indexed run into a help label.
+    fn label(bindings: &[IndexedKeybind]) -> Option<(String, usize)> {
+        let run_len = Self::key_count();
+        let run = bindings.get(..run_len)?;
+        let prefix = run.first()?.label.strip_suffix(FIRST_INDEXED_BINDING_KEY)?;
+        for (offset, binding) in run.iter().enumerate() {
+            let key = Self::key_at_offset(offset)?;
+            if binding.label.strip_suffix(key) != Some(prefix) {
+                return None;
+            }
+        }
+        Some((format!("{prefix}{}", Self::syntax()), run_len))
+    }
+
+    /// Match an indexed key, preferring bindings with exactly reported modifiers.
+    fn matched_index(bindings: &[IndexedKeybind], key: &impl BindingKey) -> Option<usize> {
+        let actual_modifiers = normalize_key_combo((key.code(), key.modifiers())).1;
+        for exact_modifiers in [true, false] {
+            for binding in bindings {
+                let expected_modifiers = normalize_key_combo(binding.trigger.combo()).1;
+                if binding.trigger.is_direct()
+                    && (actual_modifiers == expected_modifiers) == exact_modifiers
+                    && let Some(index) = binding.matched_index(key)
+                {
+                    return Some(index);
+                }
+            }
+        }
+        None
+    }
+
+    fn contains_key(code: KeyCode) -> bool {
+        matches!(
+            code,
+            KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+        )
+    }
+
+    fn key_count() -> usize {
+        (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY).count()
+    }
+
+    fn key_at_offset(offset: usize) -> Option<char> {
+        let codepoint =
+            u32::from(FIRST_INDEXED_BINDING_KEY).checked_add(u32::try_from(offset).ok()?)?;
+        (codepoint <= u32::from(LAST_INDEXED_BINDING_KEY))
+            .then(|| char::from_u32(codepoint))
+            .flatten()
+    }
+}
+
 impl IndexedKeybind {
+    /// Compress a complete ordered indexed run into a help label, if it is uniform.
+    pub fn range_label(bindings: &[Self]) -> Option<(String, usize)> {
+        IndexedRange::label(bindings)
+    }
+
+    /// Match an indexed key, preferring bindings with exactly reported modifiers.
+    pub fn matched_range_index(bindings: &[Self], key: &impl BindingKey) -> Option<usize> {
+        IndexedRange::matched_index(bindings, key)
+    }
+
     pub fn matched_index(&self, key: &impl BindingKey) -> Option<usize> {
         let combo = self.trigger.combo();
         let (expected_code, _) = normalize_key_combo(combo);
-        let KeyCode::Char(key_number @ FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY) =
-            expected_code
-        else {
+        let KeyCode::Char(key_number) = expected_code else {
             return None;
         };
+        if !IndexedRange::contains_key(KeyCode::Char(key_number)) {
+            return None;
+        }
         let index =
             usize::try_from(u32::from(key_number) - u32::from(FIRST_INDEXED_BINDING_KEY)).ok()?;
         if terminal_key_matches_combo(key, combo) {
@@ -258,6 +371,39 @@ impl IndexedKeybind {
             None
         }
     }
+}
+
+macro_rules! define_navigate_aliases {
+    ($($variant:ident => $key_code:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum NavigateAlias {
+            $($variant,)+
+        }
+
+        impl NavigateAlias {
+            fn from_table_name(name: &str) -> Option<Self> {
+                match name {
+                    $(stringify!($variant) => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            fn combo(self) -> (KeyCode, KeyModifiers) {
+                match self {
+                    $(Self::$variant => (KeyCode::$key_code, KeyModifiers::empty()),)+
+                }
+            }
+
+            fn label(self) -> String {
+                format_key_combo(self.combo())
+            }
+        }
+    };
+}
+
+define_navigate_aliases! {
+    Left => Left,
+    Right => Right,
 }
 
 /// Parsed keybinds for Shepr actions.
@@ -285,6 +431,20 @@ macro_rules! define_resolved_keybinds {
 }
 
 crate::keybinding_table!(define_resolved_keybinds);
+
+impl Keybinds {
+    /// Resolve the key combo for one alias identifier from the central table.
+    #[doc(hidden)]
+    pub fn navigate_alias_combo_from_table(alias: &str) -> Option<(KeyCode, KeyModifiers)> {
+        NavigateAlias::from_table_name(alias).map(NavigateAlias::combo)
+    }
+
+    /// Resolve the help label for one alias identifier from the central table.
+    #[doc(hidden)]
+    pub fn navigate_alias_label_from_table(alias: &str) -> Option<String> {
+        NavigateAlias::from_table_name(alias).map(NavigateAlias::label)
+    }
+}
 
 /// Parsing collects every diagnostic, but exposes no partial keymap when a
 /// prefix or any candidate binding is invalid.
@@ -486,12 +646,35 @@ impl ClientConfig {
 }
 
 fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
-    for combo in [
-        (KeyCode::Left, KeyModifiers::empty()),
-        (KeyCode::Right, KeyModifiers::empty()),
-    ] {
-        registry.reserve_direct(combo, "navigate pane arrow aliases", BindingSource::Default);
+    macro_rules! reserve_aliases {
+        (
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        ) => {
+            $(
+                if let Some(combo) = crate::navigate_alias!($navigate_alias) {
+                    registry.reserve_direct(
+                        combo,
+                        "navigate pane arrow aliases",
+                        BindingSource::Default,
+                    );
+                }
+            )*
+            $(
+                if let Some(combo) = crate::navigate_alias!($navigate_indexed_alias) {
+                    registry.reserve_direct(
+                        combo,
+                        "navigate pane arrow aliases",
+                        BindingSource::Default,
+                    );
+                }
+            )*
+        };
     }
+
+    crate::keybinding_table!(reserve_aliases);
 }
 
 fn invalid_keybinding_diagnostic(field: &str, raw: &str) -> String {
@@ -680,13 +863,10 @@ fn push_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !matches!(
-        binding.trigger.combo().0,
-        KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
-    ) {
+    if !IndexedRange::contains_key(binding.trigger.combo().0) {
         let diag = format!(
             "indexed keybinding must use {}: {field} = {:?}",
-            indexed_binding_range_syntax(),
+            IndexedRange::syntax(),
             binding.label
         );
         diagnostics.push(diag);
@@ -710,13 +890,10 @@ fn push_navigate_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !matches!(
-        binding.trigger.combo().0,
-        KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
-    ) {
+    if !IndexedRange::contains_key(binding.trigger.combo().0) {
         diagnostics.push(format!(
             "indexed keybinding must use {}: {field} = {:?}",
-            indexed_binding_range_syntax(),
+            IndexedRange::syntax(),
             binding.label
         ));
         return;
@@ -830,26 +1007,8 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
         (false, trimmed)
     };
 
-    if let Some(range_modifiers) = parse_range_modifiers(body) {
-        let bindings = (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
-            .map(|key| {
-                let combo = (KeyCode::Char(key), range_modifiers);
-                let key_label = format_key_combo(combo);
-                ResolvedBinding {
-                    trigger: if trigger_prefix {
-                        BindingTrigger::Prefix(combo)
-                    } else {
-                        BindingTrigger::Direct(combo)
-                    },
-                    label: if trigger_prefix {
-                        format!("prefix+{key_label}")
-                    } else {
-                        key_label
-                    },
-                }
-            })
-            .collect();
-        return Some(ParsedBinding::Range(bindings));
+    if let Some(range) = IndexedRange::parse(body) {
+        return Some(ParsedBinding::Range(range.expand(trigger_prefix)));
     }
 
     let combo = parse_key_combo(body)?;
@@ -926,36 +1085,28 @@ fn super_modifier_label() -> &'static str {
     "super"
 }
 
-fn indexed_binding_range_syntax() -> String {
-    format!("{FIRST_INDEXED_BINDING_KEY}..{LAST_INDEXED_BINDING_KEY}")
+const MODIFIER_ALIASES: &[(&str, KeyModifiers)] = &[
+    ("ctrl", KeyModifiers::CONTROL),
+    ("control", KeyModifiers::CONTROL),
+    ("alt", KeyModifiers::ALT),
+    ("option", KeyModifiers::ALT),
+    // Terminal mouse reports encode Meta in Alt.
+    ("meta", KeyModifiers::ALT),
+    ("shift", KeyModifiers::SHIFT),
+    ("cmd", KeyModifiers::SUPER),
+    ("command", KeyModifiers::SUPER),
+    ("super", KeyModifiers::SUPER),
+    ("hyper", KeyModifiers::HYPER),
+];
+
+pub(crate) fn modifier_aliases() -> &'static [(&'static str, KeyModifiers)] {
+    MODIFIER_ALIASES
 }
 
-fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
-    match token.to_lowercase().as_str() {
-        "ctrl" | "control" => Some(KeyModifiers::CONTROL),
-        "shift" => Some(KeyModifiers::SHIFT),
-        "alt" | "option" | "meta" => Some(KeyModifiers::ALT),
-        "cmd" | "command" | "super" => Some(KeyModifiers::SUPER),
-        "hyper" => Some(KeyModifiers::HYPER),
-        _ => None,
-    }
-}
-
-fn parse_range_modifiers(s: &str) -> Option<KeyModifiers> {
-    let mut modifiers = KeyModifiers::empty();
-    let mut saw_range = false;
-    for part in s.split('+') {
-        let trimmed = part.trim();
-        if trimmed == indexed_binding_range_syntax().as_str() {
-            if saw_range {
-                return None;
-            }
-            saw_range = true;
-        } else {
-            modifiers |= parse_modifier_token(trimmed)?;
-        }
-    }
-    saw_range.then_some(modifiers)
+pub(crate) fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
+    MODIFIER_ALIASES
+        .iter()
+        .find_map(|(alias, modifiers)| alias.eq_ignore_ascii_case(token).then_some(*modifiers))
 }
 
 pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
@@ -1750,6 +1901,36 @@ switch_workspace = "prefix+shift+1..9"
             BindingTrigger::Prefix((KeyCode::Char('1'), KeyModifiers::SHIFT))
         );
         assert_eq!(kb.switch_workspace[0].label, "prefix+shift+1");
+    }
+
+    #[test]
+    fn indexed_range_supplies_help_labels_and_key_matching() {
+        let config: ClientConfig = toml::from_str(
+            r#"
+[keys]
+switch_workspace = "prefix+alt+1..9"
+navigate_switch_workspace = "shift+1..9"
+"#,
+        )
+        .expect("test precondition");
+        let kb = parse_keybinds(&config, &["switch_workspace", "navigate_switch_workspace"])
+            .expect("valid keybindings");
+
+        assert_eq!(
+            IndexedRange::label(&kb.switch_workspace),
+            Some(("prefix+alt+1..9".to_owned(), 9))
+        );
+        assert_eq!(
+            IndexedRange::label(&kb.navigate.switch_workspace),
+            Some(("shift+1..9".to_owned(), 9))
+        );
+        assert_eq!(
+            IndexedRange::matched_index(
+                &kb.navigate.switch_workspace,
+                &TerminalKey::new(KeyCode::Char('!'), KeyModifiers::empty()),
+            ),
+            Some(0)
+        );
     }
 
     #[test]

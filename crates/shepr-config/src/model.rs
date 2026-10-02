@@ -61,25 +61,32 @@ impl<'de> Deserialize<'de> for RightClickPassthroughModifierConfig {
     }
 }
 
-const RIGHT_CLICK_MODIFIER_ALIASES: &[(&str, Option<KeyModifiers>)] = &[
-    ("", None),
-    ("off", None),
-    ("none", None),
-    ("disabled", None),
-    ("ctrl", Some(KeyModifiers::CONTROL)),
-    ("control", Some(KeyModifiers::CONTROL)),
-    ("alt", Some(KeyModifiers::ALT)),
-    ("option", Some(KeyModifiers::ALT)),
-    // Terminal mouse reports encode Meta in Alt, so this alias resolves to Alt.
-    ("meta", Some(KeyModifiers::ALT)),
-    (
-        "ctrl+alt",
-        Some(KeyModifiers::CONTROL.union(KeyModifiers::ALT)),
-    ),
-];
+const RIGHT_CLICK_DISABLED_ALIASES: &[&str] = &["", "off", "none", "disabled"];
+
+fn right_click_supported_modifiers() -> KeyModifiers {
+    KeyModifiers::CONTROL | KeyModifiers::ALT
+}
+
+fn right_click_modifier_aliases() -> Vec<(&'static str, Option<KeyModifiers>)> {
+    let supported = right_click_supported_modifiers();
+    let mut aliases = RIGHT_CLICK_DISABLED_ALIASES
+        .iter()
+        .map(|alias| (*alias, None))
+        .collect::<Vec<_>>();
+    aliases.extend(
+        crate::keybinds::modifier_aliases()
+            .iter()
+            .filter(|(_, modifiers)| {
+                !modifiers.is_empty() && modifiers.difference(supported).is_empty()
+            })
+            .map(|(alias, modifiers)| (*alias, Some(*modifiers))),
+    );
+    aliases.push(("ctrl+alt", Some(KeyModifiers::CONTROL | KeyModifiers::ALT)));
+    aliases
+}
 
 fn right_click_modifier_values_error() -> String {
-    let values = RIGHT_CLICK_MODIFIER_ALIASES
+    let values = right_click_modifier_aliases()
         .iter()
         .map(|(alias, _)| if alias.is_empty() { "empty" } else { *alias })
         .collect::<Vec<_>>()
@@ -89,7 +96,7 @@ fn right_click_modifier_values_error() -> String {
 
 fn parse_right_click_passthrough_modifier(value: &str) -> Result<Option<KeyModifiers>, String> {
     let trimmed = value.trim();
-    if let Some((_, modifiers)) = RIGHT_CLICK_MODIFIER_ALIASES
+    if let Some((_, modifiers)) = right_click_modifier_aliases()
         .iter()
         .find(|(alias, modifiers)| modifiers.is_none() && alias.eq_ignore_ascii_case(trimmed))
     {
@@ -99,33 +106,23 @@ fn parse_right_click_passthrough_modifier(value: &str) -> Result<Option<KeyModif
     let mut modifiers = KeyModifiers::empty();
     for token in trimmed.split('+') {
         let token = token.trim().to_ascii_lowercase();
-        let modifier = RIGHT_CLICK_MODIFIER_ALIASES
-            .iter()
-            .find_map(|(alias, value)| {
-                (value.is_some() && !alias.contains('+') && alias.eq_ignore_ascii_case(&token))
-                    .then_some(*value)
-                    .flatten()
-            });
-        let Some(modifier) = modifier else {
-            match token.as_str() {
-                // A mouse report's button byte has bits for shift, alt and ctrl
-                // only, so a super or hyper requirement could never be met.
-                "cmd" | "command" | "super" | "hyper" => {
-                    return Err(format!(
-                        "right_click_passthrough_modifier cannot use {token:?}: terminal mouse reports only carry ctrl and alt"
-                    ));
-                }
-                // Shift is left out on purpose: terminals commonly reserve
-                // Shift+mouse for their own selection.
-                "shift" => {
-                    return Err(format!(
-                        "{}; shift is unsupported",
-                        right_click_modifier_values_error()
-                    ));
-                }
-                _ => return Err(right_click_modifier_values_error()),
-            }
+        let Some(modifier) = crate::keybinds::parse_modifier_token(&token) else {
+            return Err(right_click_modifier_values_error());
         };
+        let unsupported = modifier.difference(right_click_supported_modifiers());
+        if unsupported.contains(KeyModifiers::SHIFT) {
+            // Terminals commonly reserve Shift+mouse for their own selection.
+            return Err(format!(
+                "{}; shift is unsupported",
+                right_click_modifier_values_error()
+            ));
+        }
+        if !unsupported.is_empty() {
+            // A mouse report's button byte has bits for shift, alt and ctrl only.
+            return Err(format!(
+                "right_click_passthrough_modifier cannot use {token:?}: terminal mouse reports only carry ctrl and alt"
+            ));
+        }
         modifiers |= modifier;
     }
 
@@ -897,9 +894,9 @@ right_click_passthrough_modifier = "{value}"
     #[test]
     fn right_click_modifier_aliases_parse() {
         let error = right_click_modifier_values_error();
-        for (alias, value) in RIGHT_CLICK_MODIFIER_ALIASES {
+        for (alias, value) in right_click_modifier_aliases() {
             let parsed = parse_right_click_passthrough_modifier(alias).expect("alias parses");
-            assert_eq!(parsed, *value, "alias {alias:?}");
+            assert_eq!(parsed, value, "alias {alias:?}");
             if !alias.is_empty() {
                 assert!(error.contains(alias), "{error} omits {alias:?}");
             }

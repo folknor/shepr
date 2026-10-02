@@ -138,13 +138,15 @@ impl Terminal {
         Some(Line(i32::try_from(line).ok()?))
     }
 
-    pub fn viewport_hyperlink_uri(&self, x: u16, y: ViewportRow) -> Result<Option<String>, Error> {
-        let line = self
-            .viewport_line(y)
-            .ok_or(Error("viewport row out of range"))?;
+    pub fn viewport_hyperlink_uri(
+        &self,
+        x: u16,
+        y: ViewportRow,
+    ) -> Result<Option<String>, ReadError> {
+        let line = self.viewport_line(y).ok_or(ReadError::RowNotRetained)?;
         let column = usize::from(x);
         if column >= self.term.columns() {
-            return Err(Error("viewport column out of range"));
+            return Err(ReadError::ColumnOutOfRange);
         }
         Ok(self.term.grid()[line][Column(column)]
             .hyperlink()
@@ -155,16 +157,16 @@ impl Terminal {
         &self,
         start: Point<ScreenRow>,
         end: Point<ScreenRow>,
-    ) -> Result<String, Error> {
+    ) -> Result<String, ReadError> {
         let grid = self.term.grid();
         let start = self
             .screen_line(start.row)
             .and_then(|line| format::grid_point(grid, line, start.col))
-            .ok_or(Error("selection start out of range"))?;
+            .ok_or(ReadError::RowNotRetained)?;
         let end = self
             .screen_line(end.row)
             .and_then(|line| format::grid_point(grid, line, end.col))
-            .ok_or(Error("selection end out of range"))?;
+            .ok_or(ReadError::RowNotRetained)?;
         Ok(format::format_range(grid, start, end, Format::Plain))
     }
 
@@ -192,16 +194,16 @@ impl Terminal {
         end: Point<ScreenRow>,
         carry: &mut format::AnsiCarry,
         open_end: bool,
-    ) -> Result<(String, Option<usize>), Error> {
+    ) -> Result<(String, Option<usize>), ReadError> {
         let grid = self.term.grid();
         let start = self
             .screen_line(start.row)
             .and_then(|line| format::grid_point(grid, line, start.col))
-            .ok_or(Error("selection start out of range"))?;
+            .ok_or(ReadError::RowNotRetained)?;
         let end = self
             .screen_line(end.row)
             .and_then(|line| format::grid_point(grid, line, end.col))
-            .ok_or(Error("selection end out of range"))?;
+            .ok_or(ReadError::RowNotRetained)?;
         Ok(format::format_range_carrying(
             grid,
             start,

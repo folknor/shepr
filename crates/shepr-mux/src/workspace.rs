@@ -301,8 +301,8 @@ impl Workspace {
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
-        let launch_env = PaneLaunchEnv::from_extra(Vec::new(), spawn.socket_path.clone())
-            .with_pane_id(PublicPaneId::new(&id, 1));
+        let launch_env =
+            PaneLaunchEnv::new(spawn.socket_path.clone()).with_pane_id(PublicPaneId::new(&id, 1));
         let (layout, root_pane) = TileLayout::new();
         let runtime = PaneRuntime::spawn(
             root_pane,
@@ -403,7 +403,7 @@ impl Workspace {
         pane_number: usize,
         spawn: &PaneSpawnHandles,
     ) -> PaneLaunchEnv {
-        PaneLaunchEnv::from_extra(Vec::new(), spawn.socket_path.clone())
+        PaneLaunchEnv::new(spawn.socket_path.clone())
             .with_pane_id(PublicPaneId::new(&self.id, pane_number))
     }
 

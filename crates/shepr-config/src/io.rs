@@ -344,8 +344,12 @@ fn resolve_paths_from_env(
         (Some(config_dir), Some(state_dir), Some(xdg_runtime_dir), Some(runtime_dir))
             if diagnostics.is_empty() =>
         {
-            let server_address =
-                super::ServerAddress::resolve_paths(&runtime_dir, socket_override.as_deref());
+            // Fail before socket setup when either selected endpoint is too long.
+            let server_address = super::ServerAddress::resolve_paths_checked(
+                &runtime_dir,
+                socket_override.as_deref(),
+            )
+            .map_err(|error| vec![format!("server socket path error: {error}")])?;
             // The saved layout sits beside the shared state directory under the
             // profile's directory name: the state directory itself for release.
             let data_dir = state_dir.with_file_name(profile.app_dir_name());

@@ -520,14 +520,6 @@ fn format_chunk(
 }
 
 impl PaneTerminal {
-    /// See [`PaneHistorySource::refresh`].
-    pub(crate) fn read_primary_history(&self, cache: &mut PaneHistoryCache) -> Option<()> {
-        let mut updated = cache.duplicate();
-        self.read_primary_history_inner(&mut updated)?;
-        *cache = updated;
-        Some(())
-    }
-
     fn read_primary_history_inner(&self, cache: &mut PaneHistoryCache) -> Option<()> {
         loop {
             let core = shepr_vt::lock_terminal_core(&self.core).ok()?;

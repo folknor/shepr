@@ -37,11 +37,8 @@ impl App {
         let pane_number = workspace.public_pane_number(pane_id)?;
         let pane_id = shepr_protocol::PublicPaneId::new(&workspace.id, pane_number);
         Some(
-            shepr_mux::pane::PaneLaunchEnv::from_extra(
-                Vec::new(),
-                self.paths.server_address().socket().to_path_buf(),
-            )
-            .with_pane_id(pane_id),
+            shepr_mux::pane::PaneLaunchEnv::new(self.paths.server_address().socket().to_path_buf())
+                .with_pane_id(pane_id),
         )
     }
 

@@ -1,6 +1,6 @@
 use super::*;
 
-impl TerminalState {
+impl AgentOwnership {
     /// A detector observation. An agent's exit releases at once: the pane
     /// shows no agent the moment its process is gone, and nothing has to
     /// guess who owns the pane while a release waits. When the release
@@ -20,9 +20,9 @@ impl TerminalState {
         visible_blocker: bool,
         process_exited: bool,
         now: Instant,
-    ) -> TerminalStateMutation {
+    ) -> AgentOwnershipMutation {
         if self.pane_ended {
-            return TerminalStateMutation::default();
+            return AgentOwnershipMutation::default();
         }
         let previous_session = self.current_session_identity_for_persistence();
         let mutation =
@@ -55,7 +55,7 @@ impl TerminalState {
         visible_blocker: bool,
         process_exited: bool,
         now: Instant,
-    ) -> TerminalStateMutation {
+    ) -> AgentOwnershipMutation {
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_state = self.state;
         let previous_detected_agent = self.detected_agent;
@@ -77,7 +77,7 @@ impl TerminalState {
             {
                 self.detected_agent = agent;
             }
-            return TerminalStateMutation {
+            return AgentOwnershipMutation {
                 effective_state_change: self
                     .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                 session_ref_changed: previous_session
@@ -92,7 +92,7 @@ impl TerminalState {
                 .exit()
                 .is_some_and(|exit| Some(exit.agent) == agent && exit.observed_at < now);
         if !process_exited && self.detected_state_observed_before_release_suppression(agent, now) {
-            return TerminalStateMutation {
+            return AgentOwnershipMutation {
                 effective_state_change: self
                     .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                 session_ref_changed: previous_session
@@ -229,7 +229,7 @@ impl TerminalState {
         }
         let effective_state_change =
             self.recompute_effective_state(previous_agent_label.as_deref(), previous_state);
-        TerminalStateMutation {
+        AgentOwnershipMutation {
             effective_state_change,
             session_ref_changed: previous_session
                 != self.current_session_identity_for_persistence(),
@@ -241,7 +241,7 @@ impl TerminalState {
         &mut self,
         exit_reason: shepr_platform::ChildExitReason,
         now: Instant,
-    ) -> TerminalStateMutation {
+    ) -> AgentOwnershipMutation {
         let previous_session = self.current_session_identity_for_persistence();
         let agent = self.effective_known_agent().or(self.detected_agent);
         // A pane's own death is never a candidate: it is resolved here.

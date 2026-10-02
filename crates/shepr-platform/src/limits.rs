@@ -96,3 +96,11 @@ pub(super) const PERMISSION_BITS: u32 = 0o7777;
 
 /// Hex digits in a random runtime entry token.
 pub(super) const RUNTIME_TOKEN_HEX_BYTES: usize = 16;
+
+/// Minimum spacing between warnings about rejected socket peers. A connect
+/// flood from a foreign uid would otherwise write one log line per attempt.
+pub(super) const PEER_REJECTION_WARNING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Writes between re-stats of the log path. The recheck notices a deleted or
+/// replaced log file without a stat on every write.
+pub(super) const PATH_RECHECK_AFTER_WRITES: u8 = 16;

@@ -30,17 +30,6 @@ Git subprocesses spawned by mux inherit the variables and apply them
 themselves. Delete the parser and keep the recognizer, or move it to
 `shepr-mux/src/git/config.rs` and wire it if that was the intent. (foundation)
 
-## CLN-005 - `AppState::should_quit` duplicates the lifecycle phase
-
-Only `HeadlessServer::initiate_shutdown` sets it, and that function also sets
-the phase to `Stopping` and raises the stop signal. All nine
-`stop_requested(self.app.state.should_quit)` calls pass a value that adds
-nothing; remove the field and `ShutdownLifecycle::stop_requested`'s `app_quit`
-parameter. The lifecycle doc calling it "the in-process input path" is herdr
-residue. The stop signal is also called `stop_requested`, `stop_request`,
-`stop_signal` and `should_quit` across `headless.rs`, `lifecycle.rs` and
-`client_transport.rs`. Reported by server-serving and server-app.
-
 ## CLN-006 - Dead checks in the server serving path
 
 - `ProtocolCellSize::from_wire` in `shepr-protocol` still nulls oversize
@@ -49,22 +38,6 @@ residue. The stop signal is also called `stop_requested`, `stop_request`,
   protocol keeps it for other callers or drops it.
 
 (server-serving)
-
-## CLN-007 - Dead pieces in the app
-
-- `lookup_runtime` returns a `WorkspaceId` neither caller uses.
-- `live_host_theme_reported()` is a private method returning a `pub(crate)`
-  field.
-- `create_workspace` is a pass-through to `create_workspace_without_save`; both
-  mark the session dirty, so "without save" is a stale name.
-- `AppPolicy::Test` is an alias of `Suspended` spelled as a const.
-- `crossterm` is used in `app/state.rs` only for a test helper `key_matches`
-  that exercises `shepr_config::terminal_key_matches_combo` (client key
-  config).
-- `handle_detect_capture` parses the pane id to `(ws_idx, pane)` and then
-  rebuilds the same `PublicPaneId` with `public_pane_id`.
-
-(server-app)
 
 ## CLN-008 - Dead pieces in the client core
 
@@ -83,8 +56,6 @@ residue. The stop signal is also called `stop_requested`, `stop_request`,
 - `host_replies.rs`'s `HostInputFramer` is a `Deref`/`DerefMut` newtype over
   `RawInputFramer<HostReplies>` that buys nothing; its test exercises termio's
   `HostReplies` and belongs there.
-- `ClientShellState::endpoint_label(&self, id)` ignores `self` and forwards to
-  `display_label()`.
 
 (client-core)
 
@@ -136,34 +107,6 @@ Reported by edges; contracts also notes the doubled compatibility derivation.
 supplies it). Its consumers in `crates/shepr-remote/src/remote/local_server.rs`
 and its tests still format absence as `"unknown"`; make the field plain and
 drop those branches together. (contracts)
-
-## CLN-013 - Dead pieces in the pane runtime
-
-- `PaneLaunchEnv::extra: Vec<(String, String)>` is `Vec::new()` at every
-  production construction (`workspace.rs` twice, `persist/restore.rs`,
-  `shepr-server/src/app/ids.rs`); the "explicit launch env opts back into
-  scrubbed variables" machinery and its test exist for an input nothing
-  provides. Remove it, or key it by the env vocabulary if it returns.
-- `From<PaneClearError> for String` appears unused; its one would-be caller
-  (`copy.rs::handle_pane_clear`) writes its own message, duplicating the
-  `Display` text for `AlternateScreenActive`.
-- `PaneTerminalCore::initial_default_foreground` and `_background` are
-  `Option<RgbColor>` but always `Some`, so `terminal_default_fg`/`_bg` carry a
-  dead `None` branch.
-- `TerminalDirtyPatchSnapshot`'s `patch` can only be `Clean` or `Patch`, but the
-  type allows `Fallback`, and `retained_surface.rs` has a dead arm for it;
-  `scroll_metrics: Option<ScrollMetrics>` is always `Some`.
-- `PaneRuntime::detection_text` is used only by a server test;
-  `primary_history_ansi` duplicates the cached history path for
-  `agent_resume.rs`.
-- `PaneRuntime::cursor_state(area, show_cursor: bool)` returns `None` when the
-  bool is false; the caller can skip the call.
-- `DetectorState` threads `Some(input.content_seq)` into three functions that
-  accept `Option<u64>` but are never given `None`.
-- `clear_osc_evidence_for_agent_transition` re-checks `previous_agent.is_some()`
-  after `observe_process_probe` computed `should_clear_osc_evidence` from it.
-
-(mux-panes)
 
 ## CLN-014 - Dead pieces in mux state and core layout
 
@@ -233,7 +176,11 @@ Reported by mux-state and foundation.
   by tests and carries a non-test `expect(dead_code)`; a test seam stored in
   production.
 
-(wave-1 review and gate)
+- `crates/shepr-server/src/app/`: `AppPolicy::Test` is kept as a const equal
+  to `Suspended`, with a comment calling Suspended a different state, while
+  every test teardown now spells `Suspended`. One spelling should win.
+
+(wave-1 review and gate, wave-3 review)
 
 ## Test-only twins and test seams in production
 

@@ -1,4 +1,5 @@
 use shepr_core::env::EnvVar;
+use shepr_core::socket_path::SocketPath;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,6 +26,18 @@ impl ServerAddress {
             socket: socket_override.map_or(runtime, Path::to_path_buf),
             overridden: socket_override.is_some(),
         }
+    }
+
+    /// [`Self::resolve_paths`], refusing a socket path no Unix socket can
+    /// have, so a too-long runtime directory or override fails the launch
+    /// instead of the later bind or connect.
+    pub(crate) fn resolve_paths_checked(
+        runtime_dir: &Path,
+        socket_override: Option<&Path>,
+    ) -> std::io::Result<Self> {
+        let address = Self::resolve_paths(runtime_dir, socket_override);
+        SocketPath::new(address.socket.clone())?;
+        Ok(address)
     }
 
     pub fn socket(&self) -> &Path {

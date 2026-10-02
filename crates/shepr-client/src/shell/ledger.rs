@@ -67,7 +67,6 @@ impl Ledger {
     }
 }
 /// What a request owns: the feature state its answer completes and its drop rolls back.
-/// Carries a copy-mode search query: never log it with `{:?}`.
 #[derive(Debug)]
 pub(super) enum Work {
     /// A command whose answer needs no shell state.
@@ -88,7 +87,7 @@ pub(super) enum Work {
     CopySearch {
         pane_id: shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
-        query: String,
+        query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         /// The copy-mode search generation, not a request guard.

@@ -148,7 +148,7 @@ impl ClientShellState {
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
-        query: String,
+        query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         generation: u64,
@@ -339,7 +339,7 @@ impl ClientShellState {
             entry_offset_from_bottom: metrics.offset_from_bottom,
             selection: None,
             search_prompt: None,
-            search_query: String::new(),
+            search_query: TypedText::default(),
             search_direction: None,
             search_matches: Vec::new(),
             search_total: 0,
@@ -597,7 +597,7 @@ impl ClientShellState {
             }
         }
         if let Some((query, direction)) = submit {
-            self.request_copy_search(query, direction, false, outcome);
+            self.request_copy_search(query.into(), direction, false, outcome);
         }
         outcome.repaint = true;
         true
@@ -684,7 +684,7 @@ impl ClientShellState {
 
     fn request_copy_search(
         &mut self,
-        query: String,
+        query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         outcome: &mut ClientShellInput,
@@ -704,7 +704,7 @@ impl ClientShellState {
         &mut self,
         pane_id: &str,
         origin: shepr_protocol::command::PaneTextPoint,
-        query: String,
+        query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         generation: u64,
@@ -1050,7 +1050,7 @@ impl ClientShellState {
                         shepr_protocol::command::EndpointCommand::PaneCopySearch(
                             shepr_protocol::command::PaneCopySearchParams {
                                 pane_id: pane_id.clone(),
-                                query: query.clone(),
+                                query: query.as_str().to_owned(),
                                 direction,
                                 cursor: origin,
                                 previous,

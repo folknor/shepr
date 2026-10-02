@@ -183,7 +183,7 @@ impl HeadlessServer {
         app: app::App,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
         api_server: Option<shepr_api::ServerHandle>,
-        stop_requested: Arc<shepr_api::ServerStopSignal>,
+        stop_signal: Arc<shepr_api::ServerStopSignal>,
     ) -> Self {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
@@ -195,7 +195,7 @@ impl HeadlessServer {
             api.client_gate().open(Arc::new(
                 crate::server::client_transport::ClientTransportHandler {
                     server_event_tx: server_event_tx.clone(),
-                    should_quit: Arc::clone(&stop_requested),
+                    stop_signal: Arc::clone(&stop_signal),
                     wake: Arc::clone(&outbox_wake),
                     ids: crate::server::clients::ClientIdAllocator::default(),
                 },
@@ -215,7 +215,7 @@ impl HeadlessServer {
             host_input_modes_dirty: true,
             retained_surface_fallback_reason: None,
             retained_surface_fallbacks_reported: HashSet::new(),
-            lifecycle: ShutdownLifecycle::new(stop_requested),
+            lifecycle: ShutdownLifecycle::new(stop_signal),
             host_shutdown_monitor: None,
             server_event_rx,
             server_event_tx,
@@ -281,9 +281,9 @@ impl HeadlessServer {
         // Every failure inside the loop goes through `initiate_shutdown` and
         // the save after it.
         // Register SIGINT handler for graceful shutdown.
-        let stop_requested = Arc::clone(self.lifecycle.stop_signal());
+        let stop_signal = Arc::clone(self.lifecycle.stop_signal());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
-        ctrlc_handler(stop_requested, signal_quit)?;
+        ctrlc_handler(stop_signal, signal_quit)?;
         self.start_host_shutdown_monitor();
 
         let mut run_error = None;
@@ -311,7 +311,7 @@ impl HeadlessServer {
             // state and agent-session reports so the final save carries them;
             // after a signal it leaves pane deaths out (see
             // `signal_quit_requested`).
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 self.drain_internal_events_with_forwarding_up_to(
                     crate::app::APP_EVENT_CHANNEL_CAPACITY,
                 );
@@ -324,7 +324,7 @@ impl HeadlessServer {
             if self.drain_internal_events_with_forwarding() {
                 self.mark_view_changed();
             }
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 continue;
             }
             self.refresh_app_clock();
@@ -333,7 +333,7 @@ impl HeadlessServer {
             if self.drain_api_requests_with_shutdown_check() {
                 self.mark_view_changed();
             }
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 continue;
             }
 
@@ -341,7 +341,7 @@ impl HeadlessServer {
 
             // 4. Drain server events from client threads.
             self.drain_server_events();
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 continue;
             }
 
@@ -441,7 +441,7 @@ impl HeadlessServer {
             // the time the event arrived, not the time the wait began.
             self.refresh_app_clock();
 
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 // This request was already dequeued when the stop arrived.
                 // Queue its refusal now; shutdown cleanup broadcasts the
                 // notice after it settles events still waiting in the channel.
@@ -778,7 +778,7 @@ impl HeadlessServer {
         for _ in 0..crate::limits::SERVER_EVENT_DRAIN_LIMIT {
             // Recheck before each dequeue so a stop during this batch leaves
             // later events for shutdown settlement.
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 break;
             }
             let Ok(ev) = self.server_event_rx.try_recv() else {
@@ -1390,7 +1390,7 @@ impl HeadlessServer {
         &mut self,
         msg: shepr_api::ApiRequestMessage,
     ) -> bool {
-        if self.lifecycle.stop_requested(self.app.state.should_quit) {
+        if self.lifecycle.stop_requested() {
             self.initiate_shutdown();
         }
         if self.lifecycle.phase() == ShutdownPhase::Stopping {
@@ -1535,7 +1535,7 @@ impl Drop for HeadlessServer {
 /// Failing to install it is an error: without it a signal kills the server
 /// without the shutdown sequence that saves the session.
 fn ctrlc_handler(
-    stop_requested: Arc<shepr_api::ServerStopSignal>,
+    stop_signal: Arc<shepr_api::ServerStopSignal>,
     signal_quit: Arc<std::sync::OnceLock<std::time::Instant>>,
 ) -> io::Result<()> {
     ctrlc::set_handler(move || {
@@ -1546,7 +1546,7 @@ fn ctrlc_handler(
         // headless-clock-sample-ok: the moment the signal arrived, on the
         // handler's thread, not a loop iteration's sample.
         signal_quit.set(Instant::now()).ok();
-        stop_requested.request();
+        stop_signal.request();
     })
     .map_err(|err| io::Error::other(format!("installing the termination signal handler: {err}")))
 }

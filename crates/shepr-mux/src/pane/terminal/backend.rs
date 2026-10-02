@@ -25,8 +25,8 @@ impl PaneTerminal {
         let mut render_state = shepr_vt::RenderState::new();
         render_state.update(&terminal);
         let initial_colors = render_state.colors();
-        let initial_default_foreground = Some(initial_colors.foreground);
-        let initial_default_background = Some(initial_colors.background);
+        let initial_default_foreground = initial_colors.foreground;
+        let initial_default_background = initial_colors.background;
         Self {
             core: Mutex::new(PaneTerminalCore {
                 content_revision: 0,
@@ -885,16 +885,6 @@ impl PaneTerminal {
             .and_then(|mut core| terminal_extract_selection(&mut core, selection))
     }
 
-    /// Read primary-screen history with nothing cached, in bounded chunks.
-    /// The inactive primary grid is inaccessible while the alternate screen
-    /// is active, so return None rather than replacing saved history with a
-    /// full-screen program frame. Saves read through a
-    /// [`super::PaneHistorySource`] with a cache kept between them instead.
-    pub(crate) fn primary_history_ansi(&self) -> Option<String> {
-        let mut cache = super::PaneHistoryCache::default();
-        self.read_primary_history(&mut cache).map(|()| cache.text())
-    }
-
     /// Writes the visible screen into `area` of `frame`, cell by cell: typed
     /// underline shapes, wide-glyph tails (empty symbols) and OSC 8 links
     /// (added to the frame's link table) go straight to the wire form.
@@ -1025,17 +1015,21 @@ impl PaneTerminal {
             return None;
         }
         let collection = terminal_collect_dirty_patch(&mut core, area_width, area_height);
-        if matches!(collection.outcome, TerminalDirtyPatchOutcome::Fallback) {
-            drop(core);
-            if let Some(reason) = collection.fallback_reason {
-                self.report_dirty_patch_fallback(reason);
+        let patch = match collection.outcome {
+            TerminalDirtyPatchOutcome::Clean => None,
+            TerminalDirtyPatchOutcome::Patch(patch) => Some(patch),
+            TerminalDirtyPatchOutcome::Fallback => {
+                drop(core);
+                if let Some(reason) = collection.fallback_reason {
+                    self.report_dirty_patch_fallback(reason);
+                }
+                return None;
             }
-            return None;
-        }
+        };
         Some(super::super::runtime::TerminalDirtyPatchSnapshot {
-            patch: collection.outcome,
+            patch,
             content_revision: core.content_revision,
-            scroll_metrics: Some(terminal_scroll_metrics(&core.terminal)),
+            scroll_metrics: terminal_scroll_metrics(&core.terminal),
             mouse_reporting: core.terminal.mouse_tracking_enabled(),
             sgr_pixel_mouse: core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels),
             alternate_screen_active: core.terminal.active_screen()
@@ -1102,7 +1096,10 @@ impl PaneTerminal {
     ) -> TerminalDirtyPatchOutcome {
         self.collect_dirty_patch_snapshot(area_width, area_height)
             .map_or(TerminalDirtyPatchOutcome::Fallback, |snapshot| {
-                snapshot.patch
+                snapshot.patch.map_or(
+                    TerminalDirtyPatchOutcome::Clean,
+                    TerminalDirtyPatchOutcome::Patch,
+                )
             })
     }
 

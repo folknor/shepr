@@ -29,9 +29,11 @@ impl App {
         };
         let first = resolve_children(&params.first_panes)?;
         let second = resolve_children(&params.second_panes)?;
-        let Some(path) = self.state.workspaces[ws_idx]
-            .layout()
-            .split_path_for_children(&first, &second)
+        let Some(path) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.layout().split_path_for_children(&first, &second))
         else {
             return rejected("split children not found");
         };

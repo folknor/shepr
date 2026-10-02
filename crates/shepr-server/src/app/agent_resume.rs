@@ -25,10 +25,6 @@ impl App {
             .any(|terminal| terminal.pending_agent_resume_plan.is_some())
     }
 
-    fn live_host_theme_reported(&self) -> bool {
-        self.live_host_theme_reported
-    }
-
     /// When the headless loop should wake to attempt a resume, `None` while
     /// nothing is eligible or nothing holds an eligible candidate back. Derived
     /// from the schedule on every call; see `ResumeSchedule::wakeup`.
@@ -39,7 +35,7 @@ impl App {
         self.resume_schedule.wakeup(
             self.clock.now,
             self.has_pending_agent_resume_candidates(),
-            self.live_host_theme_reported(),
+            self.live_host_theme_reported,
         )
     }
 
@@ -61,7 +57,7 @@ impl App {
             .observe(now, has_pending_plans, eligible);
         if !self
             .resume_schedule
-            .is_due(now, eligible, self.live_host_theme_reported())
+            .is_due(now, eligible, self.live_host_theme_reported)
         {
             return false;
         }
@@ -797,20 +793,20 @@ mod tests {
             .get(&terminal_id)
             .expect("pending resume should leave a shell runtime");
         let marker = "restored agent: shell quoted | marker";
+        let source = runtime.history_source();
+        let mut history = shepr_mux::pane::PaneHistoryCache::default();
         for _ in 0..20 {
-            if runtime
-                .snapshot_history()
-                .is_some_and(|text| text.contains(marker))
-            {
+            if source.refresh(&mut history) && history.text().contains(marker) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert!(
-            runtime
-                .snapshot_history()
-                .expect("runtime should expose terminal history")
-                .contains(marker),
+            source.refresh(&mut history),
+            "runtime should expose terminal history"
+        );
+        assert!(
+            history.text().contains(marker),
             "deferred restore should inject the resume argv into the restored shell"
         );
 

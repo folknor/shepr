@@ -1,6 +1,22 @@
 use super::*;
 use std::io::Write as _;
 
+fn merge_palette_colors(
+    palette: &mut Vec<(u8, shepr_protocol::ClientHostColor)>,
+    updates: &[(u8, shepr_protocol::ClientHostColor)],
+) {
+    for &(index, color) in updates {
+        if let Some(slot) = palette
+            .iter_mut()
+            .find(|(current_index, _)| *current_index == index)
+        {
+            slot.1 = color;
+        } else {
+            palette.push((index, color));
+        }
+    }
+}
+
 /// State tracking for the thin client.
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
@@ -60,9 +76,27 @@ impl ClientState {
                     )
                 });
             }
-            ClientHostThemeUpdate::PaletteColors(_) => self
-                .host_theme_updates
-                .retain(|current| !matches!(current, ClientHostThemeUpdate::PaletteColors(_))),
+            ClientHostThemeUpdate::PaletteColors(colors) => {
+                // A host palette reply can arrive in idle-flushed chunks. Keep
+                // the latest value for every index so a later endpoint gets the
+                // full observed palette when this baseline is replayed.
+                let current = self
+                    .host_theme_updates
+                    .iter_mut()
+                    .find_map(|update| match update {
+                        ClientHostThemeUpdate::PaletteColors(current) => Some(current),
+                        _ => None,
+                    });
+                if let Some(current) = current {
+                    merge_palette_colors(current, colors);
+                } else {
+                    let mut current = Vec::new();
+                    merge_palette_colors(&mut current, colors);
+                    self.host_theme_updates
+                        .push(ClientHostThemeUpdate::PaletteColors(current));
+                }
+                return;
+            }
             ClientHostThemeUpdate::Appearance(_) => self
                 .host_theme_updates
                 .retain(|current| !matches!(current, ClientHostThemeUpdate::Appearance(_))),

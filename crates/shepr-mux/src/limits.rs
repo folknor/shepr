@@ -14,27 +14,6 @@ pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 /// interval keeps exit detection responsive without a busy loop.
 pub(crate) const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Hook reports are ordered per source by the `seq` each hook process takes
-/// from its own wall clock (nanoseconds for the shell/python hooks,
-/// microseconds for the JS plugins; only ever compared within one source).
-/// A report whose `seq` is not above the last accepted one is normally a
-/// straggler from a racing hook process and is dropped, however late it
-/// arrives: silence is not evidence of anything. When the host's wall clock
-/// has fallen this far behind its monotonic clock since the last acceptance,
-/// the clock stepped backwards (NTP, a manual change), and dropping would lose
-/// every report until it caught up again. Such a report is accepted and
-/// re-anchors the source's sequence. A wall clock that reads earlier than it
-/// did at the last acceptance is a backward step of any size and is accepted
-/// the same way; this threshold covers a step the clock has since caught up
-/// on.
-pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
-/// Maximum distinct hook sources tracked by a terminal, preventing arbitrary
-/// source names from growing the ordering map without bound.
-pub(crate) const MAX_HOOK_REPORT_SOURCES: usize = 64;
-/// Maximum stale lifecycle sessions remembered per hook source, bounding
-/// deduplication memory while retaining recent reports.
-pub(crate) const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;
-
 /// Consecutive process misses required before dropping an identified agent;
 /// transient /proc gaps must not erase its state.
 pub(crate) const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
@@ -188,12 +167,6 @@ pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = 
     (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
 ];
 
-/// How close a pane's signal death (or a signal shutdown, on either side) must
-/// follow an agent's exit for the resume identity that exit released to be
-/// saved anyway: long enough for a group kill to reach the shell after the
-/// agent, short enough that an unrelated shell death rarely revives an agent
-/// the user quit.
-pub(crate) const AGENT_PROCESS_EXIT_RELEASE_GRACE: Duration = Duration::from_millis(750);
 /// How long a pane launch whose child has exited still waits for that child's
 /// status channel. A child that connected before exiting is already in the
 /// listener's queue and is routed at once; this only bounds the wait for one

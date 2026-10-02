@@ -270,7 +270,7 @@ pub(super) fn authentication_command_with_config(
 pub(crate) struct RemoteSsh {
     target: SshTarget,
     managed_config: ManagedSshConfig,
-    /// Bounds commands launched by `sh_output` and `user_shell_output`:
+    /// Bounds commands launched by `sh_output`:
     /// each gets the shorter of its own timeout and the time left, and none
     /// starts once it has passed. A machine connection attempt sets it so
     /// discovery cannot outlast its budget.
@@ -335,7 +335,12 @@ impl RemoteSsh {
         command
     }
 
-    pub(super) fn sh_output(&self, script: &str) -> io::Result<Output> {
+    /// Runs `script` under `/bin/sh` on the remote host. sshd hands the account
+    /// shell only `/bin/sh -s`, a plain external command any shell accepts, and
+    /// the script travels on stdin for `/bin/sh` to parse. `/bin/sh` inherits
+    /// the environment the account shell's non-login startup exported, so a
+    /// `command -v` here sees that shell's PATH.
+    pub(super) fn sh_output(&self, script: &PosixScript) -> io::Result<Output> {
         // clock-io-ok: earlier SSH round trips may have used the attempt budget.
         let timeout = self.command_timeout(Instant::now())?;
         self.sh_output_with_timeout(script, timeout.duration, timeout.authentication_candidate)
@@ -345,19 +350,19 @@ impl RemoteSsh {
     /// connection `timeout` instead of the round-trip budget. For a command that
     /// legitimately runs longer than one round trip, such as a server stop.
     pub(super) fn sh_output_within(&self, script: &str, timeout: Duration) -> io::Result<Output> {
-        self.sh_output_with_timeout(script, timeout, false)
+        self.sh_output_with_timeout(&PosixScript::new(script), timeout, false)
     }
 
     fn sh_output_with_timeout(
         &self,
-        script: &str,
+        script: &PosixScript,
         timeout: Duration,
         authentication_candidate: bool,
     ) -> io::Result<Output> {
-        let script = posix_remote_output_command(script);
+        let script = posix_remote_output_command(script.as_str());
         let mut child = self
             .command()
-            .arg("/bin/sh -s")
+            .arg(AccountShellCommand::posix_script_stdin().as_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -375,25 +380,6 @@ impl RemoteSsh {
         let output = wait_with_output_timeout(child, timeout)
             .map_err(|error| classify_command_timeout(error, authentication_candidate))?;
         finish_ssh_command(write_result, output)
-    }
-
-    /// Runs `remote_command` through sshd's non-login command in the account's
-    /// configured shell, invoked with `-c`. Its PATH is that shell's non-login PATH.
-    pub(super) fn user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
-        let mut command = self.command();
-        command
-            .arg(posix_remote_output_command(remote_command))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // clock-io-ok: earlier SSH round trips may have used the attempt budget.
-        let timeout = self.command_timeout(Instant::now())?;
-        let child = command
-            .spawn()
-            .map_err(|error| crate::local_setup_error("could not start local ssh", error))?;
-        let output = wait_with_output_timeout(child, timeout.duration)
-            .map_err(|error| classify_command_timeout(error, timeout.authentication_candidate))?;
-        normalize_remote_output(output)
     }
 }
 

@@ -834,7 +834,7 @@ impl ClientLoop {
                 // the configured endpoint label once.
                 let unavailable = (status == endpoint::ClientEndpointStatus::Attention
                     && shell.endpoint_is_active(&endpoint_id))
-                .then(|| format!("{}: {message}", shell.endpoint_label(&endpoint_id)));
+                .then(|| format!("{}: {message}", endpoint_id.display_label()));
                 if let Some(message) = unavailable {
                     present_notice(state, message);
                 } else if let Some(frame) = state.shell.compose(
@@ -881,8 +881,7 @@ impl ClientLoop {
                     if status == endpoint::ClientEndpointStatus::Attention
                         && state.shell.endpoint_is_active(&endpoint_id)
                     {
-                        let message =
-                            format!("{}: {failure}", state.shell.endpoint_label(&endpoint_id));
+                        let message = format!("{}: {failure}", endpoint_id.display_label());
                         present_notice(state, message);
                     } else if let Some(frame) = state.shell.compose(
                         state.reported_geometry.cols(),
@@ -1266,17 +1265,13 @@ impl ClientLoop {
         write_stream.tick_health(now);
         let shell = &mut state.shell;
         let (outcome, frame) = {
-            let mut outcome = shell.tick_selection_autoscroll(now);
+            let mut outcome = shell.tick_timers(now);
             outcome.merge(settle_expired_endpoint_commands(
                 endpoint_commands,
                 write_stream,
                 shell,
                 now,
             ));
-            outcome.repaint |= shell.tick_selection_highlight(now)
-                | shell.tick_workspace_highlight(now)
-                | shell.tick_endpoint_error(now)
-                | shell.tick_transient_banners(now);
             let frame = outcome
                 .repaint
                 .then(|| {

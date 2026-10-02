@@ -69,7 +69,7 @@ impl ClientShellState {
                 target: None,
             });
         } else {
-            let label = self.endpoint_label(&endpoint_id).to_owned();
+            let label = endpoint_id.display_label().to_owned();
             self.receive_endpoint_unavailable(format!("{label} is not ready"));
             outcome.repaint = true;
         }
@@ -198,7 +198,7 @@ impl ClientShellState {
         let online = self.endpoint_is_online(&endpoint_id);
         if !online && !endpoint_id.is_local() {
             if endpoint_id != self.active_endpoint_id {
-                let label = self.endpoint_label(&endpoint_id).to_owned();
+                let label = endpoint_id.display_label().to_owned();
                 self.receive_endpoint_unavailable(format!("{label} is not ready"));
                 outcome.repaint = true;
             }
@@ -221,7 +221,7 @@ impl ClientShellState {
         self.pending_agent_reveal = None;
         let online = self.endpoint_is_online(&endpoint_id);
         if !online && !endpoint_id.is_local() {
-            let label = self.endpoint_label(&endpoint_id).to_owned();
+            let label = endpoint_id.display_label().to_owned();
             self.receive_endpoint_unavailable(format!("{label} is not ready"));
             outcome.repaint = true;
             return false;

@@ -721,7 +721,7 @@ mod tests {
             entry_offset_from_bottom: 0,
             selection: None,
             search_prompt: None,
-            search_query: "x".to_string(),
+            search_query: "x".into(),
             search_direction: None,
             search_matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
             search_total: 2,

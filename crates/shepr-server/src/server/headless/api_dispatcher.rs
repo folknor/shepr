@@ -23,7 +23,7 @@ impl super::HeadlessServer {
         for _ in 0..crate::limits::API_REQUEST_DRAIN_LIMIT {
             // Recheck before each dequeue so a stop during this batch leaves
             // later requests for shutdown refusal.
-            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            if self.lifecycle.stop_requested() {
                 break;
             }
             let Ok(msg) = self.api_request_rx.try_recv() else {

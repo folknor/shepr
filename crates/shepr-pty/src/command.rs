@@ -60,6 +60,11 @@ impl PtyCommand {
         command
     }
 
+    /// The executable path used for `execve`, independent of the child's `SHELL` value.
+    pub fn program(&self) -> &OsStr {
+        self.program.as_os_str()
+    }
+
     pub fn env<K, V>(&mut self, key: K, value: V)
     where
         K: AsRef<OsStr>,

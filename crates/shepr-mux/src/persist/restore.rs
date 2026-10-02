@@ -559,8 +559,7 @@ fn restore_workspace(
             return None;
         };
         let launch_env =
-            PaneLaunchEnv::from_extra(Vec::new(), runtime_context.socket_path.to_path_buf())
-                .with_pane_id(pane_id);
+            PaneLaunchEnv::new(runtime_context.socket_path.to_path_buf()).with_pane_id(pane_id);
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
                 saved_pane,

@@ -499,6 +499,7 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AccountShellCommand;
 
     #[test]
     fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
@@ -860,10 +861,6 @@ mod tests {
             Ok(Some(executable("/found/shepr")))
         }
 
-        fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
-            panic!("account shell already found the candidate")
-        }
-
         fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
             if let Some(error) = self.interruption.take() {
                 Err(error)
@@ -982,7 +979,7 @@ mod tests {
             .map(|path| {
                 SshStdioBridge::start_command(
                     SshTarget::parse("example").expect("test precondition"),
-                    "true".into(),
+                    AccountShellCommand::from_account_shell_text("true"),
                     path.clone(),
                     None,
                 )

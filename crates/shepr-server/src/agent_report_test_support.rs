@@ -8,6 +8,9 @@
 //! client could not: apply a report request, then read the pane's terminal
 //! state.
 
+// This harness intentionally exercises App's real API dispatch. Ownership's
+// pure transition tests live in shepr-agent; this seam covers server wiring.
+
 use std::path::Path;
 
 use shepr_api::error::{ApiError, ApiErrorCode};

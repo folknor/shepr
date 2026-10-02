@@ -58,33 +58,10 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let hex = value.strip_prefix('#').filter(|hex| {
-            hex.is_ascii()
-                && matches!(hex.len(), 3 | 6)
-                && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-        });
-        let Some(hex) = hex else {
+        let Some((r, g, b)) = crate::theme_config::try_parse_hex_rgb(&value) else {
             return Err(serde::de::Error::custom(
                 "sidebar token fg must be #RGB or #RRGGBB",
             ));
-        };
-        let invalid_hex = || serde::de::Error::custom("sidebar token fg must be #RGB or #RRGGBB");
-        let (r, g, b) = if hex.len() == 3 {
-            let mut digits = hex.bytes().map(|byte| {
-                let digit = char::from(byte).to_digit(16).unwrap_or(0);
-                u8::try_from(digit).unwrap_or(0) * 17
-            });
-            (
-                digits.next().ok_or_else(invalid_hex)?,
-                digits.next().ok_or_else(invalid_hex)?,
-                digits.next().ok_or_else(invalid_hex)?,
-            )
-        } else {
-            (
-                u8::from_str_radix(&hex[0..2], 16).map_err(|_| invalid_hex())?,
-                u8::from_str_radix(&hex[2..4], 16).map_err(|_| invalid_hex())?,
-                u8::from_str_radix(&hex[4..6], 16).map_err(|_| invalid_hex())?,
-            )
         };
         Ok(Self { r, g, b })
     }
@@ -647,6 +624,7 @@ rows = [[{ token = "workspace", fg = "red" }]]
         for entry in [
             r##"{ token = "workspace", fg = "red" }"##,
             r##"{ token = "workspace", fg = "#abcd" }"##,
+            r##"{ token = "workspace", fg = " #fff " }"##,
             r##"{ token = "workspace", underline = true }"##,
         ] {
             let input = format!("[ui.sidebar.agents]\nrows = [[{entry}]]\n");

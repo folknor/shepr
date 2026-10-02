@@ -218,9 +218,12 @@ fn restart_local(
         match stop(&observed.boot_id) {
             Ok(()) => return LocalRestart::Stopped,
             Err(ServerStopError::NotRunning { .. }) => return LocalRestart::NoServer,
-            Err(error) if error.is_boot_mismatch() => match probe().filter(is_different) {
-                Some(next) if offer < MAX_LOCAL_OFFERS => observed = next,
-                _ => return LocalRestart::OccupantChanged,
+            Err(error) if error.is_boot_mismatch() => match probe() {
+                None => return LocalRestart::NoServer,
+                Some(next) if is_different(&next) && offer < MAX_LOCAL_OFFERS => {
+                    observed = next;
+                }
+                Some(_) => return LocalRestart::OccupantChanged,
             },
             Err(error) => return LocalRestart::Failed(error.to_string()),
         }
@@ -763,12 +766,17 @@ mod tests {
     #[test]
     fn a_local_occupant_that_no_longer_needs_a_restart_ends_the_offer() {
         for after in [None, Some(status(shepr_protocol::BUILD_ID, "2-2"))] {
+            let expected = if after.is_none() {
+                LocalRestart::NoServer
+            } else {
+                LocalRestart::OccupantChanged
+            };
             let mut script = LocalScript::new(
                 vec![Some(status(other_build(), "1-1")), after],
                 vec![Err(boot_mismatch())],
                 vec![true],
             );
-            assert_eq!(script.run(true), LocalRestart::OccupantChanged);
+            assert_eq!(script.run(true), expected);
             assert_eq!(script.stopped, ["1-1"]);
         }
     }

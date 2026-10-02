@@ -11,7 +11,9 @@
 //! budget against the same limit production enforces, and it sits below the
 //! platform crate.
 
-use std::path::Path;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 /// The longest socket path, in bytes, that Linux accepts: `sun_path` less its
 /// terminating NUL.
@@ -22,12 +24,66 @@ use std::path::Path;
 // limits-exempt: this is the Linux sockaddr_un ABI limit, kept beside the path check and its proof.
 pub const UNIX_SOCKET_PATH_MAX: usize = 107;
 
-/// Whether `path` is short enough to name a Unix socket.
+/// A pathname that can be represented by Linux `sockaddr_un::sun_path`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SocketPath(PathBuf);
+
+impl SocketPath {
+    /// Validate and own a pathname suitable for a Unix domain socket.
+    pub fn new(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let path = path.into();
+        validate_socket_path(&path)?;
+        Ok(Self(path))
+    }
+
+    /// Borrow the validated pathname.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Consume this value and return its pathname.
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl AsRef<Path> for SocketPath {
+    fn as_ref(&self) -> &Path {
+        self.as_path()
+    }
+}
+
+fn validate_socket_path(path: &Path) -> io::Result<()> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.len() > UNIX_SOCKET_PATH_MAX {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Unix socket path is {} bytes; the Linux limit is {UNIX_SOCKET_PATH_MAX}: {}",
+                bytes.len(),
+                path.display()
+            ),
+        ));
+    }
+    if bytes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Unix socket path cannot be empty",
+        ));
+    }
+    if bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Unix socket path contains a NUL byte: {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `path` can name a Unix socket within Linux's pathname constraints.
 #[must_use]
 pub fn fits_unix_socket_path(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-
-    path.as_os_str().as_bytes().len() <= UNIX_SOCKET_PATH_MAX
+    validate_socket_path(path).is_ok()
 }
 
 #[cfg(test)]

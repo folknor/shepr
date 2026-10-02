@@ -127,7 +127,7 @@ pub(super) fn dispatch_client_shell_actions(
                         connection.is_none() && !endpoint_id.is_local() && choice.shown().is_some();
                     if !metadata_ready && !abandoned {
                         let notice = waiting_notice(
-                            shell.endpoint_label(&endpoint_id),
+                            endpoint_id.display_label(),
                             shell.endpoint_status(&endpoint_id),
                         );
                         repaint |= shell.receive_endpoint_unavailable(notice);

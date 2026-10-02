@@ -32,11 +32,11 @@ impl CliError {
             // A caller that ran a conditional stop over SSH can identify a
             // different boot at the stop request or during shutdown with this.
             Self::ServerStop(error) if error.is_boot_mismatch() => {
-                shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
+                shepr_api::server_stop::ServerStopExit::BootMismatch.code()
             }
             // Likewise "there was no server to stop" (it had already exited).
             Self::ServerStop(error) if error.is_not_running() => {
-                shepr_api::server_stop::NO_SERVER_EXIT_CODE
+                shepr_api::server_stop::ServerStopExit::NoServer.code()
             }
             _ => 1,
         }
@@ -180,7 +180,7 @@ mod tests {
         });
         assert_eq!(
             refused.exit_code(),
-            shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE
+            shepr_api::server_stop::ServerStopExit::BootMismatch.code()
         );
         let failed = CliError::ServerStop(shepr_api::server_stop::ServerStopError::Protocol(
             "bad".into(),
@@ -197,7 +197,7 @@ mod tests {
         });
         assert_eq!(
             none.exit_code(),
-            shepr_api::server_stop::NO_SERVER_EXIT_CODE
+            shepr_api::server_stop::ServerStopExit::NoServer.code()
         );
     }
 }

@@ -495,7 +495,9 @@ fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     assert!(failed_before_remote_result(&error));
     assert!(!crate::SshFailureDiagnostic::from_error(&error).needs_attention());
     // The refusal happens before ssh is spawned.
-    let error = ssh.sh_output("true\n").expect_err("refused");
+    let error = ssh
+        .sh_output(&PosixScript::new("true\n"))
+        .expect_err("refused");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 }
 

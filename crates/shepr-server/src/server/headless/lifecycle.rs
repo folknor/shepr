@@ -62,7 +62,7 @@ impl HostShutdownFreeze {
 pub(super) struct ShutdownLifecycle {
     phase: ShutdownPhase,
     freeze: Option<HostShutdownFreeze>,
-    stop_request: Arc<shepr_api::ServerStopSignal>,
+    stop_signal: Arc<shepr_api::ServerStopSignal>,
     host_shutdown_request: Arc<AtomicBool>,
     /// When the first termination signal arrived, set by the signal handler.
     /// Later signals leave it as it is.
@@ -70,11 +70,11 @@ pub(super) struct ShutdownLifecycle {
 }
 
 impl ShutdownLifecycle {
-    pub(super) fn new(stop_request: Arc<shepr_api::ServerStopSignal>) -> Self {
+    pub(super) fn new(stop_signal: Arc<shepr_api::ServerStopSignal>) -> Self {
         Self {
             phase: ShutdownPhase::Running,
             freeze: None,
-            stop_request,
+            stop_signal,
             host_shutdown_request: Arc::new(AtomicBool::new(false)),
             signal_quit_request: Arc::default(),
         }
@@ -84,15 +84,14 @@ impl ShutdownLifecycle {
         self.phase
     }
 
-    /// Whether any quit source has requested termination, or termination has
-    /// already begun. `app_quit` is the in-process input path; the atomic latch
-    /// is shared with signal and API server-stop handling.
-    pub(super) fn stop_requested(&self, app_quit: bool) -> bool {
-        self.phase == ShutdownPhase::Stopping || app_quit || self.stop_request.is_requested()
+    /// Whether a stop source has requested termination, or termination has
+    /// already begun.
+    pub(super) fn stop_requested(&self) -> bool {
+        self.phase == ShutdownPhase::Stopping || self.stop_signal.is_requested()
     }
 
     pub(super) fn stop_signal(&self) -> &Arc<shepr_api::ServerStopSignal> {
-        &self.stop_request
+        &self.stop_signal
     }
 
     pub(super) fn host_shutdown_request_flag(&self) -> &Arc<AtomicBool> {
@@ -204,7 +203,7 @@ impl ShutdownLifecycle {
             return false;
         }
         self.phase = ShutdownPhase::Stopping;
-        self.stop_request.request();
+        self.stop_signal.request();
         true
     }
 
@@ -342,7 +341,6 @@ impl HeadlessServer {
         // unreachable to clients that leave when they read it.
         self.resolve_pending_endpoint_replies_for_shutdown();
         self.release_endpoint_replies(ReleaseMode::Shutdown);
-        self.app.state.should_quit = true;
     }
 
     /// Completes the shutdown sequence, answer every outstanding API request,

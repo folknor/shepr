@@ -232,16 +232,23 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
             .iter()
             .map(|machine| scope.spawn(move || classify_check(ssh.check(machine))))
             .collect();
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle.join().unwrap_or_else(|_| {
-                    MachineCheck::Failed(SshFailureDiagnostic::from_message(
-                        "the machine check panicked",
-                    ))
-                })
-            })
-            .collect()
+        let mut checks = Vec::with_capacity(handles.len());
+        let mut panic_payload = None;
+        for handle in handles {
+            match handle.join() {
+                Ok(check) => checks.push(check),
+                Err(payload) => {
+                    if panic_payload.is_none() {
+                        panic_payload = Some(payload);
+                    }
+                }
+            }
+        }
+        if let Some(payload) = panic_payload {
+            // Finish joining all workers before unwinding through the caller.
+            std::panic::resume_unwind(payload);
+        }
+        checks
     })
 }
 

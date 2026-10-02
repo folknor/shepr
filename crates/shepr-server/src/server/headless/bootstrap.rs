@@ -107,7 +107,7 @@ pub fn run_server(
     let data_dir = paths.data_dir();
 
     let (api_tx, api_rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
-    let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
+    let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
 
     // Field order releases the lease before the socket on startup failure.
     struct Reserved {
@@ -138,8 +138,8 @@ pub fn run_server(
     // binary's path), done before any pane is restored or created.
     shepr_mux::pane::init_pane_launches().map_err(startup_error)?;
     spawn_integration_install();
-    let api = shepr_api::start_server(api_tx, Arc::clone(&stop_requested), paths)
-        .map_err(startup_error)?;
+    let api =
+        shepr_api::start_server(api_tx, Arc::clone(&stop_signal), paths).map_err(startup_error)?;
     let reserved = Reserved {
         lease,
         api,
@@ -165,7 +165,7 @@ pub fn run_server(
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
-        let mut server = HeadlessServer::new(app, api_rx, Some(api), stop_requested);
+        let mut server = HeadlessServer::new(app, api_rx, Some(api), stop_signal);
         let ready = ServerReady {
             socket,
             log_file: data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),

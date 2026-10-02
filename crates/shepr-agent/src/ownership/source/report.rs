@@ -1,14 +1,14 @@
 use super::*;
 
-impl TerminalState {
+impl AgentOwnership {
     pub(super) fn transition_report(
         &mut self,
         origin: ReportOrigin,
         state: AgentState,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: HookClockSample,
-    ) -> Option<TerminalStateMutation> {
+    ) -> Option<AgentOwnershipMutation> {
         let now = sample.monotonic;
         self.warn_unrecognized_hook_identity(&origin);
         // All official session-only integrations use the same admission path.
@@ -85,7 +85,7 @@ impl TerminalState {
         ) {
             FullLifecycleHookReportRoute::Accept { reanchor_sequence } => reanchor_sequence,
             FullLifecycleHookReportRoute::Ignore => return None,
-            FullLifecycleHookReportRoute::Pending => return Some(TerminalStateMutation::default()),
+            FullLifecycleHookReportRoute::Pending => return Some(AgentOwnershipMutation::default()),
         };
         if !self.hook_report_sequence_has_room(&source)
             || (!reanchor_sequence && !self.hook_report_order_allows(&source, seq, sample))
@@ -145,7 +145,7 @@ impl TerminalState {
         let current_session = self.current_session_identity_for_persistence();
         let effective_state_change =
             self.recompute_effective_state(previous_agent_label.as_deref(), previous_state);
-        Some(TerminalStateMutation {
+        Some(AgentOwnershipMutation {
             effective_state_change,
             session_ref_changed: previous_session != current_session,
             agent_released: false,

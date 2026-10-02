@@ -174,10 +174,7 @@ impl DetectionTask {
         let process_change = output.process_change.take();
         if let Some(change) = &process_change {
             if change.should_clear_osc_evidence {
-                clear_osc_evidence_for_agent_transition(
-                    &self.handles.terminal,
-                    change.previous_agent,
-                );
+                clear_osc_evidence_for_agent_transition(&self.handles.terminal);
             }
             if change.agent_changed {
                 info!(

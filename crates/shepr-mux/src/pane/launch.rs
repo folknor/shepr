@@ -14,10 +14,10 @@ enum PaneEnvPolicy {
     Allowed,
     /// The inherited value describes something outside this pane (the outer
     /// terminal, an outer agent session, another scope's handoff) and is
-    /// removed, but explicit launch values may opt back in.
+    /// removed from the child environment.
     Scrubbed,
-    /// Inherited and raw extra values are removed. A dedicated typed launch
-    /// field may install its value after this policy runs.
+    /// Inherited values are removed. A dedicated typed launch field may
+    /// install its value after this policy runs.
     ServerOnly,
 }
 
@@ -143,7 +143,6 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneLaunchEnv {
-    extra: Vec<(String, String)>,
     /// The public id of a managed pane. When absent, `SHEPR_PANE_ID` stays
     /// unset rather than inheriting an enclosing pane's id.
     pane_id: Option<PublicPaneId>,
@@ -153,9 +152,8 @@ pub struct PaneLaunchEnv {
 }
 
 impl PaneLaunchEnv {
-    pub fn from_extra(extra: Vec<(String, String)>, socket_path: std::path::PathBuf) -> Self {
+    pub fn new(socket_path: std::path::PathBuf) -> Self {
         Self {
-            extra,
             socket_path,
             pane_id: None,
             purpose: LaunchPurpose::Fresh,
@@ -178,21 +176,14 @@ impl PaneLaunchEnv {
 }
 
 pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
-    // Explicit launch env below can opt back into a scrubbed variable, such as
-    // an intentional child agent session or host handle.
+    // Strip every inherited value that describes an enclosing terminal,
+    // multiplexer or agent scope. Dedicated typed fields are installed below.
     for name in registered_names_where(|policy| policy != PaneEnvPolicy::Allowed) {
         cmd.env_remove(name);
     }
-    for (key, value) in &launch_env.extra {
-        cmd.env(key, value);
-    }
-    // The startup directory is a one-time handoff, OSC evidence capture
-    // belongs to this server because it can log pane payloads, and an
-    // inherited pane id belongs to an enclosing launch. None is passed raw to
-    // a child; an assigned pane id is installed from its typed field below.
-    for name in registered_names_where(|policy| policy == PaneEnvPolicy::ServerOnly) {
-        cmd.env_remove(name);
-    }
+    // The startup directory and OSC evidence capture belong to this server;
+    // an inherited pane id belongs to an enclosing launch. The assigned id is
+    // installed from its typed field below.
     cmd.env(EnvVar::SheprEnv, shepr_core::env::SHEPR_ENV_IN_PANE);
     // The socket is exported as the server resolved it, replacing any
     // inherited value. Every agent integration reports through the
@@ -298,13 +289,7 @@ mod tests {
         apply_pane_terminal_env(&mut command);
         apply_pane_launch_env(
             &mut command,
-            &PaneLaunchEnv::from_extra(
-                vec![
-                    (EnvVar::SheprStartupCwd.name().into(), "override".into()),
-                    (EnvVar::SheprDebugOscEvidence.name().into(), "true".into()),
-                ],
-                "/run/user/1000/shepr-test.sock".into(),
-            ),
+            &PaneLaunchEnv::new("/run/user/1000/shepr-test.sock".into()),
         );
 
         for (name, policy) in every_policy() {
@@ -356,40 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_launch_env_opts_back_into_scrubbed_but_not_server_only_variables() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let extra: Vec<(String, String)> = every_policy()
-            .into_iter()
-            .filter(|&(_, policy)| policy != PaneEnvPolicy::Allowed)
-            .map(|(name, _)| (name.to_owned(), "explicit".to_owned()))
-            .collect();
-        let mut command = PtyCommand::interactive_shell("shell", false);
-        for (name, _) in &extra {
-            command.env(name, "inherited");
-        }
-
-        apply_pane_terminal_env(&mut command);
-        apply_pane_launch_env(
-            &mut command,
-            &PaneLaunchEnv::from_extra(extra, "/run/user/1000/shepr-test.sock".into()),
-        );
-
-        for (name, policy) in every_policy() {
-            match policy {
-                PaneEnvPolicy::Allowed => {}
-                PaneEnvPolicy::Scrubbed => assert_eq!(
-                    command.get_env(name),
-                    Some(std::ffi::OsStr::new("explicit")),
-                    "{name}"
-                ),
-                PaneEnvPolicy::ServerOnly => {
-                    assert!(command.get_env(name).is_none(), "{name}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn pane_id_is_not_inherited_but_an_assigned_id_is_exported() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let workspace_id = "w1".parse().expect("test workspace id");
@@ -397,17 +348,13 @@ mod tests {
         let mut command = PtyCommand::interactive_shell("shell", false);
         command.env(EnvVar::SheprPaneId, inherited.to_string());
 
-        apply_pane_launch_env(
-            &mut command,
-            &PaneLaunchEnv::from_extra(Vec::new(), "/run/shepr.sock".into()),
-        );
+        apply_pane_launch_env(&mut command, &PaneLaunchEnv::new("/run/shepr.sock".into()));
         assert!(command.get_env(EnvVar::SheprPaneId).is_none());
 
         let assigned = PublicPaneId::new(&"w2".parse().expect("test workspace id"), 3);
         apply_pane_launch_env(
             &mut command,
-            &PaneLaunchEnv::from_extra(Vec::new(), "/run/shepr.sock".into())
-                .with_pane_id(assigned.clone()),
+            &PaneLaunchEnv::new("/run/shepr.sock".into()).with_pane_id(assigned.clone()),
         );
         assert_eq!(
             command.get_env(EnvVar::SheprPaneId),
@@ -421,10 +368,7 @@ mod tests {
         let mut command = PtyCommand::interactive_shell("shell", false);
         command.env(EnvVar::SheprSocketPath, "/inherited/server.sock");
         let socket = std::path::PathBuf::from("/custom/shepr.sock");
-        apply_pane_launch_env(
-            &mut command,
-            &PaneLaunchEnv::from_extra(Vec::new(), socket.clone()),
-        );
+        apply_pane_launch_env(&mut command, &PaneLaunchEnv::new(socket.clone()));
         assert_eq!(
             command.get_env(EnvVar::SheprSocketPath),
             Some(socket.as_os_str())

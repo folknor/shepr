@@ -992,6 +992,9 @@ impl AgentSource {
             .map_or_else(|| Self::Custom(value.to_owned()), Self::Official)
     }
 
+    // Persisted string inputs and resume constructors still need an
+    // exact official source/label pair. Live report arbitration uses the typed
+    // ReportOrigin and does not use this narrower identity predicate.
     pub fn from_pair(source: &str, agent_label: &str) -> Option<Self> {
         let target = Agent::parse_canonical_label(agent_label)?.integration_target()?;
         (target.source() == source).then_some(Self::Official(target))

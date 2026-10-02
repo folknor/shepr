@@ -114,7 +114,7 @@ pub(crate) fn surface_cursor(
             })
         });
 
-    if let Some(cursor) = runtime.cursor_state(info.inner_rect, true) {
+    if let Some(cursor) = runtime.cursor_state(info.inner_rect) {
         let visible = if reveal {
             !scrolled_back
         } else {

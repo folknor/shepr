@@ -8,10 +8,9 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 /// other, by running the discovered remote `shepr server stop --expect-boot` over
 /// a BatchMode connection. The remote command waits for the server's
 /// named boot to stop answering. It exits with
-/// `shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE` when another boot answers
-/// the stop request or appears while the named boot shuts down, or
-/// `shepr_api::server_stop::NO_SERVER_EXIT_CODE` when the observed server was
-/// already gone by the time its stop request ran.
+/// `ServerStopExit::BootMismatch` when another boot answers the stop request or
+/// appears while the named boot shuts down, or `ServerStopExit::NoServer` when
+/// the observed server was already gone by the time its stop request ran.
 pub fn stop_remote_server(
     paths: &shepr_config::AppPaths,
     target: &SshTarget,
@@ -29,11 +28,18 @@ pub fn stop_remote_server(
     if output.status.success() {
         return Ok(RemoteStop::Stopped);
     }
-    if output.status.code() == Some(shepr_api::server_stop::NO_SERVER_EXIT_CODE) {
-        return Ok(RemoteStop::NoServer);
-    }
-    if output.status.code() == Some(shepr_api::server_stop::BOOT_MISMATCH_EXIT_CODE) {
-        return Ok(RemoteStop::BootChanged);
+    match output
+        .status
+        .code()
+        .and_then(shepr_api::server_stop::ServerStopExit::from_code)
+    {
+        Some(shepr_api::server_stop::ServerStopExit::NoServer) => {
+            return Ok(RemoteStop::NoServer);
+        }
+        Some(shepr_api::server_stop::ServerStopExit::BootMismatch) => {
+            return Ok(RemoteStop::BootChanged);
+        }
+        None => {}
     }
     Err(command_failed("remote server stop failed", &output))
 }

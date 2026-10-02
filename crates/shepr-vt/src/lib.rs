@@ -100,15 +100,21 @@ use crate::limits::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error(&'static str);
+pub enum ReadError {
+    RowNotRetained,
+    ColumnOutOfRange,
+}
 
-impl fmt::Display for Error {
+impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "terminal error: {}", self.0)
+        match self {
+            Self::RowNotRetained => f.write_str("terminal row is not retained"),
+            Self::ColumnOutOfRange => f.write_str("terminal column out of range"),
+        }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for ReadError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusEvent {
@@ -361,14 +367,13 @@ pub struct Terminal {
 /// VTE calls `set_timeout` while parsing BSU, but its default handler reads
 /// the process clock there. The caller sets `now` before each parser advance;
 /// `Processor::sync_timeout` exposes only a shared reference, so the adapter
-/// uses cells for the caller's clock and VTE's timeout state. Keep `pending`
-/// separate from the optional runtime deadline because it is the trait state
-/// VTE checks while buffering synchronized output.
+/// uses cells for the caller's clock and VTE's timeout state. The deadline is
+/// the authority for both runtime expiry and VTE buffering, so a deadline
+/// that cannot be represented never leaves output buffered without an expiry.
 #[derive(Debug, Default)]
 struct SyncUpdateTimeout {
     now: ClockCell<Option<Instant>>,
     deadline: ClockCell<Option<Instant>>,
-    pending: ClockCell<bool>,
 }
 
 impl SyncUpdateTimeout {
@@ -381,20 +386,29 @@ impl SyncUpdateTimeout {
     }
 }
 
+/// The one rule for selecting the active alacritty grid.
+fn primary_screen_active<T>(term: &Term<T>) -> bool {
+    !term.mode().contains(TermMode::ALT_SCREEN)
+}
+
 impl Timeout for SyncUpdateTimeout {
     fn set_timeout(&mut self, duration: std::time::Duration) {
+        // Every parser advance sets `now` first, so the clock read is only a
+        // guard: a buffering frame always gets a deadline.
+        // clock-io-ok: unreachable while `advance` sets the caller's clock.
+        let now = self.now.get().unwrap_or_else(Instant::now);
+        // A duration past the clock's range expires the frame at once rather
+        // than leaving output buffered with no deadline.
         self.deadline
-            .set(self.now.get().and_then(|now| now.checked_add(duration)));
-        self.pending.set(true);
+            .set(Some(now.checked_add(duration).unwrap_or(now)));
     }
 
     fn clear_timeout(&mut self) {
         self.deadline.set(None);
-        self.pending.set(false);
     }
 
     fn pending_timeout(&self) -> bool {
-        self.pending.get()
+        self.deadline.get().is_some()
     }
 }
 
@@ -725,7 +739,7 @@ impl Terminal {
         // A height change on the primary screen only moves lines between
         // screen and history (evicting at the history limit), which the
         // tracker follows.
-        let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);
+        let alternate = !primary_screen_active(&self.term);
         let rewraps = columns_changed || (alternate && lines_changed);
         if rewraps {
             self.rows.invalidate_primary(&self.term);
@@ -817,6 +831,9 @@ impl Terminal {
     pub fn mode_get(&self, mode: DecMode) -> bool {
         let spec = modes::lookup(mode);
         match spec.get {
+            modes::Getter::Term(flag) if flag == TermMode::ALT_SCREEN => {
+                !primary_screen_active(&self.term)
+            }
             modes::Getter::Term(flag) => self.term.mode().contains(flag),
             modes::Getter::CursorBlink => self.term.cursor_style().blinking,
             modes::Getter::Extra(extra) => extra.get(&self.modes),
@@ -848,10 +865,10 @@ impl Terminal {
     }
 
     pub fn active_screen(&self) -> ActiveScreen {
-        if self.term.mode().contains(TermMode::ALT_SCREEN) {
-            ActiveScreen::Alternate
-        } else {
+        if primary_screen_active(&self.term) {
             ActiveScreen::Primary
+        } else {
+            ActiveScreen::Alternate
         }
     }
 
@@ -910,7 +927,7 @@ impl Terminal {
     /// `AlternateScreenActive` while the alternate screen is active: the full-screen app owns
     /// that screen, and the primary history must survive until it exits.
     pub fn clear_screen(&mut self) -> ClearScreenOutcome {
-        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+        if !primary_screen_active(&self.term) {
             return ClearScreenOutcome::AlternateScreenActive;
         }
         let screen_lines = self.term.screen_lines();
@@ -963,7 +980,7 @@ impl Terminal {
     }
 
     fn restore_scrollback_budget_after_history_purge(&mut self) {
-        if self.term.mode().contains(TermMode::ALT_SCREEN) || self.term.history_size() != 0 {
+        if !primary_screen_active(&self.term) || self.term.history_size() != 0 {
             return;
         }
         let history_lines = scrollback_lines(self.max_scrollback, self.term.columns());

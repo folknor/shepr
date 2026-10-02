@@ -148,7 +148,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     // channel. Tests that need to send swap in a channel of their own.
     std::mem::forget(api_tx);
     let (worker_tx, worker_rx) = worker::channel();
-    let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
+    let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
 
     HeadlessServer {
         app,
@@ -164,7 +164,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         host_input_modes_dirty: true,
         retained_surface_fallback_reason: None,
         retained_surface_fallbacks_reported: HashSet::new(),
-        lifecycle: ShutdownLifecycle::new(stop_requested),
+        lifecycle: ShutdownLifecycle::new(stop_signal),
         host_shutdown_monitor: None,
         server_event_rx,
         server_event_tx,
@@ -4936,11 +4936,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     assert!(server.app.policy.persists_session());
     assert!(server.app.state.session_dirty);
     // Not stopping: the warning alone never ends the server.
-    assert!(
-        !server
-            .lifecycle
-            .stop_requested(server.app.state.should_quit)
-    );
+    assert!(!server.lifecycle.stop_requested());
     server.app.policy = crate::app::AppPolicy::Suspended;
     shutdown_test_runtimes(&mut server);
 }

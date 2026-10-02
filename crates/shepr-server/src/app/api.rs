@@ -233,7 +233,6 @@ mod tests {
             surface.expect_err("viewing request is answered by the loop"),
             EndpointError::Rejected(_)
         ));
-        assert!(!app.state.should_quit);
     }
 
     #[test]

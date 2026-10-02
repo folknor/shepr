@@ -153,7 +153,7 @@ impl HeadlessServer {
         client_id: ClientId,
         command: EndpointCommand,
     ) -> Result<EndpointReply, EndpointError> {
-        if self.lifecycle.stop_requested(self.app.state.should_quit) {
+        if self.lifecycle.stop_requested() {
             self.initiate_shutdown();
         }
         if self.lifecycle.phase() == ShutdownPhase::Stopping {

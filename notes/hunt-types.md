@@ -592,8 +592,10 @@ stored in `retained_surface_fallbacks_reported: HashSet<&'static str>`, and
 cannot be named outside the crate. Proposal: `Result<DirtyPatchSnapshot,
 PatchUnavailable::{CorePoisoned, SynchronizedOutput, Fallback(PatchFallback)}>`
 with `Vec<PatchRow { y, cells }>`, and a `FallbackReason` enum in the server
-whose `terminal_snapshot` arm carries the real reason. Reported by mux-panes and
-server-serving.
+whose `terminal_snapshot` arm carries the real reason. Since mux now turns a
+fallback read into no snapshot, retained-surface fallbacks that logged as
+`terminal_patch` log as `terminal_snapshot`, so one label already carries two
+reasons. Reported by mux-panes and server-serving.
 
 ## TYP-030 - Content and detection counters are raw `u64` with sentinels
 
@@ -1014,16 +1016,6 @@ outcome (`"busy"`, `"acquired"`, `"released"`) by hand in three places.
 
 ## Terminal values
 
-## TYP-054 - vt read failures are prose
-
-`shepr_vt::Error(&'static str)` is the only failure of `read_text_screen`,
-`read_ansi_screen_carrying` and `viewport_hyperlink_uri` ("selection start out of
-range", "viewport column out of range"); callers discard it (`.ok()` in
-`terminal_extract_selection`, `terminal_detection_text`). A selection whose rows
-were evicted is a real user-visible case. Proposal: `ReadError::{RowNotRetained,
-ColumnOutOfRange}` or `Option` where nobody cares; `ClearScreenOutcome` is the
-house example. (terminal)
-
 ## TYP-055 - Colour provenance is erased and rebuilt by comparing values
 
 `RenderColors` gives resolved colours and the palette as plain `RgbColor`. mux
@@ -1337,15 +1329,14 @@ later spawn reports `io::Error::other` with the kind lost. Proposal: `bind_*`
 returning `Result<BoundSocket, BindError::{Busy, Io}>` and SSH path helpers
 returning `SshRuntimeError` with an `UnsafeDirectory` arm. (foundation)
 
-## TYP-075 - Shell dialects are interchangeable `&str`
+## TYP-075 - The launch builders still pass shell text as `&str`
 
-`RemoteSsh` runs text as `sh_output(script)` (fed to `/bin/sh -s`),
-`user_shell_output(remote_command)` (to the account shell) and the bridge's
-`bridge_command()` (wrapped in `/bin/sh -c`), all `&str`/`String`;
-`posix_remote_output_command` emits POSIX syntax and is applied to the account
-shell path (see the bug). Proposal: `PosixScript` and `AccountShellCommand`, with
-`RemoteExecutable::command` returning one and `SshStdioBridge::start_command`
-taking one. (edges)
+`PosixScript` and `AccountShellCommand`
+(`crates/shepr-remote/src/remote/shell_command.rs`) are taken by the SSH
+methods and the bridge entry point, but the command builders in
+`crates/shepr-remote/src/remote/launch.rs` still produce `&str`/`String` that
+`sh_output_within` adapts internally. Have the builders return the typed
+values. (edges)
 
 ## TYP-076 - Preflight pairs outcomes with machines by position
 
@@ -1452,15 +1443,6 @@ return a bare `bool` meaning repaint; client core returns
 `AtomicCellSize::store -> bool`. The `outcome.repaint |= ..` plumbing can drop
 one silently. Proposal: an `EditOutcome` and a `Repaint` value, or writing into
 the outcome directly. Reported by client-shell and client-core.
-
-## TYP-083 - `TextEditor` and typed search text log their contents
-
-`TextEditor` has `Deref<Target = str>`, `From<&str>`, `Display` and a derived
-`Debug` that prints the typed text; `state.rs` and `ledger.rs` carry comments
-saying never to log it with `{:?}`. A redacting `Debug` on `TextEditor` and on a
-`TypedText` newtype for the search query (`Work::CopySearch`,
-`ClientCopyOperation::Search`, `ClientCopyModeState::search_query`) turns the
-comment into a guarantee. (client-shell)
 
 ## TYP-084 - The shell snapshot states facts twice
 
