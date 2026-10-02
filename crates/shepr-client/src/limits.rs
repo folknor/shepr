@@ -153,7 +153,7 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// that stalls could hold the endpoint indefinitely (each discovery command may
 /// take `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
 /// `REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it, which broke the
-/// retry bound. `do_handshake` takes this deadline and stops at whichever
+/// retry bound. `do_handshake_for_endpoint` takes this deadline and stops at whichever
 /// of it and the handshake timeout comes first.
 ///
 /// A healthy attempt needs far less: every discovery command already had

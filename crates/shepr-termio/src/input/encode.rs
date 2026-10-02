@@ -447,7 +447,6 @@ pub fn encode_mouse_event(
         MouseEventKind::ScrollRight => (67, false),
     };
     let reported = match mode {
-        MouseProtocolMode::None => false,
         // X10 reports button presses only.
         MouseProtocolMode::Press => (!release && base_button < 32) || base_button >= 64,
         MouseProtocolMode::PressRelease => !(32..64).contains(&base_button),
@@ -1985,10 +1984,6 @@ mod tests {
                 MouseProtocolEncoding::Default
             ),
             Some(vec![0x1b, b'[', b'M', 3 + 32, 33, 33])
-        );
-        assert_eq!(
-            encode_mouse_event(press, 1, 1, none, MouseProtocolMode::None, sgr),
-            None
         );
     }
 

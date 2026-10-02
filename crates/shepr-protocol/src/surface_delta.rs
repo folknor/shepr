@@ -32,8 +32,7 @@ impl std::error::Error for SurfaceDeltaError {}
 
 /// Whether a full surface can safely be represented as delta metadata.
 fn metadata_fits(surface: &PaneSurfaceFrame) -> bool {
-    super::surface_grid_size(surface.frame.width, surface.frame.height)
-        .is_some_and(|cells| cells == surface.frame.cells.len())
+    surface.frame.grid().is_ok()
         && surface.frame.hyperlinks.len() <= MAX_SURFACE_HYPERLINKS
         && surface.panes.len() <= MAX_SURFACE_PANES
         && surface.splits.len() <= MAX_SURFACE_SPLITS
@@ -50,9 +49,9 @@ fn unchanged_plan(
 ) -> Option<SurfaceDeltaPlan> {
     if !baseline.accepts_surface(surface)
         || surface.projection_revision != last.projection_revision
+        || !surface.topology().same_topology(&last.topology())
         || surface.frame != last.frame
         || surface.panes != last.panes
-        || surface.splits != last.splits
     {
         return None;
     }
@@ -80,12 +79,9 @@ fn unchanged_message(
 
 fn projection_metadata_is_unchanged(last: &PaneSurfaceFrame, surface: &PaneSurfaceFrame) -> bool {
     surface.projection_revision == last.projection_revision
-        && surface.frame.width == last.frame.width
-        && surface.frame.height == last.frame.height
+        && surface.topology().same_topology(&last.topology())
         && surface.frame.cursor == last.frame.cursor
-        && surface.frame.hyperlinks == last.frame.hyperlinks
         && surface.panes == last.panes
-        && surface.splits == last.splits
 }
 
 /// Copies each span into a row-major grid of `width` x `height` cells.
@@ -98,9 +94,7 @@ pub(crate) fn apply_rows(
     height: u16,
     rows: &[PaneSurfacePatchRow],
 ) -> Result<(), SurfaceDeltaError> {
-    if super::surface_grid_size(width, height) != Some(cells.len()) {
-        return Err(SurfaceDeltaError::InvalidGrid);
-    }
+    super::FrameGrid::new(cells, width, height).map_err(|_| SurfaceDeltaError::InvalidGrid)?;
     crate::validate_patch_rows(width, height, rows).map_err(SurfaceDeltaError::InvalidRows)?;
     for row in rows {
         let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
@@ -193,6 +187,7 @@ pub fn message(
         || last.frame.width != surface.frame.width
         || last.frame.height != surface.frame.height
         || last.frame.cells.len() != expected_cells
+        || surface.frame.cells.len() != expected_cells
     {
         return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
     }
@@ -252,6 +247,18 @@ mod tests {
             panes: Vec::new(),
             splits: Vec::new(),
         }
+    }
+
+    #[test]
+    fn truncated_candidate_cannot_be_reported_as_an_unchanged_grid() {
+        let last = surface();
+        let mut next = last.clone();
+        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.frame.cells.pop();
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Full
+        ));
     }
 
     #[test]

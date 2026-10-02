@@ -1,6 +1,10 @@
+//! Helpers shared within the app module tree. Their items stay parent-scoped,
+//! so the crate-visible module declaration exposes no helper API to other
+//! crate modules.
+
 use shepr_api::error::ApiError;
 
-pub(crate) fn pane_not_found(pane_id: &str) -> ApiError {
+pub(super) fn pane_not_found(pane_id: &str) -> ApiError {
     ApiError::pane_not_found(pane_id)
 }
 

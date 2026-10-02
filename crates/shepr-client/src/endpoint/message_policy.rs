@@ -6,11 +6,18 @@ pub(crate) enum PresentationDecision {
     Drop,
     /// Evidence for the move being prepared.
     Buffer,
+    /// Apply to endpoint state and retain as evidence for the move being prepared.
+    ApplyAndBuffer,
 }
 
-/// Classifies every inbound message by its sender's role. Connection-level messages always
-/// apply; frames apply for the shown endpoint and are evidence for the target; host effects
-/// and everything else belong to the shown endpoint alone. One role comparison per message.
+impl PresentationDecision {
+    pub(crate) fn buffers(self) -> bool {
+        matches!(self, Self::Buffer | Self::ApplyAndBuffer)
+    }
+}
+
+/// Classifies every inbound message by its sender's role. Keep the match exhaustive so a new
+/// wire message must receive an explicit presentation disposition here.
 pub(crate) struct PresentationGate {
     role: ConnectionRole,
     move_response: bool,
@@ -24,41 +31,43 @@ impl PresentationGate {
             move_response,
         }
     }
+
+    fn surface_decision(&self) -> PresentationDecision {
+        match self.role {
+            ConnectionRole::Shown => PresentationDecision::Apply,
+            ConnectionRole::Target => PresentationDecision::Buffer,
+            ConnectionRole::Other => PresentationDecision::Drop,
+        }
+    }
+
     pub(crate) fn decide(&self, message: &DecodedServerMessage) -> PresentationDecision {
-        use ConnectionRole::*;
         use PresentationDecision::*;
         match message {
-            DecodedServerMessage::Wire(
+            DecodedServerMessage::PaneSurfacePatch(_) => self.surface_decision(),
+            DecodedServerMessage::Wire(message) => match message {
                 ServerMessage::EndpointWelcome(_)
-                | ServerMessage::EndpointSnapshot(_)
-                | ServerMessage::HealthPong
                 | ServerMessage::SurfaceUpdate(_)
-                | ServerMessage::ServerShutdown { .. },
-            ) => {
-                // `DecodedServerMessage::Wire` carries the shared protocol enum; pass its
-                // handshake-only and undecoded surface variants through for the loop to reject.
-                Apply
-            }
-            DecodedServerMessage::PaneSurfacePatch(_)
-            | DecodedServerMessage::Wire(ServerMessage::PaneSurface(_)) => match self.role {
-                Shown => Apply,
-                Target => Buffer,
-                Other => Drop,
-            },
-            DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse { .. }) => {
-                match self.role {
-                    Shown => Apply,
-                    Target if self.move_response => Buffer,
+                | ServerMessage::ServerShutdown { .. }
+                | ServerMessage::HealthPong => Apply,
+                ServerMessage::EndpointSnapshot(_) => match self.role {
+                    ConnectionRole::Target => ApplyAndBuffer,
+                    ConnectionRole::Shown | ConnectionRole::Other => Apply,
+                },
+                ServerMessage::PaneSurface(_) => self.surface_decision(),
+                ServerMessage::ClientShellEndpointResponse { .. } => match self.role {
+                    ConnectionRole::Shown => Apply,
+                    ConnectionRole::Target if self.move_response => Buffer,
                     _ => Drop,
-                }
-            }
-            _ => {
-                if self.role == Shown {
-                    Apply
-                } else {
-                    Drop
-                }
-            }
+                },
+                ServerMessage::ClientShellError { .. }
+                | ServerMessage::Clipboard { .. }
+                | ServerMessage::WindowTitle { .. }
+                | ServerMessage::MouseCapture { .. }
+                | ServerMessage::ClientShellKeyboardReportAll { .. } => match self.role {
+                    ConnectionRole::Shown => Apply,
+                    ConnectionRole::Target | ConnectionRole::Other => Drop,
+                },
+            },
         }
     }
 }

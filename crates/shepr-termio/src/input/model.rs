@@ -197,16 +197,6 @@ impl KeyboardProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MouseProtocolMode {
-    None,
-    Press,
-    PressRelease,
-    ButtonMotion,
-    AnyMotion,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum MouseProtocolEncoding {
     Default,
     Utf8,

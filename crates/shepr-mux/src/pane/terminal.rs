@@ -308,9 +308,6 @@ use helpers::*;
 use text::*;
 
 #[cfg(test)]
-use serde::{Deserialize, Serialize};
-
-#[cfg(test)]
 mod invariant_tests;
 
 /// Scroll metrics together with the row origin read under one terminal lock.
@@ -325,37 +322,6 @@ pub(crate) struct ScrollPosition {
 impl ScrollPosition {
     pub(crate) fn viewport_top_row(self) -> shepr_vt::AbsRow {
         self.metrics.viewport_top_row()
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct InputState {
-    pub alternate_screen: bool,
-    pub application_cursor: bool,
-    pub bracketed_paste: bool,
-    pub focus_reporting: bool,
-    pub mouse_protocol_mode: shepr_termio::input::MouseProtocolMode,
-    pub mouse_protocol_encoding: shepr_termio::input::MouseProtocolEncoding,
-    pub mouse_alternate_scroll: bool,
-    #[serde(default)]
-    pub modify_other_keys: bool,
-    #[serde(default)]
-    pub color_scheme_reporting: bool,
-}
-
-#[cfg(test)]
-impl InputState {
-    pub(crate) fn mouse_reporting_enabled(self) -> bool {
-        self.mouse_protocol_mode != shepr_termio::input::MouseProtocolMode::None
-    }
-
-    pub(crate) fn plain_page_keys_use_host_scrollback(self) -> bool {
-        !self.alternate_screen
-            && !self.mouse_reporting_enabled()
-            // Bracketed paste distinguishes zsh's line editor (where it's on)
-            // from e.g. less -X (where it's off).
-            && (!self.application_cursor || self.bracketed_paste)
     }
 }
 

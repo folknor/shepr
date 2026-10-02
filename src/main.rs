@@ -64,31 +64,27 @@ fn launch() -> CliResult<i32> {
 fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
     // The one command-line parser: the clap spec in `cli/spec.rs`. It prints
     // its own usage errors and subcommand help, and hands back only the status.
-    let invocation = match cli::parse_invocation(raw_args) {
-        Ok(invocation) => invocation,
+    let launch = match cli::parse_launch(raw_args) {
+        Ok(launch) => launch,
         Err(exit_code) => return Ok(exit_code),
     };
 
-    // Root-level `--help` and `--version` win over any
-    // subcommand given with them.
-    if invocation.help_requested() {
-        cli::print_help();
-        return Ok(0);
-    }
-
-    if invocation.version_requested() {
-        shepr_platform::begin_cli_output();
-        println!("shepr {}", shepr_protocol::build_version());
-        return Ok(0);
-    }
-
-    let run_tui = match invocation.launch {
+    let run_tui = match launch {
+        cli::Launch::Help => {
+            cli::print_help();
+            return Ok(0);
+        }
+        cli::Launch::Version => {
+            shepr_platform::begin_cli_output();
+            println!("shepr {}", shepr_protocol::build_version());
+            return Ok(0);
+        }
         cli::Launch::ClientBridge => {
             let paths = resolve_bridge_paths()?;
             init_client_logging(&paths)?;
             return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
         }
-        cli::Launch::Cli(command) => return cli::run(command.as_ref()),
+        cli::Launch::Cli(command) => return cli::run(&command),
         cli::Launch::Client => false,
         cli::Launch::Tui => true,
     };

@@ -207,15 +207,7 @@ impl ClientShellState {
         work: Work,
         outcome: &mut ClientShellInput,
     ) -> Option<shepr_protocol::RequestId> {
-        let changes_focus = matches!(
-            &command,
-            EndpointCommand::WorkspaceFocus(_)
-                | EndpointCommand::PaneFocus(_)
-                | EndpointCommand::PaneFocusDirection(_)
-                | EndpointCommand::WorkspaceCreate(_)
-                | EndpointCommand::PaneSplit(_)
-        );
-        if changes_focus {
+        if command.traits().changes_focus {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
         if !self.endpoint_is_online(&self.active_endpoint_id) {

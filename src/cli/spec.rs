@@ -153,10 +153,9 @@ fn pane_id_argument() -> Arg {
     Arg::new("pane").value_name("PANE").value_parser(pane_id)
 }
 
-fn pane_id(value: &str) -> Result<String, String> {
+fn pane_id(value: &str) -> Result<shepr_protocol::PublicPaneId, String> {
     value
         .parse::<shepr_protocol::PublicPaneId>()
-        .map(|_| value.to_owned())
         .map_err(|_| format!("{value:?} is not a pane id (expected e.g. w1:p1)"))
 }
 
@@ -375,39 +374,39 @@ mod tests {
     fn generated_remote_cli_arguments_parse_with_the_cli_spec() {
         use shepr_remote::RemoteCliCommand;
 
-        use crate::cli::{CliCommand, Invocation, Launch, parse_invocation, server, status};
+        use crate::cli::{CliCommand, Launch, parse_launch, server, status};
 
         // Parses what the producer emits and checks what the parser made of it,
         // so a spelling that parses into the wrong command fails too.
-        fn parse(command: RemoteCliCommand<'_>) -> Invocation {
+        fn parse(command: RemoteCliCommand<'_>) -> Launch {
             let mut argv = vec![super::PROGRAM_NAME.to_owned()];
             argv.extend(command.args().into_iter().map(str::to_owned));
-            parse_invocation(&argv)
+            parse_launch(&argv)
                 .unwrap_or_else(|code| panic!("{command:?} should parse, exit code {code}"))
         }
 
         let invocation = parse(RemoteCliCommand::ClientStatus);
         assert!(matches!(
-            &invocation.launch,
+            &invocation,
             Launch::Cli(command)
                 if matches!(**command, CliCommand::ClientStatus { json: true })
         ));
 
         let invocation = parse(RemoteCliCommand::ServerStatus);
         assert!(matches!(
-            &invocation.launch,
+            &invocation,
             Launch::Cli(command)
                 if matches!(**command, CliCommand::Status(status::Command::Server { json: true }))
         ));
 
         let invocation = parse(RemoteCliCommand::ClientBridge);
-        assert!(matches!(invocation.launch, Launch::ClientBridge));
+        assert!(matches!(invocation, Launch::ClientBridge));
 
         let invocation = parse(RemoteCliCommand::ServerStop {
             expected_boot: "4242-1700000000",
         });
         assert!(matches!(
-            &invocation.launch,
+            &invocation,
             Launch::Cli(command)
                 if matches!(
                     &**command,

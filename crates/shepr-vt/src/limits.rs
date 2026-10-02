@@ -77,20 +77,3 @@ pub(crate) const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
 /// the widest category in Unicode display width, keeping cell accounting within
 /// that model.
 pub(crate) const MAX_UNICODE_CODEPOINT_WIDTH: u8 = 2;
-
-/// Red coefficient in the integer RGB luminance approximation used to infer
-/// whether a color is light. The standard approximation weights green most
-/// heavily because it contributes most to perceived luminance.
-pub(crate) const LUMINANCE_RED_WEIGHT: u32 = 299;
-
-/// Green coefficient in the integer RGB luminance approximation; see
-/// `LUMINANCE_RED_WEIGHT` for the weighted-sum scale and rationale.
-pub(crate) const LUMINANCE_GREEN_WEIGHT: u32 = 587;
-
-/// Blue coefficient in the integer RGB luminance approximation; see
-/// `LUMINANCE_RED_WEIGHT` for the weighted-sum scale and rationale.
-pub(crate) const LUMINANCE_BLUE_WEIGHT: u32 = 114;
-
-/// Weighted luminance threshold for classifying an RGB color as light. The
-/// threshold is near the midpoint of the weighted 8-bit RGB range.
-pub(crate) const LIGHT_LUMINANCE_THRESHOLD: u32 = 128_000;

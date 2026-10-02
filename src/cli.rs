@@ -45,6 +45,8 @@ pub(crate) type CliResult<T> = Result<T, CliError>;
 /// A top-level command after clap has parsed argv once. Launch modes and CLI
 /// command groups are explicit, and CLI groups already contain typed values.
 pub(crate) enum Launch {
+    Help,
+    Version,
     Tui,
     Client,
     ClientBridge,
@@ -72,24 +74,11 @@ impl CliCommand {
     }
 }
 
-/// Values parsed from the root options plus one typed launch. Launch options
-/// are only recognised before the subcommand; everything after it belongs to
-/// that subcommand.
-pub(crate) struct Invocation {
-    pub(crate) launch: Launch,
-    help: bool,
-    version: bool,
-}
-
 /// Parses argv. On a usage error, or when `--help` for a subcommand was asked
 /// for, clap's message has already been printed and the exit code is returned.
-pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
-    if let Some((help, version)) = root_exit_flags_before_subcommand(args) {
-        return Ok(Invocation {
-            launch: Launch::Tui,
-            help,
-            version,
-        });
+pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
+    if let Some(launch) = root_exit_flags_before_subcommand(args) {
+        return Ok(launch);
     }
 
     match spec::command().try_get_matches_from(args) {
@@ -111,11 +100,13 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                     }
                 },
             };
-            Ok(Invocation {
-                launch,
-                help: matches::flag(&matches, "help"),
-                version: matches::flag(&matches, "version"),
-            })
+            if matches::flag(&matches, "help") {
+                Ok(Launch::Help)
+            } else if matches::flag(&matches, "version") {
+                Ok(Launch::Version)
+            } else {
+                Ok(launch)
+            }
         }
         Err(error) => {
             shepr_platform::begin_cli_output();
@@ -129,7 +120,7 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
 
 /// Root help and version flags take precedence over validation of a following
 /// subcommand, including required arguments nested below a command group.
-fn root_exit_flags_before_subcommand(args: &[String]) -> Option<(bool, bool)> {
+fn root_exit_flags_before_subcommand(args: &[String]) -> Option<Launch> {
     let mut help = false;
     let mut version = false;
     let mut has_subcommand = false;
@@ -150,16 +141,15 @@ fn root_exit_flags_before_subcommand(args: &[String]) -> Option<(bool, bool)> {
         }
     }
 
-    (has_subcommand && (help || version)).then_some((help, version))
-}
-
-impl Invocation {
-    pub(crate) fn help_requested(&self) -> bool {
-        self.help
+    if !has_subcommand {
+        return None;
     }
-
-    pub(crate) fn version_requested(&self) -> bool {
-        self.version
+    if help {
+        Some(Launch::Help)
+    } else if version {
+        Some(Launch::Version)
+    } else {
+        None
     }
 }
 
@@ -188,10 +178,13 @@ pub(crate) fn print_help() {
 
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
-    if let CliCommand::Detect(detect::Command::Explain(args)) = command
-        && args.file.is_some()
+    if let CliCommand::Detect(detect::Command::Explain(detect::ExplainArgs {
+        source: detect::ExplainSource::File { path, agent },
+        json,
+        verbose,
+    })) = command
     {
-        return detect::run_file_explain(args);
+        return detect::run_file_explain(path, agent, *json, *verbose);
     }
 
     match command {
@@ -368,13 +361,13 @@ mod output_capture {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, CliError, Invocation, Launch};
+    use super::{CliCommand, CliError, Launch};
     use shepr_test_fixtures::*;
 
-    pub(super) fn parse(args: &[&str]) -> Invocation {
+    pub(super) fn parse(args: &[&str]) -> Launch {
         let mut argv = vec!["shepr".to_string()];
         argv.extend(args.iter().map(ToString::to_string));
-        match super::parse_invocation(&argv) {
+        match super::parse_launch(&argv) {
             Ok(invocation) => invocation,
             Err(code) => panic!("{args:?} should parse (exit {code})"),
         }
@@ -409,9 +402,9 @@ mod tests {
         assert_eq!(spec_groups, sampled_groups);
 
         for (_, args) in samples {
-            let invocation = parse(args);
+            let launch = parse(args);
             assert!(
-                matches!(invocation.launch, Launch::Cli(_)),
+                matches!(launch, Launch::Cli(_)),
                 "{args:?} should produce a typed CLI command"
             );
         }
@@ -451,8 +444,8 @@ mod tests {
             ),
             (&["server", "stop"][..], None),
         ] {
-            let invocation = parse(args);
-            let Launch::Cli(command) = invocation.launch else {
+            let launch = parse(args);
+            let Launch::Cli(command) = launch else {
                 panic!("{args:?} should be a typed CLI command");
             };
             assert!(
@@ -487,19 +480,19 @@ mod tests {
     #[test]
     fn hidden_launch_modes_are_typed() {
         assert!(matches!(
-            parse(&["remote-client-bridge"]).launch,
+            parse(&["remote-client-bridge"]),
             Launch::ClientBridge
         ));
-        assert!(matches!(parse(&["client"]).launch, Launch::Client));
-        assert!(matches!(parse(&[]).launch, Launch::Tui));
+        assert!(matches!(parse(&["client"]), Launch::Client));
+        assert!(matches!(parse(&[]), Launch::Tui));
     }
 
     #[test]
     fn client_status_does_not_require_runtime_paths() {
         let env = crate::test_support::IsolatedEnv::new();
         env.remove(shepr_core::env::EnvVar::XdgRuntimeDir.name());
-        let invocation = parse(&["status", "client", "--json"]);
-        let Launch::Cli(command) = invocation.launch else {
+        let launch = parse(&["status", "client", "--json"]);
+        let Launch::Cli(command) = launch else {
             panic!("status client should be a CLI command");
         };
         let (result, output) = super::output_capture::capture(|| super::run(&command));

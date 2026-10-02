@@ -68,6 +68,7 @@ enum NextSave {
 }
 
 pub(crate) struct SessionSaver {
+    policy: SavePolicy,
     autosave: Autosave,
     exit: PaneExitCheckpoint,
     host: HostShutdownCheckpoint,
@@ -75,12 +76,90 @@ pub(crate) struct SessionSaver {
     /// capture reaches the persister after the one before it finished.
     in_flight: Option<InFlightSave>,
     persister: shepr_mux::persist::SessionPersister,
-    /// Set after the worker refuses a job or abandons its result. Disk errors
-    /// remain retryable, but this persister cannot recover without a restart.
-    /// Clients are told through their shell snapshot.
-    persistence_stopped: bool,
     /// Fired by the persister each time a submitted save ends.
     save_finished: Arc<tokio::sync::Notify>,
+}
+
+#[derive(Clone, Copy)]
+enum SaveMode {
+    Never,
+    Persisting,
+    Stopped,
+}
+
+/// The one runtime decision that admits a session save. The persisted mode is
+/// retained across a host-shutdown freeze and restored only by `thaw`.
+#[derive(Clone, Copy)]
+enum SavePolicy {
+    Never,
+    Persisting,
+    /// The persister refused a job it can never run; no save starts again
+    /// this boot.
+    Stopped,
+    Frozen {
+        resume_to: SaveMode,
+    },
+}
+
+impl SavePolicy {
+    fn new(persists: bool) -> Self {
+        if persists {
+            Self::Persisting
+        } else {
+            Self::Never
+        }
+    }
+
+    fn allows_saves(self) -> bool {
+        matches!(self, Self::Persisting)
+    }
+
+    /// Whether a host-shutdown checkpoint request is taken: a stopped saver
+    /// takes it only to fail it at once, so the lifecycle stops waiting.
+    /// Never-persisting and frozen savers ignore it.
+    fn takes_host_checkpoint(self) -> bool {
+        matches!(self, Self::Persisting | Self::Stopped)
+    }
+
+    fn is_stopped(self) -> bool {
+        matches!(
+            self,
+            Self::Stopped
+                | Self::Frozen {
+                    resume_to: SaveMode::Stopped
+                }
+        )
+    }
+
+    fn freeze(&mut self) {
+        let resume_to = match self {
+            Self::Never => SaveMode::Never,
+            Self::Persisting => SaveMode::Persisting,
+            Self::Stopped => SaveMode::Stopped,
+            Self::Frozen { .. } => return,
+        };
+        *self = Self::Frozen { resume_to };
+    }
+
+    fn thaw(&mut self) {
+        let resume_to = match self {
+            Self::Frozen { resume_to } => *resume_to,
+            Self::Never | Self::Persisting | Self::Stopped => return,
+        };
+        *self = match resume_to {
+            SaveMode::Never => Self::Never,
+            SaveMode::Persisting => Self::Persisting,
+            SaveMode::Stopped => Self::Stopped,
+        };
+    }
+
+    fn stop(&mut self) {
+        if let Self::Frozen { resume_to } = self {
+            *resume_to = SaveMode::Stopped;
+        } else {
+            *self = Self::Stopped;
+        }
+    }
 }
 
 /// Retry delay of a failed pane-exit or host-shutdown checkpoint after
@@ -97,14 +176,15 @@ impl SessionSaver {
     pub(crate) fn new(
         persister: shepr_mux::persist::SessionPersister,
         save_finished: Arc<tokio::sync::Notify>,
+        persists: bool,
     ) -> Self {
         Self {
+            policy: SavePolicy::new(persists),
             autosave: Autosave::new(),
             exit: PaneExitCheckpoint::new(),
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
             persister,
-            persistence_stopped: false,
             save_finished,
         }
     }
@@ -121,7 +201,7 @@ impl SessionSaver {
     /// held (the lifecycle freezes saves once it takes that result), or this
     /// boot's persister has stopped.
     fn blocked(&self) -> bool {
-        self.persistence_stopped
+        !self.policy.allows_saves()
             || self.in_flight.is_some()
             || (self.host.finished_unsaved() && !self.exit.is_requested())
     }
@@ -180,9 +260,11 @@ impl SessionSaver {
     /// Applies one consumed session mutation: the autosave is due after the
     /// debounce, a preserved pane-exit layout stops being authoritative, and
     /// the layout captured by a checkpoint in flight is voided, so a capture
-    /// that predates the mutation is never installed.
+    /// that predates the mutation is never installed. This is scheduling
+    /// bookkeeping; layout authority is checked against AppState's current
+    /// dirty bit at each use, so this cache is not a second mutation source.
     fn note_mutation(&mut self, now: Instant) {
-        if self.persistence_stopped {
+        if !self.policy.allows_saves() {
             return;
         }
         self.autosave.schedule(now);
@@ -203,7 +285,7 @@ impl SessionSaver {
     fn request_host_checkpoint(&mut self) -> bool {
         let requested = self.host.request();
         if requested {
-            if self.persistence_stopped {
+            if self.policy.is_stopped() {
                 self.host.fail_permanently();
             } else {
                 self.exit.expedite_retry();
@@ -213,7 +295,7 @@ impl SessionSaver {
     }
 
     fn stop_persistence(&mut self) {
-        self.persistence_stopped = true;
+        self.policy.stop();
         self.autosave.clear();
         self.exit.abandon();
         self.host.fail_permanently();
@@ -238,13 +320,32 @@ impl SessionSaver {
     /// the layout they were held in (or ran out of retries). A save already in
     /// flight is not cancelled; it captured the pre-freeze session, so what
     /// it writes is still a pre-freeze state. Nothing starts after the freeze.
-    pub(crate) fn freeze_session_saves(&mut self) {
+    pub(crate) fn freeze(&mut self) {
+        self.policy.freeze();
         self.autosave.clear();
         self.exit.release_for_freeze();
+    }
+
+    pub(crate) fn thaw(&mut self) {
+        self.policy.thaw();
     }
 }
 
 impl App {
+    /// Freezes the saver and marks the app suspended as one lifecycle change.
+    pub(crate) fn freeze_session_saves(&mut self) {
+        self.policy = super::AppPolicy::Suspended;
+        self.session_saver.freeze();
+    }
+
+    /// Restores the app's pre-freeze policy and thaws the saver together.
+    pub(crate) fn thaw_session_saves(&mut self, policy: super::AppPolicy) {
+        self.session_saver.thaw();
+        self.policy = policy;
+    }
+
+    /// The current AppState dirty bit is the authority for a saved exit layout;
+    /// saver mutation notifications only schedule writes and invalidate caches.
     pub(super) fn preserves_pane_exit_checkpoint(&self) -> bool {
         self.session_saver.exit.preserved().is_some() && !self.state.session_dirty
     }
@@ -275,7 +376,7 @@ impl App {
     pub(crate) fn sync_session_save_schedule(&mut self) {
         if self.state.session_dirty {
             self.state.session_dirty = false;
-            if self.policy.persists_session() {
+            if self.session_saver.policy.allows_saves() {
                 self.session_saver.note_mutation(self.clock.now);
             }
         }
@@ -303,7 +404,7 @@ impl App {
     /// persister refused a save it can never run, so layout changes from now
     /// on are not restored by the next server start.
     pub(crate) fn session_saves_stopped(&self) -> bool {
-        self.session_saver.persistence_stopped
+        self.session_saver.policy.is_stopped()
     }
 
     /// The one place a save's outcome is applied to the autosave backoff and
@@ -326,6 +427,8 @@ impl App {
                         if let Some(exit) = ticket.exit {
                             self.session_saver.exit.saved(
                                 exit.generation,
+                                // This catches a mutation not yet consumed by
+                                // the loop's save-scheduling pass.
                                 exit.layout.filter(|_| !self.state.session_dirty),
                             );
                         } else {
@@ -346,7 +449,7 @@ impl App {
                     error = %error,
                     "session persister cannot accept further saves; disabling session persistence for this boot"
                 );
-                if !self.session_saver.persistence_stopped {
+                if !self.session_saver.policy.is_stopped() {
                     // Every client's snapshot carries the stop, so the user
                     // learns that later layout changes will not be restored.
                     self.state.mark_shell_projection_dirty();
@@ -382,29 +485,15 @@ impl App {
     /// turning history into its saved form and reading the cwds are the
     /// persister's work.
     fn capture_session_save_job(&self) -> shepr_mux::persist::PersistJob {
-        if self.state.workspaces.is_empty() {
-            shepr_mux::persist::PersistJob::Clear
-        } else {
-            let (snapshot, cwds) = shepr_mux::persist::capture_deferred(
-                &self.state.workspaces,
-                &self.state.terminals,
-                &self.terminal_runtimes,
-                self.paths.fallback_cwd(),
-                self.state.bookmark_index(),
-                self.state.host_terminal_theme,
-            );
-            let history = self.persist_pane_history.then(|| {
-                shepr_mux::persist::capture_pending_history(
-                    &self.state.workspaces,
-                    &self.terminal_runtimes,
-                )
-            });
-            shepr_mux::persist::PersistJob::Save(shepr_mux::persist::SessionBundle {
-                snapshot,
-                cwds,
-                history,
-            })
-        }
+        shepr_mux::persist::capture_job(
+            &self.state.workspaces,
+            &self.state.terminals,
+            &self.terminal_runtimes,
+            self.paths.fallback_cwd(),
+            self.state.bookmark_index(),
+            self.state.host_terminal_theme,
+            self.persist_pane_history,
+        )
     }
 
     /// The layout a pane-exit checkpoint preserves from its capture, or
@@ -471,14 +560,11 @@ impl App {
     }
 
     pub(crate) fn start_background_session_save(&mut self) {
-        if !self.policy.persists_session() {
+        if !self.session_saver.policy.allows_saves() {
             self.session_saver.autosave.clear();
             return;
         }
         self.reap_finished_session_save();
-        if self.session_saver.persistence_stopped {
-            return;
-        }
         match self.session_saver.next_save(self.clock.now) {
             None => {}
             Some(NextSave::Checkpoint {
@@ -520,7 +606,7 @@ impl App {
     /// burst of exits keeps the layout from before the first one), or
     /// checkpoints have been abandoned after repeated failures.
     pub(crate) fn pane_exit_checkpoint_settled(&self) -> bool {
-        !self.policy.persists_session()
+        !self.session_saver.policy.allows_saves()
             || !self.session_saver.exit.would_hold(self.state.session_dirty)
     }
 
@@ -530,7 +616,7 @@ impl App {
     /// the save later finishes, and a later change to the session cannot hold
     /// it again.
     pub(crate) fn request_pane_exit_checkpoint(&mut self) -> Option<u64> {
-        if !self.policy.persists_session() || self.session_saver.persistence_stopped {
+        if !self.session_saver.policy.allows_saves() {
             return None;
         }
         let generation = self.session_saver.exit.request(self.state.session_dirty)?;
@@ -541,11 +627,13 @@ impl App {
     /// Whether a held exit's generation is released: a checkpoint holding its
     /// pane is durable, or checkpoints were abandoned or frozen.
     pub(crate) fn pane_exit_checkpoint_generation_settled(&self, generation: u64) -> bool {
-        !self.policy.persists_session() || self.session_saver.exit.is_released(generation)
+        !self.session_saver.policy.allows_saves() || self.session_saver.exit.is_released(generation)
     }
 
     pub(crate) fn request_host_shutdown_checkpoint(&mut self) {
-        if !self.policy.persists_session() || !self.session_saver.request_host_checkpoint() {
+        if !self.session_saver.policy.takes_host_checkpoint()
+            || !self.session_saver.request_host_checkpoint()
+        {
             return;
         }
         self.start_background_session_save();
@@ -577,6 +665,15 @@ impl App {
             } else {
                 // Removing the already-checkpointed pane is not a new durable
                 // mutation; the later save can update the layout after debounce.
+                // The event path sampled this flag before applying the removal,
+                // so this only clears the removal's own dirty mark. Other
+                // event-loop mutations set it before this call and take the
+                // branch above. Captures and save completions also consult the
+                // flag directly before accepting a preserved layout. The
+                // session dirty bit is sufficient here because the event loop
+                // samples it immediately before applying one event and no
+                // other mutation can interleave; a second counter would not
+                // change which layout this synchronous path accepts.
                 self.state.session_dirty = false;
             }
             self.session_saver.autosave.schedule(self.clock.now);
@@ -589,7 +686,7 @@ impl App {
             self.finish_session_save(save.kind, result);
         }
 
-        if !self.policy.persists_session() || self.session_saver.persistence_stopped {
+        if !self.session_saver.policy.allows_saves() {
             self.session_saver.autosave.clear();
             return;
         }
@@ -648,6 +745,12 @@ impl SessionSaver {
 
     pub(crate) fn set_autosave_deadline(&mut self, deadline: Option<Instant>) {
         self.autosave.set_deadline(deadline);
+    }
+
+    /// Admits saves without a running persister, for tests of the saver's
+    /// scheduling alone.
+    pub(crate) fn admit_saves_for_test(&mut self) {
+        self.policy = SavePolicy::Persisting;
     }
 
     /// Whether a save is in flight.
@@ -711,7 +814,7 @@ impl App {
             shepr_mux::persist::HistoryCarry::default(),
             Arc::clone(&self.session_saver.save_finished),
         );
-        self.session_saver.persistence_stopped = false;
+        self.session_saver.policy = SavePolicy::Persisting;
         self.policy = super::AppPolicy::Production;
     }
 
@@ -727,13 +830,9 @@ impl App {
     pub(crate) fn save_session_now(&mut self) -> bool {
         self.wait_for_session_save();
 
-        if !self.policy.persists_session() {
+        if !self.session_saver.policy.allows_saves() {
             self.session_saver.autosave.clear();
-            return true;
-        }
-        if self.session_saver.persistence_stopped {
-            self.session_saver.autosave.clear();
-            return false;
+            return !self.session_saver.policy.is_stopped();
         }
 
         let job = self.capture_session_save_job();
@@ -786,7 +885,7 @@ impl App {
     /// directory claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) {
         self.wait_for_session_save();
-        if !self.policy.persists_session() || self.session_saver.persistence_stopped {
+        if !self.session_saver.policy.allows_saves() {
             self.session_saver.autosave.clear();
             return;
         }
@@ -816,6 +915,14 @@ mod tests {
             &shepr_config::ServerConfig::default(),
             super::super::AppPolicy::Test,
         )
+    }
+
+    /// An app whose saver admits saves, for tests of the saver's scheduling
+    /// alone: no persister runs, so only what the saver decides is observed.
+    fn saving_test_app() -> App {
+        let mut app = test_app();
+        app.session_saver.admit_saves_for_test();
+        app
     }
 
     /// A production-policy app with one workspace of two panes, returning the
@@ -1040,7 +1147,7 @@ mod tests {
 
     #[test]
     fn a_requested_checkpoint_is_chosen_over_a_due_autosave() {
-        let mut app = test_app();
+        let mut app = saving_test_app();
         let now = app.clock.now;
         let saver = &mut app.session_saver;
         saver.set_autosave_deadline(Some(now));
@@ -1067,7 +1174,7 @@ mod tests {
 
     #[test]
     fn a_checkpoint_waits_for_the_later_of_the_two_retry_deadlines() {
-        let mut app = test_app();
+        let mut app = saving_test_app();
         let now = app.clock.now;
         let generation = app.session_saver.exit.request(false).expect("exit");
         app.session_saver.host.request();
@@ -1101,7 +1208,7 @@ mod tests {
 
     #[test]
     fn a_host_request_expedites_a_pending_exit_retry() {
-        let mut app = test_app();
+        let mut app = saving_test_app();
         let now = app.clock.now;
         let generation = app.session_saver.exit.request(false).expect("exit");
         app.session_saver.exit.failed(generation, now);
@@ -1154,7 +1261,7 @@ mod tests {
 
     #[test]
     fn a_mutation_after_the_capture_voids_the_in_flight_layout() {
-        let mut app = test_app();
+        let mut app = saving_test_app();
         let generation = app.session_saver.exit.request(false).expect("held");
         let layout = Box::new(PreservedLayout {
             snapshot: shepr_mux::persist::SessionSnapshot {
@@ -1209,7 +1316,7 @@ mod tests {
         let mut app = test_app();
         let generation = app.session_saver.exit.request(false).expect("held");
         app.session_saver.autosave.schedule(app.clock.now);
-        app.session_saver.freeze_session_saves();
+        app.session_saver.freeze();
         assert_eq!(app.session_saver.autosave_deadline(), None);
         assert!(app.session_saver.exit.is_released(generation));
         assert!(app.session_saver.next_save(app.clock.now).is_none());

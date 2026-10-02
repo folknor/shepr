@@ -109,7 +109,9 @@ impl std::ops::BitOrAssign for KittyKeyboardFlags {
     }
 }
 
-pub use color::{ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette};
+pub use color::{
+    ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette, default_palette_color,
+};
 pub use render::{CursorVisualStyle, Dirty, RenderState};
 pub use scan::{ProgressReport, WorkingDirectoryReport};
 
@@ -209,6 +211,102 @@ const DEFAULT_BACKGROUND: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
 pub enum ActiveScreen {
     Primary,
     Alternate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseProtocolMode {
+    Press,
+    PressRelease,
+    ButtonMotion,
+    AnyMotion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEncoding {
+    Default,
+    Utf8,
+    Sgr,
+}
+
+/// The mouse protocol selected by the child. `encoding` is used for cell
+/// coordinates; pixel reports use SGR when `pixels_requested` is true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseProtocol {
+    pub mode: MouseProtocolMode,
+    pub encoding: MouseEncoding,
+    pub pixels_requested: bool,
+}
+
+/// Input-related terminal modes captured together from one terminal state.
+/// Pane callers collect this while holding the shared core lock, then make
+/// one event's routing and encoding decisions from this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputModes {
+    alternate_screen: bool,
+    application_cursor_keys: bool,
+    bracketed_paste: bool,
+    focus_reporting: bool,
+    mouse_protocol: Option<MouseProtocol>,
+    /// Mode 1016 may be enabled before mouse tracking itself is enabled.
+    sgr_pixel_mouse: bool,
+    mouse_alternate_scroll: bool,
+    kitty_keyboard_flags: KittyKeyboardFlags,
+    modify_other_keys: ModifyOtherKeysLevel,
+    color_scheme_reporting: bool,
+}
+
+impl InputModes {
+    pub const fn alternate_screen_active(self) -> bool {
+        self.alternate_screen
+    }
+
+    pub const fn application_cursor_keys_enabled(self) -> bool {
+        self.application_cursor_keys
+    }
+
+    pub const fn bracketed_paste_enabled(self) -> bool {
+        self.bracketed_paste
+    }
+
+    pub const fn focus_reporting_enabled(self) -> bool {
+        self.focus_reporting
+    }
+
+    pub const fn mouse_protocol(self) -> Option<MouseProtocol> {
+        self.mouse_protocol
+    }
+
+    pub const fn sgr_pixel_mouse_enabled(self) -> bool {
+        self.sgr_pixel_mouse
+    }
+
+    pub const fn mouse_alternate_scroll_enabled(self) -> bool {
+        self.mouse_alternate_scroll
+    }
+
+    pub const fn kitty_keyboard_flags(self) -> KittyKeyboardFlags {
+        self.kitty_keyboard_flags
+    }
+
+    pub const fn modify_other_keys_level(self) -> ModifyOtherKeysLevel {
+        self.modify_other_keys
+    }
+
+    pub const fn color_scheme_reporting_enabled(self) -> bool {
+        self.color_scheme_reporting
+    }
+
+    pub fn mouse_tracking_enabled(self) -> bool {
+        self.mouse_protocol.is_some()
+    }
+
+    pub fn plain_page_keys_use_host_scrollback(self) -> bool {
+        !self.alternate_screen
+            && !self.mouse_tracking_enabled()
+            // Bracketed paste distinguishes zsh's line editor (where it's on)
+            // from e.g. less -X (where it's off).
+            && (!self.application_cursor_keys || self.bracketed_paste)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -903,7 +1001,61 @@ impl Terminal {
     }
 
     pub fn mouse_tracking_enabled(&self) -> bool {
-        self.term.mode().intersects(TermMode::MOUSE_MODE) || self.modes.x10_mouse
+        self.mouse_tracking_mode(*self.term.mode()).is_some()
+    }
+
+    /// The tracking and coordinate protocol the child selected, with the
+    /// same precedence used by every pane input path.
+    pub fn mouse_protocol(&self) -> Option<MouseProtocol> {
+        self.mouse_protocol_for_terminal_mode(*self.term.mode())
+    }
+
+    fn mouse_tracking_mode(&self, terminal_mode: TermMode) -> Option<MouseProtocolMode> {
+        if terminal_mode.contains(TermMode::MOUSE_MOTION) {
+            Some(MouseProtocolMode::AnyMotion)
+        } else if terminal_mode.contains(TermMode::MOUSE_DRAG) {
+            Some(MouseProtocolMode::ButtonMotion)
+        } else if terminal_mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+            Some(MouseProtocolMode::PressRelease)
+        } else if self.modes.x10_mouse {
+            Some(MouseProtocolMode::Press)
+        } else {
+            None
+        }
+    }
+
+    fn mouse_protocol_for_terminal_mode(&self, terminal_mode: TermMode) -> Option<MouseProtocol> {
+        let mode = self.mouse_tracking_mode(terminal_mode)?;
+        let encoding = if terminal_mode.contains(TermMode::SGR_MOUSE) {
+            MouseEncoding::Sgr
+        } else if terminal_mode.contains(TermMode::UTF8_MOUSE) {
+            MouseEncoding::Utf8
+        } else {
+            MouseEncoding::Default
+        };
+        Some(MouseProtocol {
+            mode,
+            encoding,
+            pixels_requested: self.modes.sgr_pixels_mouse,
+        })
+    }
+
+    /// Capture every mode needed to route and encode one pane input event.
+    /// Pane wrappers call this while holding the shared core lock.
+    pub fn input_modes(&self) -> InputModes {
+        let terminal_mode = *self.term.mode();
+        InputModes {
+            alternate_screen: self.active_screen() == ActiveScreen::Alternate,
+            application_cursor_keys: terminal_mode.contains(TermMode::APP_CURSOR),
+            bracketed_paste: terminal_mode.contains(TermMode::BRACKETED_PASTE),
+            focus_reporting: terminal_mode.contains(TermMode::FOCUS_IN_OUT),
+            mouse_protocol: self.mouse_protocol_for_terminal_mode(terminal_mode),
+            sgr_pixel_mouse: self.modes.sgr_pixels_mouse,
+            mouse_alternate_scroll: terminal_mode.contains(TermMode::ALTERNATE_SCROLL),
+            kitty_keyboard_flags: self.kitty_keyboard_flags(),
+            modify_other_keys: self.modify_other_keys_level(),
+            color_scheme_reporting: self.modes.color_scheme_report,
+        }
     }
 
     pub fn active_screen(&self) -> ActiveScreen {

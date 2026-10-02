@@ -99,7 +99,7 @@ pub(in crate::shell) fn patch_cell(frame: &mut FrameData, x: u16, y: u16, patch:
 pub(in crate::shell) fn patch_rect(frame: &mut FrameData, rect: Rect, patch: StylePatch) {
     let width = usize::from(frame.width);
     let rect = rect.intersection(Rect::new(0, 0, frame.width, frame.height));
-    if rect.is_empty() || frame.cells.len() != width * usize::from(frame.height) {
+    if rect.is_empty() || frame.grid().is_err() {
         return;
     }
     for y in rect.top()..rect.bottom() {
@@ -183,7 +183,7 @@ fn scratch_at(scratch: &Buffer, x: usize, y: u16) -> Option<&ratatui::buffer::Ce
 /// and a scratch glyph that would cross the boundary becomes a blank.
 pub(in crate::shell) fn overwrite(frame: &mut FrameData, rects: &[Rect], scratch: &Buffer) {
     let width = usize::from(frame.width);
-    if width == 0 || frame.cells.len() != width * usize::from(frame.height) {
+    if width == 0 || frame.grid().is_err() {
         return;
     }
     let bounds = Rect::new(0, 0, frame.width, frame.height).intersection(scratch.area);

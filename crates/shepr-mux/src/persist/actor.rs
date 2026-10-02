@@ -262,6 +262,7 @@ enum Worker {
     Inline(Box<PersistState>),
     /// Holds the lease for an owner that persists nothing; refuses jobs.
     LeaseOnly(DataDirLease),
+    /// Terminal state: submitted work is refused because no worker will run it.
     Retired,
 }
 

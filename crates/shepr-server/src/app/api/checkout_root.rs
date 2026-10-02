@@ -5,16 +5,19 @@ use shepr_protocol::command::WorkspaceCheckoutRootParams;
 use crate::app::App;
 
 impl App {
-    /// `workspace.checkout_root`: the checkout root Git reports for a directory
-    /// on this host, which the client derives a new workspace's default label
-    /// from. A directory outside any repository, or one that is not a directory
-    /// here, is an ordinary `None`; a failure that kept Git from answering is an
-    /// error, and the client falls back to a path-based label. An unusable
-    /// `HOME` just means the `~` label is not offered.
+    /// `workspace.checkout_root`: the checkout root shared discovery finds for
+    /// a directory on this host, which the client derives a new workspace's
+    /// default label from. A directory outside any repository, or one that is
+    /// not a directory here, is an ordinary `None`; a filesystem failure that
+    /// kept discovery from answering is an error, and the client falls back to
+    /// a path-based label. Discovery is the walk the sidebar labels the
+    /// created workspace by, so the two agree (a bare repository answers with
+    /// its own directory). An unusable `HOME` just means the `~` label is not
+    /// offered.
     ///
     /// The server loop resolves the request data here. The directory stat and
-    /// Git query run in a worker; their result returns to the loop for its
-    /// ordered endpoint reply outbox.
+    /// discovery walk run in a worker; their result returns to the loop for
+    /// its ordered endpoint reply outbox.
     pub(crate) fn prepare_workspace_checkout_root(
         &self,
         params: &WorkspaceCheckoutRootParams,
@@ -27,7 +30,7 @@ impl App {
         Ok((cwd, home))
     }
 
-    /// Does the blocking filesystem and Git work for `workspace.checkout_root`.
+    /// Does the blocking discovery work for `workspace.checkout_root`.
     pub(crate) fn checkout_root_for_worker(cwd: &Path) -> Result<Option<String>, String> {
         checkout_root(cwd)
     }
@@ -37,30 +40,26 @@ fn checkout_root(cwd: &Path) -> Result<Option<String>, String> {
     match std::fs::metadata(cwd) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("cannot stat {}: {error}", cwd.display())),
-    }
-    let output = shepr_mux::git::run_git(cwd, &["rev-parse", "--show-toplevel"])
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        // The runner fixes the locale, so Git's message is stable.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("not a git repository") {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
             return Ok(None);
         }
-        return Err(format!(
-            "git rev-parse --show-toplevel failed with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
+        Err(error) => return Err(format!("cannot stat {}: {error}", cwd.display())),
     }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| "git rev-parse --show-toplevel returned non-UTF-8 output".to_owned())?;
-    let root = stdout.trim();
-    if root.is_empty() {
-        return Err("git rev-parse --show-toplevel returned no path".to_owned());
-    }
-    Ok(Some(root.to_owned()))
+    // Admission and sidebar refresh use one discovery policy for this answer.
+    let Some(root) =
+        shepr_mux::git::discover_checkout_root(cwd).map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    root.into_os_string()
+        .into_string()
+        .map(Some)
+        .map_err(|_| "Git checkout root path is not UTF-8".to_owned())
 }
 
 #[cfg(test)]

@@ -161,21 +161,6 @@ Reported by foundation and agents.
 
 ## Terminal emulation and input
 
-## CON-021 - Which mouse protocol does a pane speak?
-
-vt's handler models the mode exclusivities; vt `mouse_tracking_enabled()` reads
-the bits; mux `PaneTerminal::encode_mouse_event` (production) derives a
-precedence ladder (AnyMotion, ButtonMotion, PressRelease, X10; SGR, UTF-8,
-default) and returns `None` when none is set; the test-only `input_state` has a
-second ladder with a different encoding precedence (SgrPixels first); server
-`PaneRuntime::wheel_routing` and `plain_page_keys_use_host_scrollback` read the
-modes again. On the gating side, `encode_mouse_button` checks
-`mouse_reporting_enabled()` first, `encode_mouse_motion` does not,
-`encode_mouse_wheel` checks `wheel_routing()`, and the encoder checks again.
-Owner: vt `Terminal::mouse_protocol() -> Option<MouseProtocol { mode, encoding,
-pixels_requested }>`, read by the encoder and every predicate. Reported by
-terminal and mux-panes.
-
 ## CON-022 - Does a mouse report use pixels or cells, and is pixel mouse eligible?
 
 Client `mouse.rs` sends pixels when `hit.sgr_pixel_mouse && hit.pixel_width >
@@ -224,20 +209,6 @@ between termio's and protocol's scroll metrics. Owner: vt returning one
 the end; mux `terminal_extract_selection` uses the lower-bound form and relies on
 `read_text_screen`'s prose error. Owner: `Terminal`; remove `AbsRow::screen_row`.
 (terminal)
-
-## CON-026 - Is this colour light or dark, and what RGB is a named colour?
-
-vt `RgbColor::inferred_appearance` uses BT.601 luma on gamma-encoded channels
-(threshold 128) and feeds the `ColorScheme` reported to children (DSR 997) and
-the server's host appearance; termio `selection_render` uses WCAG relative
-luminance `< 0.5` for the highlight direction and a contrast ratio for the
-foreground. They disagree: a grey of 150 is Light to vt and dark to the
-selection code, and any background with luma between 128 and about 188 is
-reported light to children while selection treats it as dark. Named colours also
-disagree by construction: vt `default_palette()` says ANSI red is `#cc6666`,
-termio `selection_render::color_to_rgb` says `(128, 0, 0)`. Owner: one
-`RgbColor::appearance()` and `contrast_with` in a shared value crate, and the
-termio table resolved through the palette in force. (terminal)
 
 ## CON-027 - How are styles, colours and colour replies spelled in VT sequences?
 
@@ -298,17 +269,6 @@ the predicates three times. Cell width from `CellWide` is mapped four times in
 `text.rs` `TextBufferBuilder::push_cell`. Owner: one width module exposing both
 rules by name, and `CellWide::columns()`/`grid_width()`. Reported by terminal and
 mux-panes.
-
-## CON-031 - Which cells does blit repaint?
-
-`write_all_cells`, `write_changed_cells` and `blit_patch_to` each decide which
-cells to repaint, when to reposition the cursor and how wide a cell is. Two
-equality rules exist (`cells_equal` by hyperlink index, `cells_visually_equal`
-by sanitised URI); they agree only because `patch_rows_fit` refuses any patch
-touching a hyperlink. The patch walker repaints a wide glyph's omitted successor
-that the diff walker handles through `invalidated`. A test asserts patch bytes
-equal diff bytes. Owner: one row painter parameterised by a "previous cell at (x,
-y)" source. (terminal)
 
 ## CON-035 - Where does an OSC end?
 
@@ -526,37 +486,20 @@ Reported by mux-state, server-app and server-serving.
 
 ## CON-057 - Which panes does a surface of a workspace show?
 
-`sync_immediate_pty_sources` (zoomed means the focused pane, else
-`layout().pane_ids()`), `visible_pane_runtimes` (the same rule again),
-`any_shell_surface_contains_pane` and `shell_client_views_pane`
-(`workspace.shows_pane`), `retained_pane_layout`
-(`pane_geometry_in(area).visible_panes(layout, zoomed)`), and
-`ui::compute_surface_for`. `PaneGeometry::visible_panes` assumes the zoomed pane
-is the focus. Owner: `Workspace::visible_pane_ids()` beside `shows_pane`.
+`Workspace::visible_pane_ids()` now answers it for `sync_immediate_pty_sources`
+and `visible_pane_runtimes`. Still answering it themselves:
+`retained_pane_layout` in `server/headless/retained_surface.rs` and the surface
+pane builder in `ui::panes`, which pass `workspace.zoomed()` to
+`PaneGeometry::visible_panes` (which assumes the zoomed pane is the focus).
 (server-serving)
-
-## CON-058 - May a workspace be zoomed?
-
-`Workspace::set_zoomed` (refuses with fewer than 2 panes),
-`Workspace::from_restored` (`zoomed && panes.len() > 1`),
-`restore::plan_workspace` (`snap.zoomed && pane_ids.len() > 1 &&
-saved_focus_survived`), `detach_pane` and `commit_prepared_split` (force
-`false`), and the test invariant checker. They agree. Owner: zoom lives in the
-pane tree as a state that cannot be entered with one pane and is cleared by the
-operations that change the pane set. (mux-state)
 
 ## CON-059 - How does a layout tree collapse, and which panes are adjacent?
 
-`restore::prune_restored_node` decides how a split collapses when a child goes,
-`shepr_core::layout::remove_pane` decides it for live closes;
-`restore::collect_pane_ids`/`collect_ids_inner` duplicate `TileLayout::pane_ids`;
-the `Direction` to `DirectionSnapshot` mapping and its inverse are in
-`capture_node` and `remap_inner`; `workspace/geometry.rs` decides adjacency
-(`ranges_overlap`, `pane_to_right`, `pane_below`, `u16` saturating) separately
-from core's `find_in_direction`/`ranges_overlap` (`u32` ends), and the two differ
-at the right or bottom edge of a `u16::MAX` area. Owner: `shepr-core::layout`
-with `Node::prune(&surviving)`, `Node::pane_ids` and one adjacency helper.
-(mux-state)
+Pruning and pane-id collection now live on core's `Node`, and core's
+`find_in_direction` uses one directional helper. Still open: mux
+`workspace/geometry.rs` decides adjacency (`ranges_overlap`, `pane_to_right`,
+`pane_below`, `u16` saturating) separately from core's helper (`u32` ends), and
+the two differ at the right or bottom edge of a `u16::MAX` area. (mux-state)
 
 ## CON-060 - How does a snapshot key its panes?
 
@@ -597,91 +540,7 @@ root), and the client from the server's checkout-root answer. Visibility:
 function of `(cwd, checkout root, home)` (already `shepr_core::workspace_label`)
 computed once at admission. Reported by mux-state and server-app.
 
-## CON-064 - What is the checkout root of a directory?
-
-mux `git/discovery.rs` walks the filesystem honouring `GIT_CEILING_DIRECTORIES`,
-gitfiles and bare repositories (`core.bare` via a `git config` spawn), skipping
-`.git` directories without `HEAD`, stopping on unreadable entries; the server's
-`app/api/checkout_root.rs` runs `git rev-parse --show-toplevel` and classifies
-"outside" by `stderr.contains("not a git repository")`. They disagree: inside a
-bare repository mux says the bare directory is the root while `--show-toplevel`
-fails; `safe.directory` refusals make the server error where mux reads files; a
-`.git` without `HEAD` is skipped by mux and makes Git error. A new workspace's
-default label and its label after the first refresh can therefore differ. Within
-mux, "is this a checkout root" is answered three times with the same
-`locate_git_dir` then `git_head_file_is_readable` match
-(`git_worktree_info_with_errors`, `git_dir_for_repo_root`,
-`git_repo_root_below_with_errors`). Which Git results mean "no answer" is decided
-in `git_trimmed_stdout` by matching `args.first()` against `"symbolic-ref"` and
-`"rev-parse"` plus stderr `"Needed a single revision"`, in
-`read_repository_format_value` and `read_bare` (exit 1), and in the server's
-stderr match. Owner: one `discover(cwd) -> Discovery::{Checkout(info), Outside,
-Unreadable(err)}` that the server's checkout-root answer also calls, and probes
-that declare their own "absent" outcome next to their argv. Reported by mux-state
-and server-app.
-
-## CON-065 - Which Git cache entries are kept, and when are they retried?
-
-`status.rs` decides retry timing; the server's `GitRefreshScheduler::mark_due`
-drops negative entries by peeking at `fingerprint.is_some()`, and `finish` drops
-entries not refreshed this round and prunes the error-dedup set. The cache
-travels: the app clones it into the worker, the worker returns `cache_updates`
-inside `AppEvent::GitStatusRefreshed`, the app merges them back. Owner: a
-`GitStatusCache` type next to the status code with its retention policy (the
-crate split is filed among the structure findings). Reported by mux-state and
-server-app.
-
 ## Persistence and session saves
-
-## CON-066 - May a session save run now?
-
-`DataDirLease::file` (`None` after release), `SessionWriter::lease` (`None` after
-retire, `may_write`), `PersistState::accepting_jobs` (false after a panic),
-`Worker::LeaseOnly` (refuse with error), `Worker::Retired` (accept and report
-success), and `load`'s `lease.is_active()`: five flags across three types and
-three answers to "this save will not happen". In the app, `AppPolicy::persists_session`
-is consulted in `sync_session_save_schedule`, `start_background_session_save`,
-`pane_exit_checkpoint_settled`, `request_pane_exit_checkpoint`,
-`pane_exit_checkpoint_generation_settled`, `request_host_shutdown_checkpoint`
-and `save_session_before_teardown_async`; `SessionSaver::blocked` adds the host
-checkpoint's `finished_unsaved` latch; the persister is chosen at construction as
-threaded or `lease_only` from the same policy; the server lifecycle writes
-`app.policy = Suspended`, calls `freeze_session_saves()`, stores the old policy as
-`HostShutdownFreeze::persist_session: bool` and restores it via
-`restored_policy()`. No site disagrees today, but a `Production` policy over a
-`lease_only` persister is representable (`persist_for_test` swaps the persister
-to avoid it), and the freeze is two mechanisms that must be applied together.
-Owner: the persister's worker enum as the state machine, and `SessionSaver`
-holding `SavePolicy::{Never, Persisting, Frozen { resume_to }}` as the only thing
-asked, with `freeze()`/`thaw()`. Reported by mux-state and server-app.
-
-## CON-067 - Must the on-disk session be preserved before the first overwrite?
-
-The server computes `protect_unloaded = persists && snapshot.is_none()`, folding
-`SessionLoad::Missing` (including "lease inactive") in with `Unusable`, then sets
-it again on `SessionRestoreLoss::partial(dropped, damage)` (a protocol-crate
-function deciding what counts as loss); the writer decides when protection is
-discharged (`preserve_existing` returns `false` on `NotFound` and keeps it armed).
-The rule spans three crates. `App::with_paths` also sequences `persist::load`, the
-history gate, `load_history`, `persist::restore`, the loss decision, the restore
-log, an empty-workspace fallback that re-decides `active = None`, and the
-persister spawn; `session.rs` decides Clear versus Save and the fallback cwd.
-Owner: `persist::open_session(lease, policy, ..) -> OpenedSession { restored,
-persister, notice }` deciding protection from its own outcomes, and
-`persist::capture_job(..)` owning Clear versus Save. (mux-state)
-
-## CON-068 - Is the preserved pane-exit layout still authoritative?
-
-`preserves_pane_exit_checkpoint` (`preserved().is_some() && !session_dirty`),
-`capture_final_session_save_job` (same filter), `finish_session_save`
-(`exit.layout.filter(|_| !session_dirty)`), `PaneExitCheckpoint::would_hold` and
-`request` (both taking `session_dirty`), and
-`finish_checkpointed_pane_exit_after_event`, which writes `state.session_dirty =
-false` directly. The cause is two mutation channels: `AppState::session_dirty`
-(consumed once per pass by `sync_session_save_schedule`) and
-`SessionSaver::note_mutation`, with a window in which the saver's view is stale.
-Owner: a monotonic `MutationEpoch` in `AppState` that the saver records per
-capture and compares. (server-app)
 
 ## CON-069 - Is a pane exit checkpointed before removal?
 
@@ -790,25 +649,12 @@ per pass. (server-serving)
 
 ## CON-080 - Is this update a patch against unchanged topology, and may it apply?
 
-Encoder: `surface_reuse::Baseline::update` picks `SurfaceMeta::Patch` when
-projection revision, width, height, hyperlinks, splits and pane ids all match.
-Decoder: `Decoder::decode`'s `Projection` branch turns an update into an internal
-patch on its own field set; its `Patch`/`None` branch keys only on projection
-revision. Planner: `surface_delta::unchanged_plan` and
-`projection_metadata_is_unchanged` each compare a different set. Applying:
-`Decoder::decode` applies a patch in place on its `CellBaseline`,
-`apply_patch_to_surface` does the same to a frame with its own checks, and the
-client's `endpoint/choice/preparing.rs` keeps a second full baseline and runs
-`apply_patch_to_surface` on it, held by the pairwise test
-`surface_update_keeps_same_projection_as_an_internal_patch`. Admission:
-`ClientRenderState::prepare_pane_surface_patch` (`Baseline::accepts`, revision
-equality, `validate_patch_rows`, pane membership), `render_stream::apply_pane_surface_patch`
-(the same four plus grid size), and the client decoder; `Baseline::accepts` takes
-five positional arguments including two pairs of swappable revisions. Owner: a
-`SurfaceTopology` (or digest) with `same_topology`, one `SurfaceBaseline` with
-`apply(&Patch)` and `admits(&Patch) -> Result<(), PatchRefusal>`, and the client
-reading the decoder's baseline (`Decoder::current_surface` exists) instead of a
-second copy. Reported by contracts and server-serving.
+`SurfaceTopology`, `SurfaceBaseline::admits`, named revision transitions and one
+patch application are now shared by the server and both decoder paths. Still
+open: the client's `endpoint/choice/preparing.rs` keeps a second full baseline
+and applies patches to it instead of reading the connection decoder's baseline
+(`Decoder::current_surface`); the boundary is commented there. Reported by
+contracts and server-serving.
 
 ## CON-081 - How large may a grid be?
 
@@ -831,27 +677,6 @@ back; they order their writes differently, compatible with a client that writes
 preamble and hello together but pinned by nothing. Owner: one handshake function
 returning `Hello | Foreign | Silent | NotShepr` (or a validated hello) and
 writing the preamble once by one rule. Reported by contracts and server-serving.
-
-## CON-084 - Which methods does the socket thread answer?
-
-`schema.rs::define_methods!` generates `Method`, `MethodKind` and traits;
-`AppMethod` is a hand-written subset, `AppMethod::traits` hand-maps each arm back
-to a `MethodKind`, and `server::route_request` hand-maps `Method` to `AppMethod`.
-The test `method_traits_carry_routing_and_log_facts` checks one arm;
-exhaustiveness catches a missing arm, not a wrong one. Owner: a route column in
-`define_methods!` generating `AppMethod`, its traits and the routing match.
-Endpoint dispatch has the same shape: `dispatch_endpoint_command` matches
-`ClientShellSurfaceSet` and `WorkspaceCheckoutRoot` only to log a routing bug and
-reject (filed among the structure findings). (contracts)
-
-## CON-085 - Which commands change focus?
-
-`ledger::submit` decides with its own `matches!` that `WorkspaceFocus`,
-`PaneFocus`, `PaneFocusDirection`, `WorkspaceCreate` and `PaneSplit` change focus
-(to drop the pending workspace highlight). `EndpointCommandTraits` is "one
-exhaustive table so the client's notices, the server's logs and the server loop's
-routing agree"; `changes_focus` belongs there, and `WorkspaceClose`, `PaneClose`
-and `PaneSwap` deserve an explicit answer. (client-shell)
 
 ## Config and keybindings
 
@@ -877,22 +702,6 @@ shell state before the launch handshake. Reported by client-shell and
 client-core.
 
 ## Edges
-
-## CON-091 - What does a failure prove about the remote install?
-
-`DiscoveryProgress::advance` keeps progress only on
-`is_transient_network_failure() || is_authentication_wait_timeout()`;
-`run_remaining` ends the pass on `failed_before_remote_result` and otherwise
-records the first candidate's rejection; `MachineProbe::resolve` keeps a cached
-hint on `failed_before_remote_result`, drops it on `is_remote_candidate_mismatch`,
-keeps it otherwise; `observe_failure` invalidates on remote exit `126 | 127`;
-`path_lookup_result_with_rejected_candidate` turns a nonzero lookup into "not
-found" unless `failed_before_remote_result`. After a host-key or authentication
-refusal, `resolve` keeps the hint while `advance` wipes progress: two documented
-models of what an SSH refusal proves, kept consistent by prose. Owner: one
-`evidence() -> {NothingLearned, InstallStale, CandidateMismatch, InstallChanged,
-RemoteFault}` on the failure. Preflight and the connectors also resolve each
-machine twice (filed among the structure findings). (edges)
 
 ## CON-093 - Command lines: producers and parsers are separate copies
 
@@ -927,17 +736,12 @@ depends on `shepr-remote` only to call `interactive_shell_command` in
 and the `shepr-server-layer` allowance for it. Reported by edges, contracts and
 server-app.
 
-## CON-095 - Sanitizing remote text
+## CON-095 - The local restart offer echoes socket ids raw
 
-`server_lifecycle::printable_remote_text`, `printable_remote_value` and
-`printable_remote_token` run at `command_failed`, `ssh_bridge_exit_error` and the
-discovery messages (controls become `?`, tabs and newlines kept, CR dropped); the
-client's `MachineDiagnostics::insert_machine_diagnostic` filters again with
-`!c.is_control() || c == '\n'` (controls dropped, tabs dropped), because the
-diagnostic cannot say whether its text was sanitized (`from_message` and
-`with_context` accept anything). The local restart offer echoes the local
-socket's ids raw. Owner: a `RemoteText` newtype minted once at the SSH output
-boundary whose renderer is the only way to show it. (edges)
+Remote output is now a `RemoteText` sanitized once at the SSH boundary, and the
+client no longer filters it again. The local restart offer in `src/preflight.rs`
+still prints the build and boot ids the local socket reported without the same
+treatment. (edges)
 
 ## Client
 
@@ -967,57 +771,6 @@ one `Endpoints` owner (id, connection, generation, supervisor state, status,
 snapshot, role) with the shell reading a projection, and an endpoint state enum
 (`Connecting`, `Online { snapshot, generation }`, `Stale { last }`, `Attention {
 last }`) with `usable()`/`stale()`. Reported by client-core and client-shell.
-
-## CON-099 - What geometry does an endpoint render, and what is the host's?
-
-`do_handshake_for_link` builds `TerminalGeometry` from `HandshakeGeometry` after
-its own `bounded_cell_geometry`; `shell_runtime::view_geometry` builds the same
-from `reported_geometry` and `surface_size` with its own bounding;
-`run_until_exit` builds the `HandshakeGeometry` for `spawn_due` through
-`ProtocolCellSize::from_host` and a fresh `HostGeometry`. The host's pixel
-geometry is read by `initial_terminal_geometry` (sets `exact`),
-`host_cell_size_query_required` (reads the ioctl again to decide whether to
-query), `resize_poll_loop` (every poll) and the stdin reader per chunk via
-`HostPixelExtent::current()` (used to map SGR pixel reports), with
-`AtomicCellSize` holding the host-reported size; reads moments apart can disagree,
-and the server's cell size and the shell's pixel-to-cell mapping can differ across
-a resize. Owner: `view_geometry` as the one producer passed to the handshake, and
-one host-geometry source (the poller) publishing a snapshot the stdin thread
-reads, with the launch query decision `!geometry.exact`. (client-core)
-
-## CON-100 - May pane content be presented now, and is an inbound message move evidence?
-
-`PresentationGate::decide` drops pane frames not from the shown endpoint;
-`ClientState::present_frame` and `present_surface_patch` re-check
-`frames_frozen()` (unreachably; see cleanup); `present_chrome` deliberately skips
-it; about eighteen call sites run `state.shell.compose(cols, rows)` and pick
-`present_chrome` or `present_frame` by hand. The gate returns `Buffer` for
-surfaces, patches and move responses but `Apply` for `EndpointSnapshot`
-regardless of role, and `handle_server_message` separately checks `role ==
-Target` to feed `Preparing::receive_snapshot`; the gate takes `move_response:
-bool` computed by asking `preparing().accepts_response(..)`; new message variants
-fall into the gate's `_` arm as shown-only without anyone deciding. Owner: a
-per-turn dirty mark (Chrome or Pane) with one present at the end of `handle_event`
-and one at the end of `reconcile`, and a gate that takes the choice and returns
-`Apply | Buffer | ApplyAndBuffer | Drop` for every kind. (client-core)
-
-## CON-101 - Attaching Local: the launch path and the supervisor path
-
-The launch connects, handshakes and builds the transport itself
-(`run_launched_client`, `start_endpoint_transport`); the supervisor does the same
-for every later attempt (`connect_once`, `establish`, `spawn_endpoint_reader` on
-the loop thread). Decisions that differ: an absent socket is silent Connecting at
-launch and a rewritten `ConnectionRefused` in the supervisor; Local's
-build-mismatch guidance is computed in both (`ConnectTarget::Local` claims it is
-resolved once); launch handshakes with `surface_active: true` and no deadline,
-supervisor attempts with `false` and the attempt budget; launch shows Local by
-fiat with no coherent pair, bypassing `commit_move`; launch sends
-`ClientShellFocus { focused: true }` unconditionally while a commit sends
-`host_focus_baseline()`; `ends_client_for(&Local)` is evaluated three times in
-launch. A connection is assembled two ways and the reader-spawn failure branch
-duplicates the `Status` arm (filed among the structure findings). Owner: one
-attach routine used synchronously at launch, with `LocalFailurePolicy` applied
-once to its typed outcome. (client-core)
 
 ## CON-103 - Is a host terminal write failure fatal?
 

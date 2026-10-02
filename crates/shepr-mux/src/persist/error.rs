@@ -5,6 +5,7 @@ use std::io;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveRefusal {
     LeaseOnly,
+    InactiveLease,
     StoppedAfterPanic,
     Retired,
 }
@@ -47,6 +48,9 @@ impl std::fmt::Display for SaveError {
             Self::Refused(SaveRefusal::LeaseOnly) => f.write_str(
                 "this session persister only holds the data directory lease; it runs no saves",
             ),
+            Self::Refused(SaveRefusal::InactiveLease) => {
+                f.write_str("session persister no longer owns the data directory lease")
+            }
             Self::Refused(SaveRefusal::StoppedAfterPanic) => {
                 f.write_str("session persister stopped after a save panicked; no further saves run")
             }

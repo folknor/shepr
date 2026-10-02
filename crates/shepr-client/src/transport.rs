@@ -1,25 +1,103 @@
 use super::*;
+use shepr_platform::ipc::LocalStream;
 use tracing::debug;
 
-pub(super) fn start_endpoint_transport(
-    stream: LocalStream,
-    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    endpoint_id: endpoint::ClientEndpointId,
-    generation: u64,
-    surface_decoder: shepr_protocol::surface_reuse::Decoder,
-) -> Result<endpoint::NativeEndpointTransport, ClientError> {
-    let reader = stream.try_clone().map_err(ClientError::EndpointSetup)?;
-    let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, ())
-        .map_err(ClientError::EndpointSetup)?;
-    spawn_endpoint_reader(
-        reader,
-        event_tx,
-        &transport,
-        endpoint_id,
-        generation,
-        surface_decoder,
-    )?;
-    Ok(transport)
+pub(super) struct AttachedEndpoint {
+    pub(super) reader: LocalStream,
+    pub(super) writer: endpoint::NativeEndpointTransport,
+}
+
+pub(super) enum EndpointAttachFailure {
+    Handshake(io::Error),
+    Setup(io::Error),
+}
+
+pub(super) enum LocalAttachFailure {
+    Connection(io::Error),
+    Handshake(io::Error),
+    Setup(io::Error),
+}
+
+impl LocalAttachFailure {
+    pub(super) fn initial_failure(&self) -> Option<shepr_remote::EndpointFailure> {
+        match self {
+            Self::Connection(_) => None,
+            Self::Handshake(error) => Some(shepr_remote::EndpointFailure::from_error(error)),
+            Self::Setup(error) => Some(shepr_remote::EndpointFailure::local_setup(
+                error.to_string(),
+            )),
+        }
+    }
+
+    pub(super) fn into_launch_error(self) -> ClientRunError {
+        match self {
+            Self::Connection(error) => ClientRunError::Launch(io::Error::new(
+                error.kind(),
+                ClientError::ConnectionFailed(error),
+            )),
+            Self::Handshake(error) => ClientRunError::Launch(error),
+            Self::Setup(error) => {
+                ClientRunError::Launch(io::Error::other(ClientError::EndpointSetup(error)))
+            }
+        }
+    }
+}
+
+pub(super) fn attach_local_endpoint(
+    path: &std::path::Path,
+    geometry: shepr_protocol::TerminalGeometry,
+    mouse_capture: bool,
+    surface_active: bool,
+    mismatch_guidance: &str,
+) -> Result<AttachedEndpoint, LocalAttachFailure> {
+    let stream = shepr_platform::ipc::connect_trusted_local_stream(path)
+        .map_err(LocalAttachFailure::Connection)?;
+    attach_endpoint_stream(
+        stream,
+        geometry,
+        mouse_capture,
+        surface_active,
+        endpoint::EndpointPolicy::Local,
+        None,
+        Some(mismatch_guidance),
+        None,
+    )
+    .map_err(|failure| match failure {
+        EndpointAttachFailure::Handshake(error) => LocalAttachFailure::Handshake(error),
+        EndpointAttachFailure::Setup(error) => LocalAttachFailure::Setup(error),
+    })
+}
+
+pub(super) fn attach_endpoint_stream(
+    mut stream: LocalStream,
+    geometry: shepr_protocol::TerminalGeometry,
+    mouse_capture: bool,
+    surface_active: bool,
+    endpoint_policy: endpoint::EndpointPolicy,
+    deadline: Option<std::time::Instant>,
+    mismatch_guidance: Option<&str>,
+    ssh_bridge: Option<shepr_remote::MachineSshBridge>,
+) -> Result<AttachedEndpoint, EndpointAttachFailure> {
+    if let Err(error) = handshake::do_handshake_for_endpoint(
+        &mut stream,
+        geometry,
+        mouse_capture,
+        surface_active,
+        endpoint_policy,
+        deadline,
+    ) {
+        return Err(EndpointAttachFailure::Handshake(
+            endpoint::classify_handshake_error(error, mismatch_guidance, ssh_bridge.as_ref()),
+        ));
+    }
+    let reader = stream.try_clone().map_err(EndpointAttachFailure::Setup)?;
+    let lifetime: Box<dyn Send> = match ssh_bridge {
+        Some(bridge) => Box::new(bridge),
+        None => Box::new(()),
+    };
+    let writer = endpoint::NativeEndpointTransport::with_lifetime(stream, lifetime)
+        .map_err(EndpointAttachFailure::Setup)?;
+    Ok(AttachedEndpoint { reader, writer })
 }
 
 pub(super) fn spawn_endpoint_reader(

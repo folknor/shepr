@@ -3,6 +3,7 @@ use super::config::{
     upstream_full_ref,
 };
 use super::discovery::{git_repo_root, git_worktree_info};
+use super::identity::FullRefName;
 use super::status::git_status_fingerprint;
 use super::test_support::{temp_test_dir, write_fake_tracked_repo};
 use std::os::unix::ffi::OsStringExt;
@@ -10,10 +11,17 @@ use std::os::unix::ffi::OsStringExt;
 fn upstream(root: &std::path::Path) -> (Option<String>, super::config::Dependencies) {
     let info = git_worktree_info(root).expect("repository");
     let mut errors = Vec::new();
-    let context = read_config_for_status(&info, "main", &mut errors);
+    let branch = FullRefName::parse("refs/heads/main")
+        .and_then(|full_ref| full_ref.branch_name())
+        .expect("test branch");
+    let context = read_config_for_status(&info, &branch, &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
     (
-        context.config.as_ref().and_then(upstream_full_ref),
+        context
+            .config
+            .as_ref()
+            .map(upstream_full_ref)
+            .map(|full_ref| full_ref.as_str().to_owned()),
         context.dependencies,
     )
 }
@@ -141,7 +149,10 @@ fn git_config_malformed_config_is_not_reusable() {
     std::fs::write(root.join(".git/config"), "[broken\n").expect("config");
     let info = git_worktree_info(&root).expect("repository");
     let mut errors = Vec::new();
-    let context = read_config_for_status(&info, "main", &mut errors);
+    let branch = FullRefName::parse("refs/heads/main")
+        .and_then(|full_ref| full_ref.branch_name())
+        .expect("test branch");
+    let context = read_config_for_status(&info, &branch, &mut errors);
     assert!(context.config.is_none());
     assert!(!errors.is_empty());
     assert!(!deps_current(&context.dependencies));
@@ -202,7 +213,7 @@ fn git_status_fingerprint_honors_remote_fetch_refspec() {
     let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
     let upstream = fingerprint.upstream.expect("test precondition");
-    assert_eq!(upstream.full_ref, "refs/remotes/upstream/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/upstream/main");
 }
 
 #[test]
@@ -232,7 +243,7 @@ fn git_status_fingerprint_reads_included_config() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
-    assert_eq!(upstream.full_ref, "refs/remotes/included/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/included/main");
 }
 
 #[test]
@@ -262,7 +273,7 @@ fn git_status_fingerprint_applies_repeated_includes_in_order() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
-    assert_eq!(upstream.full_ref, "refs/remotes/included/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/included/main");
 }
 
 #[test]
@@ -295,7 +306,7 @@ fn git_status_fingerprint_reads_matching_include_if_config() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
-    assert_eq!(upstream.full_ref, "refs/remotes/included/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/included/main");
 }
 
 #[test]
@@ -330,7 +341,7 @@ fn git_status_fingerprint_matches_gitdir_include_if_directory_pattern() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
-    assert_eq!(upstream.full_ref, "refs/remotes/included/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/included/main");
 }
 
 #[test]
@@ -348,7 +359,7 @@ fn git_status_fingerprint_reads_case_insensitive_config_keys() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "origin");
-    assert_eq!(upstream.full_ref, "refs/remotes/origin/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/origin/main");
 }
 
 #[test]
@@ -379,7 +390,7 @@ fn git_status_fingerprint_keeps_refspecs_for_later_remote_override() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "fork");
-    assert_eq!(upstream.full_ref, "refs/remotes/fork/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/fork/main");
 }
 
 #[test]
@@ -409,7 +420,7 @@ fn git_status_fingerprint_reads_onbranch_include_if_config() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
-    assert_eq!(upstream.full_ref, "refs/remotes/included/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/included/main");
 }
 
 #[test]
@@ -439,7 +450,7 @@ fn git_status_fingerprint_reads_hasconfig_include_if_config() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "included");
-    assert_eq!(upstream.full_ref, "refs/remotes/included/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/included/main");
 }
 
 #[test]
@@ -486,7 +497,7 @@ fn git_status_fingerprint_reads_linked_worktree_config() {
 
     let upstream = fingerprint.upstream.expect("test precondition");
     assert_eq!(upstream.remote, "fork");
-    assert_eq!(upstream.full_ref, "refs/remotes/fork/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/fork/main");
 }
 
 #[test]
@@ -510,9 +521,9 @@ fn git_status_fingerprint_ignores_inline_fetch_refspec_comment() {
     let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
     let upstream = fingerprint.upstream.expect("test precondition");
-    assert_eq!(upstream.full_ref, "refs/remotes/upstream/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/upstream/main");
     assert_eq!(
-        upstream.oid.as_deref(),
+        upstream.oid.as_ref().map(super::identity::Oid::as_str),
         Some("2222222222222222222222222222222222222222")
     );
 }
@@ -547,9 +558,9 @@ fn git_status_fingerprint_honors_negative_fetch_refspec() {
     let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
     let upstream = fingerprint.upstream.expect("test precondition");
-    assert_eq!(upstream.full_ref, "refs/remotes/origin/main");
+    assert_eq!(upstream.full_ref.as_str(), "refs/remotes/origin/main");
     assert_eq!(
-        upstream.oid.as_deref(),
+        upstream.oid.as_ref().map(super::identity::Oid::as_str),
         Some("2222222222222222222222222222222222222222")
     );
 }

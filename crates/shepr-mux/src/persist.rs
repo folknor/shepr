@@ -13,20 +13,26 @@
 //! stale files while this one still owns live panes.
 
 mod actor;
+mod capture;
 mod error;
 mod io;
 pub mod lock;
+mod open;
 mod restore;
 pub mod snapshot;
 mod writer;
 
 pub use self::actor::{PendingSave, PersistJob, SaveCompletion, SessionBundle, SessionPersister};
+pub use self::capture::capture_job;
 pub use self::error::{SaveError, SaveRefusal};
 pub use self::io::{
     SessionLoad, check_session_target, load, load_history, session_backup_directory,
 };
 pub use self::lock::{DataDirLease, DataDirLeaseHeld};
-pub use self::restore::restore;
+pub use self::open::{
+    OpenedRestore, OpenedSession, SessionOpenOptions, SessionOpenPolicy, open_session,
+};
+pub use self::restore::{RestoredSession, restore};
 pub use self::snapshot::{
     DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
     WorkspaceSnapshot, capture,

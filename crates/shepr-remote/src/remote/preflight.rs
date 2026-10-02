@@ -477,7 +477,7 @@ mod tests {
     fn ssh_failure(message: &str) -> io::Error {
         io::Error::other(SshFailureDiagnostic::from_ssh_output(
             Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-            message.into(),
+            message,
         ))
     }
 

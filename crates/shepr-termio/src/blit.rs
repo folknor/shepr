@@ -386,17 +386,6 @@ fn build_sgr(fg: WireColor, bg: WireColor, style: WireStyle) -> String {
 // Cell comparison
 // ---------------------------------------------------------------------------
 
-/// Checks if two cells are visually identical.
-fn cells_equal(a: &CellData, b: &CellData) -> bool {
-    a.symbol == b.symbol
-        && a.grid_width == b.grid_width
-        && a.fg == b.fg
-        && a.bg == b.bg
-        && a.style == b.style
-        && a.hyperlink == b.hyperlink
-    // Skip flag is only for ratatui internal use, not visual.
-}
-
 fn frame_cell_index(frame: &FrameData, x: u16, y: u16) -> Option<usize> {
     (x < frame.width && y < frame.height)
         .then(|| usize::from(y) * usize::from(frame.width) + usize::from(x))
@@ -456,63 +445,21 @@ fn blit_patch_to(
     suppress_visible_cursor: bool,
 ) -> io::Result<()> {
     writer.write_all(b"\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\")?;
-    let mut last_sgr = String::new();
-    let mut last_style = None;
-    let mut active_hyperlink = None;
+    let mut state = CellWriterState::default();
+    let source = CellPaintSource {
+        frame,
+        current_hyperlinks: &[],
+        previous: Some(PreviousFrame {
+            frame,
+            sanitized_hyperlinks: &[],
+        }),
+        patch_rows: Some(rows),
+    };
     for row in rows {
-        let mut invalidated = 0usize;
-        let mut to_skip = 0usize;
-        let mut next_inline_col = None;
-        for (offset, cell) in row.cells.iter().enumerate() {
-            // `row` was validated by `patch_rows_fit` to stay within the u16-wide frame.
-            let col = row.x + u16::try_from(offset).unwrap_or(u16::MAX);
-            let idx = usize::from(row.y) * usize::from(frame.width) + usize::from(col);
-            let prev_cell = &frame.cells[idx];
-            let grid_width = patch_cell_width(row, offset);
-            let glyph_width = cell_width(cell);
-            let previous_width = cell_width(prev_cell);
-            let affected_width = cmp::max(glyph_width, previous_width);
-            if !cell.skip && (!cells_equal(cell, prev_cell) || invalidated > 0) && to_skip == 0 {
-                let cursor_position =
-                    (next_inline_col != Some(col) || invalidated > 0).then_some((col, row.y));
-                write_cell(
-                    &mut writer,
-                    cursor_position,
-                    cell,
-                    &mut last_sgr,
-                    &mut last_style,
-                    &mut active_hyperlink,
-                    frame,
-                )?;
-                if affected_width > grid_width
-                    && let Some(next_col) = col
-                        .checked_add(1)
-                        .filter(|next_col| *next_col < frame.width)
-                    && patch_cell_at(rows, next_col, row.y).is_none()
-                    && let Some(next_index) = frame_cell_index(frame, next_col, row.y)
-                    && let Some(next_cell) = frame.cells.get(next_index)
-                {
-                    // A wide grapheme may cover the next host column even when the
-                    // pane grid cell does not. Repaint an omitted successor after it.
-                    write_cell(
-                        &mut writer,
-                        Some((next_col, row.y)),
-                        next_cell,
-                        &mut last_sgr,
-                        &mut last_style,
-                        &mut active_hyperlink,
-                        frame,
-                    )?;
-                }
-                next_inline_col =
-                    (cell.symbol.is_ascii() && grid_width == 1).then_some(col.saturating_add(1));
-            }
-            to_skip = grid_width.saturating_sub(1);
-            invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
-        }
+        paint_row_cells(&mut writer, &source, row.y, row.x, &row.cells, &mut state)?;
     }
-    close_hyperlink(&mut writer, &mut active_hyperlink)?;
-    if !last_sgr.is_empty() {
+    close_hyperlink(&mut writer, &mut state.active_hyperlink)?;
+    if !state.last_sgr.is_empty() {
         writer.write_all(b"\x1b[0m")?;
     }
 
@@ -572,15 +519,10 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     // must not inherit it.
     writer.write_all(b"\x1b]8;;\x1b\\")?;
 
-    if let Some(prev) = diff_base {
-        // Diff-based update: only write changed cells.
-        write_changed_cells(&mut writer, frame, prev)?;
-    } else {
-        if clear_before_full_redraw {
-            writer.write_all(b"\x1b[2J")?;
-        }
-        write_all_cells(&mut writer, frame)?;
+    if diff_base.is_none() && clear_before_full_redraw {
+        writer.write_all(b"\x1b[2J")?;
     }
+    write_frame_cells(&mut writer, frame, diff_base)?;
 
     // Position the cursor while it is still hidden, then restore visibility.
     // Showing before moving makes slow terminals and IMEs briefly observe the
@@ -627,18 +569,6 @@ fn cell_grid_width(cell: &CellData) -> usize {
         GridCellWidth::One => 1,
         GridCellWidth::Two => 2,
     }
-}
-
-/// Output-frame placement width comes from the pane's grid or, for chrome,
-/// from Ratatui's grapheme convention.
-fn frame_cell_width(frame: &FrameData, col: u16, row: u16) -> usize {
-    frame_cell_index(frame, col, row)
-        .and_then(|index| frame.cells.get(index))
-        .map_or(0, cell_grid_width)
-}
-
-fn patch_cell_width(row: &PaneSurfacePatchRow, offset: usize) -> usize {
-    row.cells.get(offset).map_or(0, cell_grid_width)
 }
 
 /// Terminal column width of `symbol`; see [`text_width`] and [`cell_width`].
@@ -737,50 +667,6 @@ fn write_ime_anchor_cursor_state(
     }
 }
 
-fn write_all_cells(writer: &mut impl Write, frame: &FrameData) -> io::Result<()> {
-    let mut last_sgr = String::new();
-    let mut last_style = None;
-    let mut active_hyperlink = None;
-    for row in 0..frame.height {
-        let mut to_skip = 0usize;
-        let mut next_inline_col = None;
-        for col in 0..frame.width {
-            if to_skip > 0 {
-                to_skip -= 1;
-                continue;
-            }
-
-            let idx = (row as usize) * (frame.width as usize) + (col as usize);
-            let cell = &frame.cells[idx];
-
-            if cell.skip {
-                next_inline_col = None;
-                continue;
-            }
-
-            let cursor_position = (next_inline_col != Some(col)).then_some((col, row));
-            write_cell(
-                writer,
-                cursor_position,
-                cell,
-                &mut last_sgr,
-                &mut last_style,
-                &mut active_hyperlink,
-                frame,
-            )?;
-            let width = frame_cell_width(frame, col, row);
-            next_inline_col =
-                (cell.symbol.is_ascii() && width == 1).then_some(col.saturating_add(1));
-            to_skip = width.saturating_sub(1);
-        }
-    }
-
-    close_hyperlink(writer, &mut active_hyperlink)?;
-
-    // Reset style at the end.
-    writer.write_all(b"\x1b[0m")
-}
-
 fn cell_hyperlink_uri<'a>(frame: &'a FrameData, cell: &CellData) -> Option<&'a str> {
     let index = cell.hyperlink? as usize;
     frame.hyperlinks.get(index).map(String::as_str)
@@ -868,7 +754,7 @@ fn write_cell(
     writer.write_all(cell.symbol.as_bytes())
 }
 
-/// Writes only the cells that changed between the previous and current frame.
+/// Checks whether two cells have the same rendered content, resolving links by URI.
 fn cells_visually_equal(
     sanitized_hyperlinks: &[Option<String>],
     cell: &CellData,
@@ -885,66 +771,158 @@ fn cells_visually_equal(
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-fn write_changed_cells(
+#[derive(Default)]
+struct CellWriterState {
+    last_sgr: String,
+    last_style: Option<(WireColor, WireColor, WireStyle)>,
+    active_hyperlink: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct PreviousFrame<'a> {
+    frame: &'a FrameData,
+    sanitized_hyperlinks: &'a [Option<String>],
+}
+
+#[derive(Clone, Copy)]
+struct CellPaintSource<'a> {
+    frame: &'a FrameData,
+    current_hyperlinks: &'a [Option<String>],
+    previous: Option<PreviousFrame<'a>>,
+    patch_rows: Option<&'a [PaneSurfacePatchRow]>,
+}
+
+/// Paints full frames, frame diffs, and retained patches through one cell walker.
+fn write_frame_cells(
     writer: &mut impl Write,
     frame: &FrameData,
-    prev: &FrameData,
+    previous: Option<&FrameData>,
 ) -> io::Result<()> {
-    let mut last_sgr = String::new(); // Track last SGR to avoid redundant style changes.
-    let mut last_style = None;
-    let mut active_hyperlink = None;
-    let sanitized_hyperlinks = sanitized_frame_hyperlinks(frame);
-    let prev_sanitized_hyperlinks = sanitized_frame_hyperlinks(prev);
-
+    let current_hyperlinks = previous.map(|_| sanitized_frame_hyperlinks(frame));
+    let previous_hyperlinks = previous.map(sanitized_frame_hyperlinks);
+    let mut state = CellWriterState::default();
+    let source = CellPaintSource {
+        frame,
+        current_hyperlinks: current_hyperlinks.as_deref().unwrap_or(&[]),
+        previous: previous
+            .zip(previous_hyperlinks.as_deref())
+            .map(|(frame, links)| PreviousFrame {
+                frame,
+                sanitized_hyperlinks: links,
+            }),
+        patch_rows: None,
+    };
     for row in 0..frame.height {
-        let mut invalidated = 0usize;
-        let mut to_skip = 0usize;
-        // Shepr clients disable host autowrap, so safe cells can advance inline
-        // without spilling into adjacent rows during a resize race.
-        let mut next_inline_col = None;
-
-        for col in 0..frame.width {
-            let idx = (row as usize) * (frame.width as usize) + (col as usize);
-            let cell = &frame.cells[idx];
-            let prev_cell = &prev.cells[idx];
-            let grid_width = frame_cell_width(frame, col, row);
-
-            if !cell.skip
-                && (!cells_visually_equal(
-                    &sanitized_hyperlinks,
-                    cell,
-                    &prev_sanitized_hyperlinks,
-                    prev_cell,
-                ) || invalidated > 0)
-                && to_skip == 0
-            {
-                let cursor_position =
-                    (next_inline_col != Some(col) || invalidated > 0).then_some((col, row));
-                write_cell(
-                    writer,
-                    cursor_position,
-                    cell,
-                    &mut last_sgr,
-                    &mut last_style,
-                    &mut active_hyperlink,
-                    frame,
-                )?;
-                next_inline_col =
-                    (cell.symbol.is_ascii() && grid_width == 1).then_some(col.saturating_add(1));
-            }
-
-            to_skip = grid_width.saturating_sub(1);
-            let previous_width = cell_width(prev_cell);
-            let affected_width = cmp::max(cell_width(cell), previous_width);
-            invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
-        }
+        let start = usize::from(row) * usize::from(frame.width);
+        let end = start + usize::from(frame.width);
+        paint_row_cells(
+            writer,
+            &source,
+            row,
+            0,
+            &frame.cells[start..end],
+            &mut state,
+        )?;
     }
 
-    close_hyperlink(writer, &mut active_hyperlink)?;
+    close_hyperlink(writer, &mut state.active_hyperlink)?;
 
-    // Reset style if we wrote anything.
-    if !last_sgr.is_empty() {
+    // Full paints establish a known style even for an empty frame. Diffs reset
+    // only when the painter emitted an SGR sequence.
+    if previous.is_none() || !state.last_sgr.is_empty() {
         writer.write_all(b"\x1b[0m")?;
+    }
+    Ok(())
+}
+
+/// Paints a row slice using its previous cell at each screen position.
+///
+/// Frame paints cover the whole row. Patches cover only their supplied spans,
+/// so a newly wide grapheme also restores an omitted successor from the frame.
+fn paint_row_cells(
+    writer: &mut impl Write,
+    source: &CellPaintSource<'_>,
+    row: u16,
+    start_col: u16,
+    cells: &[CellData],
+    state: &mut CellWriterState,
+) -> io::Result<()> {
+    let mut invalidated = 0usize;
+    let mut to_skip = 0usize;
+    let mut next_inline_col = None;
+    let full_paint = source.previous.is_none();
+    let previous_hyperlinks = source
+        .previous
+        .map_or(&[][..], |previous| previous.sanitized_hyperlinks);
+
+    for (offset, cell) in cells.iter().enumerate() {
+        // The frame or patch validator guarantees that this position fits.
+        let col = start_col + u16::try_from(offset).unwrap_or(u16::MAX);
+        if full_paint && to_skip > 0 {
+            to_skip -= 1;
+            continue;
+        }
+        if full_paint && cell.skip {
+            next_inline_col = None;
+            continue;
+        }
+        let previous_cell = source.previous.and_then(|previous| {
+            frame_cell_index(previous.frame, col, row)
+                .and_then(|index| previous.frame.cells.get(index))
+        });
+        let same = previous_cell.is_some_and(|previous_cell| {
+            cells_visually_equal(
+                source.current_hyperlinks,
+                cell,
+                previous_hyperlinks,
+                previous_cell,
+            )
+        });
+        let grid_width = cell_grid_width(cell);
+        let previous_width = previous_cell.map_or(0, cell_width);
+        let affected_width = cmp::max(cell_width(cell), previous_width);
+
+        if !cell.skip && (!same || invalidated > 0) && to_skip == 0 {
+            let cursor_position = (next_inline_col != Some(col)
+                || (!full_paint && invalidated > 0))
+                .then_some((col, row));
+            write_cell(
+                writer,
+                cursor_position,
+                cell,
+                &mut state.last_sgr,
+                &mut state.last_style,
+                &mut state.active_hyperlink,
+                source.frame,
+            )?;
+
+            if let Some(patch_rows) = source.patch_rows
+                && affected_width > grid_width
+                && let Some(next_col) = col
+                    .checked_add(1)
+                    .filter(|next_col| *next_col < source.frame.width)
+                && patch_cell_at(patch_rows, next_col, row).is_none()
+                && let Some(next_index) = frame_cell_index(source.frame, next_col, row)
+                && let Some(next_cell) = source.frame.cells.get(next_index)
+            {
+                // A wide grapheme can cover the next host column beyond its pane grid cell.
+                write_cell(
+                    writer,
+                    Some((next_col, row)),
+                    next_cell,
+                    &mut state.last_sgr,
+                    &mut state.last_style,
+                    &mut state.active_hyperlink,
+                    source.frame,
+                )?;
+            }
+
+            next_inline_col =
+                (cell.symbol.is_ascii() && grid_width == 1).then_some(col.saturating_add(1));
+        }
+
+        to_skip = grid_width.saturating_sub(1);
+        invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
     }
     Ok(())
 }
@@ -952,6 +930,15 @@ fn write_changed_cells(
 // ---------------------------------------------------------------------------
 // Blitting
 // ---------------------------------------------------------------------------
+
+/// Output-frame placement width comes from the pane's grid or, for chrome,
+/// from Ratatui's grapheme convention.
+#[cfg(test)]
+fn frame_cell_width(frame: &FrameData, col: u16, row: u16) -> usize {
+    frame_cell_index(frame, col, row)
+        .and_then(|index| frame.cells.get(index))
+        .map_or(0, cell_grid_width)
+}
 
 /// Blits a frame to a writer, diffing against the previous frame.
 #[cfg(test)]
@@ -1237,7 +1224,7 @@ mod tests {
         let mut frame = make_frame(5, 1, cells);
         frame.hyperlinks.push("https://example.com".into());
         let mut output = Vec::new();
-        write_all_cells(&mut output, &frame).expect("writing into a Vec cannot fail");
+        write_frame_cells(&mut output, &frame, None).expect("writing into a Vec cannot fail");
         assert_eq!(
             String::from_utf8(output).expect("test precondition"),
             "\x1b[1;1H\x1b[0;39;49ma\x1b]8;;https://example.com\x1b\\b\x1b]8;;\x1b\\c\x1b[0;31;49md\x1b[0;39;49me\x1b[0m"
@@ -1260,21 +1247,21 @@ mod tests {
     }
 
     #[test]
-    fn cells_equal_identical() {
+    fn visually_equal_cells_match() {
         let a = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
         let b = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
-        assert!(cells_equal(&a, &b));
+        assert!(cells_visually_equal(&[], &a, &[], &b));
     }
 
     #[test]
-    fn cells_equal_different_symbol() {
+    fn visually_different_symbols_do_not_match() {
         let a = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
         let b = make_cell("B", WireColor::Red, WireColor::Black, WireStyle::default());
-        assert!(!cells_equal(&a, &b));
+        assert!(!cells_visually_equal(&[], &a, &[], &b));
     }
 
     #[test]
-    fn cells_equal_different_color() {
+    fn visually_different_colors_do_not_match() {
         let a = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
         let b = make_cell(
             "A",
@@ -1282,7 +1269,7 @@ mod tests {
             WireColor::Black,
             WireStyle::default(),
         );
-        assert!(!cells_equal(&a, &b));
+        assert!(!cells_visually_equal(&[], &a, &[], &b));
     }
 
     #[test]

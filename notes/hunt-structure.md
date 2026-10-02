@@ -484,14 +484,6 @@ its own copy; both belong on a `CommittedBaseline { surface, identities }` owned
 and is cleared separately in `request_repaint`). Reported by server-app and
 server-serving.
 
-## STR-033 - Endpoint dispatch receives commands it must refuse
-
-`dispatch_endpoint_command` matches `ClientShellSurfaceSet` and
-`WorkspaceCheckoutRoot` only to log a routing bug and reject. Splitting
-`EndpointCommand` into `LoopCommand` and `AppCommand` makes the misroute
-unrepresentable. `api_helpers.rs` is `pub(crate)` while holding one
-`pane_not_found` wrapper and three enum mappings. (server-app)
-
 ## Server serving
 
 ## STR-036 - Pane input takes a detour through `RawInputEvent`

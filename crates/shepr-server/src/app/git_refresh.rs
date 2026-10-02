@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use super::{App, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
 use crate::limits::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 use shepr_mux::events::AppEvent;
-use shepr_mux::git::{GitReadError, GitStatusCacheEntry, GitStatusDiscovery, WorkspaceGitStatus};
+use shepr_mux::git::{
+    GitStatusCache, GitStatusCacheEntry, GitStatusCacheView, GitStatusDiscovery, WorkspaceGitStatus,
+};
 
 pub(crate) struct GitRefreshScheduler {
     pub(crate) next_git_remote_status_refresh: Instant,
@@ -13,8 +15,7 @@ pub(crate) struct GitRefreshScheduler {
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
-    pub(crate) git_status_cache: HashMap<PathBuf, GitStatusCacheEntry>,
-    reported_git_read_errors: HashSet<GitReadError>,
+    pub(crate) git_status_cache: GitStatusCache,
 }
 
 impl GitRefreshScheduler {
@@ -27,8 +28,7 @@ impl GitRefreshScheduler {
             git_refresh_in_flight: false,
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
-            git_status_cache: HashMap::new(),
-            reported_git_read_errors: HashSet::new(),
+            git_status_cache: GitStatusCache::default(),
         }
     }
 
@@ -40,7 +40,7 @@ impl GitRefreshScheduler {
     }
 
     fn mark_due(&mut self, now: Instant) {
-        self.git_status_cache.retain(|_, entry| !entry.is_miss());
+        self.git_status_cache.mark_due();
         if self.git_refresh_in_flight {
             self.git_refresh_due_after_in_flight = true;
             return;
@@ -55,29 +55,8 @@ impl GitRefreshScheduler {
         cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
     ) {
         self.git_refresh_in_flight = false;
-        let mut refreshed_keys = HashSet::with_capacity(cache_updates.len());
-        for (key, entry) in cache_updates {
-            refreshed_keys.insert(key.clone());
-            for error in entry.read_errors() {
-                if self.reported_git_read_errors.insert(error.clone()) {
-                    tracing::warn!(%error, "git status read failed");
-                }
-            }
-            self.git_status_cache.insert(key, entry);
-        }
-        if !refreshed_keys.is_empty() {
-            // A successful refresh returns one update per current unique
-            // workspace repository, releasing entries no workspace visits.
-            self.git_status_cache
-                .retain(|key, _| refreshed_keys.contains(key));
-            let current_errors: HashSet<_> = self
-                .git_status_cache
-                .values()
-                .flat_map(|entry| entry.read_errors().iter().cloned())
-                .collect();
-            // Keep error deduplication only while an active cache entry carries it.
-            self.reported_git_read_errors
-                .retain(|error| current_errors.contains(error));
+        for error in self.git_status_cache.apply_refresh(cache_updates) {
+            tracing::warn!(%error, "git status read failed");
         }
         if self.git_refresh_due_after_in_flight {
             self.mark_due(now);
@@ -118,6 +97,7 @@ struct WorkspaceGitRefreshJob {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceGitRefreshOutput {
     results: Vec<WorkspaceGitStatus>,
+    // The app thread owns retention and applies the worker's visited entries.
     cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
 }
 
@@ -125,7 +105,6 @@ impl App {
     pub(crate) fn start_git_status_refresh_if_due(&mut self, now: Instant) {
         if self.state.workspaces.is_empty() {
             self.git_refresh.git_status_cache.clear();
-            self.git_refresh.reported_git_read_errors.clear();
             return;
         }
         let Some(deadline) = self.git_refresh_deadline() else {
@@ -144,7 +123,6 @@ impl App {
         // refresh always computes the complete Git status.
         if workspaces.is_empty() {
             self.git_refresh.git_status_cache.clear();
-            self.git_refresh.reported_git_read_errors.clear();
             self.git_refresh.next_git_remote_status_refresh = refresh_deadline_after(now);
             self.git_refresh.git_identity_refresh_requested = false;
             return;
@@ -152,7 +130,9 @@ impl App {
 
         self.git_refresh.git_refresh_in_flight = true;
         let event_tx = self.event_tx.clone();
-        let cache = self.git_refresh.git_status_cache.clone();
+        // Workers receive a read-only view; the app thread remains the cache's
+        // sole writer and applies returned entries with the retention policy.
+        let cache = self.git_refresh.git_status_cache.refresh_view();
         self.git_refresh.git_identity_refresh_requested = false;
         if refresh_repo_discovery {
             self.git_refresh.last_git_repo_discovery_refresh = now;
@@ -222,7 +202,7 @@ impl App {
 
 fn deduplicate_git_refresh_items(
     items: Vec<WorkspaceGitRefreshItem>,
-    cache: &HashMap<PathBuf, GitStatusCacheEntry>,
+    cache: &GitStatusCacheView,
 ) -> Vec<WorkspaceGitRefreshJob> {
     // A path-only workspace hint cannot tell checkout from outside-cwd keys.
     // Keep the key path-shaped until workspace/AppState can carry that tag.
@@ -287,7 +267,7 @@ fn refresh_output_or_empty(
 
 fn refresh_workspace_git_statuses(
     items: Vec<WorkspaceGitRefreshItem>,
-    cache: &HashMap<PathBuf, GitStatusCacheEntry>,
+    cache: &GitStatusCacheView,
 ) -> WorkspaceGitRefreshOutput {
     let mut results = Vec::new();
     let mut cache_updates = Vec::new();
@@ -321,6 +301,7 @@ fn refresh_workspace_git_statuses(
 mod tests {
     use super::*;
     use crate::test_support::*;
+    use shepr_mux::git::GitReadError;
     use shepr_mux::workspace::Workspace;
 
     #[test]
@@ -338,6 +319,7 @@ mod tests {
         std::fs::create_dir_all(repo.join(".git/refs/heads")).expect("create git refs dir");
         std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write git HEAD");
 
+        let cache = GitStatusCache::default().refresh_view();
         let output = refresh_workspace_git_statuses(
             vec![
                 WorkspaceGitRefreshItem {
@@ -351,7 +333,7 @@ mod tests {
                     cache_key_hint: None,
                 },
             ],
-            &HashMap::new(),
+            &cache,
         );
 
         assert_eq!(output.cache_updates.len(), 1);
@@ -379,12 +361,12 @@ mod tests {
             repo_root: None,
             read_errors: vec![error.clone()],
         };
-        let mut scheduler = GitRefreshScheduler::new(now);
-
-        scheduler.finish(now, vec![(path.clone(), cache_entry())]);
-        scheduler.finish(now, vec![(path, cache_entry())]);
-
-        assert_eq!(scheduler.reported_git_read_errors.len(), 1);
+        let mut cache = GitStatusCache::default();
+        assert_eq!(
+            cache.apply_refresh(vec![(path.clone(), cache_entry())]),
+            vec![error.clone()]
+        );
+        assert!(cache.apply_refresh(vec![(path, cache_entry())]).is_empty());
     }
 
     #[test]
@@ -404,7 +386,10 @@ mod tests {
             })
             .collect();
 
-        let output = refresh_workspace_git_statuses(items, &HashMap::from([(cache_key, cached)]));
+        let mut cache = GitStatusCache::default();
+        cache.apply_refresh(vec![(cache_key, cached)]);
+        let cache = cache.refresh_view();
+        let output = refresh_workspace_git_statuses(items, &cache);
 
         assert_eq!(output.cache_updates.len(), 1);
         assert_eq!(output.results.len(), 2);
@@ -467,7 +452,10 @@ mod tests {
             repo_root: None,
             read_errors: Vec::new(),
         };
-        let jobs = deduplicate_git_refresh_items(items, &HashMap::from([(cache_key, cached)]));
+        let mut cache = GitStatusCache::default();
+        cache.apply_refresh(vec![(cache_key, cached)]);
+        let cache = cache.refresh_view();
+        let jobs = deduplicate_git_refresh_items(items, &cache);
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].cached, None);
     }
@@ -624,7 +612,7 @@ mod tests {
         let (_, entry) = shepr_mux::git::git_status_snapshot_for_cwd(&cwd, None);
         app.git_refresh
             .git_status_cache
-            .insert(cwd.clone(), entry.expect("non-Git cache entry"));
+            .apply_refresh(vec![(cwd.clone(), entry.expect("non-Git cache entry"))]);
 
         app.mark_git_status_refresh_due(Instant::now());
 

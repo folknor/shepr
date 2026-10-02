@@ -2,6 +2,12 @@ use super::*;
 use shepr_core::socket_path::fits_unix_socket_path;
 use std::thread;
 
+/// Whether `error` came from ssh, the link or a bounded command timeout rather
+/// than from a remote command, so nothing is known about the remote install.
+fn failed_before_remote_result(error: &io::Error) -> bool {
+    crate::SshFailureDiagnostic::from_error(error).failed_before_remote_result()
+}
+
 /// Paths whose root doubles as the XDG runtime root; the managed config
 /// directories are created in the profile runtime directory under it.
 fn test_app_paths() -> shepr_config::AppPaths {
@@ -149,7 +155,7 @@ fn ssh_authentication_diagnostics_are_narrow() {
     let requires_authentication = |message: &str| {
         crate::SshFailureDiagnostic::from_ssh_output(
             Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-            message.into(),
+            message,
         )
         .requires_authentication()
     };

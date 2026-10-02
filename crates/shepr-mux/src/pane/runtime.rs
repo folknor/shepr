@@ -1244,6 +1244,12 @@ impl PaneRuntime {
         self.terminal.bracketed_paste_enabled()
     }
 
+    /// Capture all pane input modes together for one routing and encoding
+    /// decision.
+    pub fn input_modes(&self) -> Option<shepr_vt::InputModes> {
+        self.terminal.input_modes()
+    }
+
     pub fn focus_reporting_enabled(&self) -> bool {
         self.terminal.focus_reporting_enabled()
     }
@@ -1344,8 +1350,20 @@ impl PaneRuntime {
     }
 
     pub fn encode_terminal_key(&self, key: shepr_termio::input::TerminalKey) -> Vec<u8> {
-        self.terminal
-            .encode_terminal_key(key, self.keyboard_protocol())
+        if let Some(modes) = self.input_modes() {
+            self.encode_terminal_key_with_modes(key, modes)
+        } else {
+            self.terminal
+                .encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy())
+        }
+    }
+
+    pub fn encode_terminal_key_with_modes(
+        &self,
+        key: shepr_termio::input::TerminalKey,
+        modes: shepr_vt::InputModes,
+    ) -> Vec<u8> {
+        self.terminal.encode_terminal_key_with_modes(key, modes)
     }
 
     pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), shepr_pty::ChildIoSendError> {
@@ -1389,16 +1407,28 @@ impl PaneRuntime {
         self.terminal.wheel_routing()
     }
 
+    pub fn wheel_routing_for_modes(&self, modes: shepr_vt::InputModes) -> WheelRouting {
+        PaneTerminal::wheel_routing_for_modes(modes)
+    }
+
     pub fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        if !self.mouse_reporting_enabled() {
-            return None;
-        }
-        self.terminal.encode_mouse_button(kind, position, modifiers)
+        self.encode_mouse_button_with_modes(self.input_modes()?, kind, position, modifiers)
+    }
+
+    pub fn encode_mouse_button_with_modes(
+        &self,
+        modes: shepr_vt::InputModes,
+        kind: crossterm::event::MouseEventKind,
+        position: shepr_termio::input::mouse::Position,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        self.terminal
+            .encode_mouse_button_with_modes(modes, kind, position, modifiers)
     }
 
     pub fn encode_mouse_motion(
@@ -1407,7 +1437,18 @@ impl PaneRuntime {
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        self.terminal.encode_mouse_motion(kind, position, modifiers)
+        self.encode_mouse_motion_with_modes(self.input_modes()?, kind, position, modifiers)
+    }
+
+    pub fn encode_mouse_motion_with_modes(
+        &self,
+        modes: shepr_vt::InputModes,
+        kind: crossterm::event::MouseEventKind,
+        position: shepr_termio::input::mouse::Position,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        self.terminal
+            .encode_mouse_motion_with_modes(modes, kind, position, modifiers)
     }
 
     pub fn encode_mouse_wheel(
@@ -1416,10 +1457,21 @@ impl PaneRuntime {
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        if self.wheel_routing()? != WheelRouting::MouseReport {
+        self.encode_mouse_wheel_with_modes(self.input_modes()?, kind, position, modifiers)
+    }
+
+    pub fn encode_mouse_wheel_with_modes(
+        &self,
+        modes: shepr_vt::InputModes,
+        kind: crossterm::event::MouseEventKind,
+        position: shepr_termio::input::mouse::Position,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        if self.wheel_routing_for_modes(modes) != WheelRouting::MouseReport {
             return None;
         }
-        self.terminal.encode_mouse_wheel(kind, position, modifiers)
+        self.terminal
+            .encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
     }
 
     pub fn pixel_size(&self) -> Option<(u32, u32)> {
@@ -1433,7 +1485,15 @@ impl PaneRuntime {
         &self,
         kind: crossterm::event::MouseEventKind,
     ) -> Option<Vec<u8>> {
-        if self.wheel_routing()? != WheelRouting::AlternateScroll {
+        self.encode_alternate_scroll_with_modes(self.input_modes()?, kind)
+    }
+
+    pub fn encode_alternate_scroll_with_modes(
+        &self,
+        modes: shepr_vt::InputModes,
+        kind: crossterm::event::MouseEventKind,
+    ) -> Option<Vec<u8>> {
+        if self.wheel_routing_for_modes(modes) != WheelRouting::AlternateScroll {
             return None;
         }
         let key = match kind {
@@ -1441,12 +1501,10 @@ impl PaneRuntime {
             crossterm::event::MouseEventKind::ScrollDown => crossterm::event::KeyCode::Down,
             _ => return None,
         };
-        Some(
-            self.encode_terminal_key(shepr_termio::input::TerminalKey::new(
-                key,
-                crossterm::event::KeyModifiers::empty(),
-            )),
-        )
+        Some(self.encode_terminal_key_with_modes(
+            shepr_termio::input::TerminalKey::new(key, crossterm::event::KeyModifiers::empty()),
+            modes,
+        ))
     }
 
     /// Get the current working directory of the child shell process.

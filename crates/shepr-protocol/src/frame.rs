@@ -106,6 +106,12 @@ pub struct CursorState {
 }
 
 /// A rendered frame to be displayed by the client.
+///
+/// This is also the mutable construction buffer for renderers and composition:
+/// cells and hyperlink tables can be populated separately. Use `grid` for a
+/// shape-checked borrow and `validate` at a complete-frame boundary. Validation
+/// stays in the surface decoder rather than serde so errors retain the enclosing
+/// boot, projection and surface identities needed to diagnose a rejected update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameData {
     /// Cells in row-major order. Length must equal `width * height`.
@@ -128,7 +134,75 @@ pub struct FrameData {
     pub hyperlinks: Vec<String>,
 }
 
+/// A shape-checked borrowed grid. Mutable frame construction stays separate: renderers
+/// build and compose cells and hyperlink tables in several steps. A borrow cannot outlive
+/// a mutation, so this view never claims those in-progress frames stay valid.
+pub struct FrameGrid<'a> {
+    cells: &'a [CellData],
+    width: u16,
+    height: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameGridError {
+    InvalidDimensions,
+    InvalidCellCount,
+    InvalidHyperlink,
+}
+
+impl<'a> FrameGrid<'a> {
+    pub fn new(cells: &'a [CellData], width: u16, height: u16) -> Result<Self, FrameGridError> {
+        let expected =
+            crate::surface_grid_size(width, height).ok_or(FrameGridError::InvalidDimensions)?;
+        if cells.len() != expected {
+            return Err(FrameGridError::InvalidCellCount);
+        }
+        Ok(Self {
+            cells,
+            width,
+            height,
+        })
+    }
+
+    pub fn cells(&self) -> &'a [CellData] {
+        self.cells
+    }
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    pub fn validate_hyperlinks(&self, hyperlinks: &[String]) -> Result<(), FrameGridError> {
+        validate_cell_hyperlinks(self.cells, hyperlinks)
+    }
+}
+
+/// Shared by complete grids and changed spans; spans need not contain complete wide pairs.
+pub fn validate_cell_hyperlinks(
+    cells: &[CellData],
+    hyperlinks: &[String],
+) -> Result<(), FrameGridError> {
+    if cells.iter().any(|cell| {
+        cell.hyperlink.is_some_and(|index| {
+            !usize::try_from(index).is_ok_and(|index| index < hyperlinks.len())
+        })
+    }) {
+        return Err(FrameGridError::InvalidHyperlink);
+    }
+    Ok(())
+}
+
 impl FrameData {
+    pub fn grid(&self) -> Result<FrameGrid<'_>, FrameGridError> {
+        FrameGrid::new(&self.cells, self.width, self.height)
+    }
+
+    pub fn validate(&self) -> Result<(), FrameGridError> {
+        self.grid()?.validate_hyperlinks(&self.hyperlinks)
+    }
+
     /// A `width` by `height` frame of blank cells, with no cursor or links.
     pub fn blank(width: u16, height: u16) -> Self {
         Self {
@@ -172,6 +246,22 @@ impl FrameData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_validation_distinguishes_shape_and_hyperlink_failures() {
+        let mut frame = FrameData::blank(2, 1);
+        assert!(frame.validate().is_ok());
+        frame.cells[0].hyperlink = Some(0);
+        assert_eq!(frame.validate(), Err(FrameGridError::InvalidHyperlink));
+        // A shape-checked composition borrow does not require finished link remapping.
+        assert!(frame.grid().is_ok());
+        frame.hyperlinks.push("https://example.test".into());
+        assert!(frame.validate().is_ok());
+        frame.cells.pop();
+        assert_eq!(frame.validate(), Err(FrameGridError::InvalidCellCount));
+        frame.width = u16::MAX;
+        assert_eq!(frame.validate(), Err(FrameGridError::InvalidDimensions));
+    }
 
     #[test]
     fn grid_width_wire_value_uses_one_byte() {

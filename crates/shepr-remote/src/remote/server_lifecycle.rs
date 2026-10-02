@@ -79,7 +79,7 @@ pub(super) fn judge_remote_server(
     if let (Some(build_id), Some(boot_id)) = (build, boot) {
         return Ok(MachineSshCheck::DifferentBuild(DifferentBuildServer {
             executable: executable.clone(),
-            version: printable_remote_value(version.as_deref()),
+            version: remote_display_value(version.as_deref()).to_string(),
             build_id,
             boot_id,
         }));
@@ -138,7 +138,7 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
         // Not a link failure kind: SSH answered, the remote server did not.
         ServerPresenceJson::Unresponsive => Err(io::Error::other(format!(
             "the remote shepr server at {} is not answering status requests",
-            printable_remote_value(Some(&parsed.socket))
+            remote_display_value(Some(&parsed.socket))
         ))),
     }
 }
@@ -148,8 +148,8 @@ pub(super) fn remote_server_compatibility_error(
     version: Option<&str>,
     build_id: Option<&str>,
 ) -> io::Error {
-    let version = printable_remote_value(version);
-    let build_id = printable_remote_value(build_id);
+    let version = remote_display_value(version);
+    let build_id = remote_display_value(build_id);
     crate::remote_compatibility_error(format!(
         "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this build, stop the remote server and retry",
         shepr_protocol::build_version(),
@@ -157,44 +157,26 @@ pub(super) fn remote_server_compatibility_error(
     ))
 }
 
-/// A single remote-reported token (a version, a build id) for a local message:
-/// printable ASCII and spaces only, else `unknown`.
-pub(super) fn printable_remote_value(value: Option<&str>) -> String {
-    value
+/// A remote-reported display value (a version, build id or socket path),
+/// restricted to printable ASCII and spaces, else `unknown`.
+pub(super) fn remote_display_value(value: Option<&str>) -> crate::RemoteText {
+    let value = value
         .filter(|value| {
             !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
         })
-        .unwrap_or("unknown")
-        .to_owned()
+        .unwrap_or("unknown");
+    crate::RemoteText::from_untrusted(value)
 }
 
 /// A remote-reported identifier such as a build id: a non-empty run of
 /// printable ASCII with no spaces, or `None`. It is safe to show and to hand back
 /// to the remote as one argument.
+/// Keep this distinct from `RemoteText`, which allows whitespace for readable
+/// diagnostics and does not promise that a value is one safe argument.
 pub(super) fn printable_remote_token(value: Option<&str>) -> Option<String> {
     value
         .filter(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic()))
         .map(str::to_owned)
-}
-
-/// Remote free text (SSH diagnostics, remote stderr) made safe for a local
-/// terminal. Line breaks and tabs stay. Carriage returns are dropped: OpenSSH
-/// ends its stderr lines with CRLF, and a bare one could overwrite the line
-/// before it. Every other control character, which could start a terminal
-/// escape sequence, becomes `?`. The mapping is per character, so text can be
-/// filtered in arbitrary chunks as it streams.
-pub(super) fn printable_remote_text(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| *ch != '\r')
-        .map(|ch| {
-            if ch.is_control() && ch != '\n' && ch != '\t' {
-                '?'
-            } else {
-                ch
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -304,15 +286,24 @@ mod tests {
     #[test]
     fn shared_remote_text_filter_keeps_printable_lines_and_rejects_controls() {
         assert_eq!(
-            printable_remote_text("Connection refused\n\x1b[2J"),
+            crate::RemoteText::from_untrusted("Connection refused\n\x1b[2J").to_string(),
             "Connection refused\n?[2J"
         );
         assert_eq!(
-            printable_remote_text("Warning: added host\r\nbanner \u{9b}2J caf\u{e9}\ttab"),
+            crate::RemoteText::from_untrusted(
+                "Warning: added host\r\nbanner \u{9b}2J caf\u{e9}\ttab"
+            )
+            .to_string(),
             "Warning: added host\nbanner ?2J caf\u{e9}\ttab"
         );
-        assert_eq!(printable_remote_value(Some("build id")), "build id");
-        assert_eq!(printable_remote_value(Some("bad\tvalue")), "unknown");
+        assert_eq!(
+            remote_display_value(Some("build id")).to_string(),
+            "build id"
+        );
+        assert_eq!(
+            remote_display_value(Some("bad\tvalue")).to_string(),
+            "unknown"
+        );
     }
 
     #[test]

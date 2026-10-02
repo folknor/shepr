@@ -387,7 +387,7 @@ mod tests {
     }
 
     fn diagnostic(message: &str) -> shepr_remote::SshFailureDiagnostic {
-        shepr_remote::SshFailureDiagnostic::from_ssh_output(Some(255), message.into())
+        shepr_remote::SshFailureDiagnostic::from_ssh_output(Some(255), message)
     }
 
     fn different_build_server() -> DifferentBuildServer {

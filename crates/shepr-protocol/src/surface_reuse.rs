@@ -17,7 +17,6 @@ pub enum SurfaceDecodeError {
     InvalidCellCount,
     InvalidRows(&'static str),
     Delta(super::surface_delta::SurfaceDeltaError),
-    RejectedPatch(super::surface_delta::SurfaceDeltaError),
     /// Identifies the surface whose validation failed.
     WithSubject {
         subject: SurfaceDecodeSubject,
@@ -73,10 +72,6 @@ impl std::fmt::Display for SurfaceDecodeError {
             }
             Self::InvalidRows(reason) => f.write_str(reason),
             Self::Delta(error) => write!(f, "{error}"),
-            Self::RejectedPatch(error) => write!(
-                f,
-                "surface patch rejected against the cell baseline: {error}"
-            ),
             Self::WithSubject { subject, source } => write!(f, "{subject}: {source}"),
         }
     }
@@ -94,59 +89,114 @@ impl SurfaceDecodeError {
     }
 }
 
-/// Applies a decoded patch to its complete surface baseline.
-///
-/// The decoder validates wire deltas against its connection-local cell grid. Client activation
-/// evidence can outlive the presentation state that normally applies patches, so it uses this
-/// helper to keep its full-surface baseline at the same revision as the decoder.
+/// A borrowed complete baseline used by patch producers and consumers. Admission
+/// validates every fallible operation before any cell or metadata is changed.
+pub struct SurfaceBaseline<'a> {
+    revisions: Baseline<'a>,
+    cells: &'a [CellData],
+    width: u16,
+    height: u16,
+    hyperlinks: &'a [String],
+    panes: &'a [super::PaneSurfacePane],
+}
+
+impl<'a> SurfaceBaseline<'a> {
+    pub fn new(surface: &'a PaneSurfaceFrame) -> Self {
+        Self {
+            revisions: Baseline::new(
+                &surface.boot_id,
+                surface.projection_revision,
+                surface.surface_revision,
+            ),
+            cells: &surface.frame.cells,
+            width: surface.frame.width,
+            height: surface.frame.height,
+            hyperlinks: &surface.frame.hyperlinks,
+            panes: &surface.panes,
+        }
+    }
+
+    pub fn admits(&self, patch: &PaneSurfacePatch) -> Result<(), SurfaceDecodeError> {
+        self.check(patch).map_err(|error| patch_error(patch, error))
+    }
+
+    fn check(&self, patch: &PaneSurfacePatch) -> Result<(), SurfaceDecodeError> {
+        if patch.projection_revision != self.revisions.projection_revision
+            || !self.revisions.accepts(&SurfaceTransition {
+                boot_id: &patch.boot_id,
+                base_surface_revision: patch.base_surface_revision,
+                surface_revision: patch.surface_revision,
+                base_projection_revision: patch.projection_revision,
+                projection_revision: patch.projection_revision,
+            })
+        {
+            return Err(SurfaceDecodeError::PatchBaselineMismatch);
+        }
+        super::FrameGrid::new(self.cells, self.width, self.height)?;
+        if patch.panes.iter().any(|updated| {
+            !self
+                .panes
+                .iter()
+                .any(|existing| existing.pane_id == updated.pane_id)
+        }) {
+            return Err(SurfaceDecodeError::MetadataMismatch);
+        }
+        super::validate_patch_rows(self.width, self.height, &patch.rows)
+            .map_err(SurfaceDecodeError::InvalidRows)?;
+        for row in &patch.rows {
+            super::validate_cell_hyperlinks(&row.cells, self.hyperlinks)?;
+        }
+        Ok(())
+    }
+}
+
+/// Applies a patch using the same admission rule as encoding and decoding.
 pub fn apply_patch_to_surface(
     surface: &mut PaneSurfaceFrame,
     patch: &PaneSurfacePatch,
 ) -> Result<(), SurfaceDecodeError> {
-    if patch.boot_id != surface.boot_id
-        || patch.projection_revision != surface.projection_revision
-        || patch.base_surface_revision != surface.surface_revision
-        || surface.surface_revision.checked_next() != Some(patch.surface_revision)
-    {
-        return Err(patch_error(
-            patch,
-            SurfaceDecodeError::PatchBaselineMismatch,
-        ));
-    }
-    let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
-    else {
-        return Err(patch_error(patch, SurfaceDecodeError::InvalidDimensions));
-    };
-    if surface.frame.cells.len() != expected_cells {
-        return Err(patch_error(patch, SurfaceDecodeError::InvalidCellCount));
-    }
-    if patch.panes.iter().any(|updated| {
-        !surface
-            .panes
-            .iter()
-            .any(|existing| existing.pane_id == updated.pane_id)
-    }) {
-        return Err(patch_error(patch, SurfaceDecodeError::MetadataMismatch));
-    }
-    super::surface_delta::apply_rows(
+    SurfaceBaseline::new(surface).admits(patch)?;
+    apply_admitted_patch(
         &mut surface.frame.cells,
         surface.frame.width,
-        surface.frame.height,
-        &patch.rows,
-    )
-    .map_err(|error| patch_error(patch, SurfaceDecodeError::RejectedPatch(error)))?;
-    for updated in &patch.panes {
-        if let Some(existing) = surface
-            .panes
-            .iter_mut()
-            .find(|existing| existing.pane_id == updated.pane_id)
-        {
-            *existing = updated.clone();
-        }
-    }
-    surface.frame.cursor = patch.cursor.clone();
+        &mut surface.panes,
+        &mut surface.frame.cursor,
+        patch,
+    );
     surface.surface_revision = patch.surface_revision;
     Ok(())
+}
+
+fn apply_admitted_patch(
+    cells: &mut [CellData],
+    width: u16,
+    panes: &mut [super::PaneSurfacePane],
+    cursor: &mut Option<super::CursorState>,
+    patch: &PaneSurfacePatch,
+) {
+    for row in &patch.rows {
+        let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
+        cells[start..start + row.cells.len()].clone_from_slice(&row.cells);
+    }
+    for updated in &patch.panes {
+        if let Some(existing) = panes
+            .iter_mut()
+            .find(|pane| pane.pane_id == updated.pane_id)
+        {
+            existing.clone_from(updated);
+        }
+    }
+    cursor.clone_from(&patch.cursor);
+}
+
+impl From<super::FrameGridError> for SurfaceDecodeError {
+    fn from(error: super::FrameGridError) -> Self {
+        match error {
+            super::FrameGridError::InvalidDimensions => Self::InvalidDimensions,
+            super::FrameGridError::InvalidCellCount => Self::InvalidCellCount,
+            super::FrameGridError::InvalidHyperlink => Self::InvalidHyperlink,
+        }
+    }
 }
 
 fn patch_error(patch: &PaneSurfacePatch, error: SurfaceDecodeError) -> SurfaceDecodeError {
@@ -222,6 +272,27 @@ impl SurfaceDecodeSubject {
     }
 }
 
+/// Named revision transition prevents swapping base and next revisions at admission.
+pub struct SurfaceTransition<'a> {
+    pub boot_id: &'a str,
+    pub base_surface_revision: SurfaceRevision,
+    pub surface_revision: SurfaceRevision,
+    pub base_projection_revision: ProjectionRevision,
+    pub projection_revision: ProjectionRevision,
+}
+
+impl<'a> From<&'a SurfaceUpdate> for SurfaceTransition<'a> {
+    fn from(update: &'a SurfaceUpdate) -> Self {
+        Self {
+            boot_id: &update.boot_id,
+            base_surface_revision: update.base_surface_revision,
+            surface_revision: update.surface_revision,
+            base_projection_revision: update.base_projection_revision,
+            projection_revision: update.projection_revision,
+        }
+    }
+}
+
 pub struct Baseline<'a> {
     boot_id: &'a str,
     projection_revision: ProjectionRevision,
@@ -241,32 +312,22 @@ impl<'a> Baseline<'a> {
         }
     }
 
-    pub fn accepts(
-        &self,
-        boot_id: &str,
-        base_surface_revision: SurfaceRevision,
-        surface_revision: SurfaceRevision,
-        base_projection_revision: ProjectionRevision,
-        projection_revision: ProjectionRevision,
-    ) -> bool {
-        if self.boot_id != boot_id
-            || base_surface_revision != self.surface_revision
-            || self.surface_revision.checked_next() != Some(surface_revision)
-        {
-            return false;
-        }
-        base_projection_revision == self.projection_revision
-            && projection_revision >= self.projection_revision
+    pub fn accepts(&self, transition: &SurfaceTransition<'_>) -> bool {
+        self.boot_id == transition.boot_id
+            && transition.base_surface_revision == self.surface_revision
+            && self.surface_revision.checked_next() == Some(transition.surface_revision)
+            && transition.base_projection_revision == self.projection_revision
+            && transition.projection_revision >= self.projection_revision
     }
 
     pub(crate) fn accepts_surface(&self, surface: &PaneSurfaceFrame) -> bool {
-        self.accepts(
-            &surface.boot_id,
-            self.surface_revision,
-            surface.surface_revision,
-            self.projection_revision,
-            surface.projection_revision,
-        )
+        self.accepts(&SurfaceTransition {
+            boot_id: &surface.boot_id,
+            base_surface_revision: self.surface_revision,
+            surface_revision: surface.surface_revision,
+            base_projection_revision: self.projection_revision,
+            projection_revision: surface.projection_revision,
+        })
     }
 
     /// Builds an update after `accepts_surface` has accepted the new surface.
@@ -284,16 +345,7 @@ impl<'a> Baseline<'a> {
             projection_revision: surface.projection_revision,
             meta: Some(
                 if surface.projection_revision == last.projection_revision
-                    && surface.frame.width == last.frame.width
-                    && surface.frame.height == last.frame.height
-                    && surface.frame.hyperlinks == last.frame.hyperlinks
-                    && surface.splits == last.splits
-                    && surface.panes.len() == last.panes.len()
-                    && surface
-                        .panes
-                        .iter()
-                        .zip(&last.panes)
-                        .all(|(next, old)| next.pane_id == old.pane_id)
+                    && surface.topology().same_topology(&last.topology())
                 {
                     super::SurfaceMeta::Patch(super::SurfacePatchMeta {
                         cursor: surface.frame.cursor.clone(),
@@ -363,13 +415,8 @@ impl Decoder {
                     return Err(SurfaceDecodeError::MissingBaseline
                         .with_subject(SurfaceDecodeSubject::from_update(&update, None)));
                 };
-                if !base.revisions().accepts(
-                    &update.boot_id,
-                    update.base_surface_revision,
-                    update.surface_revision,
-                    update.base_projection_revision,
-                    update.projection_revision,
-                ) || super::surface_grid_size(base.width, base.height) != Some(base.cells.len())
+                if !base.revisions().accepts(&SurfaceTransition::from(&update))
+                    || super::FrameGrid::new(&base.cells, base.width, base.height).is_err()
                 {
                     return Err(SurfaceDecodeError::BaselineMismatch
                         .with_subject(SurfaceDecodeSubject::from_update(&update, Some(base))));
@@ -417,41 +464,30 @@ impl Decoder {
                         panes: compact.panes,
                         cursor: compact.cursor,
                     };
-                    if patch.panes.iter().any(|updated| {
-                        !previous
-                            .panes
-                            .iter()
-                            .any(|pane| pane.pane_id == updated.pane_id)
-                    }) {
-                        return Err(patch_error(&patch, SurfaceDecodeError::MetadataMismatch));
+                    SurfaceBaseline {
+                        revisions: Baseline::new(
+                            &base.boot_id,
+                            base.projection_revision,
+                            base.surface_revision,
+                        ),
+                        cells: &base.cells,
+                        width: base.width,
+                        height: base.height,
+                        hyperlinks: &previous.frame.hyperlinks,
+                        panes: &previous.panes,
                     }
-                    if patch.rows.iter().flat_map(|row| &row.cells).any(|cell| {
-                        cell.hyperlink
-                            .is_some_and(|index| index as usize >= previous.frame.hyperlinks.len())
-                    }) {
-                        return Err(patch_error(&patch, SurfaceDecodeError::InvalidHyperlink));
-                    }
-                    super::surface_delta::apply_rows(
+                    .admits(&patch)?;
+                    apply_admitted_patch(
                         &mut base.cells,
                         base.width,
-                        base.height,
-                        &patch.rows,
-                    )
-                    .map_err(|error| patch_error(&patch, SurfaceDecodeError::from(error)))?;
-                    for updated in &patch.panes {
-                        if let Some(pane) = previous
-                            .panes
-                            .iter_mut()
-                            .find(|pane| pane.pane_id == updated.pane_id)
-                        {
-                            pane.clone_from(updated);
-                        }
-                    }
-                    previous.frame.cursor.clone_from(&patch.cursor);
+                        &mut previous.panes,
+                        &mut previous.frame.cursor,
+                        &patch,
+                    );
                     base.surface_revision = patch.surface_revision;
                     return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
                 }
-                let meta = match update.meta {
+                let mut meta = match update.meta {
                     Some(super::SurfaceMeta::Projection(meta)) => meta,
                     Some(super::SurfaceMeta::Patch(_)) => {
                         return Err(SurfaceDecodeError::MetadataMismatch.with_subject(
@@ -492,40 +528,8 @@ impl Decoder {
                 // cells. Validate everything before changing the baseline.
                 if update.projection_revision == base.projection_revision
                     && let Some(previous) = &base.meta
-                    && meta.splits == previous.splits
-                    && meta.frame.hyperlinks == previous.frame.hyperlinks
-                    && meta.panes.len() == previous.panes.len()
-                    && meta
-                        .panes
-                        .iter()
-                        .zip(&previous.panes)
-                        .all(|(next, old)| next.pane_id == old.pane_id)
+                    && meta.topology().same_topology(&previous.topology())
                 {
-                    super::validate_patch_rows(base.width, base.height, &update.spans).map_err(
-                        |reason| {
-                            SurfaceDecodeError::InvalidRows(reason).with_subject(
-                                SurfaceDecodeSubject::from_update_header(
-                                    &update.boot_id,
-                                    update.projection_revision,
-                                    update.surface_revision,
-                                    &meta.panes,
-                                ),
-                            )
-                        },
-                    )?;
-                    if update.spans.iter().flat_map(|row| &row.cells).any(|cell| {
-                        cell.hyperlink
-                            .is_some_and(|index| index as usize >= meta.frame.hyperlinks.len())
-                    }) {
-                        return Err(SurfaceDecodeError::InvalidHyperlink.with_subject(
-                            SurfaceDecodeSubject::from_update_header(
-                                &update.boot_id,
-                                update.projection_revision,
-                                update.surface_revision,
-                                &meta.panes,
-                            ),
-                        ));
-                    }
                     let changed_panes = meta
                         .panes
                         .iter()
@@ -542,16 +546,22 @@ impl Decoder {
                         panes: changed_panes,
                         cursor: meta.frame.cursor.clone(),
                     };
-                    super::surface_delta::apply_rows(
+                    SurfaceBaseline {
+                        revisions: base.revisions(),
+                        cells: &base.cells,
+                        width: base.width,
+                        height: base.height,
+                        hyperlinks: &previous.frame.hyperlinks,
+                        panes: &previous.panes,
+                    }
+                    .admits(&patch)?;
+                    apply_admitted_patch(
                         &mut base.cells,
                         base.width,
-                        base.height,
-                        &patch.rows,
-                    )
-                    .map_err(|error| {
-                        SurfaceDecodeError::from(error)
-                            .with_subject(SurfaceDecodeSubject::from_patch(&patch))
-                    })?;
+                        &mut meta.panes,
+                        &mut meta.frame.cursor,
+                        &patch,
+                    );
                     base.meta = Some(meta);
                     base.surface_revision = patch.surface_revision;
                     return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
@@ -572,10 +582,7 @@ impl Decoder {
                     },
                 )?;
                 let invalid = |cells: &[CellData]| {
-                    cells.iter().any(|cell| {
-                        cell.hyperlink
-                            .is_some_and(|index| index as usize >= meta.frame.hyperlinks.len())
-                    })
+                    super::validate_cell_hyperlinks(cells, &meta.frame.hyperlinks).is_err()
                 };
                 let mut end = 0;
                 for row in &update.spans {
@@ -634,23 +641,10 @@ impl Decoder {
         // with "without a baseline". The client transport treats any decode
         // error as the end of the connection.
         if let ServerMessage::PaneSurface(surface) = &message {
-            let Some(expected) =
-                super::surface_grid_size(surface.frame.width, surface.frame.height)
-            else {
-                return Err(SurfaceDecodeError::InvalidDimensions
-                    .with_subject(SurfaceDecodeSubject::from_surface(surface)));
-            };
-            if surface.frame.cells.len() != expected {
-                return Err(SurfaceDecodeError::InvalidCellCount
-                    .with_subject(SurfaceDecodeSubject::from_surface(surface)));
-            }
-            if surface.frame.cells.iter().any(|cell| {
-                cell.hyperlink
-                    .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
-            }) {
-                return Err(SurfaceDecodeError::InvalidHyperlink
-                    .with_subject(SurfaceDecodeSubject::from_surface(surface)));
-            }
+            surface.frame.validate().map_err(|error| {
+                SurfaceDecodeError::from(error)
+                    .with_subject(SurfaceDecodeSubject::from_surface(surface))
+            })?;
             // An existing baseline is overwritten in place to keep its cell
             // buffer; only the first surface allocates one.
             let base = self.baseline.get_or_insert_with(|| CellBaseline {
@@ -706,6 +700,70 @@ mod tests {
             panes: Vec::new(),
             splits: Vec::new(),
         }
+    }
+
+    #[test]
+    fn shared_patch_admission_rejects_invalid_links_before_mutation() {
+        let mut kept = surface();
+        let original = kept.clone();
+        let mut replacement = cell("z");
+        replacement.hyperlink = Some(0);
+        let patch = PaneSurfacePatch {
+            boot_id: kept.boot_id.clone(),
+            projection_revision: kept.projection_revision,
+            base_surface_revision: kept.surface_revision,
+            surface_revision: crate::SurfaceRevision::new(2),
+            rows: vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![replacement],
+            }],
+            panes: Vec::new(),
+            cursor: None,
+        };
+        assert!(SurfaceBaseline::new(&kept).admits(&patch).is_err());
+        assert!(apply_patch_to_surface(&mut kept, &patch).is_err());
+        assert_eq!(kept, original);
+        let mut decoder = Decoder::default();
+        decoder
+            .decode(ServerMessage::PaneSurface(original.clone()))
+            .expect("baseline");
+        let update = SurfaceUpdate {
+            boot_id: patch.boot_id.clone(),
+            base_projection_revision: patch.projection_revision,
+            projection_revision: patch.projection_revision,
+            base_surface_revision: patch.base_surface_revision,
+            surface_revision: patch.surface_revision,
+            meta: None,
+            spans: patch.rows.clone(),
+        };
+        assert!(
+            decoder
+                .decode(ServerMessage::SurfaceUpdate(update))
+                .is_err()
+        );
+        assert_eq!(decoder.current_surface(), Some(original));
+    }
+
+    #[test]
+    fn projection_metadata_and_full_frame_use_the_same_topology_rule() {
+        let first = surface();
+        let mut next = first.clone();
+        next.frame.cells[0] = cell("z");
+        next.frame.cursor = Some(crate::CursorState {
+            x: 1,
+            y: 0,
+            visible: true,
+            shape: crate::CursorShapeParam::SteadyBar,
+        });
+        let previous = crate::SurfaceProjectionMeta::from(&first);
+        let changed = crate::SurfaceProjectionMeta::from(&next);
+        assert!(first.topology().same_topology(&next.topology()));
+        assert!(previous.topology().same_topology(&changed.topology()));
+        next.frame.hyperlinks.push("https://example.test".into());
+        let changed = crate::SurfaceProjectionMeta::from(&next);
+        assert!(!first.topology().same_topology(&next.topology()));
+        assert!(!previous.topology().same_topology(&changed.topology()));
     }
 
     #[test]

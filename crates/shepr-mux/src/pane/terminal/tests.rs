@@ -14,20 +14,10 @@ fn frame_cell(frame: &FrameData, x: u16, y: u16) -> &CellData {
 
 #[test]
 fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
-    assert!(
-        InputState {
-            alternate_screen: false,
-            application_cursor: true,
-            bracketed_paste: true,
-            focus_reporting: false,
-            mouse_protocol_mode: shepr_termio::input::MouseProtocolMode::None,
-            mouse_protocol_encoding: shepr_termio::input::MouseProtocolEncoding::Default,
-            mouse_alternate_scroll: false,
-            modify_other_keys: false,
-            color_scheme_reporting: false,
-        }
-        .plain_page_keys_use_host_scrollback()
-    );
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    terminal.write(b"\x1b[?1h\x1b[?2004h");
+
+    assert!(terminal.input_modes().plain_page_keys_use_host_scrollback());
 }
 
 fn text_cell(text: &str) -> OwnedTextCell {
@@ -1690,6 +1680,31 @@ fn terminal_mouse_moved_encoding_uses_any_motion_state() {
     );
 
     assert_eq!(encoded.as_deref(), Some(&b"\x1b[<35;5;7M"[..]));
+}
+
+#[test]
+fn terminal_mouse_encoding_uses_the_captured_input_modes() {
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    terminal.write(b"\x1b[?1003h\x1b[?1006h");
+    let pane = PaneTerminal::new(terminal);
+    let modes = pane.input_modes().expect("test precondition");
+
+    pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"\x1b[?1003l");
+
+    let captured = pane.encode_mouse_motion_with_modes(
+        modes,
+        crossterm::event::MouseEventKind::Moved,
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        crossterm::event::KeyModifiers::empty(),
+    );
+    let current = pane.encode_mouse_motion(
+        crossterm::event::MouseEventKind::Moved,
+        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        crossterm::event::KeyModifiers::empty(),
+    );
+
+    assert_eq!(captured.as_deref(), Some(&b"\x1b[<35;5;7M"[..]));
+    assert_eq!(current, None);
 }
 
 #[test]

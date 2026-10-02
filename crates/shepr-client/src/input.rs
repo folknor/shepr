@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 
 use super::{ClientLoopEvent, ParsedHostInput};
 use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
+use crate::terminal_geometry::SharedHostGeometry;
 
 // ---------------------------------------------------------------------------
 // Stdin reader thread
@@ -34,6 +35,7 @@ pub(crate) fn stdin_reader_loop(
     host_cell_size_query_sent: bool,
     host_mouse_capture_active: &Arc<AtomicBool>,
     host_sgr_pixels_active: &Arc<AtomicBool>,
+    host_geometry: &SharedHostGeometry,
     host_escape_disambiguation_active: bool,
     initial_host_input: &[u8],
 ) {
@@ -64,6 +66,7 @@ pub(crate) fn stdin_reader_loop(
             &mut pending_mode,
             &mut last_geometry,
             host_sgr_pixels_active,
+            host_geometry,
         ) {
             return;
         }
@@ -99,6 +102,7 @@ pub(crate) fn stdin_reader_loop(
                     &mut pending_mode,
                     &mut last_geometry,
                     host_sgr_pixels_active,
+                    host_geometry,
                 ) {
                     return;
                 }
@@ -141,14 +145,12 @@ fn consume_input_bytes(
     pending_mode: &mut Option<bool>,
     last_geometry: &mut Option<shepr_termio::input::mouse::HostPixelExtent>,
     host_sgr_pixels_active: &AtomicBool,
+    host_geometry: &SharedHostGeometry,
 ) -> bool {
     let sgr_pixels =
         *pending_mode.get_or_insert_with(|| host_sgr_pixels_active.load(Ordering::Acquire));
     if sgr_pixels {
-        *last_geometry = retain_geometry(
-            *last_geometry,
-            shepr_termio::input::mouse::HostPixelExtent::current(),
-        );
+        *last_geometry = retain_geometry(*last_geometry, host_geometry.pixel_extent());
     }
     let chunks = framer.push_framed(data);
     if !framer.has_pending_input() {

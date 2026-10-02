@@ -98,6 +98,44 @@ pub struct PaneSurfaceFrame {
     pub splits: Vec<PaneSurfaceSplit>,
 }
 
+/// The fields a cell patch retains. Cursor and per-pane observations may change;
+/// pane order, dimensions, hyperlinks and split handles must remain stable.
+/// This is a borrowed view so checking topology never clones hyperlink tables.
+pub struct SurfaceTopology<'a> {
+    width: u16,
+    height: u16,
+    hyperlinks: &'a [String],
+    panes: &'a [PaneSurfacePane],
+    splits: &'a [PaneSurfaceSplit],
+}
+
+impl SurfaceTopology<'_> {
+    pub fn same_topology(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.hyperlinks == other.hyperlinks
+            && self.splits == other.splits
+            && self.panes.len() == other.panes.len()
+            && self
+                .panes
+                .iter()
+                .zip(other.panes)
+                .all(|(left, right)| left.pane_id == right.pane_id)
+    }
+}
+
+impl PaneSurfaceFrame {
+    pub fn topology(&self) -> SurfaceTopology<'_> {
+        SurfaceTopology {
+            width: self.frame.width,
+            height: self.frame.height,
+            hyperlinks: &self.frame.hyperlinks,
+            panes: &self.panes,
+            splits: &self.splits,
+        }
+    }
+}
+
 /// Metadata either replaces the projection or changes only cursor and named panes.
 /// Patch metadata retains dimensions, split topology and hyperlink indices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +205,16 @@ impl From<&PaneSurfaceFrame> for SurfaceProjectionMeta {
 }
 
 impl SurfaceProjectionMeta {
+    pub fn topology(&self) -> SurfaceTopology<'_> {
+        SurfaceTopology {
+            width: self.frame.width,
+            height: self.frame.height,
+            hyperlinks: &self.frame.hyperlinks,
+            panes: &self.panes,
+            splits: &self.splits,
+        }
+    }
+
     pub(crate) fn into_surface(
         self,
         boot_id: BootId,

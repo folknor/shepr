@@ -211,31 +211,10 @@ impl ClientRenderState {
         }
         let last = last_surface.as_deref()?;
         let next_revision = surface_revision.checked_next()?;
-        let baseline = shepr_protocol::surface_reuse::Baseline::new(
-            &last.boot_id,
-            last.projection_revision,
-            last.surface_revision,
-        );
-        if !baseline.accepts(
-            &patch.boot_id,
-            patch.base_surface_revision,
-            next_revision,
-            last.projection_revision,
-            patch.projection_revision,
-        ) || patch.projection_revision != last.projection_revision
-        {
-            return None;
-        }
         patch.surface_revision = next_revision;
-        shepr_protocol::validate_patch_rows(last.frame.width, last.frame.height, &patch.rows)
+        shepr_protocol::surface_reuse::SurfaceBaseline::new(last)
+            .admits(&patch)
             .ok()?;
-        if !patch.panes.iter().all(|updated| {
-            last.panes
-                .iter()
-                .any(|pane| pane.pane_id == updated.pane_id)
-        }) {
-            return None;
-        }
         let meta = shepr_protocol::SurfaceMeta::Patch(shepr_protocol::SurfacePatchMeta {
             cursor: patch.cursor.clone(),
             panes: patch.panes.clone(),
@@ -282,10 +261,10 @@ impl ClientRenderState {
                 // full surface rather than diffing against a wrong grid.
                 let applied = match self.last_surface.as_deref_mut() {
                     Some(surface) => apply_pane_surface_patch(surface, &patch),
-                    None => Err("no committed surface"),
+                    None => Err(shepr_protocol::surface_reuse::SurfaceDecodeError::MissingBaseline),
                 };
                 if let Err(reason) = applied {
-                    tracing::warn!(reason, "sent surface patch did not apply to its baseline");
+                    tracing::warn!(%reason, "sent surface patch did not apply to its baseline");
                     self.last_surface = None;
                 }
                 self.surface_revision = patch.surface_revision;
@@ -300,59 +279,8 @@ impl ClientRenderState {
 pub(super) fn apply_pane_surface_patch(
     surface: &mut PaneSurfaceFrame,
     patch: &PaneSurfacePatch,
-) -> Result<(), &'static str> {
-    let baseline = shepr_protocol::surface_reuse::Baseline::new(
-        &surface.boot_id,
-        surface.projection_revision,
-        surface.surface_revision,
-    );
-    if !baseline.accepts(
-        &patch.boot_id,
-        patch.base_surface_revision,
-        patch.surface_revision,
-        surface.projection_revision,
-        patch.projection_revision,
-    ) || patch.projection_revision != surface.projection_revision
-    {
-        return Err("patch revision does not match the surface baseline");
-    }
-    shepr_protocol::validate_patch_rows(surface.frame.width, surface.frame.height, &patch.rows)?;
-    let width = usize::from(surface.frame.width);
-    if shepr_protocol::surface_grid_size(surface.frame.width, surface.frame.height)
-        != Some(surface.frame.cells.len())
-    {
-        return Err("surface cell grid does not match its size");
-    }
-    if !patch.panes.iter().all(|updated| {
-        surface
-            .panes
-            .iter()
-            .any(|pane| pane.pane_id == updated.pane_id)
-    }) {
-        return Err("patch names a pane missing from the surface");
-    }
-    for row in &patch.rows {
-        let start = usize::from(row.y) * width + usize::from(row.x);
-        if let Some(cells) = surface
-            .frame
-            .cells
-            .get_mut(start..start.saturating_add(row.cells.len()))
-        {
-            cells.clone_from_slice(&row.cells);
-        }
-    }
-    for updated in &patch.panes {
-        if let Some(pane) = surface
-            .panes
-            .iter_mut()
-            .find(|pane| pane.pane_id == updated.pane_id)
-        {
-            pane.clone_from(updated);
-        }
-    }
-    surface.frame.cursor.clone_from(&patch.cursor);
-    surface.surface_revision = patch.surface_revision;
-    Ok(())
+) -> Result<(), shepr_protocol::surface_reuse::SurfaceDecodeError> {
+    shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch)
 }
 
 /// A prepared client render message plus any baseline state needed after send.

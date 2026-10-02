@@ -84,10 +84,23 @@ impl Workspace {
         self.panes.contains_key(&pane_id)
     }
 
+    /// Pane IDs a workspace surface presents, in layout order.
+    pub fn visible_pane_ids(&self) -> Vec<PaneId> {
+        self.zoomed_pane_id()
+            .map_or_else(|| self.layout.pane_ids(), |pane_id| vec![pane_id])
+    }
+
     /// Whether `pane_id` is on screen: in the layout, and the focused pane
     /// when the workspace is zoomed.
     pub fn shows_pane(&self, pane_id: PaneId) -> bool {
-        self.panes.contains_key(&pane_id) && (!self.zoomed || self.layout.focused() == pane_id)
+        self.panes.contains_key(&pane_id)
+            && self
+                .zoomed_pane_id()
+                .is_none_or(|visible_id| visible_id == pane_id)
+    }
+
+    fn zoomed_pane_id(&self) -> Option<PaneId> {
+        self.zoomed.then(|| self.layout.focused())
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
@@ -128,11 +141,23 @@ impl Workspace {
     /// `false`, with the workspace unchanged, when asked to zoom a workspace
     /// of one pane. Unzooming always succeeds.
     pub fn set_zoomed(&mut self, zoomed: bool) -> bool {
-        if zoomed && self.panes.len() < 2 {
+        let next = Self::resolved_zoomed(zoomed, self.panes.len(), true);
+        if zoomed && !next {
             return false;
         }
-        self.zoomed = zoomed;
+        self.zoomed = next;
         true
+    }
+
+    /// Apply the workspace zoom rule to a restored pane set. A saved zoom is
+    /// retained only when its focused pane survived and there is another pane
+    /// for it to hide.
+    pub(crate) fn resolved_zoomed(
+        requested: bool,
+        pane_count: usize,
+        saved_focus_survived: bool,
+    ) -> bool {
+        requested && saved_focus_survived && pane_count > 1
     }
 
     pub fn focus_pane(&mut self, pane_id: PaneId) -> bool {
@@ -275,7 +300,7 @@ impl Workspace {
         }
 
         self.layout = prepared_layout;
-        self.zoomed = false;
+        self.set_zoomed(false);
         let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
         pane.public_number = public_number;
         self.panes.insert(pane_id, pane);
@@ -300,7 +325,7 @@ impl Workspace {
         }
 
         self.panes.remove(&pane_id)?;
-        self.zoomed = false;
+        self.set_zoomed(false);
         if let Some(next_root) = next_root {
             self.root_pane = next_root;
         }

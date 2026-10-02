@@ -2,18 +2,10 @@ use tracing::info;
 
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
-use shepr_protocol::{ClientMessage, ServerMessage};
+use shepr_protocol::{ClientMessage, ServerMessage, TerminalGeometry};
 
 use super::ClientError;
 use crate::limits::Deadline;
-
-/// What the hello reports: the host terminal (its cell size) and the size of
-/// the pane surface the shell asks the server to render.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HandshakeGeometry {
-    pub(crate) host: shepr_core::geometry::HostGeometry,
-    pub(crate) surface_size: shepr_protocol::ClientSurfaceSize,
-}
 
 /// Retains the preamble cause; the handshake failure classifier decides the
 /// endpoint disposition.
@@ -21,7 +13,8 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
     ClientError::Preamble(error)
 }
 
-/// Performs the initial Local client→server handshake.
+/// Performs the client→server handshake for launch and supervised attaches,
+/// the endpoint policy selecting its read timeout.
 ///
 /// The connection opens with the raw build-identity preamble in both
 /// directions (`shepr_protocol::preamble`), so a server of any other build is
@@ -31,52 +24,21 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError
 /// The welcome accepts or refuses the connection and carries no config.
 /// A malformed welcome is a protocol failure of the handshake.
 ///
-/// `deadline`, when given, caps the wait for the reply below the Local read timeout.
-pub(super) fn do_handshake(
-    stream: &mut LocalStream,
-    geometry: HandshakeGeometry,
-    mouse_capture: bool,
-    surface_active: bool,
-    deadline: Option<std::time::Instant>,
-) -> Result<(), ClientError> {
-    do_handshake_for_endpoint(
-        stream,
-        geometry,
-        mouse_capture,
-        surface_active,
-        crate::endpoint::EndpointPolicy::Local,
-        deadline,
-    )
-}
-
-/// Performs a supervised handshake using endpoint policy to select its read timeout.
+/// `deadline`, when given, caps the wait for the reply below the policy's read timeout.
 pub(crate) fn do_handshake_for_endpoint(
     stream: &mut LocalStream,
-    geometry: HandshakeGeometry,
+    geometry: TerminalGeometry,
     mouse_capture: bool,
     surface_active: bool,
     endpoint_policy: crate::endpoint::EndpointPolicy,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
-    let surface_size = geometry.surface_size;
-    let (cell_width_px, cell_height_px, exact_cell_size) =
-        super::terminal_geometry::bounded_cell_geometry(
-            geometry.host.cell_width(),
-            geometry.host.cell_height(),
-            geometry.host.exact,
-        );
     stream
         .set_nonblocking(false)
         .map_err(ClientError::EndpointSetup)?;
 
     let hello = ClientMessage::EndpointHello(EndpointClientHello {
-        geometry: shepr_protocol::TerminalGeometry::new(
-            surface_size.cols,
-            surface_size.rows,
-            cell_width_px,
-            cell_height_px,
-            exact_cell_size,
-        ),
+        geometry,
         mouse_capture,
         surface_active,
     });
@@ -137,17 +99,33 @@ fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
     }
 }
 
+/// The handshake under Local's endpoint policy, for tests.
+#[cfg(test)]
+pub(super) fn do_handshake(
+    stream: &mut LocalStream,
+    geometry: TerminalGeometry,
+    mouse_capture: bool,
+    surface_active: bool,
+    deadline: Option<std::time::Instant>,
+) -> Result<(), ClientError> {
+    do_handshake_for_endpoint(
+        stream,
+        geometry,
+        mouse_capture,
+        surface_active,
+        crate::endpoint::EndpointPolicy::Local,
+        deadline,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io;
     use std::time::Duration;
 
-    fn test_geometry() -> HandshakeGeometry {
-        HandshakeGeometry {
-            host: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
-            surface_size: shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-        }
+    fn test_geometry() -> TerminalGeometry {
+        TerminalGeometry::new(80, 24, 8, 16, false)
     }
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream) {

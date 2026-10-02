@@ -1,6 +1,13 @@
 use super::*;
 use std::io::Write as _;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PresentationDirty {
+    Clean,
+    Chrome,
+    Pane,
+}
+
 fn merge_palette_colors(
     palette: &mut Vec<(u8, shepr_protocol::ClientHostColor)>,
     updates: &[(u8, shepr_protocol::ClientHostColor)],
@@ -32,6 +39,8 @@ pub(super) struct ClientState {
     /// The client-rendered shell.
     pub(super) shell: Box<shell::ClientShellState>,
     pub(super) repaint_pending: bool,
+    pub(super) presentation_dirty: PresentationDirty,
+    pub(super) pending_surface_patch: Option<shell::ClientComposedSurfacePatch>,
     /// What is shown and the move toward what is selected; held in memory only, every
     /// client starts on Local.
     pub(super) choice: endpoint::EndpointChoice,
@@ -45,6 +54,34 @@ pub(super) struct ClientState {
 impl ClientState {
     pub(super) fn request_repaint(&mut self) {
         self.repaint_pending = true;
+    }
+
+    pub(super) fn mark_chrome_dirty(&mut self) {
+        if self.pending_surface_patch.take().is_some() {
+            self.presentation_dirty = PresentationDirty::Pane;
+        } else if self.presentation_dirty == PresentationDirty::Clean {
+            self.presentation_dirty = PresentationDirty::Chrome;
+        }
+    }
+
+    pub(super) fn mark_pane_dirty(&mut self) {
+        self.pending_surface_patch = None;
+        self.presentation_dirty = PresentationDirty::Pane;
+    }
+
+    pub(super) fn queue_surface_patch(&mut self, patch: shell::ClientComposedSurfacePatch) {
+        if self.presentation_dirty == PresentationDirty::Clean
+            && self.pending_surface_patch.is_none()
+        {
+            self.pending_surface_patch = Some(patch);
+        } else {
+            self.pending_surface_patch = None;
+        }
+        self.presentation_dirty = PresentationDirty::Pane;
+    }
+
+    pub(super) fn take_presentation_dirty(&mut self) -> PresentationDirty {
+        std::mem::replace(&mut self.presentation_dirty, PresentationDirty::Clean)
     }
 
     pub(super) fn set_host_size(&mut self, cols: u16, rows: u16) {
@@ -156,6 +193,54 @@ impl ClientState {
         self.write_frame(frame_data);
     }
 
+    /// Presents the accumulated change once after a client turn. Pane work dominates chrome,
+    /// and a full composition dominates a queued patch when both happened in the same turn.
+    pub(super) fn present_pending(&mut self) {
+        match self.take_presentation_dirty() {
+            PresentationDirty::Clean => {}
+            PresentationDirty::Chrome => {
+                if let Some(frame) = self
+                    .shell
+                    .compose(self.reported_geometry.cols(), self.reported_geometry.rows())
+                {
+                    self.present_chrome(frame);
+                }
+            }
+            PresentationDirty::Pane => match self.pending_surface_patch.take() {
+                None => {
+                    if let Some(frame) = self
+                        .shell
+                        .compose(self.reported_geometry.cols(), self.reported_geometry.rows())
+                    {
+                        self.present_frame(frame);
+                    }
+                }
+                Some(patch) => {
+                    let context = self.shell.presentation_log_context();
+                    match self.present_surface_patch(patch) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            if let Some(frame) = self.shell.compose(
+                                self.reported_geometry.cols(),
+                                self.reported_geometry.rows(),
+                            ) {
+                                self.present_frame(frame);
+                            }
+                        }
+                        Err(error) => {
+                            self.frame_write_failure.observe(
+                                "pane surface patch",
+                                &Err(error),
+                                Some(&context),
+                            );
+                            self.request_repaint();
+                        }
+                    }
+                }
+            },
+        }
+    }
+
     /// Writes and commits a frame only after all terminal output has been written successfully.
     /// A failed write is handled here rather than by callers: the frame is not committed, the
     /// next frame repaints in full (`repaint_pending`), and the failure is logged once per cause
@@ -254,6 +339,8 @@ impl ClientState {
                 shell::ClientShellConfig::from_validated_config(&config),
             )),
             repaint_pending: false,
+            presentation_dirty: PresentationDirty::Clean,
+            pending_surface_patch: None,
             choice: endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local),
             draw_host_cursor: false,
             frame_write_failure: HostWriteFailure::default(),

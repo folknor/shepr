@@ -1045,6 +1045,8 @@ pub fn session_backup_directory(data_dir: &Path) -> PathBuf {
 
 /// Reads the saved layout while the caller owns the data directory.
 pub fn load(lease: &DataDirLease) -> SessionLoad {
+    // Restore requires current directory ownership; this resource check is
+    // independent of the app's policy for scheduling future writes.
     if !lease.is_active() {
         return SessionLoad::Missing;
     }

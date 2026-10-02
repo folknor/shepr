@@ -268,7 +268,13 @@ mod tests {
     use crate::tests::endpoint_choice::{Fixture, RecordingTransport, boot, remote, snapshot};
     fn start(f: &mut Fixture) -> StartOutcome {
         let baseline = HostBaseline {
-            geometry: crate::shell_runtime::view_geometry(&f.client.state),
+            geometry: crate::shell_runtime::view_geometry(
+                f.client.state.reported_geometry,
+                f.client.state.shell.surface_size(
+                    f.client.state.reported_geometry.cols(),
+                    f.client.state.reported_geometry.rows(),
+                ),
+            ),
             host_focused: true,
             theme: &f.client.state.host_theme_updates,
         };

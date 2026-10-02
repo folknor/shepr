@@ -573,7 +573,9 @@ with `Vec<PatchRow { y, cells }>`, and a `FallbackReason` enum in the server
 whose `terminal_snapshot` arm carries the real reason. Since mux now turns a
 fallback read into no snapshot, retained-surface fallbacks that logged as
 `terminal_patch` log as `terminal_snapshot`, so one label already carries two
-reasons. Reported by mux-panes and server-serving.
+reasons, and the `invalid_patch` case now falls back silently through
+`prepare_pane_surface_patch` returning `None`. Reported by mux-panes and
+server-serving.
 
 ## TYP-030 - Content and detection counters are raw `u64` with sentinels
 
@@ -700,19 +702,12 @@ server-facing entry points kept their string forms: `App::with_paths`
 (`crates/shepr-server/src/app/mod.rs`) passes the loaded digest to
 `load_history` as `&str`. Carry the typed digest across. (mux-state)
 
-## TYP-039 - Git object ids, ref names and branch names are `String`s
+## TYP-039 - The workspace branch is an option that means three things
 
-`valid_oid` and `valid_full_ref` validate and throw the result away.
-`GitHeadIdentity::{Branch { full_ref, short_name, oid }, Detached { oid }}` and
-`GitUpstreamIdentity { remote, merge_ref, full_ref, oid }` are all `String`.
-`git_rev_parse_verify_with_errors` returns stdout as an oid without
-`valid_oid`, which is why `git_ahead_behind_between` validates both again;
-`BranchConfig::full_ref` from `for-each-ref %(upstream)` goes unvalidated to
-`rev-parse --verify --end-of-options` on the reftable path; `short_name` is
-derived by `strip_prefix("refs/heads/")` at two sites. `WorkspaceGitStatus::branch:
-None` means detached, not demanded, or read failed; `repo_name` falls back to the
-literal `"repo"`. Proposal: `Oid`, `FullRefName`, `BranchName` (only from a
-`FullRefName` under `refs/heads/`). (mux-state)
+`Oid`, `FullRefName` and `BranchName` now carry Git identity inside mux git.
+Still open: `WorkspaceGitStatus::branch: None` means detached or read failed,
+and `repo_name` falls back to the literal `"repo"`; a branch state enum at the
+workspace boundary would say which. (mux-state)
 
 ## TYP-041 - The Git status cache key is a bare path, and read errors are prose
 
@@ -1075,19 +1070,14 @@ cap, limit }` built once per kind that also words the refusal. (contracts)
 
 ## TYP-064 - Wire grid cells: the wide-glyph tail is a sentinel and `FrameData` has no invariant
 
-A wide tail is "`symbol` empty and `grid_width == One`" (`pane_row.rs::is_tail`)
-and an empty `Two` is representable and treated as broken; `CellData::skip:
-bool` is a ratatui diff hint on the wire. `FrameData` has public fields and no
-invariant: `cells.len() == width * height`, hyperlink indices inside
-`hyperlinks`, and the grid budget are checked in `surface_reuse::Decoder::decode`
-(several times per branch, the hyperlink check alone five times with `index as
-usize` casts), `apply_patch_to_surface`, `surface_delta::apply_rows`,
-`metadata_fits` and `message`, and on the client by `compose_pane_surface`,
-`overwrite` and `patch_rect`; `FrameData::intern_hyperlink`'s doc explains a
-cache cannot live there because the vector is public. Proposal:
-`GridCellWidth::{Grapheme, One, WideLead, WideTail}` and a validated grid type
-with private fields and `try_from` deserialization, so a decoded frame is valid
-by construction. Reported by contracts and client-shell.
+A `FrameGrid` view with private fields now owns the shape, budget and
+hyperlink validation, reused by protocol and composition code. Still open:
+`FrameData` itself keeps public mutable fields (so a frame is valid only once
+checked, not by construction), a wide tail is still "`symbol` empty and
+`grid_width == One`" (`pane_row.rs::is_tail`), and `CellData::skip: bool` is a
+ratatui diff hint on the wire. Proposal: `GridCellWidth::{Grapheme, One,
+WideLead, WideTail}` and `try_from` deserialization into the validated grid.
+Reported by contracts and client-shell.
 
 ## TYP-065 - Clipboard payload is base64 text inside the binary codec
 
@@ -1263,21 +1253,6 @@ methods and the bridge entry point, but the command builders in
 `crates/shepr-remote/src/remote/launch.rs` still produce `&str`/`String` that
 `sh_output_within` adapts internally. Have the builders return the typed
 values. (edges)
-
-## TYP-077 - Smaller CLI and remote axes
-
-- `detect::ExplainArgs { pane: Option<String>, file: Option<String>, agent:
-  Option<String>, .. }` encodes a sum type that clap enforces and the handler
-  re-checks with `CliError::Usage` arms: `ExplainSource::{Pane(PublicPaneId),
-  File { path, agent }}`.
-- `cli::Invocation { launch, help: bool, version: bool }` admits a CLI launch
-  plus help; `Help` and `Version` belong in `Launch`.
-- `SshFailureDiagnostic: Deref<Target = str>`, used by `set_machine_diagnostic`
-  through `chars()`; `CliContext: Deref<Target = AppPaths>`.
-- `RemoteText`: remote output is sanitized at the SSH boundary but the type
-  cannot say so (filed among the consolidations).
-
-(edges)
 
 ## Client
 

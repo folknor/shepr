@@ -388,7 +388,7 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     // if it had been the user's; the leaf is dropped and pruning collapses
     // its split. That happens before any pane starts, so every shell starts
     // at its size in the layout the workspace ends up with.
-    let layout_pane_ids = collect_pane_ids(&node);
+    let layout_pane_ids = node.pane_ids();
     let layout_pane_count = layout_pane_ids.len();
     let mut surviving = HashSet::new();
     for id in layout_pane_ids {
@@ -404,14 +404,14 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
         }
     }
     restore_damage |= surviving.len() != layout_pane_count;
-    let Some(node) = prune_restored_node(node, &surviving) else {
+    let Some(node) = node.prune(&surviving) else {
         warn!(
             workspace = ?snap.id,
             "no panes could be restored for workspace, dropping it"
         );
         return None;
     };
-    let pane_ids = collect_pane_ids(&node);
+    let pane_ids = node.pane_ids();
     let saved_focus_survived = snap
         .focused
         .and_then(|old_id| id_map.get(&old_id))
@@ -439,7 +439,7 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     // Pruning can leave a single pane, which is never zoomed, or drop the
     // zoomed (focused) pane, and zooming whichever pane focus fell back to
     // would show one the user never zoomed.
-    let zoomed = snap.zoomed && pane_ids.len() > 1 && saved_focus_survived;
+    let zoomed = Workspace::resolved_zoomed(snap.zoomed, pane_ids.len(), saved_focus_survived);
 
     // Assign only surviving panes; stale entries cannot exhaust numbering or
     // collide with a pane that will actually be restored.
@@ -749,31 +749,6 @@ fn restored_terminal_agent_session(
     session.and_then(persisted_agent_session_from_snapshot)
 }
 
-pub(super) fn prune_restored_node(node: Node, surviving: &HashSet<PaneId>) -> Option<Node> {
-    match node {
-        Node::Pane(id) => surviving.contains(&id).then_some(Node::Pane(id)),
-        Node::Split {
-            direction,
-            ratio,
-            first,
-            second,
-        } => {
-            let first = prune_restored_node(*first, surviving);
-            let second = prune_restored_node(*second, surviving);
-            match (first, second) {
-                (Some(first), Some(second)) => Some(Node::Split {
-                    direction,
-                    ratio,
-                    first: Box::new(first),
-                    second: Box::new(second),
-                }),
-                (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
-                (None, None) => None,
-            }
-        }
-    }
-}
-
 pub(super) fn resolve_restored_pane(
     saved_old_id: Option<u32>,
     id_map: &HashMap<u32, PaneId>,
@@ -830,6 +805,8 @@ fn remap_inner(
             let ratio = SplitRatio::new(*ratio).ok_or(InvalidSavedLayout::InvalidSplitRatio)?;
             let first_node = remap_inner(first, id_map)?;
             let second_node = remap_inner(second, id_map)?;
+            // Keep this translation at the persistence boundary: core owns
+            // live layout directions, while this file owns the saved JSON tag.
             let dir = match direction {
                 DirectionSnapshot::Horizontal => Direction::Horizontal,
                 DirectionSnapshot::Vertical => Direction::Vertical,
@@ -880,22 +857,6 @@ fn collect_snapshot_pane_ids(layout: &LayoutSnapshot, ids: &mut Vec<u32>) {
         LayoutSnapshot::Split { first, second, .. } => {
             collect_snapshot_pane_ids(first, ids);
             collect_snapshot_pane_ids(second, ids);
-        }
-    }
-}
-
-pub(super) fn collect_pane_ids(node: &Node) -> Vec<PaneId> {
-    let mut ids = Vec::new();
-    collect_ids_inner(node, &mut ids);
-    ids
-}
-
-fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
-    match node {
-        Node::Pane(id) => ids.push(*id),
-        Node::Split { first, second, .. } => {
-            collect_ids_inner(first, ids);
-            collect_ids_inner(second, ids);
         }
     }
 }
@@ -970,7 +931,7 @@ mod tests {
         let (restored, id_map) = restore_node_remapped(&snap).expect("valid snapshot ratios");
 
         assert_eq!(id_map.len(), 3);
-        let ids = collect_pane_ids(&restored);
+        let ids = restored.pane_ids();
         assert_eq!(ids.len(), 3);
         let unique: std::collections::HashSet<u32> = ids.iter().map(|id| id.raw()).collect();
         assert_eq!(unique.len(), 3);
@@ -1016,7 +977,7 @@ mod tests {
             second: Box::new(LayoutSnapshot::Pane(4)),
         };
         let (node, id_map) = restore_node_remapped(&snap).expect("valid snapshot ratios");
-        let ids = collect_pane_ids(&node);
+        let ids = node.pane_ids();
         assert_eq!(ids.len(), 2);
         assert_eq!(id_map.len(), 1);
         assert_eq!(id_map.get(&4), ids.first());
@@ -1542,7 +1503,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_restored_node_collapses_missing_branch() {
+    fn node_prune_collapses_missing_branch() {
         let keep = shepr_test_fixtures::fixed_pane_id(11);
         let missing = shepr_test_fixtures::fixed_pane_id(12);
         let node = Node::Split {
@@ -1553,7 +1514,9 @@ mod tests {
         };
         let surviving = std::collections::HashSet::from([keep]);
 
-        let pruned = prune_restored_node(node, &surviving).expect("remaining pane should survive");
+        let pruned = node
+            .prune(&surviving)
+            .expect("remaining pane should survive");
 
         assert!(matches!(pruned, Node::Pane(id) if id == keep));
     }

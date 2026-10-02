@@ -603,12 +603,15 @@ impl PaneTerminal {
     pub(crate) fn negotiated_keyboard_protocol(
         &self,
     ) -> Option<shepr_termio::input::KeyboardProtocol> {
-        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
-            return None;
-        };
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         Some(shepr_termio::input::KeyboardProtocol::from_flags(
             core.terminal.kitty_keyboard_flags(),
         ))
+    }
+
+    pub(crate) fn input_modes(&self) -> Option<shepr_vt::InputModes> {
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        Some(core.terminal.input_modes())
     }
 
     pub(crate) fn bracketed_paste_enabled(&self) -> bool {
@@ -650,14 +653,8 @@ impl PaneTerminal {
     }
 
     pub(crate) fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
-        let mouse_reporting = core.terminal.mouse_tracking_enabled();
-        let application_cursor = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys);
-        let bracketed_paste = core.terminal.mode_get(shepr_vt::DecMode::BracketedPaste);
-        Some(!alternate_screen && !mouse_reporting && (!application_cursor || bracketed_paste))
+        self.input_modes()
+            .map(shepr_vt::InputModes::plain_page_keys_use_host_scrollback)
     }
 
     pub(crate) fn alternate_screen_active(&self) -> bool {
@@ -666,21 +663,19 @@ impl PaneTerminal {
     }
 
     pub(crate) fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
-        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
-            return None;
-        };
-        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
-        let mouse_alternate_scroll = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::MouseAlternateScroll);
-        let mouse_reporting = core.terminal.mouse_tracking_enabled();
-        Some(if mouse_reporting {
+        self.input_modes().map(Self::wheel_routing_for_modes)
+    }
+
+    pub(crate) fn wheel_routing_for_modes(
+        modes: shepr_vt::InputModes,
+    ) -> crate::pane::WheelRouting {
+        if modes.mouse_tracking_enabled() {
             crate::pane::WheelRouting::MouseReport
-        } else if alternate_screen && mouse_alternate_scroll {
+        } else if modes.alternate_screen_active() && modes.mouse_alternate_scroll_enabled() {
             crate::pane::WheelRouting::AlternateScroll
         } else {
             crate::pane::WheelRouting::HostScroll
-        })
+        }
     }
 
     pub(crate) fn cursor_state(&self) -> Option<TerminalCursorState> {
@@ -711,12 +706,33 @@ impl PaneTerminal {
         key: shepr_termio::input::TerminalKey,
         protocol: shepr_termio::input::KeyboardProtocol,
     ) -> Vec<u8> {
+        self.encode_terminal_key_with_input_modes(key, protocol, None)
+    }
+
+    pub(crate) fn encode_terminal_key_with_modes(
+        &self,
+        key: shepr_termio::input::TerminalKey,
+        modes: shepr_vt::InputModes,
+    ) -> Vec<u8> {
+        let protocol =
+            shepr_termio::input::KeyboardProtocol::from_flags(modes.kitty_keyboard_flags());
+        self.encode_terminal_key_with_input_modes(key, protocol, Some(modes))
+    }
+
+    fn encode_terminal_key_with_input_modes(
+        &self,
+        key: shepr_termio::input::TerminalKey,
+        protocol: shepr_termio::input::KeyboardProtocol,
+        input_modes: Option<shepr_vt::InputModes>,
+    ) -> Vec<u8> {
         let repeat_count = key.repeat_count;
         let first = key.with_repeat_count(1);
-        let mut bytes = self.encode_terminal_key_once(first.clone(), protocol);
+        let mut bytes =
+            self.encode_terminal_key_once_with_modes(first.clone(), protocol, input_modes);
         if repeat_count > 1 && first.kind != crossterm::event::KeyEventKind::Release {
             let repeated = first.with_kind(crossterm::event::KeyEventKind::Repeat);
-            let repeated_bytes = self.encode_terminal_key_once(repeated, protocol);
+            let repeated_bytes =
+                self.encode_terminal_key_once_with_modes(repeated, protocol, input_modes);
             for _ in 1..repeat_count {
                 bytes.extend_from_slice(&repeated_bytes);
             }
@@ -724,32 +740,43 @@ impl PaneTerminal {
         bytes
     }
 
-    pub(super) fn encode_terminal_key_once(
+    fn encode_terminal_key_once_with_modes(
         &self,
         key: shepr_termio::input::TerminalKey,
         protocol: shepr_termio::input::KeyboardProtocol,
+        input_modes: Option<shepr_vt::InputModes>,
     ) -> Vec<u8> {
         // Character keys follow the caller's protocol; every other key follows
         // the modes the child negotiated with this pane.
         if matches!(key.code, crossterm::event::KeyCode::Char(_)) {
             return shepr_termio::input::encode_terminal_key(key, protocol);
         }
-        let Some(modes) = shepr_vt::lock_terminal_core(&self.core).ok().map(|core| {
-            shepr_termio::input::KeyEncodeModes {
-                kitty_flags: core.terminal.kitty_keyboard_flags(),
-                modify_other_keys: core.terminal.modify_other_keys_level(),
-                application_cursor: core
-                    .terminal
-                    .mode_get(shepr_vt::DecMode::ApplicationCursorKeys),
-            }
-        }) else {
+        let modes = input_modes
+            .map(|modes| shepr_termio::input::KeyEncodeModes {
+                kitty_flags: modes.kitty_keyboard_flags(),
+                modify_other_keys: modes.modify_other_keys_level(),
+                application_cursor: modes.application_cursor_keys_enabled(),
+            })
+            .or_else(|| {
+                shepr_vt::lock_terminal_core(&self.core).ok().map(|core| {
+                    shepr_termio::input::KeyEncodeModes {
+                        kitty_flags: core.terminal.kitty_keyboard_flags(),
+                        modify_other_keys: core.terminal.modify_other_keys_level(),
+                        application_cursor: core
+                            .terminal
+                            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys),
+                    }
+                })
+            });
+        let Some(modes) = modes else {
             return shepr_termio::input::encode_terminal_key(key, protocol);
         };
         shepr_termio::input::encode_terminal_key_with_modes(key, modes)
     }
 
-    pub(crate) fn encode_mouse_button(
+    pub(crate) fn encode_mouse_button_with_modes(
         &self,
+        modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
@@ -761,11 +788,12 @@ impl PaneTerminal {
         ) {
             return None;
         }
-        self.encode_mouse_event(kind, position, modifiers)
+        self.encode_mouse_event_with_modes(modes, kind, position, modifiers)
     }
 
-    pub(crate) fn encode_mouse_motion(
+    pub(crate) fn encode_mouse_motion_with_modes(
         &self,
+        modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
@@ -773,11 +801,12 @@ impl PaneTerminal {
         if kind != crossterm::event::MouseEventKind::Moved {
             return None;
         }
-        self.encode_mouse_event(kind, position, modifiers)
+        self.encode_mouse_event_with_modes(modes, kind, position, modifiers)
     }
 
-    pub(crate) fn encode_mouse_wheel(
+    pub(crate) fn encode_mouse_wheel_with_modes(
         &self,
+        modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
@@ -792,37 +821,24 @@ impl PaneTerminal {
         ) {
             return None;
         }
-        self.encode_mouse_event(kind, position, modifiers)
+        self.encode_mouse_event_with_modes(modes, kind, position, modifiers)
     }
 
-    fn encode_mouse_event(
+    fn encode_mouse_event_with_modes(
         &self,
+        modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let terminal = &core.terminal;
-        let mode_enabled = |mode: shepr_vt::DecMode| terminal.mode_get(mode);
-        let mode = if mode_enabled(shepr_vt::DecMode::MouseAnyMotion) {
-            shepr_termio::input::MouseProtocolMode::AnyMotion
-        } else if mode_enabled(shepr_vt::DecMode::MouseButtonMotion) {
-            shepr_termio::input::MouseProtocolMode::ButtonMotion
-        } else if mode_enabled(shepr_vt::DecMode::MousePressRelease) {
-            shepr_termio::input::MouseProtocolMode::PressRelease
-        } else if mode_enabled(shepr_vt::DecMode::X10Mouse) {
-            shepr_termio::input::MouseProtocolMode::Press
-        } else {
-            return None;
+        let protocol = modes.mouse_protocol()?;
+        let cell_encoding = match protocol.encoding {
+            shepr_vt::MouseEncoding::Default => shepr_termio::input::MouseProtocolEncoding::Default,
+            shepr_vt::MouseEncoding::Utf8 => shepr_termio::input::MouseProtocolEncoding::Utf8,
+            shepr_vt::MouseEncoding::Sgr => shepr_termio::input::MouseProtocolEncoding::Sgr,
         };
-        let cell_encoding = if mode_enabled(shepr_vt::DecMode::MouseSgr) {
-            shepr_termio::input::MouseProtocolEncoding::Sgr
-        } else if mode_enabled(shepr_vt::DecMode::MouseUtf8) {
-            shepr_termio::input::MouseProtocolEncoding::Utf8
-        } else {
-            shepr_termio::input::MouseProtocolEncoding::Default
-        };
-        let sgr_pixels = mode_enabled(shepr_vt::DecMode::MouseSgrPixels);
         // Reports are 1-based. Pixel positions already arrive 1-based; cell
         // positions are shifted here. Under SGR-pixels (mode 1016) a cell
         // position is mapped to the top-left pixel of that cell using the same
@@ -839,7 +855,9 @@ impl PaneTerminal {
                 .then(|| ((width_px / cols).max(1), (height_px / rows).max(1)))
         };
         let (encoding, x, y) = match position {
-            shepr_termio::input::mouse::Position::Cell { column, row } if sgr_pixels => {
+            shepr_termio::input::mouse::Position::Cell { column, row }
+                if protocol.pixels_requested =>
+            {
                 match cell_pitch() {
                     Some((cell_width, cell_height)) => (
                         shepr_termio::input::MouseProtocolEncoding::SgrPixels,
@@ -858,7 +876,7 @@ impl PaneTerminal {
             shepr_termio::input::mouse::Position::Cell { column, row } => {
                 (cell_encoding, u32::from(column) + 1, u32::from(row) + 1)
             }
-            shepr_termio::input::mouse::Position::Pixels { x, y } if sgr_pixels => {
+            shepr_termio::input::mouse::Position::Pixels { x, y } if protocol.pixels_requested => {
                 (shepr_termio::input::MouseProtocolEncoding::SgrPixels, x, y)
             }
             shepr_termio::input::mouse::Position::Pixels { x, y } => {
@@ -872,7 +890,7 @@ impl PaneTerminal {
                 )
             }
         };
-        shepr_termio::input::encode_mouse_event(kind, x, y, modifiers, mode, encoding)
+        shepr_termio::input::encode_mouse_event(kind, x, y, modifiers, protocol.mode, encoding)
     }
 
     pub(crate) fn detection_text(&self) -> String {
@@ -1095,6 +1113,33 @@ fn intern_render_hyperlink(
 
 #[cfg(test)]
 impl PaneTerminal {
+    /// Encodes one key event without repeat expansion, reading the pane's own modes.
+    pub(super) fn encode_terminal_key_once(
+        &self,
+        key: shepr_termio::input::TerminalKey,
+        protocol: shepr_termio::input::KeyboardProtocol,
+    ) -> Vec<u8> {
+        self.encode_terminal_key_once_with_modes(key, protocol, None)
+    }
+
+    pub(crate) fn encode_mouse_button(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        position: shepr_termio::input::mouse::Position,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        self.encode_mouse_button_with_modes(self.input_modes()?, kind, position, modifiers)
+    }
+
+    pub(crate) fn encode_mouse_motion(
+        &self,
+        kind: crossterm::event::MouseEventKind,
+        position: shepr_termio::input::mouse::Position,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Option<Vec<u8>> {
+        self.encode_mouse_motion_with_modes(self.input_modes()?, kind, position, modifiers)
+    }
+
     pub(crate) fn collect_dirty_patch(
         &self,
         area_width: u16,
@@ -1180,58 +1225,6 @@ impl PaneTerminal {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         Some(ScrollPosition {
             metrics: terminal_scroll_metrics(&core.terminal),
-        })
-    }
-
-    // This aggregate snapshot performs multiple terminal queries. Pane-scaled
-    // callers should add a narrow accessor instead.
-    pub(crate) fn input_state(&self) -> Option<InputState> {
-        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
-            return None;
-        };
-        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
-        let application_cursor = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::ApplicationCursorKeys);
-        let bracketed_paste = core.terminal.mode_get(shepr_vt::DecMode::BracketedPaste);
-        let focus_reporting = core.terminal.mode_get(shepr_vt::DecMode::FocusEvents);
-        let mouse_sgr = core.terminal.mode_get(shepr_vt::DecMode::MouseSgr);
-        let mouse_utf8 = core.terminal.mode_get(shepr_vt::DecMode::MouseUtf8);
-        let mouse_sgr_pixels = core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels);
-        let mouse_alternate_scroll = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::MouseAlternateScroll);
-        let mouse_protocol_mode = if core.terminal.mode_get(shepr_vt::DecMode::MouseAnyMotion) {
-            shepr_termio::input::MouseProtocolMode::AnyMotion
-        } else if core.terminal.mode_get(shepr_vt::DecMode::MouseButtonMotion) {
-            shepr_termio::input::MouseProtocolMode::ButtonMotion
-        } else if core.terminal.mode_get(shepr_vt::DecMode::MousePressRelease) {
-            shepr_termio::input::MouseProtocolMode::PressRelease
-        } else if core.terminal.mode_get(shepr_vt::DecMode::X10Mouse) {
-            shepr_termio::input::MouseProtocolMode::Press
-        } else {
-            shepr_termio::input::MouseProtocolMode::None
-        };
-        let mouse_protocol_encoding = if mouse_sgr_pixels {
-            shepr_termio::input::MouseProtocolEncoding::SgrPixels
-        } else if mouse_sgr {
-            shepr_termio::input::MouseProtocolEncoding::Sgr
-        } else if mouse_utf8 {
-            shepr_termio::input::MouseProtocolEncoding::Utf8
-        } else {
-            shepr_termio::input::MouseProtocolEncoding::Default
-        };
-        Some(InputState {
-            alternate_screen,
-            application_cursor,
-            bracketed_paste,
-            focus_reporting,
-            mouse_protocol_mode,
-            mouse_protocol_encoding,
-            mouse_alternate_scroll,
-            modify_other_keys: core.terminal.modify_other_keys_level()
-                == shepr_vt::ModifyOtherKeysLevel::All,
-            color_scheme_reporting: core.terminal.mode_get(shepr_vt::DecMode::ColorSchemeReport),
         })
     }
 }

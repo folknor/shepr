@@ -1,7 +1,15 @@
 use super::*;
 use crate::app::EndpointContext;
 use crate::server::ClientId;
-use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
+use shepr_protocol::command::{
+    EndpointAppCommand, EndpointCommand, EndpointError, EndpointLoopCommand, EndpointReply,
+    WorkspaceCheckoutRootParams,
+};
+
+enum AppOrCheckoutRoot {
+    App(EndpointAppCommand),
+    CheckoutRoot(WorkspaceCheckoutRootParams),
+}
 
 impl HeadlessServer {
     /// Runs one endpoint command from a client shell. Each answer enters that
@@ -27,28 +35,34 @@ impl HeadlessServer {
             self.queue_endpoint_reply(client_id, &message);
             return;
         }
-        if let EndpointCommand::ClientShellSurfaceSet(params) = &command {
-            let Some((changed, projection_revision)) =
-                self.set_client_shell_surface_active(client_id, params.active)
-            else {
-                return;
-            };
-            self.queue_endpoint_reply(
-                client_id,
-                &crate::server::client_commands::response_message(
-                    boot_id,
-                    request_id,
-                    Ok(EndpointReply::ClientShellSurfaceSet {
-                        active: params.active,
-                        projection_revision,
-                    }),
-                ),
-            );
-            if changed && params.active {
-                self.mark_view_changed();
+        let command = match command.into_app_command() {
+            Ok(command) => AppOrCheckoutRoot::App(command),
+            Err(EndpointLoopCommand::WorkspaceCheckoutRoot(params)) => {
+                AppOrCheckoutRoot::CheckoutRoot(params)
             }
-            return;
-        }
+            Err(EndpointLoopCommand::ClientShellSurfaceSet(params)) => {
+                let Some((changed, projection_revision)) =
+                    self.set_client_shell_surface_active(client_id, params.active)
+                else {
+                    return;
+                };
+                self.queue_endpoint_reply(
+                    client_id,
+                    &crate::server::client_commands::response_message(
+                        boot_id,
+                        request_id,
+                        Ok(EndpointReply::ClientShellSurfaceSet {
+                            active: params.active,
+                            projection_revision,
+                        }),
+                    ),
+                );
+                if changed && params.active {
+                    self.mark_view_changed();
+                }
+                return;
+            }
+        };
         if !surface_active {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -62,33 +76,37 @@ impl HeadlessServer {
         if self.promote_client_to_foreground(client_id) {
             self.mark_view_changed();
         }
-        if let EndpointCommand::WorkspaceCheckoutRoot(params) = &command {
-            if self.drain_all_internal_events_with_forwarding() {
-                self.mark_view_changed();
+        let result = match command {
+            AppOrCheckoutRoot::App(command) => {
+                self.handle_client_shell_app_command(client_id, command)
             }
-            match self.app.prepare_workspace_checkout_root(params) {
-                Ok((cwd, home)) => {
-                    worker::EndpointWorkers::dispatch_checkout_root(
-                        self,
-                        client_id,
-                        boot_id.clone(),
-                        request_id.clone(),
-                        cwd,
-                        home,
-                    );
+            AppOrCheckoutRoot::CheckoutRoot(params) => {
+                if self.drain_all_internal_events_with_forwarding() {
+                    self.mark_view_changed();
                 }
-                Err(error) => self.queue_endpoint_reply(
-                    client_id,
-                    &crate::server::client_commands::response_message(
-                        boot_id,
-                        request_id,
-                        Err(error),
+                match self.app.prepare_workspace_checkout_root(&params) {
+                    Ok((cwd, home)) => {
+                        worker::EndpointWorkers::dispatch_checkout_root(
+                            self,
+                            client_id,
+                            boot_id.clone(),
+                            request_id.clone(),
+                            cwd,
+                            home,
+                        );
+                    }
+                    Err(error) => self.queue_endpoint_reply(
+                        client_id,
+                        &crate::server::client_commands::response_message(
+                            boot_id,
+                            request_id,
+                            Err(error),
+                        ),
                     ),
-                ),
+                }
+                return;
             }
-            return;
-        }
-        let result = self.handle_client_shell_command(client_id, command);
+        };
         self.queue_endpoint_reply(
             client_id,
             &crate::server::client_commands::response_message(boot_id, request_id, result),
@@ -109,10 +127,10 @@ impl HeadlessServer {
     /// Pane focus is shared per workspace; only which workspace a client views
     /// is its own. Shared changes advance the view epoch; navigation is
     /// derived from each client's location generation. Returns the command's answer.
-    pub(super) fn handle_client_shell_command(
+    fn handle_client_shell_app_command(
         &mut self,
         client_id: ClientId,
-        command: EndpointCommand,
+        command: EndpointAppCommand,
     ) -> Result<EndpointReply, EndpointError> {
         let traits = command.traits();
 
@@ -127,14 +145,16 @@ impl HeadlessServer {
             requester_geometry: self.client_geometry(client_id),
         };
         let scrolled_pane = match &command {
-            EndpointCommand::PaneScroll(params) => self
+            EndpointAppCommand::PaneScroll(params) => self
                 .app
                 .parse_pane_id(&params.pane_id)
                 .map(|(_, pane)| pane),
             _ => None,
         };
         let projection_before = self.app.state.shell_projection_revision;
-        let mut outcome = self.app.handle_endpoint_command_with_render(command, &ctx);
+        let mut outcome = self
+            .app
+            .handle_endpoint_app_command_with_render(command, &ctx);
         if let Some(pane) = scrolled_pane {
             if outcome.effects.pane_surface_changed {
                 self.invalidate_pane_viewers(pane);
@@ -211,6 +231,23 @@ impl HeadlessServer {
         self.release_endpoint_replies(ReleaseMode::Shutdown);
         if let Some(client) = self.clients.get(&client_id) {
             self.shutdown_flushes.push(client.outbox.flush_barrier());
+        }
+    }
+
+    /// Test adapter for the wire command: runs an app command through
+    /// `handle_client_shell_app_command` and refuses a loop-owned one.
+    #[cfg(test)]
+    pub(super) fn handle_client_shell_command(
+        &mut self,
+        client_id: ClientId,
+        command: EndpointCommand,
+    ) -> Result<EndpointReply, EndpointError> {
+        match command.into_app_command() {
+            Ok(command) => self.handle_client_shell_app_command(client_id, command),
+            Err(command) => Err(EndpointError::Rejected(format!(
+                "{} is handled by the server loop",
+                command.name()
+            ))),
         }
     }
 }

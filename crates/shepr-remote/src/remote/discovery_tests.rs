@@ -60,7 +60,7 @@ impl FakeHost {
             return Err(io::Error::other(
                 crate::SshFailureDiagnostic::from_ssh_output(
                     Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-                    "Host key verification failed".into(),
+                    "Host key verification failed",
                 ),
             ));
         }
@@ -172,7 +172,7 @@ fn a_first_round_trip_that_times_out_leaves_no_progress() {
 }
 
 #[test]
-fn progress_survives_link_and_authentication_wait_timeouts_but_not_ssh_failures() {
+fn progress_survives_retryable_failures_and_restarts_for_untrusted_targets() {
     let host = || {
         FakeHost::new(
             Some("/usr/bin/shepr"),
@@ -246,8 +246,9 @@ fn progress_survives_link_and_authentication_wait_timeouts_but_not_ssh_failures(
         ]
     );
 
-    // An SSH failure is different: a changed host key means prior candidate
-    // data may describe another machine, so the next attempt starts over.
+    // SSH did not trust the target's host key, so completed candidate data may
+    // belong to another machine. Authentication refusals retain progress once
+    // the target identity is trusted; this one starts discovery over.
     let mut host_key_changed = host();
     host_key_changed.fail_host_key_at = vec![3];
     let mut progress = DiscoveryProgress::default();

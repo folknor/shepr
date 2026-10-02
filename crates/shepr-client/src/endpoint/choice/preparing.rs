@@ -34,6 +34,10 @@ pub(super) struct ViewEvidence {
     snapshot_revision: Option<u64>,
     focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
     focused_pane_id: Option<shepr_protocol::PublicPaneId>,
+    // Preparation receives decoded events, not the connection decoder. Its evidence
+    // must also survive presentation filtering and reject surfaces for an old size.
+    // Reading Decoder::current_surface here requires the connection owner to pass
+    // that baseline through this event boundary; patch admission is shared until then.
     surface: Option<PaneSurfaceFrame>,
 }
 

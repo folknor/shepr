@@ -65,23 +65,23 @@ impl ClientShellState {
         id: &ClientEndpointId,
         failure: &shepr_remote::SshFailureDiagnostic,
     ) {
-        self.insert_machine_diagnostic(id, failure.chars(), failure.requires_authentication());
+        self.insert_machine_diagnostic(id, failure.text(), failure.requires_authentication());
     }
 
     fn insert_machine_diagnostic(
         &mut self,
         id: &ClientEndpointId,
-        message: impl Iterator<Item = char>,
+        message: &shepr_remote::RemoteText,
         requires_authentication: bool,
     ) {
         if !id.is_local() {
             self.machine_diagnostics.errors.insert(
                 id.clone(),
                 MachineDiagnostic {
-                    // Preserve line breaks so the notice card can display structured SSH
-                    // diagnostics as separate wrapped lines.
+                    // The diagnostic owns terminal sanitization. Preserve line breaks
+                    // while bounding the notice body.
                     message: message
-                        .filter(|c| !c.is_control() || *c == '\n')
+                        .chars()
                         .take(crate::limits::MAX_MACHINE_DIAGNOSTIC_CHARS)
                         .collect(),
                     requires_authentication,

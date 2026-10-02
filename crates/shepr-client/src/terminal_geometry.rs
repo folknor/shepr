@@ -1,6 +1,6 @@
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use tracing::{debug, warn};
 
 use super::ClientLoopEvent;
@@ -25,15 +25,35 @@ pub(super) fn ioctl_cell_size(
     ))
 }
 
-fn ioctl_terminal_geometry() -> Option<(u16, u16, u32, u32)> {
-    let size = crossterm::terminal::window_size().ok()?;
-    let (cell_width_px, cell_height_px) = ioctl_cell_size(
-        size.columns,
-        size.rows,
-        u32::from(size.width),
-        u32::from(size.height),
-    )?;
-    Some((size.columns, size.rows, cell_width_px, cell_height_px))
+/// One host-terminal observation. The extent is kept separately from the rounded cell pitch:
+/// the terminal may have pixel padding that a cell size alone cannot reconstruct.
+#[derive(Clone, Copy)]
+pub(super) struct HostGeometrySnapshot {
+    pub(super) geometry: TerminalGeometry,
+    pub(super) pixel_extent: Option<shepr_termio::input::mouse::HostPixelExtent>,
+}
+
+#[derive(Clone)]
+pub(super) struct SharedHostGeometry(Arc<RwLock<HostGeometrySnapshot>>);
+
+impl SharedHostGeometry {
+    pub(super) fn new(initial: HostGeometrySnapshot) -> Self {
+        Self(Arc::new(RwLock::new(initial)))
+    }
+
+    pub(super) fn publish(&self, snapshot: HostGeometrySnapshot) {
+        match self.0.write() {
+            Ok(mut current) => *current = snapshot,
+            Err(_) => warn!("host geometry snapshot lock is poisoned"),
+        }
+    }
+
+    pub(super) fn pixel_extent(&self) -> Option<shepr_termio::input::mouse::HostPixelExtent> {
+        self.0
+            .read()
+            .ok()
+            .and_then(|snapshot| snapshot.pixel_extent)
+    }
 }
 
 /// A coherent cell pitch snapshot shared by the stdin and resize threads.
@@ -66,7 +86,7 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
         .map(|cell| (cell.width.get(), cell.height.get()))
 }
 
-type TerminalGeometry = shepr_core::geometry::HostGeometry;
+pub(super) type TerminalGeometry = shepr_core::geometry::HostGeometry;
 
 /// Host grid size as reported by the client. The client-owned shell must keep
 /// its full grid within one surface frame.
@@ -99,52 +119,49 @@ pub(super) fn bounded_cell_geometry(
     (size.width(), size.height(), size.exact)
 }
 
-pub(super) fn current_terminal_geometry_with(
+fn ioctl_host_geometry() -> Option<HostGeometrySnapshot> {
+    let size = crossterm::terminal::window_size().ok()?;
+    let width_px = u32::from(size.width);
+    let height_px = u32::from(size.height);
+    let (cell_width_px, cell_height_px) =
+        ioctl_cell_size(size.columns, size.rows, width_px, height_px)?;
+    let geometry =
+        TerminalGeometry::new(size.columns, size.rows, cell_width_px, cell_height_px, true);
+    let pixel_extent = shepr_termio::input::mouse::HostPixelExtent::new(
+        size.columns,
+        size.rows,
+        width_px,
+        height_px,
+    );
+    Some(HostGeometrySnapshot {
+        geometry,
+        pixel_extent,
+    })
+}
+
+fn current_host_geometry(
     reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
-    exact_geometry: Option<(u16, u16, u32, u32)>,
-    terminal_grid_size: impl FnOnce() -> io::Result<(u16, u16)>,
-) -> io::Result<TerminalGeometry> {
-    if let Some((cols, rows, cell_width_px, cell_height_px)) = exact_geometry {
-        return Ok(TerminalGeometry::new(
-            cols,
-            rows,
-            cell_width_px,
-            cell_height_px,
-            true,
-        ));
+) -> io::Result<HostGeometrySnapshot> {
+    if let Some(snapshot) = ioctl_host_geometry() {
+        return Ok(snapshot);
     }
-    let (cols, rows) = terminal_grid_size()?;
+    let (cols, rows) = shepr_platform::terminal_grid_size()?;
     let (cell_width_px, cell_height_px) = reported_cell_size
         .load()
         .or(last_cell_size
             .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
-    Ok(TerminalGeometry::new(
-        cols,
-        rows,
-        cell_width_px,
-        cell_height_px,
-        false,
-    ))
-}
-
-fn current_terminal_geometry(
-    reported_cell_size: &AtomicCellSize,
-    last_cell_size: Option<(u32, u32)>,
-) -> io::Result<TerminalGeometry> {
-    current_terminal_geometry_with(
-        reported_cell_size,
-        last_cell_size,
-        ioctl_terminal_geometry(),
-        shepr_platform::terminal_grid_size,
-    )
+    Ok(HostGeometrySnapshot {
+        geometry: TerminalGeometry::new(cols, rows, cell_width_px, cell_height_px, false),
+        pixel_extent: None,
+    })
 }
 
 /// Reads terminal geometry before the handshake. Pixel input is eligible only
 /// when one ioctl supplied a coherent exact geometry snapshot.
-pub(super) fn initial_terminal_geometry() -> io::Result<TerminalGeometry> {
-    current_terminal_geometry(&AtomicCellSize::new(), None)
+pub(super) fn initial_terminal_geometry() -> io::Result<HostGeometrySnapshot> {
+    current_host_geometry(&AtomicCellSize::new(), None)
 }
 
 pub(super) fn resize_report_required(
@@ -162,23 +179,24 @@ pub(super) fn resize_report_required(
 /// swallow the first change.
 pub(super) fn resize_poll_loop(
     resize_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    initial: TerminalGeometry,
+    initial: HostGeometrySnapshot,
     reported_cell_size: &AtomicCellSize,
+    host_geometry: &SharedHostGeometry,
     should_quit: &Arc<AtomicBool>,
 ) {
     shepr_platform::watch_terminal_resize_signal();
-    let mut last_size = initial;
+    let mut last_size = initial.geometry;
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(TERMINAL_RESIZE_POLL_INTERVAL);
         // Finish the probe after a quit arrives during sleep so terminal loss can still enter
         // the event queue; a successful unchanged probe is silent and quit already wakes the
         // client loop.
         let signalled = shepr_platform::take_terminal_resize_signal();
-        let new_size = match current_terminal_geometry(
+        let snapshot = match current_host_geometry(
             reported_cell_size,
             Some((last_size.cell_width(), last_size.cell_height())),
         ) {
-            Ok(size) => size,
+            Ok(snapshot) => snapshot,
             Err(err) => {
                 if let Err(send_error) =
                     resize_tx.blocking_send(ClientLoopEvent::TerminalUnavailable(err))
@@ -192,6 +210,8 @@ pub(super) fn resize_poll_loop(
                 break;
             }
         };
+        host_geometry.publish(snapshot);
+        let new_size = snapshot.geometry;
         if resize_report_required(signalled, new_size, last_size) {
             last_size = new_size;
             if resize_tx
@@ -271,10 +291,6 @@ pub(super) fn query_host_cell_size(writer: &mut impl io::Write) -> bool {
     }
 }
 
-pub(super) fn host_cell_size_query_required() -> bool {
-    ioctl_terminal_geometry().is_none()
-}
-
 pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Result<()> {
     writer.write_all(shepr_termio::host_term::modes::HOST_CELL_SIZE_QUERY_SEQUENCE)?;
     writer.flush()
@@ -303,6 +319,37 @@ pub(super) fn reported_cell_size_from_events<'a>(
             _ => None,
         })
         .last()
+}
+
+#[cfg(test)]
+pub(super) fn current_terminal_geometry_with(
+    reported_cell_size: &AtomicCellSize,
+    last_cell_size: Option<(u32, u32)>,
+    exact_geometry: Option<(u16, u16, u32, u32)>,
+    terminal_grid_size: impl FnOnce() -> io::Result<(u16, u16)>,
+) -> io::Result<TerminalGeometry> {
+    if let Some((cols, rows, cell_width_px, cell_height_px)) = exact_geometry {
+        return Ok(TerminalGeometry::new(
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+            true,
+        ));
+    }
+    let (cols, rows) = terminal_grid_size()?;
+    let (cell_width_px, cell_height_px) = reported_cell_size
+        .load()
+        .or(last_cell_size
+            .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
+        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
+    Ok(TerminalGeometry::new(
+        cols,
+        rows,
+        cell_width_px,
+        cell_height_px,
+        false,
+    ))
 }
 
 #[cfg(test)]

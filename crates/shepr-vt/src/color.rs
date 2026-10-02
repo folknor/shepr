@@ -1,7 +1,4 @@
 use super::*;
-use crate::limits::{
-    LIGHT_LUMINANCE_THRESHOLD, LUMINANCE_BLUE_WEIGHT, LUMINANCE_GREEN_WEIGHT, LUMINANCE_RED_WEIGHT,
-};
 use vte::ansi::Handler;
 
 // limits-exempt: the xterm palette starts with its 16 named ANSI colors.
@@ -31,74 +28,105 @@ impl RgbColor {
         }
     }
 
-    pub fn inferred_appearance(self) -> ColorScheme {
-        let luminance = u32::from(self.r) * LUMINANCE_RED_WEIGHT
-            + u32::from(self.g) * LUMINANCE_GREEN_WEIGHT
-            + u32::from(self.b) * LUMINANCE_BLUE_WEIGHT;
-        if luminance >= LIGHT_LUMINANCE_THRESHOLD {
+    /// Relative luminance in the range 0..=1, with sRGB channels linearized first.
+    pub fn relative_luminance(self) -> f32 {
+        fn channel(value: u8) -> f32 {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        0.2126 * channel(self.r) + 0.7152 * channel(self.g) + 0.0722 * channel(self.b)
+    }
+
+    /// Classifies the color for a child's light/dark color-scheme query.
+    ///
+    /// The boundary is half of the Rec. 601 weighted sum of the gamma-encoded
+    /// channels, the rule children such as Neovim apply to the background
+    /// they read through OSC 11, so a child asking for the scheme and one
+    /// reading the background agree. Consumers that need readable
+    /// foregrounds use [`Self::contrast_with`] instead of treating the scheme
+    /// as a contrast test.
+    pub fn appearance(self) -> ColorScheme {
+        let weighted = u32::from(self.r) * 299 + u32::from(self.g) * 587 + u32::from(self.b) * 114;
+        // The weights sum to 1000, so this is the 8-bit midpoint 128 scaled.
+        if weighted >= 128_000 {
             ColorScheme::Light
         } else {
             ColorScheme::Dark
         }
     }
+
+    /// Returns the WCAG contrast ratio between this color and `other`.
+    pub fn contrast_with(self, other: Self) -> f32 {
+        let self_luminance = self.relative_luminance();
+        let other_luminance = other.relative_luminance();
+        let lighter = self_luminance.max(other_luminance);
+        let darker = self_luminance.min(other_luminance);
+        (lighter + 0.05) / (darker + 0.05)
+    }
 }
 
-/// The built-in indexed palette used until the host theme overrides it.
-pub fn default_palette() -> [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT] {
-    const NAMED: [(u8, u8, u8); NAMED_COLOR_COUNT] = [
-        (0x1d, 0x1f, 0x21),
-        (0xcc, 0x66, 0x66),
-        (0xb5, 0xbd, 0x68),
-        (0xf0, 0xc6, 0x74),
-        (0x81, 0xa2, 0xbe),
-        (0xb2, 0x94, 0xbb),
-        (0x8a, 0xbe, 0xb7),
-        (0xc5, 0xc8, 0xc6),
-        (0x66, 0x66, 0x66),
-        (0xd5, 0x4e, 0x53),
-        (0xb9, 0xca, 0x4a),
-        (0xe7, 0xc5, 0x47),
-        (0x7a, 0xa6, 0xda),
-        (0xc3, 0x97, 0xd8),
-        (0x70, 0xc0, 0xb1),
-        (0xea, 0xea, 0xea),
-    ];
-    let mut palette = [RgbColor::default(); shepr_core::limits::PALETTE_COLOR_COUNT];
-    for (slot, (r, g, b)) in palette.iter_mut().zip(NAMED) {
-        *slot = RgbColor { r, g, b };
+const NAMED: [(u8, u8, u8); NAMED_COLOR_COUNT] = [
+    (0x1d, 0x1f, 0x21),
+    (0xcc, 0x66, 0x66),
+    (0xb5, 0xbd, 0x68),
+    (0xf0, 0xc6, 0x74),
+    (0x81, 0xa2, 0xbe),
+    (0xb2, 0x94, 0xbb),
+    (0x8a, 0xbe, 0xb7),
+    (0xc5, 0xc8, 0xc6),
+    (0x66, 0x66, 0x66),
+    (0xd5, 0x4e, 0x53),
+    (0xb9, 0xca, 0x4a),
+    (0xe7, 0xc5, 0x47),
+    (0x7a, 0xa6, 0xda),
+    (0xc3, 0x97, 0xd8),
+    (0x70, 0xc0, 0xb1),
+    (0xea, 0xea, 0xea),
+];
+
+/// The built-in indexed color at `index`, before any host palette overrides.
+pub fn default_palette_color(index: u8) -> RgbColor {
+    let index = usize::from(index);
+    if index < NAMED_COLOR_COUNT {
+        let (r, g, b) = NAMED[index];
+        return RgbColor { r, g, b };
     }
-    // limits-exempt: xterm's indexed color cube dimensions and formulas define its palette format.
-    let cube = |value: usize| -> u8 {
-        if value == 0 {
-            0
-        } else {
-            // `value` is a 0..=5 cube coordinate, so `value * 40 + 55` maxes at 255.
-            u8::try_from(value * 40 + 55).unwrap_or(u8::MAX)
-        }
-    };
-    // 232 is where the xterm 6-by-6-by-6 color cube ends and its grayscale
-    // entries begin.
-    for (offset, slot) in palette[NAMED_COLOR_COUNT..232].iter_mut().enumerate() {
-        *slot = RgbColor {
+
+    // xterm's 6-by-6-by-6 color cube occupies indexes 16 through 231.
+    if index < 232 {
+        let offset = index - NAMED_COLOR_COUNT;
+        let cube = |value: usize| -> u8 {
+            if value == 0 {
+                0
+            } else {
+                // `value` is a 0..=5 cube coordinate, so this is at most 255.
+                u8::try_from(value * 40 + 55).unwrap_or(u8::MAX)
+            }
+        };
+        return RgbColor {
             r: cube(offset / 36),
             g: cube((offset / 6) % 6),
             b: cube(offset % 6),
         };
     }
-    // The remaining xterm slots after the color cube are the grayscale palette.
-    for (offset, slot) in palette[232..shepr_core::limits::PALETTE_COLOR_COUNT]
-        .iter_mut()
-        .enumerate()
-    {
-        // `offset` is 0..24 here, so `offset * 10 + 8` maxes at 238.
-        let value = u8::try_from(offset * 10 + 8).unwrap_or(u8::MAX);
-        *slot = RgbColor {
-            r: value,
-            g: value,
-            b: value,
-        };
+
+    // The remaining xterm indexes are grayscale values from 8 through 238.
+    let value = u8::try_from((index - 232) * 10 + 8).unwrap_or(u8::MAX);
+    RgbColor {
+        r: value,
+        g: value,
+        b: value,
     }
-    palette
+}
+
+/// The built-in indexed palette used until the host theme overrides it.
+pub fn default_palette() -> [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT] {
+    std::array::from_fn(|index| default_palette_color(u8::try_from(index).unwrap_or(u8::MAX)))
 }
 
 /// Target of an OSC 4/10/11/12 colour query.

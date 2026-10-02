@@ -264,40 +264,14 @@ pub struct PaneInfo {
     pub scroll: Option<PaneScrollInfo>,
 }
 
-/// One endpoint operation a client shell asks of the server it is connected
-/// to; nothing outside this set can be asked through a client shell.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum EndpointCommand {
-    ClientShellSurfaceSet(ClientShellSurfaceSetParams),
-    WorkspaceCreate(WorkspaceCreateParams),
-    WorkspaceFocus(WorkspaceTarget),
-    WorkspaceRename(WorkspaceRenameParams),
-    WorkspaceCheckoutRoot(WorkspaceCheckoutRootParams),
-    WorkspaceMove(WorkspaceMoveParams),
-    WorkspaceClose(WorkspaceCloseParams),
-    PaneSplit(PaneSplitParams),
-    PaneSwap(PaneSwapParams),
-    PaneZoom(PaneZoomParams),
-    LayoutSetSplitRatio(LayoutSetSplitRatioParams),
-    PaneFocusDirection(PaneFocusDirectionParams),
-    PaneResize(PaneResizeParams),
-    PaneScroll(PaneScrollParams),
-    PaneClear(PaneTarget),
-    PaneSelectionRead(PaneSelectionReadParams),
-    PaneCopyMotion(PaneCopyMotionParams),
-    PaneCopySearch(PaneCopySearchParams),
-    PaneFocus(PaneTarget),
-    PaneInputSet(PaneInputSetParams),
-    PaneRename(PaneRenameParams),
-    PaneClose(PaneTarget),
-}
-
 /// Facts about one endpoint command, kept in one exhaustive table so the
-/// client's notices, the server's logs and the server loop's routing agree.
+/// client's notices, the server's logs and server dispatch agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointCommandTraits {
     /// The dotted name logs and client notices use.
     pub name: &'static str,
+    /// The command can move the selected workspace or pane.
+    pub changes_focus: bool,
     /// The command creates or removes a workspace or pane, or reorders
     /// workspaces (which client locations track by index), so every shell
     /// client's location is reconciled after it.
@@ -307,42 +281,232 @@ pub struct EndpointCommandTraits {
     pub claims_shell_geometry: bool,
 }
 
-impl EndpointCommand {
-    pub fn traits(&self) -> EndpointCommandTraits {
-        let (name, changes_topology, claims_shell_geometry) = match self {
-            Self::ClientShellSurfaceSet(_) => ("client_shell.surface.set", false, false),
-            Self::WorkspaceCreate(_) => ("workspace.create", true, true),
-            Self::WorkspaceFocus(_) => ("workspace.focus", false, true),
-            Self::WorkspaceRename(_) => ("workspace.rename", false, true),
-            Self::WorkspaceCheckoutRoot(_) => ("workspace.checkout_root", false, false),
-            Self::WorkspaceMove(_) => ("workspace.move", true, true),
-            Self::WorkspaceClose(_) => ("workspace.close", true, true),
-            Self::PaneSplit(_) => ("pane.split", true, true),
-            Self::PaneSwap(_) => ("pane.swap", false, true),
-            Self::PaneZoom(_) => ("pane.zoom", false, true),
-            Self::LayoutSetSplitRatio(_) => ("layout.set_split_ratio", false, true),
-            Self::PaneFocusDirection(_) => ("pane.focus_direction", false, true),
-            Self::PaneResize(_) => ("pane.resize", false, true),
-            Self::PaneScroll(_) => ("pane.scroll", false, true),
-            Self::PaneClear(_) => ("pane.clear", false, true),
-            Self::PaneSelectionRead(_) => ("pane.selection.read", false, false),
-            Self::PaneCopyMotion(_) => ("pane.copy_motion", false, false),
-            Self::PaneCopySearch(_) => ("pane.copy_search", false, false),
-            Self::PaneFocus(_) => ("pane.focus", false, true),
-            Self::PaneInputSet(_) => ("pane.input.set", false, true),
-            Self::PaneRename(_) => ("pane.rename", false, true),
-            Self::PaneClose(_) => ("pane.close", true, true),
-        };
-        EndpointCommandTraits {
-            name,
-            changes_topology,
-            claims_shell_geometry,
+macro_rules! define_endpoint_commands {
+    (
+        loop_commands {
+            $(
+                $loop_variant:ident($loop_params:ty) => $loop_name:literal {
+                    changes_focus: $loop_focus:literal,
+                    changes_topology: $loop_topology:literal,
+                    claims_shell_geometry: $loop_geometry:literal,
+                };
+            )+
         }
-    }
+        app_commands {
+            $(
+                $app_variant:ident($app_params:ty) => $app_name:literal {
+                    changes_focus: $app_focus:literal,
+                    changes_topology: $app_topology:literal,
+                    claims_shell_geometry: $app_geometry:literal,
+                };
+            )+
+        }
+    ) => {
+        /// One endpoint operation a client shell asks of the server it is connected
+        /// to; nothing outside this set can be asked through a client shell.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        pub enum EndpointCommand {
+            $($loop_variant($loop_params),)+
+            $($app_variant($app_params),)+
+        }
 
-    /// The command's dotted name, as logs and client notices spell it.
-    pub fn name(&self) -> &'static str {
-        self.traits().name
+        /// Commands the app handles after the server loop has routed its own work.
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum EndpointAppCommand {
+            $($app_variant($app_params),)+
+        }
+
+        /// Commands answered or delegated by the server loop itself.
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum EndpointLoopCommand {
+            $($loop_variant($loop_params),)+
+        }
+
+        impl EndpointCommand {
+            pub fn traits(&self) -> EndpointCommandTraits {
+                match self {
+                    $(
+                        Self::$loop_variant(_) => EndpointCommandTraits {
+                            name: $loop_name,
+                            changes_focus: $loop_focus,
+                            changes_topology: $loop_topology,
+                            claims_shell_geometry: $loop_geometry,
+                        },
+                    )+
+                    $(
+                        Self::$app_variant(_) => EndpointCommandTraits {
+                            name: $app_name,
+                            changes_focus: $app_focus,
+                            changes_topology: $app_topology,
+                            claims_shell_geometry: $app_geometry,
+                        },
+                    )+
+                }
+            }
+
+            /// The command's dotted name, as logs and client notices spell it.
+            pub fn name(&self) -> &'static str {
+                self.traits().name
+            }
+
+            /// Makes it impossible to pass a server-loop command to app dispatch.
+            pub fn into_app_command(self) -> Result<EndpointAppCommand, EndpointLoopCommand> {
+                match self {
+                    $(
+                        Self::$loop_variant(params) => {
+                            Err(EndpointLoopCommand::$loop_variant(params))
+                        }
+                    )+
+                    $(
+                        Self::$app_variant(params) => {
+                            Ok(EndpointAppCommand::$app_variant(params))
+                        }
+                    )+
+                }
+            }
+        }
+
+        impl EndpointAppCommand {
+            pub fn traits(&self) -> EndpointCommandTraits {
+                match self {
+                    $(
+                        Self::$app_variant(_) => EndpointCommandTraits {
+                            name: $app_name,
+                            changes_focus: $app_focus,
+                            changes_topology: $app_topology,
+                            claims_shell_geometry: $app_geometry,
+                        },
+                    )+
+                }
+            }
+        }
+
+        impl EndpointLoopCommand {
+            /// The loop-owned command's dotted name, for a rejected test-only app call.
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $(Self::$loop_variant(_) => $loop_name,)+
+                }
+            }
+        }
+    };
+}
+
+define_endpoint_commands! {
+    loop_commands {
+        ClientShellSurfaceSet(ClientShellSurfaceSetParams) => "client_shell.surface.set" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: false,
+        };
+        WorkspaceCheckoutRoot(WorkspaceCheckoutRootParams) => "workspace.checkout_root" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: false,
+        };
+    }
+    app_commands {
+        WorkspaceCreate(WorkspaceCreateParams) => "workspace.create" {
+            changes_focus: true,
+            changes_topology: true,
+            claims_shell_geometry: true,
+        };
+        WorkspaceFocus(WorkspaceTarget) => "workspace.focus" {
+            changes_focus: true,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        WorkspaceRename(WorkspaceRenameParams) => "workspace.rename" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        WorkspaceMove(WorkspaceMoveParams) => "workspace.move" {
+            changes_focus: false,
+            changes_topology: true,
+            claims_shell_geometry: true,
+        };
+        WorkspaceClose(WorkspaceCloseParams) => "workspace.close" {
+            changes_focus: true,
+            changes_topology: true,
+            claims_shell_geometry: true,
+        };
+        PaneSplit(PaneSplitParams) => "pane.split" {
+            changes_focus: true,
+            changes_topology: true,
+            claims_shell_geometry: true,
+        };
+        // The swap focuses its source pane and navigates to its workspace.
+        PaneSwap(PaneSwapParams) => "pane.swap" {
+            changes_focus: true,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneZoom(PaneZoomParams) => "pane.zoom" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        LayoutSetSplitRatio(LayoutSetSplitRatioParams) => "layout.set_split_ratio" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneFocusDirection(PaneFocusDirectionParams) => "pane.focus_direction" {
+            changes_focus: true,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneResize(PaneResizeParams) => "pane.resize" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneScroll(PaneScrollParams) => "pane.scroll" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneClear(PaneTarget) => "pane.clear" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneSelectionRead(PaneSelectionReadParams) => "pane.selection.read" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: false,
+        };
+        PaneCopyMotion(PaneCopyMotionParams) => "pane.copy_motion" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: false,
+        };
+        PaneCopySearch(PaneCopySearchParams) => "pane.copy_search" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: false,
+        };
+        PaneFocus(PaneTarget) => "pane.focus" {
+            changes_focus: true,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneInputSet(PaneInputSetParams) => "pane.input.set" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneRename(PaneRenameParams) => "pane.rename" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
+        PaneClose(PaneTarget) => "pane.close" {
+            changes_focus: true,
+            changes_topology: true,
+            claims_shell_geometry: true,
+        };
     }
 }
 

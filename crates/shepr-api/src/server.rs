@@ -12,7 +12,7 @@ use crate::limits::{
     STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
-    AppMethod, AppRequest, ErrorResponse, Method, MethodTraits, Request, ResponseResult,
+    AppRequest, ErrorResponse, MethodRoute, MethodTraits, Request, ResponseResult, SocketMethod,
     SuccessResponse,
 };
 use crate::{ApiRequestMessage, ApiRequestSender};
@@ -302,19 +302,17 @@ enum Route {
     App(AppRequest),
 }
 
-/// Answers `ping` and both stop methods on the connection thread, including
-/// while App is restoring or stalled, and routes every other method to the app
-/// loop as an [`AppRequest`]. The match is the one routing classification: a
-/// method the app answers has an [`AppMethod`] arm, and nothing else reaches
-/// the app.
+/// Answers socket-routed controls on the connection thread, including while
+/// App is restoring or stalled. The schema generates the route split and the
+/// app method subset; this function performs each socket method's action.
 fn route_request(
     request: Request,
     server_stop: &crate::ServerStopSignal,
     gate: &ClientGate,
 ) -> Route {
     let Request { id, method } = request;
-    let method = match method {
-        Method::Ping(_) => {
+    let method = match method.into_route() {
+        MethodRoute::Socket(SocketMethod::Ping(_)) => {
             let response = SuccessResponse {
                 id: id.clone(),
                 result: ResponseResult::Pong {
@@ -331,18 +329,17 @@ fn route_request(
                 &id, &response,
             ));
         }
-        Method::ServerStop(_) => return Route::Immediate(stop_server(&id, None, server_stop)),
-        Method::ServerStopIfBoot(params) => {
+        MethodRoute::Socket(SocketMethod::ServerStop(_)) => {
+            return Route::Immediate(stop_server(&id, None, server_stop));
+        }
+        MethodRoute::Socket(SocketMethod::ServerStopIfBoot(params)) => {
             return Route::Immediate(stop_server(
                 &id,
                 Some(&params.expected_boot_id),
                 server_stop,
             ));
         }
-        Method::DetectCapture(target) => AppMethod::DetectCapture(target),
-        Method::DetectExplain(target) => AppMethod::DetectExplain(target),
-        Method::PaneReportAgent(params) => AppMethod::PaneReportAgent(params),
-        Method::PaneReportAgentSession(params) => AppMethod::PaneReportAgentSession(params),
+        MethodRoute::App(method) => method,
     };
 
     if server_stop.is_requested() {
@@ -549,6 +546,7 @@ fn error_response_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{AppMethod, Method};
     use shepr_test_support::ScratchDir;
     use std::io::{BufRead, BufReader, Read};
     use std::time::Duration;

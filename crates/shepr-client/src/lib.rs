@@ -53,13 +53,12 @@ pub use startup::run_client;
 use terminal_geometry::query_host_terminal_appearance;
 use terminal_geometry::{AtomicCellSize, reported_cell_size_from_events, store_reported_cell_size};
 use terminal_geometry::{
-    host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
+    HostGeometrySnapshot, SharedHostGeometry, initial_terminal_geometry, query_host_cell_size,
     query_host_terminal_theme, resize_poll_loop,
 };
 use terminal_setup::{HostMouseMode, TerminalGuard, setup_terminal, should_draw_host_cursor};
 
 pub use errors::{ClientError, ClientExit, ClientRunError};
-use handshake::do_handshake;
 use limits::CLIENT_EVENT_QUEUE_CAPACITY;
 
 use std::io::{self, Write as _};
@@ -68,7 +67,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{info, warn};
 
-use shepr_platform::ipc::LocalStream;
 use shepr_protocol::{ClientMessage, ServerMessage, surface_reuse::DecodedServerMessage};
 use shepr_termio::blit as render_ansi;
 
@@ -84,12 +82,17 @@ fn run_launched_client(
     let socket_path = paths.server_address().socket().to_path_buf();
     let shell_config = shell::ClientShellConfig::from_validated_config(config)
         .with_local_endpoint(paths.state_dir(), &socket_path)?;
+    let mismatch_guidance: Arc<str> = paths
+        .server_address()
+        .build_mismatch_guidance(&shepr_config::operator_entrypoint())
+        .into();
     let mouse_capture = settings.mouse_capture_active();
     let mut loop_config = ClientLoopConfig {
         settings,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
         paths: paths.clone(),
+        local_mismatch_guidance: Arc::clone(&mismatch_guidance),
     };
 
     crate::logging::startup("client");
@@ -97,62 +100,41 @@ fn run_launched_client(
 
     let machines = config.machines().to_vec();
     let local_failure_policy = endpoint::LocalFailurePolicy::for_machines(&machines);
-    let local_endpoint_policy = endpoint::ClientEndpointId::Local.policy();
-    let mut initial_local_failure = None;
-
-    let initial_stream = match shepr_platform::ipc::connect_trusted_local_stream(&socket_path) {
-        Ok(stream) => Some(stream),
-        Err(error) if !local_failure_policy.ends_client_for(local_endpoint_policy) => {
-            // An absent or refusing Local socket is the ordinary "server not running" case:
-            // Local shows as Connecting and the supervisor attempts it at once, with its own
-            // guidance, rather than seeding a diagnostic from the raw connect error.
-            warn!(%error, "Local is unavailable; keeping configured machines available");
-            None
-        }
-        Err(error) => {
-            return Err(ClientRunError::Launch(io::Error::new(
-                error.kind(),
-                ClientError::ConnectionFailed(error),
-            )));
-        }
-    };
 
     // Get the terminal geometry before handshake (before raw mode).
-    let geometry = initial_terminal_geometry()?;
+    let initial_host_geometry = initial_terminal_geometry()?;
+    let geometry = initial_host_geometry.geometry;
     let (cols, rows) = (geometry.cols(), geometry.rows());
 
     let host_size = terminal_geometry::ClientHostSize::new(cols, rows);
     let shell_surface_size = shell_config.initial_surface_size(host_size.cols, host_size.rows);
     // Healthy Local attaches directly; only an actual failure enters background recovery.
-    let mismatch_guidance = paths
-        .server_address()
-        .build_mismatch_guidance(&shepr_config::operator_entrypoint());
-    let initial = match initial_stream {
-        Some(mut stream) => match do_handshake(
-            &mut stream,
-            handshake::HandshakeGeometry {
-                host: geometry,
-                surface_size: shell_surface_size,
-            },
-            loop_config.settings.mouse_capture_active(),
-            true,
-            None,
-        ) {
-            Ok(()) => Some(stream),
-            Err(error) if !local_failure_policy.ends_client_for(local_endpoint_policy) => {
-                let error = endpoint::handshake_error(error, Some(&mismatch_guidance));
-                warn!(%error, "Local handshake failed; keeping configured machines available");
-                initial_local_failure = Some(shepr_remote::EndpointFailure::from_error(&error));
-                None
+    let initial_attach = attach_local_endpoint(
+        &socket_path,
+        view_geometry(geometry, shell_surface_size),
+        loop_config.settings.mouse_capture_active(),
+        // Local is the first shown endpoint; it can render as soon as the handshake completes.
+        true,
+        &mismatch_guidance,
+    );
+    let reconnect_local = local_failure_policy.reconnects_local();
+    let (initial, initial_local_failure) = match initial_attach {
+        Ok(attached) => (Some(attached), None),
+        Err(failure) if reconnect_local => {
+            match &failure {
+                LocalAttachFailure::Connection(error) => {
+                    warn!(%error, "Local is unavailable; keeping configured machines available");
+                }
+                LocalAttachFailure::Handshake(error) => {
+                    warn!(%error, "Local handshake failed; keeping configured machines available");
+                }
+                LocalAttachFailure::Setup(error) => {
+                    warn!(%error, "Local transport setup failed; keeping configured machines available");
+                }
             }
-            Err(error) => {
-                return Err(ClientRunError::Launch(endpoint::handshake_error(
-                    error,
-                    Some(&mismatch_guidance),
-                )));
-            }
-        },
-        None => None,
+            (None, failure.initial_failure())
+        }
+        Err(failure) => return Err(failure.into_launch_error()),
     };
 
     // From here on a panic on any thread ends the client through the one
@@ -202,7 +184,7 @@ fn run_launched_client(
             initial_local_failure,
             machines,
             local_failure_policy,
-            geometry,
+            initial_host_geometry,
             Arc::clone(&should_quit),
             Arc::clone(&fatal),
             (event_tx, event_rx),
@@ -273,11 +255,11 @@ fn run_launched_client(
     reason = "the launch hands over every owner it set up: endpoints, policy, geometry, the quit and panic latches, the event channel, config and the terminal"
 )]
 async fn run_client_loop(
-    initial: Option<LocalStream>,
+    initial: Option<AttachedEndpoint>,
     mut initial_local_failure: Option<shepr_remote::EndpointFailure>,
     machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
-    initial_geometry: shepr_core::geometry::HostGeometry,
+    initial_host_geometry: HostGeometrySnapshot,
     should_quit: Arc<AtomicBool>,
     fatal: Arc<fatal_panic::FatalPanic>,
     (event_tx, event_rx): (
@@ -289,6 +271,8 @@ async fn run_client_loop(
     output_writer: terminal_setup::HostTerminalWriter,
     terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
+    let initial_geometry = initial_host_geometry.geometry;
+    let host_geometry = SharedHostGeometry::new(initial_host_geometry);
     let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) = (
         initial_geometry.cell_width(),
@@ -326,6 +310,9 @@ async fn run_client_loop(
         settings: config.settings,
         shell: Box::new(shell::ClientShellState::new_at(shell_config, launch_now)),
         repaint_pending: false,
+        presentation_dirty: state::PresentationDirty::Clean,
+        pending_surface_patch: None,
+        // A successful launch attach is the first view, with no previous endpoint to move from.
         choice: if local_unavailable {
             endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
         } else {
@@ -361,13 +348,14 @@ async fn run_client_loop(
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
     let will_query_host_cell_size =
-        host_cell_size_query_required() && query_host_cell_size(&mut state.output_writer);
+        !initial_geometry.exact && query_host_cell_size(&mut state.output_writer);
 
     // Spawn the stdin reader after query writes so a failed write does not make
     // its parser wait for a host reply that cannot arrive.
     let stdin_quit = Arc::clone(&should_quit);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
+    let stdin_host_geometry = host_geometry.clone();
     std::thread::spawn(move || {
         input::stdin_reader_loop(
             &stdin_tx,
@@ -376,6 +364,7 @@ async fn run_client_loop(
             will_query_host_cell_size,
             &stdin_mouse_capture_active,
             &stdin_sgr_pixels_active,
+            &stdin_host_geometry,
             stdin_escape_disambiguation_active,
             &stdin_initial_host_input,
         );
@@ -385,35 +374,35 @@ async fn run_client_loop(
     let resize_quit = Arc::clone(&should_quit);
     let resize_tx = event_tx.clone();
     let resize_cell_size = Arc::clone(&reported_cell_size);
+    let resize_host_geometry = host_geometry.clone();
     std::thread::spawn(move || {
         resize_poll_loop(
             &resize_tx,
-            shepr_core::geometry::HostGeometry::new(
-                cols,
-                rows,
-                initial_cell_width_px,
-                initial_cell_height_px,
-                initial_pixel_geometry_exact,
-            ),
+            initial_host_geometry,
             &resize_cell_size,
+            &resize_host_geometry,
             &resize_quit,
         );
     });
 
-    let write_stream = if let Some(stream) = initial {
+    let write_stream = if let Some(attached) = initial {
         let surface_decoder = shepr_protocol::surface_reuse::Decoder::default();
-        match start_endpoint_transport(
-            stream,
+        match spawn_endpoint_reader(
+            attached.reader,
             &event_tx,
+            &attached.writer,
             endpoint::ClientEndpointId::Local,
             1,
             surface_decoder,
         ) {
-            Ok(transport) => {
-                let mut registry = endpoint::EndpointRegistry::new_at(transport, 1, launch_now);
+            Ok(()) => {
+                let mut registry =
+                    endpoint::EndpointRegistry::new_at(attached.writer, 1, launch_now);
                 registry.send_to(
                     &endpoint::ClientEndpointId::Local,
-                    &ClientMessage::ClientShellFocus { focused: true },
+                    &ClientMessage::ClientShellFocus {
+                        focused: state.shell.host_focus_baseline(),
+                    },
                 );
                 registry
             }
@@ -463,6 +452,7 @@ async fn run_client_loop(
         let generation = seeded_failure.map_or(connected_generation, |_| Some(1));
         supervisors.add_local(
             config.paths.server_address().socket().to_path_buf(),
+            Arc::clone(&config.local_mismatch_guidance),
             generation,
             launch_now,
         );
@@ -476,13 +466,11 @@ async fn run_client_loop(
                 warn!(endpoint = "local", error = %failure, "endpoint needs attention");
             }
             present_notice(&mut state, format!("Local: {failure}"));
-        } else if let Some(frame) = state.shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        ) {
-            state.present_chrome(frame);
+        } else {
+            state.mark_chrome_dirty();
         }
     }
+    state.present_pending();
     let mut client_loop = ClientLoop::new(
         state,
         local_failure_policy,
@@ -520,6 +508,28 @@ struct ClientLoop {
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
     will_query_host_cell_size: bool,
+}
+
+fn update_endpoint_status_presentation(
+    state: &mut ClientState,
+    endpoint_id: &endpoint::ClientEndpointId,
+    status: endpoint::ClientEndpointStatus,
+    message: &shepr_remote::EndpointFailure,
+) {
+    state.shell.set_endpoint_status(endpoint_id, status);
+    state
+        .shell
+        .set_machine_diagnostic(endpoint_id, &message.diagnostic());
+    // Handshake diagnostics carry only the failing phase; the status line supplies
+    // the configured endpoint label once.
+    let unavailable = (status == endpoint::ClientEndpointStatus::Attention
+        && state.shell.endpoint_is_active(endpoint_id))
+    .then(|| format!("{}: {message}", endpoint_id.display_label()));
+    if let Some(message) = unavailable {
+        present_notice(state, message);
+    } else {
+        state.mark_chrome_dirty();
+    }
 }
 
 fn earliest_client_timer_deadline(
@@ -620,27 +630,17 @@ impl ClientLoop {
             if self.fatal.is_latched() {
                 return Err(ClientError::Panicked);
             }
-            let cell = shepr_protocol::ProtocolCellSize::from_host(
-                self.state.reported_geometry.cell_width(),
-                self.state.reported_geometry.cell_height(),
-                self.state.reported_geometry.exact,
+            let geometry = view_geometry(
+                self.state.reported_geometry,
+                self.state.shell.surface_size(
+                    self.state.reported_geometry.cols(),
+                    self.state.reported_geometry.rows(),
+                ),
             );
             self.supervisors.spawn_due(
                 loop_now,
                 endpoint::EndpointConnectOptions {
-                    geometry: handshake::HandshakeGeometry {
-                        host: shepr_core::geometry::HostGeometry::new(
-                            self.state.reported_geometry.cols(),
-                            self.state.reported_geometry.rows(),
-                            cell.width(),
-                            cell.height(),
-                            cell.exact,
-                        ),
-                        surface_size: self.state.shell.surface_size(
-                            self.state.reported_geometry.cols(),
-                            self.state.reported_geometry.rows(),
-                        ),
-                    },
+                    geometry,
                     mouse_capture: self.state.host_modes.mouse_shell_preference(),
                 },
                 &self.event_tx,
@@ -664,7 +664,7 @@ impl ClientLoop {
         now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         self.state.shell.now = now;
-        match event {
+        let action = match event {
             ClientLoopEvent::Quit => Ok(ClientLoopAction::Exit),
             ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs, now),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
@@ -689,7 +689,11 @@ impl ClientLoop {
                 error,
             } => self.handle_server_disconnected(&endpoint_id, generation, &error),
             ClientLoopEvent::Timer => self.handle_timer(now),
+        }?;
+        if action == ClientLoopAction::NextEvent {
+            self.state.present_pending();
         }
+        Ok(action)
     }
 
     fn handle_stdin_input(
@@ -723,16 +727,7 @@ impl ClientLoop {
         let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
         let shell = &mut state.shell;
         let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
-        let frame = outcome
-            .repaint
-            .then(|| {
-                shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                )
-            })
-            .flatten();
-        if finish_client_shell_input(state, outcome, frame, write_stream, endpoint_commands, now)? {
+        if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)? {
             return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)
@@ -783,17 +778,10 @@ impl ClientLoop {
         // machine-list placeholder.
         state.request_repaint();
         resize_views(state, write_stream);
-        // The host has already reflowed the old frame; redraw the chrome at the new
-        // size now rather than on the next input or surface. The pane cells are still
-        // the retained surface (clipped), so this is chrome and presents even while
-        // nothing is shown; otherwise the wrongly sized frame would stay up until a move
-        // committed.
-        if let Some(frame) = state.shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        ) {
-            state.present_chrome(frame);
-        }
+        // The host has already reflowed the old frame. Compose the retained pane surface
+        // clipped to the new size at the end of this event, rather than waiting for the next
+        // input or server surface.
+        state.mark_pane_dirty();
         Ok(ClientLoopAction::NextEvent)
     }
 
@@ -824,24 +812,7 @@ impl ClientLoop {
                 if status == endpoint::ClientEndpointStatus::Attention {
                     warn!(endpoint = %endpoint_id.storage_key(), generation, error = %message, "endpoint needs attention");
                 }
-                let shell = &mut state.shell;
-                shell.set_endpoint_status(&endpoint_id, status);
-                shell.set_machine_diagnostic(&endpoint_id, &message.diagnostic());
-                // Handshake diagnostics carry only the failing phase; the status line supplies
-                // the configured endpoint label once.
-                let unavailable = (status == endpoint::ClientEndpointStatus::Attention
-                    && shell.endpoint_is_active(&endpoint_id))
-                .then(|| format!("{}: {message}", endpoint_id.display_label()));
-                if let Some(message) = unavailable {
-                    present_notice(state, message);
-                } else if let Some(frame) = state.shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                ) {
-                    // A status change is machine-list chrome; it must show even while
-                    // nothing is shown.
-                    state.present_chrome(frame);
-                }
+                update_endpoint_status_presentation(state, &endpoint_id, status, &message);
             }
             endpoint::EndpointSupervisorEvent::Connected {
                 endpoint_id,
@@ -871,38 +842,17 @@ impl ClientLoop {
                     let failure = errors::endpoint_setup_failure(&error);
                     let status = endpoint::ClientEndpointStatus::after_failure(&failure);
                     supervisors.record_status(&endpoint_id, generation, status, now);
-                    state.shell.set_endpoint_status(&endpoint_id, status);
-                    state
-                        .shell
-                        .set_machine_diagnostic(&endpoint_id, &failure.diagnostic());
-                    if status == endpoint::ClientEndpointStatus::Attention
-                        && state.shell.endpoint_is_active(&endpoint_id)
-                    {
-                        let message = format!("{}: {failure}", endpoint_id.display_label());
-                        present_notice(state, message);
-                    } else if let Some(frame) = state.shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    ) {
-                        state.present_chrome(frame);
-                    }
+                    update_endpoint_status_presentation(state, &endpoint_id, status, &failure);
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 write_stream.insert_native(endpoint_id.clone(), writer, generation, false, now);
-                // The supervisor is Online as soon as the transport connects. Reflect that
-                // before composing so this repaint updates the client-owned machine list.
+                // Reflect Online before the event's one presentation updates the machine list.
                 state
                     .shell
                     .set_endpoint_status(&endpoint_id, endpoint::ClientEndpointStatus::Online);
-                let frame = state.shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                );
-                if let Some(frame) = frame {
-                    // Connecting changes no pane projection (the connection has no
-                    // surface yet), only the machine list.
-                    state.present_chrome(frame);
-                }
+                // Connecting changes no pane projection (the connection has no
+                // surface yet), only the machine list.
+                state.mark_chrome_dirty();
             }
         };
         Ok(ClientLoopAction::NextEvent)
@@ -945,7 +895,7 @@ impl ClientLoop {
         let message = match *message {
             DecodedServerMessage::Wire(message) => message,
             DecodedServerMessage::PaneSurfacePatch(patch) => {
-                if presentation_decision == endpoint::PresentationDecision::Buffer {
+                if presentation_decision.buffers() {
                     if let Some(pending) = state.choice.preparing_mut() {
                         pending.receive_patch(endpoint_id, generation, &patch);
                     }
@@ -954,39 +904,16 @@ impl ClientLoop {
                 let outcome = state
                     .shell
                     .apply_pane_surface_patch_from(&patch, generation);
-                let compose_fallback = match outcome {
+                match outcome {
                     shell::ClientPaneSurfacePatchOutcome::Applied(
                         shell::PatchPresentation::Rows(composed),
-                    ) => {
-                        match state.present_surface_patch(composed) {
-                            Ok(presented) => !presented,
-                            Err(error) => {
-                                // Once per cause: a patch arrives with every pane update.
-                                // The full repaint that follows reports the recovery.
-                                let mut context = state.shell.presentation_log_context();
-                                if !patch.panes.is_empty() {
-                                    context.pane_ids = patch
-                                        .panes
-                                        .iter()
-                                        .map(|pane| pane.pane_id.clone())
-                                        .collect();
-                                }
-                                state.frame_write_failure.observe(
-                                    "pane surface patch",
-                                    &Err(error),
-                                    Some(&context),
-                                );
-                                state.request_repaint();
-                                false
-                            }
-                        }
-                    }
+                    ) => state.queue_surface_patch(composed),
                     shell::ClientPaneSurfacePatchOutcome::Applied(
                         shell::PatchPresentation::Compose,
-                    ) => true,
+                    ) => state.mark_pane_dirty(),
                     shell::ClientPaneSurfacePatchOutcome::Applied(
                         shell::PatchPresentation::Held,
-                    ) => false,
+                    ) => {}
                     shell::ClientPaneSurfacePatchOutcome::Rejected(reason) => {
                         // The patch does not follow the shell's baseline, which mirrors the
                         // reader's. Either the two disagree about a baseline both derive from
@@ -1009,16 +936,6 @@ impl ClientLoop {
                                 ),
                             ),
                         );
-                        false
-                    }
-                };
-                if compose_fallback {
-                    let composed = state.shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    );
-                    if let Some(frame) = composed {
-                        state.present_frame(frame);
                     }
                 }
                 return Ok(ClientLoopAction::NextEvent);
@@ -1026,7 +943,7 @@ impl ClientLoop {
         };
         match message {
             ServerMessage::PaneSurface(surface) => {
-                if presentation_decision == endpoint::PresentationDecision::Buffer {
+                if presentation_decision.buffers() {
                     let size = state.shell.surface_size(
                         state.reported_geometry.cols(),
                         state.reported_geometry.rows(),
@@ -1037,13 +954,7 @@ impl ClientLoop {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 state.shell.receive_pane_surface_from(surface, generation);
-                let composed = state.shell.compose(
-                    state.reported_geometry.cols(),
-                    state.reported_geometry.rows(),
-                );
-                if let Some(frame) = composed {
-                    state.present_frame(frame);
-                }
+                state.mark_pane_dirty();
             }
             ServerMessage::ServerShutdown { reason } => {
                 if local_failure_policy.ends_client_for(endpoint_id.policy()) {
@@ -1058,15 +969,10 @@ impl ClientLoop {
                 );
             }
             ServerMessage::ClientShellError { kind } => {
-                if state.shell.receive_server_notice(&kind)
-                    && let Some(frame) = state.shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    )
-                {
+                if state.shell.receive_server_notice(&kind) {
                     // The error banner is chrome; it must show while nothing is shown,
                     // like machine statuses do.
-                    state.present_chrome(frame);
+                    state.mark_chrome_dirty();
                 }
             }
             ServerMessage::ClientShellEndpointResponse {
@@ -1074,7 +980,7 @@ impl ClientLoop {
                 request_id,
                 result,
             } => {
-                if presentation_decision == endpoint::PresentationDecision::Buffer {
+                if presentation_decision.buffers() {
                     if let Some(pending) = state.choice.preparing_mut() {
                         pending.receive_response(
                             endpoint_id,
@@ -1115,23 +1021,8 @@ impl ClientLoop {
                         ..Default::default()
                     }
                 };
-                let frame = outcome
-                    .repaint
-                    .then(|| {
-                        shell.compose(
-                            state.reported_geometry.cols(),
-                            state.reported_geometry.rows(),
-                        )
-                    })
-                    .flatten();
-                if finish_client_shell_input(
-                    state,
-                    outcome,
-                    frame,
-                    write_stream,
-                    endpoint_commands,
-                    now,
-                )? {
+                if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)?
+                {
                     return Ok(ClientLoopAction::Exit);
                 }
             }
@@ -1208,7 +1099,7 @@ impl ClientLoop {
                         .shell
                         .receive_session_saves_stopped(endpoint_id, &snapshot.boot_id);
                 }
-                if role == endpoint::ConnectionRole::Target
+                if presentation_decision.buffers()
                     && let Some(pending) = state.choice.preparing_mut()
                 {
                     pending.receive_snapshot(endpoint_id, generation, &snapshot);
@@ -1260,7 +1151,7 @@ impl ClientLoop {
         } = self;
         write_stream.tick_health(now);
         let shell = &mut state.shell;
-        let (outcome, frame) = {
+        let outcome = {
             let mut outcome = shell.tick_timers(now);
             outcome.merge(settle_expired_endpoint_commands(
                 endpoint_commands,
@@ -1268,18 +1159,9 @@ impl ClientLoop {
                 shell,
                 now,
             ));
-            let frame = outcome
-                .repaint
-                .then(|| {
-                    shell.compose(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    )
-                })
-                .flatten();
-            (outcome, frame)
+            outcome
         };
-        if finish_client_shell_input(state, outcome, frame, write_stream, endpoint_commands, now)? {
+        if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)? {
             return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)

@@ -6,12 +6,19 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use super::GitReadError;
+use super::identity::{FullRefName, Oid};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitWorktreeInfo {
     pub repo_root: PathBuf,
     pub git_dir: PathBuf,
     pub git_common_dir: PathBuf,
+}
+
+pub(super) enum Discovery {
+    Checkout(GitWorktreeInfo),
+    Outside,
+    Unreadable(GitReadError),
 }
 
 struct LocatedGitDir {
@@ -22,7 +29,8 @@ struct LocatedGitDir {
 /// The label for a cwd outside any Git checkout: `~` for the home directory,
 /// the directory name otherwise. This runs when a workspace's identity cwd
 /// changes or its Git status is refreshed, never per frame, so `$HOME` is
-/// read here. An unusable `HOME` only means the `~` label is not offered.
+/// read here. Shared fallback naming stays in core; this wrapper only supplies
+/// the resolved home. An unusable `HOME` only means the `~` label is not offered.
 pub fn fallback_label_from_cwd(cwd: &Path) -> String {
     let home = shepr_core::pathutil::home_dir().ok();
     shepr_core::workspace_label::workspace_label_from_cwd(cwd, None, home.as_deref())
@@ -32,21 +40,47 @@ pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     git_worktree_info_with_errors(cwd, &mut Vec::new())
 }
 
+/// Existing mux callers keep their `Option` plus accumulated-error boundary;
+/// this adapter delegates repository classification to the shared discovery.
 pub(super) fn git_worktree_info_with_errors(
     cwd: &Path,
     errors: &mut Vec<GitReadError>,
 ) -> Option<GitWorktreeInfo> {
-    let (repo_root, located) =
-        git_worktree_location_below_with_errors(cwd, &GitCeilings::from_env(), errors)?;
-    match git_config_info(&repo_root, &located.path) {
-        Ok(info) => Some(info),
-        Err(error) => {
-            errors.push(GitReadError::FileRead {
-                path: located.path.join("commondir"),
-                message: error.to_string(),
-            });
+    match discover(cwd) {
+        Discovery::Checkout(info) => Some(info),
+        Discovery::Outside => None,
+        Discovery::Unreadable(error) => {
+            errors.push(error);
             None
         }
+    }
+}
+
+pub(super) fn discover(cwd: &Path) -> Discovery {
+    discover_below(cwd, &GitCeilings::from_env())
+}
+
+pub fn discover_checkout_root(cwd: &Path) -> Result<Option<PathBuf>, GitReadError> {
+    match discover(cwd) {
+        Discovery::Checkout(info) => Ok(Some(canonicalize_best_effort_path(&info.repo_root))),
+        Discovery::Outside => Ok(None),
+        Discovery::Unreadable(error) => Err(error),
+    }
+}
+
+fn discover_below(cwd: &Path, ceilings: &GitCeilings) -> Discovery {
+    let location = match git_worktree_location_below(cwd, ceilings) {
+        Ok(Some(location)) => location,
+        Ok(None) => return Discovery::Outside,
+        Err(error) => return Discovery::Unreadable(error),
+    };
+    let (repo_root, located) = location;
+    match git_config_info(&repo_root, &located.path) {
+        Ok(info) => Discovery::Checkout(info),
+        Err(error) => Discovery::Unreadable(GitReadError::FileRead {
+            path: located.path.join("commondir"),
+            message: error.to_string(),
+        }),
     }
 }
 
@@ -273,23 +307,61 @@ fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
         && is_dir_entry(&path.join("refs"))?)
 }
 
+pub(super) enum SymbolicHeadProbe {
+    Output(FullRefName),
+    NoOutput,
+    InvalidOutput,
+}
+
 pub(super) fn git_symbolic_head_full(
     repo_root: &Path,
     errors: &mut Vec<GitReadError>,
-) -> Option<String> {
-    git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "HEAD"], errors)
+) -> SymbolicHeadProbe {
+    let args = ["symbolic-ref", "--quiet", "HEAD"];
+    let Some(output) = git_trimmed_stdout(
+        repo_root,
+        &args,
+        |output| output.status.code() == Some(1),
+        errors,
+    ) else {
+        return SymbolicHeadProbe::NoOutput;
+    };
+    match FullRefName::parse(&output) {
+        Some(full_ref) => SymbolicHeadProbe::Output(full_ref),
+        None => {
+            errors.push(GitReadError::InvalidOutput {
+                cwd: repo_root.to_path_buf(),
+                arguments: args.join(" "),
+                output,
+            });
+            SymbolicHeadProbe::InvalidOutput
+        }
+    }
 }
 
 pub(super) fn git_rev_parse_verify_with_errors(
     repo_root: &Path,
     revision: &str,
     errors: &mut Vec<GitReadError>,
-) -> Option<String> {
-    git_trimmed_stdout(
+) -> Option<Oid> {
+    let args = ["rev-parse", "--verify", "--end-of-options", revision];
+    let output = git_trimmed_stdout(
         repo_root,
-        &["rev-parse", "--verify", "--end-of-options", revision],
+        &args,
+        |output| String::from_utf8_lossy(&output.stderr).contains("Needed a single revision"),
         errors,
-    )
+    )?;
+    match Oid::parse(&output) {
+        Some(oid) => Some(oid),
+        None => {
+            errors.push(GitReadError::InvalidOutput {
+                cwd: repo_root.to_path_buf(),
+                arguments: args.join(" "),
+                output,
+            });
+            None
+        }
+    }
 }
 
 /// Whether the repository keeps its refs in a reftable store. Git takes
@@ -323,6 +395,7 @@ fn git_dir_is_bare(info: &GitWorktreeInfo) -> Result<bool, GitReadError> {
 pub(super) fn git_trimmed_stdout(
     repo_root: &Path,
     args: &[&str],
+    is_absent: impl FnOnce(&Output) -> bool,
     errors: &mut Vec<GitReadError>,
 ) -> Option<String> {
     let output = match run_git_output(repo_root, args) {
@@ -333,11 +406,7 @@ pub(super) fn git_trimmed_stdout(
         }
     };
     if !output.status.success() {
-        let expected_no_result = (args.first() == Some(&"symbolic-ref")
-            && output.status.code() == Some(1))
-            || (args.first() == Some(&"rev-parse")
-                && String::from_utf8_lossy(&output.stderr).contains("Needed a single revision"));
-        if !expected_no_result {
+        if !is_absent(&output) {
             errors.push(command_failed(repo_root, args, &output));
         }
         return None;
@@ -447,102 +516,61 @@ impl GitCeilings {
     }
 }
 
-/// The checkout root and its located Git directory, retained from the walk
-/// so callers that need repository metadata do not locate the final marker a
-/// second time.
-fn git_worktree_location_below_with_errors(
+/// The checkout root and its located Git directory come from the same walk,
+/// so discovery consumers do not locate the final marker a second time.
+fn git_worktree_location_below(
     start: &Path,
     ceilings: &GitCeilings,
-    errors: &mut Vec<GitReadError>,
-) -> Option<(PathBuf, LocatedGitDir)> {
+) -> Result<Option<(PathBuf, LocatedGitDir)>, GitReadError> {
     let mut current = match is_dir_entry(start) {
         Ok(true) => start.to_path_buf(),
-        Ok(false) => start.parent()?.to_path_buf(),
-        Err(error) => {
-            errors.push(GitReadError::FileRead {
-                path: start.to_path_buf(),
-                message: error.to_string(),
-            });
-            return None;
-        }
+        Ok(false) => match start.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return Ok(None),
+        },
+        Err(error) => return Err(file_read_error(start, &error)),
     };
 
     loop {
-        let found = match locate_git_dir(&current) {
-            Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
-                Ok(true) => Some(git_dir),
-                Ok(false) => None,
-                Err(error) => {
-                    errors.push(GitReadError::FileRead {
-                        path: git_dir.path.join("HEAD"),
-                        message: error.to_string(),
-                    });
-                    return None;
+        let found = match locate_git_dir(&current)? {
+            Some(git_dir) => {
+                if git_head_file_is_readable(&git_dir)
+                    .map_err(|error| file_read_error(&git_dir.path.join("HEAD"), &error))?
+                {
+                    Some(git_dir)
+                } else {
+                    None
                 }
-            },
-            Ok(None) => None,
-            Err(error) => {
-                errors.push(error);
-                return None;
             }
+            None => None,
         };
         if let Some(git_dir) = found {
-            return Some((current, git_dir));
+            return Ok(Some((current, git_dir)));
         }
         if !current.pop() || ceilings.contains(&current) {
-            return None;
+            return Ok(None);
         }
     }
 }
 
-/// Only complete object IDs may enter revision arguments. Ref text is not a
-/// revision expression, and symbolic refs are unavailable to this file reader.
-pub(super) fn valid_oid(oid: &str) -> bool {
-    matches!(oid.len(), 40 | 64)
-        && oid
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-/// Keep repository-controlled names inside the refs namespace. Git's other
-/// refname restrictions also prevent malformed names being cached as branches.
-pub(super) fn valid_full_ref(name: &str) -> bool {
-    name.starts_with("refs/")
-        && !name.ends_with('.')
-        && !name.contains("..")
-        && !name.contains("@{")
-        && name
-            .split('/')
-            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
-        && !name
-            .bytes()
-            .any(|byte| byte <= b' ' || byte == 0x7f || b"~^:?*[\\".contains(&byte))
-}
-
-pub(super) fn read_ref_oid_with_errors(
+/// Reads a ref only after its repository-controlled name has been validated
+/// and kept as a full-ref type.
+pub(super) fn read_ref_oid_for_full_ref(
     common_dir: &Path,
-    full_ref: &str,
+    full_ref: &FullRefName,
     errors: &mut Vec<GitReadError>,
-) -> Option<String> {
-    if !valid_full_ref(full_ref) {
-        errors.push(GitReadError::FileRead {
-            path: common_dir.to_path_buf(),
-            message: "invalid ref name".into(),
-        });
-        return None;
-    }
-    let loose_ref = common_dir.join(full_ref);
+) -> Option<Oid> {
+    let loose_ref = common_dir.join(full_ref.as_str());
     match read_git_ref_file_state(&loose_ref) {
         RefFileRead::Content(contents) => {
-            let oid = contents.trim();
-            if !valid_oid(oid) {
+            let Some(oid) = Oid::parse(contents.trim()) else {
                 errors.push(GitReadError::FileRead {
                     path: loose_ref,
                     message: "loose ref is not a complete object ID".into(),
                 });
                 return None;
-            }
-            return Some(oid.to_string());
+            };
+            return Some(oid);
         }
         // An existing but unavailable loose ref must not resurrect a stale
         // packed OID. Symbolic loose refs are reported unavailable too.
@@ -603,9 +631,11 @@ pub(super) fn read_ref_oid_with_errors(
         let (Some(oid), Some(name)) = (parts.next(), parts.next()) else {
             continue;
         };
-        if name == full_ref {
-            if valid_oid(oid) && parts.next().is_none() {
-                return Some(oid.to_owned());
+        if name == full_ref.as_str() {
+            if let Some(oid) = Oid::parse(oid)
+                && parts.next().is_none()
+            {
+                return Some(oid);
             }
             errors.push(GitReadError::FileRead {
                 path: packed_path,
@@ -614,6 +644,37 @@ pub(super) fn read_ref_oid_with_errors(
             return None;
         }
     }
+}
+
+#[cfg(test)]
+fn git_worktree_location_below_with_errors(
+    start: &Path,
+    ceilings: &GitCeilings,
+    errors: &mut Vec<GitReadError>,
+) -> Option<(PathBuf, LocatedGitDir)> {
+    match git_worktree_location_below(start, ceilings) {
+        Ok(location) => location,
+        Err(error) => {
+            errors.push(error);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn read_ref_oid_with_errors(
+    common_dir: &Path,
+    full_ref: &str,
+    errors: &mut Vec<GitReadError>,
+) -> Option<String> {
+    let Some(full_ref) = FullRefName::parse(full_ref) else {
+        errors.push(GitReadError::FileRead {
+            path: common_dir.to_path_buf(),
+            message: "invalid ref name".into(),
+        });
+        return None;
+    };
+    read_ref_oid_for_full_ref(common_dir, &full_ref, errors).map(|oid| oid.as_str().to_owned())
 }
 
 #[cfg(test)]
@@ -627,6 +688,7 @@ fn derive_label_from_cwd(cwd: &Path) -> String {
 #[cfg(test)]
 pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<String> {
     git_rev_parse_verify_with_errors(repo_root, revision, &mut Vec::new())
+        .map(|oid| oid.as_str().to_owned())
 }
 
 #[cfg(test)]
@@ -689,9 +751,9 @@ mod tests {
             assert!(read_ref_oid_with_errors(&root, "refs/heads/main", &mut errors).is_none());
             assert!(!errors.is_empty());
         }
-        assert!(valid_oid(&"a".repeat(40)));
-        assert!(valid_oid(&"0".repeat(64)));
-        assert!(!valid_oid(&"A".repeat(40)));
+        assert!(Oid::parse(&"a".repeat(40)).is_some());
+        assert!(Oid::parse(&"0".repeat(64)).is_some());
+        assert!(Oid::parse(&"A".repeat(40)).is_none());
     }
 
     #[test]

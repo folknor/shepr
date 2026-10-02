@@ -300,11 +300,7 @@ impl HeadlessServer {
             else {
                 continue;
             };
-            if workspace.zoomed() {
-                pane_ids.insert(workspace.focused_pane_id());
-            } else {
-                pane_ids.extend(workspace.layout().pane_ids());
-            }
+            pane_ids.extend(workspace.visible_pane_ids());
         }
         self.app.render_dirty.set_immediate_pty_sources(pane_ids);
     }
@@ -360,12 +356,8 @@ impl HeadlessServer {
         let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
             return Vec::new();
         };
-        let visible = if workspace.zoomed() {
-            vec![workspace.focused_pane_id()]
-        } else {
-            workspace.layout().pane_ids()
-        };
-        visible
+        workspace
+            .visible_pane_ids()
             .into_iter()
             .filter_map(|pane_id| {
                 self.app.state.runtime_for_pane_in_workspace(

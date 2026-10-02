@@ -44,7 +44,7 @@ use crate::limits::{
 };
 
 use tokio::sync::{Notify, mpsc};
-use tracing::{info, warn};
+use tracing::info;
 
 use shepr_mux::events::AppEvent;
 
@@ -162,137 +162,65 @@ impl App {
         let settings = state::AppSettings::from_config(config);
         let hostname = shepr_platform::hostname().unwrap_or_default();
 
-        // Try to restore previous session
-        let mut restored_terminals = std::collections::HashMap::new();
-        let mut restored_terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
-        let mut pane_history_carry = shepr_mux::persist::HistoryCarry::default();
         let paths = paths.clone();
-        let load = policy
-            .persists_session()
-            .then(|| shepr_mux::persist::load(&lease));
-        let backup_dir = || {
-            shepr_mux::persist::session_backup_directory(lease.directory())
-                .display()
-                .to_string()
-        };
-        // What every client of this boot is told about a session that did
-        // not come back in full; `None` when there is nothing to tell.
-        let mut restore_notice = None;
-        let mut history_digest = None;
-        let snapshot = match load {
-            Some(shepr_mux::persist::SessionLoad::Loaded {
-                snapshot,
-                history_digest: digest,
-            }) => {
-                history_digest = digest;
-                Some(snapshot)
-            }
-            Some(shepr_mux::persist::SessionLoad::Unusable(reason)) => {
-                restore_notice = Some(shepr_protocol::SessionRestoreNotice {
-                    loss: shepr_protocol::SessionRestoreLoss::Unusable { reason },
-                    backup_dir: backup_dir(),
-                });
-                None
-            }
-            Some(shepr_mux::persist::SessionLoad::Missing) | None => None,
-        };
-        let restored_host_theme = snapshot
-            .as_ref()
-            .map_or_default(|snapshot| snapshot.host_theme.to_theme());
-        // Whether the first save must copy the on-disk session into
-        // `session-backups` before replacing it: the file either could not be
-        // loaded, or restore discarded saved workspace or pane data, or
-        // replaced a saved workspace ID still present in it.
-        let mut protect_unloaded = policy.persists_session() && snapshot.is_none();
-        let (workspaces, active) = if let Some(snap) = snapshot {
-            let history = config
-                .experimental()
-                .pane_history
-                .then(|| shepr_mux::persist::load_history(&lease, history_digest.as_deref()))
-                .flatten();
-            // No view exists yet, so each workspace is laid out in the headless
-            // area (what the server lays out against until a client
-            // attaches), and each restored pane starts at its own size in
-            // it. The saved host theme supplies colours until a live client
-            // reports its own.
-            let socket_path = paths.server_address().socket().to_path_buf();
-            let restored = shepr_mux::persist::restore(
-                &snap,
-                history.as_ref(),
-                settings.pane_geometry_in(settings.headless_rect()),
-                settings.pane_scrollback_limit_bytes,
-                shepr_mux::pane::PaneShellConfig::new(
+        let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
+        let socket_path = paths.server_address().socket().to_path_buf();
+        let opened = shepr_mux::persist::open_session(
+            lease,
+            &shepr_mux::persist::SessionOpenOptions {
+                policy: if policy.persists_session() {
+                    shepr_mux::persist::SessionOpenPolicy::Persist
+                } else {
+                    shepr_mux::persist::SessionOpenPolicy::Never
+                },
+                pane_history: config.experimental().pane_history,
+                geometry: settings.pane_geometry_in(settings.headless_rect()),
+                scrollback_limit_bytes: settings.pane_scrollback_limit_bytes,
+                shell_config: shepr_mux::pane::PaneShellConfig::new(
                     &settings.default_shell,
                     settings.login_shell,
                 ),
-                &socket_path,
-                config.session().resume_agents_on_restore,
-                &event_tx,
-                &render_notify,
-                &render_dirty,
-                &pane_teardowns,
-                clock.now,
-            );
-            restored_terminals = restored.terminals;
-            restored_terminal_runtimes = restored.terminal_runtimes.into();
-            pane_history_carry = restored.history_carry;
-            let loss = shepr_protocol::SessionRestoreLoss::partial(
-                restored.dropped_workspaces,
-                restored.restore_damage,
-            );
-            let restore_was_partial = loss.is_some();
-            if let Some(loss) = loss {
-                protect_unloaded = true;
-                warn!(
-                    dropped_workspaces = restored.dropped_workspaces,
-                    restore_damage = restored.restore_damage,
-                    "session restore discarded saved data; the saved session is backed up to session-backups before the first save"
-                );
-                restore_notice = Some(shepr_protocol::SessionRestoreNotice {
-                    loss,
-                    backup_dir: backup_dir(),
-                });
-            }
-            let outcome = if restore_was_partial {
-                "partial"
-            } else if restored.workspaces.is_empty() {
-                "empty"
-            } else {
-                "ok"
-            };
+                socket_path: &socket_path,
+                resume_agents_on_restore: config.session().resume_agents_on_restore,
+                events: &event_tx,
+                render_notify: &render_notify,
+                render_dirty: &render_dirty,
+                pane_teardowns: &pane_teardowns,
+                now: clock.now,
+            },
+            std::sync::Arc::clone(&save_finished),
+        );
+        let shepr_mux::persist::OpenedSession {
+            policy: session_policy,
+            restored,
+            restored_host_theme,
+            persister,
+            restore_notice,
+            restore_summary,
+        } = opened;
+        if let Some((workspaces, outcome)) = restore_summary {
             crate::logging::session_restored(
-                &lease
-                    .directory()
+                &paths
+                    .data_dir()
                     .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-                restored.workspaces.len(),
+                workspaces,
                 outcome,
             );
-            if restored.workspaces.is_empty() {
-                (Vec::new(), None)
-            } else {
-                (restored.workspaces, restored.active)
-            }
-        } else {
-            (Vec::new(), None)
-        };
-        // From here on the persister is the one owner of the data directory:
-        // it holds the lease, the writer and the carried pane history. An app
-        // that persists nothing only holds the lease, with no thread and no
-        // writer. Each finished job fires `save_finished`, which the event
-        // loop waits on to reap the save.
-        let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
-        let persister = if policy.persists_session() {
-            shepr_mux::persist::SessionPersister::spawn(
-                lease,
-                protect_unloaded,
-                pane_history_carry,
-                std::sync::Arc::clone(&save_finished),
-            )
-        } else {
-            shepr_mux::persist::SessionPersister::lease_only(
-                lease,
-                std::sync::Arc::clone(&save_finished),
-            )
+        }
+        let restored_host_theme = restored_host_theme.unwrap_or_default();
+        let (workspaces, active, restored_terminals, restored_terminal_runtimes) = match restored {
+            Some(restored) => (
+                restored.workspaces,
+                restored.active,
+                restored.terminals,
+                restored.terminal_runtimes.into(),
+            ),
+            None => (
+                Vec::new(),
+                None,
+                std::collections::HashMap::new(),
+                shepr_mux::pane::PaneRuntimeRegistry::new(),
+            ),
         };
 
         info!(
@@ -349,7 +277,11 @@ impl App {
             default_workspace_retry_failures: 0,
             runtimes_replaced_panes: Vec::new(),
             pending_resume_commands: std::collections::HashMap::new(),
-            session_saver: session::SessionSaver::new(persister, save_finished),
+            session_saver: session::SessionSaver::new(
+                persister,
+                save_finished,
+                session_policy == shepr_mux::persist::SessionOpenPolicy::Persist,
+            ),
             hostname,
             window_title_template: None,
             persist_pane_history: config.experimental().pane_history,
@@ -1068,6 +1000,7 @@ mod tests {
     #[test]
     fn headless_next_loop_deadline_ignores_resize_poll() {
         let mut app = test_app();
+        app.session_saver.admit_saves_for_test();
         let now = Instant::now();
         app.session_saver
             .set_autosave_deadline(Some(now + Duration::from_secs(2)));
@@ -1128,7 +1061,7 @@ mod tests {
         assert!(app.session_saver.autosave_deadline().is_some());
 
         release.complete(Ok(()));
-        app.policy = AppPolicy::Suspended;
+        app.freeze_session_saves();
         app.save_session_now();
     }
 

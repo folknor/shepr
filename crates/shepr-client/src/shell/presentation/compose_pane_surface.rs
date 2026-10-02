@@ -23,8 +23,7 @@ pub(in crate::shell) fn compose_pane_surface(
         .min(target.height.saturating_sub(area.y));
     let hyperlink_base = u32::try_from(target.hyperlinks.len()).unwrap_or(u32::MAX);
     target.hyperlinks.extend(source.hyperlinks.iter().cloned());
-    let consistent = target.cells.len() == target_width * usize::from(target.height)
-        && source.cells.len() == source_width * usize::from(source.height);
+    let consistent = target.grid().is_ok() && source.grid().is_ok();
 
     if consistent && copy_width > 0 {
         let mut target_covered = vec![false; target_width];
@@ -60,7 +59,10 @@ pub(in crate::shell) fn compose_pane_surface(
             for (col, source_cell) in source_row[..usize::from(copy_width)].iter().enumerate() {
                 let mut cell = source_cell.clone();
                 cell.hyperlink = source_cell.hyperlink.and_then(|index| {
-                    ((index as usize) < source.hyperlinks.len()).then_some(hyperlink_base + index)
+                    usize::try_from(index)
+                        .ok()
+                        .filter(|index| *index < source.hyperlinks.len())
+                        .and_then(|_| hyperlink_base.checked_add(index))
                 });
                 if source_remnants.contains(&col) {
                     // A cut pane glyph becomes the blank the server emits for

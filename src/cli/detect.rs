@@ -2,6 +2,8 @@
 //! screen and OSC values the detector evaluates for a pane; `explain` shows
 //! which rule decided a pane's state, or evaluates a saved capture locally.
 
+use std::path::{Path, PathBuf};
+
 use clap::ArgMatches;
 
 use shepr_api::schema::{DetectionCapture, ErrorBody, ErrorResponse, Method, PaneTarget, Request};
@@ -10,16 +12,19 @@ use super::matches::{try_flag, try_string};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
-    Capture { pane: String },
+    Capture { pane: shepr_protocol::PublicPaneId },
     Explain(ExplainArgs),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ExplainSource {
+    Pane(shepr_protocol::PublicPaneId),
+    File { path: PathBuf, agent: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExplainArgs {
-    /// A live target. Only a pane id passes the spec's value parser.
-    pub(super) pane: Option<String>,
-    pub(super) file: Option<String>,
-    pub(super) agent: Option<String>,
+    pub(super) source: ExplainSource,
     pub(super) json: bool,
     pub(super) verbose: bool,
 }
@@ -28,15 +33,23 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
     match matches.subcommand() {
         Some(("capture", command)) => Some(Command::Capture {
             // The spec marks the pane required; `None` means spec and handler disagree.
-            pane: try_string(command, "pane").ok()??,
+            pane: super::matches::try_value(command, "pane").ok()??,
         }),
-        Some(("explain", command)) => Some(Command::Explain(ExplainArgs {
-            pane: try_string(command, "pane").ok()?,
-            file: try_string(command, "file").ok()?,
-            agent: try_string(command, "agent").ok()?,
-            json: try_flag(command, "json").ok()?,
-            verbose: try_flag(command, "verbose").ok()?,
-        })),
+        Some(("explain", command)) => {
+            let pane = super::matches::try_value(command, "pane").ok()?;
+            let file = try_string(command, "file").ok()?.map(PathBuf::from);
+            let agent = try_string(command, "agent").ok()?;
+            let source = match (pane, file, agent) {
+                (Some(pane), None, None) => ExplainSource::Pane(pane),
+                (None, Some(path), Some(agent)) => ExplainSource::File { path, agent },
+                _ => return None,
+            };
+            Some(Command::Explain(ExplainArgs {
+                source,
+                json: try_flag(command, "json").ok()?,
+                verbose: try_flag(command, "verbose").ok()?,
+            }))
+        }
         _ => None,
     }
 }
@@ -47,22 +60,30 @@ pub(super) fn run_detect_command(
 ) -> super::CliResult<i32> {
     match command {
         Command::Capture { pane } => capture(paths, &pane),
-        Command::Explain(args) => explain(paths, args),
+        Command::Explain(args) => match args.source {
+            ExplainSource::Pane(pane) => explain(paths, &pane, args.json, args.verbose),
+            ExplainSource::File { path, agent } => {
+                run_file_explain(&path, &agent, args.json, args.verbose)
+            }
+        },
     }
 }
 
 /// The request behind `detect capture`: the server answers with the complete
 /// detector input for that pane, whether or not an agent is currently detected.
-fn capture_request(pane: &str) -> Request {
+fn capture_request(pane: &shepr_protocol::PublicPaneId) -> Request {
     Request {
         id: "cli:detect:capture".into(),
         method: Method::DetectCapture(PaneTarget {
-            pane_id: pane.to_owned(),
+            pane_id: pane.to_string(),
         }),
     }
 }
 
-fn capture(paths: &shepr_config::AppPaths, pane: &str) -> super::CliResult<i32> {
+fn capture(
+    paths: &shepr_config::AppPaths,
+    pane: &shepr_protocol::PublicPaneId,
+) -> super::CliResult<i32> {
     let response = super::send_request(paths, &capture_request(pane))?;
     if response.get("error").is_some() {
         print_detect_error(&response)?;
@@ -77,38 +98,39 @@ fn capture(paths: &shepr_config::AppPaths, pane: &str) -> super::CliResult<i32> 
     Ok(0)
 }
 
-pub(super) fn explain(paths: &shepr_config::AppPaths, args: ExplainArgs) -> super::CliResult<i32> {
-    let target = args.pane.ok_or_else(|| {
-        super::CliError::Usage("explain requires PANE unless --file is used".into())
-    })?;
+pub(super) fn explain(
+    paths: &shepr_config::AppPaths,
+    target: &shepr_protocol::PublicPaneId,
+    json: bool,
+    verbose: bool,
+) -> super::CliResult<i32> {
     let response = super::send_request(
         paths,
         &Request {
             id: "cli:detect:explain".into(),
-            method: Method::DetectExplain(PaneTarget { pane_id: target }),
+            method: Method::DetectExplain(PaneTarget {
+                pane_id: target.to_string(),
+            }),
         },
     )?;
     if response.get("error").is_some() {
         print_detect_error(&response)?;
         return Ok(1);
     }
-    print_explain_output(&response["result"]["explain"], args.json, args.verbose);
+    print_explain_output(&response["result"]["explain"], json, verbose);
     Ok(0)
 }
 
 /// Evaluates a saved capture in this process. `cli::run` sends a `--file`
 /// explain here before it resolves any application paths.
-pub(super) fn run_file_explain(args: &ExplainArgs) -> super::CliResult<i32> {
-    let path = args
-        .file
-        .as_deref()
-        .ok_or_else(|| super::CliError::Usage("--file is required".into()))?;
-    let agent_label = args
-        .agent
-        .as_deref()
-        .ok_or_else(|| super::CliError::Usage("--file requires --agent".into()))?;
+pub(super) fn run_file_explain(
+    path: &Path,
+    agent_label: &str,
+    json: bool,
+    verbose: bool,
+) -> super::CliResult<i32> {
     let explain = explain_file(path, agent_label)?;
-    print_explain_output(&explain, args.json, args.verbose);
+    print_explain_output(&explain, json, verbose);
     Ok(0)
 }
 
@@ -136,7 +158,7 @@ fn print_detect_error(response: &serde_json::Value) -> super::CliResult<()> {
 
 /// Evaluates a saved capture against an agent's compiled manifest. Runs in
 /// the CLI process and needs no server.
-pub(super) fn explain_file(path: &str, agent_label: &str) -> super::CliResult<serde_json::Value> {
+pub(super) fn explain_file(path: &Path, agent_label: &str) -> super::CliResult<serde_json::Value> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
@@ -144,7 +166,7 @@ pub(super) fn explain_file(path: &str, agent_label: &str) -> super::CliResult<se
                 id: "cli:detect:explain".into(),
                 error: ErrorBody::new(
                     &shepr_api::error::ApiErrorCode::AgentExplainFileReadFailed,
-                    format!("failed to read explain file {path}: {err}"),
+                    format!("failed to read explain file {}: {err}", path.display()),
                 ),
             }));
         }
@@ -152,7 +174,10 @@ pub(super) fn explain_file(path: &str, agent_label: &str) -> super::CliResult<se
     let capture: DetectionCapture = serde_json::from_str(&content).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("failed to parse detection capture {path}: {error}"),
+            format!(
+                "failed to parse detection capture {}: {error}",
+                path.display()
+            ),
         )
     })?;
     Ok(shepr_agent::detect::manifest::explain_to_json_value(
@@ -283,7 +308,7 @@ mod tests {
         assert_eq!(
             command(&["detect", "capture", "w1:p1"]),
             Command::Capture {
-                pane: "w1:p1".into()
+                pane: "w1:p1".parse().expect("test precondition")
             }
         );
         for args in [
@@ -327,8 +352,11 @@ mod tests {
         let Command::Explain(args) = command(&["detect", "explain", "w1:p1"]) else {
             panic!("expected detect explain");
         };
-        assert_eq!(args.pane.as_deref(), Some("w1:p1"));
-        assert!(!args.json && !args.verbose && args.file.is_none());
+        assert!(matches!(
+            args.source,
+            ExplainSource::Pane(ref pane) if pane.as_str() == "w1:p1"
+        ));
+        assert!(!args.json && !args.verbose);
 
         let Command::Explain(args) = command(&["detect", "explain", "w1:p1", "--json", "-v"])
         else {
@@ -347,9 +375,11 @@ mod tests {
         ]) else {
             panic!("expected detect explain");
         };
-        assert_eq!(args.file.as_deref(), Some("screen.txt"));
-        assert_eq!(args.agent.as_deref(), Some("codex"));
-        assert_eq!(args.pane, None);
+        assert!(matches!(
+            args.source,
+            ExplainSource::File { ref path, ref agent }
+                if path.as_path() == Path::new("screen.txt") && agent == "codex"
+        ));
         assert!(args.verbose);
     }
 
@@ -370,7 +400,8 @@ mod tests {
 
     #[test]
     fn capture_request_names_the_pane_and_nothing_else() {
-        let request = capture_request("w1:p1");
+        let pane = "w1:p1".parse().expect("valid pane id");
+        let request = capture_request(&pane);
         let Method::DetectCapture(target) = request.method.clone() else {
             panic!("capture should use detect.capture");
         };
@@ -392,13 +423,13 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&capture).expect("encode capture"))
             .expect("write capture");
 
-        let explain = explain_file(path.to_str().expect("utf8 path"), "codex")
-            .expect("file evaluation should not need a server");
+        let explain =
+            explain_file(&path, "codex").expect("file evaluation should not need a server");
         assert_eq!(explain["state"], "blocked");
         assert_eq!(explain["matched_rule"]["id"], "live_strong_blocker");
 
         let missing = scratch.join("missing.txt");
-        assert!(explain_file(missing.to_str().expect("utf8 path"), "codex").is_err());
+        assert!(explain_file(&missing, "codex").is_err());
     }
 
     #[test]
@@ -413,8 +444,8 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&capture).expect("encode capture"))
             .expect("write capture");
 
-        let explain = explain_file(path.to_str().expect("utf8 path"), "codex")
-            .expect("file evaluation should not need a server");
+        let explain =
+            explain_file(&path, "codex").expect("file evaluation should not need a server");
         assert_eq!(explain["state"], "blocked");
         assert_eq!(explain["matched_rule"]["id"], "osc_title_blocked");
     }
@@ -431,8 +462,8 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&capture).expect("encode capture"))
             .expect("write capture");
 
-        let explain = explain_file(path.to_str().expect("utf8 path"), "letta")
-            .expect("file evaluation should not need a server");
+        let explain =
+            explain_file(&path, "letta").expect("file evaluation should not need a server");
         assert_eq!(explain["state"], "blocked");
         assert_eq!(explain["matched_rule"]["id"], "osc_progress_blocked");
     }

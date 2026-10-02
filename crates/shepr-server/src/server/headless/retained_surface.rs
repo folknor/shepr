@@ -594,19 +594,9 @@ impl HeadlessServer {
                 changed_panes.push(pane.clone());
             }
 
-            // Panes and scrollbars were collected pane by pane; clients accept only
-            // sorted, disjoint spans, so order them and send a full surface instead of
-            // a patch they would reject.
+            // Collection is pane by pane; put spans in the row-major order required
+            // by the shared baseline admission in prepare_pane_surface_patch below.
             shepr_protocol::sort_patch_rows(&mut patch_rows);
-            if shepr_protocol::validate_patch_rows(
-                surface.frame.width,
-                surface.frame.height,
-                &patch_rows,
-            )
-            .is_err()
-            {
-                fallback!("invalid_patch", client_id, 'recipients);
-            }
             let cursor = retained_cursor(&self.app, &recipient.panes);
             let cursor_changed = cursor != surface.frame.cursor;
             let patch = shepr_protocol::PaneSurfacePatch {

@@ -96,7 +96,9 @@ impl PaneExitCheckpoint {
     /// Whether an exit arriving now must wait for a checkpoint: Idle,
     /// Requested and a Saved whose session has since changed
     /// (`session_dirty`) hold; a Saved with an unchanged session and
-    /// Abandoned do not.
+    /// Abandoned do not. `session_dirty` is AppState's current pending signal;
+    /// the app checks it directly when deciding whether a preserved layout is
+    /// still authoritative.
     pub(super) fn would_hold(&self, session_dirty: bool) -> bool {
         match self {
             Self::Idle { .. } | Self::Requested { .. } => true,

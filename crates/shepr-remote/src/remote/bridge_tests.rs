@@ -1,6 +1,12 @@
 use super::*;
 use std::time::Duration;
 
+/// Whether `error` came from ssh, the link or a bounded command timeout rather
+/// than from a remote command, so nothing is known about the remote install.
+fn failed_before_remote_result(error: &io::Error) -> bool {
+    crate::SshFailureDiagnostic::from_error(error).failed_before_remote_result()
+}
+
 fn upload_test_streams(
     name: &str,
 ) -> (

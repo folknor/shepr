@@ -6,12 +6,13 @@ use super::GitReadError;
 use super::discovery::{
     GitWorktreeInfo, canonicalize_best_effort_path, command_failed, run_git_output,
 };
+use super::identity::{BranchName, FullRefName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BranchConfig {
     pub(super) remote: String,
-    pub(super) merge_ref: String,
-    full_ref: String,
+    pub(super) merge_ref: FullRefName,
+    full_ref: FullRefName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +71,7 @@ impl Dependencies {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConfigCtx {
-    pub(super) branch: String,
+    pub(super) branch: BranchName,
     pub(super) config: Option<BranchConfig>,
     pub(super) dependencies: Dependencies,
 }
@@ -194,41 +195,65 @@ fn config_deps(
 
 fn branch_config(
     info: &GitWorktreeInfo,
-    branch: &str,
+    branch: &BranchName,
 ) -> Result<Option<BranchConfig>, GitReadError> {
-    let full_ref = format!("refs/heads/{branch}");
+    let full_ref = branch.full_ref();
     // A ref query cannot enumerate the config origins used to derive its
     // upstream. Keep a separate config-origin probe on config changes so
     // conditional includes and Git's refspec rules have one owner: Git.
     let args = [
         "for-each-ref",
         "--format=%(refname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)",
-        &full_ref,
+        full_ref.as_str(),
     ];
     let output = config_output(&info.repo_root, &args)?;
     let output = String::from_utf8(output).map_err(|_| GitReadError::InvalidUtf8 {
         cwd: info.repo_root.clone(),
         arguments: args.join(" "),
     })?;
-    Ok(output.lines().find_map(|line| {
+    for line in output.lines() {
         let mut fields = line.split('\0');
-        if fields.next()? != full_ref {
-            return None;
+        if fields.next() != Some(full_ref.as_str()) {
+            continue;
         }
-        let upstream = fields.next()?;
-        let remote = fields.next()?;
-        let merge_ref = fields.next()?;
-        (!upstream.is_empty()).then(|| BranchConfig {
+        let Some(upstream) = fields.next() else {
+            return Err(GitReadError::InvalidOutput {
+                cwd: info.repo_root.clone(),
+                arguments: args.join(" "),
+                output: line.to_owned(),
+            });
+        };
+        if upstream.is_empty() {
+            return Ok(None);
+        }
+        let (Some(remote), Some(merge_ref)) = (fields.next(), fields.next()) else {
+            return Err(GitReadError::InvalidOutput {
+                cwd: info.repo_root.clone(),
+                arguments: args.join(" "),
+                output: line.to_owned(),
+            });
+        };
+        let (Some(full_ref), Some(merge_ref)) =
+            (FullRefName::parse(upstream), FullRefName::parse(merge_ref))
+        else {
+            return Err(GitReadError::InvalidOutput {
+                cwd: info.repo_root.clone(),
+                arguments: args.join(" "),
+                output: line.to_owned(),
+            });
+        };
+        return Ok(Some(BranchConfig {
             remote: remote.to_owned(),
-            merge_ref: merge_ref.to_owned(),
-            full_ref: upstream.to_owned(),
-        })
-    }))
+            merge_ref,
+            full_ref,
+        }));
+    }
+    Ok(None)
 }
 
 pub(super) fn read_config_for_status(
     info: &GitWorktreeInfo,
-    branch: &str,
+    branch: &BranchName,
     errors: &mut Vec<GitReadError>,
 ) -> ConfigCtx {
     // Keep refused environment values typed apart from errors reading config files.
@@ -239,7 +264,7 @@ pub(super) fn read_config_for_status(
                 message: error.to_string(),
             });
             return ConfigCtx {
-                branch: branch.to_owned(),
+                branch: branch.clone(),
                 config: None,
                 dependencies: Dependencies::Uncacheable,
             };
@@ -250,7 +275,7 @@ pub(super) fn read_config_for_status(
         Err(error) => {
             errors.push(error);
             return ConfigCtx {
-                branch: branch.to_owned(),
+                branch: branch.clone(),
                 config: None,
                 dependencies: Dependencies::Uncacheable,
             };
@@ -265,14 +290,14 @@ pub(super) fn read_config_for_status(
         }
     };
     ConfigCtx {
-        branch: branch.to_owned(),
+        branch: branch.clone(),
         config,
         dependencies: deps,
     }
 }
 
-pub(super) fn upstream_full_ref(config: &BranchConfig) -> Option<String> {
-    Some(config.full_ref.clone())
+pub(super) fn upstream_full_ref(config: &BranchConfig) -> FullRefName {
+    config.full_ref.clone()
 }
 
 pub(super) fn read_repository_format_value(
@@ -305,6 +330,8 @@ pub(super) fn read_repository_format_value(
     let query = format!("{section}.{key}");
     let args = ["config", "--file", name, "--no-includes", "--get", &query];
     let output = run_git_output(cwd, &args)?;
+    // For `config --get`, status 1 means this key is absent; keep that meaning
+    // beside the probe instead of inferring it from a shared argv matcher.
     if output.status.code() == Some(1) {
         return Ok((None, Dependencies::tracked(vec![dep])));
     }
@@ -324,6 +351,8 @@ pub(super) fn read_repository_format_value(
 pub(super) fn read_bare(info: &GitWorktreeInfo) -> Result<bool, GitReadError> {
     let args = ["config", "--includes", "--bool", "--get", "core.bare"];
     let output = run_git_output(&info.git_dir, &args)?;
+    // This `config --get` probe uses the same key-absent exit status, declared
+    // next to its own argv so unrelated Git commands keep their own policy.
     if output.status.code() == Some(1) {
         return Ok(false);
     }

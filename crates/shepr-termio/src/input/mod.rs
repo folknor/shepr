@@ -15,8 +15,8 @@ pub use keybindings::{
     resolve_non_indexed_action, resolve_prefix_binding,
 };
 pub use lease::{InputLeaseKey, InputLeaseTable, RepeatPlan};
-pub use model::MouseProtocolMode;
 pub use model::{
     KeyboardProtocol, MouseProtocolEncoding, TerminalKey, host_modify_other_keys_mode,
 };
 pub use parse::parse_terminal_key_sequence;
+pub use shepr_vt::MouseProtocolMode;

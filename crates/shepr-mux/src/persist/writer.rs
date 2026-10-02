@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::SessionSnapshot;
-use super::error::SaveError;
+use super::error::{SaveError, SaveRefusal};
 use super::snapshot::SessionHistory;
 
 fn history_file_stamp(path: &Path) -> io::Result<Option<shepr_platform::FileStamp>> {
@@ -183,8 +183,15 @@ impl SessionWriter {
         }
     }
 
-    fn may_write(&self) -> bool {
-        self.lease.is_some()
+    fn may_write(&self) -> Result<bool, SaveError> {
+        // A missing lease means this writer was retired and should quietly
+        // ignore later direct calls. A present but released lease must refuse
+        // writes because another server may own the directory now.
+        match self.lease.as_ref() {
+            None => Ok(false),
+            Some(lease) if lease.is_active() => Ok(true),
+            Some(_) => Err(SaveError::Refused(SaveRefusal::InactiveLease)),
+        }
     }
 
     /// Release ownership after the final shutdown save. Later saves and
@@ -228,6 +235,9 @@ impl SessionWriter {
         history: Option<&SessionHistory>,
         now: SystemTime,
     ) -> Result<Option<String>, SaveError> {
+        if !self.may_write()? {
+            return Ok(None);
+        }
         let history = match history {
             None => HistoryIntent::Remove,
             Some(history) => self.prepare_history(history),
@@ -246,6 +256,9 @@ impl SessionWriter {
         digest: &str,
         now: SystemTime,
     ) -> Result<Option<String>, SaveError> {
+        if !self.may_write()? {
+            return Ok(None);
+        }
         let digest = super::io::HistoryDigest::from_hex(digest).ok_or_else(|| {
             SaveError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -291,9 +304,6 @@ impl SessionWriter {
         history: HistoryIntent,
         now: SystemTime,
     ) -> Result<Option<String>, SaveError> {
-        if !self.may_write() {
-            return Ok(None);
-        }
         let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
         let result = self.preserve_unloaded(now).and_then(|()| {
             snapshot_history_plan = self.prepare_snapshot_history(snapshot, now);
@@ -464,7 +474,7 @@ impl SessionWriter {
     /// Clears the layout and history, reporting either file's clear failure.
     /// `now` supplies the time used for recovery-copy naming and preservation.
     pub fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
-        if !self.may_write() {
+        if !self.may_write()? {
             return Ok(());
         }
         self.written_history = None;
@@ -1482,7 +1492,7 @@ mod tests {
     fn retiring_releases_the_directory_and_ignores_later_saves() {
         let mut writer = writer(false);
         writer.save_for_test(&snapshot(), None).expect("save");
-        assert!(writer.may_write());
+        assert!(writer.may_write().expect("active lease"));
         let lock = File::open(
             writer
                 .path

@@ -93,7 +93,10 @@ fn path_lookup_result_with_rejected_candidate(
 ) -> io::Result<Option<RemoteExecutable>> {
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", output);
-        if super::SshFailureDiagnostic::from_error(&error).failed_before_remote_result() {
+        if !crate::EndpointFailure::from_error(&error)
+            .evidence()
+            .rejects_candidate()
+        {
             return Err(error);
         }
         return Ok(None);
@@ -118,12 +121,12 @@ fn path_lookup_result_with_rejected_candidate(
 /// the attempt budget, so each attempt completes at least one and discovery finishes after
 /// a bounded number of attempts, each of which still ends within the budget.
 ///
-/// Progress survives transient network failures and full round-trip timeouts that may
-/// be waiting for authentication, because no remote command returned a result. Any SSH
-/// process failure clears it, including host-key, authentication, local configuration
-/// and unrecognized failures: the next attempt starts from fresh discovery after that
-/// condition changes. Remote command and compatibility failures also clear progress,
-/// since they can mean the installation changed.
+/// Progress survives failures that produced no remote result while the target
+/// remains trusted, including network losses, round-trip timeouts that may be
+/// waiting for authentication, and authentication refusals. A host-key, local
+/// SSH configuration, remote rejection or unrecognized ssh failure leaves the
+/// target's identity in doubt and clears it, as does any remote command or
+/// compatibility result, since the installation may have changed.
 #[derive(Default)]
 pub(crate) struct DiscoveryProgress {
     account_shell_path: Option<Option<RemoteExecutable>>,
@@ -144,22 +147,19 @@ impl DiscoveryProgress {
     /// round trip stops the pass. Returns the first matching candidate, the first
     /// candidate's rejection if none match, or the not-ready error when no candidate
     /// was there to reject.
-    /// Progress survives a transient link failure or a full round-trip timeout that
-    /// may be waiting for interactive authentication. SSH process failures such as
-    /// authentication rejection, host-key rejection and local configuration errors
-    /// clear it, as do remote command and compatibility failures.
+    /// Progress survives failures that returned no remote result while the target
+    /// remains trusted. Target trust failures and remote results end this snapshot.
     pub(super) fn advance(
         &mut self,
         steps: &mut impl DiscoverySteps,
     ) -> io::Result<RemoteExecutable> {
         let result = self.run_remaining(steps);
-        if let Err(error) = &result {
-            let diagnostic = super::SshFailureDiagnostic::from_error(error);
-            if !diagnostic.is_transient_network_failure()
-                && !diagnostic.is_authentication_wait_timeout()
-            {
-                *self = Self::default();
-            }
+        if let Err(error) = &result
+            && !crate::EndpointFailure::from_error(error)
+                .evidence()
+                .preserves_discovery()
+        {
+            *self = Self::default();
         }
         result
     }
@@ -194,7 +194,11 @@ impl DiscoveryProgress {
                 // later candidate, such as the real binary behind a PATH shim. A
                 // failure before any remote result says nothing about this
                 // candidate, so it ends the pass with progress kept.
-                Err(error) if !failed_before_remote_result(&error) => {
+                Err(error)
+                    if crate::EndpointFailure::from_error(&error)
+                        .evidence()
+                        .rejects_candidate() =>
+                {
                     if self.first_candidate_rejection.is_none() {
                         self.first_candidate_rejection = Some(error);
                     }
@@ -432,11 +436,9 @@ fn ensure_remote_sibling_build(
         let binary = sibling
             .binary
             .as_deref()
-            .map(super::server_lifecycle::printable_remote_text)
             .map_or_else(String::new, |binary| format!(" ({binary})"));
         return Err(remote_candidate_mismatch(format!(
-            "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {}. {install_hint}",
-            super::server_lifecycle::printable_remote_text(error)
+            "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {error}. {install_hint}"
         )));
     }
     if sibling
@@ -446,8 +448,8 @@ fn ensure_remote_sibling_build(
     {
         return Ok(());
     }
-    let version = super::server_lifecycle::printable_remote_value(sibling.version.as_deref());
-    let build_id = super::server_lifecycle::printable_remote_value(sibling.build_id.as_deref());
+    let version = super::server_lifecycle::remote_display_value(sibling.version.as_deref());
+    let build_id = super::server_lifecycle::remote_display_value(sibling.build_id.as_deref());
     Err(remote_candidate_mismatch(format!(
         "remote Shepr installation error on {target}: the shepr-server beside shepr is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
         shepr_protocol::build_version(),
@@ -459,8 +461,8 @@ fn remote_compatibility_error(
     target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Error {
-    let version = super::server_lifecycle::printable_remote_value(status.version.as_deref());
-    let build_id = super::server_lifecycle::printable_remote_value(status.build_id.as_deref());
+    let version = super::server_lifecycle::remote_display_value(status.version.as_deref());
+    let build_id = super::server_lifecycle::remote_display_value(status.build_id.as_deref());
     let advice = if shepr_config::BuildProfile::current() == shepr_config::BuildProfile::Dev {
         "This is a dev client, which needs a dev build of shepr on the remote host; discovery only finds installed builds (normally release), so install a dev build there and retry"
     } else {
@@ -479,8 +481,10 @@ fn remote_candidate_mismatch(message: String) -> io::Error {
     crate::remote_candidate_mismatch_error(message)
 }
 
+#[cfg(test)]
 pub(super) fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
-    super::SshFailureDiagnostic::from_error(error).is_remote_candidate_mismatch()
+    crate::EndpointFailure::from_error(error).evidence()
+        == crate::failure::FailureEvidence::CandidateMismatch
 }
 
 #[cfg(test)]

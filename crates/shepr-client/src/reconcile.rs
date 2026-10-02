@@ -8,12 +8,7 @@ use endpoint::{
 /// the choice already says that.
 pub(super) fn present_notice(state: &mut ClientState, message: String) {
     state.shell.receive_endpoint_unavailable(message);
-    if let Some(frame) = state.shell.compose(
-        state.reported_geometry.cols(),
-        state.reported_geometry.rows(),
-    ) {
-        state.present_chrome(frame);
-    }
+    state.mark_chrome_dirty();
 }
 
 /// The notice when the endpoint a move targets disconnects before the move commits.
@@ -63,7 +58,13 @@ impl ClientLoop {
             }
         }
         let baseline = HostBaseline {
-            geometry: view_geometry(&self.state),
+            geometry: view_geometry(
+                self.state.reported_geometry,
+                self.state.shell.surface_size(
+                    self.state.reported_geometry.cols(),
+                    self.state.reported_geometry.rows(),
+                ),
+            ),
             host_focused: self.state.shell.host_focus_baseline(),
             theme: &self.state.host_theme_updates,
         };
@@ -103,12 +104,7 @@ impl ClientLoop {
                         .send_next(&committed.shown, &mut self.write_stream, now);
                 cancel_endpoint_commands(&mut self.state.shell, cancelled);
                 self.state.request_repaint();
-                if let Some(frame) = self.state.shell.compose(
-                    self.state.reported_geometry.cols(),
-                    self.state.reported_geometry.rows(),
-                ) {
-                    self.state.present_frame(frame);
-                }
+                self.state.mark_pane_dirty();
             }
             Err(reason) => self.fail_move(|label| format!("{label}: {reason}")),
             Ok(None) => {}
@@ -119,6 +115,7 @@ impl ClientLoop {
             &self.state.shell,
             &mut self.next_view_serial,
         );
+        self.state.present_pending();
         Ok(())
     }
 
@@ -163,12 +160,7 @@ impl ClientLoop {
                 present_notice(&mut self.state, message);
             }
             Lost::Unrelated => {
-                if let Some(frame) = self.state.shell.compose(
-                    self.state.reported_geometry.cols(),
-                    self.state.reported_geometry.rows(),
-                ) {
-                    self.state.present_chrome(frame);
-                }
+                self.state.mark_chrome_dirty();
             }
         }
         Ok(())

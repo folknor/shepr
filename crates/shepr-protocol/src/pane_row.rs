@@ -17,6 +17,10 @@ fn is_lead(cell: &CellData) -> bool {
     cell.grid_width == GridCellWidth::Two && !cell.symbol.is_empty()
 }
 
+// The terminal adapter supplies tails as empty One cells, and output consumers
+// match the same width variants. Changing the wire enum alone cannot change that
+// contract. Pair validity is a row property: changed spans may start with a tail
+// whose lead remains in the baseline, so cell deserialization must not repair it.
 fn is_tail(cell: &CellData) -> bool {
     cell.grid_width == GridCellWidth::One && cell.symbol.is_empty()
 }

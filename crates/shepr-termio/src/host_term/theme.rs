@@ -38,6 +38,11 @@ impl TerminalTheme {
         self
     }
 
+    /// Returns the host's palette entry, falling back to the built-in palette.
+    pub fn palette_color(&self, index: u8) -> RgbColor {
+        self.palette[usize::from(index)].unwrap_or_else(|| shepr_vt::default_palette_color(index))
+    }
+
     pub fn is_empty(self) -> bool {
         self.foreground.is_none()
             && self.background.is_none()

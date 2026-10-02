@@ -607,13 +607,13 @@ pub(super) fn write_managed_ssh_config(
 
 /// Preserve the SSH process exit code and its classified diagnostic in the error source.
 ///
-/// The remote stderr is kept whole (control characters stripped, size bounded
-/// by the capture): it is the diagnostic, and the operator who reads it owns
-/// both hosts, so a login banner or hostname in it exposes nothing new.
-/// `ssh_bridge_exit_error` makes the same choice.
+/// The captured remote stderr becomes the diagnostic. `SshFailureDiagnostic`
+/// wraps it in `RemoteText` once, so line breaks remain readable and terminal
+/// control characters cannot affect local output. `ssh_bridge_exit_error` uses
+/// the same boundary.
 pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr = super::server_lifecycle::printable_remote_text(stderr.trim());
+    let stderr = stderr.trim();
     let message = if stderr.is_empty() {
         format!("{context}: {}", output.status)
     } else {
@@ -621,7 +621,7 @@ pub(super) fn command_failed(context: &str, output: &Output) -> io::Error {
     };
     io::Error::other(super::SshFailureDiagnostic::from_ssh_output(
         output.status.code(),
-        message,
+        &message,
     ))
 }
 

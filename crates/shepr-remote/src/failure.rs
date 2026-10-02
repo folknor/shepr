@@ -1,6 +1,42 @@
 use std::io;
 
-use crate::{SshFailure, SshFailureDiagnostic, SshFailureOrigin, SshTarget};
+use crate::{RemoteText, SshFailure, SshFailureDiagnostic, SshFailureOrigin, SshTarget};
+
+/// What a failure established about the remote executable.
+/// This records evidence from the failure source; callers use the same result
+/// when deciding whether to keep discovery progress or discard a cached path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailureEvidence {
+    /// No remote command result was observed, so existing knowledge is intact.
+    NothingLearned,
+    /// ssh failed in a way that leaves the target's identity in doubt: a host
+    /// key, local configuration, remote rejection or unrecognized ssh failure.
+    /// Previously discovered paths may belong to a different machine.
+    /// Authentication refusals are not here: the host key was accepted.
+    TargetUntrusted,
+    /// The requested executable could not be run at its remembered path.
+    InstallStale,
+    /// A candidate ran but did not match the build or sibling pair.
+    CandidateMismatch,
+    /// The remote answered with an incompatible install or protocol result.
+    InstallChanged,
+    /// The remote answered, but the failure does not identify an install issue.
+    RemoteFault,
+}
+
+impl FailureEvidence {
+    pub(crate) fn preserves_discovery(self) -> bool {
+        matches!(self, Self::NothingLearned)
+    }
+
+    pub(crate) fn invalidates_executable(self) -> bool {
+        matches!(self, Self::InstallStale | Self::CandidateMismatch)
+    }
+
+    pub(crate) fn rejects_candidate(self) -> bool {
+        !matches!(self, Self::NothingLearned | Self::TargetUntrusted)
+    }
+}
 
 /// The operator action established by a failure, independent of its display text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +83,7 @@ enum Cause {
 #[derive(Clone, Debug)]
 pub struct EndpointFailure {
     cause: Cause,
-    message: String,
+    message: RemoteText,
 }
 
 impl EndpointFailure {
@@ -74,42 +110,46 @@ impl EndpointFailure {
         }
         Self {
             cause: Cause::Io(error.kind()),
-            message: error.to_string(),
+            message: RemoteText::from_untrusted(&error.to_string()),
         }
     }
 
     pub fn from_ssh(diagnostic: SshFailureDiagnostic) -> Self {
         Self {
-            message: diagnostic.to_string(),
+            message: diagnostic.message.clone(),
             cause: Cause::Ssh(diagnostic),
         }
     }
 
     pub fn incompatible(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             cause: Cause::Incompatible,
-            message: message.into(),
+            message: RemoteText::from_untrusted(&message),
         }
     }
 
     pub fn local_setup(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             cause: Cause::LocalSetup,
-            message: message.into(),
+            message: RemoteText::from_untrusted(&message),
         }
     }
 
     pub fn backpressure(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             cause: Cause::Backpressure,
-            message: message.into(),
+            message: RemoteText::from_untrusted(&message),
         }
     }
 
     pub fn retry(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             cause: Cause::Retry,
-            message: message.into(),
+            message: RemoteText::from_untrusted(&message),
         }
     }
 
@@ -120,7 +160,7 @@ impl EndpointFailure {
         );
         Self {
             cause: Cause::Shutdown(reason),
-            message,
+            message: RemoteText::from_untrusted(&message),
         }
     }
 
@@ -139,7 +179,7 @@ impl EndpointFailure {
     }
 
     pub fn with_context(mut self, context: &str) -> Self {
-        self.message = format!("{context}: {}", self.message);
+        self.message = RemoteText::from_untrusted(&format!("{context}: {}", self.message));
         self
     }
 
@@ -163,6 +203,23 @@ impl EndpointFailure {
             Cause::Io(kind) if crate::is_ssh_link_error_kind(*kind) => D::Offline,
             Cause::LocalSetup => D::Repair,
             Cause::Io(_) | Cause::Backpressure | Cause::Retry | Cause::Shutdown(_) => D::Retry,
+        }
+    }
+
+    /// Interprets the source of a failure as evidence about remote discovery.
+    /// Display text is deliberately irrelevant: SSH output classification and
+    /// typed remote status errors are the only sources of install evidence.
+    pub(crate) fn evidence(&self) -> FailureEvidence {
+        match &self.cause {
+            Cause::Ssh(diagnostic) => diagnostic.evidence(),
+            Cause::LocalSetup => FailureEvidence::NothingLearned,
+            Cause::Incompatible => FailureEvidence::InstallChanged,
+            Cause::Io(kind) if crate::is_ssh_link_error_kind(*kind) => {
+                FailureEvidence::NothingLearned
+            }
+            Cause::Io(_) | Cause::Backpressure | Cause::Retry | Cause::Shutdown(_) => {
+                FailureEvidence::RemoteFault
+            }
         }
     }
 
@@ -214,7 +271,7 @@ impl EndpointFailure {
 
 impl std::fmt::Display for EndpointFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+        std::fmt::Display::fmt(&self.message, f)
     }
 }
 
@@ -280,7 +337,7 @@ mod tests {
     fn ssh_authentication_keeps_its_prompt_and_hint_after_wrapping() {
         let diagnostic = SshFailureDiagnostic::from_ssh_output(
             Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-            "Permission denied (publickey).".into(),
+            "Permission denied (publickey).",
         );
         let failure = EndpointFailure::from_ssh(diagnostic).with_context("handshake failed");
         let target = crate::SshTarget::parse("buildbox").expect("test precondition");

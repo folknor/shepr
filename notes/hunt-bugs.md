@@ -46,6 +46,13 @@ At(ViewportRow), Below}`. (terminal)
 
 ## Latent defects
 
+## BUG-076 - Machine diagnostic cards keep tabs
+
+Remote text is now sanitized once as `RemoteText`, which keeps tabs and
+newlines, and the client's machine diagnostics no longer filter it again, so a
+tab in remote output reaches the diagnostic card and may render oddly there.
+(wave-8 review)
+
 ## BUG-073 - The unrecognized hook identity warning no longer names its pane
 
 `AgentOwnership::warn_unrecognized_hook_identity` lost its `pane_id` field when
@@ -71,16 +78,6 @@ untagged `PaneDied` or `StateChanged` would skip the generation check that is
 the point of the envelope. No production producer sends one today. The typed
 envelope is filed among the types. Reported by mux-panes, mux-state and
 server-app.
-
-## BUG-047 - One terminal-core lock per input accessor gives inconsistent mode snapshots
-
-`PaneTerminal`'s `mode_enabled`, `bracketed_paste_enabled`,
-`focus_reporting_enabled`, `sgr_pixel_mouse_enabled`, `mouse_reporting_enabled`,
-`modify_other_keys_level` and `negotiated_keyboard_protocol` each take the
-core lock. The server input path calls several in a row for one event
-(`sgr_pixel_mouse_enabled`, `wheel_routing`, then `encode_mouse_wheel`, which
-reads the modes again), so the child can change modes between them. An
-`InputModes` snapshot read under one lock fixes both. (terminal)
 
 ## Hot-path costs
 

@@ -12,10 +12,10 @@ use super::state::SpawnGeometry;
 use super::{App, Outcome};
 use shepr_api::error::ApiResult;
 use shepr_protocol::WorkspaceId;
-use shepr_protocol::command::{EndpointCommand, EndpointError, EndpointReply};
+use shepr_protocol::command::{EndpointAppCommand, EndpointError, EndpointReply};
 
 pub(crate) use endpoint::EndpointEffects;
-use endpoint::{HandlerResult, rejected};
+use endpoint::HandlerResult;
 
 /// What the server loop knows about the requesting client that no app state
 /// holds.
@@ -75,9 +75,9 @@ impl App {
     /// command's navigation effect is returned, not applied: navigation is per
     /// client and the loop owns it, as it owns the reconcile, the geometry
     /// settlement and the reply's focus flags that follow.
-    pub(crate) fn handle_endpoint_command_with_render(
+    pub(crate) fn handle_endpoint_app_command_with_render(
         &mut self,
-        command: EndpointCommand,
+        command: EndpointAppCommand,
         ctx: &EndpointContext,
     ) -> EndpointOutcome {
         // Some app operations publish their projection revision at the state
@@ -104,52 +104,46 @@ impl App {
 
     fn dispatch_endpoint_command(
         &mut self,
-        command: EndpointCommand,
+        command: EndpointAppCommand,
         ctx: &EndpointContext,
     ) -> HandlerResult {
         match command {
-            // The server loop answers the viewing request itself, before any
-            // command reaches the app; reaching here is a routing bug.
-            EndpointCommand::ClientShellSurfaceSet(_) => {
-                tracing::warn!("client_shell.surface.set routed to the app by mistake");
-                rejected("client_shell.surface.set is not handled by the app")
+            EndpointAppCommand::WorkspaceCreate(params) => {
+                self.handle_workspace_create(params, ctx)
             }
-            // The server loop runs the checkout root's blocking stat and Git
-            // query on a worker; answering it here would block the loop.
-            EndpointCommand::WorkspaceCheckoutRoot(_) => {
-                tracing::warn!("workspace.checkout_root routed to the app by mistake");
-                rejected("workspace.checkout_root is not handled by the app")
-            }
-            EndpointCommand::WorkspaceCreate(params) => self.handle_workspace_create(params, ctx),
-            EndpointCommand::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
-            EndpointCommand::WorkspaceRename(params) => self.handle_workspace_rename(params),
-            EndpointCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
-            EndpointCommand::WorkspaceClose(params) => self.handle_workspace_close(&params),
-            EndpointCommand::PaneSplit(params) => self.handle_pane_split(&params, ctx),
-            EndpointCommand::PaneSwap(params) => self.handle_pane_swap(&params),
-            EndpointCommand::PaneZoom(params) => self.handle_pane_zoom(&params),
-            EndpointCommand::LayoutSetSplitRatio(params) => {
+            EndpointAppCommand::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
+            EndpointAppCommand::WorkspaceRename(params) => self.handle_workspace_rename(params),
+            EndpointAppCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
+            EndpointAppCommand::WorkspaceClose(params) => self.handle_workspace_close(&params),
+            EndpointAppCommand::PaneSplit(params) => self.handle_pane_split(&params, ctx),
+            EndpointAppCommand::PaneSwap(params) => self.handle_pane_swap(&params),
+            EndpointAppCommand::PaneZoom(params) => self.handle_pane_zoom(&params),
+            EndpointAppCommand::LayoutSetSplitRatio(params) => {
                 self.handle_layout_set_split_ratio(&params)
             }
-            EndpointCommand::PaneFocusDirection(params) => {
+            EndpointAppCommand::PaneFocusDirection(params) => {
                 self.handle_pane_focus_direction(&params)
             }
-            EndpointCommand::PaneResize(params) => self.handle_pane_resize(&params),
-            EndpointCommand::PaneScroll(params) => self.handle_pane_scroll(&params),
-            EndpointCommand::PaneClear(target) => self.handle_pane_clear(&target),
-            EndpointCommand::PaneSelectionRead(params) => self.handle_pane_selection_read(params),
-            EndpointCommand::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
-            EndpointCommand::PaneCopySearch(params) => self.handle_pane_copy_search(params),
-            EndpointCommand::PaneFocus(target) => self.handle_pane_focus(&target),
-            EndpointCommand::PaneInputSet(params) => self.handle_pane_input_set(&params),
-            EndpointCommand::PaneRename(params) => self.handle_pane_rename(params),
-            EndpointCommand::PaneClose(target) => self.handle_pane_close(&target),
+            EndpointAppCommand::PaneResize(params) => self.handle_pane_resize(&params),
+            EndpointAppCommand::PaneScroll(params) => self.handle_pane_scroll(&params),
+            EndpointAppCommand::PaneClear(target) => self.handle_pane_clear(&target),
+            EndpointAppCommand::PaneSelectionRead(params) => {
+                self.handle_pane_selection_read(params)
+            }
+            EndpointAppCommand::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
+            EndpointAppCommand::PaneCopySearch(params) => self.handle_pane_copy_search(params),
+            EndpointAppCommand::PaneFocus(target) => self.handle_pane_focus(&target),
+            EndpointAppCommand::PaneInputSet(params) => self.handle_pane_input_set(&params),
+            EndpointAppCommand::PaneRename(params) => self.handle_pane_rename(params),
+            EndpointAppCommand::PaneClose(target) => self.handle_pane_close(&target),
         }
     }
 }
 
 #[cfg(test)]
 use shepr_mux::events::AppEvent;
+#[cfg(test)]
+use shepr_protocol::command::EndpointCommand;
 
 #[cfg(test)]
 impl EndpointContext {
@@ -172,6 +166,27 @@ impl App {
             id,
             self.handle_api_request_after_internal_events_drained(request),
         )
+    }
+
+    /// Test adapter for the wire command. Production dispatch accepts only
+    /// `EndpointAppCommand`, so loop-owned commands cannot reach the app.
+    pub(crate) fn handle_endpoint_command_with_render(
+        &mut self,
+        command: EndpointCommand,
+        ctx: &EndpointContext,
+    ) -> EndpointOutcome {
+        match command.into_app_command() {
+            Ok(command) => self.handle_endpoint_app_command_with_render(command, ctx),
+            Err(command) => EndpointOutcome {
+                result: Err(EndpointError::Rejected(format!(
+                    "{} is not handled by the app",
+                    command.name()
+                ))),
+                navigate: None,
+                effects: EndpointEffects::default(),
+                view_changed: false,
+            },
+        }
     }
 
     /// Runs the App handler for a test with explicitly prepared state and no

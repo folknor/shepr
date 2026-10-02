@@ -16,6 +16,18 @@ fn sr(col: u16, row: usize) -> Point<ScreenRow> {
     Point::new(ScreenRow(row), col)
 }
 
+#[test]
+fn color_scheme_appearance_splits_at_the_gamma_encoded_midpoint() {
+    let grey = |value| RgbColor {
+        r: value,
+        g: value,
+        b: value,
+    };
+    assert_eq!(grey(127).appearance(), ColorScheme::Dark);
+    assert_eq!(grey(128).appearance(), ColorScheme::Light);
+    assert_eq!(grey(150).appearance(), ColorScheme::Light);
+}
+
 fn screen_row_cells(
     terminal: &Terminal,
     row: ScreenRow,
@@ -180,15 +192,38 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     assert!(terminal.mouse_tracking_enabled());
     assert!(terminal.mode_get(DecMode::MousePressRelease));
     assert!(terminal.mode_get(DecMode::MouseSgr));
+    assert_eq!(
+        terminal.mouse_protocol(),
+        Some(MouseProtocol {
+            mode: MouseProtocolMode::PressRelease,
+            encoding: MouseEncoding::Sgr,
+            pixels_requested: false,
+        })
+    );
 
     // X10 replaces the other tracking modes; enabling 1003 cancels X10 again.
     terminal.write(b"\x1b[?9h");
     assert!(terminal.mode_get(DecMode::X10Mouse));
     assert!(!terminal.mode_get(DecMode::MousePressRelease));
     assert!(terminal.mouse_tracking_enabled());
+    assert_eq!(
+        terminal.mouse_protocol().map(|protocol| protocol.mode),
+        Some(MouseProtocolMode::Press)
+    );
     terminal.write(b"\x1b[?1003h");
     assert!(!terminal.mode_get(DecMode::X10Mouse));
     assert!(terminal.mode_get(DecMode::MouseAnyMotion));
+    terminal.write(b"\x1b[?1016h");
+    let input_modes = terminal.input_modes();
+    assert_eq!(
+        input_modes.mouse_protocol(),
+        Some(MouseProtocol {
+            mode: MouseProtocolMode::AnyMotion,
+            encoding: MouseEncoding::Sgr,
+            pixels_requested: true,
+        })
+    );
+    assert!(input_modes.sgr_pixel_mouse_enabled());
 
     terminal.write(b"\x1b[<u");
     terminal.write(b"\x1b[?12l\x1b[?1042l");

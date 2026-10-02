@@ -350,7 +350,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
         &id,
         &shepr_remote::SshFailureDiagnostic::from_ssh_output(
             Some(255),
-            "Permission denied (keyboard-interactive)".into(),
+            "Permission denied (keyboard-interactive)",
         ),
     );
     for _ in 0..2 {

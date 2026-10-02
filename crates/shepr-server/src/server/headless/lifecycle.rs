@@ -279,7 +279,7 @@ impl ShutdownLifecycle {
                 if self.frozen_warning_generation() != generation
                     && let Some(freeze) = self.restart_host_shutdown_warning()
                 {
-                    app.policy = freeze.restored_policy();
+                    app.thaw_session_saves(freeze.restored_policy());
                     self.freeze_for_host_shutdown(app);
                 }
             }
@@ -312,8 +312,7 @@ impl ShutdownLifecycle {
                 warn!("host shutdown checkpoint failed repeatedly; releasing the delay lock");
             }
         }
-        app.policy = crate::app::AppPolicy::Suspended;
-        app.session_saver.freeze_session_saves();
+        app.freeze_session_saves();
         if let (Some(monitor), Some(generation)) = (self.monitor.as_ref(), generation) {
             monitor.release_delay_lock(generation);
         }
@@ -327,7 +326,7 @@ impl ShutdownLifecycle {
 
     fn thaw_after_host_shutdown(&mut self, app: &mut app::App, freeze: &HostShutdownFreeze) {
         info!("host shutdown cancelled; resuming session saves");
-        app.policy = freeze.restored_policy();
+        app.thaw_session_saves(freeze.restored_policy());
         app.state.mark_session_dirty();
     }
 }

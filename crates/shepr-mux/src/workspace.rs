@@ -209,7 +209,6 @@ impl Workspace {
         root_pane: PaneId,
         layout: TileLayout,
         panes: HashMap<PaneId, WorkspacePane>,
-        zoomed: bool,
         next_public_pane_number: usize,
     ) -> Self {
         let mut workspace = Self {
@@ -225,7 +224,7 @@ impl Workspace {
             root_pane,
             layout,
             panes,
-            zoomed,
+            zoomed: false,
         };
         workspace.mark_identity_undiscovered();
         workspace
@@ -272,17 +271,16 @@ impl Workspace {
         zoomed: bool,
         next_public_pane_number: usize,
     ) -> Option<Self> {
-        let zoomed = zoomed && panes.len() > 1;
-        let workspace = Self::assemble(
+        let mut workspace = Self::assemble(
             id,
             custom_name,
             identity_cwd,
             root_pane,
             layout,
             panes,
-            zoomed,
             next_public_pane_number,
         );
+        workspace.set_zoomed(zoomed);
         workspace.valid_panes().then_some(workspace)
     }
 
@@ -306,7 +304,6 @@ impl Workspace {
             pane_id,
             TileLayout::from_live_pane(pane_id),
             HashMap::from([(pane_id, pane)]),
-            false,
             2,
         )
     }
@@ -365,7 +362,6 @@ impl Workspace {
             root_pane,
             layout,
             HashMap::from([(root_pane, pane)]),
-            false,
             2,
         );
         Ok((workspace, terminal, runtime))
@@ -603,7 +599,6 @@ impl Workspace {
             root_id,
             layout,
             HashMap::from([(root_id, pane)]),
-            false,
             2,
         )
     }
@@ -614,7 +609,7 @@ impl Workspace {
             new_id,
             WorkspacePane::new(PaneState::new(TerminalId::alloc())),
         );
-        self.zoomed = false;
+        self.set_zoomed(false);
         self.register_new_pane(new_id);
         new_id
     }
@@ -672,7 +667,7 @@ impl Workspace {
             self.id
         );
         assert!(
-            !self.zoomed || self.pane_count() > 1,
+            !self.zoomed || Workspace::resolved_zoomed(self.zoomed, self.pane_count(), true),
             "workspace {} is zoomed with {} pane(s); a zoom needs a second pane to hide",
             self.id,
             self.pane_count()

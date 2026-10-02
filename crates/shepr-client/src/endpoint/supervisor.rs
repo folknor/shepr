@@ -17,7 +17,7 @@ const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
-    pub(crate) geometry: crate::handshake::HandshakeGeometry,
+    pub(crate) geometry: shepr_protocol::TerminalGeometry,
     pub(crate) mouse_capture: bool,
 }
 
@@ -142,7 +142,6 @@ impl ReconnectState {
 
 pub(crate) struct EndpointSupervisors {
     endpoints: HashMap<ClientEndpointId, ReconnectState>,
-    paths: shepr_config::AppPaths,
     next_generation: shepr_protocol::ConnectionGeneration,
     shutdown: Arc<AtomicBool>,
 }
@@ -155,7 +154,6 @@ impl EndpointSupervisors {
     ) -> io::Result<Self> {
         let mut supervisors = Self {
             endpoints: HashMap::new(),
-            paths: paths.clone(),
             next_generation: shepr_protocol::ConnectionGeneration::new(2),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
@@ -181,12 +179,13 @@ impl EndpointSupervisors {
         Ok(supervisors)
     }
 
-    pub(crate) fn add_local(&mut self, path: PathBuf, generation: Option<u64>, now: Instant) {
-        let mismatch_guidance = self
-            .paths
-            .server_address()
-            .build_mismatch_guidance(&shepr_config::operator_entrypoint())
-            .into();
+    pub(crate) fn add_local(
+        &mut self,
+        path: PathBuf,
+        mismatch_guidance: Arc<str>,
+        generation: Option<u64>,
+        now: Instant,
+    ) {
         let mut state = ReconnectState::new(
             ConnectTarget::Local {
                 path,
@@ -486,68 +485,41 @@ enum EndpointLink<'a> {
 
 /// Handshakes over a fresh endpoint stream and hands the connection to the loop.
 fn establish(
-    mut stream: shepr_platform::ipc::LocalStream,
+    stream: shepr_platform::ipc::LocalStream,
     link: EndpointLink<'_>,
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
     generation: u64,
     deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    // The link carries the SSH bridge's lifetime and diagnostics, or Local's mismatch guidance;
-    // handshake timing follows the endpoint identity's shared policy.
+    // The link carries the SSH bridge's lifetime and diagnostics, or Local's mismatch guidance.
     let (ssh_bridge, mismatch_guidance) = match link {
         EndpointLink::Local { mismatch_guidance } => (None, Some(mismatch_guidance)),
         EndpointLink::Ssh(bridge) => (Some(bridge), None),
     };
-    crate::handshake::do_handshake_for_endpoint(
-        &mut stream,
+    let attached = crate::transport::attach_endpoint_stream(
+        stream,
         options.geometry,
         options.mouse_capture,
+        // A recovery connection stays hidden until a move requests its surface.
         false,
         endpoint_id.policy(),
         Some(deadline),
+        mismatch_guidance,
+        ssh_bridge,
     )
-    .map_err(|error| {
-        let error = handshake_error(error, mismatch_guidance);
-        // An SSH endpoint that closes before Welcome usually means ssh itself failed
-        // (network drop, auth, remote server launch). The bridge holds the real stderr;
-        // prefer it so both the diagnostic and the attention classification see it.
-        if error.kind() == std::io::ErrorKind::UnexpectedEof
-            && let Some(failure) = ssh_bridge
-                .as_ref()
-                .and_then(shepr_remote::MachineSshBridge::reported_failure)
-                .map(|failure| {
-                    let kind = failure.kind();
-                    let diagnostic = shepr_remote::EndpointFailure::from_error(&failure)
-                        .with_context(HANDSHAKE_CONTEXT);
-                    std::io::Error::new(kind, diagnostic)
-                })
-        {
-            failure
-        } else {
-            error
-        }
-    })?;
-    let lifetime: Box<dyn Send> = match ssh_bridge {
-        Some(bridge) => Box::new(bridge),
-        None => Box::new(()),
-    };
-    // No encoding or capability checks: the handshake's build-identity
-    // preamble already proved the endpoint is this same build, so it speaks
-    // the semantic client shell and has every capability this build has.
-    let setup_error = |error: std::io::Error| {
-        std::io::Error::new(
+    .map_err(|failure| match failure {
+        crate::transport::EndpointAttachFailure::Handshake(error) => error,
+        crate::transport::EndpointAttachFailure::Setup(error) => std::io::Error::new(
             error.kind(),
             shepr_remote::EndpointFailure::local_setup(error.to_string()),
-        )
-    };
-    let reader = stream.try_clone().map_err(setup_error)?;
-    let writer = NativeEndpointTransport::with_lifetime(stream, lifetime).map_err(setup_error)?;
+        ),
+    })?;
     Ok(EndpointSupervisorEvent::Connected {
         endpoint_id,
         generation,
-        reader,
-        writer,
+        reader: attached.reader,
+        writer: attached.writer,
         connector: None,
     })
 }
@@ -630,6 +602,32 @@ pub(crate) fn handshake_error(
             ),
         };
     std::io::Error::new(kind, failure.with_context(HANDSHAKE_CONTEXT))
+}
+
+/// Applies Local's launch guidance and the SSH bridge's stderr to the same classified handshake
+/// result for both initial and supervised attachment.
+pub(crate) fn classify_handshake_error(
+    error: crate::ClientError,
+    mismatch_guidance: Option<&str>,
+    ssh_bridge: Option<&shepr_remote::MachineSshBridge>,
+) -> std::io::Error {
+    let error = handshake_error(error, mismatch_guidance);
+    // An SSH endpoint that closes before Welcome usually means ssh itself failed. The bridge
+    // holds the real stderr; prefer it so diagnosis and attention classification use its cause.
+    if error.kind() == std::io::ErrorKind::UnexpectedEof
+        && let Some(failure) = ssh_bridge
+            .and_then(shepr_remote::MachineSshBridge::reported_failure)
+            .map(|failure| {
+                let kind = failure.kind();
+                let diagnostic = shepr_remote::EndpointFailure::from_error(&failure)
+                    .with_context(HANDSHAKE_CONTEXT);
+                std::io::Error::new(kind, diagnostic)
+            })
+    {
+        failure
+    } else {
+        error
+    }
 }
 
 /// The shell status line and machine notice title supply the endpoint label;
@@ -1047,7 +1045,11 @@ mod tests {
         let now = Instant::now();
         let mut supervisors =
             EndpointSupervisors::new(&paths, &[], now).expect("test precondition");
-        supervisors.add_local(paths.server_address().socket().into(), None, now);
+        let guidance: Arc<str> = paths
+            .server_address()
+            .build_mismatch_guidance(&shepr_config::operator_entrypoint())
+            .into();
+        supervisors.add_local(paths.server_address().socket().into(), guidance, None, now);
         let ConnectTarget::Local {
             mismatch_guidance, ..
         } = &supervisors.endpoints[&ClientEndpointId::Local].target
@@ -1089,7 +1091,7 @@ mod tests {
         let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let mut supervisors = supervisors_for(&env, &[], now);
-        supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
+        supervisors.add_local(PathBuf::from("local.sock"), Arc::from(""), Some(1), now);
         assert!(supervisors.record_status(
             &ClientEndpointId::Local,
             1,
@@ -1107,7 +1109,7 @@ mod tests {
         let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let mut supervisors = supervisors_for(&env, &[machine()], now);
-        supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
+        supervisors.add_local(PathBuf::from("local.sock"), Arc::from(""), Some(1), now);
         assert!(
             supervisors.endpoints[&ClientEndpointId::Local]
                 .next_attempt

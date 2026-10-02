@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 mod config;
 mod discovery;
+mod identity;
 mod runner;
 mod status;
 
@@ -14,10 +15,11 @@ pub(super) enum RefBackend {
 }
 
 pub use self::{
-    discovery::fallback_label_from_cwd,
+    discovery::{discover_checkout_root, fallback_label_from_cwd},
     status::{
-        AheadBehindState, GitStatusCacheEntry, GitStatusDiscovery, git_status_cache_key,
-        git_status_discovery, git_status_snapshot_for_cwd, git_status_snapshot_for_discovery,
+        AheadBehindState, GitStatusCache, GitStatusCacheEntry, GitStatusCacheView,
+        GitStatusDiscovery, git_status_cache_key, git_status_discovery,
+        git_status_snapshot_for_cwd, git_status_snapshot_for_discovery,
     },
 };
 pub use runner::{GitCommandError, run_git};

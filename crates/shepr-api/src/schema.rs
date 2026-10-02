@@ -166,60 +166,93 @@ pub struct AppRequest {
     pub method: AppMethod,
 }
 
-/// The methods the app loop answers, a subset of [`Method`] with no arm for
-/// the ones the socket thread keeps.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AppMethod {
-    DetectCapture(PaneTarget),
-    DetectExplain(PaneTarget),
-    PaneReportAgent(PaneReportAgentParams),
-    PaneReportAgentSession(PaneReportAgentSessionParams),
-}
-
-impl AppMethod {
-    pub fn traits(&self) -> MethodTraits {
-        match self {
-            Self::DetectCapture(_) => MethodKind::DetectCapture,
-            Self::DetectExplain(_) => MethodKind::DetectExplain,
-            Self::PaneReportAgent(_) => MethodKind::PaneReportAgent,
-            Self::PaneReportAgentSession(_) => MethodKind::PaneReportAgentSession,
-        }
-        .traits()
-    }
-}
-
 macro_rules! define_methods {
     (
-        $(
-            $variant:ident($params:ty) => $name:literal {
-                mutates_ui: $mutates_ui:literal,
-                routine: $routine:literal,
-            };
-        )+
+        socket {
+            $(
+                $socket_variant:ident($socket_params:ty) => $socket_name:literal {
+                    mutates_ui: $socket_mutates_ui:literal,
+                    routine: $socket_routine:literal,
+                };
+            )+
+        }
+        app {
+            $(
+                $app_variant:ident($app_params:ty) => $app_name:literal {
+                    mutates_ui: $app_mutates_ui:literal,
+                    routine: $app_routine:literal,
+                };
+            )+
+        }
     ) => {
+        /// Methods the client can request, preserving their flat wire names.
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         #[serde(tag = "method", content = "params")]
         pub enum Method {
             $(
-                #[serde(rename = $name)]
-                $variant($params),
+                #[serde(rename = $socket_name)]
+                $socket_variant($socket_params),
             )+
+            $(
+                #[serde(rename = $app_name)]
+                $app_variant($app_params),
+            )+
+        }
+
+        /// Methods the app loop answers, generated from the `app` route group.
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum AppMethod {
+            $($app_variant($app_params),)+
+        }
+
+        /// Methods the socket thread answers before they can reach the app loop.
+        #[derive(Debug, Clone, PartialEq)]
+        pub(crate) enum SocketMethod {
+            $($socket_variant($socket_params),)+
+        }
+
+        /// The schema route after a method and its parameters are decoded.
+        pub(crate) enum MethodRoute {
+            Socket(SocketMethod),
+            App(AppMethod),
         }
 
         #[derive(Clone, Copy)]
         enum MethodKind {
-            $($variant,)+
+            $($socket_variant,)+
+            $($app_variant,)+
         }
 
         impl MethodKind {
             fn traits(self) -> MethodTraits {
-                // Keep each method's routing facts in one generated match arm.
+                // Keep each method's logging facts beside its route declaration.
                 match self {
                     $(
-                        Self::$variant => MethodTraits {
-                            name: $name,
-                            mutates_ui: $mutates_ui,
-                            routine: $routine,
+                        Self::$socket_variant => MethodTraits {
+                            name: $socket_name,
+                            mutates_ui: $socket_mutates_ui,
+                            routine: $socket_routine,
+                        },
+                    )+
+                    $(
+                        Self::$app_variant => MethodTraits {
+                            name: $app_name,
+                            mutates_ui: $app_mutates_ui,
+                            routine: $app_routine,
+                        },
+                    )+
+                }
+            }
+        }
+
+        impl AppMethod {
+            pub fn traits(&self) -> MethodTraits {
+                match self {
+                    $(
+                        Self::$app_variant(_) => MethodTraits {
+                            name: $app_name,
+                            mutates_ui: $app_mutates_ui,
+                            routine: $app_routine,
                         },
                     )+
                 }
@@ -228,11 +261,31 @@ macro_rules! define_methods {
 
         impl Method {
             /// All wire names declared by the API schema.
-            pub const ALL_NAMES: &'static [&'static str] = &[$($name,)+];
+            pub const ALL_NAMES: &'static [&'static str] = &[
+                $($socket_name,)+
+                $($app_name,)+
+            ];
+
+            /// Splits socket-thread controls from app-loop requests using the schema route.
+            pub(crate) fn into_route(self) -> MethodRoute {
+                match self {
+                    $(
+                        Self::$socket_variant(params) => {
+                            MethodRoute::Socket(SocketMethod::$socket_variant(params))
+                        }
+                    )+
+                    $(
+                        Self::$app_variant(params) => {
+                            MethodRoute::App(AppMethod::$app_variant(params))
+                        }
+                    )+
+                }
+            }
 
             pub fn traits(&self) -> MethodTraits {
                 match self {
-                    $(Self::$variant(_) => MethodKind::$variant,)+
+                    $(Self::$socket_variant(_) => MethodKind::$socket_variant,)+
+                    $(Self::$app_variant(_) => MethodKind::$app_variant,)+
                 }
                 .traits()
             }
@@ -241,34 +294,38 @@ macro_rules! define_methods {
 }
 
 define_methods! {
-    Ping(PingParams) => "ping" {
-        mutates_ui: false,
-        routine: false,
-    };
-    ServerStop(ServerStopParams) => "server.stop" {
-        mutates_ui: false,
-        routine: false,
-    };
-    ServerStopIfBoot(ServerStopIfBootParams) => "server.stop_if_boot" {
-        mutates_ui: false,
-        routine: false,
-    };
-    DetectCapture(PaneTarget) => "detect.capture" {
-        mutates_ui: false,
-        routine: false,
-    };
-    DetectExplain(PaneTarget) => "detect.explain" {
-        mutates_ui: false,
-        routine: false,
-    };
-    PaneReportAgent(PaneReportAgentParams) => "pane.report_agent" {
-        mutates_ui: true,
-        routine: true,
-    };
-    PaneReportAgentSession(PaneReportAgentSessionParams) => "pane.report_agent_session" {
-        mutates_ui: true,
-        routine: true,
-    };
+    socket {
+        Ping(PingParams) => "ping" {
+            mutates_ui: false,
+            routine: false,
+        };
+        ServerStop(ServerStopParams) => "server.stop" {
+            mutates_ui: false,
+            routine: false,
+        };
+        ServerStopIfBoot(ServerStopIfBootParams) => "server.stop_if_boot" {
+            mutates_ui: false,
+            routine: false,
+        };
+    }
+    app {
+        DetectCapture(PaneTarget) => "detect.capture" {
+            mutates_ui: false,
+            routine: false,
+        };
+        DetectExplain(PaneTarget) => "detect.explain" {
+            mutates_ui: false,
+            routine: false,
+        };
+        PaneReportAgent(PaneReportAgentParams) => "pane.report_agent" {
+            mutates_ui: true,
+            routine: true,
+        };
+        PaneReportAgentSession(PaneReportAgentSessionParams) => "pane.report_agent_session" {
+            mutates_ui: true,
+            routine: true,
+        };
+    }
 }
 
 #[cfg(test)]

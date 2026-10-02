@@ -540,11 +540,11 @@ pub(super) fn bridge_connection(
     }
 }
 
-/// Classify an SSH bridge exit. The remote stderr goes into the message
-/// unredacted, for the reason given at `ssh::command_failed`.
+/// Classify an SSH bridge exit. The raw remote stderr is handed to the
+/// diagnostic constructor, which stores it as terminal-safe `RemoteText`.
 pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
-    let stderr = super::server_lifecycle::printable_remote_text(stderr.trim());
+    let stderr = stderr.trim();
     let (failure, exit_status) = match status.code() {
         Some(SSH_OWN_FAILURE_EXIT_CODE) => (
             "remote SSH connection failed",
@@ -573,7 +573,7 @@ pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
     };
     io::Error::new(
         io::ErrorKind::ConnectionAborted,
-        super::SshFailureDiagnostic::from_ssh_output(status.code(), message),
+        super::SshFailureDiagnostic::from_ssh_output(status.code(), &message),
     )
 }
 
@@ -592,15 +592,6 @@ pub(crate) fn attempt_deadline_passed() -> io::Error {
 pub(crate) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
 // limits-exempt: remote exit 255 is remapped to 254 to keep it apart from SSH failures.
 pub(crate) const REMAPPED_REMOTE_255_EXIT_CODE: i32 = 254;
-
-/// Whether `error` came from ssh, the link or a bounded command timeout rather
-/// than from a remote command: the remote was never reached, the link was
-/// lost, ssh itself failed for any reason (host key and credentials included),
-/// or the command ran out of time. Nothing is then known about the remote
-/// install.
-pub(crate) fn failed_before_remote_result(error: &io::Error) -> bool {
-    super::SshFailureDiagnostic::from_error(error).failed_before_remote_result()
-}
 
 pub(super) fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
     let marker = REMOTE_OUTPUT_READY_MARKER.as_bytes();

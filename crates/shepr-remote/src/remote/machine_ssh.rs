@@ -5,9 +5,8 @@ use crate::limits::BRIDGE_NAME_LABEL_CHARS;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_remote_candidate_mismatch,
-    judge_remote_server, remote_server_status, resume_installed_remote_shepr_discovery,
-    verify_remote_shepr,
+    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, judge_remote_server,
+    remote_server_status, resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
 
 /// One machine's executable resolution and preflight server validation. Disk metadata is an
@@ -109,9 +108,16 @@ impl MachineProbe {
                         self.executable = ProbeExecutable::Verified(cached.clone());
                         return Ok(cached);
                     }
-                    // Only a candidate mismatch is evidence that the cached
-                    // executable is stale; other failures keep the hint.
-                    Err(error) if !is_remote_candidate_mismatch(&error) => return Err(error),
+                    // Only evidence that this path is stale drops the hint.
+                    // Link, server and target-trust failures leave it as an
+                    // unverified hint; a later attempt checks it again.
+                    Err(error)
+                        if !crate::EndpointFailure::from_error(&error)
+                            .evidence()
+                            .invalidates_executable() =>
+                    {
+                        return Err(error);
+                    }
                     Ok(false) | Err(_) => self.invalidate(cache),
                 }
             }
@@ -151,7 +157,10 @@ impl MachineProbe {
     }
 
     fn observe_failure(&mut self, cache: &SshMetadataCache, error: &io::Error) -> bool {
-        if remote_executable_must_be_rediscovered(error) {
+        if crate::EndpointFailure::from_error(error)
+            .evidence()
+            .invalidates_executable()
+        {
             self.invalidate(cache);
             true
         } else {
@@ -415,20 +424,6 @@ impl MachineSshConnector {
     }
 }
 
-/// Only the POSIX shell's command-not-found (127) and not-executable (126)
-/// statuses, reported by ssh as the remote command's own exit status, prove
-/// that a remembered Shepr path is stale. The status is read from the typed
-/// diagnostic, never from message text, which carries remote stderr. A failed
-/// handshake or remote launch error says nothing about that path. The bridge
-/// relays bytes from the remote server socket, so a preamble build mismatch
-/// identifies that server, not the Shepr executable that opened the bridge.
-fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
-    matches!(
-        super::SshFailureDiagnostic::from_error(error).remote_exit_code(),
-        Some(126 | 127)
-    )
-}
-
 // The label only makes these names readable; it is not what keeps bridges
 // apart. `remote_bridge_endpoint_path` inserts a fresh random token into every
 // name it hands out, so each bridge (every client attached to one configured
@@ -493,6 +488,13 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
         .get_ref()
         .and_then(|source| source.downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>())
         .is_some()
+}
+
+#[cfg(test)]
+fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
+    crate::EndpointFailure::from_error(error)
+        .evidence()
+        .invalidates_executable()
 }
 
 #[cfg(test)]
@@ -565,11 +567,11 @@ mod tests {
     }
 
     #[test]
-    fn only_remote_exec_failures_invalidate_a_remembered_path() {
+    fn typed_install_evidence_invalidates_a_remembered_path() {
         for exit_code in [126, 127] {
             let diagnostic = super::super::SshFailureDiagnostic::from_ssh_output(
                 Some(exit_code),
-                format!("remote command failed (exit status {exit_code})"),
+                &format!("remote command failed (exit status {exit_code})"),
             );
             let error = io::Error::other(diagnostic);
             assert!(remote_executable_must_be_rediscovered(&error));
@@ -581,7 +583,7 @@ mod tests {
         assert!(!remote_executable_must_be_rediscovered(&quoted));
         let own_failure = io::Error::other(super::super::SshFailureDiagnostic::from_ssh_output(
             Some(super::super::SSH_OWN_FAILURE_EXIT_CODE),
-            "ssh: connect to host h port 22: Connection refused".into(),
+            "ssh: connect to host h port 22: Connection refused",
         ));
         assert!(!remote_executable_must_be_rediscovered(&own_failure));
 
@@ -723,7 +725,7 @@ mod tests {
             .expect("verified");
         let error = io::Error::other(super::super::SshFailureDiagnostic::from_ssh_output(
             Some(127),
-            "remote executable disappeared".into(),
+            "remote executable disappeared",
         ));
         assert!(probe.observe_failure(&cache, &error));
         assert!(cache.load().is_none());
@@ -777,7 +779,7 @@ mod tests {
                     Err(io::Error::other(
                         crate::SshFailureDiagnostic::from_ssh_output(
                             Some(126),
-                            "remote executable no longer executable".into(),
+                            "remote executable no longer executable",
                         ),
                     ))
                 },
@@ -807,7 +809,7 @@ mod tests {
                         Err(io::Error::other(
                             crate::SshFailureDiagnostic::from_ssh_output(
                                 Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-                                message.into(),
+                                message,
                             ),
                         ))
                     },
@@ -881,8 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_probe_resumes_network_failures_and_authentication_waits_but_restarts_after_ssh_rejection()
-     {
+    fn machine_probe_resumes_discovery_without_a_remote_result_unless_the_target_is_untrusted() {
         let failures = [
             (io::Error::from(io::ErrorKind::TimedOut), 1),
             (
@@ -895,15 +896,16 @@ mod tests {
             (
                 io::Error::other(crate::SshFailureDiagnostic::from_ssh_output(
                     Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-                    "Permission denied (publickey)".into(),
+                    "Permission denied (publickey)",
                 )),
-                2,
+                1,
             ),
             (
                 io::Error::other(crate::SshFailureDiagnostic::from_ssh_output(
                     Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
-                    "Host key verification failed".into(),
+                    "Host key verification failed",
                 )),
+                // The target's identity is in doubt, so discovery starts over.
                 2,
             ),
         ];
@@ -1017,7 +1019,7 @@ mod tests {
     fn prompt_and_compatibility_failures_require_attention() {
         let authentication = super::super::SshFailureDiagnostic::from_ssh_output(
             Some(super::super::SSH_OWN_FAILURE_EXIT_CODE),
-            "Permission denied (publickey)".into(),
+            "Permission denied (publickey)",
         );
         assert!(
             super::super::SshFailureDiagnostic::from_error(&io::Error::other(authentication))
@@ -1025,7 +1027,7 @@ mod tests {
         );
         let host_key = super::super::SshFailureDiagnostic::from_ssh_output(
             Some(super::super::SSH_OWN_FAILURE_EXIT_CODE),
-            "Host key verification failed".into(),
+            "Host key verification failed",
         );
         assert!(
             super::super::SshFailureDiagnostic::from_error(&io::Error::other(host_key))

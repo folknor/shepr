@@ -140,7 +140,13 @@ Reported by mux-state and foundation.
 - `Notices::queue_boot` calls `dismiss()` to show the first queued card; an
   `advance` name would say what it does.
 
-(wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 review)
+- `crates/shepr-server/src/app/`: `AppPolicy` and the saver's `SavePolicy` are
+  now separate state, and about twenty tests still end with
+  `app.policy = Suspended`, which no longer touches the saver.
+- `crates/shepr-mux/src/pane/runtime.rs`: every pane input encoder exists both
+  mode-free and `_with_modes`; the mode-free public ones look used only by tests.
+
+(wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
 ## CLN-024 - Leftovers in the terminal input crates
 

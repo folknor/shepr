@@ -318,7 +318,6 @@ impl Fixture {
                 requests: vec![message],
                 ..Default::default()
             },
-            None,
             &mut self.client.write_stream,
             &mut self.client.endpoint_commands,
             self.now,
@@ -876,7 +875,6 @@ fn an_interactive_detach_goes_to_the_shown_endpoint() {
             detach: true,
             ..Default::default()
         },
-        None,
         &mut f.client.write_stream,
         &mut f.client.endpoint_commands,
         f.now,

@@ -1,19 +1,21 @@
 use crate::limits::GIT_STATUS_RETRY_DELAY;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{AheadBehind, GitReadError, WorkspaceGitStatusSnapshot};
 
+use super::identity::{BranchName, FullRefName, Oid};
 use super::{
     RefBackend,
     config::{
         ConfigCtx, Dependencies, deps_current, read_config_for_status, stamp, upstream_full_ref,
     },
     discovery::{
-        GitWorktreeInfo, canonicalize_best_effort_path, git_ref_storage_is_reftable,
-        git_rev_parse_verify_with_errors, git_symbolic_head_full, git_trimmed_stdout,
-        git_worktree_info, git_worktree_info_with_errors, read_git_ref_file,
-        read_ref_oid_with_errors, valid_full_ref, valid_oid,
+        GitWorktreeInfo, SymbolicHeadProbe, canonicalize_best_effort_path,
+        git_ref_storage_is_reftable, git_rev_parse_verify_with_errors, git_symbolic_head_full,
+        git_trimmed_stdout, git_worktree_info, git_worktree_info_with_errors, read_git_ref_file,
+        read_ref_oid_for_full_ref,
     },
 };
 
@@ -81,6 +83,8 @@ impl GitStatusCacheEntry {
                 ..
             } => WorkspaceGitStatusSnapshot {
                 repo_root: Some(fingerprint.repository_context.info.repo_root.clone()),
+                // Keep the workspace/sidebar boundary as a display string;
+                // repository identity stays typed inside the Git cache.
                 branch: fingerprint.branch_name().map(str::to_string),
                 ahead_behind: match ahead_behind {
                     AheadBehindState::Known(ahead_behind) => Some(*ahead_behind),
@@ -94,6 +98,79 @@ impl GitStatusCacheEntry {
         match self {
             Self::Miss { read_errors, .. } | Self::Hit { read_errors, .. } => read_errors,
         }
+    }
+}
+
+/// The cached Git answers for the workspaces in one server process. It owns
+/// both cache-entry retention and the lifetime of deduplicated read errors.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitStatusCache {
+    entries: HashMap<PathBuf, GitStatusCacheEntry>,
+    reported_read_errors: HashSet<GitReadError>,
+}
+
+impl GitStatusCache {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.reported_read_errors.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn refresh_view(&self) -> GitStatusCacheView {
+        GitStatusCacheView {
+            entries: self.entries.clone(),
+        }
+    }
+
+    pub fn mark_due(&mut self) {
+        self.entries.retain(|_, entry| !entry.is_miss());
+    }
+
+    /// Applies one completed refresh. Entries that were not visited are
+    /// released once the refresh produced at least one cache update; error
+    /// deduplication follows the retained entries that still carry each cause.
+    pub fn apply_refresh(
+        &mut self,
+        cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
+    ) -> Vec<GitReadError> {
+        let mut newly_reported_errors = Vec::new();
+        let mut refreshed_keys = HashSet::with_capacity(cache_updates.len());
+        for (key, entry) in cache_updates {
+            refreshed_keys.insert(key.clone());
+            for error in entry.read_errors() {
+                if self.reported_read_errors.insert(error.clone()) {
+                    newly_reported_errors.push(error.clone());
+                }
+            }
+            self.entries.insert(key, entry);
+        }
+        if !refreshed_keys.is_empty() {
+            self.entries.retain(|key, _| refreshed_keys.contains(key));
+            let current_errors: HashSet<_> = self
+                .entries
+                .values()
+                .flat_map(|entry| entry.read_errors().iter().cloned())
+                .collect();
+            self.reported_read_errors
+                .retain(|error| current_errors.contains(error));
+        }
+        newly_reported_errors
+    }
+}
+
+/// Immutable cache entries copied to one refresh worker. Reporting history
+/// stays with the server-owned cache and is not carried across that boundary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitStatusCacheView {
+    entries: HashMap<PathBuf, GitStatusCacheEntry>,
+}
+
+impl GitStatusCacheView {
+    pub fn get(&self, key: &Path) -> Option<&GitStatusCacheEntry> {
+        self.entries.get(key)
     }
 }
 
@@ -192,21 +269,21 @@ pub fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitHeadIdentity {
     Branch {
-        full_ref: String,
-        short_name: String,
-        oid: Option<String>,
+        full_ref: FullRefName,
+        short_name: BranchName,
+        oid: Option<Oid>,
     },
     Detached {
-        oid: String,
+        oid: Oid,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitUpstreamIdentity {
     pub remote: String,
-    pub merge_ref: String,
-    pub full_ref: String,
-    pub oid: Option<String>,
+    pub merge_ref: FullRefName,
+    pub full_ref: FullRefName,
+    pub oid: Option<Oid>,
 }
 
 pub fn git_status_cache_key(cwd: &Path) -> Option<PathBuf> {
@@ -364,17 +441,17 @@ impl GitStatusFingerprint {
         }
     }
 
-    fn head_oid(&self) -> Option<&str> {
+    fn head_oid(&self) -> Option<&Oid> {
         match &self.head {
-            GitHeadIdentity::Branch { oid, .. } => oid.as_deref(),
-            GitHeadIdentity::Detached { oid } => Some(oid.as_str()),
+            GitHeadIdentity::Branch { oid, .. } => oid.as_ref(),
+            GitHeadIdentity::Detached { oid } => Some(oid),
         }
     }
 
-    fn upstream_oid(&self) -> Option<&str> {
+    fn upstream_oid(&self) -> Option<&Oid> {
         self.upstream
             .as_ref()
-            .and_then(|upstream| upstream.oid.as_deref())
+            .and_then(|upstream| upstream.oid.as_ref())
     }
 }
 
@@ -393,17 +470,19 @@ fn read_head_identity_from_git(
     info: &GitWorktreeInfo,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitHeadIdentity> {
-    if let Some(full_ref) = git_symbolic_head_full(&info.repo_root, read_errors) {
-        if !valid_full_ref(&full_ref) {
-            return None;
+    match git_symbolic_head_full(&info.repo_root, read_errors) {
+        SymbolicHeadProbe::Output(full_ref) => {
+            let short_name = full_ref.branch_name()?;
+            let oid =
+                git_rev_parse_verify_with_errors(&info.repo_root, full_ref.as_str(), read_errors);
+            return Some(GitHeadIdentity::Branch {
+                full_ref,
+                short_name,
+                oid,
+            });
         }
-        let short_name = full_ref.strip_prefix("refs/heads/")?.to_string();
-        let oid = git_rev_parse_verify_with_errors(&info.repo_root, &full_ref, read_errors);
-        return Some(GitHeadIdentity::Branch {
-            full_ref,
-            short_name,
-            oid,
-        });
+        SymbolicHeadProbe::InvalidOutput => return None,
+        SymbolicHeadProbe::NoOutput => {}
     }
 
     git_rev_parse_verify_with_errors(&info.repo_root, "HEAD", read_errors)
@@ -417,54 +496,52 @@ fn read_head_identity_from_files(
     let head = read_git_ref_file(&info.git_dir.join("HEAD"), read_errors)?;
     let head = head.trim();
     if let Some(full_ref) = head.strip_prefix("ref: ") {
-        if !valid_full_ref(full_ref) {
+        let Some(full_ref) = FullRefName::parse(full_ref) else {
             read_errors.push(GitReadError::FileRead {
                 path: info.git_dir.join("HEAD"),
                 message: "HEAD contains an invalid ref name".into(),
             });
             return None;
-        }
-        let short_name = full_ref.strip_prefix("refs/heads/")?.to_string();
-        let oid = read_ref_oid_with_errors(&info.git_common_dir, full_ref, read_errors);
+        };
+        let short_name = full_ref.branch_name()?;
+        let oid = read_ref_oid_for_full_ref(&info.git_common_dir, &full_ref, read_errors);
         return Some(GitHeadIdentity::Branch {
-            full_ref: full_ref.to_string(),
+            full_ref,
             short_name,
             oid,
         });
     }
 
-    if !valid_oid(head) {
+    let Some(oid) = Oid::parse(head) else {
         read_errors.push(GitReadError::FileRead {
             path: info.git_dir.join("HEAD"),
             message: "detached HEAD is not a complete object ID".into(),
         });
         return None;
-    }
-    Some(GitHeadIdentity::Detached {
-        oid: head.to_string(),
-    })
+    };
+    Some(GitHeadIdentity::Detached { oid })
 }
 
 fn read_upstream(
     repo: &mut RepoContext,
-    branch: &str,
+    branch: &BranchName,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitUpstreamIdentity> {
     if repo
         .config
         .as_ref()
-        .is_none_or(|context| context.branch != branch || !deps_current(&context.dependencies))
+        .is_none_or(|context| &context.branch != branch || !deps_current(&context.dependencies))
     {
         repo.config = Some(read_config_for_status(&repo.info, branch, read_errors));
     }
     let config = repo.config.as_ref()?.config.clone()?;
-    let full_ref = upstream_full_ref(&config)?;
+    let full_ref = upstream_full_ref(&config);
     let oid = match repo.backend {
         RefBackend::Reftable => {
-            git_rev_parse_verify_with_errors(&repo.info.repo_root, &full_ref, read_errors)
+            git_rev_parse_verify_with_errors(&repo.info.repo_root, full_ref.as_str(), read_errors)
         }
         RefBackend::Files => {
-            read_ref_oid_with_errors(&repo.info.git_common_dir, &full_ref, read_errors)
+            read_ref_oid_for_full_ref(&repo.info.git_common_dir, &full_ref, read_errors)
         }
     };
     Some(GitUpstreamIdentity {
@@ -477,14 +554,11 @@ fn read_upstream(
 
 fn git_ahead_behind_between(
     repo_root: &Path,
-    head_oid: &str,
-    upstream_oid: &str,
+    head_oid: &Oid,
+    upstream_oid: &Oid,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<AheadBehind> {
-    if !valid_oid(head_oid) || !valid_oid(upstream_oid) {
-        return None;
-    }
-    let range = format!("{head_oid}...{upstream_oid}");
+    let range = format!("{}...{}", head_oid.as_str(), upstream_oid.as_str());
     let stdout = git_trimmed_stdout(
         repo_root,
         &[
@@ -494,6 +568,7 @@ fn git_ahead_behind_between(
             "--end-of-options",
             &range,
         ],
+        |_| false,
         read_errors,
     )?;
     match parse_git_ahead_behind_output(&stdout) {
@@ -652,7 +727,8 @@ mod tests {
                 })
                 .is_some_and(|fingerprint| fingerprint.head
                     == GitHeadIdentity::Detached {
-                        oid: "3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d".into()
+                        oid: Oid::parse("3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d")
+                            .expect("valid test OID")
                     })
         );
     }
@@ -897,7 +973,8 @@ mod tests {
                 .upstream
                 .expect("test precondition")
                 .oid
-                .as_deref(),
+                .as_ref()
+                .map(Oid::as_str),
             Some("2222222222222222222222222222222222222222")
         );
     }
@@ -978,12 +1055,16 @@ mod tests {
 
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
+        let full_ref = FullRefName::parse("refs/heads/main").expect("valid test ref");
+        let short_name = full_ref.branch_name().expect("branch ref");
+        let oid = super::super::discovery::git_rev_parse_verify(&root, "HEAD")
+            .and_then(|oid| Oid::parse(&oid));
         assert_eq!(
             fingerprint.head,
             GitHeadIdentity::Branch {
-                full_ref: "refs/heads/main".into(),
-                short_name: "main".into(),
-                oid: super::super::discovery::git_rev_parse_verify(&root, "HEAD"),
+                full_ref,
+                short_name,
+                oid,
             }
         );
     }

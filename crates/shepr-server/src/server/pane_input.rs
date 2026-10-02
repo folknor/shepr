@@ -140,6 +140,7 @@ enum ScrollDirection {
 
 fn apply_scroll(
     runtime: &shepr_mux::pane::PaneRuntime,
+    input_modes: Option<shepr_vt::InputModes>,
     direction: ScrollDirection,
     lines: u16,
     position: shepr_termio::input::mouse::Position,
@@ -150,10 +151,11 @@ fn apply_scroll(
         ScrollDirection::Down => MouseEventKind::ScrollDown,
     };
 
-    match runtime.wheel_routing() {
-        Some(shepr_mux::pane::WheelRouting::MouseReport) => {
+    match input_modes.map(|modes| (modes, runtime.wheel_routing_for_modes(modes))) {
+        Some((modes, shepr_mux::pane::WheelRouting::MouseReport)) => {
             runtime.scroll_reset();
-            let Some(bytes) = runtime.encode_mouse_wheel(
+            let Some(bytes) = runtime.encode_mouse_wheel_with_modes(
+                modes,
                 wheel_kind,
                 position,
                 KeyModifiers::from_bits_truncate(modifiers),
@@ -165,14 +167,14 @@ fn apply_scroll(
             };
             send_input(runtime, Bytes::from(bytes), "mouse wheel input")?;
         }
-        Some(shepr_mux::pane::WheelRouting::AlternateScroll) => {
+        Some((modes, shepr_mux::pane::WheelRouting::AlternateScroll)) => {
             runtime.scroll_reset();
-            let Some(bytes) = runtime.encode_alternate_scroll(wheel_kind) else {
+            let Some(bytes) = runtime.encode_alternate_scroll_with_modes(modes, wheel_kind) else {
                 return Ok(());
             };
             send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
         }
-        Some(shepr_mux::pane::WheelRouting::HostScroll) | None => {
+        _ => {
             match direction {
                 ScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
                 ScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
@@ -216,6 +218,7 @@ fn apply_client_pane_input_event(
         ..
     } = event
     {
+        let input_modes = runtime.input_modes();
         let kind = kind.to_host();
         let modifiers = modifiers.to_host();
         let position = match position {
@@ -226,7 +229,7 @@ fn apply_client_pane_input_event(
                 }
             }
             shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => {
-                if runtime.sgr_pixel_mouse_enabled() {
+                if input_modes.is_some_and(shepr_vt::InputModes::sgr_pixel_mouse_enabled) {
                     shepr_termio::input::mouse::Position::Pixels { x: *x, y: *y }
                 } else {
                     shepr_termio::input::mouse::Position::Cell {
@@ -245,20 +248,29 @@ fn apply_client_pane_input_event(
                 };
                 return apply_scroll(
                     runtime,
+                    input_modes,
                     direction,
                     (*lines).max(1),
                     position,
                     modifiers.bits(),
                 );
             }
-            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => runtime
-                .encode_mouse_wheel(kind, position, modifiers)
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => input_modes
+                .and_then(|modes| {
+                    runtime.encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
+                })
                 .unwrap_or_default(),
-            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => runtime
-                .encode_mouse_button(kind, position, modifiers)
-                .unwrap_or_default(),
-            MouseEventKind::Moved => runtime
-                .encode_mouse_motion(kind, position, modifiers)
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
+                input_modes
+                    .and_then(|modes| {
+                        runtime.encode_mouse_button_with_modes(modes, kind, position, modifiers)
+                    })
+                    .unwrap_or_default()
+            }
+            MouseEventKind::Moved => input_modes
+                .and_then(|modes| {
+                    runtime.encode_mouse_motion_with_modes(modes, kind, position, modifiers)
+                })
                 .unwrap_or_default(),
         };
         if bytes.is_empty() {
@@ -282,9 +294,11 @@ fn apply_client_pane_input_event(
     match event.to_raw_input_event() {
         shepr_termio::input::raw_input::RawInputEvent::Key(key) => {
             let key_event = key.as_key_event();
+            let input_modes = runtime.input_modes();
             if matches!(key_event.code, KeyCode::PageUp | KeyCode::PageDown)
                 && key_event.modifiers.is_empty()
-                && runtime.plain_page_keys_use_host_scrollback() == Some(true)
+                && input_modes
+                    .is_some_and(shepr_vt::InputModes::plain_page_keys_use_host_scrollback)
             {
                 match key_event.kind {
                     KeyEventKind::Release => {}
@@ -301,7 +315,11 @@ fn apply_client_pane_input_event(
             }
 
             runtime.scroll_reset();
-            let bytes = runtime.encode_terminal_key(key);
+            let bytes = if let Some(modes) = input_modes {
+                runtime.encode_terminal_key_with_modes(key, modes)
+            } else {
+                runtime.encode_terminal_key(key)
+            };
             if bytes.is_empty() {
                 return Ok(());
             }

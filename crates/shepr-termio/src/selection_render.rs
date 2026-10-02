@@ -3,6 +3,7 @@ use ratatui::{
     style::{Color, Style},
 };
 use shepr_config::theme::Palette;
+use shepr_vt::{ColorScheme, RgbColor};
 
 fn panel_background(p: &Palette) -> Color {
     if p.panel_bg == Color::Reset {
@@ -58,7 +59,9 @@ pub fn automatic_selection_style(
     host_theme: crate::host_term::theme::TerminalTheme,
 ) -> Style {
     let bg = automatic_selection_bg(p, host_theme);
-    Style::reset().fg(selection_fg_for_bg(bg, p)).bg(bg)
+    Style::reset()
+        .fg(selection_fg_for_bg(bg, p, &host_theme))
+        .bg(bg)
 }
 
 pub fn automatic_selection_bg(
@@ -77,37 +80,64 @@ pub fn automatic_selection_bg(
         return fallback;
     };
 
-    let target = if relative_luminance(background) < 0.5 {
-        (255, 255, 255)
-    } else {
-        (0, 0, 0)
+    // This asks the same dark/light question as the child-facing scheme query:
+    // move a dark surface toward white and a light one toward black. The text
+    // foreground below is picked by its actual contrast ratio instead.
+    let target = match rgb_color(background).appearance() {
+        ColorScheme::Dark => (255, 255, 255),
+        ColorScheme::Light => (0, 0, 0),
     };
     let selected = mix_rgb(background, target, 0.28);
     Color::Rgb(selected.0, selected.1, selected.2)
 }
 
-fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
+fn selection_fg_for_bg(
+    bg: Color,
+    p: &Palette,
+    host_theme: &crate::host_term::theme::TerminalTheme,
+) -> Color {
     if let Color::Rgb(r, g, b) = bg {
-        let luminance = relative_luminance((r, g, b));
-        let black_contrast = (luminance + 0.05) / 0.05;
-        let white_contrast = 1.05 / (luminance + 0.05);
-        return if black_contrast > white_contrast {
-            Color::Rgb(0, 0, 0)
-        } else {
-            Color::Rgb(255, 255, 255)
-        };
+        return contrast_foreground(rgb_color((r, g, b)), true, host_theme);
     }
 
-    color_to_rgb(bg).map_or_else(
+    color_to_rgb(bg, host_theme).map_or_else(
         || panel_background(p),
-        |bg| {
-            if relative_luminance(bg) < 0.5 {
-                Color::White
-            } else {
-                Color::Black
-            }
-        },
+        |background| contrast_foreground(background, false, host_theme),
     )
+}
+
+fn contrast_foreground(
+    background: RgbColor,
+    rgb_output: bool,
+    host_theme: &crate::host_term::theme::TerminalTheme,
+) -> Color {
+    const RGB_BLACK: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
+    const RGB_WHITE: RgbColor = RgbColor {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+    let (black_rgb, white_rgb, black, white) = if rgb_output {
+        (
+            RGB_BLACK,
+            RGB_WHITE,
+            Color::Rgb(0, 0, 0),
+            Color::Rgb(255, 255, 255),
+        )
+    } else {
+        (
+            host_theme.palette_color(0),
+            host_theme.palette_color(15),
+            Color::Black,
+            Color::White,
+        )
+    };
+
+    if background.contrast_with(black_rgb) > background.contrast_with(white_rgb) {
+        black
+    } else {
+        white
+    }
 }
 
 fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
@@ -130,38 +160,39 @@ fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
 }
 
 pub fn relative_luminance(color: Rgb) -> f32 {
-    fn channel(value: u8) -> f32 {
-        let value = f32::from(value) / 255.0;
-        if value <= 0.03928 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * channel(color.0) + 0.7152 * channel(color.1) + 0.0722 * channel(color.2)
+    rgb_color(color).relative_luminance()
 }
 
-fn color_to_rgb(color: Color) -> Option<Rgb> {
-    match color {
-        Color::Reset | Color::Indexed(_) => None,
-        Color::Black => Some((0, 0, 0)),
-        Color::Red => Some((128, 0, 0)),
-        Color::Green => Some((0, 128, 0)),
-        Color::Yellow => Some((128, 128, 0)),
-        Color::Blue => Some((0, 0, 128)),
-        Color::Magenta => Some((128, 0, 128)),
-        Color::Cyan => Some((0, 128, 128)),
-        Color::Gray => Some((192, 192, 192)),
-        Color::DarkGray => Some((128, 128, 128)),
-        Color::LightRed => Some((255, 0, 0)),
-        Color::LightGreen => Some((0, 255, 0)),
-        Color::LightYellow => Some((255, 255, 0)),
-        Color::LightBlue => Some((0, 0, 255)),
-        Color::LightMagenta => Some((255, 0, 255)),
-        Color::LightCyan => Some((0, 255, 255)),
-        Color::White => Some((255, 255, 255)),
-        Color::Rgb(r, g, b) => Some((r, g, b)),
-    }
+fn color_to_rgb(
+    color: Color,
+    host_theme: &crate::host_term::theme::TerminalTheme,
+) -> Option<RgbColor> {
+    let index = match color {
+        Color::Reset => return None,
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(index) => index,
+        Color::Rgb(r, g, b) => return Some(rgb_color((r, g, b))),
+    };
+    Some(host_theme.palette_color(index))
+}
+
+fn rgb_color((r, g, b): Rgb) -> RgbColor {
+    RgbColor { r, g, b }
 }
 
 #[cfg(test)]

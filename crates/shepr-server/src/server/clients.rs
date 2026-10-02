@@ -106,7 +106,7 @@ impl ClientShellState {
                     shepr_termio::host_term::theme::DefaultColorKind::Background
                 ) && !self.host_terminal_appearance_explicit
                 {
-                    changed |= self.set_host_appearance(Some(color.inferred_appearance()), false);
+                    changed |= self.set_host_appearance(Some(color.appearance()), false);
                 }
             }
             shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors) => {

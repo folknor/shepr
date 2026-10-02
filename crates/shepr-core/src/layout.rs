@@ -145,6 +145,42 @@ pub enum Node {
     },
 }
 
+impl Node {
+    /// Pane IDs in tree order.
+    pub fn pane_ids(&self) -> Vec<PaneId> {
+        let mut ids = Vec::new();
+        collect_ids(self, &mut ids);
+        ids
+    }
+
+    /// Drop leaves outside `surviving`, collapsing any split left with only
+    /// one child. Returns `None` when no pane survives.
+    pub fn prune(self, surviving: &HashSet<PaneId>) -> Option<Self> {
+        match self {
+            Self::Pane(id) => surviving.contains(&id).then_some(Self::Pane(id)),
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                let first = (*first).prune(surviving);
+                let second = (*second).prune(surviving);
+                match (first, second) {
+                    (Some(first), Some(second)) => Some(Self::Split {
+                        direction,
+                        ratio,
+                        first: Box::new(first),
+                        second: Box::new(second),
+                    }),
+                    (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
+                    (None, None) => None,
+                }
+            }
+        }
+    }
+}
+
 /// BSP tiling layout. Tracks a tree of splits and a focused pane.
 #[derive(Clone)]
 pub struct TileLayout {
@@ -352,8 +388,7 @@ impl TileLayout {
         second_ids: &[PaneId],
     ) -> Option<Vec<SplitBranch>> {
         fn same_members(node: &Node, expected: &[PaneId]) -> bool {
-            let mut actual = Vec::new();
-            collect_ids(node, &mut actual);
+            let actual = node.pane_ids();
             !expected.is_empty()
                 && actual.len() == expected.len()
                 && actual.iter().all(|id| expected.contains(id))
@@ -434,9 +469,7 @@ impl TileLayout {
 
     /// Pane record keys in layout order. `Workspace.panes` owns the live records.
     pub fn pane_ids(&self) -> Vec<PaneId> {
-        let mut ids = Vec::new();
-        collect_ids(&self.root, &mut ids);
-        ids
+        self.root.pane_ids()
     }
 
     /// Access the tree root for serialization.
@@ -490,35 +523,12 @@ pub fn find_in_direction(
         .iter()
         .enumerate()
         .filter(|(_, p)| p.id != focused.id)
-        .filter(|(_, p)| {
-            let r = p.rect;
-            match direction {
-                NavDirection::Left => {
-                    rect_end(r.x, r.width) <= u32::from(fr.x)
-                        && ranges_overlap(r.y, r.height, fr.y, fr.height)
-                }
-                NavDirection::Right => {
-                    u32::from(r.x) >= rect_end(fr.x, fr.width)
-                        && ranges_overlap(r.y, r.height, fr.y, fr.height)
-                }
-                NavDirection::Up => {
-                    rect_end(r.y, r.height) <= u32::from(fr.y)
-                        && ranges_overlap(r.x, r.width, fr.x, fr.width)
-                }
-                NavDirection::Down => {
-                    u32::from(r.y) >= rect_end(fr.y, fr.height)
-                        && ranges_overlap(r.x, r.width, fr.x, fr.width)
-                }
-            }
+        .filter_map(|(index, pane)| {
+            rect_distance_in_direction(fr, pane.rect, direction)
+                .map(|distance| (index, pane, distance))
         })
-        .min_by_key(|(index, p)| {
+        .min_by_key(|(index, p, edge_distance)| {
             let r = p.rect;
-            let edge_distance = match direction {
-                NavDirection::Left => u32::from(fr.x) - rect_end(r.x, r.width),
-                NavDirection::Right => u32::from(r.x) - rect_end(fr.x, fr.width),
-                NavDirection::Up => u32::from(fr.y) - rect_end(r.y, r.height),
-                NavDirection::Down => u32::from(r.y) - rect_end(fr.y, fr.height),
-            };
             let overlap = match direction {
                 NavDirection::Left | NavDirection::Right => {
                     range_overlap_amount(r.y, r.height, fr.y, fr.height)
@@ -535,9 +545,65 @@ pub fn find_in_direction(
                     range_center_distance(r.x, r.width, fr.x, fr.width)
                 }
             };
-            (edge_distance, Reverse(overlap), center_distance, *index)
+            (*edge_distance, Reverse(overlap), center_distance, *index)
         })
-        .map(|(_, p)| p.id)
+        .map(|(_, p, _)| p.id)
+}
+
+/// Distance between two panes along `direction`, provided they are separated
+/// on that axis and overlap on the other. Touching pane edges have distance 0.
+pub fn rect_distance_in_direction(from: Rect, to: Rect, direction: NavDirection) -> Option<u32> {
+    let (
+        axis_from_start,
+        from_len,
+        axis_to_start,
+        to_len,
+        cross_from_start,
+        cross_from_len,
+        cross_to_start,
+        cross_to_len,
+    ) = match direction {
+        NavDirection::Left | NavDirection::Right => (
+            from.x,
+            from.width,
+            to.x,
+            to.width,
+            from.y,
+            from.height,
+            to.y,
+            to.height,
+        ),
+        NavDirection::Up | NavDirection::Down => (
+            from.y,
+            from.height,
+            to.y,
+            to.height,
+            from.x,
+            from.width,
+            to.x,
+            to.width,
+        ),
+    };
+    if !ranges_overlap(
+        cross_from_start,
+        cross_from_len,
+        cross_to_start,
+        cross_to_len,
+    ) {
+        return None;
+    }
+
+    let from_start = u32::from(axis_from_start);
+    let to_start = u32::from(axis_to_start);
+    let from_end = rect_end(axis_from_start, from_len);
+    let to_end = rect_end(axis_to_start, to_len);
+    match direction {
+        NavDirection::Left | NavDirection::Up if to_end <= from_start => Some(from_start - to_end),
+        NavDirection::Right | NavDirection::Down if to_start >= from_end => {
+            Some(to_start - from_end)
+        }
+        _ => None,
+    }
 }
 
 fn rect_end(start: u16, len: u16) -> u32 {

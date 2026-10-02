@@ -160,16 +160,18 @@ pub(super) fn waiting_notice(
 }
 
 /// The geometry every endpoint is asked to render: the host size under the client's own layout.
-/// Shell chrome belongs to the client, so all endpoints lay out the same surface.
-pub(super) fn view_geometry(state: &ClientState) -> shepr_protocol::TerminalGeometry {
-    let geometry = &state.reported_geometry;
+/// Shell chrome belongs to the client, so all endpoints lay out the same surface. Handshakes
+/// and resize messages use this producer so they cannot disagree about pixel bounding.
+pub(super) fn view_geometry(
+    host: shepr_core::geometry::HostGeometry,
+    size: shepr_protocol::ClientSurfaceSize,
+) -> shepr_protocol::TerminalGeometry {
     let (cell_width_px, cell_height_px, pixel_mouse) =
         super::terminal_geometry::bounded_cell_geometry(
-            geometry.cell_width(),
-            geometry.cell_height(),
-            geometry.exact,
+            host.cell_width(),
+            host.cell_height(),
+            host.exact,
         );
-    let size = state.shell.surface_size(geometry.cols(), geometry.rows());
     shepr_protocol::TerminalGeometry::new(
         size.cols,
         size.rows,
@@ -183,7 +185,13 @@ pub(super) fn view_geometry(state: &ClientState) -> shepr_protocol::TerminalGeom
 /// being prepared. A changed geometry also drops the move's recorded surface; an unchanged
 /// one keeps it, because the server answers an unchanged resize with no new surface.
 pub(super) fn resize_views(state: &mut ClientState, endpoints: &mut endpoint::EndpointRegistry) {
-    let geometry = view_geometry(state);
+    let geometry = view_geometry(
+        state.reported_geometry,
+        state.shell.surface_size(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        ),
+    );
     if let Some(preparing) = state.choice.preparing_mut() {
         preparing.update_geometry(geometry);
     }
@@ -243,30 +251,24 @@ pub(super) fn install_client_shell_snapshot(
         .shell
         .set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
     // Only the shown endpoint's snapshot moves the projection. Any other one (a target being
-    // prepared included) is cached for its commit, so the chrome frame below shows the same
-    // projection and pane cells as before and needs no gate. Snapshot application only moves
-    // Copy and Terminal modes; neither asks the host for report-all keys.
+    // prepared included) is cached for its commit. Snapshot application only moves Copy and
+    // Terminal modes; neither asks the host for report-all keys.
     if role == endpoint::ConnectionRole::Shown {
         state
             .shell
             .set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
+        state.mark_pane_dirty();
     } else {
         state
             .shell
             .cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
-    }
-    if let Some(frame) = state.shell.compose(
-        state.reported_geometry.cols(),
-        state.reported_geometry.rows(),
-    ) {
-        state.present_chrome(frame);
+        state.mark_chrome_dirty();
     }
 }
 
 pub(super) fn finish_client_shell_input(
     state: &mut ClientState,
     outcome: shell::ClientShellInput,
-    frame: Option<shepr_protocol::FrameData>,
     endpoints: &mut endpoint::EndpointRegistry,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     now: std::time::Instant,
@@ -279,11 +281,12 @@ pub(super) fn finish_client_shell_input(
         }
         return Ok(true);
     }
+    let repaint = outcome.repaint;
     if outcome.resize {
         resize_views(state, endpoints);
     }
     if outcome.full_redraw {
-        // Discard the blit baseline so the frame below is written in full; the
+        // Discard the blit baseline so the pending frame is written in full; the
         // host may have lost or garbled what we last drew while unfocused.
         state.request_repaint();
     }
@@ -304,14 +307,6 @@ pub(super) fn finish_client_shell_input(
         &mut state.shell,
         now,
     );
-    let frame = if dispatch_repaint {
-        state.shell.compose(
-            state.reported_geometry.cols(),
-            state.reported_geometry.rows(),
-        )
-    } else {
-        frame
-    };
     for request in outcome.requests {
         match &request {
             ClientMessage::ClientShellHostTheme { update } => {
@@ -327,8 +322,8 @@ pub(super) fn finish_client_shell_input(
             }
         }
     }
-    if let Some(frame) = frame {
-        state.present_chrome(frame);
+    if repaint || dispatch_repaint {
+        state.mark_pane_dirty();
     }
     Ok(false)
 }
